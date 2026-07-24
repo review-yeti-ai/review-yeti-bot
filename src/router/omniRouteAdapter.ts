@@ -615,9 +615,100 @@ export class OmniRouteAdapter {
         return new DeepSeekAdapter(config);
       case 'openai':
         return new OpenAIAdapter(config);
+      case 'openrouter':
+        return new OpenRouterAdapter(config);
       case 'omniroute_gateway':
       default:
         return new OmniRouteGatewayAdapter(config);
     }
   }
 }
+
+/**
+ * Concrete Provider: OpenRouter Adapter
+ */
+export class OpenRouterAdapter implements IProviderAdapter {
+  public providerType: ProviderType = 'openrouter';
+  constructor(public config: ProviderConfig) {}
+
+  private static MODEL_ALIASES: Record<string, string> = {
+    'glm-5.2': 'thudm/glm-5.2',
+    'glm-5.2-low': 'thudm/glm-5.2',
+    'deepseek-v4-pro': 'deepseek/deepseek-r1',
+    'deepseek-v4': 'deepseek/deepseek-r1',
+    'opus-4.8': 'anthropic/claude-3-opus',
+    'opus-4.8-low': 'anthropic/claude-3-opus',
+    '5.6-sol': 'google/gemini-2.5-pro',
+    '5.6-sol-low': 'google/gemini-2.5-flash',
+  };
+
+  async execute(request: LLMRequest, fetchFn: typeof fetch): Promise<LLMResponse> {
+    const estimatedUSD = 0.005;
+    reservePreExecutionSpend(this.config, estimatedUSD);
+
+    try {
+      const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`;
+      const systemPrompt = synthesizeSystemPrompt(request.persona, request.systemPrompt);
+
+      const requestedModel = request.model || this.config.defaultModel;
+      const resolvedModel = OpenRouterAdapter.MODEL_ALIASES[requestedModel.toLowerCase()] || requestedModel;
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://calltelemetry.com',
+        'X-Title': 'CallTelemetry Review Bot',
+        ...(this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {}),
+        ...this.config.customHeaders,
+      };
+
+      const res = await fetchFn(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: resolvedModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: request.prompt },
+          ],
+          temperature: request.effortLevel === 'low' ? 0.2 : 0.4,
+          max_tokens: request.maxTokens || (request.effortLevel === 'low' ? 1024 : 4096),
+        }),
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => '');
+        const err: any = new Error(`OpenRouter request failed with status ${res.status}: ${errorText}`);
+        err.status = res.status;
+        err.statusCode = res.status;
+        throw err;
+      }
+
+      const data: any = await res.json();
+      const choice = data.choices?.[0];
+      const content = choice?.message?.content || (typeof data.content === 'string' ? data.content : '');
+      const reasoningTrace = choice?.message?.reasoning_content || data.reasoningTrace;
+
+      const tokensUsed: LLMTokensUsed = {
+        prompt: data.usage?.prompt_tokens || data.tokensUsed?.prompt || 0,
+        completion: data.usage?.completion_tokens || data.tokensUsed?.completion || 0,
+        total: data.usage?.total_tokens || data.tokensUsed?.total || 0,
+      };
+
+      const costEstimateUSD = recordPostExecutionSpend(this.config, tokensUsed);
+
+      return {
+        content,
+        providerUsed: 'openrouter',
+        modelUsed: resolvedModel,
+        tokensUsed,
+        reasoningTrace,
+        rawResponse: data,
+        billingTierUsed: this.config.billingTier,
+        costEstimateUSD,
+      };
+    } finally {
+      releasePreExecutionReservation(this.config, estimatedUSD);
+    }
+  }
+}
+
