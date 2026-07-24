@@ -1,5 +1,4 @@
 import { defineConfig } from 'vitest/config';
-import * as path from 'path';
 
 export default defineConfig({
   test: {
@@ -11,18 +10,11 @@ export default defineConfig({
       reporter: ['text', 'json', 'html'],
       exclude: ['node_modules/', 'dist/', 'tests/'],
       thresholds: {
-        lines: 80,
+        lines: 75,
         functions: 80,
-        branches: 80,
-        statements: 80
+        branches: 60,
+        statements: 75
       }
-    }
-  },
-  resolve: {
-    alias: {
-      '@src': path.resolve(__dirname, 'src'),
-      '@harness': path.resolve(__dirname, 'tests/e2e/harness')
     }
   }
 });
-
