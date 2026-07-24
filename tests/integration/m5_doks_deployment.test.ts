@@ -98,6 +98,12 @@ describe('Milestone 5 DOKS Deployment & Kubernetes Manifest Integration Test Sui
       NODE_ENV: 'production',
       LOG_LEVEL: 'info',
       OMNIROUTE_BASE_URL: 'http://omniroute-service.default.svc.cluster.local:9090',
+      AGY_ENDPOINT: 'http://omniroute-service.default.svc.cluster.local:9090',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai/api',
+      OPENAI_BASE_URL: 'https://api.openai.com',
+      ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+      GEMINI_BASE_URL: 'https://generativelanguage.googleapis.com',
+      DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
       CT_REVIEW_DB_PATH: '/app/data/pr_states.sqlite'
     });
   });
