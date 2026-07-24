@@ -18,6 +18,10 @@ spec:
       serviceAccountName: ct-review-bot
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -33,7 +37,6 @@ spec:
             - secretRef:
                 name: ct-review-bot-runtime
           securityContext:
-            runAsUser: 1000
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
