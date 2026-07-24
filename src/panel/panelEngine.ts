@@ -168,6 +168,9 @@ async function runPersona(
   headSha: string,
 ): Promise<PersonaLaneResult> {
   const errors: string[] = [];
+  const scopedFiles = changedFiles.filter((file) =>
+    persona.paths.some((pattern) => pathMatches(pattern, file.path)),
+  );
   for (const providerId of persona.providers) {
     const spec = provider(config, providerId);
     try {
@@ -176,7 +179,7 @@ async function runPersona(
         charter: BUILTIN_CHARTERS[persona.charter] || persona.charter,
         repository,
         headSha,
-        changedFiles,
+        changedFiles: scopedFiles,
         pathInstructions: config.path_instructions,
         rules: config.rules,
         outputSchema: {

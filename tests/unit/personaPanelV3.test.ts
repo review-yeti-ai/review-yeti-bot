@@ -95,10 +95,18 @@ describe('version 3 configurable persona panel', () => {
   it('runs enabled applicable personas concurrently, satisfies distinct-provider quorum, moderates, then arbitrates', async () => {
     const config = parseAndValidateConfig(policy);
     const starts: string[] = [];
+    const personaFiles = new Map<string, string[]>();
     const complete = vi.fn(async ({ model, messages }: any) => {
       const prompt = messages[messages.length - 1].content as string;
       const nonce = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)![1];
       starts.push(model);
+      const payload = JSON.parse(prompt.split('\n').slice(3).join('\n'));
+      if (payload.role === 'persona') {
+        personaFiles.set(
+          payload.persona,
+          payload.changedFiles.map((file: { path: string }) => file.path),
+        );
+      }
       if (prompt.includes('"role":"moderator"')) {
         return {
           model,
@@ -125,7 +133,10 @@ describe('version 3 configurable persona panel', () => {
 
     const result = await executePersonaPanel({
       config,
-      changedFiles: [{ path: 'src/auth.ts', patch: '+const safe = true;' }],
+      changedFiles: [
+        { path: 'src/auth.ts', patch: '+const safe = true;' },
+        { path: 'README.md', patch: '+documentation' },
+      ],
       repository: 'calltelemetry/ct-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
@@ -139,6 +150,8 @@ describe('version 3 configurable persona panel', () => {
     expect(result.quorum.satisfied).toBe(true);
     expect(result.moderator.decision).toBe('RECONCILED');
     expect(result.arbiter.verdict).toBe('SHIP');
+    expect(personaFiles.get('security-tenancy')).toEqual(['src/auth.ts']);
+    expect(personaFiles.get('constitutional-goals')).toEqual(['src/auth.ts', 'README.md']);
     expect(starts).not.toContain('openai/gpt-4o');
   });
 
