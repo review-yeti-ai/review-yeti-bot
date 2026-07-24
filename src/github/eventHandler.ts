@@ -99,6 +99,10 @@ export class GitHubEventHandler {
         return { shouldTrigger: false, reason: 'PR is closed' };
       }
 
+      if (pr.draft === true) {
+        return { shouldTrigger: false, reason: 'PR is a draft' };
+      }
+
       const labels = Array.isArray(pr.labels)
         ? pr.labels.map((l: any) => (typeof l === 'string' ? l : l.name))
         : [];

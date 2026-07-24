@@ -288,4 +288,38 @@ describe('Milestone 4: Webhook Event Loop Integration Test Suite', () => {
     // OmniRoute LLM calls count should be unchanged on second commit because diff delta was unchanged
     expect(harness.mockOmniRoute.getRecordedRequests().length).toBe(omniCallsAfterFirstCommit);
   });
+
+  test('6. Draft PR Guard — Webhook ignores and skips automated review execution when PR is marked as draft', async () => {
+    const draftPayload = {
+      action: 'opened',
+      number: 206,
+      pull_request: {
+        number: 206,
+        draft: true,
+        title: '[PROJ-206] draft: work in progress',
+        body: 'PR is still a work in progress',
+        head: { sha: 'sha-draft-1' },
+        base: { sha: 'sha-base-0' },
+      },
+      repository: {
+        name: 'ai-workspace',
+        owner: { login: 'calltelemetry' },
+      },
+      sender: { login: 'developer6' },
+    };
+
+    const signature = signPayload(draftPayload);
+
+    const res = await request(app)
+      .post('/webhook')
+      .set('X-GitHub-Event', 'pull_request')
+      .set('X-Hub-Signature-256', signature)
+      .set('Content-Type', 'application/json')
+      .send(draftPayload);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ignored');
+    expect(res.body.reason).toBe('PR is a draft');
+  });
 });
+
