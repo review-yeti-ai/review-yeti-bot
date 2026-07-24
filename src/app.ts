@@ -299,8 +299,16 @@ export async function runReviewPipeline(
 
         personaDetails.push({
           persona,
-          provider: 'openrouter/review',
-          model: persona === 'security' ? 'claude-3.5-sonnet' : persona === 'architecture' ? 'gpt-4o' : persona === 'performance' ? 'deepseek-r1' : 'thudm/glm-5.2',
+          provider: (omniRes as any)?.provider || 'openrouter/review',
+          model: (omniRes as any)?.model || (
+            persona === 'security'
+              ? 'claude-3-7-sonnet'
+              : persona === 'architecture'
+                ? 'gpt-4.5-turbo'
+                : persona === 'performance'
+                  ? 'deepseek-r2-reasoner'
+                  : 'gemini-2.5-pro'
+          ),
           effortLevel,
           promptTokens: tokensUsed.prompt || 850,
           completionTokens: tokensUsed.completion || 220,
