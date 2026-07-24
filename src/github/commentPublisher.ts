@@ -344,4 +344,89 @@ export class CommentPublisher {
       inlineComments,
     });
   }
+
+  /**
+   * Posts or updates a Commit Status Check (e.g., ct-review-bot / quorum-panel)
+   */
+  public async setCommitStatus(options: {
+    owner: string;
+    repo: string;
+    sha: string;
+    state: 'pending' | 'success' | 'failure' | 'error';
+    context?: string;
+    description?: string;
+    targetUrl?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    const { owner, repo, sha, state, context = 'ct-review-bot / quorum-panel', description = 'Automated Quorum Code Review', targetUrl } = options;
+    const url = `${this.baseUrl}/repos/${owner}/${repo}/statuses/${sha}`;
+
+    try {
+      const res = await this.fetchWithRetry(url, {
+        method: 'POST',
+        body: JSON.stringify({
+          state,
+          context,
+          description,
+          target_url: targetUrl || `https://github.com/${owner}/${repo}`,
+        }),
+      });
+
+      if (res.ok) {
+        logger.info(`Set commit status '${state}' for ${owner}/${repo}@${sha.substring(0, 7)} [${context}]`);
+        return { success: true };
+      }
+
+      const errText = await res.text();
+      logger.error(`Failed to set commit status`, { status: res.status, errText });
+      return { success: false, error: errText };
+    } catch (err: any) {
+      logger.error(`Exception setting commit status`, { err: err?.message || err });
+      return { success: false, error: err?.message || 'Network error' };
+    }
+  }
+
+  /**
+   * Creates a GitHub Check Run with granular output findings
+   */
+  public async createCheckRun(options: {
+    owner: string;
+    repo: string;
+    headSha: string;
+    name?: string;
+    status?: 'queued' | 'in_progress' | 'completed';
+    conclusion?: 'success' | 'failure' | 'neutral' | 'cancelled' | 'action_required';
+    title?: string;
+    summary?: string;
+  }): Promise<{ success: boolean; checkRunId?: number; error?: string }> {
+    const { owner, repo, headSha, name = 'ct-review-bot / quorum-review', status = 'completed', conclusion = 'success', title = 'Quorum Code Review', summary = 'Automated review completed successfully' } = options;
+    const url = `${this.baseUrl}/repos/${owner}/${repo}/check-runs`;
+
+    try {
+      const res = await this.fetchWithRetry(url, {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          head_sha: headSha,
+          status,
+          conclusion,
+          output: {
+            title,
+            summary,
+          },
+        }),
+      });
+
+      if (res.ok) {
+        const data: any = await res.json();
+        logger.info(`Created check run '${name}' for ${owner}/${repo}@${headSha.substring(0, 7)}`);
+        return { success: true, checkRunId: data.id };
+      }
+
+      const errText = await res.text();
+      return { success: false, error: errText };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error' };
+    }
+  }
 }
+

@@ -208,5 +208,63 @@ describe('Milestone 4: Octokit PR Comment Publisher Unit Tests', () => {
       expect(res.reviewId).toBe(888);
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
+
+    it('sets commit status on GitHub status API endpoint', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: new Headers(),
+        json: async () => ({ state: 'success', context: 'ct-review-bot / quorum-panel' }),
+      });
+
+      const publisher = new CommentPublisher({ baseUrl: 'http://api.github.test' });
+      const res = await publisher.setCommitStatus({
+        owner: 'calltelemetry',
+        repo: 'ai-workspace',
+        sha: 'sha123',
+        state: 'success',
+        context: 'ct-review-bot / quorum-panel',
+        description: 'Quorum Review Passed (4/4)',
+      });
+
+      expect(res.success).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe('http://api.github.test/repos/calltelemetry/ai-workspace/statuses/sha123');
+      const body = JSON.parse(call[1].body);
+      expect(body.state).toBe('success');
+      expect(body.context).toBe('ct-review-bot / quorum-panel');
+    });
+
+    it('creates GitHub Check Run with granular status and conclusion', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: new Headers(),
+        json: async () => ({ id: 555, status: 'completed', conclusion: 'success' }),
+      });
+
+      const publisher = new CommentPublisher({ baseUrl: 'http://api.github.test' });
+      const res = await publisher.createCheckRun({
+        owner: 'calltelemetry',
+        repo: 'ai-workspace',
+        headSha: 'sha123',
+        name: 'ct-review-bot / quorum-review',
+        conclusion: 'success',
+        title: 'Quorum Review Passed',
+        summary: 'All 4 personas approved diff.',
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.checkRunId).toBe(555);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe('http://api.github.test/repos/calltelemetry/ai-workspace/check-runs');
+      const body = JSON.parse(call[1].body);
+      expect(body.name).toBe('ct-review-bot / quorum-review');
+      expect(body.head_sha).toBe('sha123');
+      expect(body.conclusion).toBe('success');
+    });
   });
 });
+
