@@ -6,6 +6,7 @@ describe('Container Configuration Unit Tests', () => {
   const rootDir = path.resolve(__dirname, '../../');
   const dockerfilePath = path.join(rootDir, 'Dockerfile');
   const dockerignorePath = path.join(rootDir, '.dockerignore');
+  const botDeploymentPath = path.join(rootDir, 'k8s/bot-deployment.yaml.tpl');
   const omniRouteStatefulSetPath = path.join(
     rootDir,
     'k8s/omniroute-statefulset.yaml.tpl'
@@ -79,5 +80,14 @@ describe('Container Configuration Unit Tests', () => {
     expect(statefulSet).toContain('runAsGroup: 10002');
     expect(statefulSet).toContain('fsGroup: 10002');
     expect(statefulSet).toContain('fsGroupChangePolicy: OnRootMismatch');
+  });
+
+  it('grants the non-root review bot write access to its persistent run store', () => {
+    const deployment = fs.readFileSync(botDeploymentPath, 'utf-8');
+
+    expect(deployment).toContain('runAsUser: 1000');
+    expect(deployment).toContain('runAsGroup: 1000');
+    expect(deployment).toContain('fsGroup: 1000');
+    expect(deployment).toContain('fsGroupChangePolicy: OnRootMismatch');
   });
 });
