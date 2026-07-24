@@ -171,7 +171,7 @@ async function executeRealDiffReview(owner: string, repo: string, prNumber: numb
     diffDeltaSavingsPercent: 35,
     personaDetails: [
       { persona: 'security', provider: 'subscription/agy', model: 'agy-opus (Opus 5.0)', effortLevel: 'medium', promptTokens: 1080, completionTokens: 340, totalTokens: 1420, costUSD: 0.00420, durationMs: 650 },
-      { persona: 'architecture', provider: 'openai/review', model: 'gpt-4.5-turbo', effortLevel: 'medium', promptTokens: 1040, completionTokens: 320, totalTokens: 1360, costUSD: 0.00410, durationMs: 620 },
+      { persona: 'architecture', provider: 'openai/review', model: 'gpt-5.6-sol', effortLevel: 'medium', promptTokens: 1040, completionTokens: 320, totalTokens: 1360, costUSD: 0.00410, durationMs: 620 },
       { persona: 'performance', provider: 'openrouter/review', model: 'deepseek/deepseek-v4-pro', effortLevel: 'low', promptTokens: 1000, completionTokens: 240, totalTokens: 1240, costUSD: 0.00228, durationMs: 560 },
       { persona: 'quality', provider: 'openrouter/review', model: 'z-ai/glm-5.2', effortLevel: 'low', promptTokens: 1000, completionTokens: 240, totalTokens: 1240, costUSD: 0.00190, durationMs: 550 },
     ],
@@ -199,7 +199,7 @@ async function executeRealDiffReview(owner: string, repo: string, prNumber: numb
     '| Persona | Model | Effort | Confidence | Verdict | Status |',
     '| :--- | :--- | :--- | :--- | :--- | :--- |',
     '| **Security** | `agy-opus (Opus 5.0)` | `medium` | `98%` | `REQUEST_CHANGES` | 🔴 Changes Requested |',
-    '| **Architecture** | `gpt-4.5-turbo` | `medium` | `95%` | `REQUEST_CHANGES` | 🔴 Changes Requested |',
+    '| **Architecture** | `gpt-5.6-sol` | `medium` | `95%` | `REQUEST_CHANGES` | 🔴 Changes Requested |',
     '| **Performance** | `deepseek/deepseek-v4-pro` | `low` | `92%` | `COMMENT` | 🟡 Advisory |',
     '| **Quality** | `z-ai/glm-5.2` | `low` | `90%` | `COMMENT` | 🟡 Advisory |',
     '',
