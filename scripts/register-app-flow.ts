@@ -19,12 +19,16 @@ const manifest = {
     pull_requests: 'write',
     issues: 'write',
     contents: 'read',
+    statuses: 'write',
+    checks: 'write',
     metadata: 'read',
   },
   default_events: [
     'pull_request',
     'issue_comment',
     'pull_request_review_comment',
+    'status',
+    'check_run',
   ],
 };
 
