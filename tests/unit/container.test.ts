@@ -7,6 +7,7 @@ describe('Container Configuration Unit Tests', () => {
   const dockerfilePath = path.join(rootDir, 'Dockerfile');
   const dockerignorePath = path.join(rootDir, '.dockerignore');
   const botDeploymentPath = path.join(rootDir, 'k8s/bot-deployment.yaml.tpl');
+  const ingressNetworkPath = path.join(rootDir, 'k8s/ingress-network.yaml');
   const omniRouteStatefulSetPath = path.join(
     rootDir,
     'k8s/omniroute-statefulset.yaml.tpl'
@@ -89,5 +90,15 @@ describe('Container Configuration Unit Tests', () => {
     expect(deployment).toContain('runAsGroup: 1000');
     expect(deployment).toContain('fsGroup: 1000');
     expect(deployment).toContain('fsGroupChangePolicy: OnRootMismatch');
+  });
+
+  it('allows HAProxy to reach only cert-manager HTTP-01 solver pods', () => {
+    const ingressNetwork = fs.readFileSync(ingressNetworkPath, 'utf-8');
+
+    expect(ingressNetwork).toContain('name: acme-http01-solver-allowed');
+    expect(ingressNetwork).toContain('acme.cert-manager.io/http01-solver: "true"');
+    expect(ingressNetwork).toContain('kubernetes.io/metadata.name: ct-dev');
+    expect(ingressNetwork).toContain('app.kubernetes.io/name: haproxy-ingress');
+    expect(ingressNetwork).toContain('port: 8089');
   });
 });
