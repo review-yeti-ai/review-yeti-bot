@@ -28,7 +28,7 @@ export function resolveWebhookSecret(overrideSecret?: string): string {
   if (process.env.GITHUB_WEBHOOK_SECRET && process.env.GITHUB_WEBHOOK_SECRET.trim() !== '') {
     return process.env.GITHUB_WEBHOOK_SECRET;
   }
-  return 'development-webhook-secret-key-12345';
+  throw new Error('WEBHOOK_SECRET is required; no placeholder webhook secret is permitted');
 }
 
 /**

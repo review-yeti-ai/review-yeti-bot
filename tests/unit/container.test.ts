@@ -15,18 +15,17 @@ describe('Container Configuration Unit Tests', () => {
     expect(dockerfile).toContain('AS builder');
     expect(dockerfile).toContain('AS runner');
 
-    // Base image node:20-alpine
+    // Pinned major runtime shared by builder and runner.
     const fromLines = dockerfile.split('\n').filter(line => line.trim().startsWith('FROM'));
     expect(fromLines.length).toBeGreaterThanOrEqual(2);
     fromLines.forEach(line => {
-      expect(line).toContain('node:20-alpine');
+      expect(line).toContain('node:24-bookworm-slim');
     });
 
     // Builder stage steps
-    expect(dockerfile).toMatch(/apk add .*python3 make g\+\+/);
     expect(dockerfile).toContain('npm ci');
     expect(dockerfile).toContain('npm run build');
-    expect(dockerfile).toContain('npm prune --production');
+    expect(dockerfile).toContain('npm prune --omit=dev --omit=optional');
 
     // Non-root security
     expect(dockerfile).toContain('USER node');
