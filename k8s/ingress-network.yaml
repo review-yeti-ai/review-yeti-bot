@@ -4,6 +4,7 @@ metadata:
   name: ct-review-bot
   namespace: ct-review-system
   annotations:
+    kubernetes.io/ingress.class: haproxy-ct-dev
     cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: haproxy-ct-dev
