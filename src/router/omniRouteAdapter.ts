@@ -618,12 +618,95 @@ export class OmniRouteAdapter {
       case 'openrouter':
       case 'openrouter/review':
         return new OpenRouterAdapter(config);
+      case 'agy':
+      case 'antigravity':
+      case 'agy-opus':
+      case 'agy-gemini':
+        return new AGYAdapter(config);
       case 'omniroute_gateway':
       default:
         return new OmniRouteGatewayAdapter(config);
     }
   }
 }
+
+/**
+ * Concrete Provider: Google Antigravity (AGY) Gateway Adapter
+ */
+export class AGYAdapter implements IProviderAdapter {
+  public providerType: ProviderType = 'agy';
+  constructor(public config: ProviderConfig) {}
+
+  async execute(request: LLMRequest, fetchFn: typeof fetch): Promise<LLMResponse> {
+    const estimatedUSD = 0.005;
+    reservePreExecutionSpend(this.config, estimatedUSD);
+
+    try {
+      const baseUrl = this.config.baseUrl || process.env.AGY_ENDPOINT || 'http://127.0.0.1:8080';
+      const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`;
+      const systemPrompt = synthesizeSystemPrompt(request.persona, request.systemPrompt);
+
+      const targetModel = request.model || this.config.defaultModel || 'agy-gemini-3.6-pro';
+      const apiKey = this.config.apiKey || process.env.AGY_API_KEY || 'agy-subscription-token';
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'X-AGY-Client': 'ct-review-bot',
+        ...this.config.customHeaders,
+      };
+
+      const res = await fetchFn(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: request.prompt },
+          ],
+          temperature: request.temperature ?? 0.3,
+          max_tokens: request.maxTokens || 4096,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => '');
+        const err: any = new Error(`AGY (Antigravity) request failed with status ${res.status}: ${errorText}`);
+        err.status = res.status;
+        err.statusCode = res.status;
+        throw err;
+      }
+
+      const data: any = await res.json();
+      const choice = data.choices?.[0];
+      const content = choice?.message?.content || (typeof data.content === 'string' ? data.content : '');
+      const reasoningTrace = choice?.message?.reasoning_content || data.reasoningTrace;
+
+      const tokensUsed: LLMTokensUsed = {
+        prompt: data.usage?.prompt_tokens || data.tokensUsed?.prompt || 0,
+        completion: data.usage?.completion_tokens || data.tokensUsed?.completion || 0,
+        total: data.usage?.total_tokens || data.tokensUsed?.total || 0,
+      };
+
+      const costEstimateUSD = recordPostExecutionSpend(this.config, tokensUsed);
+
+      return {
+        content,
+        providerUsed: request.provider || this.config.id || 'agy',
+        modelUsed: targetModel,
+        tokensUsed,
+        reasoningTrace,
+        rawResponse: data,
+        billingTierUsed: 'subscription_flat',
+        costEstimateUSD,
+      };
+    } finally {
+      releasePreExecutionReservation(this.config, estimatedUSD);
+    }
+  }
+}
+
 
 /**
  * Concrete Provider: OpenRouter Adapter
