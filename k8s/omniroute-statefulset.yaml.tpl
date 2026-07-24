@@ -16,6 +16,10 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -41,7 +45,6 @@ spec:
                   name: omniroute-runtime
                   key: OMNIROUTE_API_KEY
           securityContext:
-            runAsUser: 10002
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
