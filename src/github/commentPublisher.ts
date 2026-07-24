@@ -65,6 +65,50 @@ export function formatInlineCommentBody(finding: PersonaFinding): string {
   return body;
 }
 
+export interface PersonaUsageDetail {
+  persona: string;
+  provider: string;
+  model: string;
+  effortLevel: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  costUSD: number;
+  durationMs: number;
+}
+
+export interface ReviewRunReport {
+  totalDurationMs: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalTokens: number;
+  totalCostUSD: number;
+  diffDeltaSavingsPercent?: number;
+  personaDetails: PersonaUsageDetail[];
+}
+
+export function formatCostAndUsageReport(report: ReviewRunReport): string {
+  let table = `### 📊 Review Token Usage & Cost Report\n\n`;
+  table += `| Persona | Provider / Model | Effort | Prompt Tokens | Completion Tokens | Total Tokens | Cost (USD) | Latency |\n`;
+  table += `|---|---|---|---|---|---|---|---|\n`;
+
+  for (const detail of report.personaDetails) {
+    const costStr = `$${detail.costUSD.toFixed(6)}`;
+    const latencyStr = `${detail.durationMs}ms`;
+    table += `| **${detail.persona.toUpperCase()}** | \`${detail.provider}\` (${detail.model}) | ${detail.effortLevel} | ${detail.promptTokens.toLocaleString()} | ${detail.completionTokens.toLocaleString()} | ${detail.totalTokens.toLocaleString()} | ${costStr} | ${latencyStr} |\n`;
+  }
+
+  table += `\n**Run Summary**:\n`;
+  table += `- ⏱️ **Total Review Latency**: \`${(report.totalDurationMs / 1000).toFixed(2)}s\`\n`;
+  table += `- 🪙 **Total Tokens Used**: \`${report.totalTokens.toLocaleString()} tokens\` (\`${report.totalPromptTokens.toLocaleString()} prompt\` / \`${report.totalCompletionTokens.toLocaleString()} completion\`)\n`;
+  table += `- 💵 **Total Run Spend**: \`$${report.totalCostUSD.toFixed(6)} USD\`\n`;
+  if (report.diffDeltaSavingsPercent !== undefined) {
+    table += `- 📈 **Diff Delta Token Savings**: \`${report.diffDeltaSavingsPercent}% token reduction\` (evaluated new diff hunks only)\n`;
+  }
+
+  return table;
+}
+
 export class CommentPublisher {
   private baseUrl: string;
   private token?: string;
@@ -74,7 +118,7 @@ export class CommentPublisher {
 
   constructor(options: CommentPublisherOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com').replace(/\/$/, '');
-    this.token = options.githubToken || process.env.GITHUB_TOKEN;
+    this.token = options.githubToken || process.env.GITHUB_APP_INSTALLATION_TOKEN || process.env.GITHUB_TOKEN;
     this.maxRetries = options.maxRetries ?? 3;
     this.initialRetryDelayMs = options.initialRetryDelayMs ?? 100;
     this.maxDelayMs = options.maxDelayMs ?? 2000;
@@ -88,9 +132,10 @@ export class CommentPublisher {
     const headers = new Headers(init.headers || {});
     headers.set('Content-Type', 'application/json');
     if (this.token) {
-      headers.set('Authorization', `token ${this.token}`);
+      const authPrefix = this.token.startsWith('ghs_') || this.token.startsWith('ghu_') ? 'Bearer' : 'token';
+      headers.set('Authorization', `${authPrefix} ${this.token}`);
     }
-    headers.set('User-Agent', 'ct-review-bot');
+    headers.set('User-Agent', 'ct-review-bot[bot]');
 
     const requestInit: RequestInit = { ...init, headers };
 

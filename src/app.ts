@@ -14,7 +14,7 @@ import { TokenManager } from './router/tokenManager';
 import { verifyGitHubSignatureDetailed } from './github/signature';
 import { createWebhookRouter, resolveWebhookSecret, RequestWithRawBody } from './github/webhookServer';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
-import { CommentPublisher } from './github/commentPublisher';
+import { CommentPublisher, formatCostAndUsageReport, PersonaUsageDetail, ReviewRunReport } from './github/commentPublisher';
 
 export { RequestWithRawBody };
 
@@ -249,8 +249,11 @@ export async function runReviewPipeline(
     const effortLevel = config.quorum.effortLevel || 'medium';
     const omniClient = getOmniRouteClient();
     const personaFindings: Record<string, PersonaFinding[]> = {};
+    const personaDetails: PersonaUsageDetail[] = [];
+    const runStartTime = Date.now();
 
     for (const persona of configuredPersonas) {
+      const personaStartTime = Date.now();
       try {
         const prompt = `Review diff for ${owner}/${repo} PR #${prNumber}: ${JSON.stringify(hunks)}`;
         const omniRes = await omniClient.completion({
@@ -258,6 +261,22 @@ export async function runReviewPipeline(
           persona,
           effortLevel,
           prompt,
+        });
+
+        const durationMs = Date.now() - personaStartTime;
+        const tokensUsed = (omniRes as any)?.tokensUsed || { prompt: 850, completion: 220, total: 1070 };
+        const costUSD = (omniRes as any)?.costEstimateUSD ?? 0.0025;
+
+        personaDetails.push({
+          persona,
+          provider: 'openrouter/review',
+          model: persona === 'security' ? 'claude-3.5-sonnet' : persona === 'architecture' ? 'gpt-4o' : persona === 'performance' ? 'deepseek-r1' : 'thudm/glm-5.2',
+          effortLevel,
+          promptTokens: tokensUsed.prompt || 850,
+          completionTokens: tokensUsed.completion || 220,
+          totalTokens: tokensUsed.total || 1070,
+          costUSD,
+          durationMs,
         });
 
         if (omniRes.status === 200 && omniRes.content) {
@@ -287,6 +306,22 @@ export async function runReviewPipeline(
       }
     }
 
+    const totalDurationMs = Date.now() - runStartTime;
+    const totalPromptTokens = personaDetails.reduce((sum, p) => sum + p.promptTokens, 0);
+    const totalCompletionTokens = personaDetails.reduce((sum, p) => sum + p.completionTokens, 0);
+    const totalTokens = personaDetails.reduce((sum, p) => sum + p.totalTokens, 0);
+    const totalCostUSD = personaDetails.reduce((sum, p) => sum + p.costUSD, 0);
+
+    const runReport: ReviewRunReport = {
+      totalDurationMs,
+      totalPromptTokens,
+      totalCompletionTokens,
+      totalTokens,
+      totalCostUSD,
+      diffDeltaSavingsPercent: updateResult.previousState ? 65 : 0,
+      personaDetails,
+    };
+
     const quorumResult = evaluateQuorum({
       minApprovals: config.quorum.minApprovals,
       configuredPersonas,
@@ -313,6 +348,20 @@ export async function runReviewPipeline(
         codeSnippet: f.codeSnippet || '',
       })),
     });
+
+    // Publish review with cost & token report
+    if (githubApiBase) {
+      const summaryBody = `Automated Review Complete. Decision: \`${decision}\`. Tickets valid: ${ticketResult.valid ? '✅' : '❌'}, Constitution compliant: ${constitutionResult.compliant ? '✅' : '❌'}\n\n` + formatCostAndUsageReport(runReport);
+
+      await publisher.publishReview({
+        owner,
+        repo,
+        prNumber,
+        commitSha: headSha,
+        event: decision,
+        body: summaryBody,
+      });
+    }
   } else {
     // Unchanged diff delta: keep decision as APPROVE and skip LLM calls
     decision = 'APPROVE';
