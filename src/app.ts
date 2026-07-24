@@ -410,6 +410,29 @@ export function createApp(): Express {
     });
   });
 
+  // Dynamic Provider Registration Endpoint (Add providers dynamically without redeploying)
+  app.post('/api/router/providers', express.json(), (req: Request, res: Response) => {
+    const { id, name, priority, providerType, baseUrl, apiKey, defaultModel } = req.body || {};
+    if (!id || !name) {
+      res.status(400).json({ error: 'Missing required fields: id, name' });
+      return;
+    }
+    const pool = getProviderPool();
+    pool.registerProvider({
+      id,
+      name,
+      priority: priority || 5,
+    });
+
+    if (apiKey) {
+      const tokenMgr = getTokenManager();
+      tokenMgr.setSecretKey(`api_key_${id}`, apiKey);
+    }
+
+    logger.info(`Dynamically registered provider/model '${id}' (${name}) at runtime without redeployment`);
+    res.status(201).json({ status: 'registered', id, name, priority: priority || 5 });
+  });
+
   // Create & mount GitHub Webhook Router
   const webhookRouter = createWebhookRouter({
     onEvent: async (req: RequestWithRawBody) => {

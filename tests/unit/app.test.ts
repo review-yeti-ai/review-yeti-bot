@@ -158,5 +158,29 @@ describe('Express App & Health Endpoint', () => {
       expect(res.body).toHaveProperty('error', 'Internal Server Error');
       expect(res.body).toHaveProperty('message', 'Simulated webhook processing error');
     });
+
+    it('dynamically registers a new provider/model without redeployment', async () => {
+      const res = await request(app)
+        .post('/api/router/providers')
+        .send({
+          id: 'custom-openrouter-model',
+          name: 'OpenRouter Dynamic Model',
+          priority: 2,
+          apiKey: 'test-dynamic-key',
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body).toEqual({
+        status: 'registered',
+        id: 'custom-openrouter-model',
+        name: 'OpenRouter Dynamic Model',
+        priority: 2,
+      });
+
+      const statusRes = await request(app).get('/api/router/status');
+      expect(statusRes.status).toBe(200);
+      expect(statusRes.body.providers).toHaveProperty('custom-openrouter-model');
+    });
   });
 });
+

@@ -1,0 +1,62 @@
+name: Automated SemVer Release & DOKS Deployment
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  semver-release:
+    name: Build SemVer Release & Deploy to DOKS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Tag / Version
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "Release version: ${VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Tagged Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/calltelemetry/ct-review-bot:${{ env.VERSION }}
+            ghcr.io/calltelemetry/ct-review-bot:latest
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Save DOKS kubeconfig
+        run: doctl kubernetes cluster kubeconfig save cluster-ny1
+
+      - name: Deploy SemVer Release to DOKS
+        run: |
+          kubectl set image deployment/ct-review-bot ct-review-bot=ghcr.io/calltelemetry/ct-review-bot:${{ env.VERSION }}
+          kubectl rollout status deployment/ct-review-bot --timeout=180s
+
+      - name: Create GitHub Release Artifact
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          generate_release_notes: true
