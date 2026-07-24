@@ -6,6 +6,10 @@ describe('Container Configuration Unit Tests', () => {
   const rootDir = path.resolve(__dirname, '../../');
   const dockerfilePath = path.join(rootDir, 'Dockerfile');
   const dockerignorePath = path.join(rootDir, '.dockerignore');
+  const omniRouteStatefulSetPath = path.join(
+    rootDir,
+    'k8s/omniroute-statefulset.yaml.tpl'
+  );
 
   it('reads and validates Dockerfile multi-stage build configuration', () => {
     expect(fs.existsSync(dockerfilePath)).toBe(true);
@@ -66,5 +70,14 @@ describe('Container Configuration Unit Tests', () => {
     for (const item of requiredExclusions) {
       expect(lines).toContain(item);
     }
+  });
+
+  it('grants the non-root OmniRoute process write access to its persistent volume', () => {
+    const statefulSet = fs.readFileSync(omniRouteStatefulSetPath, 'utf-8');
+
+    expect(statefulSet).toContain('runAsUser: 10002');
+    expect(statefulSet).toContain('runAsGroup: 10002');
+    expect(statefulSet).toContain('fsGroup: 10002');
+    expect(statefulSet).toContain('fsGroupChangePolicy: OnRootMismatch');
   });
 });
