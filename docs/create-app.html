@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Create ct-review-bot GitHub App (1-Click Manifest)</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 40px; text-align: center; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 32px; max-width: 600px; margin: 0 auto; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    h1 { color: #58a6ff; font-size: 24px; margin-bottom: 16px; }
+    p { color: #8b949e; line-height: 1.5; margin-bottom: 24px; }
+    button { background: #238636; color: #ffffff; border: none; font-size: 16px; font-weight: 600; padding: 12px 24px; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #2ea043; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🤖 1-Click GitHub App Registration</h1>
+    <p>Click the button below to register <strong>ct-review-bot</strong> for the <code>@calltelemetry</code> organization. GitHub will pre-fill all permissions, webhooks, and events automatically.</p>
+    <form action="https://github.com/organizations/calltelemetry/settings/apps/new" method="post">
+      <input type="hidden" name="manifest" id="manifest">
+      <button type="submit">🚀 Register ct-review-bot GitHub App on GitHub</button>
+    </form>
+  </div>
+  <script>
+    const manifestData = {
+      name: "ct-review-bot",
+      url: "https://review-bot.calltelemetry.com",
+      hook_attributes: {
+        url: "https://review-bot.calltelemetry.com/webhook",
+        active: true
+      },
+      public: false,
+      default_permissions: {
+        pull_requests: "write",
+        issues: "write",
+        contents: "read",
+        metadata: "read"
+      },
+      default_events: [
+        "pull_request",
+        "issue_comment",
+        "pull_request_review_comment"
+      ]
+    };
+    document.getElementById('manifest').value = JSON.stringify(manifestData);
+  </script>
+</body>
+</html>
