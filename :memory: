@@ -1,0 +1,49 @@
+{
+  "calltelemetry/ai-workspace#101": {
+    "repoOwner": "calltelemetry",
+    "repoName": "ai-workspace",
+    "prNumber": 101,
+    "headSha": "sha111",
+    "baseSha": "sha000",
+    "updatedAt": "2026-07-24T16:33:36.057Z",
+    "hunks": [],
+    "findings": []
+  },
+  "calltelemetry/ct-review-bot#999": {
+    "repoOwner": "calltelemetry",
+    "repoName": "ct-review-bot",
+    "prNumber": 999,
+    "headSha": "commit-2",
+    "baseSha": "commit-1",
+    "updatedAt": "2026-07-24T16:33:43.270Z",
+    "hunks": [
+      {
+        "filePath": "src/service.ts",
+        "hunkHash": "bde49a2bb5e209b61d69d52a91022d17021f07d28791dd634af0ea3e295b96af",
+        "oldStart": 1,
+        "oldLines": 0,
+        "newStart": 1,
+        "newLines": 20,
+        "commitSha": "commit-2",
+        "createdAt": "2026-07-24T16:33:43.270Z"
+      }
+    ],
+    "findings": [
+      {
+        "fingerprintHash": "08bc35e80482e74e31e1db026d5ccd8d48685bdf4923528df0d2a6219e9e630b",
+        "filePath": "src/service.ts",
+        "startLine": 50,
+        "endLine": 50,
+        "persona": "security",
+        "severity": "major",
+        "comment": "Insecure random number generator",
+        "status": "IDENTIFIED",
+        "firstSeenCommit": "commit-1",
+        "lastSeenCommit": "commit-1",
+        "resolvedAtCommit": null,
+        "createdAt": "2026-07-24T16:28:09.066Z",
+        "updatedAt": "2026-07-24T16:33:43.244Z"
+      }
+    ]
+  }
+}
