@@ -16,9 +16,11 @@ spec:
       labels:
         app: ct-review-bot
     spec:
+      imagePullSecrets:
+        - name: ghcr-secret
       containers:
         - name: ct-review-bot
-          image: ct-review-bot:latest
+          image: ghcr.io/calltelemetry/ct-review-bot:latest
           ports:
             - containerPort: 3000
           securityContext:
