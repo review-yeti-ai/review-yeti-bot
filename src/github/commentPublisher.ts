@@ -3,6 +3,7 @@ import { PersonaFinding, QuorumEvaluationResult } from '../quorum/quorumEngine';
 
 export interface CommentPublisherOptions {
   githubToken?: string;
+  authToken?: string;
   baseUrl?: string; // Supports mock GitHub server or GitHub Enterprise Base URL
   maxRetries?: number;
   initialRetryDelayMs?: number;
@@ -53,12 +54,29 @@ export function formatInlineCommentBody(finding: PersonaFinding): string {
 
   const emoji = personaEmoji[finding.persona.toLowerCase()] || '🤖';
   const severityFormatted = finding.severity.toUpperCase();
+  const confidence = finding.confidence ?? 95;
 
-  let body = `### ${emoji} [${finding.persona.toUpperCase()}] Severity: ${severityFormatted}\n\n`;
-  body += `${finding.comment}\n`;
+  let body = `### ${emoji} [${finding.persona.toUpperCase()}] Severity: ${severityFormatted} (🎯 Confidence: ${confidence}%)\n\n`;
+  body += `**Finding**: ${finding.comment}\n`;
 
-  const code = finding.suggestion || finding.codeSnippet;
-  if (code && code.trim() !== '') {
+  if (finding.recommendation) {
+    body += `\n💡 **Recommendation**: ${finding.recommendation}\n`;
+  }
+
+  if (finding.rankedFixes && finding.rankedFixes.length > 0) {
+    body += `\n🛠️ **Ranked Potential Fixes (Up to 2 Options)**:\n`;
+    for (const fix of finding.rankedFixes.slice(0, 2)) {
+      const badge = fix.rank === 1 ? '🥇 **Option 1 (Recommended)**' : '🥈 **Option 2 (Alternative)**';
+      body += `\n${badge}: ${fix.title}\n`;
+      if (fix.description) {
+        body += `${fix.description}\n`;
+      }
+      if (fix.codeSnippet) {
+        body += `\`\`\`yaml\n${fix.codeSnippet}\n\`\`\`\n`;
+      }
+    }
+  } else if (finding.suggestion || finding.codeSnippet) {
+    const code = finding.suggestion || finding.codeSnippet;
     body += `\n\`\`\`suggestion\n${code}\n\`\`\`\n`;
   }
 
@@ -118,7 +136,7 @@ export class CommentPublisher {
 
   constructor(options: CommentPublisherOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com').replace(/\/$/, '');
-    this.token = options.githubToken || process.env.GITHUB_APP_INSTALLATION_TOKEN || process.env.GITHUB_TOKEN;
+    this.token = options.authToken || options.githubToken || process.env.GITHUB_APP_INSTALLATION_TOKEN || process.env.GITHUB_TOKEN;
     this.maxRetries = options.maxRetries ?? 3;
     this.initialRetryDelayMs = options.initialRetryDelayMs ?? 100;
     this.maxDelayMs = options.maxDelayMs ?? 2000;
