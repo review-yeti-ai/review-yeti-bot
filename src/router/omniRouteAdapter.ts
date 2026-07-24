@@ -642,7 +642,11 @@ export class AGYAdapter implements IProviderAdapter {
     reservePreExecutionSpend(this.config, estimatedUSD);
 
     try {
-      const baseUrl = this.config.baseUrl || process.env.AGY_ENDPOINT || 'http://127.0.0.1:8080';
+      const baseUrl =
+        process.env.AGY_ENDPOINT ||
+        process.env.OMNIROUTE_BASE_URL ||
+        this.config.baseUrl ||
+        'http://omniroute-service.default.svc.cluster.local:9090';
       const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`;
       const systemPrompt = synthesizeSystemPrompt(request.persona, request.systemPrompt);
 
