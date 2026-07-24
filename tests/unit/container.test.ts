@@ -95,6 +95,7 @@ describe('Container Configuration Unit Tests', () => {
   it('allows HAProxy to reach only cert-manager HTTP-01 solver pods', () => {
     const ingressNetwork = fs.readFileSync(ingressNetworkPath, 'utf-8');
 
+    expect(ingressNetwork).toContain('kubernetes.io/ingress.class: haproxy-ct-dev');
     expect(ingressNetwork).toContain('name: acme-http01-solver-allowed');
     expect(ingressNetwork).toContain('acme.cert-manager.io/http01-solver: "true"');
     expect(ingressNetwork).toContain('kubernetes.io/metadata.name: ct-dev');
