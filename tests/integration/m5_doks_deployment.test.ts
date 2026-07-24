@@ -50,8 +50,8 @@ describe('Milestone 5 DOKS Deployment & Kubernetes Manifest Integration Test Sui
     // resources
     expect(container.resources).toEqual({
       requests: {
-        cpu: '250m',
-        memory: '512Mi'
+        cpu: '100m',
+        memory: '256Mi'
       },
       limits: {
         cpu: '1000m',
