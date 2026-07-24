@@ -19,11 +19,12 @@ export interface ParsedPRPayload {
   sender: string;
   labels: string[];
   changedFiles?: Array<{ path: string; content?: string; patch?: string }>;
-  triggerSource: 'pr_event' | 'comment_command' | 'label_trigger';
+  triggerSource: 'pr_event' | 'comment_command' | 'label_trigger' | 'draft_precheck';
   triggerAction: string;
   commandText?: string;
   commentId?: number;
   deliveryId: string;
+  isDraft?: boolean;
 }
 
 export interface TriggerResult {
@@ -100,7 +101,36 @@ export class GitHubEventHandler {
       }
 
       if (pr.draft === true) {
-        return { shouldTrigger: false, reason: 'PR is a draft' };
+        let changedFiles: Array<{ path: string; content?: string; patch?: string }> | undefined = undefined;
+        if (Array.isArray(payload.changed_files)) {
+          changedFiles = payload.changed_files;
+        } else if (Array.isArray(pr.changed_files)) {
+          changedFiles = pr.changed_files;
+        } else if (Array.isArray(pr.files)) {
+          changedFiles = pr.files.map((f: any) => ({
+            path: f.filename || f.path,
+            content: f.content,
+            patch: f.patch,
+          }));
+        }
+
+        const parsed: ParsedPRPayload = {
+          owner,
+          repo: repoName,
+          prNumber,
+          headSha: pr.head?.sha || 'head-sha-latest',
+          baseSha: pr.base?.sha || 'base-sha-latest',
+          title: pr.title || '',
+          body: pr.body || '',
+          sender,
+          labels: Array.isArray(pr.labels) ? pr.labels.map((l: any) => (typeof l === 'string' ? l : l.name)) : [],
+          changedFiles,
+          triggerSource: 'draft_precheck',
+          triggerAction: action,
+          deliveryId,
+          isDraft: true,
+        };
+        return { shouldTrigger: true, reason: 'Draft PR precheck (ticket linkage & diff coverage check)', parsedPayload: parsed };
       }
 
       const labels = Array.isArray(pr.labels)

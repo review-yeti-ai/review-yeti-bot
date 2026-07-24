@@ -148,8 +148,38 @@ export async function runReviewPipeline(
   // Short-circuit gating check for Ticket or Constitution failures
   let decision: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' = 'APPROVE';
   let activeFindings: PersonaFinding[] = [];
+  let runReport: ReviewRunReport | undefined = undefined;
 
   const publisher = new CommentPublisher({ baseUrl: githubApiBase });
+
+  // 4b. Draft PR Precheck Short-Circuit (Ticket Linkage & Diff Coverage Check without LLM calls)
+  if (triggerSource === 'draft_precheck' || parsedPayload.isDraft) {
+    const draftStatusState = ticketResult.valid && constitutionResult.compliant ? 'success' : 'pending';
+    const draftDesc = ticketResult.valid
+      ? `Draft Precheck Passed: Tickets [${ticketResult.ticketsFound.join(', ')}] linked.`
+      : `Draft Precheck: ${ticketResult.error || 'Missing Linear/GitHub issue linkage (e.g. [PROJ-123] or #456)'}`;
+
+    if (githubApiBase) {
+      await publisher.setCommitStatus({
+        owner,
+        repo,
+        sha: headSha,
+        state: draftStatusState as any,
+        context: 'ct-review-bot / draft-precheck',
+        description: draftDesc.substring(0, 140),
+      });
+    }
+
+    logger.info(`Completed Draft PR precheck for ${owner}/${repo} PR #${prNumber} (isDraft: true, ticketValid: ${ticketResult.valid})`);
+    return {
+      status: 'draft_precheck_completed',
+      isDraft: true,
+      prNumber,
+      ticketValid: ticketResult.valid,
+      constitutionCompliant: constitutionResult.compliant,
+      ticketsFound: ticketResult.ticketsFound,
+    };
+  }
 
   if (!ticketResult.valid || !constitutionResult.compliant) {
     decision = 'REQUEST_CHANGES';
@@ -312,7 +342,7 @@ export async function runReviewPipeline(
     const totalTokens = personaDetails.reduce((sum, p) => sum + p.totalTokens, 0);
     const totalCostUSD = personaDetails.reduce((sum, p) => sum + p.costUSD, 0);
 
-    const runReport: ReviewRunReport = {
+    runReport = {
       totalDurationMs,
       totalPromptTokens,
       totalCompletionTokens,
@@ -349,49 +379,52 @@ export async function runReviewPipeline(
       })),
     });
 
-    // Publish review with cost & token report
     if (githubApiBase) {
-      const summaryBody = `Automated Review Complete. Decision: \`${decision}\`. Tickets valid: ${ticketResult.valid ? '✅' : '❌'}, Constitution compliant: ${constitutionResult.compliant ? '✅' : '❌'}\n\n` + formatCostAndUsageReport(runReport);
+      try {
+        for (const finding of activeFindings) {
+          await publisher.publishInlineComment({
+            owner,
+            repo,
+            prNumber,
+            commitSha: headSha,
+            path: finding.filePath || changedFiles[0]?.path || 'src/index.ts',
+            line: finding.lineNumber || 1,
+            finding,
+          });
+        }
 
-      await publisher.publishReview({
-        owner,
-        repo,
-        prNumber,
-        commitSha: headSha,
-        event: decision,
-        body: summaryBody,
-      });
-    }
-  } else {
-    // Unchanged diff delta: keep decision as APPROVE and skip LLM calls
-    decision = 'APPROVE';
-  }
+        const summaryBody = runReport
+          ? `Automated Review Complete. Decision: \`${decision}\`. Tickets valid: ${ticketResult.valid ? '✅' : '❌'}, Constitution compliant: ${constitutionResult.compliant ? '✅' : '❌'}\n\n` + formatCostAndUsageReport(runReport)
+          : `Automated Review Complete. Decision: \`${decision}\`. Tickets valid: ${ticketResult.valid ? '✅' : '❌'}, Constitution compliant: ${constitutionResult.compliant ? '✅' : '❌'}`;
 
-  // 7. GitHub API Comment & Review Publication
-  if (githubApiBase) {
-    try {
-      for (const finding of activeFindings) {
-        await publisher.publishInlineComment({
+        await publisher.publishReview({
           owner,
           repo,
           prNumber,
           commitSha: headSha,
-          path: finding.filePath || changedFiles[0]?.path || 'src/index.ts',
-          line: finding.lineNumber || 1,
-          finding,
+          event: decision,
+          body: summaryBody,
         });
+      } catch (err) {
+        logger.error('Failed to publish review to GitHub API', { err });
       }
-
-      await publisher.publishReview({
-        owner,
-        repo,
-        prNumber,
-        commitSha: headSha,
-        event: decision,
-        body: `Automated Review Complete. Decision: ${decision}. Tickets valid: ${ticketResult.valid}, Constitution compliant: ${constitutionResult.compliant}`,
-      });
-    } catch (err) {
-      logger.error('Failed to post review to GitHub API', { err });
+    }
+  } else {
+    // Unchanged diff delta: keep decision as APPROVE and skip LLM calls
+    decision = 'APPROVE';
+    if (githubApiBase) {
+      try {
+        await publisher.publishReview({
+          owner,
+          repo,
+          prNumber,
+          commitSha: headSha,
+          event: 'APPROVE',
+          body: `Automated Review Complete (Unchanged Diff Delta). Decision: \`APPROVE\`. Tickets valid: ${ticketResult.valid ? '✅' : '❌'}, Constitution compliant: ${constitutionResult.compliant ? '✅' : '❌'}`,
+        });
+      } catch (err) {
+        logger.error('Failed to publish unchanged diff review to GitHub API', { err });
+      }
     }
   }
 
