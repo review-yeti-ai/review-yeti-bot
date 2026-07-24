@@ -1,3 +1,10 @@
+export interface RankedFix {
+  rank: number; // 1 or 2
+  title: string;
+  description: string;
+  codeSnippet?: string;
+}
+
 export interface PersonaFinding {
   persona: 'security' | 'architecture' | 'performance' | 'quality';
   severity: 'critical' | 'major' | 'minor' | 'nit';
@@ -5,6 +12,9 @@ export interface PersonaFinding {
   lineNumber: number;
   endLineNumber?: number;
   comment: string;
+  confidence?: number; // 0 - 100
+  recommendation?: string;
+  rankedFixes?: RankedFix[];
   codeSnippet?: string;
   suggestion?: string;
   ruleId?: string;
