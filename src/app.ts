@@ -302,9 +302,9 @@ export async function runReviewPipeline(
           provider: (omniRes as any)?.provider || 'openrouter/review',
           model: (omniRes as any)?.model || (
             persona === 'security'
-              ? 'agy-opus (Opus 4.8)'
+              ? 'agy-opus (Opus 5.0)'
               : persona === 'architecture'
-                ? 'xai/grok-2'
+                ? 'gpt-4.5-turbo'
                 : persona === 'performance'
                   ? 'deepseek/deepseek-v4-pro'
                   : 'z-ai/glm-5.2'
