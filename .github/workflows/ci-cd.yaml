@@ -4,11 +4,16 @@ on:
   push:
     branches: [ main ]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [ main ]
+
+env:
+  CLUSTER_NAME: ct-review-bot-cluster
 
 jobs:
   test:
     name: Run Unit & Integration Tests
+    if: github.event.pull_request.draft == false || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -60,7 +65,7 @@ jobs:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Save DOKS kubeconfig
-        run: doctl kubernetes cluster kubeconfig save cluster-ny1
+        run: doctl kubernetes cluster kubeconfig save ${{ env.CLUSTER_NAME }}
 
       - name: Deploy to DigitalOcean Kubernetes (DOKS)
         run: |
