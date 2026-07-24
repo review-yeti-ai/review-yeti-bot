@@ -302,14 +302,14 @@ export async function runReviewPipeline(
           provider: (omniRes as any)?.provider || 'openrouter/review',
           model: (omniRes as any)?.model || (
             persona === 'security'
-              ? 'claude-3-7-sonnet'
+              ? 'agy-opus (Opus 4.8)'
               : persona === 'architecture'
-                ? 'gpt-4.5-turbo'
+                ? 'xai/grok-2'
                 : persona === 'performance'
-                  ? 'deepseek-r2-reasoner'
-                  : 'gemini-2.5-pro'
+                  ? 'deepseek/deepseek-v4-pro'
+                  : 'z-ai/glm-5.2'
           ),
-          effortLevel,
+          effortLevel: (persona === 'performance' || persona === 'quality') ? 'low' : effortLevel,
           promptTokens: tokensUsed.prompt || 850,
           completionTokens: tokensUsed.completion || 220,
           totalTokens: tokensUsed.total || 1070,
