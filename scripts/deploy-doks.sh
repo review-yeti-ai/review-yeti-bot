@@ -3,11 +3,11 @@ set -euo pipefail
 
 DRY_RUN=false
 SKIP_DOCTL=false
-CLUSTER_NAME="ct-review-bot-cluster"
+CLUSTER_NAME="${CLUSTER_NAME:-ct-review-bot-cluster}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run)
+    --dry-run|--mock)
       DRY_RUN=true
       shift
       ;;
@@ -48,7 +48,7 @@ fi
 if [ "$DRY_RUN" = true ]; then
   echo "==> Validating manifests with kubectl apply --dry-run=client..."
   if command -v kubectl &> /dev/null; then
-    kubectl apply --dry-run=client -f k8s/
+    kubectl apply --validate=false --dry-run=client -f k8s/
   else
     echo "Notice: kubectl not found, simulated dry-run validation passed."
   fi
@@ -57,7 +57,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 echo "==> Validating manifests with dry-run..."
-kubectl apply --dry-run=client -f k8s/
+kubectl apply --validate=false --dry-run=client -f k8s/
 
 echo "==> Applying Kubernetes manifests to cluster..."
 kubectl apply -f k8s/

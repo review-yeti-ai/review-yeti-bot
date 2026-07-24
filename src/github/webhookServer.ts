@@ -123,8 +123,11 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
     }
   };
 
-  // Mount at primary path and standard API alias path
+  // Mount at primary path, /webhook, and standard API alias path
   router.post(primaryPath, webhookHandler);
+  if (primaryPath !== '/webhook') {
+    router.post('/webhook', webhookHandler);
+  }
   if (primaryPath !== '/api/webhook/github') {
     router.post('/api/webhook/github', webhookHandler);
   }
