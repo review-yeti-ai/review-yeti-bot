@@ -318,8 +318,12 @@ describe('Milestone 4: Webhook Event Loop Integration Test Suite', () => {
       .send(draftPayload);
 
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('ignored');
-    expect(res.body.reason).toBe('PR is a draft');
+    expect(res.body.status).toBe('draft_precheck_completed');
+    expect(res.body.isDraft).toBe(true);
+    expect(res.body.ticketValid).toBe(true);
+    expect(res.body.ticketsFound).toContain('PROJ-206');
+    // Verify 0 LLM calls were made on Draft PR
+    expect(harness.mockOmniRoute.getRecordedRequests().length).toBe(0);
   });
 });
 
