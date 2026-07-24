@@ -616,6 +616,7 @@ export class OmniRouteAdapter {
       case 'openai':
         return new OpenAIAdapter(config);
       case 'openrouter':
+      case 'openrouter/review':
         return new OpenRouterAdapter(config);
       case 'omniroute_gateway':
       default:
@@ -631,17 +632,6 @@ export class OpenRouterAdapter implements IProviderAdapter {
   public providerType: ProviderType = 'openrouter';
   constructor(public config: ProviderConfig) {}
 
-  private static MODEL_ALIASES: Record<string, string> = {
-    'glm-5.2': 'thudm/glm-5.2',
-    'glm-5.2-low': 'thudm/glm-5.2',
-    'deepseek-v4-pro': 'deepseek/deepseek-r1',
-    'deepseek-v4': 'deepseek/deepseek-r1',
-    'opus-4.8': 'anthropic/claude-3-opus',
-    'opus-4.8-low': 'anthropic/claude-3-opus',
-    '5.6-sol': 'google/gemini-2.5-pro',
-    '5.6-sol-low': 'google/gemini-2.5-flash',
-  };
-
   async execute(request: LLMRequest, fetchFn: typeof fetch): Promise<LLMResponse> {
     const estimatedUSD = 0.005;
     reservePreExecutionSpend(this.config, estimatedUSD);
@@ -650,8 +640,8 @@ export class OpenRouterAdapter implements IProviderAdapter {
       const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`;
       const systemPrompt = synthesizeSystemPrompt(request.persona, request.systemPrompt);
 
-      const requestedModel = request.model || this.config.defaultModel;
-      const resolvedModel = OpenRouterAdapter.MODEL_ALIASES[requestedModel.toLowerCase()] || requestedModel;
+      // Use requested model directly or defaultModel configured for openrouter/review pool
+      const targetModel = request.model || this.config.defaultModel;
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -665,7 +655,7 @@ export class OpenRouterAdapter implements IProviderAdapter {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: resolvedModel,
+          model: targetModel,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: request.prompt },
@@ -698,8 +688,8 @@ export class OpenRouterAdapter implements IProviderAdapter {
 
       return {
         content,
-        providerUsed: 'openrouter',
-        modelUsed: resolvedModel,
+        providerUsed: request.provider || this.config.id || 'openrouter',
+        modelUsed: targetModel,
         tokensUsed,
         reasoningTrace,
         rawResponse: data,
@@ -711,4 +701,5 @@ export class OpenRouterAdapter implements IProviderAdapter {
     }
   }
 }
+
 
