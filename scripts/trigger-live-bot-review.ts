@@ -75,10 +75,10 @@ async function executeLiveBotReviewOnPR(owner: string, repo: string, prNumber: n
     totalCostUSD: 0.0098,
     diffDeltaSavingsPercent: 45,
     personaDetails: [
-      { persona: 'security', provider: 'openrouter/review', model: 'claude-3-7-sonnet', effortLevel: 'high', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0025, durationMs: 380 },
-      { persona: 'architecture', provider: 'openrouter/review', model: 'gpt-4.5-turbo', effortLevel: 'high', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0025, durationMs: 350 },
-      { persona: 'performance', provider: 'openrouter/review', model: 'deepseek-r2-reasoner', effortLevel: 'high', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0025, durationMs: 340 },
-      { persona: 'quality', provider: 'openrouter/review', model: 'gemini-2.5-pro', effortLevel: 'high', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0023, durationMs: 350 },
+      { persona: 'security', provider: 'subscription/agy', model: 'agy-opus (Opus 4.8)', effortLevel: 'medium', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0025, durationMs: 380 },
+      { persona: 'architecture', provider: 'openrouter/review', model: 'xai/grok-2', effortLevel: 'medium', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0025, durationMs: 350 },
+      { persona: 'performance', provider: 'openrouter/review', model: 'deepseek/deepseek-v4-pro', effortLevel: 'low', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0015, durationMs: 340 },
+      { persona: 'quality', provider: 'openrouter/review', model: 'z-ai/glm-5.2', effortLevel: 'low', promptTokens: 850, completionTokens: 220, totalTokens: 1070, costUSD: 0.0012, durationMs: 350 },
     ],
   };
 
@@ -95,10 +95,10 @@ async function executeLiveBotReviewOnPR(owner: string, repo: string, prNumber: n
 ### 👥 Quorum Persona Breakdown
 | Persona | Model | Effort | Decision | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Security** | \`claude-3-7-sonnet\` | \`high\` | \`APPROVE\` | 🟢 Approved |
-| **Architecture** | \`gpt-4.5-turbo\` | \`high\` | \`APPROVE\` | 🟢 Approved |
-| **Performance** | \`deepseek-r2-reasoner\` | \`high\` | \`APPROVE\` | 🟢 Approved |
-| **Quality** | \`gemini-2.5-pro\` | \`high\` | \`APPROVE\` | 🟢 Approved |
+| **Security** | \`agy-opus (Opus 4.8)\` | \`medium\` | \`APPROVE\` | 🟢 Approved |
+| **Architecture** | \`xai/grok-2\` | \`medium\` | \`APPROVE\` | 🟢 Approved |
+| **Performance** | \`deepseek/deepseek-v4-pro\` | \`low\` | \`APPROVE\` | 🟢 Approved |
+| **Quality** | \`z-ai/glm-5.2\` | \`low\` | \`APPROVE\` | 🟢 Approved |
 
 ` + formatCostAndUsageReport(mockReport);
 
