@@ -28,6 +28,42 @@ export interface OmniRouteResponse {
   raw: unknown;
 }
 
+const OMNIROUTE_PROVIDER_PROVENANCE: Record<string, readonly string[]> = {
+  codex: ['codex', 'cx'],
+  'grok-cli': ['grok-cli'],
+  agy: ['agy'],
+  claude: ['claude'],
+};
+
+function validateProvenance(
+  requestedRoute: string,
+  responseModel: string,
+  response: Response,
+): void {
+  const separator = requestedRoute.indexOf('/');
+  const requestedProvider = separator > 0 ? requestedRoute.slice(0, separator) : '';
+  const requestedModel = separator > 0 ? requestedRoute.slice(separator + 1) : '';
+  const headerProvider = response.headers.get('x-omniroute-provider');
+  const headerModel = response.headers.get('x-omniroute-model');
+
+  if (!requestedProvider || !requestedModel || !OMNIROUTE_PROVIDER_PROVENANCE[requestedProvider]) {
+    throw new Error(`OmniRoute request used an unknown exact route: ${requestedRoute}`);
+  }
+  if (responseModel !== requestedRoute && responseModel !== requestedModel) {
+    throw new Error(`OmniRoute silently substituted model ${responseModel || '<missing>'} for ${requestedRoute}`);
+  }
+  if (headerModel && headerModel !== requestedRoute && headerModel !== requestedModel) {
+    throw new Error(`OmniRoute silently substituted model ${headerModel} for ${requestedRoute}`);
+  }
+  if (responseModel !== requestedRoute && !headerProvider) {
+    throw new Error(`OmniRoute did not provide provider provenance for ${requestedRoute}`);
+  }
+  if (headerProvider &&
+      !OMNIROUTE_PROVIDER_PROVENANCE[requestedProvider].includes(headerProvider)) {
+    throw new Error(`OmniRoute silently substituted provider ${headerProvider} for ${requestedProvider}`);
+  }
+}
+
 export class OmniRouteClient {
   private readonly baseUrl: string;
   private readonly accessToken?: string;
@@ -72,7 +108,7 @@ export class OmniRouteClient {
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ model: request.model, messages: request.messages }),
+      body: JSON.stringify({ model: request.model, messages: request.messages, stream: false }),
       signal: AbortSignal.timeout(request.timeoutMs),
     });
     const data = await response.json().catch(() => ({})) as any;
@@ -81,9 +117,7 @@ export class OmniRouteClient {
     }
 
     const resolvedModel = String(data.model || '');
-    if (resolvedModel !== request.model) {
-      throw new Error(`OmniRoute silently substituted model ${resolvedModel || '<missing>'} for ${request.model}`);
-    }
+    validateProvenance(request.model, resolvedModel, response);
     const content = data.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || content.trim() === '') {
       throw new Error('OmniRoute returned empty completion content');
@@ -101,9 +135,15 @@ export class OmniRouteClient {
         }
       : null;
     const authoritativeCost = data.cost_usd ?? data.accounting?.cost_usd;
-    const costUSD = Number.isFinite(authoritativeCost) ? Number(authoritativeCost) : null;
+    const headerCostValue = response.headers.get('x-omniroute-response-cost');
+    const headerCost = headerCostValue === null ? Number.NaN : Number(headerCostValue);
+    const costUSD = Number.isFinite(authoritativeCost)
+      ? Number(authoritativeCost)
+      : Number.isFinite(headerCost) && headerCost >= 0
+        ? headerCost
+        : null;
 
-    return { model: resolvedModel, content, usage, costUSD, raw: data };
+    return { model: request.model, content, usage, costUSD, raw: data };
   }
 
   /**

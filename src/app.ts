@@ -1,7 +1,6 @@
 import express, { Express, NextFunction, Request, Response } from 'express';
 import { parseAndValidateConfig } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
-import { V3_PROVIDER_MODELS } from './config/schema';
 import { OmniRouteClient } from './gateway/omniRouteClient';
 import { getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
@@ -293,7 +292,7 @@ export function createApp(): Express {
       ? await new OmniRouteClient({
           baseUrl: process.env.OMNIROUTE_BASE_URL!,
           accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
-        }).health(Object.values(V3_PROVIDER_MODELS))
+        }).health()
       : false;
     res.status(configurationReady && omniReady ? 200 : 503).json({
       status: configurationReady && omniReady ? 'ready' : 'not_ready',
