@@ -65,7 +65,7 @@ jobs:
           push: true
           provenance: true
           sbom: true
-          tags: ${{ env.REGISTRY }}/ct-review-omniroute:3.8.48-${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/ct-review-bot:omniroute-3.8.48-${{ github.sha }}
           cache-from: type=gha,scope=omniroute
           cache-to: type=gha,mode=max,scope=omniroute
 
@@ -94,7 +94,7 @@ jobs:
       - name: Deploy digest-pinned workloads
         env:
           CT_REVIEW_BOT_IMAGE: ${{ env.REGISTRY }}/ct-review-bot@${{ steps.bot.outputs.digest }}
-          OMNIROUTE_IMAGE: ${{ env.REGISTRY }}/ct-review-omniroute@${{ steps.omniroute.outputs.digest }}
+          OMNIROUTE_IMAGE: ${{ env.REGISTRY }}/ct-review-bot@${{ steps.omniroute.outputs.digest }}
         run: |
           sudo apt-get update
           sudo apt-get install -y gettext-base
