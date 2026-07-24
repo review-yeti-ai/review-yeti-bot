@@ -1,0 +1,113 @@
+{
+  "acme-inc/auth-service#501": {
+    "repoOwner": "acme-inc",
+    "repoName": "auth-service",
+    "prNumber": 501,
+    "headSha": "commit2sha",
+    "baseSha": "basesha",
+    "updatedAt": "2026-07-24T15:25:41.417Z",
+    "hunks": [
+      {
+        "filePath": "src/util.ts",
+        "hunkHash": "5fb7d781a627df5244562ca3aed90afb168eddb31b52a0ec893833ef26fb0c8d",
+        "oldStart": 1,
+        "oldLines": 10,
+        "newStart": 1,
+        "newLines": 10,
+        "commitSha": "commit2sha",
+        "createdAt": "2026-07-24T15:25:41.417Z"
+      }
+    ],
+    "findings": [
+      {
+        "fingerprintHash": "a36f98d3de60ca2cb68920c3f599b0095de194ed44c6dfdb9e3a32510c12227e",
+        "filePath": "src/util.ts",
+        "startLine": 2,
+        "endLine": 2,
+        "persona": "quality",
+        "severity": "minor",
+        "comment": "Avoid console.log statement in production code",
+        "status": "SUPPRESSED",
+        "firstSeenCommit": "commit1sha",
+        "lastSeenCommit": "commit1sha",
+        "resolvedAtCommit": "commit2sha",
+        "createdAt": "2026-07-24T15:25:17.206Z",
+        "updatedAt": "2026-07-24T15:25:41.411Z"
+      }
+    ]
+  },
+  "acme-inc/auth-service#502": {
+    "repoOwner": "acme-inc",
+    "repoName": "auth-service",
+    "prNumber": 502,
+    "headSha": "c3",
+    "baseSha": "base",
+    "updatedAt": "2026-07-24T15:25:41.473Z",
+    "hunks": [
+      {
+        "filePath": "src/auth.ts",
+        "hunkHash": "117f356831d955956efc5ffc2c12f69913cbf128382ba12f01d18e2fbcaef060",
+        "oldStart": 1,
+        "oldLines": 5,
+        "newStart": 1,
+        "newLines": 5,
+        "commitSha": "c3",
+        "createdAt": "2026-07-24T15:25:41.473Z"
+      }
+    ],
+    "findings": [
+      {
+        "fingerprintHash": "238917f8f35fdd019be98eba220a5225a8810064e7ff269ffd072679d18ca59c",
+        "filePath": "src/auth.ts",
+        "startLine": 2,
+        "endLine": 2,
+        "persona": "security",
+        "severity": "critical",
+        "comment": "Dangerous eval call",
+        "status": "IDENTIFIED",
+        "firstSeenCommit": "c1",
+        "lastSeenCommit": "c3",
+        "resolvedAtCommit": null,
+        "createdAt": "2026-07-24T15:25:17.233Z",
+        "updatedAt": "2026-07-24T15:25:41.473Z"
+      }
+    ]
+  },
+  "acme-org/auth-service#101": {
+    "repoOwner": "acme-org",
+    "repoName": "auth-service",
+    "prNumber": 101,
+    "headSha": "sha2222222222222222222222222222222222222",
+    "baseSha": "sha0000000000000000000000000000000000000",
+    "updatedAt": "2026-07-24T16:33:35.427Z",
+    "hunks": [
+      {
+        "filePath": "src/auth/jwt.ts",
+        "hunkHash": "83f920627d946e992ac50a40cb4dd7ab40bf9285e90141f7eb6b7a9663ab4093",
+        "oldStart": 1,
+        "oldLines": 5,
+        "newStart": 1,
+        "newLines": 5,
+        "commitSha": "sha2222222222222222222222222222222222222",
+        "createdAt": "2026-07-24T16:33:35.426Z"
+      }
+    ],
+    "findings": [
+      {
+        "fingerprintHash": "b89ac2a2b7246723ebcb03f55580fedfc32fd00c4d0d2e4656de708c82bdb569",
+        "filePath": "src/auth/jwt.ts",
+        "startLine": 2,
+        "endLine": 2,
+        "persona": "security",
+        "severity": "critical",
+        "comment": "Avoid eval() execution with untrusted JWT tokens.",
+        "status": "RESOLVED",
+        "firstSeenCommit": "sha1111111111111111111111111111111111111",
+        "lastSeenCommit": "sha1111111111111111111111111111111111111",
+        "resolvedAtCommit": "sha2222222222222222222222222222222222222",
+        "createdAt": "2026-07-24T15:26:06.649Z",
+        "updatedAt": "2026-07-24T16:33:35.426Z"
+      }
+    ]
+  }
+}

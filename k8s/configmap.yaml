@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ct-review-bot-config
+  labels:
+    app: ct-review-bot
+data:
+  PORT: "3000"
+  HOST: "0.0.0.0"
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  OMNIROUTE_BASE_URL: "http://omniroute-service.default.svc.cluster.local:9090"
+  CT_REVIEW_DB_PATH: "/app/data/pr_states.sqlite"
