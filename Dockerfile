@@ -1,20 +1,18 @@
 # Stage 1: builder
-FROM node:20-alpine AS builder
+FROM node:24-bookworm-slim AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache python3 make g++
-
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --omit=optional
 
 COPY src ./src
 COPY tsconfig.json ./
 RUN npm run build
-RUN npm prune --production
+RUN npm prune --omit=dev --omit=optional
 
 # Stage 2: runner
-FROM node:20-alpine AS runner
+FROM node:24-bookworm-slim AS runner
 
 WORKDIR /app
 
@@ -22,6 +20,7 @@ COPY --chown=node:node package.json ./
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/dist ./dist
 
+RUN install -d -o node -g node /app/data
 USER node
 
 EXPOSE 3000

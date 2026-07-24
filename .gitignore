@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.agents/
+.env
+*.log
+:memory:
+data/*.json
+data/*.sqlite*
+k8s/rendered/

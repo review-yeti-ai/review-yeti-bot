@@ -1,0 +1,31 @@
+FROM node:24-bookworm-slim
+
+ARG OMNIROUTE_VERSION=3.8.48
+ARG CODEX_VERSION=0.145.0
+ARG GROK_VERSION=0.2.111
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git ripgrep \
+    && npm install --global "omniroute@${OMNIROUTE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 10002 --shell /bin/bash omniroute \
+    && install -d -o omniroute -g omniroute /data
+
+USER omniroute
+ENV HOME=/home/omniroute
+ENV PATH=/home/omniroute/.local/bin:/home/omniroute/.grok/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "${GROK_VERSION}" \
+    && curl -fsSL https://antigravity.google/cli/install.sh | bash \
+    && curl -fsSL https://claude.ai/install.sh | bash \
+    && omniroute --version \
+    && codex --version \
+    && grok --version \
+    && agy --version \
+    && claude --version
+
+ENV DATA_DIR=/data
+ENV PORT=20128
+EXPOSE 20128
+ENTRYPOINT ["omniroute", "serve", "--port", "20128", "--no-open", "--no-tray", "--log"]

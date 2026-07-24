@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'crypto';
 import express from 'express';
@@ -247,27 +247,5 @@ describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
       expect(evalResult.parsedPayload?.prNumber).toBe(99);
     });
 
-    it('enqueues job and returns queued status on handleWebhook', async () => {
-      const runner = vi.fn().mockResolvedValue({ success: true });
-      handler.setReviewRunner(runner);
-
-      const payload = {
-        action: 'opened',
-        number: 100,
-        pull_request: { number: 100, head: { sha: 'sha100' } },
-        sender: { login: 'dev' },
-      };
-
-      const res = await handler.handleWebhook('pull_request', payload, 'delivery-100');
-      expect(res.status).toBe('queued');
-      expect(res.jobId).toBeDefined();
-      expect(res.prNumber).toBe(100);
-
-      await handler.drainAndStop();
-      expect(runner).toHaveBeenCalledTimes(1);
-
-      const job = handler.getJob(res.jobId!);
-      expect(job?.status).toBe('completed');
-    });
   });
 });

@@ -1,9 +1,5 @@
-import { createApp, getProviderPool, getTokenManager } from './app';
+import { createApp } from './app';
 import { logger } from './utils/logger';
-
-export * from './router/tokenManager';
-export * from './router/omniRouteAdapter';
-export * from './router/providerPool';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const app = createApp();
@@ -40,5 +36,4 @@ process.on('uncaughtException', (err: Error) => {
   gracefulShutdown('uncaughtException');
 });
 
-export { app, server, createApp, getProviderPool, getTokenManager };
-
+export { app, server, createApp };

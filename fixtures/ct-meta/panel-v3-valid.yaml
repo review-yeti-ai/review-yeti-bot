@@ -1,0 +1,47 @@
+version: 3
+profile: assertive
+quorum: 2
+personas:
+  - id: security-tenancy
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["src/**"]
+    providers: [grok, claude]
+  - id: constitutional-goals
+    enabled: true
+    required: true
+    charter: "Protect the repository constitutional goals and authority boundaries."
+    paths: ["**"]
+    providers: [codex, agy-opus]
+reviewers:
+  execution: personas
+  fallback: ordered
+  overall_timeout_s: 900
+  providers:
+    - id: codex
+      enabled: true
+      model: codex/gpt-5.6-sol-high
+      effort: high
+      review_timeout_s: 240
+      arbiter_timeout_s: 240
+    - id: grok
+      enabled: true
+      model: grok-cli/grok-4.5
+      effort: high
+      review_timeout_s: 240
+      arbiter_timeout_s: 240
+    - id: agy-opus
+      enabled: true
+      model: agy/claude-opus-4-6-thinking
+      effort: high
+      review_timeout_s: 300
+      arbiter_timeout_s: 300
+    - id: claude
+      enabled: true
+      model: claude/claude-opus-4-8
+      effort: high
+      review_timeout_s: 300
+      arbiter_timeout_s: 300
+  arbiter:
+    order: [claude, codex, grok, agy-opus]

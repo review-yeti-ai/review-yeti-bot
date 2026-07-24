@@ -1,6 +1,5 @@
 import yaml from 'js-yaml';
-import { DEFAULT_ORG_CONFIG } from './defaultOrgConfig';
-import { ctReviewConfigSchema, codeRabbitConfigSchema, CtReviewConfig } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, CtReviewConfig } from './schema';
 
 export class ConfigValidationError extends Error {
   constructor(message: string, public readonly details?: unknown) {
@@ -9,91 +8,39 @@ export class ConfigValidationError extends Error {
   }
 }
 
-/**
- * Deep merge utility for config objects.
- * - Primitive values in target override source.
- * - Objects are recursively merged.
- * - Arrays in target override source (if target array is non-empty/defined).
- */
-export function deepMergeConfig(target: Record<string, any>, source: Record<string, any>): Record<string, any> {
-  const result = { ...source };
-  
-  for (const key of Object.keys(target)) {
-    const targetVal = target[key];
-    const sourceVal = source[key];
-    
-    if (targetVal === undefined || targetVal === null) {
-      continue;
-    }
-    
-    if (Array.isArray(targetVal)) {
-      result[key] = targetVal;
-    } else if (typeof targetVal === 'object' && !Array.isArray(targetVal) && targetVal !== null) {
-      result[key] = deepMergeConfig(targetVal, typeof sourceVal === 'object' && sourceVal !== null ? sourceVal : {});
-    } else {
-      result[key] = targetVal;
-    }
-  }
-  
-  return result;
-}
-
-/**
- * Converts parsed `.coderabbit.yaml` config into equivalent `CtReviewConfig` overrides.
- */
-export function convertCodeRabbitConfig(raw: Record<string, any>): Partial<CtReviewConfig> {
-  const parsed = codeRabbitConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    return {};
-  }
-
-  const cr = parsed.data;
-  const config: Partial<CtReviewConfig> = {};
-
-  if (cr.reviews) {
-    config.quorum = {
-      minApprovals: 2,
-      personas: ['security', 'architecture', 'performance', 'quality'],
-      effortLevel: cr.reviews.profile === 'chill' ? 'low' : cr.reviews.profile === 'assertive' ? 'high' : 'medium',
-    };
-  }
-
-  return config;
-}
-
-/**
- * Main Loader API
- */
 export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = false): CtReviewConfig {
-  let parsedRaw: unknown;
-  try {
-    parsedRaw = yaml.load(rawYaml);
-  } catch (err: any) {
-    throw new ConfigValidationError(`YAML syntax error: ${err.message}`, err);
-  }
-
-  if (Array.isArray(parsedRaw)) {
-    throw new ConfigValidationError('Configuration YAML must be a key-value mapping object, not an array');
-  }
-
-  if (typeof parsedRaw !== 'object' || parsedRaw === null) {
-    parsedRaw = {};
-  }
-
-  let userOverrides: Record<string, any> = parsedRaw as Record<string, any>;
   if (isCodeRabbitFormat) {
-    userOverrides = convertCodeRabbitConfig(userOverrides) as Record<string, any>;
+    throw new ConfigValidationError('CodeRabbit configuration is not a ct-review policy');
   }
-
-  const merged = deepMergeConfig(userOverrides, DEFAULT_ORG_CONFIG);
-
-  const validationResult = ctReviewConfigSchema.safeParse(merged);
-  if (!validationResult.success) {
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(rawYaml);
+  } catch (error: any) {
+    throw new ConfigValidationError(`YAML syntax error: ${error.message}`, error);
+  }
+  if (Array.isArray(parsed)) {
+    throw new ConfigValidationError('Configuration YAML must be a mapping, not an array');
+  }
+  if (parsed === null || parsed === undefined || parsed === '') parsed = {};
+  if (typeof parsed !== 'object') throw new ConfigValidationError('Configuration YAML must be a mapping');
+  const raw = parsed as Record<string, unknown>;
+  if (String(raw.version ?? 1) === '3') {
+    if ('lenses' in raw) throw new ConfigValidationError('version 3 personas cannot be mixed with legacy lenses');
+    const result = ctReviewConfigV3Schema.safeParse(raw);
+    if (!result.success) {
+      throw new ConfigValidationError(
+        `Config validation failed: ${result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`,
+        result.error.format(),
+      );
+    }
+    return result.data;
+  }
+  const result = ctReviewConfigSchema.safeParse({ version: raw.version ?? 1, ...raw });
+  if (!result.success) {
     throw new ConfigValidationError(
-      `Config validation failed: ${validationResult.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
-      validationResult.error.format()
+      `Config validation failed: ${result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`,
+      result.error.format(),
     );
   }
-
-  return validationResult.data;
+  return result.data;
 }

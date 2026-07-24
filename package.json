@@ -1,22 +1,16 @@
 {
   "name": "ct-review-bot",
   "version": "1.0.0",
-  "description": "Enterprise-grade quorum-based GitHub Code Review Bot service",
+  "description": "Repository-configurable persona-panel GitHub App with binding arbitration",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "setup:app": "ts-node scripts/register-app-flow.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "vitest run --config vitest.config.e2e.ts",
-    "test:e2e:tier1": "vitest run --config vitest.config.e2e.ts tests/e2e/tier1",
-    "test:e2e:tier2": "vitest run --config vitest.config.e2e.ts tests/e2e/tier2",
-    "test:e2e:tier3": "vitest run --config vitest.config.e2e.ts tests/e2e/tier3",
-    "test:e2e:tier4": "vitest run --config vitest.config.e2e.ts tests/e2e/tier4",
-    "test:e2e:tier5": "vitest run --config vitest.config.e2e.ts tests/e2e/tier5",
+    "test:integration": "vitest run tests/integration",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -26,20 +20,16 @@
     "js-yaml": "^4.1.0",
     "zod": "^3.23.8"
   },
-  "optionalDependencies": {
-    "better-sqlite3": "^11.0.0"
-  },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.10",
     "@types/express": "^4.17.21",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.12.12",
     "@types/supertest": "^6.0.2",
-    "@vitest/coverage-v8": "^1.6.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "supertest": "^7.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20.0.0"
