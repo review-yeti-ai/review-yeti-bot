@@ -121,7 +121,7 @@ describe('Milestone 5 DOKS Deployment & Kubernetes Manifest Integration Test Sui
     const secretData = doc.stringData || doc.data;
     expect(secretData).toBeDefined();
     expect(secretData.WEBHOOK_SECRET).toBeDefined();
-    expect(secretData.GITHUB_TOKEN).toBeDefined();
+    expect(secretData.GITHUB_APP_ID || secretData.GITHUB_TOKEN).toBeDefined();
     expect(secretData.CT_SECRET_SALT).toBeDefined();
     expect(secretData.CT_SECRET_MASTER_KEY).toBeDefined();
   });
