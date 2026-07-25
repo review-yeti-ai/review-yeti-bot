@@ -7,6 +7,15 @@ export interface PullRequestSnapshot {
   body: string;
 }
 
+export interface ReviewComment {
+  id: number;
+  body: string;
+  user?: { login: string };
+  diff_hunk?: string;
+  path?: string;
+  in_reply_to_id?: number;
+}
+
 export interface ChangedFile {
   path: string;
   patch?: string;
@@ -116,5 +125,129 @@ export class GitHubInstallationClient {
       method: 'POST',
       body: JSON.stringify({ body }),
     });
+  }
+
+  async getReviewCommentThread(owner: string, repo: string, prNumber: number, commentId: number): Promise<ReviewComment[]> {
+    try {
+      const allComments = await this.request(`/repos/${owner}/${repo}/pulls/${prNumber}/comments`);
+      if (!Array.isArray(allComments)) return [];
+      const root = allComments.find((c: any) => c.id === commentId);
+      const replies = allComments.filter((c: any) => c.in_reply_to_id === commentId);
+      if (root) {
+        return [root, ...replies];
+      }
+    } catch {
+      // Fall through to single comment endpoint fallback
+    }
+
+    try {
+      const data = await this.request(`/repos/${owner}/${repo}/pulls/comments/${commentId}`);
+      if (data && typeof data === 'object' && typeof data.id === 'number') {
+        return [data];
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }
+
+  async replyToReviewComment(owner: string, repo: string, prNumber: number, commentId: number, body: string): Promise<void> {
+    await this.request(`/repos/${owner}/${repo}/pulls/${prNumber}/comments/${commentId}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  async getIncrementalDiff(owner: string, repo: string, baseSha: string, headSha: string): Promise<any> {
+    const encBase = encodeURIComponent(baseSha);
+    const encHead = encodeURIComponent(headSha);
+    const data = await this.request(`/repos/${owner}/${repo}/compare/${encBase}...${encHead}`);
+    const rawFiles = Array.isArray(data) ? data : Array.isArray(data.files) ? data.files : [];
+    const files = rawFiles.map((file: any) => ({
+      path: String(file.filename || file.path || ''),
+      ...(typeof file.patch === 'string' ? { patch: file.patch } : {}),
+    }));
+    Object.assign(files, {
+      status: data.status,
+      ahead_by: data.ahead_by,
+      behind_by: data.behind_by,
+      total_commits: data.total_commits,
+      files,
+    });
+    return files;
+  }
+
+  async getFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null> {
+    try {
+      const url = `/repos/${owner}/${repo}/contents/${path}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
+      const data = await this.request(url);
+      if (data.encoding === 'base64' && typeof data.content === 'string') {
+        return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
+      }
+      if (typeof data.content === 'string') {
+        return data.content;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Get reference SHA for a branch */
+  async getBranchRef(owner: string, repo: string, branch: string): Promise<string> {
+    const data = await this.request(`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);
+    return data.object?.sha || data.sha;
+  }
+
+  /** Create a new Git branch ref */
+  async createBranch(owner: string, repo: string, newBranch: string, sha: string): Promise<void> {
+    await this.request(`/repos/${owner}/${repo}/git/refs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ref: `refs/heads/${newBranch}`,
+        sha,
+      }),
+    });
+  }
+
+  /** Create or update a file in a branch */
+  async createOrUpdateFile(options: {
+    owner: string;
+    repo: string;
+    path: string;
+    message: string;
+    content: string;
+    branch: string;
+    sha?: string;
+  }): Promise<{ sha: string }> {
+    const base64Content = Buffer.from(options.content, 'utf8').toString('base64');
+    const body: Record<string, any> = {
+      message: options.message,
+      content: base64Content,
+      branch: options.branch,
+    };
+    if (options.sha) body.sha = options.sha;
+
+    const data = await this.request(`/repos/${options.owner}/${options.repo}/contents/${options.path}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+    return { sha: data.content?.sha || 'sha-updated' };
+  }
+
+  /** Create a Pull Request */
+  async createPullRequest(options: {
+    owner: string;
+    repo: string;
+    title: string;
+    body: string;
+    head: string;
+    base: string;
+  }): Promise<{ number: number; html_url: string }> {
+    const data = await this.request(`/repos/${options.owner}/${options.repo}/pulls`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    });
+    return { number: data.number, html_url: data.html_url || `https://github.com/${options.owner}/${options.repo}/pull/${data.number}` };
   }
 }

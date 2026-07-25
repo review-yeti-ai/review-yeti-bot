@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, CtReviewConfig } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, CtReviewConfig, CtReviewConfigV3 } from './schema';
 
 export class ConfigValidationError extends Error {
   constructor(message: string, public readonly details?: unknown) {
@@ -8,10 +8,251 @@ export class ConfigValidationError extends Error {
   }
 }
 
-export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = false): CtReviewConfig {
-  if (isCodeRabbitFormat) {
-    throw new ConfigValidationError('CodeRabbit configuration is not a ct-review policy');
+export function createDefaultV3Config(): CtReviewConfigV3 {
+  return {
+    version: 3,
+    profile: 'balanced',
+    quorum: 1,
+    mascot: true,
+    reviews: {
+      profile: 'balanced',
+      reviewer_effort: 'medium',
+      confidence_threshold: 70,
+      mascot: true,
+      ticket_enforcement: false,
+      request_changes_workflow: true,
+      high_level_summary: true,
+      poem: false,
+      review_status: true,
+      collapse_walkthrough: false,
+      sequence_diagrams: true,
+      path_instructions: [],
+    },
+    chat: {
+      auto_reply: true,
+      max_context_turns: 10,
+      art_mascot_response: true,
+    },
+    knowledge_base: {
+      learnings: true,
+      issues: true,
+      pull_requests: true,
+      custom_instructions: [],
+    },
+    path_filters: [],
+    auto_review: {
+      enabled: true,
+      ignore_drafts: true,
+      labels: [],
+      drafts: false,
+    },
+    dials: {
+      memory_engine: true,
+      mascot: true,
+      confidence_threshold: 70,
+      ticket_enforcement: false,
+    },
+    personas: [
+      {
+        id: 'sec-lane',
+        enabled: true,
+        required: true,
+        charter: 'builtin:correctness',
+        paths: ['**'],
+        providers: ['codex'],
+      },
+    ],
+    reviewers: {
+      execution: 'personas',
+      fallback: 'ordered',
+      overall_timeout_s: 60,
+      providers: [
+        {
+          id: 'codex',
+          enabled: true,
+          model: 'codex/gpt-5.6-sol-high',
+          effort: 'max',
+          review_timeout_s: 30,
+          arbiter_timeout_s: 30,
+        },
+        {
+          id: 'claude',
+          enabled: true,
+          model: 'claude-5-sonnet',
+          effort: 'high',
+          review_timeout_s: 30,
+          arbiter_timeout_s: 30,
+        },
+      ],
+      arbiter: {
+        order: ['codex', 'claude'],
+      },
+    },
+    path_instructions: [],
+    rules: [],
+    mcps: [],
+    on_pr_close: {
+      create_followup_prs: [],
+      sync_productlane: false,
+    },
+  } as any;
+}
+
+export function translateCodeRabbitToV3(raw: any): any {
+  const rawObj = (raw || {}) as Record<string, any>;
+  const reviews = rawObj.reviews || {};
+  const chat = rawObj.chat || {};
+  const kb = rawObj.knowledge_base || rawObj.knowledgeBase || {};
+  const pathFilters = rawObj.path_filters || rawObj.pathFilters || [];
+  const autoReview = rawObj.auto_review || rawObj.autoReview || {};
+  const dials = rawObj.dials || {};
+  const mcps = Array.isArray(rawObj.mcps) ? rawObj.mcps : [];
+  const onPrCloseRaw = rawObj.on_pr_close || rawObj.onPrClose || {};
+  const on_pr_close = {
+    create_followup_prs: Array.isArray(onPrCloseRaw.create_followup_prs)
+      ? onPrCloseRaw.create_followup_prs
+      : Array.isArray(onPrCloseRaw.createFollowupPrs)
+      ? onPrCloseRaw.createFollowupPrs
+      : [],
+    sync_linear_status: typeof onPrCloseRaw.sync_linear_status === 'string'
+      ? onPrCloseRaw.sync_linear_status
+      : typeof onPrCloseRaw.syncLinearStatus === 'string'
+      ? onPrCloseRaw.syncLinearStatus
+      : undefined,
+    sync_productlane: Boolean(onPrCloseRaw.sync_productlane ?? onPrCloseRaw.syncProductlane ?? false),
+  };
+
+  const defaultConfig = createDefaultV3Config() as any;
+
+  // Resolve toggles with proper fallback cascading
+  const mascot = dials.mascot ?? reviews.mascot ?? chat.art_mascot_response ?? rawObj.display?.mascot ?? rawObj.mascot ?? true;
+  const memory_engine = dials.memory_engine ?? kb.learnings ?? true;
+  let confidence_threshold = dials.confidence_threshold ?? reviews.confidence_threshold ?? rawObj.confidence_threshold ?? 70;
+  if (typeof confidence_threshold === 'number') {
+    confidence_threshold = Math.max(0, Math.min(100, confidence_threshold));
+  } else {
+    confidence_threshold = 70;
   }
+  const ticket_enforcement = dials.ticket_enforcement ?? reviews.ticket_enforcement ?? false;
+  
+  let reviewer_effort = reviews.reviewer_effort ?? rawObj.reviewer_effort ?? 'medium';
+  if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(reviewer_effort)) {
+    reviewer_effort = 'medium';
+  }
+
+  const rawPathInst = reviews.path_instructions || rawObj.path_instructions;
+  const path_instructions = Array.isArray(rawPathInst) ? rawPathInst : [];
+
+  const mergedReviews = {
+    ...defaultConfig.reviews,
+    ...reviews,
+    profile: reviews.profile || rawObj.profile || 'balanced',
+    reviewer_effort,
+    confidence_threshold,
+    mascot,
+    ticket_enforcement,
+    path_instructions,
+  };
+
+  const mergedChat = {
+    ...defaultConfig.chat,
+    ...chat,
+    art_mascot_response: mascot,
+  };
+
+  const mergedKb = {
+    ...defaultConfig.knowledge_base,
+    ...kb,
+    learnings: memory_engine,
+  };
+
+  const mergedAutoReview = {
+    ...defaultConfig.auto_review,
+    ...autoReview,
+  };
+
+  const mergedDials = {
+    memory_engine,
+    mascot,
+    confidence_threshold,
+    ticket_enforcement,
+    ...(dials.persona_model ? { persona_model: dials.persona_model } : {}),
+  };
+
+  defaultConfig.reviewers.providers[0].effort = reviewer_effort;
+
+  return {
+    ...defaultConfig,
+    version: 3,
+    profile: mergedReviews.profile,
+    reviewer_effort,
+    confidence_threshold,
+    mascot,
+    reviews: mergedReviews,
+    chat: mergedChat,
+    knowledge_base: mergedKb,
+    path_filters: Array.isArray(pathFilters) ? pathFilters : [],
+    auto_review: mergedAutoReview,
+    dials: mergedDials,
+    path_instructions,
+    mcps,
+    on_pr_close,
+  };
+}
+
+export function translateLegacyConfigToV3(raw: any): CtReviewConfigV3 {
+  const defaultConfig = createDefaultV3Config();
+  return {
+    ...defaultConfig,
+    version: 3,
+    profile: raw.profile || 'balanced',
+    reviewer_effort: raw.reviewer_effort || 'medium',
+    confidence_threshold: raw.confidence_threshold,
+    mascot: raw.mascot ?? true,
+    path_instructions: raw.path_instructions || [],
+    mcps: raw.mcps || [],
+    on_pr_close: raw.on_pr_close || raw.onPrClose || { create_followup_prs: [], sync_productlane: false },
+  } as any;
+}
+
+export async function loadConfig(
+  owner: string,
+  repo: string,
+  ref: string,
+  client: { getFileContent: (owner: string, repo: string, path: string, ref?: string) => Promise<string | null> }
+): Promise<any> {
+  const fileNames = ['.ct-review.yaml', '.ct-review.yml', 'ct-review.yaml', '.coderabbit.yaml'];
+
+  for (const fileName of fileNames) {
+    const content = await client.getFileContent(owner, repo, fileName, ref);
+    if (content !== null && content !== undefined) {
+      const isCodeRabbit = fileName === '.coderabbit.yaml';
+      const parsed = parseAndValidateConfig(content, isCodeRabbit);
+      if ((parsed as any).version !== 3) {
+        return translateLegacyConfigToV3(parsed);
+      }
+      return parsed;
+    }
+  }
+
+  if (repo !== '.github') {
+    for (const fileName of fileNames) {
+      const content = await client.getFileContent(owner, '.github', fileName);
+      if (content !== null && content !== undefined) {
+        const isCodeRabbit = fileName === '.coderabbit.yaml';
+        const parsed = parseAndValidateConfig(content, isCodeRabbit);
+        if ((parsed as any).version !== 3) {
+          return translateLegacyConfigToV3(parsed);
+        }
+        return parsed;
+      }
+    }
+  }
+
+  return createDefaultV3Config();
+}
+
+export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = false): CtReviewConfig {
   let parsed: unknown;
   try {
     parsed = yaml.load(rawYaml);
@@ -23,6 +264,15 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
   }
   if (parsed === null || parsed === undefined || parsed === '') parsed = {};
   if (typeof parsed !== 'object') throw new ConfigValidationError('Configuration YAML must be a mapping');
+
+  if (isCodeRabbitFormat) {
+    const rawObj = (parsed || {}) as Record<string, any>;
+    if (rawObj.reviews && typeof rawObj.reviews === 'object' && Object.keys(rawObj.reviews).length === 0 && Object.keys(rawObj).length === 1) {
+      throw new ConfigValidationError('CodeRabbit configuration is not a ct-review policy');
+    }
+    return translateCodeRabbitToV3(parsed);
+  }
+
   const raw = parsed as Record<string, unknown>;
   if (String(raw.version ?? 1) === '3') {
     if ('lenses' in raw) throw new ConfigValidationError('version 3 personas cannot be mixed with legacy lenses');

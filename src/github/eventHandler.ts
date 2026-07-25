@@ -10,12 +10,16 @@ export interface ParsedPRPayload {
   sender: string;
   labels: string[];
   changedFiles?: Array<{ path: string; content?: string; patch?: string }>;
-  triggerSource: 'pr_event' | 'comment_command' | 'label_trigger' | 'draft_precheck';
+  triggerSource: 'pr_event' | 'comment_command' | 'label_trigger' | 'draft_precheck' | 'pr_close_event';
   triggerAction: string;
   commandText?: string;
   commentId?: number;
+  inReplyToId?: number;
   deliveryId: string;
   isDraft?: boolean;
+  isMerged?: boolean;
+  mergedAt?: string;
+  targetBranch?: string;
 }
 
 export interface TriggerResult {
@@ -61,6 +65,41 @@ export class GitHubEventHandler {
     if (eventName === 'pull_request') {
       const action = payload.action;
       const pr = payload.pull_request || {};
+      
+      if (action === 'closed') {
+        const isMerged = pr.merged === true;
+        if (!isMerged) {
+          return { shouldTrigger: false, reason: 'PR is closed without being merged' };
+        }
+        
+        const repository = payload.repository || {};
+        const parsedPayload: ParsedPRPayload = {
+          installationId: String(payload.installation?.id || ''),
+          owner: repository.owner?.login || 'calltelemetry',
+          repo: repository.name || 'ai-workspace',
+          prNumber: pr.number || payload.number || 0,
+          headSha: pr.head?.sha || 'head-sha-latest',
+          baseSha: pr.base?.sha || 'base-sha-latest',
+          title: pr.title || '',
+          body: pr.body || '',
+          sender,
+          labels: labels(pr),
+          changedFiles: changedFiles(pr, payload),
+          triggerSource: 'pr_close_event',
+          triggerAction: action,
+          deliveryId,
+          isMerged: true,
+          mergedAt: pr.merged_at || new Date().toISOString(),
+          targetBranch: pr.base?.ref || 'main',
+        };
+
+        return {
+          shouldTrigger: true,
+          reason: 'PR closed and merged event triggered PR close action dispatcher',
+          parsedPayload,
+        };
+      }
+
       if (pr.state === 'closed') return { shouldTrigger: false, reason: 'PR is closed' };
 
       const prLabels = labels(pr);
@@ -102,14 +141,19 @@ export class GitHubEventHandler {
 
     if (eventName === 'issue_comment' || eventName === 'pull_request_review_comment') {
       const commentBody = payload.comment?.body || '';
-      if (!/@(ct-review|bot|ct-review-bot)\s+review/i.test(commentBody)) {
-        return { shouldTrigger: false, reason: 'not bot review command' };
+      const inReplyToId = payload.comment?.in_reply_to_id || payload.comment?.inReplyToId;
+      const isBotMention = /@(ct-review|bot|ct-review-bot)(\[[^\]]+\])?\b/i.test(commentBody);
+      const isInlineReply = Boolean(inReplyToId);
+
+      if (!isBotMention && !isInlineReply) {
+        return { shouldTrigger: false, reason: 'not bot review command or inline reply' };
       }
+
       const issue = payload.issue || payload.pull_request || {};
       const repository = payload.repository || {};
       return {
         shouldTrigger: true,
-        reason: 'Comment review command detected',
+        reason: isInlineReply ? 'Inline comment reply detected' : 'Comment review command detected',
         parsedPayload: {
           installationId: String(payload.installation?.id || ''),
           owner: repository.owner?.login || 'calltelemetry',
@@ -125,6 +169,7 @@ export class GitHubEventHandler {
           triggerAction: payload.action || 'created',
           commandText: commentBody,
           commentId: payload.comment?.id,
+          inReplyToId: inReplyToId ? Number(inReplyToId) : undefined,
           deliveryId,
         },
       };

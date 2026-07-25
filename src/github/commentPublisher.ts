@@ -1,4 +1,13 @@
 import { logger } from '../utils/logger';
+import { GraphLearningEngine } from '../memory/graphLearningEngine';
+import { PanelFinding } from '../panel/panelEngine';
+
+export interface FixOption {
+  rank?: number;
+  title?: string;
+  explanation?: string;
+  suggestionCode?: string;
+}
 
 export interface PersonaFinding {
   persona: string;
@@ -6,8 +15,12 @@ export interface PersonaFinding {
   filePath: string;
   lineNumber: number;
   comment: string;
+  title?: string;
+  confidence?: number;
+  recommendation?: string;
   suggestion?: string;
   codeSnippet?: string;
+  fixOptions?: FixOption[];
 }
 
 export interface CommentPublisherOptions {
@@ -39,6 +52,7 @@ export interface PublishReviewRequest {
   event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
   body: string;
   inlineComments?: PublishInlineCommentRequest[];
+  mascot?: boolean;
 }
 
 export interface PublishResult {
@@ -49,16 +63,64 @@ export interface PublishResult {
   errors?: string[];
 }
 
+export const ASCII_MASCOT = `\`\`\`
+  /\\_/\\   CallTelemetry AI Reviewer
+ ( o.o )  Code Telemetry & Security Engine
+  > ^ <
+\`\`\``;
+
+export const PUBLISHER_MASCOT = ASCII_MASCOT;
+
 /**
  * Formats a PersonaFinding into a rich GitHub inline comment body with optional suggestion block.
  */
-export function formatInlineCommentBody(finding: PersonaFinding): string {
-  const severityFormatted = finding.severity.toUpperCase();
+export function formatInlineCommentBody(
+  finding: PersonaFinding,
+  options?: { mascot?: boolean }
+): string {
+  let body = '';
 
-  let body = `### [${finding.persona}] Severity: ${severityFormatted}\n\n`;
+  if (options?.mascot) {
+    body += `${ASCII_MASCOT}\n\n`;
+  }
+
+  const severityFormatted = finding.severity.toUpperCase();
+  if (finding.title) {
+    body += `### [${finding.persona}] ${finding.title} — Severity: ${severityFormatted}\n\n`;
+  } else {
+    body += `### [${finding.persona}] Severity: ${severityFormatted}\n\n`;
+  }
+
+  if (finding.confidence !== undefined) {
+    body += `**Confidence**: ${finding.confidence}%\n`;
+  }
+
   body += `**Finding**: ${finding.comment}\n`;
 
-  if (finding.suggestion || finding.codeSnippet) {
+  if (finding.recommendation) {
+    if (finding.recommendation.startsWith('[RECOMMENDATION]')) {
+      body += `${finding.recommendation}\n`;
+    } else {
+      body += `[RECOMMENDATION] ${finding.recommendation}\n`;
+    }
+  }
+
+  if (finding.fixOptions && finding.fixOptions.length > 0) {
+    body += '\n';
+    const optionsToFormat = finding.fixOptions.slice(0, 2);
+    optionsToFormat.forEach((fix, i) => {
+      const rankNum = fix.rank ?? i + 1;
+      const defaultTitle = rankNum === 1 ? 'Recommended Fix' : 'Alternative Approach';
+      const optionTitle = fix.title || defaultTitle;
+      body += `#### Option ${rankNum}: ${optionTitle} (Rank #${rankNum})\n`;
+      if (fix.explanation) {
+        body += `${fix.explanation}\n`;
+      }
+      if (fix.suggestionCode) {
+        body += `\`\`\`suggestion\n${fix.suggestionCode}\n\`\`\`\n`;
+      }
+    });
+  } else if (finding.suggestion || finding.codeSnippet) {
     const code = finding.suggestion || finding.codeSnippet;
     body += `\n\`\`\`suggestion\n${code}\n\`\`\`\n`;
   }
@@ -84,9 +146,6 @@ export class CommentPublisher {
     this.maxDelayMs = options.maxDelayMs ?? 2000;
   }
 
-  /**
-   * Helper to perform HTTP requests with rate limit retry & exponential backoff
-   */
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
     let delay = this.initialRetryDelayMs;
     const headers = new Headers(init.headers || {});
@@ -133,9 +192,6 @@ export class CommentPublisher {
     throw new Error('Max retries reached during GitHub API request');
   }
 
-  /**
-   * Publishes a top-level review summary and optional inline comments on a Pull Request.
-   */
   public async publishReview(req: PublishReviewRequest): Promise<PublishResult> {
     const { owner, repo, prNumber, commitSha, event, body, inlineComments = [] } = req;
     let commentsCreated = 0;
@@ -154,7 +210,7 @@ export class CommentPublisher {
             line,
             side,
             ...(startLine ? { start_line: startLine, start_side: side } : {}),
-            body: formatInlineCommentBody(finding),
+            body: formatInlineCommentBody(finding, { mascot: req.mascot }),
           })),
         }),
       });
@@ -184,4 +240,27 @@ export class CommentPublisher {
     }
   }
 
+  public async publishReviewWithNitSuppression(
+    req: PublishReviewRequest,
+    learningEngine?: GraphLearningEngine
+  ): Promise<PublishResult> {
+    if (learningEngine && req.inlineComments && req.inlineComments.length > 0) {
+      const repo = `${req.owner}/${req.repo}`;
+      const findings: PanelFinding[] = req.inlineComments.map((ic) => ({
+        severity: ic.finding.severity === 'critical' ? 'P0' : ic.finding.severity === 'major' ? 'P1' : 'P2',
+        path: ic.path,
+        line: ic.line,
+        title: ic.finding.comment.split('\n')[0],
+        body: ic.finding.comment,
+        suggestion: ic.finding.suggestion,
+      }));
+
+      const { filteredFindings } = await learningEngine.analyzeAndFilterFindings(repo, findings);
+      const filteredKeys = new Set(filteredFindings.map((f) => `${f.path}:${f.line}:${f.title}`));
+      req.inlineComments = req.inlineComments.filter((ic) =>
+        filteredKeys.has(`${ic.path}:${ic.line}:${ic.finding.comment.split('\n')[0]}`)
+      );
+    }
+    return this.publishReview(req);
+  }
 }

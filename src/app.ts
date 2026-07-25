@@ -1,4 +1,5 @@
 import express, { Express, NextFunction, Request, Response } from 'express';
+import path from 'path';
 import { parseAndValidateConfig } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OmniRouteClient } from './gateway/omniRouteClient';
@@ -8,9 +9,19 @@ import { GitHubInstallationClient } from './github/installationClient';
 import { createWebhookRouter, RequestWithRawBody } from './github/webhookServer';
 import { executePersonaPanel, PanelResult } from './panel/panelEngine';
 import { ReviewRunStore } from './persistence/reviewRunStore';
+import { createMemoryRouter } from './api/memoryApi';
+import { createProviderRouter } from './gateway/providerRouterApi';
+import { createAuthRouter } from './api/authApi';
+import { createDashboardRouter } from './api/dashboardApi';
+import { createIntegrationsRouter } from './dashboard/integrationsApi';
+import { requireAuth } from './api/authMiddleware';
+import { dashboardStore } from './persistence/dashboardStore';
+import { providerPool } from './gateway/providerPool';
+import { GraphLearningEngine } from './memory/graphLearningEngine';
+import { PRCloseDispatcher } from './github/prCloseDispatcher';
 import { logger } from './utils/logger';
 
-export { RequestWithRawBody };
+export { RequestWithRawBody, providerPool };
 
 const store = new ReviewRunStore(process.env.CT_REVIEW_RUN_STORE || '/tmp/ct-review-bot/review-runs.json');
 
@@ -139,6 +150,10 @@ async function installationClient(payload: ParsedPRPayload): Promise<GitHubInsta
 
 export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> {
   const { owner, repo, prNumber, headSha } = payload;
+  if (!dashboardStore.isAutomationEnabled(owner, repo)) {
+    logger.info(`Review automation disabled for repository ${owner}/${repo}`);
+    return { status: 'skipped', reason: 'automation disabled per repo setting' };
+  }
   const github = await installationClient(payload);
   let checkId: number | undefined;
   try {
@@ -182,7 +197,16 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
       return { status: 'cancelled', reason: 'head changed during review' };
     }
 
+    const learningEngine = new GraphLearningEngine();
     for (const lane of panel.personas) {
+      const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
+        `${owner}/${repo}`,
+        lane.findings
+      );
+      if (suppressedNits.length > 0) {
+        logger.info(`Suppressed ${suppressedNits.length} nit pattern(s) for persona ${lane.id}`);
+      }
+
       const published = await github.publishReview({
         owner,
         repo,
@@ -190,7 +214,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         commitSha: headSha,
         event: 'COMMENT',
         body: personaBody(lane, headSha),
-        inlineComments: lane.findings.map((finding) => ({
+        inlineComments: filteredFindings.map((finding) => ({
           owner,
           repo,
           prNumber,
@@ -228,6 +252,13 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
       conclusion: ship ? 'success' : 'failure',
       title: `Binding arbiter verdict: ${panel.arbiter.verdict}`,
       summary,
+    });
+    dashboardStore.recordReviewRun({
+      prRun: `${repo} #${prNumber}`,
+      headSha,
+      personas: panel.personas.map((lane) => lane.id).join(', '),
+      quorum: `${panel.quorum.distinctProviders.length}/${panel.quorum.required} Distinct`,
+      arbiterVerdict: panel.arbiter.verdict,
     });
     return {
       status: 'processed',
@@ -276,10 +307,27 @@ export function createApp(): Express {
     next();
   });
 
+  app.use(express.json());
+
+  // Static assets from public directory
+  app.use(express.static(path.join(__dirname, '../public')));
+
+  // API Routers
+  app.use('/api/auth', createAuthRouter());
+  app.use('/api', requireAuth);
+  app.use('/api/dashboard', createDashboardRouter());
+  const integrationsRouter = createIntegrationsRouter();
+  app.use('/api/dashboard', integrationsRouter);
+  app.use('/api/dashboard/integrations', integrationsRouter);
+  app.use('/api/dashboard/mcp', integrationsRouter);
+  app.use('/api/router', createProviderRouter());
+  app.use('/api', createMemoryRouter());
+
   app.get('/health', (_req, res) => {
     res.status(200).json({
       status: 'ok',
       service: 'ct-review-bot',
+      memoryEngineReady: true,
       timestamp: new Date().toISOString(),
       uptimeSeconds: process.uptime(),
     });
@@ -312,9 +360,42 @@ export function createApp(): Express {
       if (!store.claimDelivery(deliveryId)) {
         return { status: 'duplicate', deliveryId };
       }
-      setImmediate(() => runReviewPipeline(trigger.parsedPayload!).catch(() => undefined));
-      return { status: 'accepted', deliveryId, prNumber: trigger.parsedPayload.prNumber };
+
+      const payload = trigger.parsedPayload;
+
+      if (payload.triggerSource === 'pr_close_event') {
+        setImmediate(async () => {
+          try {
+            const github = await installationClient(payload);
+            const omniRouteUrl = process.env.OMNIROUTE_BASE_URL;
+            const omniRouteClient = omniRouteUrl
+              ? new OmniRouteClient({
+                  baseUrl: omniRouteUrl,
+                  accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
+                })
+              : undefined;
+            const dispatcher = new PRCloseDispatcher(omniRouteClient);
+            await dispatcher.dispatchPRCloseActions(payload, github);
+          } catch (err) {
+            logger.error('Failed processing PR close event pipeline', { error: err });
+          }
+        });
+        return { status: 'accepted', deliveryId, prNumber: payload.prNumber, action: 'pr_close_dispatch' };
+      }
+
+      setImmediate(() => runReviewPipeline(payload).catch(() => undefined));
+      return { status: 'accepted', deliveryId, prNumber: payload.prNumber };
     },
   }));
+
+  // SPA Fallback: Serve index.html for non-API GET requests
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/health') || req.path.startsWith('/ready')) {
+      return next();
+    }
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+  });
+
   return app;
 }
+
