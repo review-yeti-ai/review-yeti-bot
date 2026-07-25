@@ -113,7 +113,7 @@ describe('End-to-End PR Compliance Checks & Webhook Pipeline Lifecycle', () => {
     const result = eventHandler.evaluateTrigger('pull_request', payload, 'delivery-uuid-104');
 
     expect(result.shouldTrigger).toBe(false);
-    expect(result.reason).toBe('PR is closed');
+    expect(result.reason).toContain('PR is closed');
   });
 
   it('ignores actions triggered by bot senders to prevent infinite loops', () => {

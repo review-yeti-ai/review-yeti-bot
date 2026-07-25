@@ -3,6 +3,7 @@ import { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { OmniRouteClient, OmniRouteResponse, TokensUsed } from '../gateway/omniRouteClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { logger } from '../utils/logger';
+import { runInSpan, getMetrics } from '../telemetry';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -176,47 +177,77 @@ async function runPersona(
   headSha: string,
   memoryRules: string[] = [],
 ): Promise<PersonaLaneResult> {
-  const errors: string[] = [];
-  const scopedFiles = changedFiles.filter((file) =>
-    persona.paths.some((pattern) => pathMatches(pattern, file.path)),
-  );
-  for (const providerId of persona.providers) {
-    const spec = provider(config, providerId);
-    try {
-      const result = await invoke(client, spec.model, spec.review_timeout_s * 1_000, 'persona', {
-        persona: persona.id,
-        charter: BUILTIN_CHARTERS[persona.charter] || persona.charter,
-        repository,
-        headSha,
-        changedFiles: scopedFiles,
-        pathInstructions: config.path_instructions,
-        rules: [...config.rules, ...memoryRules],
-        outputSchema: {
-          decision: 'APPROVE|FINDINGS',
-          findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'optional string' }],
-        },
-      });
-      if (!['APPROVE', 'FINDINGS'].includes(result.parsed?.decision)) throw new Error('invalid persona decision');
-      const findings = validateFindings(result.parsed.findings);
-      if (result.parsed.decision === 'APPROVE' && findings.length > 0) throw new Error('APPROVE cannot contain findings');
-      if (result.parsed.decision === 'FINDINGS' && findings.length === 0) throw new Error('FINDINGS requires at least one finding');
-      return {
-        id: persona.id,
-        required: persona.required,
-        providerId,
-        model: result.response.model,
-        decision: result.parsed.decision,
-        findings,
-        usage: result.response.usage,
-        costUSD: result.response.costUSD,
-        durationMs: result.durationMs,
-      };
-    } catch (error: any) {
-      errors.push(`${providerId}: ${error?.message || String(error)}`);
-      if (config.reviewers.fallback === 'none') break;
+  return runInSpan(`ct_persona_lane`, async (span) => {
+    span.setAttribute('ct.persona.id', persona.id);
+    span.setAttribute('ct.persona.required', persona.required);
+
+    const errors: string[] = [];
+    const scopedFiles = changedFiles.filter((file) =>
+      persona.paths.some((pattern) => pathMatches(pattern, file.path)),
+    );
+    for (const providerId of persona.providers) {
+      const spec = provider(config, providerId);
+      try {
+        const result = await invoke(client, spec.model, spec.review_timeout_s * 1_000, 'persona', {
+          persona: persona.id,
+          charter: BUILTIN_CHARTERS[persona.charter] || persona.charter,
+          repository,
+          headSha,
+          changedFiles: scopedFiles,
+          pathInstructions: config.path_instructions,
+          rules: [...config.rules, ...memoryRules],
+          outputSchema: {
+            decision: 'APPROVE|FINDINGS',
+            findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'optional string' }],
+          },
+        });
+        if (!['APPROVE', 'FINDINGS'].includes(result.parsed?.decision)) throw new Error('invalid persona decision');
+        const findings = validateFindings(result.parsed.findings);
+        if (result.parsed.decision === 'APPROVE' && findings.length > 0) throw new Error('APPROVE cannot contain findings');
+        if (result.parsed.decision === 'FINDINGS' && findings.length === 0) throw new Error('FINDINGS requires at least one finding');
+
+        const promptTokens = result.response.usage?.prompt || 0;
+        const completionTokens = result.response.usage?.completion || 0;
+        const totalTokens = result.response.usage?.total || (promptTokens + completionTokens);
+        const costUSD = result.response.costUSD || 0;
+
+        span.setAttribute('ct.persona.provider', providerId);
+        span.setAttribute('ct.persona.model', result.response.model);
+        span.setAttribute('ct.persona.decision', result.parsed.decision);
+        span.setAttribute('ct.persona.findings_count', findings.length);
+        span.setAttribute('ct.persona.duration_ms', result.durationMs);
+        span.setAttribute('ct.tokens.prompt', promptTokens);
+        span.setAttribute('ct.tokens.completion', completionTokens);
+        span.setAttribute('ct.tokens.total', totalTokens);
+        span.setAttribute('ct.cost_usd', costUSD);
+
+        try {
+          const metrics = getMetrics();
+          metrics.tokensPrompt.add(promptTokens, { persona: persona.id, provider: providerId, model: result.response.model });
+          metrics.tokensCompletion.add(completionTokens, { persona: persona.id, provider: providerId, model: result.response.model });
+          metrics.tokensTotal.add(totalTokens, { persona: persona.id, provider: providerId, model: result.response.model });
+          metrics.modelCostUsd.add(costUSD, { persona: persona.id, provider: providerId, model: result.response.model });
+          metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision: result.parsed.decision });
+        } catch (_) {}
+
+        return {
+          id: persona.id,
+          required: persona.required,
+          providerId,
+          model: result.response.model,
+          decision: result.parsed.decision,
+          findings,
+          usage: result.response.usage,
+          costUSD: result.response.costUSD,
+          durationMs: result.durationMs,
+        };
+      } catch (error: any) {
+        errors.push(`${providerId}: ${error?.message || String(error)}`);
+        if (config.reviewers.fallback === 'none') break;
+      }
     }
-  }
-  throw new PanelConfigurationError(`persona ${persona.id} failed closed: ${errors.join('; ')}`);
+    throw new PanelConfigurationError(`persona ${persona.id} failed closed: ${errors.join('; ')}`);
+  });
 }
 
 export async function executePersonaPanel(options: {
@@ -226,102 +257,166 @@ export async function executePersonaPanel(options: {
   headSha: string;
   client: OmniRouteClient;
 }): Promise<PanelResult> {
-  const { config, changedFiles, repository, headSha, client } = options;
-  const applicable = config.personas.filter((persona) =>
-    persona.enabled && persona.paths.some((pattern) => changedFiles.some((file) => pathMatches(pattern, file.path))),
-  );
-  if (applicable.length === 0) throw new PanelConfigurationError('no enabled persona applies to the changed paths');
+  return runInSpan('ct_persona_panel', async (span) => {
+    const { config, changedFiles, repository, headSha, client } = options;
+    span.setAttribute('ct.repo', repository);
+    span.setAttribute('ct.head_sha', headSha);
 
-  let memoryRules: string[] = [];
-  try {
-    const memoryStore = new PRMemoryStore();
-    const memContext = await memoryStore.queryLearnings(repository);
-    const adrs = memContext.adrConstraints.map((adr) => `ADR #${adr.adrNumber} (${adr.title}): ${adr.rule}`);
-    const learnings = memContext.learnings.map((l) => `[${l.category}] ${l.title}: ${l.description}`);
-    memoryRules = [...adrs, ...learnings];
-    memoryStore.close();
-  } catch (err: any) {
-    logger.warn('Failed to query PRMemoryStore during executePersonaPanel', { repository, error: err?.message });
-  }
+    const applicable = config.personas.filter((persona) =>
+      persona.enabled && persona.paths.some((pattern) => changedFiles.some((file) => pathMatches(pattern, file.path))),
+    );
+    span.setAttribute('ct.persona_count', applicable.length);
+    span.setAttribute('ct.quorum_required', config.quorum);
 
-  const settled = await Promise.all(applicable.map(async (persona) => {
+    if (applicable.length === 0) throw new PanelConfigurationError('no enabled persona applies to the changed paths');
+
+    let memoryRules: string[] = [];
     try {
-      return { persona, result: await runPersona(config, client, persona, changedFiles, repository, headSha, memoryRules) };
-    } catch (error: any) {
-      return { persona, error: error?.message || String(error) };
+      const memoryStore = new PRMemoryStore();
+      const memContext = await memoryStore.queryLearnings(repository);
+      const adrs = memContext.adrConstraints.map((adr) => `ADR #${adr.adrNumber} (${adr.title}): ${adr.rule}`);
+      const learnings = memContext.learnings.map((l) => `[${l.category}] ${l.title}: ${l.description}`);
+      memoryRules = [...adrs, ...learnings];
+      memoryStore.close();
+    } catch (err: any) {
+      logger.warn('Failed to query PRMemoryStore during executePersonaPanel', { repository, error: err?.message });
     }
-  }));
-  const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
-  if (requiredFailures.length > 0) {
-    throw new PanelConfigurationError(`required persona failure: ${requiredFailures.map((entry) => entry.error).join(' | ')}`);
-  }
-  const personas = settled.flatMap((entry) => entry.result ? [entry.result] : []);
-  const optionalFailures = settled.flatMap((entry) =>
-    !entry.result ? [{ id: entry.persona.id, error: entry.error || 'unknown failure' }] : [],
-  );
-  const distinctProviders = [...new Set(personas.map((lane) => lane.providerId))];
-  if (distinctProviders.length < config.quorum) {
-    throw new PanelConfigurationError(`distinct-provider quorum failed: ${distinctProviders.length}/${config.quorum}`);
-  }
 
-  const moderatorId = config.reviewers.providers.find((candidate) => candidate.enabled)?.id;
-  if (!moderatorId) throw new PanelConfigurationError('no enabled moderator provider');
-  const moderatorProvider = provider(config, moderatorId);
-  const moderatorRun = await invoke(client, moderatorProvider.model, moderatorProvider.review_timeout_s * 1_000, 'moderator', {
-    repository,
-    headSha,
-    personaEvidence: personas,
-    outputSchema: { decision: 'RECONCILED', findings: [] },
-  });
-  if (moderatorRun.parsed?.decision !== 'RECONCILED') throw new PanelConfigurationError('moderator returned invalid decision');
-  const moderatedFindings = validateFindings(moderatorRun.parsed.findings);
+    const settled = await Promise.all(applicable.map(async (persona) => {
+      try {
+        return { persona, result: await runPersona(config, client, persona, changedFiles, repository, headSha, memoryRules) };
+      } catch (error: any) {
+        return { persona, error: error?.message || String(error) };
+      }
+    }));
+    const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
+    if (requiredFailures.length > 0) {
+      throw new PanelConfigurationError(`required persona failure: ${requiredFailures.map((entry) => entry.error).join(' | ')}`);
+    }
+    const personas = settled.flatMap((entry) => entry.result ? [entry.result] : []);
+    const optionalFailures = settled.flatMap((entry) =>
+      !entry.result ? [{ id: entry.persona.id, error: entry.error || 'unknown failure' }] : [],
+    );
+    const distinctProviders = [...new Set(personas.map((lane) => lane.providerId))];
+    span.setAttribute('ct.quorum_distinct', distinctProviders.length);
+    span.setAttribute('ct.quorum_satisfied', distinctProviders.length >= config.quorum);
 
-  let arbiterResult: PanelResult['arbiter'] | null = null;
-  const arbiterErrors: string[] = [];
-  for (const providerId of config.reviewers.arbiter.order) {
-    const spec = provider(config, providerId);
-    try {
-      const run = await invoke(client, spec.model, spec.arbiter_timeout_s * 1_000, 'arbiter', {
+    if (distinctProviders.length < config.quorum) {
+      throw new PanelConfigurationError(`distinct-provider quorum failed: ${distinctProviders.length}/${config.quorum}`);
+    }
+
+    const moderatorId = config.reviewers.providers.find((candidate) => candidate.enabled)?.id;
+    if (!moderatorId) throw new PanelConfigurationError('no enabled moderator provider');
+    const moderatorProvider = provider(config, moderatorId);
+
+    const moderatorRun = await runInSpan('ct_moderator', async (modSpan) => {
+      const run = await invoke(client, moderatorProvider.model, moderatorProvider.review_timeout_s * 1_000, 'moderator', {
         repository,
         headSha,
         personaEvidence: personas,
-        moderatorLedger: moderatedFindings,
-        outputSchema: { verdict: 'SHIP|FIX_FIRST|BLOCK', rationale: 'string' },
+        outputSchema: { decision: 'RECONCILED', findings: [] },
       });
-      if (!['SHIP', 'FIX_FIRST', 'BLOCK'].includes(run.parsed?.verdict) || typeof run.parsed?.rationale !== 'string') {
-        throw new Error('invalid arbiter verdict');
-      }
-      arbiterResult = {
-        providerId,
-        model: run.response.model,
-        verdict: run.parsed.verdict,
-        rationale: run.parsed.rationale,
-        usage: run.response.usage,
-        costUSD: run.response.costUSD,
-        durationMs: run.durationMs,
-      };
-      break;
-    } catch (error: any) {
-      arbiterErrors.push(`${providerId}: ${error?.message || String(error)}`);
-      if (config.reviewers.fallback === 'none') break;
-    }
-  }
-  if (!arbiterResult) throw new PanelConfigurationError(`arbiter failed closed: ${arbiterErrors.join('; ')}`);
+      if (run.parsed?.decision !== 'RECONCILED') throw new PanelConfigurationError('moderator returned invalid decision');
+      const modFindings = validateFindings(run.parsed.findings);
 
-  return {
-    headSha,
-    personas,
-    optionalFailures,
-    quorum: { required: config.quorum, distinctProviders, satisfied: true },
-    moderator: {
-      providerId: moderatorId,
-      model: moderatorRun.response.model,
-      decision: 'RECONCILED',
-      findings: moderatedFindings,
-      usage: moderatorRun.response.usage,
-      costUSD: moderatorRun.response.costUSD,
-      durationMs: moderatorRun.durationMs,
-    },
-    arbiter: arbiterResult,
-  };
+      const modPrompt = run.response.usage?.prompt || (run.response.usage as any)?.prompt_tokens || 0;
+      const modComp = run.response.usage?.completion || (run.response.usage as any)?.completion_tokens || 0;
+      const modTotal = run.response.usage?.total || (run.response.usage as any)?.total_tokens || (modPrompt + modComp);
+      const modCost = run.response.costUSD || 0;
+
+      modSpan.setAttribute('ct.moderator.provider', moderatorId);
+      modSpan.setAttribute('ct.moderator.model', run.response.model);
+      modSpan.setAttribute('ct.moderator.findings_count', modFindings.length);
+      modSpan.setAttribute('ct.tokens.prompt', modPrompt);
+      modSpan.setAttribute('ct.tokens.completion', modComp);
+      modSpan.setAttribute('ct.tokens.total', modTotal);
+      modSpan.setAttribute('ct.cost_usd', modCost);
+
+      try {
+        const metrics = getMetrics();
+        metrics.tokensPrompt.add(modPrompt, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+        metrics.tokensCompletion.add(modComp, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+        metrics.tokensTotal.add(modTotal, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+        metrics.modelCostUsd.add(modCost, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+      } catch (_) {}
+
+      return { run, modFindings };
+    });
+
+    const moderatedFindings = moderatorRun.modFindings;
+
+    let arbiterResult: PanelResult['arbiter'] | null = null;
+    const arbiterErrors: string[] = [];
+    for (const providerId of config.reviewers.arbiter.order) {
+      const spec = provider(config, providerId);
+      try {
+        arbiterResult = await runInSpan('ct_arbiter', async (arbSpan) => {
+          const run = await invoke(client, spec.model, spec.arbiter_timeout_s * 1_000, 'arbiter', {
+            repository,
+            headSha,
+            personaEvidence: personas,
+            moderatorLedger: moderatedFindings,
+            outputSchema: { verdict: 'SHIP|FIX_FIRST|BLOCK', rationale: 'string' },
+          });
+          if (!['SHIP', 'FIX_FIRST', 'BLOCK'].includes(run.parsed?.verdict) || typeof run.parsed?.rationale !== 'string') {
+            throw new Error('invalid arbiter verdict');
+          }
+
+          const arbPrompt = run.response.usage?.prompt || (run.response.usage as any)?.prompt_tokens || 0;
+          const arbComp = run.response.usage?.completion || (run.response.usage as any)?.completion_tokens || 0;
+          const arbTotal = run.response.usage?.total || (run.response.usage as any)?.total_tokens || (arbPrompt + arbComp);
+          const arbCost = run.response.costUSD || 0;
+
+          arbSpan.setAttribute('ct.arbiter.provider', providerId);
+          arbSpan.setAttribute('ct.arbiter.model', run.response.model);
+          arbSpan.setAttribute('ct.arbiter.verdict', run.parsed.verdict);
+          arbSpan.setAttribute('ct.tokens.prompt', arbPrompt);
+          arbSpan.setAttribute('ct.tokens.completion', arbComp);
+          arbSpan.setAttribute('ct.tokens.total', arbTotal);
+          arbSpan.setAttribute('ct.cost_usd', arbCost);
+
+          try {
+            const metrics = getMetrics();
+            metrics.tokensPrompt.add(arbPrompt, { persona: 'arbiter', provider: providerId, model: run.response.model });
+            metrics.tokensCompletion.add(arbComp, { persona: 'arbiter', provider: providerId, model: run.response.model });
+            metrics.tokensTotal.add(arbTotal, { persona: 'arbiter', provider: providerId, model: run.response.model });
+            metrics.modelCostUsd.add(arbCost, { persona: 'arbiter', provider: providerId, model: run.response.model });
+            metrics.arbiterVerdicts.add(1, { verdict: run.parsed.verdict, provider: providerId, model: run.response.model });
+          } catch (_) {}
+
+          return {
+            providerId,
+            model: run.response.model,
+            verdict: run.parsed.verdict,
+            rationale: run.parsed.rationale,
+            usage: run.response.usage,
+            costUSD: run.response.costUSD,
+            durationMs: run.durationMs,
+          };
+        });
+        break;
+      } catch (error: any) {
+        arbiterErrors.push(`${providerId}: ${error?.message || String(error)}`);
+        if (config.reviewers.fallback === 'none') break;
+      }
+    }
+    if (!arbiterResult) throw new PanelConfigurationError(`arbiter failed closed: ${arbiterErrors.join('; ')}`);
+
+    return {
+      headSha,
+      personas,
+      optionalFailures,
+      quorum: { required: config.quorum, distinctProviders, satisfied: true },
+      moderator: {
+        providerId: moderatorId,
+        model: moderatorRun.run.response.model,
+        decision: 'RECONCILED',
+        findings: moderatedFindings,
+        usage: moderatorRun.run.response.usage,
+        costUSD: moderatorRun.run.response.costUSD,
+        durationMs: moderatorRun.run.durationMs,
+      },
+      arbiter: arbiterResult,
+    };
+  });
 }

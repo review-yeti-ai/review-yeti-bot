@@ -122,6 +122,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (targetView === 'apikeys') renderApiKeysView();
       if (targetView === 'dials') renderDialsView();
       if (targetView === 'integrations') renderIntegrationsView();
+      if (targetView === 'overview' || targetView === 'spend') {
+        renderAnalyticsCharts();
+      }
     });
   });
 
@@ -153,6 +156,8 @@ document.addEventListener('DOMContentLoaded', () => {
         settings = settingsData.settings;
         renderDialsView();
       }
+
+      renderAnalyticsCharts();
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
     }
@@ -340,7 +345,17 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    const toggles = ['toggle-memory-engine', 'toggle-mascot', 'toggle-ticket-enforcement'];
+    const effortSlider = document.getElementById('effort-slider');
+    const effortVal = document.getElementById('effort-val');
+    if (effortSlider && effortVal) {
+      effortSlider.addEventListener('input', (e) => {
+        const val = e.target.value;
+        const labels = { '1': '1 - Fast', '2': '2 - Balanced', '3': '3 - Moderate', '4': '4 - Deep', '5': '5 - Maximum' };
+        effortVal.textContent = labels[val] || val;
+      });
+    }
+
+    const toggles = ['toggle-memory-engine', 'toggle-nit-suppression', 'toggle-mascot', 'toggle-ticket-enforcement'];
     toggles.forEach((id) => {
       const el = document.getElementById(id);
       if (el) {
@@ -351,16 +366,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('dials-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const memoryEngine = document.getElementById('toggle-memory-engine').classList.contains('active');
-    const mascot = document.getElementById('toggle-mascot').classList.contains('active');
-    const ticketEnforcement = document.getElementById('toggle-ticket-enforcement').classList.contains('active');
-    const confidence = parseInt(document.getElementById('confidence-slider').value, 10);
-    const model = document.getElementById('persona-model-select').value;
+    const memoryEngine = document.getElementById('toggle-memory-engine')?.classList.contains('active') ?? true;
+    const nitSuppression = document.getElementById('toggle-nit-suppression')?.classList.contains('active') ?? true;
+    const mascot = document.getElementById('toggle-mascot')?.classList.contains('active') ?? true;
+    const ticketEnforcement = document.getElementById('toggle-ticket-enforcement')?.classList.contains('active') ?? false;
+    const confidence = parseInt(document.getElementById('confidence-slider')?.value || '70', 10);
+    const effortLevel = parseInt(document.getElementById('effort-slider')?.value || '3', 10);
+    const securityModel = document.getElementById('model-security')?.value || 'claude-5-sonnet';
+    const analysisModel = document.getElementById('model-analysis')?.value || 'gpt-5.6-sol';
+    const defaultModel = document.getElementById('persona-model-select')?.value || 'claude-5-sonnet';
 
     try {
       await ApiClient.updateSettings({
-        memoryEngineSettings: { autoSuppressNits: memoryEngine },
-        defaultModelOverrides: { codex: model },
+        reasoningEffortLevel: effortLevel,
+        confidenceThreshold: confidence,
+        personaModels: {
+          securityArbiter: securityModel,
+          codeAnalysis: analysisModel,
+        },
+        memoryEngineSettings: { autoSuppressNits: nitSuppression && memoryEngine },
+        defaultModelOverrides: { codex: defaultModel, securityArbiter: securityModel, codeAnalysis: analysisModel },
       });
       showToast('Dial settings saved successfully', 'success');
     } catch {
@@ -707,4 +732,161 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Start Auth Check
   checkAuth();
+
+  // ECharts State & Initialization Engine
+  let tokenChart = null;
+  let costChart = null;
+  let verdictChart = null;
+  let indexerChart = null;
+
+  function initCharts() {
+    if (typeof echarts === 'undefined') return;
+
+    const tokenEl = document.getElementById('chart-tokens-timeseries');
+    if (tokenEl && !tokenChart) {
+      tokenChart = echarts.init(tokenEl);
+    }
+
+    const costEl = document.getElementById('chart-model-costs');
+    if (costEl && !costChart) {
+      costChart = echarts.init(costEl);
+    }
+
+    const verdictEl = document.getElementById('chart-persona-verdicts');
+    if (verdictEl && !verdictChart) {
+      verdictChart = echarts.init(verdictEl);
+    }
+
+    const indexerEl = document.getElementById('chart-indexer-performance');
+    if (indexerEl && !indexerChart) {
+      indexerChart = echarts.init(indexerEl);
+    }
+
+    window.addEventListener('resize', () => {
+      tokenChart?.resize();
+      costChart?.resize();
+      verdictChart?.resize();
+      indexerChart?.resize();
+    });
+  }
+
+  async function renderAnalyticsCharts() {
+    initCharts();
+    if (typeof echarts === 'undefined') return;
+
+    try {
+      const [tokenRes, costRes, personaRes, indexerRes] = await Promise.all([
+        ApiClient.getAnalyticsTokens('7d', 'day').catch(() => null),
+        ApiClient.getAnalyticsCosts().catch(() => null),
+        ApiClient.getAnalyticsPersonas().catch(() => null),
+        ApiClient.getAnalyticsIndexer().catch(() => null),
+      ]);
+
+      // 1. Render Token Time-Series Stacked Area Chart
+      if (tokenChart && tokenRes && tokenRes.data) {
+        const dates = tokenRes.data.map((d) => d.timestamp);
+        const promptData = tokenRes.data.map((d) => d.promptTokens);
+        const completionData = tokenRes.data.map((d) => d.completionTokens);
+
+        tokenChart.setOption({
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'axis', backgroundColor: 'rgba(21, 24, 33, 0.9)', borderColor: 'hsl(220, 10%, 24%)', textStyle: { color: '#f0f3f9' } },
+          legend: { data: ['Prompt Tokens', 'Completion Tokens'], textStyle: { color: 'hsl(220, 10%, 70%)' } },
+          grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+          xAxis: { type: 'category', boundaryGap: false, data: dates, axisLine: { lineStyle: { color: 'hsl(220, 10%, 24%)' } } },
+          yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+          series: [
+            {
+              name: 'Prompt Tokens',
+              type: 'line',
+              stack: 'Total',
+              areaStyle: { color: 'rgba(110, 86, 207, 0.4)' },
+              lineStyle: { color: 'hsl(250, 85%, 65%)' },
+              data: promptData,
+            },
+            {
+              name: 'Completion Tokens',
+              type: 'line',
+              stack: 'Total',
+              areaStyle: { color: 'rgba(162, 66, 230, 0.4)' },
+              lineStyle: { color: 'hsl(280, 80%, 60%)' },
+              data: completionData,
+            },
+          ],
+        });
+      }
+
+      // 2. Render Cost Breakdown Donut Chart
+      if (costChart && costRes && costRes.breakdown) {
+        const donutData = costRes.breakdown.map((b) => ({
+          name: b.displayName,
+          value: b.spendUsd,
+        }));
+
+        costChart.setOption({
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'item', formatter: '{b}: ${c} ({d}%)' },
+          legend: { orient: 'vertical', left: 'left', textStyle: { color: 'hsl(220, 10%, 70%)' } },
+          series: [
+            {
+              name: 'Model Spend',
+              type: 'pie',
+              radius: ['45%', '75%'],
+              avoidLabelOverlap: false,
+              itemStyle: { borderRadius: 6, borderColor: 'hsl(220, 15%, 8%)', borderWidth: 2 },
+              label: { show: false },
+              data: donutData,
+              color: ['#6e56cf', '#a242e6', '#38bdf8', '#27c46a'],
+            },
+          ],
+        });
+      }
+
+      // 3. Render Persona Verdicts & Latency Chart
+      if (verdictChart && personaRes && personaRes.personas) {
+        const names = personaRes.personas.map((p) => p.persona);
+        const shipData = personaRes.personas.map((p) => p.verdicts.SHIP);
+        const nackData = personaRes.personas.map((p) => p.verdicts.NACK);
+        const latencies = personaRes.personas.map((p) => p.avgLatencyMs);
+
+        verdictChart.setOption({
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'axis' },
+          legend: { data: ['SHIP', 'NACK', 'Avg Latency (ms)'], textStyle: { color: 'hsl(220, 10%, 70%)' } },
+          xAxis: { type: 'category', data: names },
+          yAxis: [
+            { type: 'value', name: 'Reviews', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+            { type: 'value', name: 'Latency (ms)', splitLine: { show: false } },
+          ],
+          series: [
+            { name: 'SHIP', type: 'bar', stack: 'Verdicts', data: shipData, itemStyle: { color: 'hsl(145, 65%, 45%)' } },
+            { name: 'NACK', type: 'bar', stack: 'Verdicts', data: nackData, itemStyle: { color: 'hsl(355, 75%, 55%)' } },
+            { name: 'Avg Latency (ms)', type: 'line', yAxisIndex: 1, data: latencies, itemStyle: { color: 'hsl(200, 80%, 55%)' } },
+          ],
+        });
+      }
+
+      // 4. Render Indexer & Nit Suppression Performance Chart
+      if (indexerChart && indexerRes && indexerRes.indexer) {
+        indexerChart.setOption({
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'axis' },
+          xAxis: { type: 'category', data: ['AST Parser', 'Vector Embedder', 'Nit Engine'] },
+          yAxis: { type: 'value', name: 'Duration (ms) / Count' },
+          series: [
+            {
+              type: 'bar',
+              data: [
+                { value: indexerRes.indexer.astParseLatencyMs, itemStyle: { color: '#38bdf8' } },
+                { value: indexerRes.indexer.vectorEmbedLatencyMs, itemStyle: { color: '#6e56cf' } },
+                { value: indexerRes.indexer.suppressedNitsCount, itemStyle: { color: '#27c46a' } },
+              ],
+            },
+          ],
+        });
+      }
+    } catch (err) {
+      console.error('Failed to render ECharts analytics:', err);
+    }
+  }
 });

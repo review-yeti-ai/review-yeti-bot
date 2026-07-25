@@ -46,6 +46,26 @@ export interface ReviewLogEntry {
   quorum: string;
   arbiterVerdict: string;
   timestamp: string;
+  latencyMs?: number;
+  costUSD?: number;
+  tokens?: { prompt?: number; completion?: number; total?: number };
+  status?: string;
+  modelCosts?: Record<string, number>;
+  personaLogs?: Array<{
+    persona: string;
+    displayName?: string;
+    decision?: string;
+    latencyMs?: number;
+    confidence?: number;
+    model?: string;
+  }>;
+}
+
+export interface IndexerMetrics {
+  astParseLatencyMsSum: number;
+  astParseCount: number;
+  vectorEmbedLatencyMsSum: number;
+  vectorEmbedCount: number;
 }
 
 export interface IntegrationConfig {
@@ -96,11 +116,24 @@ export interface DashboardData {
   reviewLogs?: ReviewLogEntry[];
   integrations?: Record<string, IntegrationConfig>;
   mcpServers?: CustomMcpServerConfig[];
+  indexerMetrics?: IndexerMetrics;
 }
 
 export class DashboardStore {
   private filePath: string;
   private data: DashboardData;
+  private cache: {
+    analyticsSummary?: any;
+    tokenTimeSeries: Record<string, any>;
+    costBreakdown?: any;
+    personaAnalytics?: any;
+    indexerAnalytics?: any;
+    overviewStats?: any;
+  } = { tokenTimeSeries: {} };
+
+  private invalidateCache(): void {
+    this.cache = { tokenTimeSeries: {} };
+  }
 
   constructor(filePath?: string) {
     this.filePath = filePath || process.env.CT_DASHBOARD_STORE || '/tmp/ct-review-bot/dashboard.json';
@@ -146,8 +179,8 @@ export class DashboardStore {
         },
       },
       apiKeys: [],
-      reviewCounter: 348,
-      totalCostUSD: 14.8251,
+      reviewCounter: 0,
+      totalCostUSD: 0,
       integrations: {
         linear: {
           id: 'linear',
@@ -219,6 +252,7 @@ export class DashboardStore {
   }
 
   private saveData(data: DashboardData): void {
+    this.invalidateCache();
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -343,40 +377,358 @@ export class DashboardStore {
     return false;
   }
 
-  public recordReviewRun(run: {
-    prRun: string;
-    headSha: string;
-    personas: string;
-    quorum: string;
-    arbiterVerdict: string;
-    promptTokens?: number;
-    completionTokens?: number;
-    costUSD?: number;
-  }): void {
+  public recordReviewRun(run: any): void {
     this.data.reviewCounter = (this.data.reviewCounter || 0) + 1;
-    if (run.costUSD) {
-      this.data.totalCostUSD = (this.data.totalCostUSD || 0) + run.costUSD;
+    const cost = run.costUSD ?? run.costUsd ?? 0;
+    if (cost) {
+      this.data.totalCostUSD = (this.data.totalCostUSD || 0) + cost;
     }
-    if (run.promptTokens) {
-      this.data.totalPromptTokens = (this.data.totalPromptTokens || 0) + run.promptTokens;
+    const promptTokens = run.promptTokens ?? (run.tokens && run.tokens.prompt) ?? 0;
+    if (promptTokens) {
+      this.data.totalPromptTokens = (this.data.totalPromptTokens || 0) + promptTokens;
     }
-    if (run.completionTokens) {
-      this.data.totalCompletionTokens = (this.data.totalCompletionTokens || 0) + run.completionTokens;
+    const completionTokens = run.completionTokens ?? (run.tokens && run.tokens.completion) ?? 0;
+    if (completionTokens) {
+      this.data.totalCompletionTokens = (this.data.totalCompletionTokens || 0) + completionTokens;
     }
-    
+
     if (!this.data.reviewLogs) this.data.reviewLogs = [];
-    this.data.reviewLogs.unshift({
-      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      prRun: run.prRun,
-      headSha: run.headSha,
-      personas: run.personas,
-      quorum: run.quorum,
-      arbiterVerdict: run.arbiterVerdict,
-      timestamp: new Date().toISOString(),
-    });
-    if (this.data.reviewLogs.length > 50) this.data.reviewLogs.pop();
-    
+    const prRunName = run.prRun || (run.repository ? `${run.repository}#${run.prNumber || 1}` : `Run-${Date.now()}`);
+    const verdict = run.arbiterVerdict || run.verdict || 'SHIP';
+    const latencyMs = run.latencyMs ?? run.durationMs ?? 0;
+
+    const logEntry: ReviewLogEntry = {
+      id: run.id || `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      prRun: prRunName,
+      headSha: run.headSha || 'head-sha',
+      personas: typeof run.personas === 'string' ? run.personas : Array.isArray(run.personas) ? run.personas.map((p: any) => typeof p === 'string' ? p : p.id || p.persona).join(', ') : '4 Personas',
+      quorum: run.quorum ? (typeof run.quorum === 'string' ? run.quorum : `${run.quorum.distinctProviders?.length || 4}/${run.quorum.required || 4}`) : '4/4',
+      arbiterVerdict: verdict,
+      timestamp: run.timestamp || new Date().toISOString(),
+      latencyMs,
+      costUSD: cost,
+      tokens: run.tokens || (promptTokens || completionTokens ? { prompt: promptTokens, completion: completionTokens, total: promptTokens + completionTokens } : undefined),
+      status: run.status || (verdict === 'SHIP' ? 'success' : 'processed'),
+      modelCosts: run.modelCosts,
+      personaLogs: run.personaLogs || (Array.isArray(run.personas) && typeof run.personas[0] === 'object' ? run.personas : undefined),
+    };
+
+    this.data.reviewLogs.unshift(logEntry);
+    if (this.data.reviewLogs.length > 100) this.data.reviewLogs.pop();
+
     this.saveData(this.data);
+  }
+
+  public recordIndexerRun(astParseDurationMs: number, vectorEmbedDurationMs?: number): void {
+    if (!this.data.indexerMetrics) {
+      this.data.indexerMetrics = {
+        astParseLatencyMsSum: 0,
+        astParseCount: 0,
+        vectorEmbedLatencyMsSum: 0,
+        vectorEmbedCount: 0,
+      };
+    }
+    if (astParseDurationMs > 0) {
+      this.data.indexerMetrics.astParseLatencyMsSum += astParseDurationMs;
+      this.data.indexerMetrics.astParseCount += 1;
+    }
+    if (vectorEmbedDurationMs && vectorEmbedDurationMs > 0) {
+      this.data.indexerMetrics.vectorEmbedLatencyMsSum += vectorEmbedDurationMs;
+      this.data.indexerMetrics.vectorEmbedCount += 1;
+    }
+    this.saveData(this.data);
+  }
+
+  public getAnalyticsSummary() {
+    if (this.cache.analyticsSummary) return this.cache.analyticsSummary;
+
+    const overview = this.getOverviewStats();
+    const totalReviews = overview.totalReviewsExecuted;
+
+    const logs = this.data.reviewLogs || [];
+    const logsWithLatency = logs.filter((l) => typeof l.latencyMs === 'number' && l.latencyMs > 0);
+    const avgLatencyMs = logsWithLatency.length > 0
+      ? Math.round(logsWithLatency.reduce((acc, l) => acc + (l.latencyMs || 0), 0) / logsWithLatency.length)
+      : 0;
+
+    const successfulLogs = logs.filter((l) => l.arbiterVerdict === 'SHIP' || l.status === 'success' || l.status === 'processed');
+    const successRate = logs.length > 0
+      ? parseFloat(((successfulLogs.length / logs.length) * 100).toFixed(1))
+      : 100;
+
+    const summary = {
+      totalReviews,
+      totalSpendUsd: overview.totalCostUSD,
+      totalTokens: overview.totalTokens.total,
+      avgLatencyMs,
+      successRate,
+      activeRepositories: overview.activeAutomations,
+      memoryRulesCount: overview.memoryGraph.learningsCount,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.cache.analyticsSummary = summary;
+    return summary;
+  }
+
+  public getTokenTimeSeries(range = '7d', _interval = 'day') {
+    const cacheKey = `${range}_${_interval}`;
+    if (this.cache.tokenTimeSeries[cacheKey]) return this.cache.tokenTimeSeries[cacheKey];
+
+    const days = range === '24h' ? 1 : range === '30d' ? 30 : 7;
+    const now = new Date();
+    const logs = this.data.reviewLogs || [];
+
+    const tokensByDate: Record<string, { prompt: number; completion: number }> = {};
+    for (const log of logs) {
+      if (!log.timestamp) continue;
+      const dateStr = log.timestamp.split('T')[0];
+      if (!tokensByDate[dateStr]) {
+        tokensByDate[dateStr] = { prompt: 0, completion: 0 };
+      }
+      const prompt = log.tokens?.prompt || 0;
+      const completion = log.tokens?.completion || 0;
+      tokensByDate[dateStr].prompt += prompt;
+      tokensByDate[dateStr].completion += completion;
+    }
+
+    const points: Array<{ timestamp: string; promptTokens: number; completionTokens: number; totalTokens: number }> = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+
+      const dayData = tokensByDate[dateStr];
+      const promptTokens = dayData ? dayData.prompt : 0;
+      const completionTokens = dayData ? dayData.completion : 0;
+
+      points.push({
+        timestamp: dateStr,
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens,
+      });
+    }
+
+    this.cache.tokenTimeSeries[cacheKey] = points;
+    return points;
+  }
+
+  public getCostBreakdown() {
+    if (this.cache.costBreakdown) return this.cache.costBreakdown;
+
+    const totalSpendUsd = this.data.totalCostUSD || 0;
+    const monthlyBudgetUsd = this.data.settings.providerCostCaps.monthlyBudgetUSD;
+    const budgetPercentUsed = monthlyBudgetUsd > 0 ? Math.min(100, (totalSpendUsd / monthlyBudgetUsd) * 100) : 0;
+
+    const knownModels = [
+      { model: 'claude-5-sonnet', displayName: 'Claude 5 Sonnet', providerId: 'claude' },
+      { model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', providerId: 'codex' },
+      { model: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', providerId: 'deepseek' },
+      { model: 'glm-5.2', displayName: 'GLM 5.2 Arbiter', providerId: 'glm' },
+    ];
+
+    const logs = this.data.reviewLogs || [];
+    const modelStats: Record<string, { spendUsd: number; promptTokens: number; completionTokens: number; callCount: number }> = {};
+
+    for (const m of knownModels) {
+      modelStats[m.model] = { spendUsd: 0, promptTokens: 0, completionTokens: 0, callCount: 0 };
+    }
+
+    let loggedSpendSum = 0;
+    for (const log of logs) {
+      if (log.modelCosts) {
+        for (const [mod, cst] of Object.entries(log.modelCosts)) {
+          if (!modelStats[mod]) {
+            modelStats[mod] = { spendUsd: 0, promptTokens: 0, completionTokens: 0, callCount: 0 };
+          }
+          modelStats[mod].spendUsd += cst;
+          modelStats[mod].callCount += 1;
+          loggedSpendSum += cst;
+        }
+      }
+    }
+
+    const totalPrompt = this.data.totalPromptTokens || 0;
+    const totalCompletion = this.data.totalCompletionTokens || 0;
+    const totalCalls = this.data.reviewCounter || 0;
+
+    const modelKeys = Object.keys(modelStats);
+    const breakdown = modelKeys.map((key) => {
+      const known = knownModels.find((km) => km.model === key);
+      const displayName = known ? known.displayName : key;
+      const providerId = known ? known.providerId : key.split('-')[0];
+
+      const stats = modelStats[key];
+      let spendUsd = parseFloat(stats.spendUsd.toFixed(4));
+      if (loggedSpendSum === 0 && totalSpendUsd > 0) {
+        spendUsd = parseFloat((totalSpendUsd / modelKeys.length).toFixed(4));
+      }
+
+      const percentage = totalSpendUsd > 0 ? Math.round((spendUsd / totalSpendUsd) * 100) : 0;
+      const modelRatio = totalSpendUsd > 0 ? spendUsd / totalSpendUsd : (1 / modelKeys.length);
+      const prompt = stats.promptTokens || Math.round(totalPrompt * modelRatio);
+      const completion = stats.completionTokens || Math.round(totalCompletion * modelRatio);
+      const callCount = stats.callCount || Math.round(totalCalls * modelRatio);
+
+      return {
+        model: key,
+        displayName,
+        providerId,
+        spendUsd,
+        percentage,
+        tokens: {
+          prompt,
+          completion,
+        },
+        callCount,
+      };
+    });
+
+    const result = {
+      totalSpendUsd,
+      monthlyBudgetUsd,
+      budgetPercentUsed: parseFloat(budgetPercentUsed.toFixed(1)),
+      breakdown,
+    };
+
+    this.cache.costBreakdown = result;
+    return result;
+  }
+
+  public getPersonaAnalytics() {
+    if (this.cache.personaAnalytics) return this.cache.personaAnalytics;
+
+    const standardPersonas = [
+      { persona: 'securityArbiter', displayName: 'Security & Auth Arbiter' },
+      { persona: 'docsPersona', displayName: 'Documentation & API Spec' },
+      { persona: 'linearSyncPersona', displayName: 'Linear Issue & Traceability' },
+      { persona: 'marketingPersona', displayName: 'UX & Feature Release' },
+    ];
+
+    const logs = this.data.reviewLogs || [];
+
+    const personaStats: Record<string, {
+      totalReviews: number;
+      verdicts: { SHIP: number; NACK: number; COMMENT: number };
+      latencySum: number;
+      latencyCount: number;
+      confidenceSum: number;
+      confidenceCount: number;
+    }> = {};
+
+    for (const sp of standardPersonas) {
+      personaStats[sp.persona] = {
+        totalReviews: 0,
+        verdicts: { SHIP: 0, NACK: 0, COMMENT: 0 },
+        latencySum: 0,
+        latencyCount: 0,
+        confidenceSum: 0,
+        confidenceCount: 0,
+      };
+    }
+
+    for (const log of logs) {
+      const personasInLog = (log.personas || '').toLowerCase();
+      const arbiterVerdict = log.arbiterVerdict || 'SHIP';
+
+      for (const sp of standardPersonas) {
+        const pKey = sp.persona;
+        const stats = personaStats[pKey];
+
+        const isIncluded = personasInLog.includes(pKey.toLowerCase()) ||
+          personasInLog.includes(sp.displayName.toLowerCase()) ||
+          personasInLog.includes('persona') ||
+          log.personaLogs?.some((pl) => pl.persona === pKey);
+
+        if (isIncluded) {
+          stats.totalReviews += 1;
+          if (arbiterVerdict === 'SHIP') stats.verdicts.SHIP += 1;
+          else if (arbiterVerdict === 'NACK') stats.verdicts.NACK += 1;
+          else stats.verdicts.COMMENT += 1;
+
+          if (log.latencyMs) {
+            stats.latencySum += log.latencyMs;
+            stats.latencyCount += 1;
+          }
+        }
+      }
+
+      if (log.personaLogs) {
+        for (const pl of log.personaLogs) {
+          if (personaStats[pl.persona]) {
+            const stats = personaStats[pl.persona];
+            if (pl.decision === 'SHIP') stats.verdicts.SHIP += 1;
+            else if (pl.decision === 'NACK') stats.verdicts.NACK += 1;
+            else if (pl.decision === 'COMMENT') stats.verdicts.COMMENT += 1;
+
+            if (pl.latencyMs) {
+              stats.latencySum += pl.latencyMs;
+              stats.latencyCount += 1;
+            }
+            if (pl.confidence) {
+              stats.confidenceSum += pl.confidence;
+              stats.confidenceCount += 1;
+            }
+          }
+        }
+      }
+    }
+
+    const result = standardPersonas.map((sp) => {
+      const stats = personaStats[sp.persona];
+      const totalReviews = stats.totalReviews > 0 ? stats.totalReviews : logs.length;
+      const shipCount = stats.verdicts.SHIP;
+      const approvalRate = totalReviews > 0 ? parseFloat((shipCount / totalReviews).toFixed(2)) : 0;
+
+      const avgConfidence = stats.confidenceCount > 0
+        ? Math.round(stats.confidenceSum / stats.confidenceCount)
+        : 0;
+
+      const avgLatencyMs = stats.latencyCount > 0
+        ? Math.round(stats.latencySum / stats.latencyCount)
+        : 0;
+
+      return {
+        persona: sp.persona,
+        displayName: sp.displayName,
+        totalReviews,
+        approvalRate,
+        avgConfidence,
+        verdicts: stats.verdicts,
+        avgLatencyMs,
+      };
+    });
+
+    this.cache.personaAnalytics = result;
+    return result;
+  }
+
+  public getIndexerAnalytics() {
+    if (this.cache.indexerAnalytics) return this.cache.indexerAnalytics;
+
+    const overview = this.getOverviewStats();
+    const metrics = this.data.indexerMetrics;
+
+    const astParseLatencyMs = metrics && metrics.astParseCount > 0
+      ? Math.round(metrics.astParseLatencyMsSum / metrics.astParseCount)
+      : 0;
+
+    const vectorEmbedLatencyMs = metrics && metrics.vectorEmbedCount > 0
+      ? Math.round(metrics.vectorEmbedLatencyMsSum / metrics.vectorEmbedCount)
+      : 0;
+
+    const result = {
+      symbolNodesCount: overview.memoryGraph.symbolNodesCount,
+      symbolEdgesCount: overview.memoryGraph.symbolEdgesCount,
+      astParseLatencyMs,
+      vectorEmbedLatencyMs,
+      memoryLearningsCount: overview.memoryGraph.learningsCount,
+      suppressedNitsCount: overview.memoryGraph.suppressedNitsCount,
+    };
+
+    this.cache.indexerAnalytics = result;
+    return result;
   }
 
   public getReviewLogs(): ReviewLogEntry[] {
@@ -384,6 +736,8 @@ export class DashboardStore {
   }
 
   public getOverviewStats() {
+    if (this.cache.overviewStats) return this.cache.overviewStats;
+
     const repos = this.getRepositories();
     const activeAutomations = repos.filter((r) => r.automationEnabled).length;
 
@@ -420,10 +774,10 @@ export class DashboardStore {
           model,
         }));
 
-    const promptTokens = this.data.totalPromptTokens ?? 4500000;
-    const completionTokens = this.data.totalCompletionTokens ?? 1200000;
+    const promptTokens = this.data.totalPromptTokens ?? 0;
+    const completionTokens = this.data.totalCompletionTokens ?? 0;
 
-    return {
+    const overview = {
       totalRepositories: repos.length,
       activeAutomations,
       totalReviewsExecuted: this.data.reviewCounter,
@@ -444,6 +798,9 @@ export class DashboardStore {
         symbolEdgesCount: symbolCounts.edges,
       },
     };
+
+    this.cache.overviewStats = overview;
+    return overview;
   }
 
   public getIntegrations(): IntegrationConfig[] {
