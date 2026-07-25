@@ -28,8 +28,14 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
-      - run: npm test
-      - run: npm run build
+      - name: Run Unit Tests
+        run: npm run test:unit
+      - name: Run Integration Tests
+        run: npm run test:integration
+      - name: Run E2E Tests
+        run: npm run test:e2e
+      - name: Verify TypeScript Build
+        run: npm run build
 
   build-and-deploy:
     needs: test
