@@ -1,4 +1,8 @@
+import fs from 'fs';
 import ts from 'typescript';
+import { trace, context, SpanStatusCode } from '@opentelemetry/api';
+import { getMetrics, getTracer } from '../telemetry';
+import { dashboardStore } from '../persistence/dashboardStore';
 
 export type SupportedLanguage = 'typescript' | 'javascript' | 'python' | 'unknown';
 
@@ -98,24 +102,57 @@ export class ASTParser {
     }
   }
 
-  public parseSource(filePath: string, content: string): ParseResult {
-    const startTime = performance.now();
-    const language = this.detectLanguage(filePath);
-    const lines = content.split(/\r?\n/);
-    const linesOfCode = lines.length;
+  public parseFile(filePath: string): ParseResult {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return this.parseSource(filePath, content);
+  }
 
-    try {
-      if (language === 'typescript' || language === 'javascript') {
-        return this.parseTypeScriptSource(filePath, content, language, lines, startTime);
-      } else if (language === 'python') {
-        return this.parsePythonSource(filePath, content, lines, startTime);
-      } else {
-        return this.fallbackParse(filePath, content, language, lines, startTime);
+  public parseSource(filePath: string, content: string): ParseResult {
+    const tracer = getTracer();
+    const parentContext = context.active();
+    const span = tracer.startSpan('ct_ast_parse', undefined, parentContext);
+    const activeCtx = trace.setSpan(parentContext, span);
+
+    return context.with(activeCtx, () => {
+      span.setAttribute('ct.file_path', filePath);
+      const startTime = performance.now();
+      const language = this.detectLanguage(filePath);
+      span.setAttribute('ct.language', language);
+      const lines = content.split(/\r?\n/);
+
+      let result: ParseResult;
+      try {
+        if (language === 'typescript' || language === 'javascript') {
+          result = this.parseTypeScriptSource(filePath, content, language, lines, startTime);
+        } else if (language === 'python') {
+          result = this.parsePythonSource(filePath, content, lines, startTime);
+        } else {
+          result = this.fallbackParse(filePath, content, language, lines, startTime);
+        }
+        span.setStatus({ code: SpanStatusCode.OK });
+      } catch (err: any) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
+        result = this.fallbackParse(filePath, content, language, lines, startTime);
+      } finally {
+        span.end();
       }
-    } catch {
-      // Robust fallback on syntax or parser error
-      return this.fallbackParse(filePath, content, language, lines, startTime);
-    }
+
+      span.setAttribute('ct.symbols_count', result.symbols.length);
+      span.setAttribute('ct.parse_duration_ms', result.parseDurationMs);
+
+      try {
+        const metrics = getMetrics();
+        metrics.indexerAstDuration.record(result.parseDurationMs / 1000, { language });
+        metrics.indexerFilesIndexed.add(1, { language });
+        metrics.indexerSymbolsExtracted.add(result.symbols.length, { language });
+      } catch (_) {}
+
+      try {
+        dashboardStore.recordIndexerRun(result.parseDurationMs);
+      } catch (_) {}
+
+      return result;
+    });
   }
 
   private parseTypeScriptSource(
@@ -686,6 +723,7 @@ export class ASTParser {
     }
 
     const durationMs = performance.now() - startTime;
+
     return {
       filePath,
       language,

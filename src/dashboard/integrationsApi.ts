@@ -190,7 +190,6 @@ export function createIntegrationsRouter(): Router {
   router.delete('/mcp/servers/:id', handleDeleteMcpServer);
   router.delete('/mcp/:id', handleDeleteMcpServer);
   router.delete('/servers/:id', handleDeleteMcpServer);
-  router.delete('/:id', handleDeleteMcpServer);
 
   // 7. POST /api/dashboard/mcp/test
   const handleTestMcpServer = async (req: Request, res: Response) => {

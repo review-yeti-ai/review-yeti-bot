@@ -168,4 +168,25 @@ const ApiClient = {
       body: payload,
     });
   },
+
+  // Analytics API Methods
+  async getAnalyticsSummary() {
+    return this.request('/api/analytics/summary');
+  },
+
+  async getAnalyticsTokens(range = '7d', interval = 'day') {
+    return this.request(`/api/analytics/tokens?range=${range}&interval=${interval}`);
+  },
+
+  async getAnalyticsCosts() {
+    return this.request('/api/analytics/costs');
+  },
+
+  async getAnalyticsPersonas() {
+    return this.request('/api/analytics/personas');
+  },
+
+  async getAnalyticsIndexer() {
+    return this.request('/api/analytics/indexer');
+  },
 };
