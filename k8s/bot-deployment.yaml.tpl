@@ -4,9 +4,12 @@ metadata:
   name: ct-review-bot
   namespace: ct-review-system
 spec:
-  replicas: 1
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: ct-review-bot
@@ -50,13 +53,17 @@ spec:
             httpGet:
               path: /ready
               port: http
-            periodSeconds: 10
-            failureThreshold: 12
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: http
-            periodSeconds: 20
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
           resources:
             requests:
               cpu: 200m
