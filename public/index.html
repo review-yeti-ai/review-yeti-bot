@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CT-Review-Bot | Web Dashboard & Auth Portal</title>
+  <link rel="stylesheet" href="/css/theme.css">
+  <link rel="stylesheet" href="/css/components.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <img src="/assets/github_bot_icon.png" alt="CT Review Bot Logo" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><rect width=\'100\' height=\'100\' fill=\'%236e56cf\'/><text x=\'50\' y=\'65\' font-size=\'50\' text-anchor=\'middle\' fill=\'white\'>CT</text></svg>'">
+        <div class="sidebar-title">CT-Review-Bot</div>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-item active" data-view="overview">
+          <span class="nav-icon">📊</span> Overview
+        </div>
+        <div class="nav-item" data-view="repositories">
+          <span class="nav-icon">📦</span> Repositories
+        </div>
+        <div class="nav-item" data-view="logs">
+          <span class="nav-icon">📑</span> Review Logs
+        </div>
+        <div class="nav-item" data-view="spend">
+          <span class="nav-icon">💳</span> Token Spend
+        </div>
+        <div class="nav-item" data-view="memory">
+          <span class="nav-icon">🧠</span> Memory Engine
+        </div>
+        <div class="nav-item" data-view="dials">
+          <span class="nav-icon">🎛️</span> Review Dials
+        </div>
+        <div class="nav-item" data-view="apikeys">
+          <span class="nav-icon">🔑</span> API Keys
+        </div>
+        <div class="nav-item" data-view="integrations">
+          <span class="nav-icon">🔌</span> Integrations & MCPs
+        </div>
+      </nav>
+    </aside>
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Header Bar -->
+      <header class="top-bar">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <button class="mobile-toggle" id="mobile-toggle" aria-label="Toggle navigation">☰</button>
+          <h1 class="page-title" id="current-view-title">Overview</h1>
+        </div>
+        <div class="header-controls">
+          <div class="session-badge" id="session-badge">
+            <span class="pulse-dot"></span> Session Active
+          </div>
+          <button class="btn-secondary" id="logout-btn" style="padding: 6px 12px; font-size: 12px;">Sign Out</button>
+        </div>
+      </header>
+
+      <!-- View Panels -->
+
+      <!-- 1. Overview View -->
+      <section class="view-panel active" id="view-overview">
+        <div class="kpi-grid">
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Monitored Repositories</span>
+            <span class="kpi-value" id="kpi-total-repos">12</span>
+            <span class="kpi-subtext" id="kpi-active-repos">10 active automations</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Total Reviews Executed</span>
+            <span class="kpi-value" id="kpi-total-reviews">348</span>
+            <span class="kpi-subtext">Across all monitored repos</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Monthly Cost USD</span>
+            <span class="kpi-value" id="kpi-total-cost">$14.83</span>
+            <span class="kpi-subtext" id="kpi-cost-budget">Budget Cap: $100.00</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Memory Graph Rule Coverage</span>
+            <span class="kpi-value" id="kpi-memory-rules">142</span>
+            <span class="kpi-subtext">Learned rules & nit patterns</span>
+          </div>
+        </div>
+
+        <div class="glass-panel">
+          <h3 style="margin-bottom: 16px;">Provider Pool Status</h3>
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Provider ID</th>
+                  <th>Status</th>
+                  <th>Default Model</th>
+                </tr>
+              </thead>
+              <tbody id="overview-provider-table">
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Repositories View -->
+      <section class="view-panel" id="view-repositories">
+        <div class="glass-panel" style="display: flex; justify-content: space-between; align-items: center;">
+          <h2>Monitored Repositories</h2>
+          <input type="text" class="input-control" id="repo-search" placeholder="Search repositories..." style="width: 260px;">
+        </div>
+
+        <div class="glass-panel">
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Repository</th>
+                  <th>Automation Toggle</th>
+                  <th>Profile Preset</th>
+                  <th>Last Updated</th>
+                </tr>
+              </thead>
+              <tbody id="repo-list-body">
+                <!-- Dynamically rendered -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Review Logs View -->
+      <section class="view-panel" id="view-logs">
+        <div class="glass-panel">
+          <h2>Recent PR Review Timeline & Arbitration Matrix</h2>
+          <p class="kpi-subtext" style="margin-top: 4px; margin-bottom: 16px;">Live execution logs for multi-persona analysis & binding arbiter decisions.</p>
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>PR Run</th>
+                  <th>Head SHA</th>
+                  <th>Personas</th>
+                  <th>Quorum</th>
+                  <th>Arbiter Verdict</th>
+                </tr>
+              </thead>
+              <tbody id="logs-list-body">
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Token Spend View -->
+      <section class="view-panel" id="view-spend">
+        <div class="kpi-grid">
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Monthly Cost USD</span>
+            <span class="kpi-value" id="spend-total-cost">$14.83</span>
+            <span class="kpi-subtext">Monthly Cap: $100.00</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Prompt Tokens</span>
+            <span class="kpi-value" id="spend-prompt-tokens">4.50 M</span>
+            <span class="kpi-subtext">Input context tokens</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Completion Tokens</span>
+            <span class="kpi-value" id="spend-completion-tokens">1.20 M</span>
+            <span class="kpi-subtext">Generated reviewer output</span>
+          </div>
+        </div>
+
+        <div class="glass-panel">
+          <h3>Provider Spend Distribution</h3>
+          <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 12px;" id="spend-breakdown-list">
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. Memory Engine View -->
+      <section class="view-panel" id="view-memory">
+        <div class="kpi-grid">
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Learned PR Rules</span>
+            <span class="kpi-value" id="memory-kpi-learnings">0</span>
+            <span class="kpi-subtext">Extracted from merged PRs</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Suppressed Nit Patterns</span>
+            <span class="kpi-value" id="memory-kpi-nits">0</span>
+            <span class="kpi-subtext">Auto-filtered recurring nits</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">ADR Architectural Rules</span>
+            <span class="kpi-value" id="memory-kpi-adrs">0</span>
+            <span class="kpi-subtext">System boundary constraints</span>
+          </div>
+          <div class="glass-panel kpi-card">
+            <span class="kpi-label">Symbol Graph Nodes</span>
+            <span class="kpi-value" id="memory-kpi-symbols">0</span>
+            <span class="kpi-subtext">AST symbols & references</span>
+          </div>
+        </div>
+
+        <div class="glass-panel">
+          <h3>Memory & Vector Query Sandbox</h3>
+          <p class="kpi-subtext" style="margin-top: 4px; margin-bottom: 16px;">Perform real-time queries against graph learnings and symbol graph embeddings.</p>
+          <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+            <input type="text" class="input-control" id="memory-query-input" placeholder="e.g. magic numbers, memory leak, auth header">
+            <button class="btn-primary" id="memory-query-btn">Query Memory</button>
+          </div>
+          <pre id="memory-query-output" style="background: var(--bg-input); padding: 16px; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); color: var(--color-info); max-height: 200px; overflow-y: auto;">// Query results will appear here...</pre>
+        </div>
+      </section>
+
+      <!-- 6. Review Dials View -->
+      <section class="view-panel" id="view-dials">
+        <div class="glass-panel">
+          <h2>CodeRabbit Policy Dials & Persona Model Overrides</h2>
+          <p class="kpi-subtext" style="margin-top: 4px; margin-bottom: 24px;">Configure default org-level toggles, models, and thresholds.</p>
+
+          <form id="dials-form">
+            <div class="form-group" style="flex-direction: row; justify-content: space-between; align-items: center;">
+              <div>
+                <label style="font-size: 14px;">Memory Engine (GraphLearningEngine)</label>
+                <div class="kpi-subtext">Automatically suppress resolved nit patterns and calculate symbol graph risks.</div>
+              </div>
+              <div class="toggle-switch active" id="toggle-memory-engine">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="form-group" style="flex-direction: row; justify-content: space-between; align-items: center; margin-top: 20px;">
+              <div>
+                <label style="font-size: 14px;">ASCII Art Mascot Header Banner</label>
+                <div class="kpi-subtext">Display CT-Review-Bot mascot header block in PR comments.</div>
+              </div>
+              <div class="toggle-switch active" id="toggle-mascot">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="form-group" style="flex-direction: row; justify-content: space-between; align-items: center; margin-top: 20px;">
+              <div>
+                <label style="font-size: 14px;">Ticket Key Enforcement</label>
+                <div class="kpi-subtext">Require Jira or GitHub issue keys in PR title and description.</div>
+              </div>
+              <div class="toggle-switch" id="toggle-ticket-enforcement">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="form-group" style="margin-top: 24px;">
+              <label style="font-size: 14px;">Confidence Threshold (<span id="confidence-val">70</span>%)</label>
+              <div class="kpi-subtext" style="margin-bottom: 8px;">Filter findings with confidence below this threshold.</div>
+              <input type="range" class="slider-control" id="confidence-slider" min="0" max="100" value="70">
+            </div>
+
+            <div class="form-group" style="margin-top: 24px;">
+              <label style="font-size: 14px;">Default Persona Model Override</label>
+              <select class="select-control" id="persona-model-select">
+                <option value="claude-5-sonnet">claude-5-sonnet (Default High Security)</option>
+                <option value="gpt-5.6-sol">gpt-5.6-sol (High Speed Code Analysis)</option>
+                <option value="deepseek-v4-pro">deepseek-v4-pro (Deep Logic & Math)</option>
+                <option value="glm-5.2">glm-5.2 (Fast Reasoning Arbiter)</option>
+              </select>
+            </div>
+
+            <button type="submit" class="btn-primary" style="margin-top: 16px;">Save Dial Settings</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- 7. API Keys View -->
+      <section class="view-panel" id="view-apikeys">
+        <div class="glass-panel" style="display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <h2>API Secret Keys</h2>
+            <div class="kpi-subtext">Manage active API keys for CI/CD integrations and scraper bots.</div>
+          </div>
+          <button class="btn-primary" id="create-key-btn">+ Generate New API Key</button>
+        </div>
+
+        <div class="glass-panel">
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Key Name</th>
+                  <th>Key Secret Prefix</th>
+                  <th>Created Date</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="apikeys-table-body">
+                <!-- Dynamically rendered -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8. Integrations & MCP Fleet View -->
+      <section class="view-panel" id="view-integrations">
+        <!-- Top Section: Platform Integrations Grid -->
+        <div class="glass-panel" style="margin-bottom: 24px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <div>
+              <h2>Connected Platform Integrations</h2>
+              <p class="kpi-subtext">Manage API keys & OAuth connections for Linear, GitHub, Context7, Productlane, and PostHog.</p>
+            </div>
+          </div>
+          <div class="kpi-grid" id="integrations-cards-grid">
+            <!-- Cards for Linear, GitHub, Context7, Productlane, PostHog dynamically rendered -->
+          </div>
+        </div>
+
+        <!-- Bottom Section: Custom MCP Fleet Table -->
+        <div class="glass-panel">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <div>
+              <h2>Dynamic MCP Fleet Manager</h2>
+              <p class="kpi-subtext">Active Model Context Protocol servers available for persona reasoning and post-merge hooks.</p>
+            </div>
+            <button class="btn-primary" id="add-mcp-btn">+ Add Custom MCP Server</button>
+          </div>
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Server Name</th>
+                  <th>Transport</th>
+                  <th>Endpoint / Command</th>
+                  <th>Status</th>
+                  <th>Discovered Tools</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="mcp-servers-table-body">
+                <!-- Dynamically rendered -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Auth Login Modal -->
+  <div class="modal-overlay" id="auth-modal">
+    <div class="modal-card">
+      <div style="text-align: center;">
+        <h2 style="margin-bottom: 6px;">Sign In to Dashboard</h2>
+        <p class="kpi-subtext">Enter administrator credentials to access dashboard.</p>
+      </div>
+      <form id="login-form">
+        <div class="form-group">
+          <label for="login-username">Username</label>
+          <input type="text" id="login-username" class="input-control" value="admin" required>
+        </div>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" class="input-control" value="admin123" required>
+        </div>
+        <button type="submit" class="btn-primary" style="width: 100%; margin-top: 8px;">Sign In</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Create API Key Modal -->
+  <div class="modal-overlay" id="apikey-modal">
+    <div class="modal-card">
+      <h2>Generate New API Key</h2>
+      <form id="apikey-form">
+        <div class="form-group">
+          <label for="key-name-input">Key Description / Name</label>
+          <input type="text" id="key-name-input" class="input-control" placeholder="e.g. CI Metrics Collector" required>
+        </div>
+        <div id="key-reveal-box" style="display: none; background: var(--bg-input); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--color-success);">
+          <div style="font-size: 11px; color: var(--color-success); font-weight: 600; margin-bottom: 4px;">RAW API KEY (Copy now - won't be shown again):</div>
+          <code id="raw-key-text" style="color: var(--text-primary); font-size: 13px;"></code>
+        </div>
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 12px;">
+          <button type="button" class="btn-secondary" id="close-apikey-modal">Cancel</button>
+          <button type="submit" class="btn-primary" id="save-apikey-btn">Generate Key</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Integration Key Modal -->
+  <div class="modal-overlay" id="integration-modal">
+    <div class="modal-card">
+      <h2 id="integration-modal-title">Configure Platform Integration</h2>
+      <form id="integration-form">
+        <input type="hidden" id="integration-platform-id">
+        <div class="form-group">
+          <label for="integration-api-key">API Secret Key / Token</label>
+          <input type="password" id="integration-api-key" class="input-control" placeholder="Enter API Key...">
+        </div>
+        <div class="form-group" id="group-oauth-client-id">
+          <label for="integration-oauth-id">OAuth Client ID (Optional)</label>
+          <input type="text" id="integration-oauth-id" class="input-control" placeholder="Client ID...">
+        </div>
+        <div class="form-group" id="group-oauth-client-secret">
+          <label for="integration-oauth-secret">OAuth Client Secret (Optional)</label>
+          <input type="password" id="integration-oauth-secret" class="input-control" placeholder="Client Secret...">
+        </div>
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
+          <button type="button" class="btn-secondary" id="close-integration-modal">Cancel</button>
+          <button type="submit" class="btn-primary">Save Connection</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add MCP Server Modal -->
+  <div class="modal-overlay" id="mcp-modal">
+    <div class="modal-card">
+      <h2>Add Custom MCP Server</h2>
+      <form id="mcp-form">
+        <div class="form-group">
+          <label for="mcp-name-input">Server Name</label>
+          <input type="text" id="mcp-name-input" class="input-control" placeholder="e.g. Sentry Monitoring MCP" required>
+        </div>
+        <div class="form-group">
+          <label for="mcp-transport-select">Transport Protocol</label>
+          <select id="mcp-transport-select" class="select-control">
+            <option value="http">HTTP (SSE / JSON-RPC)</option>
+            <option value="stdio">Stdio Process (CLI Child Process)</option>
+          </select>
+        </div>
+        <div class="form-group" id="mcp-url-group">
+          <label for="mcp-url-input">HTTP Endpoint URL</label>
+          <input type="url" id="mcp-url-input" class="input-control" placeholder="http://localhost:8080/mcp">
+        </div>
+        <div class="form-group" id="mcp-command-group" style="display: none;">
+          <label for="mcp-command-input">Command & Arguments</label>
+          <input type="text" id="mcp-command-input" class="input-control" placeholder="npx -y @modelcontextprotocol/server-sentry">
+        </div>
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
+          <button type="button" class="btn-secondary" id="close-mcp-modal">Cancel</button>
+          <button type="button" class="btn-secondary" id="test-mcp-btn">Test Connection</button>
+          <button type="submit" class="btn-primary">Add Server</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

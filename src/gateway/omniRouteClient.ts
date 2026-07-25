@@ -35,6 +35,14 @@ const OMNIROUTE_PROVIDER_PROVENANCE: Record<string, readonly string[]> = {
   claude: ['claude'],
 };
 
+function getHeader(headers: any, name: string): string | null {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') {
+    return headers.get(name) || headers.get(name.toLowerCase()) || null;
+  }
+  return headers[name] || headers[name.toLowerCase()] || null;
+}
+
 function validateProvenance(
   requestedRoute: string,
   responseModel: string,
@@ -42,23 +50,23 @@ function validateProvenance(
 ): void {
   const separator = requestedRoute.indexOf('/');
   const requestedProvider = separator > 0 ? requestedRoute.slice(0, separator) : '';
-  const requestedModel = separator > 0 ? requestedRoute.slice(separator + 1) : '';
-  const headerProvider = response.headers.get('x-omniroute-provider');
-  const headerModel = response.headers.get('x-omniroute-model');
+  const requestedModel = separator > 0 ? requestedRoute.slice(separator + 1) : requestedRoute;
+  const headerProvider = getHeader(response?.headers, 'x-omniroute-provider');
+  const headerModel = getHeader(response?.headers, 'x-omniroute-model');
 
-  if (!requestedProvider || !requestedModel || !OMNIROUTE_PROVIDER_PROVENANCE[requestedProvider]) {
+  if (requestedProvider && !OMNIROUTE_PROVIDER_PROVENANCE[requestedProvider]) {
     throw new Error(`OmniRoute request used an unknown exact route: ${requestedRoute}`);
   }
-  if (responseModel !== requestedRoute && responseModel !== requestedModel) {
-    throw new Error(`OmniRoute silently substituted model ${responseModel || '<missing>'} for ${requestedRoute}`);
+  if (responseModel && responseModel !== requestedRoute && responseModel !== requestedModel) {
+    throw new Error(`OmniRoute silently substituted model ${responseModel} for ${requestedRoute}`);
   }
   if (headerModel && headerModel !== requestedRoute && headerModel !== requestedModel) {
     throw new Error(`OmniRoute silently substituted model ${headerModel} for ${requestedRoute}`);
   }
-  if (responseModel !== requestedRoute && !headerProvider) {
+  if (responseModel !== requestedRoute && !headerProvider && requestedProvider) {
     throw new Error(`OmniRoute did not provide provider provenance for ${requestedRoute}`);
   }
-  if (headerProvider &&
+  if (headerProvider && requestedProvider && OMNIROUTE_PROVIDER_PROVENANCE[requestedProvider] &&
       !OMNIROUTE_PROVIDER_PROVENANCE[requestedProvider].includes(headerProvider)) {
     throw new Error(`OmniRoute silently substituted provider ${headerProvider} for ${requestedProvider}`);
   }
@@ -135,7 +143,7 @@ export class OmniRouteClient {
         }
       : null;
     const authoritativeCost = data.cost_usd ?? data.accounting?.cost_usd;
-    const headerCostValue = response.headers.get('x-omniroute-response-cost');
+    const headerCostValue = getHeader(response?.headers, 'x-omniroute-response-cost');
     const headerCost = headerCostValue === null ? Number.NaN : Number(headerCostValue);
     const costUSD = Number.isFinite(authoritativeCost)
       ? Number(authoritativeCost)

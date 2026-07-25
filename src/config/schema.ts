@@ -15,6 +15,17 @@ export const V3_PROVIDER_MODELS = {
   claude: 'claude/claude-opus-4-8',
 } as const;
 
+export const R4_ALLOWED_MODELS = [
+  'claude-5-sonnet',
+  'gpt-5.6-sol',
+  'deepseek-v4-pro',
+  'glm-5.2',
+  'codex/gpt-5.6-sol-high',
+  'grok-cli/grok-4.5',
+  'agy/claude-opus-4-6-thinking',
+  'claude/claude-opus-4-8',
+];
+
 export type ProviderId = keyof typeof V3_PROVIDER_MODELS;
 export const ProviderIdEnum = z.enum(['codex', 'grok', 'agy-opus', 'claude']);
 const BuiltinCharterEnum = z.enum([
@@ -35,7 +46,8 @@ export const providerSchema = z.object({
   arbiter_timeout_s: z.number().int().positive(),
 }).superRefine((provider, ctx) => {
   const expected = V3_PROVIDER_MODELS[provider.id];
-  if (provider.model !== expected) {
+  const isAllowed = provider.model === expected || R4_ALLOWED_MODELS.includes(provider.model);
+  if (!isAllowed) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['model'],
@@ -60,11 +72,93 @@ export const personaSchema = z.object({
   }
 });
 
+export const reviewsSchema = z.object({
+  profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
+  reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
+  confidence_threshold: z.number().min(0).max(100).default(70),
+  mascot: z.boolean().default(true),
+  ticket_enforcement: z.boolean().default(false),
+  request_changes_workflow: z.boolean().default(true),
+  high_level_summary: z.boolean().default(true),
+  poem: z.boolean().default(false),
+  review_status: z.boolean().default(true),
+  collapse_walkthrough: z.boolean().default(false),
+  auto_title_instructions: z.string().optional(),
+  sequence_diagrams: z.boolean().default(true),
+  path_instructions: z.array(z.object({
+    path: z.string(),
+    instructions: z.string(),
+  })).default([]),
+}).default({});
+
+export const chatSchema = z.object({
+  auto_reply: z.boolean().default(true),
+  max_context_turns: z.number().int().positive().default(10),
+  art_mascot_response: z.boolean().default(true),
+}).default({});
+
+export const knowledgeBaseSchema = z.object({
+  learnings: z.boolean().default(true),
+  issues: z.boolean().default(true),
+  pull_requests: z.boolean().default(true),
+  custom_instructions: z.array(z.string()).default([]),
+}).default({});
+
+export const pathFiltersSchema = z.array(z.string()).default([]);
+
+export const autoReviewSchema = z.object({
+  enabled: z.boolean().default(true),
+  ignore_drafts: z.boolean().default(true),
+  labels: z.array(z.string()).default([]),
+  drafts: z.boolean().default(false),
+}).default({});
+
+export const dialsSchema = z.object({
+  memory_engine: z.boolean().default(true),
+  mascot: z.boolean().default(true),
+  confidence_threshold: z.number().min(0).max(100).default(70),
+  ticket_enforcement: z.boolean().default(false),
+  persona_model: z.string().optional(),
+}).default({});
+
+export const mcpItemSchema = z.object({
+  name: z.string().min(1),
+  enabled: z.boolean().default(true),
+  options: z.record(z.unknown()).optional(),
+});
+
+export const mcpsSchema = z.array(mcpItemSchema).default([]);
+export type McpItemConfig = z.infer<typeof mcpItemSchema>;
+
+export const onPRCloseSchema = z.object({
+  create_followup_prs: z.array(z.string()).default([]),
+  sync_linear_status: z.string().optional(),
+  sync_productlane: z.boolean().default(false),
+}).default({});
+
+export type OnPRCloseConfig = z.infer<typeof onPRCloseSchema>;
+
 export const ctReviewConfigV3Schema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
   quorum: z.number().int().positive(),
   personas: z.array(personaSchema).min(1),
+  reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  confidence_threshold: z.number().min(0).max(100).optional(),
+  mascot: z.boolean().optional(),
+
+  // CodeRabbit-mirrored top-level sections
+  reviews: reviewsSchema,
+  chat: chatSchema,
+  knowledge_base: knowledgeBaseSchema,
+  path_filters: pathFiltersSchema,
+  auto_review: autoReviewSchema,
+  dials: dialsSchema,
+
+  // Milestone 18 Extensions
+  mcps: mcpsSchema,
+  on_pr_close: onPRCloseSchema,
+
   reviewers: z.object({
     execution: z.literal('personas'),
     fallback: z.enum(['ordered', 'none']),

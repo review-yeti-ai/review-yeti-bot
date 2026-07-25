@@ -19,6 +19,7 @@ WORKDIR /app
 COPY --chown=node:node package.json ./
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/dist ./dist
+COPY --chown=node:node public ./public
 
 RUN install -d -o node -g node /app/data
 USER node

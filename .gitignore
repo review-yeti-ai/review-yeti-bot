@@ -7,4 +7,6 @@ coverage/
 :memory:
 data/*.json
 data/*.sqlite*
+.ct-memory/
+fixtures/tmp/
 k8s/rendered/

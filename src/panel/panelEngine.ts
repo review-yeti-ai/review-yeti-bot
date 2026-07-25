@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { OmniRouteClient, OmniRouteResponse, TokensUsed } from '../gateway/omniRouteClient';
+import { PRMemoryStore } from '../memory/prMemoryStore';
+import { logger } from '../utils/logger';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -11,6 +13,9 @@ export interface PanelFinding {
   title: string;
   body: string;
   suggestion?: string;
+  confidence?: number;
+  recommendation?: string;
+  fixOptions?: any[];
 }
 
 export interface PersonaLaneResult {
@@ -125,6 +130,9 @@ function validateFindings(value: unknown): PanelFinding[] {
       title: finding.title,
       body: finding.body,
       ...(typeof finding.suggestion === 'string' ? { suggestion: finding.suggestion } : {}),
+      ...(typeof finding.confidence === 'number' ? { confidence: finding.confidence } : {}),
+      ...(typeof finding.recommendation === 'string' ? { recommendation: finding.recommendation } : {}),
+      ...(Array.isArray(finding.fixOptions) ? { fixOptions: finding.fixOptions } : {}),
     };
   });
 }
@@ -166,6 +174,7 @@ async function runPersona(
   changedFiles: Array<{ path: string; patch?: string; content?: string }>,
   repository: string,
   headSha: string,
+  memoryRules: string[] = [],
 ): Promise<PersonaLaneResult> {
   const errors: string[] = [];
   const scopedFiles = changedFiles.filter((file) =>
@@ -181,7 +190,7 @@ async function runPersona(
         headSha,
         changedFiles: scopedFiles,
         pathInstructions: config.path_instructions,
-        rules: config.rules,
+        rules: [...config.rules, ...memoryRules],
         outputSchema: {
           decision: 'APPROVE|FINDINGS',
           findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'optional string' }],
@@ -223,9 +232,21 @@ export async function executePersonaPanel(options: {
   );
   if (applicable.length === 0) throw new PanelConfigurationError('no enabled persona applies to the changed paths');
 
+  let memoryRules: string[] = [];
+  try {
+    const memoryStore = new PRMemoryStore();
+    const memContext = await memoryStore.queryLearnings(repository);
+    const adrs = memContext.adrConstraints.map((adr) => `ADR #${adr.adrNumber} (${adr.title}): ${adr.rule}`);
+    const learnings = memContext.learnings.map((l) => `[${l.category}] ${l.title}: ${l.description}`);
+    memoryRules = [...adrs, ...learnings];
+    memoryStore.close();
+  } catch (err: any) {
+    logger.warn('Failed to query PRMemoryStore during executePersonaPanel', { repository, error: err?.message });
+  }
+
   const settled = await Promise.all(applicable.map(async (persona) => {
     try {
-      return { persona, result: await runPersona(config, client, persona, changedFiles, repository, headSha) };
+      return { persona, result: await runPersona(config, client, persona, changedFiles, repository, headSha, memoryRules) };
     } catch (error: any) {
       return { persona, error: error?.message || String(error) };
     }
