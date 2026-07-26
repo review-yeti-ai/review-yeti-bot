@@ -49,9 +49,10 @@ export class SymbolGraphStore {
   private dbPath: string;
 
   constructor(dbPath?: string) {
-    this.dbPath = dbPath || process.env.CT_REVIEW_SYMBOL_DB || path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'symbol_graph.db');
+    const defaultPath = process.env.NODE_ENV === 'test' ? ':memory:' : path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'symbol_graph.db');
+    this.dbPath = dbPath || process.env.CT_REVIEW_SYMBOL_DB || defaultPath;
 
-    if (this.dbPath !== ':memory:') {
+    if (this.dbPath !== ':memory:' && !this.dbPath.startsWith(':memory:')) {
       const dir = path.dirname(this.dbPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
