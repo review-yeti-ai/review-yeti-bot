@@ -362,6 +362,84 @@ document.addEventListener('DOMContentLoaded', () => {
         el.onclick = () => el.classList.toggle('active');
       }
     });
+
+    renderPersonaRosterGrid();
+  }
+
+  const defaultPersonaRoster = [
+    { id: 'security', icon: '🛡️', displayName: 'Security & Tenancy Guardian', desc: 'Secret scanning, Auth, OWASP Top 10', model: 'claude-5-sonnet', effort: 'max', conf: 85 },
+    { id: 'architecture', icon: '🏛️', displayName: 'System Architecture & Design', desc: 'Module boundaries, design patterns, ADR compliance', model: 'claude-5-sonnet', effort: 'high', conf: 75 },
+    { id: 'performance', icon: '⚡', displayName: 'Performance & Scalability', desc: 'CPU/Memory hotspots, N+1 queries, memory leaks', model: 'gpt-5.6-sol', effort: 'high', conf: 70 },
+    { id: 'quality', icon: '✨', displayName: 'Code Quality & Style', desc: 'Idiomatic syntax, readability, type safety', model: 'claude-5-sonnet', effort: 'medium', conf: 70 },
+    { id: 'database', icon: '🗄️', displayName: 'Database & Persistence', desc: 'Migrations, index efficiency, SQL injection', model: 'gpt-5.6-sol', effort: 'high', conf: 80 },
+    { id: 'api_contract', icon: '🔌', displayName: 'API Contract & Integration', desc: 'Breaking changes, OpenAPI/REST contracts', model: 'claude-5-sonnet', effort: 'medium', conf: 75 },
+    { id: 'reliability', icon: '💥', displayName: 'Reliability & Resilience (SRE)', desc: 'Rate limiting, circuit breakers, timeout backoffs', model: 'deepseek-v4-pro', effort: 'high', conf: 80 },
+    { id: 'devops', icon: '🐳', displayName: 'DevOps & Containers', desc: 'K8s manifests, Dockerfiles, IAM security', model: 'glm-5.2', effort: 'medium', conf: 75 },
+    { id: 'docs_compliance', icon: '📝', displayName: 'Documentation & Compliance', desc: 'Docstrings, README updates, license checks', model: 'claude-5-sonnet', effort: 'low', conf: 60 },
+    { id: 'finops', icon: '💰', displayName: 'FinOps & Token Budget', desc: 'Prompt token budget efficiency, cost tiering', model: 'glm-5.2', effort: 'medium', conf: 70 },
+  ];
+
+  function renderPersonaRosterGrid(ps = {}) {
+    const container = document.getElementById('persona-roster-grid');
+    if (!container) return;
+
+    container.innerHTML = defaultPersonaRoster.map((p) => {
+      const setting = ps[p.id] || {};
+      const enabled = setting.enabled !== false;
+      const model = setting.model || p.model;
+      const effort = setting.effort || p.effort;
+      const conf = setting.confidenceThreshold || p.conf;
+
+      return `
+        <div class="glass-panel" style="padding: 12px 16px; border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong style="font-size: 13px;">${p.icon} ${p.displayName}</strong>
+            <div class="toggle-switch ${enabled ? 'active' : ''} persona-toggle-btn" data-id="${p.id}">
+              <div class="toggle-knob"></div>
+            </div>
+          </div>
+          <div class="kpi-subtext" style="margin-bottom: 10px; font-size: 11px;">${p.desc}</div>
+          
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <div>
+              <label style="font-size: 10px; color: var(--text-muted);">Model Override</label>
+              <select class="select-control persona-model-input" data-id="${p.id}" style="padding: 4px 6px; font-size: 11px;">
+                <option value="claude-5-sonnet" ${model === 'claude-5-sonnet' ? 'selected' : ''}>claude-5-sonnet</option>
+                <option value="gpt-5.6-sol" ${model === 'gpt-5.6-sol' ? 'selected' : ''}>gpt-5.6-sol</option>
+                <option value="deepseek-v4-pro" ${model === 'deepseek-v4-pro' ? 'selected' : ''}>deepseek-v4-pro</option>
+                <option value="glm-5.2" ${model === 'glm-5.2' ? 'selected' : ''}>glm-5.2</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size: 10px; color: var(--text-muted);">Reasoning Effort</label>
+              <select class="select-control persona-effort-input" data-id="${p.id}" style="padding: 4px 6px; font-size: 11px;">
+                <option value="low" ${effort === 'low' ? 'selected' : ''}>Low</option>
+                <option value="medium" ${effort === 'medium' ? 'selected' : ''}>Medium</option>
+                <option value="high" ${effort === 'high' ? 'selected' : ''}>High</option>
+                <option value="max" ${effort === 'max' ? 'selected' : ''}>Maximum</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top: 8px;">
+            <label style="font-size: 10px; color: var(--text-muted);">Confidence: <span id="conf-val-${p.id}">${conf}</span>%</label>
+            <input type="range" class="slider-control persona-conf-slider" data-id="${p.id}" min="0" max="100" value="${conf}" style="height: 4px;">
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.persona-toggle-btn').forEach((btn) => {
+      btn.onclick = () => btn.classList.toggle('active');
+    });
+
+    container.querySelectorAll('.persona-conf-slider').forEach((slider) => {
+      slider.oninput = (e) => {
+        const id = slider.getAttribute('data-id');
+        const valDisplay = document.getElementById(`conf-val-${id}`);
+        if (valDisplay) valDisplay.textContent = e.target.value;
+      };
+    });
   }
 
   document.getElementById('dials-form')?.addEventListener('submit', async (e) => {

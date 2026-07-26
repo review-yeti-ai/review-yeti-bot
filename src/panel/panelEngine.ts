@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
+import { LiveStreamBus } from '../live/liveStreamBus';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -72,6 +73,10 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:consistency': 'Find internal consistency, maintainability, repository-convention, and generated-source defects.',
   'builtin:policy-compliance': 'Enforce repository rules, path instructions, release policy, and fail-closed gates.',
   'builtin:constitutional-goals': 'Protect the repository constitutional goals and durable system authority boundaries.',
+  'builtin:performance': 'Identify CPU/memory bottlenecks, N+1 queries, unindexed queries, blocking loops, and memory leaks.',
+  'builtin:database': 'Find database migration hazards, SQL injection vulnerabilities, unsafe transactions, and index inefficiencies.',
+  'builtin:devops': 'Inspect K8s manifests, Dockerfile layer efficiency, IAM privilege boundaries, and CI/CD security risks.',
+  'builtin:finops': 'Optimize prompt token budget consumption, model cost efficiency, AST hunk filtering, and resource limits.',
 };
 
 function globRegex(pattern: string): RegExp {
@@ -178,18 +183,58 @@ async function runPersona(
   repository: string,
   headSha: string,
   memoryRules: string[] = [],
+  jobId?: string,
 ): Promise<PersonaLaneResult> {
   return runInSpan(`ct_persona_lane`, async (span) => {
     span.setAttribute('ct.persona.id', persona.id);
     span.setAttribute('ct.persona.required', persona.required);
 
+    const bus = LiveStreamBus.getInstance();
+    const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
+
+    bus.publishEvent({
+      jobId: effectiveJobId,
+      timestamp: new Date().toISOString(),
+      type: 'persona:start',
+      persona: persona.id,
+      data: {
+        personaId: persona.id,
+        charter: BUILTIN_CHARTERS[persona.charter] || persona.charter,
+        paths: persona.paths,
+        required: persona.required,
+      },
+    });
+
     const errors: string[] = [];
     const scopedFiles = changedFiles.filter((file) =>
       persona.paths.some((pattern) => pathMatches(pattern, file.path)),
     );
+
+    bus.publishEvent({
+      jobId: effectiveJobId,
+      timestamp: new Date().toISOString(),
+      type: 'persona:chunk',
+      persona: persona.id,
+      data: {
+        chunk: `Evaluating ${scopedFiles.length} file(s) for persona ${persona.id}`,
+      },
+    });
+
     for (const providerId of persona.providers) {
       const spec = provider(config, providerId);
       try {
+        bus.publishEvent({
+          jobId: effectiveJobId,
+          timestamp: new Date().toISOString(),
+          type: 'llm:prompt',
+          persona: persona.id,
+          data: {
+            provider: providerId,
+            model: spec.model,
+            promptSnippet: `CT_REVIEW_NONCE: persona=${persona.id} repository=${repository} headSha=${headSha.slice(0, 7)}`,
+          },
+        });
+
         const result = await invoke(client, spec.model, spec.review_timeout_s * 1_000, 'persona', {
           persona: persona.id,
           charter: BUILTIN_CHARTERS[persona.charter] || persona.charter,
@@ -212,6 +257,48 @@ async function runPersona(
         const completionTokens = result.response.usage?.completion || 0;
         const totalTokens = result.response.usage?.total || (promptTokens + completionTokens);
         const costUSD = result.response.costUSD || 0;
+
+        bus.publishEvent({
+          jobId: effectiveJobId,
+          timestamp: new Date().toISOString(),
+          type: 'llm:token',
+          persona: persona.id,
+          data: {
+            token: result.parsed?.decision || 'complete',
+            accumulatedLength: result.response.content.length,
+          },
+        });
+
+        bus.publishEvent({
+          jobId: effectiveJobId,
+          timestamp: new Date().toISOString(),
+          type: 'omniroute:metric',
+          persona: persona.id,
+          data: {
+            requestedModel: spec.model,
+            resolvedModel: result.response.model,
+            provider: providerId,
+            latencyMs: result.durationMs,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            costUSD,
+          },
+        });
+
+        bus.publishEvent({
+          jobId: effectiveJobId,
+          timestamp: new Date().toISOString(),
+          type: 'persona:complete',
+          persona: persona.id,
+          data: {
+            decision: result.parsed.decision,
+            findingsCount: findings.length,
+            durationMs: result.durationMs,
+            tokensUsed: { prompt: promptTokens, completion: completionTokens, total: totalTokens },
+            costUSD,
+          },
+        });
 
         span.setAttribute('ct.persona.provider', providerId);
         span.setAttribute('ct.persona.model', result.response.model);
@@ -258,9 +345,11 @@ export async function executePersonaPanel(options: {
   repository: string;
   headSha: string;
   client: OmniRouteClient;
+  jobId?: string;
 }): Promise<PanelResult> {
   return runInSpan('ct_persona_panel', async (span) => {
-    const { config, changedFiles, repository, headSha, client } = options;
+    const { config, changedFiles, repository, headSha, client, jobId } = options;
+    const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
     span.setAttribute('ct.repo', repository);
     span.setAttribute('ct.head_sha', headSha);
 
@@ -300,7 +389,7 @@ export async function executePersonaPanel(options: {
 
     const settled = await Promise.all(applicable.map(async (persona) => {
       try {
-        return { persona, result: await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules) };
+        return { persona, result: await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId) };
       } catch (error: any) {
         return { persona, error: error?.message || String(error) };
       }
@@ -417,6 +506,25 @@ export async function executePersonaPanel(options: {
       }
     }
     if (!arbiterResult) throw new PanelConfigurationError(`arbiter failed closed: ${arbiterErrors.join('; ')}`);
+
+    const totalDuration = personas.reduce((acc, p) => acc + p.durationMs, 0) + moderatorRun.run.durationMs + arbiterResult.durationMs;
+    const totalCost = personas.reduce((acc, p) => acc + (p.costUSD || 0), 0) + (moderatorRun.run.response.costUSD || 0) + (arbiterResult.costUSD || 0);
+
+    LiveStreamBus.getInstance().publishEvent({
+      jobId: effectiveJobId,
+      timestamp: new Date().toISOString(),
+      type: 'job:complete',
+      persona: 'quorum',
+      data: {
+        verdict: arbiterResult.verdict,
+        quorumSatisfied: true,
+        distinctProviders,
+        totalPersonasExecuted: personas.length,
+        totalFindings: personas.reduce((acc, p) => acc + p.findings.length, 0),
+        totalDurationMs: totalDuration,
+        totalCostUSD: totalCost,
+      },
+    });
 
     return {
       headSha,

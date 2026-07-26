@@ -1,5 +1,6 @@
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { LearningStore } from './learningStore';
+import { LiveStreamBus } from '../live/liveStreamBus';
 
 export interface Finding {
   id?: string;
@@ -49,7 +50,8 @@ export class NitSuppressionEngine {
 
   public async suppressNits(
     repo: string,
-    findings: Finding[]
+    findings: Finding[],
+    jobId?: string,
   ): Promise<{
     activeFindings: Finding[];
     suppressedFindings: Array<{ finding: Finding; nitPattern: any }>;
@@ -91,6 +93,21 @@ export class NitSuppressionEngine {
         if (matchedNit.id) {
           await this.prMemoryStore.incrementNitSuppression(matchedNit.id);
         }
+
+        if (jobId) {
+          LiveStreamBus.getInstance().publishEvent({
+            jobId,
+            timestamp: new Date().toISOString(),
+            type: 'nit:suppression',
+            persona: 'quality',
+            data: {
+              findingTitle: finding.title,
+              filePath: finding.path,
+              pattern: matchedNit.pattern,
+              rationale: `Suppressed per repository resolved nit memory rule: ${matchedNit.pattern}`,
+            },
+          });
+        }
       } else {
         activeFindings.push(finding);
       }
@@ -106,9 +123,10 @@ export class NitSuppressionEngine {
 
   public async filterFindings(
     repo: string,
-    findings: Finding[]
+    findings: Finding[],
+    jobId?: string,
   ): Promise<{ active: Finding[]; suppressed: Finding[] }> {
-    const res = await this.suppressNits(repo, findings);
+    const res = await this.suppressNits(repo, findings, jobId);
     return {
       active: res.activeFindings,
       suppressed: res.suppressedFindings.map((sf) => sf.finding),

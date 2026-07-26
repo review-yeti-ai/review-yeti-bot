@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { ASTParser, ASTSymbol, SymbolReference, ParseResult } from './astParser';
 import { VectorEmbedder, ChunkInput } from './vectorEmbedder';
+import { LiveStreamBus } from '../live/liveStreamBus';
 
 export interface IndexingStats {
   filesIndexed: number;
@@ -350,7 +351,9 @@ export class SymbolGraphStore {
 
   public async querySymbols(
     symbolName: string,
-    options: SymbolQueryOptions = {}
+    options: SymbolQueryOptions = {},
+    jobId?: string,
+    persona?: string,
   ): Promise<SymbolQueryResult & Array<ASTSymbol>> {
     const symStmt = this.db.prepare('SELECT * FROM symbols WHERE name = ?');
     const symRows = symStmt.all(symbolName) as any[];
@@ -458,6 +461,22 @@ export class SymbolGraphStore {
       enumerable: false,
       writable: true,
     });
+
+    if (jobId) {
+      LiveStreamBus.getInstance().publishEvent({
+        jobId,
+        timestamp: new Date().toISOString(),
+        type: 'ast:lookup',
+        persona: (persona as any) || 'architecture',
+        data: {
+          symbolName,
+          filePath: definitions[0]?.filePath || 'unknown',
+          callersCount: callers.length,
+          calleesCount: callees.length,
+          riskScore: 0.1 * (callers.length + callees.length),
+        },
+      });
+    }
 
     return resultObject as unknown as SymbolQueryResult & Array<ASTSymbol>;
   }

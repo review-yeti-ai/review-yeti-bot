@@ -28,9 +28,6 @@ describe('app.ts — Pipeline Resilience & Edge Case Expansion Tests', () => {
     process.env.GITHUB_APP_ID = '12345';
     process.env.GITHUB_APP_PRIVATE_KEY = 'test-key';
 
-    // Call runReviewPipeline with stale head
-    const mockInstallationClientModule = vi.spyOn(await import('../../src/app'), 'runReviewPipeline');
-
     // Test that stale head is caught
     expect(payload.headSha).not.toBe('new-head-sha');
   });
