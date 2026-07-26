@@ -52,8 +52,9 @@ export class PRMemoryStore {
   private dbPath: string;
 
   constructor(dbPath?: string) {
-    this.dbPath = dbPath || process.env.CT_REVIEW_MEMORY_DB || path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'pr_memory.db');
-    if (this.dbPath.startsWith(':memory:')) {
+    const defaultPath = process.env.NODE_ENV === 'test' ? ':memory:' : path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'pr_memory.db');
+    this.dbPath = dbPath || process.env.CT_REVIEW_MEMORY_DB || defaultPath;
+    if (this.dbPath === ':memory:' || this.dbPath.startsWith(':memory:')) {
       this.db = new DatabaseSync(':memory:');
     } else {
       const dir = path.dirname(this.dbPath);
