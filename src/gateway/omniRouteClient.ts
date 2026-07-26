@@ -1,3 +1,5 @@
+import { LiveStreamBus } from '../live/liveStreamBus';
+
 export interface OmniRouteClientConfig {
   baseUrl: string;
   accessToken?: string;
@@ -12,6 +14,8 @@ export interface OmniRouteRequest {
   model: string;
   messages: OmniMessage[];
   timeoutMs: number;
+  jobId?: string;
+  persona?: string;
 }
 
 export interface TokensUsed {
@@ -110,6 +114,7 @@ export class OmniRouteClient {
   }
 
   public async complete(request: OmniRouteRequest): Promise<OmniRouteResponse> {
+    const startTime = Date.now();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`;
 
@@ -150,6 +155,26 @@ export class OmniRouteClient {
       : Number.isFinite(headerCost) && headerCost >= 0
         ? headerCost
         : null;
+
+    if (request.jobId) {
+      const provider = request.model.split('/')[0] || 'omniroute';
+      LiveStreamBus.getInstance().publishEvent({
+        jobId: request.jobId,
+        timestamp: new Date().toISOString(),
+        type: 'omniroute:metric',
+        persona: (request.persona as any) || 'omniroute',
+        data: {
+          requestedModel: request.model,
+          resolvedModel,
+          provider,
+          latencyMs: Date.now() - startTime,
+          promptTokens: usage?.prompt || 0,
+          completionTokens: usage?.completion || 0,
+          totalTokens: usage?.total || 0,
+          costUSD,
+        },
+      });
+    }
 
     return { model: request.model, content, usage, costUSD, raw: data };
   }

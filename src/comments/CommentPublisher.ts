@@ -1,0 +1,33 @@
+import {
+  CommentPublisher,
+  CommentPublisherOptions,
+  PublishReviewRequest,
+  PublishInlineCommentRequest,
+  PublishResult,
+  PersonaFinding,
+  FixOption,
+  formatInlineCommentBody,
+  ASCII_MASCOT,
+  PUBLISHER_MASCOT,
+  getJobId,
+  getLiveStreamUrl,
+  getOrgDashboardUrl,
+  formatDashboardFooter,
+} from '../github/commentPublisher';
+
+export {
+  CommentPublisher,
+  CommentPublisherOptions,
+  PublishReviewRequest,
+  PublishInlineCommentRequest,
+  PublishResult,
+  PersonaFinding,
+  FixOption,
+  formatInlineCommentBody,
+  ASCII_MASCOT,
+  PUBLISHER_MASCOT,
+  getJobId,
+  getLiveStreamUrl,
+  getOrgDashboardUrl,
+  formatDashboardFooter,
+};

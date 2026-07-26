@@ -35,6 +35,10 @@ const BuiltinCharterEnum = z.enum([
   'builtin:consistency',
   'builtin:policy-compliance',
   'builtin:constitutional-goals',
+  'builtin:performance',
+  'builtin:database',
+  'builtin:devops',
+  'builtin:finops',
 ]);
 
 export const providerSchema = z.object({

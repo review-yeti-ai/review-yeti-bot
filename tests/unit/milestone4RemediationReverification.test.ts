@@ -65,7 +65,7 @@ mascot: true
       expect(v3.personas.length).toBeGreaterThanOrEqual(1);
       const requiredPersona = v3.personas.find(p => p.enabled && p.required);
       expect(requiredPersona).toBeDefined();
-      expect(requiredPersona?.charter).toBe('builtin:correctness');
+      expect(requiredPersona?.charter).toBe('builtin:security');
       expect(requiredPersona?.paths).toEqual(['**']);
       expect(requiredPersona?.providers).toContain('codex');
 
