@@ -151,6 +151,18 @@ export class GitHubInstallationClient {
     }
   }
 
+  async getReviewComment(owner: string, repo: string, commentId: number): Promise<ReviewComment | null> {
+    try {
+      const data = await this.request(`/repos/${owner}/${repo}/pulls/comments/${commentId}`);
+      if (data && typeof data === 'object' && typeof data.id === 'number') {
+        return data as ReviewComment;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async replyToReviewComment(owner: string, repo: string, prNumber: number, commentId: number, body: string): Promise<void> {
     await this.request(`/repos/${owner}/${repo}/pulls/${prNumber}/comments/${commentId}/replies`, {
       method: 'POST',

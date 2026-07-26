@@ -889,4 +889,101 @@ document.addEventListener('DOMContentLoaded', () => {
       console.error('Failed to render ECharts analytics:', err);
     }
   }
+
+  // Onboarding Wizard Handler
+  let lastScanResult = null;
+
+  const startScanBtn = document.getElementById('start-scan-btn');
+  const onboardingRepoPathInput = document.getElementById('onboarding-repo-path');
+  const scanResultsCard = document.getElementById('scan-results-card');
+  const wizardConfigSection = document.getElementById('wizard-config-section');
+  const scanSpeedBadge = document.getElementById('scan-speed-badge');
+  const scanLanguagesList = document.getElementById('scan-languages-list');
+  const scanFrameworksList = document.getElementById('scan-frameworks-list');
+  const generateYamlBtn = document.getElementById('generate-yaml-btn');
+  const copyYamlBtn = document.getElementById('copy-yaml-btn');
+  const yamlPreviewBox = document.getElementById('yaml-preview-box');
+  const wizardProfileSelect = document.getElementById('wizard-profile-select');
+  const wizardTicketSelect = document.getElementById('wizard-ticket-select');
+
+  if (startScanBtn) {
+    startScanBtn.addEventListener('click', async () => {
+      const repoPath = onboardingRepoPathInput ? onboardingRepoPathInput.value.trim() : '';
+      startScanBtn.disabled = true;
+      startScanBtn.textContent = '⏳ Scanning...';
+
+      try {
+        const res = await ApiClient.scanOnboarding(repoPath);
+        if (res.success && res.scanResult) {
+          lastScanResult = res.scanResult;
+          showToast('Tech stack auto-detection complete!', 'success');
+
+          if (scanSpeedBadge) {
+            scanSpeedBadge.textContent = `Execution Time: ${res.scanResult.detection.scanDurationMs} ms`;
+          }
+
+          if (scanLanguagesList) {
+            const langs = res.scanResult.detection.languages;
+            scanLanguagesList.innerHTML = Object.entries(langs)
+              .map(([lang, pct]) => `<span style="background: var(--bg-surface); padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border-medium); font-size: 12px; font-weight: 500; color: var(--text-primary);">${lang}: ${pct}%</span>`)
+              .join('');
+          }
+
+          if (scanFrameworksList) {
+            const items = [
+              ...res.scanResult.detection.manifestsFound,
+              ...res.scanResult.detection.frameworks,
+              ...res.scanResult.detection.infrastructure,
+            ];
+            scanFrameworksList.innerHTML = items.length > 0
+              ? items.map((it) => `<span style="background: var(--bg-surface); padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border-medium); font-size: 12px; font-weight: 500; color: var(--color-info);">${it}</span>`).join('')
+              : '<span style="color: var(--text-muted); font-size: 12px;">Standard Repository</span>';
+          }
+
+          if (scanResultsCard) scanResultsCard.style.display = 'block';
+          if (wizardConfigSection) wizardConfigSection.style.display = 'block';
+
+          await generateAndRenderYaml();
+        }
+      } catch (err) {
+        showToast(err.message || 'Scan failed', 'error');
+      } finally {
+        startScanBtn.disabled = false;
+        startScanBtn.textContent = '⚡ Run Tech Stack Auto-Detection (< 1s)';
+      }
+    });
+  }
+
+  async function generateAndRenderYaml() {
+    if (!lastScanResult) return;
+    const profile = wizardProfileSelect ? wizardProfileSelect.value : 'balanced';
+    const ticketEnforcement = wizardTicketSelect ? wizardTicketSelect.value === 'true' : false;
+
+    try {
+      const res = await ApiClient.generateOnboardingConfig({
+        scanResult: lastScanResult,
+        profile,
+        ticketEnforcement,
+      });
+
+      if (res.success && res.yamlText && yamlPreviewBox) {
+        yamlPreviewBox.textContent = res.yamlText;
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to generate config', 'error');
+    }
+  }
+
+  if (generateYamlBtn) {
+    generateYamlBtn.addEventListener('click', generateAndRenderYaml);
+  }
+
+  if (copyYamlBtn) {
+    copyYamlBtn.addEventListener('click', () => {
+      if (yamlPreviewBox && yamlPreviewBox.textContent) {
+        navigator.clipboard.writeText(yamlPreviewBox.textContent);
+        showToast('YAML configuration copied to clipboard!', 'success');
+      }
+    });
+  }
 });

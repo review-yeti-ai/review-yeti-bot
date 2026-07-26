@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { PanelFinding } from '../panel/panelEngine';
+import { NitSuppressionEngine } from '../reflection/nitSuppressionEngine';
 
 export interface FixOption {
   rank?: number;
@@ -242,7 +243,7 @@ export class CommentPublisher {
 
   public async publishReviewWithNitSuppression(
     req: PublishReviewRequest,
-    learningEngine?: GraphLearningEngine
+    learningEngine?: GraphLearningEngine | NitSuppressionEngine
   ): Promise<PublishResult> {
     if (learningEngine && req.inlineComments && req.inlineComments.length > 0) {
       const repo = `${req.owner}/${req.repo}`;
@@ -250,16 +251,25 @@ export class CommentPublisher {
         severity: ic.finding.severity === 'critical' ? 'P0' : ic.finding.severity === 'major' ? 'P1' : 'P2',
         path: ic.path,
         line: ic.line,
-        title: ic.finding.comment.split('\n')[0],
+        title: ic.finding.title || ic.finding.comment.split('\n')[0],
         body: ic.finding.comment,
         suggestion: ic.finding.suggestion,
       }));
 
-      const { filteredFindings } = await learningEngine.analyzeAndFilterFindings(repo, findings);
-      const filteredKeys = new Set(filteredFindings.map((f) => `${f.path}:${f.line}:${f.title}`));
-      req.inlineComments = req.inlineComments.filter((ic) =>
-        filteredKeys.has(`${ic.path}:${ic.line}:${ic.finding.comment.split('\n')[0]}`)
-      );
+      if (learningEngine instanceof NitSuppressionEngine) {
+        const { activeFindings } = await (learningEngine as NitSuppressionEngine).suppressNits(repo, findings);
+        const activeKeys = new Set(activeFindings.map((f: any) => `${f.path}:${f.line}:${f.title}`));
+        req.inlineComments = req.inlineComments.filter((ic) => {
+          const title = ic.finding.title || ic.finding.comment.split('\n')[0];
+          return activeKeys.has(`${ic.path}:${ic.line}:${title}`);
+        });
+      } else if (learningEngine && typeof (learningEngine as any).analyzeAndFilterFindings === 'function') {
+        const { filteredFindings } = await (learningEngine as GraphLearningEngine).analyzeAndFilterFindings(repo, findings);
+        const filteredKeys = new Set(filteredFindings.map((f: any) => `${f.path}:${f.line}:${f.title}`));
+        req.inlineComments = req.inlineComments.filter((ic) =>
+          filteredKeys.has(`${ic.path}:${ic.line}:${ic.finding.title || ic.finding.comment.split('\n')[0]}`)
+        );
+      }
     }
     return this.publishReview(req);
   }

@@ -118,6 +118,16 @@ export class PRMemoryStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_adr_repo ON adr_constraints(repo);
+
+      CREATE TABLE IF NOT EXISTS feedback_events (
+        id TEXT PRIMARY KEY,
+        repo TEXT NOT NULL,
+        reaction TEXT NOT NULL,
+        feedback_type TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_feedback_repo ON feedback_events(repo);
     `);
   }
 
@@ -238,7 +248,7 @@ export class PRMemoryStore {
     let nSql = 'SELECT * FROM resolved_nits WHERE repo = ?';
     const nParams: any[] = [repo];
     if (context?.filePath) {
-      nSql += ' AND (file_path = ? OR file_path = \'\')';
+      nSql += " AND (file_path = ? OR file_path = '' OR file_path = '**' OR file_path IS NULL)";
       nParams.push(context.filePath);
     }
     const nRows = this.db.prepare(nSql).all(...nParams) as any[];
@@ -275,10 +285,51 @@ export class PRMemoryStore {
     stmt.run(id);
   }
 
+  public async recordFeedback(repo: string, reaction: string): Promise<void> {
+    const reactionLower = (reaction || '').toLowerCase().trim();
+    let feedbackType: 'positive' | 'negative' | null = null;
+    if (reactionLower === '+1' || reactionLower === 'thumbsup' || reactionLower === 'thumbs_up' || reactionLower === 'like') {
+      feedbackType = 'positive';
+    } else if (reactionLower === '-1' || reactionLower === 'thumbsdown' || reactionLower === 'thumbs_down' || reactionLower === 'dislike') {
+      feedbackType = 'negative';
+    }
+
+    if (feedbackType) {
+      const id = `fb_${crypto.randomUUID().slice(0, 8)}`;
+      const stmt = this.db.prepare(`
+        INSERT INTO feedback_events (id, repo, reaction, feedback_type)
+        VALUES (?, ?, ?, ?)
+      `);
+      stmt.run(id, repo, reaction, feedbackType);
+    }
+  }
+
+  public getFeedbackCounts(repo?: string): { positiveFeedbackCount: number; negativeFeedbackCount: number } {
+    try {
+      let posSql = "SELECT COUNT(*) as cnt FROM feedback_events WHERE feedback_type = 'positive'";
+      let negSql = "SELECT COUNT(*) as cnt FROM feedback_events WHERE feedback_type = 'negative'";
+      const params: any[] = [];
+      if (repo) {
+        posSql += ' AND repo = ?';
+        negSql += ' AND repo = ?';
+        params.push(repo);
+      }
+      const pos = this.db.prepare(posSql).get(...params) as { cnt: number } | undefined;
+      const neg = this.db.prepare(negSql).get(...params) as { cnt: number } | undefined;
+      return {
+        positiveFeedbackCount: pos?.cnt || 0,
+        negativeFeedbackCount: neg?.cnt || 0,
+      };
+    } catch {
+      return { positiveFeedbackCount: 0, negativeFeedbackCount: 0 };
+    }
+  }
+
   public async clearRepoMemory(repo: string): Promise<void> {
     this.db.prepare('DELETE FROM learnings WHERE repo = ?').run(repo);
     this.db.prepare('DELETE FROM resolved_nits WHERE repo = ?').run(repo);
     this.db.prepare('DELETE FROM adr_constraints WHERE repo = ?').run(repo);
+    this.db.prepare('DELETE FROM feedback_events WHERE repo = ?').run(repo);
   }
 
   public getCounts(): { learningsCount: number; suppressedNitsCount: number; adrConstraintsCount: number } {

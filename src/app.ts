@@ -15,6 +15,7 @@ import { createAuthRouter } from './api/authApi';
 import { createDashboardRouter } from './api/dashboardApi';
 import { createAnalyticsRouter } from './api/analytics';
 import { createIntegrationsRouter } from './dashboard/integrationsApi';
+import { createOnboardingRouter } from './api/onboarding';
 import { requireAuth } from './api/authMiddleware';
 import { dashboardStore } from './persistence/dashboardStore';
 import { providerPool } from './gateway/providerPool';
@@ -390,6 +391,7 @@ export function createApp(): Express {
 
   // API Routers
   app.use('/api/auth', createAuthRouter());
+  app.use('/api/onboarding', createOnboardingRouter());
   app.use('/api', requireAuth);
 
   // GET /api/telemetry/spans (JSON format) - protected by requireAuth
@@ -420,6 +422,7 @@ export function createApp(): Express {
       status: 'ok',
       service: 'ct-review-bot',
       memoryEngineReady: true,
+      onboardingWizardReady: true,
       timestamp: new Date().toISOString(),
       uptimeSeconds: process.uptime(),
     });
