@@ -15,6 +15,7 @@ import { createAuthRouter } from './api/authApi';
 import { createDashboardRouter } from './api/dashboardApi';
 import { createAnalyticsRouter } from './api/analytics';
 import { createIntegrationsRouter } from './dashboard/integrationsApi';
+import { createLiveRouter } from './api/liveApi';
 import { createOnboardingRouter } from './api/onboarding';
 import { requireAuth } from './api/authMiddleware';
 import { dashboardStore } from './persistence/dashboardStore';
@@ -415,6 +416,7 @@ export function createApp(): Express {
   app.use('/api/dashboard/mcp', integrationsRouter);
   app.use('/api/router', createProviderRouter());
   app.use('/api/analytics', createAnalyticsRouter());
+  app.use('/api/live', createLiveRouter());
   app.use('/api', createMemoryRouter());
 
   app.get('/health', (_req, res) => {
