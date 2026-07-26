@@ -392,16 +392,15 @@ describe('LiveStreamBus & SSE API Empirical Stress Harness', () => {
       const orgUrl = 'https://bot.calltelemetry.com/dashboard/organization';
 
       const footerApprove = formatDashboardFooter(liveUrl, orgUrl, 'APPROVE');
-      expect(footerApprove).toContain('[![Live Terminal Stream]');
-      expect(footerApprove).toContain('Quorum-APPROVE-27c46a');
-      expect(footerApprove).toContain(`[Watch Live Agent Review Stream & Terminal View](${liveUrl})`);
-      expect(footerApprove).toContain(`[Organization Dashboard & Settings](${orgUrl})`);
+      expect(footerApprove).toContain(`[📊 Live Terminal Dashboard](${liveUrl})`);
+      expect(footerApprove).toContain(`[🏢 Org Settings](${orgUrl})`);
+      expect(footerApprove).toContain('---');
 
       const footerFixFirst = formatDashboardFooter(liveUrl, orgUrl, 'FIX_FIRST');
-      expect(footerFixFirst).toContain('Quorum-FIX_FIRST-f59e0b');
+      expect(footerFixFirst).toContain(`[📊 Live Terminal Dashboard](${liveUrl})`);
 
       const footerReject = formatDashboardFooter(liveUrl, orgUrl, 'REJECT');
-      expect(footerReject).toContain('Quorum-REJECT-eb3b48');
+      expect(footerReject).toContain(`[📊 Live Terminal Dashboard](${liveUrl})`);
     });
 
     it('formats inline comment body with mascot and fix options correctly', () => {
