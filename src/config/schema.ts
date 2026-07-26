@@ -67,12 +67,17 @@ export const personaSchema = z.object({
   charter: z.union([BuiltinCharterEnum, z.string().min(12)]),
   paths: z.array(z.string().min(1)).min(1),
   providers: z.array(ProviderIdEnum).min(1),
+  model: z.string().optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
 }).superRefine((persona, ctx) => {
   if (persona.charter.startsWith('builtin:') && !BuiltinCharterEnum.safeParse(persona.charter).success) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['charter'], message: `unknown built-in charter ${persona.charter}` });
   }
   if (new Set(persona.providers).size !== persona.providers.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['providers'], message: 'provider order contains duplicates' });
+  }
+  if (persona.model && !R4_ALLOWED_MODELS.includes(persona.model)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['model'], message: `persona model ${persona.model} is not in R4_ALLOWED_MODELS` });
   }
 });
 

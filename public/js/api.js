@@ -114,6 +114,13 @@ const ApiClient = {
     });
   },
 
+  async updatePersonaSetting(personaId, patch) {
+    return this.request(`/api/dashboard/settings/personas/${personaId}`, {
+      method: 'PATCH',
+      body: patch,
+    });
+  },
+
   // Router Pool & Memory Methods
   async getProviders() {
     return this.request('/api/router/providers');

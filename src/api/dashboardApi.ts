@@ -94,11 +94,37 @@ export function createDashboardRouter(): Router {
   // PUT /api/dashboard/settings
   router.put('/settings', (req: Request, res: Response) => {
     const settingsUpdate = req.body || {};
-    const updated = dashboardStore.updateSettings(settingsUpdate);
-    return res.status(200).json({
-      success: true,
-      settings: updated,
-    });
+    try {
+      const updated = dashboardStore.updateSettings(settingsUpdate);
+      return res.status(200).json({
+        success: true,
+        settings: updated,
+      });
+    } catch (err: any) {
+      return res.status(400).json({
+        success: false,
+        error: err?.message || 'Invalid settings payload',
+      });
+    }
+  });
+
+  // PATCH /api/dashboard/settings/personas/:personaId
+  router.patch('/settings/personas/:personaId', (req: Request, res: Response) => {
+    const { personaId } = req.params;
+    const patch = req.body || {};
+    try {
+      const updatedPersona = dashboardStore.updatePersonaSetting(personaId, patch);
+      return res.status(200).json({
+        success: true,
+        persona: updatedPersona,
+      });
+    } catch (err: any) {
+      const isNotFound = err.message && err.message.includes('not found');
+      return res.status(isNotFound ? 404 : 400).json({
+        success: false,
+        error: err?.message || `Failed to update persona '${personaId}'`,
+      });
+    }
   });
 
   return router;

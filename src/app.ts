@@ -16,6 +16,7 @@ import { createDashboardRouter } from './api/dashboardApi';
 import { createAnalyticsRouter } from './api/analytics';
 import { createIntegrationsRouter } from './dashboard/integrationsApi';
 import { createLiveRouter } from './api/liveApi';
+import { createGitHubAppApiRouter } from './api/githubAppApi';
 import { createOnboardingRouter } from './api/onboarding';
 import { requireAuth } from './api/authMiddleware';
 import { dashboardStore } from './persistence/dashboardStore';
@@ -417,6 +418,7 @@ export function createApp(): Express {
   app.use('/api/router', createProviderRouter());
   app.use('/api/analytics', createAnalyticsRouter());
   app.use('/api/live', createLiveRouter());
+  app.use('/api/github', createGitHubAppApiRouter());
   app.use('/api', createMemoryRouter());
 
   app.get('/health', (_req, res) => {
