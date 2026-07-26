@@ -35,13 +35,13 @@ export interface ADRConstraint {
   repo: string;
   adrNumber: number;
   title: string;
-  status: 'accepted' | 'deprecated' | 'superseded' | 'draft';
+  status: 'draft' | 'accepted' | 'deprecated';
   rule: string;
   targetPaths: string[];
   createdAt?: string;
 }
 
-export interface MemoryQueryResult {
+export interface RepoMemoryState {
   learnings: ReviewerLearning[];
   resolvedNits: ResolvedNitPattern[];
   adrConstraints: ADRConstraint[];
@@ -53,26 +53,19 @@ export class PRMemoryStore {
 
   constructor(dbPath: string = '.ct-memory/pr_memory.db') {
     this.dbPath = dbPath;
-    if (dbPath !== ':memory:') {
+    if (dbPath.startsWith(':memory:')) {
+      this.db = new DatabaseSync(':memory:');
+    } else {
       const dir = path.dirname(dbPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
+      this.db = new DatabaseSync(dbPath);
     }
-    this.db = new DatabaseSync(dbPath);
-    this.initSchema();
+    this.initDatabase();
   }
 
-  private initSchema(): void {
-    try {
-      this.db.exec('PRAGMA busy_timeout = 5000;');
-      this.db.exec('PRAGMA journal_mode = WAL;');
-      this.db.exec('PRAGMA synchronous = NORMAL;');
-      this.db.exec('PRAGMA temp_store = MEMORY;');
-    } catch (err: any) {
-      logger.warn('Failed setting PRAGMAs on PRMemoryStore', { error: err.message });
-    }
-
+  private initDatabase(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS learnings (
         id TEXT PRIMARY KEY,
@@ -82,14 +75,10 @@ export class PRMemoryStore {
         title TEXT NOT NULL,
         description TEXT NOT NULL,
         file_path TEXT,
-        confidence REAL NOT NULL DEFAULT 1.0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        confidence REAL DEFAULT 1.0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
-
-      CREATE INDEX IF NOT EXISTS idx_learnings_repo ON learnings(repo);
-      CREATE INDEX IF NOT EXISTS idx_learnings_category ON learnings(category);
-      CREATE INDEX IF NOT EXISTS idx_learnings_file_path ON learnings(file_path);
 
       CREATE TABLE IF NOT EXISTS resolved_nits (
         id TEXT PRIMARY KEY,
@@ -99,12 +88,9 @@ export class PRMemoryStore {
         file_path TEXT NOT NULL,
         reason TEXT NOT NULL,
         head_sha TEXT,
-        resolved_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        suppression_count INTEGER NOT NULL DEFAULT 0
+        resolved_at TEXT NOT NULL,
+        suppression_count INTEGER DEFAULT 0
       );
-
-      CREATE INDEX IF NOT EXISTS idx_nits_repo ON resolved_nits(repo);
-      CREATE INDEX IF NOT EXISTS idx_nits_file_path ON resolved_nits(file_path);
 
       CREATE TABLE IF NOT EXISTS adr_constraints (
         id TEXT PRIMARY KEY,
@@ -114,19 +100,19 @@ export class PRMemoryStore {
         status TEXT NOT NULL,
         rule TEXT NOT NULL,
         target_paths TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT NOT NULL
       );
-
-      CREATE INDEX IF NOT EXISTS idx_adr_repo ON adr_constraints(repo);
 
       CREATE TABLE IF NOT EXISTS feedback_events (
         id TEXT PRIMARY KEY,
         repo TEXT NOT NULL,
         reaction TEXT NOT NULL,
-        feedback_type TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        feedback_type TEXT NOT NULL
       );
 
+      CREATE INDEX IF NOT EXISTS idx_learnings_repo ON learnings(repo);
+      CREATE INDEX IF NOT EXISTS idx_nits_repo ON resolved_nits(repo);
+      CREATE INDEX IF NOT EXISTS idx_adr_repo ON adr_constraints(repo);
       CREATE INDEX IF NOT EXISTS idx_feedback_repo ON feedback_events(repo);
     `);
   }
@@ -165,9 +151,8 @@ export class PRMemoryStore {
     nit: Omit<ResolvedNitPattern, 'repo' | 'prNumber'>
   ): Promise<ResolvedNitPattern> {
     const id = nit.id || `nit_${crypto.randomUUID().slice(0, 8)}`;
-    const now = new Date().toISOString();
-    const resolvedAt = nit.resolvedAt || now;
-    const suppressionCount = nit.suppressionCount ?? 0;
+    const resolvedAt = nit.resolvedAt || new Date().toISOString();
+    const suppressionCount = nit.suppressionCount || 0;
     const stmt = this.db.prepare(`
       INSERT INTO resolved_nits (id, repo, pr_number, pattern, file_path, reason, head_sha, resolved_at, suppression_count)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -183,16 +168,15 @@ export class PRMemoryStore {
       resolvedAt,
       suppressionCount
     );
-    return { id, repo, prNumber, ...nit, resolvedAt, suppressionCount };
+    return { id, repo, prNumber, suppressionCount, ...nit, resolvedAt };
   }
 
   public async recordADRConstraint(
     repo: string,
-    constraint: Omit<ADRConstraint, 'repo'>
+    adr: Omit<ADRConstraint, 'repo'>
   ): Promise<ADRConstraint> {
-    const id = constraint.id || `adr_${constraint.adrNumber}`;
-    const now = new Date().toISOString();
-    const createdAt = constraint.createdAt || now;
+    const id = adr.id || `adr_${crypto.randomUUID().slice(0, 8)}`;
+    const createdAt = adr.createdAt || new Date().toISOString();
     const stmt = this.db.prepare(`
       INSERT INTO adr_constraints (id, repo, adr_number, title, status, rule, target_paths, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -200,37 +184,40 @@ export class PRMemoryStore {
     stmt.run(
       id,
       repo,
-      constraint.adrNumber,
-      constraint.title,
-      constraint.status,
-      constraint.rule,
-      JSON.stringify(constraint.targetPaths),
+      adr.adrNumber,
+      adr.title,
+      adr.status,
+      adr.rule,
+      JSON.stringify(adr.targetPaths),
       createdAt
     );
-    return { id, repo, ...constraint, createdAt };
+    return { id, repo, ...adr, createdAt };
+  }
+
+  public async incrementNitSuppression(id: string): Promise<void> {
+    this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE id = ?').run(id);
   }
 
   public async queryLearnings(
     repo: string,
-    context?: { filePath?: string; category?: string; query?: string }
-  ): Promise<MemoryQueryResult> {
-    // 1. Query Learnings
-    let lSql = 'SELECT * FROM learnings WHERE repo = ?';
-    const lParams: any[] = [repo];
-    if (context?.category) {
-      lSql += ' AND category = ?';
-      lParams.push(context.category);
+    options: { category?: string; filePath?: string; query?: string } = {}
+  ): Promise<RepoMemoryState> {
+    let lRows = this.db.prepare('SELECT * FROM learnings WHERE repo = ?').all(repo) as any[];
+    let nRows = this.db.prepare('SELECT * FROM resolved_nits WHERE repo = ?').all(repo) as any[];
+    let aRows = this.db.prepare("SELECT * FROM adr_constraints WHERE repo = ? AND status = 'accepted'").all(repo) as any[];
+
+    if (options.category) {
+      lRows = lRows.filter((r) => r.category === options.category);
     }
-    if (context?.filePath) {
-      lSql += " AND (file_path IS NULL OR file_path = ? OR ? LIKE file_path || '%')";
-      lParams.push(context.filePath, context.filePath);
+    if (options.filePath) {
+      lRows = lRows.filter((r) => !r.file_path || r.file_path === options.filePath || r.file_path === '**');
+      nRows = nRows.filter((r) => !r.file_path || r.file_path === options.filePath || r.file_path === '**');
     }
-    if (context?.query) {
-      lSql += ' AND (title LIKE ? OR description LIKE ?)';
-      const q = `%${context.query}%`;
-      lParams.push(q, q);
+    if (options.query) {
+      const q = options.query.toLowerCase();
+      lRows = lRows.filter((r) => r.title.toLowerCase().includes(q) || r.description.toLowerCase().includes(q));
     }
-    const lRows = this.db.prepare(lSql).all(...lParams) as any[];
+
     const learnings: ReviewerLearning[] = lRows.map((r) => ({
       id: r.id,
       repo: r.repo,
@@ -244,14 +231,6 @@ export class PRMemoryStore {
       updatedAt: r.updated_at,
     }));
 
-    // 2. Query Resolved Nits
-    let nSql = 'SELECT * FROM resolved_nits WHERE repo = ?';
-    const nParams: any[] = [repo];
-    if (context?.filePath) {
-      nSql += " AND (file_path = ? OR file_path = '' OR file_path = '**' OR file_path IS NULL)";
-      nParams.push(context.filePath);
-    }
-    const nRows = this.db.prepare(nSql).all(...nParams) as any[];
     const resolvedNits: ResolvedNitPattern[] = nRows.map((r) => ({
       id: r.id,
       repo: r.repo,
@@ -264,8 +243,6 @@ export class PRMemoryStore {
       suppressionCount: r.suppression_count,
     }));
 
-    // 3. Query ADR Constraints
-    const aRows = this.db.prepare("SELECT * FROM adr_constraints WHERE repo = ? AND status = 'accepted'").all(repo) as any[];
     const adrConstraints: ADRConstraint[] = aRows.map((r) => ({
       id: r.id,
       repo: r.repo,
@@ -280,27 +257,57 @@ export class PRMemoryStore {
     return { learnings, resolvedNits, adrConstraints };
   }
 
-  public async incrementNitSuppression(id: string): Promise<void> {
-    const stmt = this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE id = ?');
-    stmt.run(id);
+  public async recordFeedback(repo: string, reaction: string, feedbackType: 'positive' | 'negative' = 'positive'): Promise<void> {
+    const id = `fb_${crypto.randomUUID().slice(0, 8)}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO feedback_events (id, repo, reaction, feedback_type)
+      VALUES (?, ?, ?, ?)
+    `);
+    stmt.run(id, repo, reaction, feedbackType);
   }
 
-  public async recordFeedback(repo: string, reaction: string): Promise<void> {
-    const reactionLower = (reaction || '').toLowerCase().trim();
-    let feedbackType: 'positive' | 'negative' | null = null;
-    if (reactionLower === '+1' || reactionLower === 'thumbsup' || reactionLower === 'thumbs_up' || reactionLower === 'like') {
-      feedbackType = 'positive';
-    } else if (reactionLower === '-1' || reactionLower === 'thumbsdown' || reactionLower === 'thumbs_down' || reactionLower === 'dislike') {
-      feedbackType = 'negative';
-    }
+  /**
+   * Exports repo memory to formatted JSON string for committing back to repository (.ct-memory/learning.json).
+   */
+  public async exportToGitFile(repo: string): Promise<string> {
+    const state = await this.queryLearnings(repo);
+    return JSON.stringify(
+      {
+        version: '1.0',
+        repo,
+        exportedAt: new Date().toISOString(),
+        memory: state,
+      },
+      null,
+      2
+    );
+  }
 
-    if (feedbackType) {
-      const id = `fb_${crypto.randomUUID().slice(0, 8)}`;
-      const stmt = this.db.prepare(`
-        INSERT INTO feedback_events (id, repo, reaction, feedback_type)
-        VALUES (?, ?, ?, ?)
-      `);
-      stmt.run(id, repo, reaction, feedbackType);
+  /**
+   * Imports repo memory from committed repository file (.ct-memory/learning.json).
+   */
+  public async importFromGitFile(repo: string, jsonContent: string): Promise<void> {
+    try {
+      const parsed = JSON.parse(jsonContent);
+      if (parsed && parsed.memory) {
+        if (Array.isArray(parsed.memory.learnings)) {
+          for (const l of parsed.memory.learnings) {
+            await this.recordLearning(repo, l.prNumber || 0, l);
+          }
+        }
+        if (Array.isArray(parsed.memory.resolvedNits)) {
+          for (const n of parsed.memory.resolvedNits) {
+            await this.recordResolvedNit(repo, n.prNumber || 0, n);
+          }
+        }
+        if (Array.isArray(parsed.memory.adrConstraints)) {
+          for (const a of parsed.memory.adrConstraints) {
+            await this.recordADRConstraint(repo, a);
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.error('Failed to import repo memory from git file', { repo, error: err.message });
     }
   }
 
@@ -348,8 +355,12 @@ export class PRMemoryStore {
   }
 
   public close(): void {
-    try {
-      this.db.close();
-    } catch {}
+    if (this.db && typeof this.db.close === 'function') {
+      try {
+        this.db.close();
+      } catch {
+        // Ignore double close
+      }
+    }
   }
 }
