@@ -96,22 +96,28 @@ async function main() {
     `[📊 View Live Terminal Dashboard](https://ct-review-bot.calltelemetry.com/dashboard/live?jobId=job_${repo.replace('/', '_')}_pr${prNumber}) | [🏢 Org Management](https://ct-review-bot.calltelemetry.com/dashboard/organization)`,
   ].join('\n');
 
-  // Obtain GitHub App Installation Token if credentials provided, else fall back to user token
+  const appId = process.env.GITHUB_APP_ID || '4385771';
+  const installationId = process.env.GITHUB_INSTALLATION_ID || '148780830';
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+
   let token = process.env.GITHUB_TOKEN || execSync('gh auth token', { encoding: 'utf-8' }).trim();
   let allowUserToken = true;
 
-  if (process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY && process.env.GITHUB_INSTALLATION_ID) {
+  if (privateKey) {
     try {
       const tokenRes = await getGitHubAppInstallationToken({
-        appId: process.env.GITHUB_APP_ID,
-        privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
-        installationId: process.env.GITHUB_INSTALLATION_ID,
+        appId,
+        privateKey,
+        installationId,
       });
       token = tokenRes.token;
       allowUserToken = false;
+      logger.info('Authenticating review post via GitHub App Installation Token (ct-review-bot[bot])', { appId, installationId });
     } catch (err: any) {
-      logger.warn('Failed to obtain GitHub App token, falling back to active user token', { error: err.message });
+      logger.warn('Failed to obtain GitHub App installation token, falling back to active user token', { error: err.message });
     }
+  } else {
+    logger.info('GITHUB_APP_PRIVATE_KEY not detected in environment. To post as ct-review-bot[bot], store GITHUB_APP_PRIVATE_KEY in Doppler or K8s secrets.', { appId, installationId });
   }
 
   // Post top-level review comment via GitHub REST API
