@@ -158,6 +158,33 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       renderAnalyticsCharts();
+
+      // Fetch SemVer & Git Commit Info for About View
+      fetch('/api/about')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.about) {
+            const a = data.about;
+            const vBadge = document.getElementById('version-header-badge');
+            if (vBadge) vBadge.textContent = `${a.version} (${a.commitHash})`;
+
+            const semverEl = document.getElementById('about-semver');
+            if (semverEl) semverEl.textContent = a.version;
+
+            const hashEl = document.getElementById('about-commit-hash');
+            if (hashEl) {
+              hashEl.textContent = a.commitHash;
+              hashEl.href = `https://github.com/calltelemetry/ct-review-bot/commit/${a.fullCommitHash || a.commitHash}`;
+            }
+
+            const envEl = document.getElementById('about-env');
+            if (envEl) envEl.textContent = a.cluster || a.environment;
+
+            const runEl = document.getElementById('about-runner');
+            if (runEl) runEl.textContent = a.runner;
+          }
+        })
+        .catch(() => {});
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
     }
