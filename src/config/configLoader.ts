@@ -57,11 +57,11 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
       { id: 'arch-lane', enabled: true, required: false, charter: 'builtin:constitutional-goals', paths: ['**'], providers: ['claude'] },
       { id: 'perf-lane', enabled: true, required: false, charter: 'builtin:performance', paths: ['**'], providers: ['codex'] },
       { id: 'qual-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['**'], providers: ['claude'] },
-      { id: 'db-lane', enabled: true, required: false, charter: 'builtin:database', paths: ['**'], providers: ['codex'] },
-      { id: 'api-lane', enabled: true, required: false, charter: 'builtin:contract', paths: ['**'], providers: ['claude'] },
+      { id: 'db-lane', enabled: true, required: false, charter: 'builtin:database', paths: ['src/persistence/**', 'src/db/**', 'migrations/**', '**/*.sql'], providers: ['codex'] },
+      { id: 'api-lane', enabled: true, required: false, charter: 'builtin:contract', paths: ['src/api/**', 'src/routes/**', 'openapi/**', '**/*.yaml'], providers: ['claude'] },
       { id: 'sre-lane', enabled: true, required: false, charter: 'builtin:policy-compliance', paths: ['**'], providers: ['codex'] },
-      { id: 'devops-lane', enabled: true, required: false, charter: 'builtin:devops', paths: ['**'], providers: ['claude'] },
-      { id: 'docs-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['**'], providers: ['codex'] },
+      { id: 'devops-lane', enabled: true, required: false, charter: 'builtin:devops', paths: ['Dockerfile*', 'k8s/**', '.github/**', 'helm/**', '**/*.yaml'], providers: ['claude'] },
+      { id: 'docs-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['docs/**', 'README.md', '**/*.md', 'src/**'], providers: ['codex'] },
       { id: 'finops-lane', enabled: true, required: false, charter: 'builtin:finops', paths: ['**'], providers: ['claude'] },
     ],
     reviewers: {
@@ -217,13 +217,16 @@ export function translateLegacyConfigToV3(raw: any): CtReviewConfigV3 {
   } as any;
 }
 
+import { ConfigResolver } from './configResolver';
+
 export async function loadConfig(
   owner: string,
   repo: string,
   ref: string,
   client: { getFileContent: (owner: string, repo: string, path: string, ref?: string) => Promise<string | null> }
 ): Promise<any> {
-  const fileNames = ['.ct-review.yaml', '.ct-review.yml', 'ct-review.yaml', '.coderabbit.yaml'];
+  const resolver = new ConfigResolver();
+  const fileNames = ConfigResolver.CONFIG_FILES;
 
   for (const fileName of fileNames) {
     const content = await client.getFileContent(owner, repo, fileName, ref);
@@ -233,7 +236,7 @@ export async function loadConfig(
       if ((parsed as any).version !== 3) {
         return translateLegacyConfigToV3(parsed);
       }
-      return parsed;
+      return resolver.deepMergeConfigs(createDefaultV3Config(), null, parsed);
     }
   }
 
@@ -246,7 +249,7 @@ export async function loadConfig(
         if ((parsed as any).version !== 3) {
           return translateLegacyConfigToV3(parsed);
         }
-        return parsed;
+        return resolver.deepMergeConfigs(createDefaultV3Config(), parsed, null);
       }
     }
   }

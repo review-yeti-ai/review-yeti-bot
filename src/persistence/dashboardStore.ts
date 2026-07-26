@@ -179,16 +179,16 @@ export class DashboardStore {
           'agy-opus': 'agy/claude-opus-4-6-thinking',
         },
         personaSettings: {
-          security: { id: 'security', displayName: '🛡️ Security & Tenancy Guardian', description: 'Secret scanning, authentication, authorization, OWASP Top 10, multi-tenant isolation.', enabled: true, model: 'claude-5-sonnet', effort: 'max', confidenceThreshold: 85 },
-          architecture: { id: 'architecture', displayName: '🏛️ System Architecture & Design', description: 'Module boundaries, design patterns, microservice contracts, ADR compliance.', enabled: true, model: 'claude-5-sonnet', effort: 'high', confidenceThreshold: 75 },
-          performance: { id: 'performance', displayName: '⚡ Performance & Scalability', description: 'CPU/Memory hotspots, N+1 queries, unindexed lookups, memory leaks.', enabled: true, model: 'gpt-5.6-sol', effort: 'high', confidenceThreshold: 70 },
-          quality: { id: 'quality', displayName: '✨ Code Quality & Style', description: 'Idiomatic syntax, readability, type safety, error handling guidelines.', enabled: true, model: 'claude-5-sonnet', effort: 'medium', confidenceThreshold: 70 },
-          database: { id: 'database', displayName: '🗄️ Database & Persistence', description: 'Schema migrations, index efficiency, SQL injection, transaction safety.', enabled: true, model: 'gpt-5.6-sol', effort: 'high', confidenceThreshold: 80 },
-          api_contract: { id: 'api_contract', displayName: '🔌 API Contract & Integration', description: 'Breaking API changes, OpenAPI/REST schemas, backward compatibility.', enabled: true, model: 'claude-5-sonnet', effort: 'medium', confidenceThreshold: 75 },
-          reliability: { id: 'reliability', displayName: '💥 Reliability & Resilience (SRE)', description: 'Rate limiting, circuit breakers, timeout backoffs, fail-closed safety.', enabled: true, model: 'deepseek-v4-pro', effort: 'high', confidenceThreshold: 80 },
-          devops: { id: 'devops', displayName: '🐳 DevOps & Containers', description: 'K8s manifests, Dockerfile layer optimization, IAM privilege boundaries.', enabled: true, model: 'glm-5.2', effort: 'medium', confidenceThreshold: 75 },
-          docs_compliance: { id: 'docs_compliance', displayName: '📝 Documentation & Compliance', description: 'Inline docstrings, README updates, ADR registration, open-source licenses.', enabled: true, model: 'claude-5-sonnet', effort: 'low', confidenceThreshold: 60 },
-          finops: { id: 'finops', displayName: '💰 FinOps & Token Budget', description: 'Prompt token budget efficiency, model cost tiering, AST hunk filtering.', enabled: true, model: 'glm-5.2', effort: 'medium', confidenceThreshold: 70 },
+          security: { id: 'security', displayName: '🛡️ Security & Tenancy Guardian', description: 'Secret scanning, authentication, authorization, OWASP Top 10, multi-tenant isolation.', enabled: true, model: 'claude-3-5-sonnet', effort: 'max', confidenceThreshold: 85 },
+          architecture: { id: 'architecture', displayName: '🏛️ System Architecture & Design', description: 'Module boundaries, design patterns, microservice contracts, ADR compliance.', enabled: true, model: 'claude-3-5-sonnet', effort: 'high', confidenceThreshold: 75 },
+          performance: { id: 'performance', displayName: '⚡ Performance & Scalability', description: 'CPU/Memory hotspots, N+1 queries, unindexed lookups, memory leaks.', enabled: true, model: 'gpt-4o', effort: 'high', confidenceThreshold: 70 },
+          quality: { id: 'quality', displayName: '✨ Code Quality & Style', description: 'Idiomatic syntax, readability, type safety, error handling guidelines.', enabled: true, model: 'claude-3-5-sonnet', effort: 'medium', confidenceThreshold: 70 },
+          database: { id: 'database', displayName: '🗄️ Database & Persistence', description: 'Schema migrations, index efficiency, SQL injection, transaction safety.', enabled: true, model: 'gpt-4o', effort: 'high', confidenceThreshold: 80 },
+          api_contract: { id: 'api_contract', displayName: '🔌 API Contract & Integration', description: 'Breaking API changes, OpenAPI/REST schemas, backward compatibility.', enabled: true, model: 'claude-3-5-sonnet', effort: 'medium', confidenceThreshold: 75 },
+          reliability: { id: 'reliability', displayName: '💥 Reliability & Resilience (SRE)', description: 'Rate limiting, circuit breakers, timeout backoffs, fail-closed safety.', enabled: true, model: 'deepseek-v3', effort: 'high', confidenceThreshold: 80 },
+          devops: { id: 'devops', displayName: '🐳 DevOps & Containers', description: 'K8s manifests, Dockerfile layer optimization, IAM privilege boundaries.', enabled: true, model: 'glm-4', effort: 'medium', confidenceThreshold: 75 },
+          docs_compliance: { id: 'docs_compliance', displayName: '📝 Documentation & Compliance', description: 'Inline docstrings, README updates, ADR registration, open-source licenses.', enabled: true, model: 'claude-3-5-sonnet', effort: 'low', confidenceThreshold: 60 },
+          finops: { id: 'finops', displayName: '💰 FinOps & Token Budget', description: 'Prompt token budget efficiency, model cost tiering, AST hunk filtering.', enabled: true, model: 'glm-4', effort: 'medium', confidenceThreshold: 70 },
         },
         memoryEngineSettings: {
           autoSuppressNits: true,
@@ -328,13 +328,44 @@ export class DashboardStore {
     return JSON.parse(JSON.stringify(this.data.settings));
   }
 
+  public validatePersonaSetting(persona: any, id?: string): void {
+    if (!persona || typeof persona !== 'object') {
+      throw new Error(`Invalid persona settings for '${id || 'unknown'}'`);
+    }
+    const key = id || persona.id || 'persona';
+    if (typeof persona.confidenceThreshold !== 'number' || persona.confidenceThreshold < 0 || persona.confidenceThreshold > 100 || !Number.isFinite(persona.confidenceThreshold)) {
+      throw new Error(`confidenceThreshold for '${key}' must be between 0 and 100`);
+    }
+    const allowedEfforts = ['low', 'medium', 'high', 'max'];
+    if (typeof persona.effort !== 'string' || !allowedEfforts.includes(persona.effort)) {
+      throw new Error(`effort for '${key}' must be one of low, medium, high, max`);
+    }
+    if (typeof persona.model !== 'string' || !persona.model.trim()) {
+      throw new Error(`model for '${key}' must be a non-empty string`);
+    }
+    if (typeof persona.enabled !== 'boolean') {
+      throw new Error(`enabled for '${key}' must be a boolean`);
+    }
+  }
+
   public updateSettings(newSettings: Partial<PlatformSettings>): PlatformSettings {
+    if (newSettings.personaSettings) {
+      for (const [key, val] of Object.entries(newSettings.personaSettings)) {
+        const current = this.data.settings.personaSettings?.[key] || {};
+        const merged = { ...current, ...val };
+        this.validatePersonaSetting(merged, key);
+      }
+    }
     this.data.settings = {
       ...this.data.settings,
       ...newSettings,
       defaultModelOverrides: {
         ...this.data.settings.defaultModelOverrides,
         ...(newSettings.defaultModelOverrides || {}),
+      },
+      personaSettings: {
+        ...(this.data.settings.personaSettings || {}),
+        ...(newSettings.personaSettings || {}),
       },
       memoryEngineSettings: {
         ...this.data.settings.memoryEngineSettings,
@@ -349,11 +380,35 @@ export class DashboardStore {
     return this.getSettings();
   }
 
+  public updatePersonaSetting(personaId: string, patch: Partial<PersonaSetting>): PersonaSetting {
+    if (!this.data.settings.personaSettings) {
+      this.data.settings.personaSettings = this.defaultData().settings.personaSettings!;
+    }
+    let current = this.data.settings.personaSettings[personaId];
+    if (!current) {
+      const defaults = this.defaultData().settings.personaSettings;
+      if (defaults && defaults[personaId]) {
+        this.data.settings.personaSettings[personaId] = { ...defaults[personaId] };
+        current = this.data.settings.personaSettings[personaId];
+      }
+    }
+    if (!current) {
+      throw new Error(`Persona '${personaId}' not found`);
+    }
+    const merged: PersonaSetting = { ...current, ...patch, id: personaId };
+    this.validatePersonaSetting(merged, personaId);
+    this.data.settings.personaSettings[personaId] = merged;
+    this.saveData(this.data);
+    return merged;
+  }
+
   public getApiKeys(): ApiKeyRecord[] {
+    if (!this.data.apiKeys) this.data.apiKeys = [];
     return [...this.data.apiKeys];
   }
 
   public createApiKey(name: string): { id: string; name: string; rawKey: string; maskedKey: string; createdAt: string } {
+    if (!this.data.apiKeys) this.data.apiKeys = [];
     const id = `key_${crypto.randomBytes(4).toString('hex')}`;
     const rawSecret = crypto.randomBytes(16).toString('hex');
     const rawKey = `ct_live_${rawSecret}`;
@@ -381,6 +436,7 @@ export class DashboardStore {
   }
 
   public validateApiKey(rawKey: string): boolean {
+    if (!this.data.apiKeys) this.data.apiKeys = [];
     const hash = crypto.createHash('sha256').update(rawKey).digest('hex');
     const match = this.data.apiKeys.find((k) => k.keyHash === hash);
     if (match) {
@@ -392,6 +448,7 @@ export class DashboardStore {
   }
 
   public deleteApiKey(id: string): boolean {
+    if (!this.data.apiKeys) this.data.apiKeys = [];
     const prevLen = this.data.apiKeys.length;
     this.data.apiKeys = this.data.apiKeys.filter((k) => k.id !== id);
     if (this.data.apiKeys.length !== prevLen) {

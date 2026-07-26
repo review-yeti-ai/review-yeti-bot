@@ -1,6 +1,6 @@
 {
   "name": "ct-review-bot",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Repository-configurable persona-panel GitHub App with binding arbitration",
   "main": "dist/index.js",
   "scripts": {
