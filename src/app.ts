@@ -485,6 +485,16 @@ export function createApp(): Express {
     },
   }));
 
+  // Explicit static page route for Live Terminal Stream Dashboard
+  app.get('/dashboard/live', (_req: Request, res: Response) => {
+    res.sendFile(path.join(__dirname, '../public/live.html'));
+  });
+
+  // Explicit static page route for Organization Management Dashboard
+  app.get('/dashboard/organization', (_req: Request, res: Response) => {
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+  });
+
   // SPA Fallback: Serve index.html for non-API GET requests
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/') || req.path.startsWith('/health') || req.path.startsWith('/ready') || req.path.startsWith('/metrics')) {

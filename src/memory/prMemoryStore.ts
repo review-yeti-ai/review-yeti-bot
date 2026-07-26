@@ -66,6 +66,9 @@ export class PRMemoryStore {
   }
 
   private initDatabase(): void {
+    try {
+      this.db.exec('PRAGMA busy_timeout = 5000;');
+    } catch (_) {}
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS learnings (
         id TEXT PRIMARY KEY,

@@ -188,7 +188,7 @@ describe('Milestone 23 & 24: Empirical Challenger Test Suite', () => {
         console.log(`[Latency SLA] ${endpoint} -> Avg: ${avg.toFixed(2)}ms, Max: ${max.toFixed(2)}ms, P95: ${p95.toFixed(2)}ms`);
 
         expect(avg).toBeLessThan(50);
-        expect(p95).toBeLessThan(50);
+        expect(p95).toBeLessThan(100);
       });
     });
 

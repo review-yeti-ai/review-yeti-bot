@@ -5,25 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ct-review-bot — Live Agent Review Terminal</title>
   <link rel="stylesheet" href="/css/theme.css">
+  <link rel="stylesheet" href="/css/components.css">
   <style>
-    :root {
-      --bg-dark: #0b0e14;
-      --panel-bg: rgba(22, 27, 34, 0.85);
-      --border-color: rgba(255, 255, 255, 0.1);
-      --accent-blue: #3b82f6;
-      --accent-green: #10b981;
-      --accent-purple: #8b5cf6;
-      --accent-orange: #f59e0b;
-      --text-muted: #8b949e;
-      --terminal-bg: #05070a;
-    }
-
     body {
       margin: 0;
       padding: 0;
-      background-color: var(--bg-dark);
-      color: #f0f6fc;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: var(--bg-app);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
       display: flex;
       flex-direction: column;
       height: 100vh;
@@ -31,13 +20,15 @@
     }
 
     header {
-      background: var(--panel-bg);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border-color);
+      background: var(--bg-surface-glass);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border-bottom: 1px solid var(--border-subtle);
       padding: 12px 24px;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      z-index: 10;
     }
 
     .logo-badge {
@@ -46,34 +37,35 @@
       gap: 12px;
       font-weight: 700;
       font-size: 1.1rem;
-      letter-spacing: 0.5px;
+      letter-spacing: -0.3px;
+    }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
     }
 
     .status-dot {
       width: 10px;
       height: 10px;
-      background-color: var(--accent-green);
+      background-color: var(--color-success);
       border-radius: 50%;
-      box-shadow: 0 0 8px var(--accent-green);
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.9); }
-      100% { opacity: 1; transform: scale(1); }
+      box-shadow: 0 0 8px var(--color-success);
+      animation: pulse 2s infinite ease-in-out;
     }
 
     main {
       flex: 1;
       display: grid;
-      grid-template-columns: 320px 1fr;
-      height: calc(100vh - 65px);
+      grid-template-columns: 280px 1fr 340px;
+      height: calc(100vh - 61px);
+      overflow: hidden;
     }
 
-    sidebar {
-      background: var(--panel-bg);
-      border-right: 1px solid var(--border-color);
+    sidebar.persona-explorer {
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
       padding: 16px;
       display: flex;
       flex-direction: column;
@@ -81,34 +73,59 @@
       overflow-y: auto;
     }
 
-    .tab-button {
-      background: transparent;
-      border: 1px solid var(--border-color);
+    .sidebar-section-title {
+      font-size: 11px;
+      font-weight: 700;
       color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 8px;
+    }
+
+    .tab-button {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
       padding: 10px 14px;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
       text-align: left;
       font-weight: 600;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      transition: all 0.2s ease;
+      transition: all 0.15s ease;
     }
 
     .tab-button.active, .tab-button:hover {
-      background: rgba(59, 130, 246, 0.15);
-      border-color: var(--accent-blue);
+      background: rgba(110, 86, 207, 0.18);
+      border-color: var(--accent-primary);
       color: #ffffff;
     }
 
+    .tab-badge {
+      background: var(--bg-surface);
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .tab-button.active .tab-badge {
+      background: var(--accent-primary);
+      color: #ffffff;
+      border-color: var(--accent-primary);
+    }
+
     .terminal-container {
-      background: var(--terminal-bg);
+      background: hsl(220, 15%, 6%);
       padding: 16px;
       display: flex;
       flex-direction: column;
       height: 100%;
+      border-right: 1px solid var(--border-subtle);
     }
 
     .terminal-header {
@@ -116,9 +133,9 @@
       justify-content: space-between;
       align-items: center;
       padding-bottom: 12px;
-      border-bottom: 1px solid var(--border-color);
+      border-bottom: 1px solid var(--border-subtle);
       margin-bottom: 12px;
-      font-family: monospace;
+      font-family: var(--font-mono);
       color: var(--text-muted);
       font-size: 0.85rem;
     }
@@ -126,44 +143,96 @@
     .terminal-output {
       flex: 1;
       overflow-y: auto;
-      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-family: var(--font-mono);
       font-size: 0.88rem;
-      line-height: 1.5;
+      line-height: 1.6;
       padding-right: 8px;
     }
 
     .log-line {
       margin-bottom: 6px;
       word-break: break-word;
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
     }
 
-    .tag-security { color: #f43f5e; font-weight: bold; }
-    .tag-architecture { color: #a855f7; font-weight: bold; }
-    .tag-performance { color: #eab308; font-weight: bold; }
-    .tag-quality { color: #3b82f6; font-weight: bold; }
-    .tag-quorum { color: #10b981; font-weight: bold; }
+    .log-time {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      white-space: nowrap;
+    }
+
+    .tag-security { color: #eb3b48; font-weight: 700; }
+    .tag-architecture { color: #a242e6; font-weight: 700; }
+    .tag-performance { color: #f59e0b; font-weight: 700; }
+    .tag-quality { color: #6e56cf; font-weight: 700; }
+    .tag-quorum { color: #27c46a; font-weight: 700; }
+    .tag-omniroute { color: #38bdf8; font-weight: 700; }
+    .tag-system { color: var(--text-muted); font-weight: 700; }
 
     .llm-chunk {
-      color: #94a3b8;
-      border-left: 2px solid var(--accent-blue);
-      padding-left: 8px;
-      margin: 4px 0;
+      color: var(--text-primary);
+      border-left: 2px solid var(--accent-primary);
+      padding-left: 10px;
+      margin: 4px 0 4px 24px;
+      background: rgba(110, 86, 207, 0.06);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      white-space: pre-wrap;
     }
 
-    .inspector-panel {
-      background: var(--panel-bg);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 12px;
+    aside.inspector-drawer {
+      background: var(--bg-surface);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    .drawer-card {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 14px;
       font-size: 0.85rem;
     }
 
-    .inspector-title {
+    .drawer-card-title {
       font-weight: 700;
-      color: var(--accent-blue);
-      margin-bottom: 8px;
+      color: var(--accent-primary);
+      margin-bottom: 10px;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.6px;
+      font-size: 0.78rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .drawer-metric-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 0.85rem;
+    }
+
+    .drawer-metric-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .code-block {
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      max-height: 120px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
     }
   </style>
 </head>
@@ -173,53 +242,77 @@
       <div class="status-dot"></div>
       <span>ct-review-bot — Live Agent Review Terminal</span>
     </div>
-    <div>
-      <span id="job-id-display" style="color: var(--text-muted); font-family: monospace; font-size: 0.9rem;">Job: Loading...</span>
-      <a href="/dashboard/organization" style="margin-left: 16px; color: var(--accent-blue); text-decoration: none; font-weight: 600; font-size: 0.9rem;">Organization Management →</a>
+
+    <div class="header-controls">
+      <span id="job-id-display" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.88rem;">Job: Loading...</span>
+
+      <input type="text" id="terminal-search" class="input-control" placeholder="🔍 Search terminal..." oninput="handleSearchInput()" style="width: 180px; padding: 6px 12px; font-size: 12px;">
+
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary);">
+        <span>Auto-scroll</span>
+        <div id="autoscroll-toggle" class="toggle-switch active" onclick="toggleAutoScroll()">
+          <div class="toggle-knob"></div>
+        </div>
+      </div>
+
+      <button class="btn-secondary" onclick="clearFeed()" style="padding: 6px 12px; font-size: 12px;">Clear Feed</button>
+      <a href="/dashboard/organization" class="btn-primary" style="padding: 6px 12px; font-size: 12px;">Organization Dashboard →</a>
     </div>
   </header>
 
   <main>
-    <sidebar>
-      <div class="inspector-title">Active Persona Panels</div>
+    <sidebar class="persona-explorer">
+      <div class="sidebar-section-title">Tabbed Persona Explorer</div>
       <button class="tab-button active" onclick="filterPersona('all')">
         <span>🤖 All Persona Feeds</span>
-        <span id="badge-all">0</span>
+        <span class="tab-badge" id="badge-all">0</span>
       </button>
       <button class="tab-button" onclick="filterPersona('security')">
         <span>🛡️ Security Panel</span>
-        <span id="badge-security">0</span>
+        <span class="tab-badge" id="badge-security">0</span>
       </button>
       <button class="tab-button" onclick="filterPersona('architecture')">
         <span>🏛️ Architecture Panel</span>
-        <span id="badge-architecture">0</span>
+        <span class="tab-badge" id="badge-architecture">0</span>
       </button>
       <button class="tab-button" onclick="filterPersona('performance')">
         <span>⚡ Performance Panel</span>
-        <span id="badge-performance">0</span>
+        <span class="tab-badge" id="badge-performance">0</span>
       </button>
       <button class="tab-button" onclick="filterPersona('quality')">
         <span>✨ Code Quality Panel</span>
-        <span id="badge-quality">0</span>
+        <span class="tab-badge" id="badge-quality">0</span>
       </button>
       <button class="tab-button" onclick="filterPersona('quorum')">
         <span>⚖️ Quorum Consensus</span>
-        <span id="badge-quorum">0</span>
+        <span class="tab-badge" id="badge-quorum">0</span>
       </button>
 
-      <div class="inspector-panel" style="margin-top: 12px;">
-        <div class="inspector-title">Live Review Telemetry</div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+      <div class="drawer-card" style="margin-top: auto;">
+        <div class="drawer-card-title">Live Review Telemetry</div>
+        <div class="drawer-metric-row">
           <span>Tokens Streamed:</span>
           <strong id="stat-tokens">0</strong>
         </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+        <div class="drawer-metric-row">
           <span>Active Persona Agents:</span>
           <strong id="stat-personas">4</strong>
         </div>
-        <div style="display: flex; justify-content: space-between;">
+        <div class="drawer-metric-row">
           <span>Quorum Verdict:</span>
-          <strong id="stat-verdict" style="color: var(--accent-green);">PENDING</strong>
+          <strong id="stat-verdict" style="color: var(--color-success);">PENDING</strong>
+        </div>
+        <div class="drawer-metric-row">
+          <span>Estimated Spend:</span>
+          <strong id="stat-cost">$0.0000 USD</strong>
+        </div>
+        <div class="drawer-metric-row">
+          <span>AST Symbol Lookups:</span>
+          <strong id="stat-ast">0</strong>
+        </div>
+        <div class="drawer-metric-row">
+          <span>Suppressed Nits:</span>
+          <strong id="stat-nits">0</strong>
         </div>
       </div>
     </sidebar>
@@ -227,12 +320,64 @@
     <div class="terminal-container">
       <div class="terminal-header">
         <span>STREAMING TURN LOGS & PROMPTS</span>
-        <span id="connection-status">Connecting to SSE Stream...</span>
+        <span id="connection-status" style="color: var(--color-warning);">Connecting to SSE Stream...</span>
       </div>
       <div class="terminal-output" id="terminal-feed">
-        <div class="log-line" style="color: var(--text-muted);">[SYSTEM] Initializing live review terminal listener...</div>
+        <div class="log-line">
+          <span class="log-time">[SYSTEM]</span>
+          <span class="tag-system">[SYSTEM]</span>
+          <span style="color: var(--text-muted);">Initializing live review terminal SSE listener...</span>
+        </div>
       </div>
     </div>
+
+    <aside class="inspector-drawer">
+      <div class="sidebar-section-title">Prompt & State Inspector</div>
+
+      <div class="drawer-card">
+        <div class="drawer-card-title">📜 System Prompt Inspector</div>
+        <div class="code-block" id="inspector-prompt">You are an expert security & code quality reviewer. Evaluate the PR diff for authorization vulnerabilities, OWASP Top 10 risks, and performance regressions.</div>
+      </div>
+
+      <div class="drawer-card">
+        <div class="drawer-card-title">🔀 Evaluated Diff Hunk</div>
+        <div class="code-block" id="inspector-diff">@@ -42,6 +42,12 @@ export class LiveStreamBus {
++  public addClient(jobId: string, res: Response): void {
++    res.setHeader('Content-Type', 'text/event-stream');
++    res.setHeader('Cache-Control', 'no-cache');</div>
+      </div>
+
+      <div class="drawer-card">
+        <div class="drawer-card-title">⚙️ Model & Omniroute Params</div>
+        <div id="inspector-params">
+          <div class="drawer-metric-row"><span>Active Model:</span> <strong>claude-5-sonnet</strong></div>
+          <div class="drawer-metric-row"><span>Secondary Model:</span> <strong>gpt-5.6-sol</strong></div>
+          <div class="drawer-metric-row"><span>Reasoning Effort:</span> <strong>Level 4 (High)</strong></div>
+          <div class="drawer-metric-row"><span>Temperature:</span> <strong>0.20</strong></div>
+          <div class="drawer-metric-row"><span>Latency:</span> <strong>142 ms</strong></div>
+        </div>
+      </div>
+
+      <div class="drawer-card">
+        <div class="drawer-card-title">💳 Token & Spend Telemetry</div>
+        <div id="inspector-telemetry">
+          <div class="drawer-metric-row"><span>Prompt Tokens:</span> <strong>3,420</strong></div>
+          <div class="drawer-metric-row"><span>Completion Tokens:</span> <strong>700</strong></div>
+          <div class="drawer-metric-row"><span>Total Tokens:</span> <strong>4,120</strong></div>
+          <div class="drawer-metric-row"><span>Estimated USD:</span> <strong>$0.0124</strong></div>
+        </div>
+      </div>
+
+      <div class="drawer-card">
+        <div class="drawer-card-title">🔍 AST Symbol Resolution</div>
+        <div class="code-block" id="inspector-ast">Resolved Symbols: [LiveStreamBus, publishEvent, addClient, CommentPublisher, formatInlineCommentBody]</div>
+      </div>
+
+      <div class="drawer-card">
+        <div class="drawer-card-title">🧹 Suppressed Nit Audit</div>
+        <div class="code-block" id="inspector-nits">No nit patterns suppressed for this review pass.</div>
+      </div>
+    </aside>
   </main>
 
   <script>
@@ -241,8 +386,15 @@
     document.getElementById('job-id-display').textContent = 'Job: ' + jobId;
 
     let activeFilter = 'all';
+    let searchQuery = '';
+    let autoScroll = true;
     let totalTokens = 0;
+    let totalAstLookups = 0;
+    let totalSuppressedNits = 0;
+    let totalCostUsd = 0;
+
     const personaCounts = { security: 0, architecture: 0, performance: 0, quality: 0, quorum: 0, all: 0 };
+    const allEvents = [];
 
     function filterPersona(persona) {
       activeFilter = persona;
@@ -251,32 +403,81 @@
       renderLogs();
     }
 
-    const allEvents = [];
+    function toggleAutoScroll() {
+      autoScroll = !autoScroll;
+      const toggle = document.getElementById('autoscroll-toggle');
+      if (autoScroll) {
+        toggle.classList.add('active');
+      } else {
+        toggle.classList.remove('active');
+      }
+    }
+
+    function clearFeed() {
+      allEvents.length = 0;
+      Object.keys(personaCounts).forEach(k => personaCounts[k] = 0);
+      document.querySelectorAll('.tab-badge').forEach(b => b.textContent = '0');
+      renderLogs();
+    }
+
+    function handleSearchInput() {
+      searchQuery = document.getElementById('terminal-search').value.toLowerCase().trim();
+      renderLogs();
+    }
 
     function renderLogs() {
       const feed = document.getElementById('terminal-feed');
       feed.innerHTML = '';
 
-      const filtered = activeFilter === 'all' 
-        ? allEvents 
-        : allEvents.filter(e => e.persona === activeFilter);
+      const filtered = allEvents.filter(evt => {
+        const matchesPersona = activeFilter === 'all' || evt.persona === activeFilter;
+        if (!matchesPersona) return false;
+        if (!searchQuery) return true;
+        const textContent = JSON.stringify(evt).toLowerCase();
+        return textContent.includes(searchQuery);
+      });
 
       filtered.forEach(evt => {
         const line = document.createElement('div');
         line.className = 'log-line';
         const tagClass = 'tag-' + (evt.persona || 'quality');
-        const tag = `<span class="${tagClass}">[${(evt.persona || 'AGENT').toUpperCase()}]</span>`;
-        const time = `<span style="color: var(--text-muted);">[${new Date(evt.timestamp).toLocaleTimeString()}]</span>`;
+        const timestamp = evt.timestamp ? new Date(evt.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+        const timeSpan = `<span class="log-time">[${timestamp}]</span>`;
+        const tagSpan = `<span class="${tagClass}">[${(evt.persona || 'AGENT').toUpperCase()}]</span>`;
 
         if (evt.type === 'llm_chunk') {
-          line.innerHTML = `${time} ${tag} <span class="llm-chunk">${escapeHtml(evt.data.chunk || '')}</span>`;
+          line.innerHTML = `${timeSpan} ${tagSpan} <div class="llm-chunk">${escapeHtml(evt.data.chunk || '')}</div>`;
         } else {
-          line.innerHTML = `${time} ${tag} <strong>${evt.type}</strong>: ${escapeHtml(evt.data.message || JSON.stringify(evt.data))}`;
+          const detail = evt.data.message || JSON.stringify(evt.data);
+          line.innerHTML = `${timeSpan} ${tagSpan} <span><strong>${evt.type}</strong>: ${escapeHtml(detail)}</span>`;
         }
         feed.appendChild(line);
       });
 
-      feed.scrollTop = feed.scrollHeight;
+      if (autoScroll) {
+        feed.scrollTop = feed.scrollHeight;
+      }
+    }
+
+    function updateInspectors(evt) {
+      if (evt.data) {
+        if (evt.data.promptSnippet) {
+          document.getElementById('inspector-prompt').textContent = evt.data.promptSnippet;
+        }
+        if (evt.data.path) {
+          document.getElementById('inspector-diff').textContent = 'Evaluating file: ' + evt.data.path;
+        }
+        if (evt.type === 'indexer_lookup') {
+          totalAstLookups++;
+          document.getElementById('stat-ast').textContent = totalAstLookups;
+          document.getElementById('inspector-ast').textContent = 'Lookup: ' + (evt.data.message || JSON.stringify(evt.data));
+        }
+        if (evt.type === 'nit_suppression') {
+          totalSuppressedNits++;
+          document.getElementById('stat-nits').textContent = totalSuppressedNits;
+          document.getElementById('inspector-nits').textContent = 'Suppressed: ' + (evt.data.message || JSON.stringify(evt.data));
+        }
+      }
     }
 
     function escapeHtml(text) {
@@ -287,8 +488,9 @@
     const evtSource = new EventSource('/api/live/stream?jobId=' + encodeURIComponent(jobId));
 
     evtSource.onopen = () => {
-      document.getElementById('connection-status').textContent = '● SSE STREAM CONNECTED';
-      document.getElementById('connection-status').style.color = 'var(--accent-green)';
+      const statusEl = document.getElementById('connection-status');
+      statusEl.textContent = '● SSE STREAM CONNECTED';
+      statusEl.style.color = 'var(--color-success)';
     };
 
     evtSource.onmessage = (event) => {
@@ -307,12 +509,21 @@
         if (data.data && data.data.tokensUsed) {
           totalTokens += data.data.tokensUsed;
           document.getElementById('stat-tokens').textContent = totalTokens;
+          totalCostUsd = totalTokens * 0.000003;
+          document.getElementById('stat-cost').textContent = '$' + totalCostUsd.toFixed(4) + ' USD';
         }
 
         if (data.data && data.data.verdict) {
-          document.getElementById('stat-verdict').textContent = data.data.verdict;
+          const verdictEl = document.getElementById('stat-verdict');
+          verdictEl.textContent = data.data.verdict;
+          if (data.data.verdict === 'SHIP' || data.data.verdict === 'APPROVE') {
+            verdictEl.style.color = 'var(--color-success)';
+          } else if (data.data.verdict === 'REJECT' || data.data.verdict === 'REQUEST_CHANGES') {
+            verdictEl.style.color = 'var(--color-danger)';
+          }
         }
 
+        updateInspectors(data);
         renderLogs();
       } catch (err) {
         console.error('Failed parsing SSE payload', err);
@@ -320,8 +531,9 @@
     };
 
     evtSource.onerror = () => {
-      document.getElementById('connection-status').textContent = '○ DISCONNECTED (RETRYING)';
-      document.getElementById('connection-status').style.color = 'var(--accent-orange)';
+      const statusEl = document.getElementById('connection-status');
+      statusEl.textContent = '○ DISCONNECTED (RETRYING)';
+      statusEl.style.color = 'var(--color-warning)';
     };
   </script>
 </body>
