@@ -51,16 +51,16 @@ export class PRMemoryStore {
   private db: DatabaseSync;
   private dbPath: string;
 
-  constructor(dbPath: string = '.ct-memory/pr_memory.db') {
-    this.dbPath = dbPath;
-    if (dbPath.startsWith(':memory:')) {
+  constructor(dbPath?: string) {
+    this.dbPath = dbPath || process.env.CT_REVIEW_MEMORY_DB || path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'pr_memory.db');
+    if (this.dbPath.startsWith(':memory:')) {
       this.db = new DatabaseSync(':memory:');
     } else {
-      const dir = path.dirname(dbPath);
+      const dir = path.dirname(this.dbPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      this.db = new DatabaseSync(dbPath);
+      this.db = new DatabaseSync(this.dbPath);
     }
     this.initDatabase();
   }
@@ -149,7 +149,7 @@ export class PRMemoryStore {
       createdAt,
       updatedAt
     );
-    return { id, repo, prNumber, category, title, description, ...learning, createdAt, updatedAt };
+    return { id, repo, prNumber, ...learning, category, title, description, createdAt, updatedAt };
   }
 
   public async recordResolvedNit(

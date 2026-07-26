@@ -394,6 +394,7 @@ export function createApp(): Express {
   // API Routers
   app.use('/api/auth', createAuthRouter());
   app.use('/api/onboarding', createOnboardingRouter());
+  app.use('/api/router', createProviderRouter());
   app.use('/api', requireAuth);
 
   // GET /api/telemetry/spans (JSON format) - protected by requireAuth
@@ -415,7 +416,6 @@ export function createApp(): Express {
   app.use('/api/dashboard', integrationsRouter);
   app.use('/api/dashboard/integrations', integrationsRouter);
   app.use('/api/dashboard/mcp', integrationsRouter);
-  app.use('/api/router', createProviderRouter());
   app.use('/api/analytics', createAnalyticsRouter());
   app.use('/api/live', createLiveRouter());
   app.use('/api/github', createGitHubAppApiRouter());
@@ -499,7 +499,7 @@ export function createApp(): Express {
 
   // Explicit static page route for 1-Click Zero-Config Onboarding Wizard
   app.get('/dashboard/onboarding', (_req: Request, res: Response) => {
-    res.sendFile(path.join(__dirname, '../public/onboarding.html'));
+    res.sendFile(path.join(__dirname, '../public/github-app.html'));
   });
 
   // Explicit static page route for Organization Management Dashboard
