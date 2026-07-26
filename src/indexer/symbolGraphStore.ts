@@ -408,6 +408,7 @@ export class SymbolGraphStore {
       exported: Boolean(r.exported),
     }));
 
+
     // Find Callees: symbols called by this symbolName
     const defIds = definitions.map((d) => d.id);
     const callees: ASTSymbol[] = [];
@@ -459,6 +460,29 @@ export class SymbolGraphStore {
     });
 
     return resultObject as unknown as SymbolQueryResult & Array<ASTSymbol>;
+  }
+
+  public queryCallers(symbolName: string): ASTSymbol[] {
+    const callersStmt = this.db.prepare(`
+      SELECT DISTINCT s.* FROM symbols s
+      JOIN call_graph cg ON cg.caller_symbol_id = s.id
+      WHERE cg.callee_symbol_name = ?
+    `);
+    const callerRows = callersStmt.all(symbolName) as any[];
+    return callerRows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      kind: r.kind,
+      filePath: r.file_path,
+      startLine: r.start_line,
+      endLine: r.end_line,
+      startColumn: r.start_column,
+      endColumn: r.end_column,
+      containerName: r.container_name || undefined,
+      signature: r.signature || undefined,
+      docComment: r.doc_comment || undefined,
+      exported: Boolean(r.exported),
+    }));
   }
 
   public async semanticSearch(
