@@ -11,6 +11,7 @@ describe('Integrations REST API Unit Tests', () => {
 
   beforeEach(() => {
     process.env.CT_DASHBOARD_STORE = testStorePath;
+    process.env.CONTEXT7_API_KEY = process.env.CONTEXT7_API_KEY || 'test-context7-key';
     if (fs.existsSync(testStorePath)) {
       fs.unlinkSync(testStorePath);
     }
