@@ -18,6 +18,7 @@ import { createIntegrationsRouter } from './dashboard/integrationsApi';
 import { createLiveRouter } from './api/liveApi';
 import { createGitHubAppApiRouter } from './api/githubAppApi';
 import { createOnboardingRouter } from './api/onboarding';
+import { getSystemVersionInfo } from './utils/versionInfo';
 import { requireAuth } from './api/authMiddleware';
 import { dashboardStore } from './persistence/dashboardStore';
 import { providerPool } from './gateway/providerPool';
@@ -397,6 +398,14 @@ export function createApp(): Express {
   app.use('/api/router', createProviderRouter());
   app.use('/api/live', createLiveRouter());
   app.use('/api/github/manifest-callback', createGitHubAppApiRouter());
+
+  app.get('/api/version', (_req: Request, res: Response) => {
+    return res.status(200).json({ success: true, ...getSystemVersionInfo() });
+  });
+
+  app.get('/api/about', (_req: Request, res: Response) => {
+    return res.status(200).json({ success: true, about: getSystemVersionInfo() });
+  });
 
   app.use('/api', requireAuth);
 

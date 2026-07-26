@@ -1,8 +1,18 @@
 import { Router, Request, Response } from 'express';
 import { dashboardStore } from '../persistence/dashboardStore';
+import { getSystemVersionInfo } from '../utils/versionInfo';
 
 export function createDashboardRouter(): Router {
   const router = Router();
+
+  // GET /api/dashboard/about
+  router.get('/about', (_req: Request, res: Response) => {
+    const versionInfo = getSystemVersionInfo();
+    return res.status(200).json({
+      success: true,
+      about: versionInfo,
+    });
+  });
 
   // GET /api/dashboard/overview
   router.get('/overview', (_req: Request, res: Response) => {
