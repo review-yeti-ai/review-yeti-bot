@@ -43,6 +43,7 @@ describe('McpFleetManager Unit Tests', () => {
   });
 
   it('tests connection for builtin adapter transport', async () => {
+    process.env.CONTEXT7_API_KEY = process.env.CONTEXT7_API_KEY || 'test-context7-key';
     const res = await mcpFleetManager.testConnection({
       id: 'builtin-context7',
       transport: 'adapter',
