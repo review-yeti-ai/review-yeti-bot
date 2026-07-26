@@ -130,10 +130,22 @@ export class DopplerSecretManager {
         { timeout: this.timeoutMs }
       );
       const secret = stdout.trim();
-      return secret.length > 0 ? secret : null;
+      if (secret.length > 0) return secret;
     } catch {
-      return null;
+      // Fallback: execute without explicit project/config flags
+      try {
+        const { stdout } = await execFileAsync(
+          this.cliPath,
+          ['secrets', 'get', keyName, '--plain'],
+          { timeout: this.timeoutMs }
+        );
+        const secret = stdout.trim();
+        return secret.length > 0 ? secret : null;
+      } catch {
+        return null;
+      }
     }
+    return null;
   }
 
   private async fetchFromApi(keyName: string): Promise<string | null> {

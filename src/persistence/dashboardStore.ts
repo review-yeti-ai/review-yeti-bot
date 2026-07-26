@@ -25,6 +25,43 @@ export interface PersonaSetting {
   customPrompt?: string;
 }
 
+export interface GitHubAppConfigRecord {
+  appId: string;
+  installationId?: string;
+  webhookSecretConfigured: boolean;
+  webhookSecretRaw?: string;
+  privateKeyConfigured: boolean;
+  privateKeyPemRaw?: string;
+  oauthClientId?: string;
+  oauthClientSecretMasked?: string;
+  oauthClientSecretRaw?: string;
+  status: 'configured' | 'unconfigured' | 'error';
+  updatedAt: string;
+}
+
+export interface AutoReviewSettings {
+  enabled: boolean;
+  triggers: string[];
+  review_drafts: boolean;
+  ignore_drafts: boolean;
+  labels: string[];
+  ignore_patterns: string[];
+}
+
+export interface EnforcementPolicySettings {
+  require_all_reviews: boolean;
+  failure_action: 'fail_closed' | 'fail_open' | 'quarantine';
+  require_ticket_link: boolean;
+}
+
+export interface CustomApiBases {
+  omniroute_base_url?: string;
+  openai_base_url?: string;
+  anthropic_base_url?: string;
+  deepseek_base_url?: string;
+  ollama_base_url?: string;
+}
+
 export interface PlatformSettings {
   defaultModelOverrides: Record<string, string>;
   personaSettings?: Record<string, PersonaSetting>;
@@ -39,6 +76,10 @@ export interface PlatformSettings {
     alertThresholdPercent: number;
     actionOnCapBreach: 'fail_closed' | 'disable_optional';
   };
+  githubAppConfig?: GitHubAppConfigRecord;
+  autoReviewSettings?: AutoReviewSettings;
+  enforcementPolicy?: EnforcementPolicySettings;
+  customApiBases?: CustomApiBases;
 }
 
 export interface ApiKeyRecord {
@@ -200,6 +241,39 @@ export class DashboardStore {
           dailyBudgetUSD: 10.0,
           alertThresholdPercent: 80,
           actionOnCapBreach: 'fail_closed',
+        },
+        githubAppConfig: {
+          appId: process.env.GITHUB_APP_ID || '',
+          installationId: process.env.GITHUB_INSTALLATION_ID || '',
+          webhookSecretConfigured: Boolean(process.env.WEBHOOK_SECRET),
+          webhookSecretRaw: process.env.WEBHOOK_SECRET || '',
+          privateKeyConfigured: Boolean(process.env.GITHUB_APP_PRIVATE_KEY),
+          privateKeyPemRaw: process.env.GITHUB_APP_PRIVATE_KEY || '',
+          oauthClientId: process.env.GITHUB_OAUTH_CLIENT_ID || '',
+          oauthClientSecretMasked: maskSecretKey(process.env.GITHUB_OAUTH_CLIENT_SECRET),
+          oauthClientSecretRaw: process.env.GITHUB_OAUTH_CLIENT_SECRET || '',
+          status: 'configured',
+          updatedAt: now,
+        },
+        autoReviewSettings: {
+          enabled: true,
+          triggers: ['pr_opened', 'pr_synchronize', '@ct-review'],
+          review_drafts: false,
+          ignore_drafts: true,
+          labels: [],
+          ignore_patterns: [],
+        },
+        enforcementPolicy: {
+          require_all_reviews: true,
+          failure_action: 'fail_closed',
+          require_ticket_link: false,
+        },
+        customApiBases: {
+          omniroute_base_url: process.env.OMNIROUTE_BASE_URL || '',
+          openai_base_url: process.env.OPENAI_BASE_URL || '',
+          anthropic_base_url: process.env.ANTHROPIC_BASE_URL || '',
+          deepseek_base_url: process.env.DEEPSEEK_BASE_URL || '',
+          ollama_base_url: process.env.OLLAMA_BASE_URL || '',
         },
       },
       apiKeys: [],
@@ -375,9 +449,112 @@ export class DashboardStore {
         ...this.data.settings.providerCostCaps,
         ...(newSettings.providerCostCaps || {}),
       },
+      githubAppConfig: {
+        ...(this.data.settings.githubAppConfig || {} as any),
+        ...(newSettings.githubAppConfig || {}),
+      },
+      autoReviewSettings: {
+        ...(this.data.settings.autoReviewSettings || {} as any),
+        ...(newSettings.autoReviewSettings || {}),
+      },
+      enforcementPolicy: {
+        ...(this.data.settings.enforcementPolicy || {} as any),
+        ...(newSettings.enforcementPolicy || {}),
+      },
+      customApiBases: {
+        ...(this.data.settings.customApiBases || {} as any),
+        ...(newSettings.customApiBases || {}),
+      },
     };
     this.saveData(this.data);
     return this.getSettings();
+  }
+
+  public getGitHubAppConfig(): GitHubAppConfigRecord {
+    if (!this.data.settings.githubAppConfig) {
+      const now = new Date().toISOString();
+      const rawPem = process.env.GITHUB_APP_PRIVATE_KEY || '';
+      const rawWebhook = process.env.WEBHOOK_SECRET || '';
+      const rawClientSecret = process.env.GITHUB_OAUTH_CLIENT_SECRET || '';
+      this.data.settings.githubAppConfig = {
+        appId: process.env.GITHUB_APP_ID || '',
+        installationId: process.env.GITHUB_INSTALLATION_ID || '',
+        webhookSecretConfigured: Boolean(rawWebhook),
+        webhookSecretRaw: rawWebhook,
+        privateKeyConfigured: Boolean(rawPem),
+        privateKeyPemRaw: rawPem,
+        oauthClientId: process.env.GITHUB_OAUTH_CLIENT_ID || '',
+        oauthClientSecretMasked: maskSecretKey(rawClientSecret),
+        oauthClientSecretRaw: rawClientSecret,
+        status: 'configured',
+        updatedAt: now,
+      };
+    }
+    const cfg = this.data.settings.githubAppConfig;
+    return {
+      appId: cfg.appId || '',
+      installationId: cfg.installationId || '',
+      webhookSecretConfigured: cfg.webhookSecretConfigured || Boolean(cfg.webhookSecretRaw),
+      webhookSecretRaw: cfg.webhookSecretRaw,
+      privateKeyConfigured: cfg.privateKeyConfigured || Boolean(cfg.privateKeyPemRaw),
+      privateKeyPemRaw: cfg.privateKeyPemRaw,
+      oauthClientId: cfg.oauthClientId || '',
+      oauthClientSecretMasked: cfg.oauthClientSecretMasked || maskSecretKey(cfg.oauthClientSecretRaw),
+      oauthClientSecretRaw: cfg.oauthClientSecretRaw,
+      status: cfg.status || 'unconfigured',
+      updatedAt: cfg.updatedAt || new Date().toISOString(),
+    };
+  }
+
+  public updateGitHubAppConfig(patch: Partial<GitHubAppConfigRecord> & { webhookSecret?: string; privateKeyPem?: string; oauthClientSecret?: string }): GitHubAppConfigRecord {
+    const current = this.getGitHubAppConfig();
+    const now = new Date().toISOString();
+
+    let rawPem = patch.privateKeyPem !== undefined ? patch.privateKeyPem : (patch.privateKeyPemRaw !== undefined ? patch.privateKeyPemRaw : current.privateKeyPemRaw);
+    if (rawPem && typeof rawPem === 'string') {
+      rawPem = rawPem.replace(/\\n/g, '\n').trim();
+    }
+
+    const rawWebhook = patch.webhookSecret !== undefined ? patch.webhookSecret : (patch.webhookSecretRaw !== undefined ? patch.webhookSecretRaw : current.webhookSecretRaw);
+    const rawClientSecret = patch.oauthClientSecret !== undefined ? patch.oauthClientSecret : (patch.oauthClientSecretRaw !== undefined ? patch.oauthClientSecretRaw : current.oauthClientSecretRaw);
+
+    const updated: GitHubAppConfigRecord = {
+      appId: patch.appId !== undefined ? patch.appId : current.appId,
+      installationId: patch.installationId !== undefined ? patch.installationId : current.installationId,
+      webhookSecretConfigured: Boolean(rawWebhook),
+      webhookSecretRaw: rawWebhook,
+      privateKeyConfigured: Boolean(rawPem),
+      privateKeyPemRaw: rawPem,
+      oauthClientId: patch.oauthClientId !== undefined ? patch.oauthClientId : current.oauthClientId,
+      oauthClientSecretMasked: maskSecretKey(rawClientSecret),
+      oauthClientSecretRaw: rawClientSecret,
+      status: (patch.appId || current.appId) ? 'configured' : 'unconfigured',
+      updatedAt: now,
+    };
+
+    this.data.settings.githubAppConfig = updated;
+    this.saveData(this.data);
+    return updated;
+  }
+
+  public resetGitHubAppConfig(): GitHubAppConfigRecord {
+    const now = new Date().toISOString();
+    const resetConfig: GitHubAppConfigRecord = {
+      appId: '',
+      installationId: '',
+      webhookSecretConfigured: false,
+      webhookSecretRaw: '',
+      privateKeyConfigured: false,
+      privateKeyPemRaw: '',
+      oauthClientId: '',
+      oauthClientSecretMasked: '',
+      oauthClientSecretRaw: '',
+      status: 'unconfigured',
+      updatedAt: now,
+    };
+    this.data.settings.githubAppConfig = resetConfig;
+    this.saveData(this.data);
+    return resetConfig;
   }
 
   public updatePersonaSetting(personaId: string, patch: Partial<PersonaSetting>): PersonaSetting {

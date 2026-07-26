@@ -9,6 +9,7 @@ const legacyConfigSchema = z.object({
 }).passthrough();
 
 export const V3_PROVIDER_MODELS = {
+  synthetic: 'synthetic/v1',
   codex: 'codex/gpt-5.6-sol-high',
   grok: 'grok-cli/grok-4.5',
   'agy-opus': 'agy/claude-opus-4-6-thinking',
@@ -16,6 +17,9 @@ export const V3_PROVIDER_MODELS = {
 } as const;
 
 export const R4_ALLOWED_MODELS = [
+  'synthetic/v1',
+  'synthetic-fast',
+  'synthetic-reasoning',
   'claude-5-sonnet',
   'gpt-5.6-sol',
   'deepseek-v4-pro',
@@ -27,7 +31,7 @@ export const R4_ALLOWED_MODELS = [
 ];
 
 export type ProviderId = keyof typeof V3_PROVIDER_MODELS;
-export const ProviderIdEnum = z.enum(['codex', 'grok', 'agy-opus', 'claude']);
+export const ProviderIdEnum = z.enum(['synthetic', 'codex', 'grok', 'agy-opus', 'claude']);
 const BuiltinCharterEnum = z.enum([
   'builtin:correctness',
   'builtin:security',
@@ -118,8 +122,17 @@ export const pathFiltersSchema = z.array(z.string()).default([]);
 export const autoReviewSchema = z.object({
   enabled: z.boolean().default(true),
   ignore_drafts: z.boolean().default(true),
+  review_drafts: z.boolean().default(false),
+  triggers: z.array(z.string()).default(['pr_opened', 'pr_synchronize', '@ct-review']),
   labels: z.array(z.string()).default([]),
+  ignore_patterns: z.array(z.string()).default([]),
   drafts: z.boolean().default(false),
+}).default({});
+
+export const enforcementPolicySchema = z.object({
+  require_all_reviews: z.boolean().default(true),
+  failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine']).default('fail_closed'),
+  require_ticket_link: z.boolean().default(false),
 }).default({});
 
 export const dialsSchema = z.object({
@@ -163,6 +176,7 @@ export const ctReviewConfigV3Schema = z.object({
   path_filters: pathFiltersSchema,
   auto_review: autoReviewSchema,
   dials: dialsSchema,
+  enforcement_policy: enforcementPolicySchema.optional(),
 
   // Milestone 18 Extensions
   mcps: mcpsSchema,

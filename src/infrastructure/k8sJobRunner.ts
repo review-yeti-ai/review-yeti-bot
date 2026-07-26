@@ -1,7 +1,8 @@
+import * as k8s from '@kubernetes/client-node';
 import { logger } from '../utils/logger';
 
 export interface K8sJobSpec {
-  jobName: string;
+  jobName?: string;
   namespace?: string;
   image?: string;
   persona: string;
@@ -11,7 +12,10 @@ export interface K8sJobSpec {
   pvcClaimName?: string;
   cpuLimit?: string;
   memoryLimit?: string;
+  cpuRequest?: string;
+  memoryRequest?: string;
   ttlSecondsAfterFinished?: number;
+  activeDeadlineSeconds?: number;
   envVars?: Record<string, string>;
 }
 
@@ -25,6 +29,7 @@ export interface GeneratedK8sJobManifest {
   };
   spec: {
     ttlSecondsAfterFinished: number;
+    activeDeadlineSeconds: number;
     backoffLimit: number;
     template: {
       metadata: {
@@ -58,14 +63,33 @@ export interface GeneratedK8sJobManifest {
 }
 
 export class K8sJobRunner {
+  private batchV1Api?: k8s.BatchV1Api;
+  private isK8sAvailable: boolean = false;
   private namespace: string;
   private defaultImage: string;
   private defaultPvcName: string;
 
-  constructor(options?: { namespace?: string; defaultImage?: string; defaultPvcName?: string }) {
-    this.namespace = options?.namespace || process.env.K8S_NAMESPACE || 'ct-review-bot';
-    this.defaultImage = options?.defaultImage || process.env.K8S_AGENT_IMAGE || 'calltelemetry/ct-review-agent:latest';
-    this.defaultPvcName = options?.defaultPvcName || process.env.K8S_WORKSPACE_PVC || 'ct-workspace-shared-pvc';
+  constructor(options?: {
+    namespace?: string;
+    defaultImage?: string;
+    defaultPvcName?: string;
+    forceSimulation?: boolean;
+  }) {
+    this.namespace = options?.namespace || process.env.K8S_NAMESPACE || 'ct-review-system';
+    this.defaultImage = options?.defaultImage || process.env.K8S_AGENT_IMAGE || 'registry.digitalocean.com/calltelemetry/ct-review-agent:latest';
+    this.defaultPvcName = options?.defaultPvcName || process.env.K8S_WORKSPACE_PVC || 'ct-review-bot-workspace-pvc';
+
+    if (!options?.forceSimulation && process.env.NODE_ENV !== 'test') {
+      try {
+        const kc = new k8s.KubeConfig();
+        kc.loadFromDefault();
+        this.batchV1Api = kc.makeApiClient(k8s.BatchV1Api);
+        this.isK8sAvailable = true;
+      } catch (err) {
+        logger.warn('KubeConfig initialization failed; using simulation mode', { error: (err as Error).message });
+        this.isK8sAvailable = false;
+      }
+    }
   }
 
   /**
@@ -79,6 +103,7 @@ export class K8sJobRunner {
     const image = spec.image || this.defaultImage;
     const pvcClaimName = spec.pvcClaimName || this.defaultPvcName;
     const ttl = spec.ttlSecondsAfterFinished ?? 300;
+    const activeDeadline = spec.activeDeadlineSeconds ?? 600;
     const subPath = `repos/${spec.repoUrl.replace(/[^a-zA-Z0-9_-]/g, '_')}_pr${spec.prNumber}`;
 
     const envArray = Object.entries({
@@ -105,6 +130,7 @@ export class K8sJobRunner {
       },
       spec: {
         ttlSecondsAfterFinished: ttl,
+        activeDeadlineSeconds: activeDeadline,
         backoffLimit: 1,
         template: {
           metadata: {
@@ -122,8 +148,8 @@ export class K8sJobRunner {
                 command: ['node', '/app/dist/agentWorker.js'],
                 resources: {
                   requests: {
-                    cpu: '250m',
-                    memory: '512Mi',
+                    cpu: spec.cpuRequest || '250m',
+                    memory: spec.memoryRequest || '512Mi',
                   },
                   limits: {
                     cpu: spec.cpuLimit || '500m',
@@ -157,19 +183,47 @@ export class K8sJobRunner {
   /**
    * Simulates/Executes Kubernetes Job dispatch on DOKS cluster.
    */
-  public async dispatchJob(spec: K8sJobSpec): Promise<{ success: boolean; jobName: string; manifest: GeneratedK8sJobManifest }> {
+  public async dispatchJob(spec: K8sJobSpec): Promise<{
+    success: boolean;
+    jobName: string;
+    namespace: string;
+    mode: 'k8s' | 'simulation';
+    manifest: GeneratedK8sJobManifest;
+  }> {
     const manifest = this.generateJobManifest(spec);
-    logger.info('Dispatched Kubernetes agent sandbox Job', {
+    const namespace = manifest.metadata.namespace;
+
+    if (this.isK8sAvailable && this.batchV1Api) {
+      try {
+        if (typeof (this.batchV1Api as any).createNamespacedJob === 'function') {
+          try {
+            await (this.batchV1Api as any).createNamespacedJob({ namespace, body: manifest as any });
+          } catch (e: any) {
+            await (this.batchV1Api as any).createNamespacedJob(namespace, manifest as any);
+          }
+        }
+        logger.info('Dispatched Kubernetes agent batch Job via K8s API', { jobName: manifest.metadata.name, namespace });
+        return { success: true, jobName: manifest.metadata.name, namespace, mode: 'k8s', manifest };
+      } catch (err: any) {
+        logger.error('Failed to create K8s agent batch Job', { error: err.message, jobName: manifest.metadata.name });
+        return { success: false, jobName: manifest.metadata.name, namespace, mode: 'k8s', manifest };
+      }
+    }
+
+    logger.info('Simulated Kubernetes agent sandbox Job dispatch', {
       jobName: manifest.metadata.name,
       persona: spec.persona,
-      namespace: manifest.metadata.namespace,
+      namespace,
       pvcClaimName: manifest.spec.template.spec.volumes[0].persistentVolumeClaim?.claimName,
     });
 
     return {
       success: true,
       jobName: manifest.metadata.name,
+      namespace,
+      mode: 'simulation',
       manifest,
     };
   }
 }
+

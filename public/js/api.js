@@ -211,4 +211,40 @@ const ApiClient = {
       body: payload,
     });
   },
+
+  // GitHub App Onboarding & Monitored Repos API Methods
+  async getGitHubAppConfig() {
+    return this.request('/api/github/app-config');
+  },
+
+  async updateGitHubAppConfig(data) {
+    return this.request('/api/github/app-config', {
+      method: 'POST',
+      body: data,
+    });
+  },
+
+  async deleteGitHubAppConfig() {
+    return this.request('/api/github/app-config', {
+      method: 'DELETE',
+    });
+  },
+
+  async verifyGitHubAppInstallation(data = {}) {
+    return this.request('/api/github/app-config/verify', {
+      method: 'POST',
+      body: data,
+    });
+  },
+
+  async getMonitoredRepos() {
+    return this.request('/api/github/app-config/monitored-repos');
+  },
+
+  async toggleMonitoredRepo(owner, repo, automationEnabled) {
+    return this.request(`/api/github/app-config/monitored-repos/${owner}/${repo}`, {
+      method: 'PATCH',
+      body: { automationEnabled },
+    });
+  },
 };

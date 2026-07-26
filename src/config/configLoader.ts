@@ -70,6 +70,14 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
       overall_timeout_s: 60,
       providers: [
         {
+          id: 'synthetic',
+          enabled: true,
+          model: 'synthetic/v1',
+          effort: 'max',
+          review_timeout_s: 30,
+          arbiter_timeout_s: 30,
+        },
+        {
           id: 'codex',
           enabled: true,
           model: 'codex/gpt-5.6-sol-high',
@@ -87,7 +95,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
         },
       ],
       arbiter: {
-        order: ['codex', 'claude'],
+        order: ['synthetic', 'codex', 'claude'],
       },
     },
     path_instructions: [],

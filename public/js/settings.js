@@ -155,9 +155,120 @@
         };
       }
       renderPersonaCards();
+      populateExtraSettings(currentSettings);
     } catch (err) {
       console.error('Failed to load settings:', err);
       showToast(`Failed to load settings: ${err.message}`, 'error');
+    }
+  }
+
+  function populateExtraSettings(settings) {
+    const autoReview = settings.autoReviewSettings || {};
+    const triggers = autoReview.triggers || ['pr_opened', 'pr_synchronize', '@ct-review'];
+
+    const openedCb = document.getElementById('trigger-pr-opened');
+    if (openedCb) openedCb.checked = triggers.includes('pr_opened') || triggers.includes('opened');
+
+    const synchCb = document.getElementById('trigger-pr-synchronize');
+    if (synchCb) synchCb.checked = triggers.includes('pr_synchronize') || triggers.includes('synchronize');
+
+    const mentionCb = document.getElementById('trigger-ct-review');
+    if (mentionCb) mentionCb.checked = triggers.includes('@ct-review');
+
+    const reviewDraftsToggle = document.getElementById('toggle-review-drafts');
+    if (reviewDraftsToggle) reviewDraftsToggle.checked = Boolean(autoReview.review_drafts);
+
+    const labelsInput = document.getElementById('input-review-labels');
+    if (labelsInput && Array.isArray(autoReview.labels)) labelsInput.value = autoReview.labels.join(', ');
+
+    const ignoreTextarea = document.getElementById('input-ignore-patterns');
+    if (ignoreTextarea && Array.isArray(autoReview.ignore_patterns)) ignoreTextarea.value = autoReview.ignore_patterns.join('\n');
+
+    const policy = settings.enforcementPolicy || {};
+    const reqReviewsToggle = document.getElementById('toggle-require-all-reviews');
+    if (reqReviewsToggle) reqReviewsToggle.checked = policy.require_all_reviews !== false;
+
+    const reqTicketToggle = document.getElementById('toggle-require-ticket-link');
+    if (reqTicketToggle) reqTicketToggle.checked = Boolean(policy.require_ticket_link);
+
+    const failActionSelect = document.getElementById('select-failure-action');
+    if (failActionSelect && policy.failure_action) failActionSelect.value = policy.failure_action;
+
+    const bases = settings.customApiBases || {};
+    const baseOmni = document.getElementById('input-base-omniroute');
+    if (baseOmni && bases.omniroute_base_url) baseOmni.value = bases.omniroute_base_url;
+
+    const baseOpenAI = document.getElementById('input-base-openai');
+    if (baseOpenAI && bases.openai_base_url) baseOpenAI.value = bases.openai_base_url;
+
+    const baseAnthropic = document.getElementById('input-base-anthropic');
+    if (baseAnthropic && bases.anthropic_base_url) baseAnthropic.value = bases.anthropic_base_url;
+
+    const baseDeepseek = document.getElementById('input-base-deepseek');
+    if (baseDeepseek && bases.deepseek_base_url) baseDeepseek.value = bases.deepseek_base_url;
+
+    const baseOllama = document.getElementById('input-base-ollama');
+    if (baseOllama && bases.ollama_base_url) baseOllama.value = bases.ollama_base_url;
+  }
+
+  function getExtraSettingsPayload() {
+    const triggers = [];
+    if (document.getElementById('trigger-pr-opened')?.checked) triggers.push('pr_opened');
+    if (document.getElementById('trigger-pr-synchronize')?.checked) triggers.push('pr_synchronize');
+    if (document.getElementById('trigger-ct-review')?.checked) triggers.push('@ct-review');
+
+    const reviewDrafts = Boolean(document.getElementById('toggle-review-drafts')?.checked);
+    const labelsRaw = document.getElementById('input-review-labels')?.value || '';
+    const labels = labelsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+
+    const ignoreRaw = document.getElementById('input-ignore-patterns')?.value || '';
+    const ignorePatterns = ignoreRaw.split('\n').map((s) => s.trim()).filter(Boolean);
+
+    const requireAllReviews = Boolean(document.getElementById('toggle-require-all-reviews')?.checked);
+    const requireTicketLink = Boolean(document.getElementById('toggle-require-ticket-link')?.checked);
+    const failureAction = document.getElementById('select-failure-action')?.value || 'fail_closed';
+
+    const omnirouteBaseUrl = document.getElementById('input-base-omniroute')?.value.trim();
+    const openaiBaseUrl = document.getElementById('input-base-openai')?.value.trim();
+    const anthropicBaseUrl = document.getElementById('input-base-anthropic')?.value.trim();
+    const deepseekBaseUrl = document.getElementById('input-base-deepseek')?.value.trim();
+    const ollamaBaseUrl = document.getElementById('input-base-ollama')?.value.trim();
+
+    return {
+      autoReviewSettings: {
+        enabled: true,
+        triggers,
+        review_drafts: reviewDrafts,
+        ignore_drafts: !reviewDrafts,
+        labels,
+        ignore_patterns: ignorePatterns,
+      },
+      enforcementPolicy: {
+        require_all_reviews: requireAllReviews,
+        failure_action: failureAction,
+        require_ticket_link: requireTicketLink,
+      },
+      customApiBases: {
+        omniroute_base_url: omnirouteBaseUrl,
+        openai_base_url: openaiBaseUrl,
+        anthropic_base_url: anthropicBaseUrl,
+        deepseek_base_url: deepseekBaseUrl,
+        ollama_base_url: ollamaBaseUrl,
+      },
+    };
+  }
+
+  async function saveAllSettings() {
+    try {
+      const extraPayload = getExtraSettingsPayload();
+      const payload = {
+        personaSettings: personaState,
+        ...extraPayload,
+      };
+      await ApiClient.updateSettings(payload);
+      showToast('All platform and persona settings saved successfully!', 'success');
+    } catch (err) {
+      showToast(`Failed to save settings: ${err.message}`, 'error');
     }
   }
 
