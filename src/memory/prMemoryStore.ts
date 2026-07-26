@@ -129,6 +129,10 @@ export class PRMemoryStore {
     const now = new Date().toISOString();
     const createdAt = learning.createdAt || now;
     const updatedAt = learning.updatedAt || now;
+    const title = learning.title || (learning as any).rule || 'Learned Rule';
+    const description = learning.description || (learning as any).rule || 'Learned from PR review feedback';
+    const category = learning.category || 'convention';
+
     const stmt = this.db.prepare(`
       INSERT INTO learnings (id, repo, pr_number, category, title, description, file_path, confidence, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -137,15 +141,15 @@ export class PRMemoryStore {
       id,
       repo,
       prNumber,
-      learning.category,
-      learning.title,
-      learning.description,
+      category,
+      title,
+      description,
       learning.filePath || null,
       learning.confidence ?? 1.0,
       createdAt,
       updatedAt
     );
-    return { id, repo, prNumber, ...learning, createdAt, updatedAt };
+    return { id, repo, prNumber, category, title, description, ...learning, createdAt, updatedAt };
   }
 
   public async recordResolvedNit(
