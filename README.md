@@ -231,3 +231,6 @@ kubectl apply -f k8s/ingress.yaml
 
 ## 📄 License
 Distributed under the MIT License. See `LICENSE` for details.
+
+## Release v1.5.3 Verification
+Verified bot account installation token auth and clean Markdown summary formatting.
