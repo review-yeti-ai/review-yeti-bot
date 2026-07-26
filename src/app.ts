@@ -391,11 +391,13 @@ export function createApp(): Express {
   // Static assets from public directory
   app.use(express.static(path.join(__dirname, '../public')));
 
-  // API Routers
+  // API Routers (Unauthenticated / Public routes)
   app.use('/api/auth', createAuthRouter());
   app.use('/api/onboarding', createOnboardingRouter());
   app.use('/api/router', createProviderRouter());
+  app.use('/api/live', createLiveRouter());
   app.use('/api/github/manifest-callback', createGitHubAppApiRouter());
+
   app.use('/api', requireAuth);
 
   // GET /api/telemetry/spans (JSON format) - protected by requireAuth
