@@ -200,10 +200,18 @@ export class CommentPublisher {
 
     try {
       const url = `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`;
+      const dashboardDomain = process.env.DASHBOARD_URL || 'https://ct-review-bot.calltelemetry.com';
+      const jobId = `job_${owner}_${repo}_pr${prNumber}_${commitSha.slice(0, 7)}`;
+      const liveStreamUrl = `${dashboardDomain}/dashboard/live?jobId=${jobId}`;
+      const orgDashboardUrl = `${dashboardDomain}/dashboard/organization`;
+
+      const dashboardFooter = `\n\n---\n📺 **[Watch Live Agent Review Stream & Terminal View](${liveStreamUrl})** | ⚙️ **[Organization Dashboard & Settings](${orgDashboardUrl})**`;
+      const finalBody = body.includes(dashboardFooter) ? body : body + dashboardFooter;
+
       const res = await this.fetchWithRetry(url, {
         method: 'POST',
         body: JSON.stringify({
-          body,
+          body: finalBody,
           event,
           commit_id: commitSha,
           comments: inlineComments.map(({ path, line, side = 'RIGHT', startLine, finding }) => ({

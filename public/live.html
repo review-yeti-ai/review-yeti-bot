@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ct-review-bot — Live Agent Review Terminal</title>
+  <link rel="stylesheet" href="/css/theme.css">
+  <style>
+    :root {
+      --bg-dark: #0b0e14;
+      --panel-bg: rgba(22, 27, 34, 0.85);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --accent-blue: #3b82f6;
+      --accent-green: #10b981;
+      --accent-purple: #8b5cf6;
+      --accent-orange: #f59e0b;
+      --text-muted: #8b949e;
+      --terminal-bg: #05070a;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: var(--bg-dark);
+      color: #f0f6fc;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    header {
+      background: var(--panel-bg);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo-badge {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.1rem;
+      letter-spacing: 0.5px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      background-color: var(--accent-green);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.9); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: calc(100vh - 65px);
+    }
+
+    sidebar {
+      background: var(--panel-bg);
+      border-right: 1px solid var(--border-color);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    .tab-button {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 10px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      font-weight: 600;
+      font-size: 0.9rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.2s ease;
+    }
+
+    .tab-button.active, .tab-button:hover {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: var(--accent-blue);
+      color: #ffffff;
+    }
+
+    .terminal-container {
+      background: var(--terminal-bg);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .terminal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-color);
+      margin-bottom: 12px;
+      font-family: monospace;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .terminal-output {
+      flex: 1;
+      overflow-y: auto;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.88rem;
+      line-height: 1.5;
+      padding-right: 8px;
+    }
+
+    .log-line {
+      margin-bottom: 6px;
+      word-break: break-word;
+    }
+
+    .tag-security { color: #f43f5e; font-weight: bold; }
+    .tag-architecture { color: #a855f7; font-weight: bold; }
+    .tag-performance { color: #eab308; font-weight: bold; }
+    .tag-quality { color: #3b82f6; font-weight: bold; }
+    .tag-quorum { color: #10b981; font-weight: bold; }
+
+    .llm-chunk {
+      color: #94a3b8;
+      border-left: 2px solid var(--accent-blue);
+      padding-left: 8px;
+      margin: 4px 0;
+    }
+
+    .inspector-panel {
+      background: var(--panel-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 0.85rem;
+    }
+
+    .inspector-title {
+      font-weight: 700;
+      color: var(--accent-blue);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo-badge">
+      <div class="status-dot"></div>
+      <span>ct-review-bot — Live Agent Review Terminal</span>
+    </div>
+    <div>
+      <span id="job-id-display" style="color: var(--text-muted); font-family: monospace; font-size: 0.9rem;">Job: Loading...</span>
+      <a href="/dashboard/organization" style="margin-left: 16px; color: var(--accent-blue); text-decoration: none; font-weight: 600; font-size: 0.9rem;">Organization Management →</a>
+    </div>
+  </header>
+
+  <main>
+    <sidebar>
+      <div class="inspector-title">Active Persona Panels</div>
+      <button class="tab-button active" onclick="filterPersona('all')">
+        <span>🤖 All Persona Feeds</span>
+        <span id="badge-all">0</span>
+      </button>
+      <button class="tab-button" onclick="filterPersona('security')">
+        <span>🛡️ Security Panel</span>
+        <span id="badge-security">0</span>
+      </button>
+      <button class="tab-button" onclick="filterPersona('architecture')">
+        <span>🏛️ Architecture Panel</span>
+        <span id="badge-architecture">0</span>
+      </button>
+      <button class="tab-button" onclick="filterPersona('performance')">
+        <span>⚡ Performance Panel</span>
+        <span id="badge-performance">0</span>
+      </button>
+      <button class="tab-button" onclick="filterPersona('quality')">
+        <span>✨ Code Quality Panel</span>
+        <span id="badge-quality">0</span>
+      </button>
+      <button class="tab-button" onclick="filterPersona('quorum')">
+        <span>⚖️ Quorum Consensus</span>
+        <span id="badge-quorum">0</span>
+      </button>
+
+      <div class="inspector-panel" style="margin-top: 12px;">
+        <div class="inspector-title">Live Review Telemetry</div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+          <span>Tokens Streamed:</span>
+          <strong id="stat-tokens">0</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+          <span>Active Persona Agents:</span>
+          <strong id="stat-personas">4</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span>Quorum Verdict:</span>
+          <strong id="stat-verdict" style="color: var(--accent-green);">PENDING</strong>
+        </div>
+      </div>
+    </sidebar>
+
+    <div class="terminal-container">
+      <div class="terminal-header">
+        <span>STREAMING TURN LOGS & PROMPTS</span>
+        <span id="connection-status">Connecting to SSE Stream...</span>
+      </div>
+      <div class="terminal-output" id="terminal-feed">
+        <div class="log-line" style="color: var(--text-muted);">[SYSTEM] Initializing live review terminal listener...</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const jobId = urlParams.get('jobId') || 'demo-job';
+    document.getElementById('job-id-display').textContent = 'Job: ' + jobId;
+
+    let activeFilter = 'all';
+    let totalTokens = 0;
+    const personaCounts = { security: 0, architecture: 0, performance: 0, quality: 0, quorum: 0, all: 0 };
+
+    function filterPersona(persona) {
+      activeFilter = persona;
+      document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+      event.currentTarget.classList.add('active');
+      renderLogs();
+    }
+
+    const allEvents = [];
+
+    function renderLogs() {
+      const feed = document.getElementById('terminal-feed');
+      feed.innerHTML = '';
+
+      const filtered = activeFilter === 'all' 
+        ? allEvents 
+        : allEvents.filter(e => e.persona === activeFilter);
+
+      filtered.forEach(evt => {
+        const line = document.createElement('div');
+        line.className = 'log-line';
+        const tagClass = 'tag-' + (evt.persona || 'quality');
+        const tag = `<span class="${tagClass}">[${(evt.persona || 'AGENT').toUpperCase()}]</span>`;
+        const time = `<span style="color: var(--text-muted);">[${new Date(evt.timestamp).toLocaleTimeString()}]</span>`;
+
+        if (evt.type === 'llm_chunk') {
+          line.innerHTML = `${time} ${tag} <span class="llm-chunk">${escapeHtml(evt.data.chunk || '')}</span>`;
+        } else {
+          line.innerHTML = `${time} ${tag} <strong>${evt.type}</strong>: ${escapeHtml(evt.data.message || JSON.stringify(evt.data))}`;
+        }
+        feed.appendChild(line);
+      });
+
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Connect to Server-Sent Events API
+    const evtSource = new EventSource('/api/live/stream?jobId=' + encodeURIComponent(jobId));
+
+    evtSource.onopen = () => {
+      document.getElementById('connection-status').textContent = '● SSE STREAM CONNECTED';
+      document.getElementById('connection-status').style.color = 'var(--accent-green)';
+    };
+
+    evtSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        allEvents.push(data);
+
+        if (data.persona && personaCounts[data.persona] !== undefined) {
+          personaCounts[data.persona]++;
+          const badge = document.getElementById('badge-' + data.persona);
+          if (badge) badge.textContent = personaCounts[data.persona];
+        }
+        personaCounts.all++;
+        document.getElementById('badge-all').textContent = personaCounts.all;
+
+        if (data.data && data.data.tokensUsed) {
+          totalTokens += data.data.tokensUsed;
+          document.getElementById('stat-tokens').textContent = totalTokens;
+        }
+
+        if (data.data && data.data.verdict) {
+          document.getElementById('stat-verdict').textContent = data.data.verdict;
+        }
+
+        renderLogs();
+      } catch (err) {
+        console.error('Failed parsing SSE payload', err);
+      }
+    };
+
+    evtSource.onerror = () => {
+      document.getElementById('connection-status').textContent = '○ DISCONNECTED (RETRYING)';
+      document.getElementById('connection-status').style.color = 'var(--accent-orange)';
+    };
+  </script>
+</body>
+</html>
