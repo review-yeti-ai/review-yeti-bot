@@ -87,9 +87,8 @@ export function getOrgDashboardUrl(domain: string): string {
   return `${cleanDomain}/dashboard/organization`;
 }
 
-export function formatDashboardFooter(liveStreamUrl: string, orgDashboardUrl: string, verdict: string = 'APPROVE'): string {
-  const badgeColor = verdict === 'SHIP' || verdict === 'APPROVE' ? '27c46a' : verdict === 'FIX_FIRST' ? 'f59e0b' : 'eb3b48';
-  return `\n\n---\n### 🤖 CallTelemetry Live Agent Review Panel\n\n| 📺 Live Terminal Stream | ⚙️ Organization Dashboard | ⚖️ Quorum Verdict |\n| :---: | :---: | :---: |\n| [![Live Terminal Stream](https://img.shields.io/badge/Live_Stream-Active_Terminal-6e56cf?style=flat-square&logo=terminal)](${liveStreamUrl}) | [![Org Dashboard](https://img.shields.io/badge/Organization-Dashboard-202430?style=flat-square&logo=github)](${orgDashboardUrl}) | ![Verdict](https://img.shields.io/badge/Quorum-${verdict}-${badgeColor}?style=flat-square) |\n\n📺 **[Watch Live Agent Review Stream & Terminal View](${liveStreamUrl})** | ⚙️ **[Organization Dashboard & Settings](${orgDashboardUrl})**`;
+export function formatDashboardFooter(liveStreamUrl: string, orgDashboardUrl: string, _verdict: string = 'APPROVE'): string {
+  return `\n\n---\n[📊 Live Terminal Dashboard](${liveStreamUrl}) | [🏢 Org Settings](${orgDashboardUrl})`;
 }
 
 /**
@@ -232,7 +231,7 @@ export class CommentPublisher {
       const orgDashboardUrl = getOrgDashboardUrl(dashboardDomain);
 
       const dashboardFooter = formatDashboardFooter(liveStreamUrl, orgDashboardUrl);
-      const finalBody = body.includes(dashboardFooter) || body.includes('Watch Live Agent Review Stream') ? body : body + dashboardFooter;
+      const finalBody = body.includes(liveStreamUrl) || body.includes('Live Terminal Dashboard') || body.includes(dashboardFooter) ? body : body + dashboardFooter;
 
       const res = await this.fetchWithRetry(url, {
         method: 'POST',
