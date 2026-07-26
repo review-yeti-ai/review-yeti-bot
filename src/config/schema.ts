@@ -9,7 +9,7 @@ const legacyConfigSchema = z.object({
 }).passthrough();
 
 export const V3_PROVIDER_MODELS = {
-  synthetic: 'synthetic/v1',
+  synthetic: 'glm-5.2',
   codex: 'codex/gpt-5.6-sol-high',
   grok: 'grok-cli/grok-4.5',
   'agy-opus': 'agy/claude-opus-4-6-thinking',
@@ -17,7 +17,9 @@ export const V3_PROVIDER_MODELS = {
 } as const;
 
 export const R4_ALLOWED_MODELS = [
+  'glm-5.2',
   'synthetic/v1',
+  'synthetic/glm-5.2-high',
   'synthetic-fast',
   'synthetic-reasoning',
   'claude-5-sonnet',
