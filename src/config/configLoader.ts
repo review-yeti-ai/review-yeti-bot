@@ -72,7 +72,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
         {
           id: 'synthetic',
           enabled: true,
-          model: 'synthetic/v1',
+          model: 'glm-5.2',
           effort: 'max',
           review_timeout_s: 30,
           arbiter_timeout_s: 30,

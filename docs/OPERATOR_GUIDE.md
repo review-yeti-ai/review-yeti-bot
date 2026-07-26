@@ -1,50 +1,49 @@
-# Operator & Deployment Guide — ct-review-bot
+# ct-review-bot — Enterprise Operator & Deployment Guide
 
-## 1. Overview
-`ct-review-bot` runs as a containerized microservice on DigitalOcean Kubernetes (DOKS `cluster-ny1`). It handles incoming GitHub webhook events, performs AST symbol & vector code indexing via the in-house `ct-indexer`, manages Context7 MCP integration via Doppler, and dispatches multi-persona quorum reviews.
+## Overview
+This document describes production deployment procedures for `ct-review-bot` on DigitalOcean Kubernetes (DOKS), secret management via Doppler & Kubernetes Secrets, and default provider allocations.
 
----
+## Default LLM Provider Allocation
+As of **v1.5.1**, the default provider for review synthesis and arbiter quorum is **Synthetic API** with model **`glm-5.2`** (high reasoning effort).
 
-## 2. Deployment Architecture
-- **Cluster**: DigitalOcean Kubernetes (`cluster-ny1`)
-- **Container Registry**: `registry.digitalocean.com/calltelemetry/ct-review-bot`
-- **CI/CD Platform**: Blacksmith Runners (`blacksmith.sh`) with Docker Buildx `type=gha` layer caching.
-- **Image Architecture**: Native `linux/amd64` multi-arch compilation.
-
----
-
-## 3. Environment Variables & Secret Management
-
-### Required Environment Secrets (`k8s/secret.yaml` / GitHub Secrets)
-- `GITHUB_APP_ID`: `4385771`
-- `GITHUB_APP_CLIENT_ID`: `Iv23liHmE9qxSkdvGMMJ`
-- `GITHUB_APP_CLIENT_SECRET`: Managed in Doppler / GitHub Secrets
-- `GITHUB_APP_PRIVATE_KEY`: RSA 2048-bit Private Key for RS256 JWT signing
-- `GITHUB_WEBHOOK_SECRET`: HMAC SHA-256 webhook signature validation key
-- `DOPPLER_TOKEN`: Service token for dynamic secret routing (`CONTEXT7_API_KEY`)
-
----
-
-## 4. In-House Code Indexer & Memory Storage (`ct-indexer`)
-- **AST Indexer**: Tree-sitter parser extracting classes, functions, interfaces, imports, and call graphs.
-- **Database**: SQLite WAL mode database (`data/symbol_graph.db` and `.ct-memory/pr_memory.sqlite`).
-- **Memory API Endpoints**:
-  - `POST /api/memory/query`: Query past review findings and resolved nit patterns.
-  - `GET /api/code/symbol-graph`: Fetch caller/callee AST graph node trees.
-  - `POST /api/code/search`: Semantic vector & keyword code search across indexed repos.
-
----
-
-## 5. Verification & Health Monitoring
-
-Run `scripts/verify-doks.sh` to execute live cluster readiness checks:
-
-```bash
-# Verify DOKS pod status, readiness probes, and ingress routing
-./scripts/verify-doks.sh
+```yaml
+reviewers:
+  execution: personas
+  providers:
+    - id: synthetic
+      enabled: true
+      model: glm-5.2
+      effort: max
+      review_timeout_s: 30
+      arbiter_timeout_s: 30
+  arbiter:
+    order: [synthetic, codex, claude]
 ```
 
-Checks performed:
-- `1/1 READY Running` status on `ct-review-bot` pods.
-- HTTP 200 responses on `/health`, `/ready`, and `/api/router/status`.
-- HMAC signature verification on `/webhook` routes.
+## Secret Management & Pre-Deployment Procedures
+
+### 1. Doppler Secret Management (Recommended)
+Store `SYNTHETIC_API_KEY` securely in Doppler:
+```bash
+doppler secrets set SYNTHETIC_API_KEY=syn_caed4a04054f3d66e707e63b31cae88e --project ct-review-bot --config dev
+```
+
+### 2. Kubernetes Secret Deployment (DOKS Cluster)
+Deploy the secret to your DigitalOcean Kubernetes cluster (`ct-review-bot` namespace):
+```bash
+kubectl create secret generic ct-review-bot-secrets \
+  --from-literal=SYNTHETIC_API_KEY=syn_caed4a04054f3d66e707e63b31cae88e \
+  --namespace=ct-review-bot
+```
+
+Or apply via manifest template:
+```bash
+kubectl apply -f k8s/synthetic-secret.yaml
+```
+
+### 3. Verification & Health Check
+Verify Kubernetes secrets and server readiness:
+```bash
+kubectl get secret ct-review-bot-secrets -n ct-review-bot
+curl -s https://ct-review-bot.calltelemetry.com/health | jq .
+```
