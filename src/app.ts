@@ -395,6 +395,7 @@ export function createApp(): Express {
   app.use('/api/auth', createAuthRouter());
   app.use('/api/onboarding', createOnboardingRouter());
   app.use('/api/router', createProviderRouter());
+  app.use('/api/github/manifest-callback', createGitHubAppApiRouter());
   app.use('/api', requireAuth);
 
   // GET /api/telemetry/spans (JSON format) - protected by requireAuth
