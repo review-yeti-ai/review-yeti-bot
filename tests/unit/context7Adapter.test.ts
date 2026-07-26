@@ -172,7 +172,10 @@ describe('Context7Adapter', () => {
 
   it('healthCheck reports false when API key is missing and true when present', async () => {
     delete process.env.CONTEXT7_API_KEY;
-    const health1 = await adapter.healthCheck();
+    const mockDoppler = { getSecret: async () => null } as any;
+    const testAdapter = new Context7Adapter({ dopplerManager: mockDoppler });
+
+    const health1 = await testAdapter.healthCheck();
     expect(health1.ok).toBe(false);
 
     process.env.CONTEXT7_API_KEY = 'valid_key_123';

@@ -492,6 +492,11 @@ export function createApp(): Express {
     res.sendFile(path.join(__dirname, '../public/live.html'));
   });
 
+  // Explicit static page route for GitHub App Onboarding & Monitored Repos Dashboard
+  app.get('/dashboard/github-app', (_req: Request, res: Response) => {
+    res.sendFile(path.join(__dirname, '../public/github-app.html'));
+  });
+
   // Explicit static page route for Organization Management Dashboard
   app.get('/dashboard/organization', (_req: Request, res: Response) => {
     res.sendFile(path.join(__dirname, '../public/index.html'));

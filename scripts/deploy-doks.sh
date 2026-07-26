@@ -33,6 +33,7 @@ envsubst '${CT_REVIEW_BOT_IMAGE}' < k8s/bot-deployment.yaml.tpl > "$render_dir/b
 envsubst '${OMNIROUTE_IMAGE}' < k8s/omniroute-statefulset.yaml.tpl > "$render_dir/omniroute-statefulset.yaml"
 
 kubectl apply --server-side -f k8s/namespace.yaml
+kubectl apply --server-side -f k8s/rbac.yaml
 kubectl apply --server-side -f k8s/config.yaml
 kubectl apply --server-side -f k8s/ingress-network.yaml
 kubectl apply --server-side -f "$render_dir/omniroute-statefulset.yaml"
