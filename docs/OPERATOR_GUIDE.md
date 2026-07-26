@@ -47,3 +47,27 @@ Verify Kubernetes secrets and server readiness:
 kubectl get secret ct-review-bot-secrets -n ct-review-bot
 curl -s https://ct-review-bot.calltelemetry.com/health | jq .
 ```
+
+## GitHub App Bot Authentication & Webhook Setup
+
+To ensure all PR reviews and comments are authored exclusively by **`ct-review-bot[bot]`** (with official bot badges and avatars) rather than personal user accounts:
+
+### 1. GitHub App Credentials Required
+Set the following environment variables in your Kubernetes Secret or Doppler:
+- `GITHUB_APP_ID`: Your GitHub App ID (e.g. `123456`).
+- `GITHUB_APP_PRIVATE_KEY`: Your RSA Private Key PEM file content (`-----BEGIN RSA PRIVATE KEY----- ...`).
+- `GITHUB_WEBHOOK_SECRET`: Secret token for validating HMAC SHA-256 signatures on incoming GitHub webhooks.
+
+### 2. GitHub Webhook Configuration
+In your GitHub App / Organization Settings (`https://github.com/organizations/calltelemetry/settings/apps/ct-review-bot`):
+- **Webhook URL**: `https://ct-review-bot.calltelemetry.com/webhook`
+- **Permissions**:
+  - `Pull Requests`: Read & Write
+  - `Issues`: Read & Write
+  - `Contents`: Read-only
+- **Subscribe to Events**:
+  - `Pull request` (`opened`, `synchronize`, `reopened`)
+  - `Issue comment` (`created` for `@ct-review review` on-demand triggers)
+
+### 3. Automated Token Exchange (`ghs_...`)
+When incoming webhooks trigger `src/app.ts`, the bot automatically exchanges `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` + `installation.id` for a short-lived **Installation Access Token** (`ghs_...`). All posted comments are strictly authored by **`ct-review-bot[bot]`**.
