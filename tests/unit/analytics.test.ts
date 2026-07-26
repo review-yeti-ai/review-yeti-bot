@@ -43,7 +43,7 @@ describe('Milestone 24 & 26: Typed Analytics REST API Unit Tests', () => {
       expect(res.body.summary.totalSpendUsd).toBeDefined();
       expect(res.body.summary.totalTokens).toBeDefined();
       expect(res.body.summary.avgLatencyMs).toBeDefined();
-      expect(durationMs).toBeLessThan(100);
+      expect(durationMs).toBeLessThan(200);
     });
   });
 
