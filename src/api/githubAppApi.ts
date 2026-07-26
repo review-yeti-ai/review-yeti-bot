@@ -229,5 +229,51 @@ export function createGitHubAppApiRouter(): Router {
     });
   });
 
+  /**
+   * GET /api/github/manifest-callback
+   * Handles GitHub App Manifest code exchange callback, retrieving auto-generated App ID and PEM key.
+   */
+  router.get('/manifest-callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    if (!code) {
+      return res.status(400).send('Missing code parameter from GitHub Manifest callback.');
+    }
+
+    try {
+      const response = await fetch(`https://api.github.com/app-manifests/${code}/conversions`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'ct-review-bot[bot]',
+        },
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        logger.error('Failed to convert GitHub App Manifest code', { status: response.status, errText });
+        return res.status(500).send(`GitHub App Manifest conversion failed: ${errText}`);
+      }
+
+      const data: any = await response.json();
+      const updatedConfig = dashboardStore.updateGitHubAppConfig({
+        appId: data.id ? String(data.id) : undefined,
+        privateKeyPem: data.pem,
+        oauthClientId: data.client_id,
+        oauthClientSecret: data.client_secret,
+        webhookSecret: data.webhook_secret,
+      });
+
+      logger.info('Successfully auto-registered GitHub App and PEM private key via Manifest flow', {
+        appId: updatedConfig.appId,
+        hasPem: !!data.pem,
+      });
+
+      return res.redirect('/dashboard/github-app?status=auto_registered');
+    } catch (err: any) {
+      logger.error('Error during GitHub App Manifest callback conversion', { error: err.message });
+      return res.status(500).send(`Error processing GitHub App Manifest callback: ${err.message}`);
+    }
+  });
+
   return router;
 }
