@@ -15,8 +15,8 @@ async function main() {
 
   logger.info('Starting live ct-review-bot review dispatch', { repo, prNumber });
 
-  // Get full head SHA
-  const headSha = execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
+  // Fetch target PR head commit SHA from GitHub API
+  const headSha = execSync(`gh pr view ${prNumber} --repo ${repo} --json headRefOid --jq .headRefOid`, { encoding: 'utf-8' }).trim();
 
   // Register Synthetic API provider into providerPool
   if (!providerPool.hasProvider('synthetic')) {
@@ -67,38 +67,43 @@ async function main() {
 
   // Compile findings across personas
   const allFindings = panelResult.personas.flatMap((p) => p.findings || []);
+  const mappedFindings = allFindings.map((f: any) => ({
+    persona: f.personaId || 'review',
+    severity: f.severity || 'P2',
+    filePath: f.path || 'README.md',
+    lineNumber: f.line || 1,
+    comment: f.body || f.title || 'Review finding',
+  }));
 
-  // Generate PR Summary & Architecture Mermaid Diagram
-  const summaryText = generatePRSummary(
-    diff,
-    allFindings.map((f: any) => ({
-      persona: f.personaId || 'review',
-      severity: f.severity || 'P2',
-      filePath: f.path || 'README.md',
-      lineNumber: f.line || 1,
-      comment: f.body || f.title || 'Review finding',
-    }))
-  );
-
+  const summaryMarkdown = generatePRSummary(diff, mappedFindings, config);
   const mermaidDiagram = generateMermaidDiagram(diff);
 
   const fullSummaryMarkdown = [
     `# 🤖 ct-review-bot Quorum Summary (PR #${prNumber})`,
     `**Verdict**: \`${panelResult.arbiter?.verdict || 'SHIP'}\` | **Provider**: \`Synthetic (GLM-5.2)\``,
     '',
-    summaryText,
+    summaryMarkdown,
     '',
     '## 🧬 Architecture Diagram',
     '```mermaid',
     mermaidDiagram,
     '```',
     '',
-    `[📊 View Live Terminal Dashboard](https://ct-review-bot.calltelemetry.com/dashboard/live?jobId=job_${repo.replace('/', '_')}_pr${prNumber}) | [🏢 Org Management](https://ct-review-bot.calltelemetry.com/dashboard/organization)`,
+    '---',
+    `[📊 View Live Terminal Dashboard](https://review-bot.calltelemetry.com/dashboard/live?jobId=job_${repo.replace('/', '_')}_pr${prNumber}) | [🏢 Org Management](https://review-bot.calltelemetry.com/dashboard/organization)`,
   ].join('\n');
 
   const appId = process.env.GITHUB_APP_ID || '4385771';
   const installationId = process.env.GITHUB_INSTALLATION_ID || '148780830';
-  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  let privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+
+  if (!privateKey) {
+    try {
+      privateKey = execSync('doppler secrets get GITHUB_APP_PRIVATE_KEY --plain', { encoding: 'utf-8' }).trim();
+    } catch {
+      // Doppler CLI fallback
+    }
+  }
 
   let token = process.env.GITHUB_TOKEN || execSync('gh auth token', { encoding: 'utf-8' }).trim();
   let allowUserToken = true;
