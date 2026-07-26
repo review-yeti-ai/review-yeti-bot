@@ -497,6 +497,11 @@ export function createApp(): Express {
     res.sendFile(path.join(__dirname, '../public/github-app.html'));
   });
 
+  // Explicit static page route for 1-Click Zero-Config Onboarding Wizard
+  app.get('/dashboard/onboarding', (_req: Request, res: Response) => {
+    res.sendFile(path.join(__dirname, '../public/onboarding.html'));
+  });
+
   // Explicit static page route for Organization Management Dashboard
   app.get('/dashboard/organization', (_req: Request, res: Response) => {
     res.sendFile(path.join(__dirname, '../public/index.html'));
