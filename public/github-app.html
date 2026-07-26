@@ -159,11 +159,19 @@
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
             <div>
               <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 6px;">⚡ 1-Click Organization Onboarding</h2>
-              <p style="color: var(--text-muted); font-size: 14px; margin: 0;">Click below to grant access and install <strong>ct-review-bot[bot]</strong> directly into your GitHub organization in 1 step.</p>
+              <p style="color: var(--text-muted); font-size: 14px; margin: 0;">Grant permissions or auto-create App & RSA Private Key directly in 1 step.</p>
             </div>
-            <a href="https://github.com/apps/ct-review-bot/installations/new" target="_blank" class="btn-primary" style="padding: 12px 24px; font-size: 15px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 14px rgba(110, 86, 207, 0.4);">
-              <span>🤖</span> Install & Onboard App on GitHub
-            </a>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+              <a href="https://github.com/apps/ct-review-bot/installations/new" target="_blank" class="btn-primary" style="padding: 12px 24px; font-size: 15px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 14px rgba(110, 86, 207, 0.4);">
+                <span>🤖</span> Install & Onboard App on GitHub
+              </a>
+              <form action="https://github.com/organizations/calltelemetry/settings/apps/new" method="post" target="_blank" style="margin: 0;">
+                <input type="hidden" name="manifest" value='{"name":"ct-review-bot-autokey","url":"https://review-bot.calltelemetry.com","hook_attributes":{"url":"https://review-bot.calltelemetry.com/api/webhooks/github"},"redirect_url":"https://review-bot.calltelemetry.com/api/github/manifest-callback","public":false,"default_permissions":{"pull_requests":"write","contents":"read","issues":"write","metadata":"read"},"default_events":["pull_request","issue_comment","pull_request_review_comment"]}'>
+                <button type="submit" class="btn-secondary" style="padding: 12px 20px; font-size: 14px; font-weight: 700; border-color: var(--color-success); color: var(--color-success);">
+                  🔑 1-Click Auto-Generate Keys on GitHub
+                </button>
+              </form>
+            </div>
           </div>
         </div>
 
