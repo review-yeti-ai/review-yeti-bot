@@ -28,13 +28,15 @@ describe('Milestone 32: Onboarding & Session Learning E2E Suite', () => {
 
     // Step 2: Simulate PR comment @ct-review learn
     const learnRes = await request(app)
-      .post('/api/memory/learn')
+      .post('/api/memory/record')
       .set('Authorization', `Bearer ${token}`)
       .send({
         repo: 'calltelemetry/cisco-cdr',
-        command: '@ct-review learn Prefer async/await over raw Promises',
+        prNumber: 1,
+        type: 'learning',
+        data: { rule: 'Prefer async/await over raw Promises', category: 'convention' },
       });
-    expect(learnRes.status).toBe(200);
+    expect(learnRes.status).toBe(201);
     expect(learnRes.body.success).toBe(true);
 
     // Step 3: Verify persistent memory retrieval

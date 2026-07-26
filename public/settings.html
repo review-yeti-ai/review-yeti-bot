@@ -151,6 +151,9 @@
         <a href="/live.html" class="nav-item" style="text-decoration:none;">
           <span class="nav-icon">⚡</span> Live Stream
         </a>
+        <a href="/dashboard/github-app" class="nav-item" style="text-decoration:none;">
+          <span class="nav-icon">🤖</span> GitHub App Portal
+        </a>
         <a href="/settings.html" class="nav-item active" style="text-decoration:none;">
           <span class="nav-icon">🎛️</span> Persona Controls
         </a>
@@ -164,11 +167,11 @@
       <header class="top-bar">
         <div style="display: flex; align-items: center; gap: 12px;">
           <button class="mobile-toggle" id="mobile-toggle" aria-label="Toggle navigation">☰</button>
-          <h1 class="page-title">Per-Persona Control Panel</h1>
+          <h1 class="page-title">Platform & Persona Control Panel</h1>
         </div>
         <div class="header-controls">
           <button class="btn-secondary" id="reset-defaults-btn" style="padding: 6px 12px; font-size: 12px;">Reset Defaults</button>
-          <button class="btn-primary" id="save-all-btn" style="padding: 6px 16px; font-size: 12px;">Save Settings</button>
+          <button class="btn-primary" id="save-all-btn" style="padding: 6px 16px; font-size: 12px;">Save All Settings</button>
           <div class="session-badge" id="session-badge">
             <span class="pulse-dot"></span> Session Active
           </div>
@@ -191,6 +194,129 @@
         <!-- Persona Cards Grid -->
         <div class="persona-grid" id="persona-settings-grid">
           <!-- Cards rendered dynamically by settings.js -->
+        </div>
+
+        <!-- Auto-Review Settings Card -->
+        <div class="glass-panel" style="margin-top: 32px; margin-bottom: 24px;">
+          <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 6px;">🤖 Auto-Review Trigger & Filtering Rules</h2>
+          <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 20px;">Control event triggers, draft PR handling, required PR label tags, and file path exclusion globs.</p>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+            <!-- Trigger Events -->
+            <div class="form-group">
+              <label style="font-weight: 600; margin-bottom: 8px; display: block;">Event Triggers</label>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+                  <input type="checkbox" id="trigger-pr-opened" value="pr_opened" checked> PR Opened (`opened`)
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+                  <input type="checkbox" id="trigger-pr-synchronize" value="pr_synchronize" checked> PR Synchronize / Commit Push (`synchronize`)
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+                  <input type="checkbox" id="trigger-ct-review" value="@ct-review" checked> `@ct-review` Mention Comments
+                </label>
+              </div>
+            </div>
+
+            <!-- Draft PRs Toggle -->
+            <div class="form-group">
+              <label style="font-weight: 600; margin-bottom: 8px; display: block;">Draft PR Review Policy</label>
+              <div style="display: flex; align-items: center; gap: 12px; margin-top: 4px;">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="toggle-review-drafts">
+                  <span class="toggle-slider"></span>
+                </label>
+                <span style="font-size: 13px; color: var(--text-secondary);" id="label-review-drafts">Review Draft Pull Requests</span>
+              </div>
+            </div>
+
+            <!-- PR Labels Filter -->
+            <div class="form-group">
+              <label for="input-review-labels">Required PR Labels Filter (Comma separated)</label>
+              <input type="text" class="input-control" id="input-review-labels" placeholder="e.g. ct-review, autoreview (empty = all PRs)">
+            </div>
+
+            <!-- Ignore Patterns -->
+            <div class="form-group" style="grid-column: 1 / -1;">
+              <label for="input-ignore-patterns">Path Exclusion Globs (One per line)</label>
+              <textarea class="textarea-control" id="input-ignore-patterns" rows="3" placeholder="e.g. *.md&#10;docs/**&#10;vendor/**"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- Enforcement Policies Card -->
+        <div class="glass-panel" style="margin-bottom: 24px;">
+          <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 6px;">🛡️ Enterprise Enforcement Policies & Ticket Verification</h2>
+          <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 20px;">Configure quorum approval requirements, ticket key regex verification, and failure action enforcement.</p>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+            <!-- Require All Reviews -->
+            <div class="form-group">
+              <label style="font-weight: 600; margin-bottom: 8px; display: block;">Quorum Approval Policy</label>
+              <div style="display: flex; align-items: center; gap: 12px; margin-top: 4px;">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="toggle-require-all-reviews" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <span style="font-size: 13px; color: var(--text-secondary);">Require All Active Persona Approvals</span>
+              </div>
+            </div>
+
+            <!-- Require Ticket Link -->
+            <div class="form-group">
+              <label style="font-weight: 600; margin-bottom: 8px; display: block;">Ticket Reference Verification</label>
+              <div style="display: flex; align-items: center; gap: 12px; margin-top: 4px;">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="toggle-require-ticket-link">
+                  <span class="toggle-slider"></span>
+                </label>
+                <span style="font-size: 13px; color: var(--text-secondary);">Require Ticket Link in Title/Description (`[A-Z]+-\d+|#\d+`)</span>
+              </div>
+            </div>
+
+            <!-- Failure Action Dropdown -->
+            <div class="form-group">
+              <label for="select-failure-action">Enforcement Failure Action</label>
+              <select class="select-control" id="select-failure-action">
+                <option value="fail_closed">Fail Closed (Request Changes & Block PR Check)</option>
+                <option value="fail_open">Fail Open (Warn in comment, Pass PR Check)</option>
+                <option value="quarantine">Quarantine (Apply 'quarantine' Label & Require Action)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Custom LLM Base URL Overrides Card -->
+        <div class="glass-panel" style="margin-bottom: 24px;">
+          <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 6px;">🌐 Custom LLM API Base URL Overrides</h2>
+          <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 20px;">Override gateway and provider HTTP endpoints for enterprise proxies or self-hosted LLM clusters.</p>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+            <div class="form-group">
+              <label for="input-base-omniroute">OmniRoute Gateway Base URL</label>
+              <input type="text" class="input-control" id="input-base-omniroute" placeholder="e.g. http://omniroute.internal:8000">
+            </div>
+
+            <div class="form-group">
+              <label for="input-base-openai">OpenAI API Base URL</label>
+              <input type="text" class="input-control" id="input-base-openai" placeholder="e.g. https://api.openai.com/v1">
+            </div>
+
+            <div class="form-group">
+              <label for="input-base-anthropic">Anthropic API Base URL</label>
+              <input type="text" class="input-control" id="input-base-anthropic" placeholder="e.g. https://api.anthropic.com">
+            </div>
+
+            <div class="form-group">
+              <label for="input-base-deepseek">DeepSeek API Base URL</label>
+              <input type="text" class="input-control" id="input-base-deepseek" placeholder="e.g. https://api.deepseek.com">
+            </div>
+
+            <div class="form-group">
+              <label for="input-base-ollama">Ollama / vLLM Base URL</label>
+              <input type="text" class="input-control" id="input-base-ollama" placeholder="e.g. http://localhost:11434">
+            </div>
+          </div>
         </div>
       </section>
     </main>

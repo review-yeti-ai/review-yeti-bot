@@ -90,7 +90,10 @@ export function generateCtReviewConfig(options: ConfigGenerationOptions): { yaml
     auto_review: {
       enabled: true,
       ignore_drafts: true,
+      review_drafts: false,
+      triggers: ['pr_opened', 'pr_synchronize', '@ct-review'],
       labels: [],
+      ignore_patterns: [],
       drafts: false,
     },
     dials: {

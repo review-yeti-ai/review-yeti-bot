@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CT-Review-Bot | GitHub App Onboarding & Monitored Repos</title>
+  <link rel="stylesheet" href="/css/theme.css">
+  <link rel="stylesheet" href="/css/components.css">
+  <style>
+    .onboarding-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+      margin-top: 24px;
+    }
+    .status-badge-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .status-card {
+      padding: 16px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .status-card-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .status-card-value {
+      font-size: 14px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pem-dropzone {
+      border: 2px dashed var(--border-medium);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      text-align: center;
+      background: var(--bg-input);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .pem-dropzone:hover, .pem-dropzone.dragover {
+      border-color: var(--accent-primary);
+      background: rgba(110, 86, 207, 0.08);
+    }
+    .pem-dropzone-icon {
+      font-size: 28px;
+      margin-bottom: 8px;
+      display: block;
+    }
+    .form-grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: var(--bg-surface-elevated);
+      border: 1px solid var(--border-medium);
+      border-radius: 24px;
+      transition: 0.2s ease;
+    }
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: var(--text-secondary);
+      border-radius: 50%;
+      transition: 0.2s ease;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--gradient-accent);
+      border-color: var(--accent-primary);
+    }
+    .toggle-switch input:checked + .toggle-slider:before {
+      transform: translateX(20px);
+      background-color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <img src="/assets/github_bot_icon.png" alt="CT Review Bot Logo" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><rect width=\'100\' height=\'100\' fill=\'%236e56cf\'/><text x=\'50\' y=\'65\' font-size=\'50\' text-anchor=\'middle\' fill=\'white\'>CT</text></svg>'">
+        <div class="sidebar-title">CT-Review-Bot</div>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="/" class="nav-item" style="text-decoration:none;">
+          <span class="nav-icon">📊</span> Overview
+        </a>
+        <a href="/#repositories" class="nav-item" style="text-decoration:none;">
+          <span class="nav-icon">📦</span> Repositories
+        </a>
+        <a href="/#logs" class="nav-item" style="text-decoration:none;">
+          <span class="nav-icon">📑</span> Review Logs
+        </a>
+        <a href="/live.html" class="nav-item" style="text-decoration:none;">
+          <span class="nav-icon">⚡</span> Live Stream
+        </a>
+        <a href="/dashboard/github-app" class="nav-item active" style="text-decoration:none;">
+          <span class="nav-icon">🤖</span> GitHub App Portal
+        </a>
+        <a href="/settings.html" class="nav-item" style="text-decoration:none;">
+          <span class="nav-icon">🎛️</span> Persona Controls
+        </a>
+      </nav>
+    </aside>
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Header Bar -->
+      <header class="top-bar">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <button class="mobile-toggle" id="mobile-toggle" aria-label="Toggle navigation">☰</button>
+          <h1 class="page-title">GitHub App & OAuth Onboarding Portal</h1>
+        </div>
+        <div class="header-controls">
+          <div class="session-badge" id="session-badge">
+            <span class="pulse-dot"></span> Session Active
+          </div>
+        </div>
+      </header>
+
+      <!-- Main Onboarding & Repos Content -->
+      <section style="padding: 32px;">
+        <!-- Status Indicator Cards -->
+        <div class="status-badge-grid">
+          <div class="status-card">
+            <span class="status-card-label">App Onboarding Status</span>
+            <span class="status-card-value" id="status-app">
+              <span class="pulse-dot"></span> <span id="status-app-text">Checking...</span>
+            </span>
+          </div>
+          <div class="status-card">
+            <span class="status-card-label">RSA Private Key</span>
+            <span class="status-card-value" id="status-pem">
+              <span id="status-pem-text">Checking...</span>
+            </span>
+          </div>
+          <div class="status-card">
+            <span class="status-card-label">Webhook Secret</span>
+            <span class="status-card-value" id="status-webhook">
+              <span id="status-webhook-text">Checking...</span>
+            </span>
+          </div>
+          <div class="status-card">
+            <span class="status-card-label">Installation Token</span>
+            <span class="status-card-value" id="status-token">
+              <span id="status-token-text">Unverified</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Card 1: GitHub App Onboarding Wizard -->
+        <div class="glass-panel" style="margin-bottom: 32px;">
+          <div style="margin-bottom: 20px;">
+            <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 6px;">1. GitHub App Onboarding Credentials</h2>
+            <p style="color: var(--text-muted); font-size: 14px;">Configure GitHub App ID, OAuth Client Secret, Webhook Secret, and RSA Private Key for RS256 JWT installation tokens.</p>
+          </div>
+
+          <form id="github-app-form" onsubmit="return false;">
+            <div class="form-grid-2" style="margin-bottom: 20px;">
+              <div class="form-group">
+                <label for="input-app-id">GitHub App ID</label>
+                <input type="text" class="input-control" id="input-app-id" placeholder="e.g. 1092381">
+              </div>
+
+              <div class="form-group">
+                <label for="input-installation-id">Installation ID</label>
+                <input type="text" class="input-control" id="input-installation-id" placeholder="e.g. 58923019">
+              </div>
+
+              <div class="form-group">
+                <label for="input-client-id">OAuth Client ID</label>
+                <input type="text" class="input-control" id="input-client-id" placeholder="e.g. Iv1.8a92f0...">
+              </div>
+
+              <div class="form-group">
+                <label for="input-client-secret">OAuth Client Secret</label>
+                <input type="password" class="input-control" id="input-client-secret" placeholder="Leave empty to keep existing">
+              </div>
+
+              <div class="form-group" style="grid-column: 1 / -1;">
+                <label for="input-webhook-secret">Webhook Secret</label>
+                <input type="password" class="input-control" id="input-webhook-secret" placeholder="Webhook signing secret">
+              </div>
+            </div>
+
+            <!-- PEM RSA Private Key Dropzone & Textarea -->
+            <div class="form-group" style="margin-bottom: 24px;">
+              <label>RSA Private Key (.pem format)</label>
+              
+              <div class="pem-dropzone" id="pem-dropzone">
+                <span class="pem-dropzone-icon">🔑</span>
+                <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">Drag & Drop your .pem private key file here</div>
+                <div style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">or click to browse from your computer</div>
+                <input type="file" id="pem-file-input" accept=".pem,.key,.txt" style="display: none;">
+                <button type="button" class="btn-secondary" id="browse-pem-btn" style="padding: 6px 14px; font-size: 12px;">Select File</button>
+              </div>
+
+              <div style="margin-top: 12px;">
+                <label for="input-pem-key" style="font-size: 12px; color: var(--text-muted);">Direct PEM Key Paste (-----BEGIN RSA PRIVATE KEY-----):</label>
+                <textarea class="textarea-control" id="input-pem-key" rows="6" placeholder="Paste full RSA private key here..." style="font-family: var(--font-mono); font-size: 12px; line-height: 1.4;"></textarea>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+              <button type="button" class="btn-primary" id="save-credentials-btn">Save Credentials</button>
+              <button type="button" class="btn-secondary" id="verify-token-btn">Verify Installation Token</button>
+              <button type="button" class="btn-danger" id="reset-config-btn" style="margin-left: auto;">Reset Config</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Card 2: Monitored Org Repositories Manager -->
+        <div class="glass-panel">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 20px;">
+            <div>
+              <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 6px;">2. Monitored Org Repositories Manager</h2>
+              <p style="color: var(--text-muted); font-size: 14px;">1-click toggle switches to enable or disable automated multi-persona review pipelines across organization repositories.</p>
+            </div>
+
+            <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+              <div class="kpi-card" style="padding: 10px 16px; border-radius: var(--radius-sm); background: var(--bg-surface-elevated); border: 1px solid var(--border-subtle);">
+                <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Total Repos</span>
+                <div style="font-size: 18px; font-weight: 700; color: var(--text-primary);" id="kpi-repo-total">0</div>
+              </div>
+              <div class="kpi-card" style="padding: 10px 16px; border-radius: var(--radius-sm); background: var(--bg-surface-elevated); border: 1px solid var(--border-subtle);">
+                <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Active Automations</span>
+                <div style="font-size: 18px; font-weight: 700; color: var(--color-success);" id="kpi-repo-active">0</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Search Filter Input -->
+          <div class="form-group" style="margin-bottom: 20px;">
+            <input type="text" class="input-control" id="input-repo-search" placeholder="🔍 Search monitored repositories by owner or name...">
+          </div>
+
+          <!-- Repositories Data Table -->
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Repository</th>
+                  <th>Profile Preset</th>
+                  <th>Automation Status</th>
+                  <th>1-Click Review Toggle</th>
+                  <th>Last Updated</th>
+                </tr>
+              </thead>
+              <tbody id="monitored-repos-tbody">
+                <tr>
+                  <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading monitored repositories...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/github-app.js"></script>
+</body>
+</html>
