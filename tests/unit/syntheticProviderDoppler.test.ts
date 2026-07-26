@@ -23,7 +23,7 @@ describe('Synthetic API Provider & Doppler Secret Management Suite (Release v1.5
 
     expect(syntheticProvider).toBeDefined();
     expect(syntheticProvider?.enabled).toBe(true);
-    expect(syntheticProvider?.model).toBe('synthetic/v1');
+    expect(syntheticProvider?.model).toBe('glm-5.2');
     expect(config.reviewers.arbiter.order[0]).toBe('synthetic');
   });
 
