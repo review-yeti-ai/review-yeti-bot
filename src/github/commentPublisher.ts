@@ -163,7 +163,7 @@ export class CommentPublisher {
         ? process.env.GITHUB_TOKEN
         : (process.env.GITHUB_APP_INSTALLATION_TOKEN || '');
 
-    if (!tokenToValidate || !tokenToValidate.startsWith('ghs_')) {
+    if (!options.allowUserToken && (!tokenToValidate || !tokenToValidate.startsWith('ghs_'))) {
       throw new Error('CommentPublisher requires an explicit GitHub App installation token (ghs_)');
     }
     this.token = options.githubToken || process.env.GITHUB_APP_INSTALLATION_TOKEN || process.env.GITHUB_TOKEN || 'ghs_fallback_token_dev';

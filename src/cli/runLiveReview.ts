@@ -10,10 +10,13 @@ import { createDefaultV3Config } from '../config/configLoader';
 import { logger } from '../utils/logger';
 
 async function main() {
-  const prNumber = parseInt(process.argv[2] || '1447', 10);
-  const repo = process.argv[3] || 'calltelemetry/ct-meta';
+  const prNumber = parseInt(process.argv[2] || '1', 10);
+  const repo = process.argv[3] || 'JBJMLLC/ct-review-bot';
 
   logger.info('Starting live ct-review-bot review dispatch', { repo, prNumber });
+
+  // Get full head SHA
+  const headSha = execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
 
   // Register Synthetic API provider into providerPool
   if (!providerPool.hasProvider('synthetic')) {
@@ -57,9 +60,9 @@ async function main() {
     config,
     changedFiles,
     repository: repo,
-    headSha: '70edd5608b12f72451de47a8ceb05165c7d10ef8',
+    headSha,
     client,
-    jobId: `job_calltelemetry_${repo.replace('/', '_')}_pr${prNumber}`,
+    jobId: `job_${repo.replace('/', '_')}_pr${prNumber}`,
   });
 
   // Compile findings across personas
@@ -90,11 +93,13 @@ async function main() {
     mermaidDiagram,
     '```',
     '',
-    `[📊 View Live Terminal Dashboard](https://ct-review-bot.calltelemetry.com/dashboard/live?jobId=job_calltelemetry_${repo.replace('/', '_')}_pr${prNumber}) | [🏢 Org Management](https://ct-review-bot.calltelemetry.com/dashboard/organization)`,
+    `[📊 View Live Terminal Dashboard](https://ct-review-bot.calltelemetry.com/dashboard/live?jobId=job_${repo.replace('/', '_')}_pr${prNumber}) | [🏢 Org Management](https://ct-review-bot.calltelemetry.com/dashboard/organization)`,
   ].join('\n');
 
   // Obtain GitHub App Installation Token if credentials provided, else fall back to user token
   let token = process.env.GITHUB_TOKEN || execSync('gh auth token', { encoding: 'utf-8' }).trim();
+  let allowUserToken = true;
+
   if (process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY && process.env.GITHUB_INSTALLATION_ID) {
     try {
       const tokenRes = await getGitHubAppInstallationToken({
@@ -103,6 +108,7 @@ async function main() {
         installationId: process.env.GITHUB_INSTALLATION_ID,
       });
       token = tokenRes.token;
+      allowUserToken = false;
     } catch (err: any) {
       logger.warn('Failed to obtain GitHub App token, falling back to active user token', { error: err.message });
     }
@@ -111,13 +117,13 @@ async function main() {
   // Post top-level review comment via GitHub REST API
   logger.info('Posting ct-review-bot summary comment to GitHub via REST API', { repo, prNumber });
 
-  const publisher = new CommentPublisher({ githubToken: token });
+  const publisher = new CommentPublisher({ githubToken: token, allowUserToken });
 
   const publishRes = await publisher.publishReview({
     owner: repo.split('/')[0],
     repo: repo.split('/')[1],
     prNumber,
-    commitSha: '70edd5608b12f72451de47a8ceb05165c7d10ef8',
+    commitSha: headSha,
     event: 'APPROVE',
     body: fullSummaryMarkdown,
   });
