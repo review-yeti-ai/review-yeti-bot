@@ -48,17 +48,17 @@ export class SymbolGraphStore {
   private embedder: VectorEmbedder;
   private dbPath: string;
 
-  constructor(dbPath: string = '.ct-memory/symbol_graph.db') {
-    this.dbPath = dbPath;
+  constructor(dbPath?: string) {
+    this.dbPath = dbPath || process.env.CT_REVIEW_SYMBOL_DB || path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'symbol_graph.db');
 
-    if (dbPath !== ':memory:') {
-      const dir = path.dirname(dbPath);
+    if (this.dbPath !== ':memory:') {
+      const dir = path.dirname(this.dbPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
     }
 
-    this.db = new DatabaseSync(dbPath);
+    this.db = new DatabaseSync(this.dbPath);
     this.parser = new ASTParser();
     this.embedder = new VectorEmbedder();
 

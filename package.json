@@ -26,6 +26,7 @@
     "@opentelemetry/semantic-conventions": "^1.25.0",
     "express": "^4.19.2",
     "js-yaml": "^4.1.0",
+    "typescript": "^5.4.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -36,7 +37,6 @@
     "@vitest/coverage-v8": "^4.1.10",
     "supertest": "^7.0.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.5",
     "vitest": "^4.1.10"
   },
   "engines": {

@@ -31,6 +31,7 @@ export interface CommentPublisherOptions {
   initialRetryDelayMs?: number;
   maxDelayMs?: number;
   userAgent?: string;
+  allowUserToken?: boolean;
 }
 
 export interface PublishInlineCommentRequest {

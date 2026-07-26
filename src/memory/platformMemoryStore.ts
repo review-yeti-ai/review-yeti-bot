@@ -22,7 +22,7 @@ export class PlatformMemoryStore {
   private dbPathKey: string;
 
   constructor(dbPath?: string) {
-    const defaultPath = path.join(process.cwd(), 'data', 'platform_memory.db');
+    const defaultPath = process.env.CT_REVIEW_PLATFORM_DB || path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'platform_memory.db');
     const targetPath = dbPath || defaultPath;
     this.dbPathKey = targetPath;
     const dir = path.dirname(targetPath);
