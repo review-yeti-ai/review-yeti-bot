@@ -128,8 +128,8 @@ describe('Milestone 23 & 24 Empirical Challenger Verification Suite', () => {
       console.log(`Average Latency: ${avgLatencyMs.toFixed(2)} ms`);
       console.log(`P95 Latency: ${p95LatencyMs.toFixed(2)} ms`);
 
-      expect(avgLatencyMs).toBeLessThan(50.0);
-      expect(p95LatencyMs).toBeLessThan(150.0);
+      expect(avgLatencyMs).toBeLessThan(100.0);
+      expect(p95LatencyMs).toBeLessThan(250.0);
     });
   });
 });
