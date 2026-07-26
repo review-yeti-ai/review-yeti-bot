@@ -4,6 +4,8 @@ import { OmniRouteClient, OmniRouteResponse, TokensUsed } from '../gateway/omniR
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { logger } from '../utils/logger';
 import { runInSpan, getMetrics } from '../telemetry';
+import { filterDiffHunks } from '../pipeline/hunkFilter';
+import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -262,8 +264,22 @@ export async function executePersonaPanel(options: {
     span.setAttribute('ct.repo', repository);
     span.setAttribute('ct.head_sha', headSha);
 
+    const hunkResult = filterDiffHunks(changedFiles);
+    const effectiveFiles = hunkResult.files
+      .filter((f) => f.status !== 'ignored')
+      .map((f) => ({
+        path: f.path,
+        patch: f.patch,
+        content: f.content,
+      }));
+
+    const budget = evaluateEffortAndBudget(effectiveFiles, config);
+    span.setAttribute('ct.token_budget.effort_tier', budget.effortTier);
+    span.setAttribute('ct.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
+    span.setAttribute('ct.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
+
     const applicable = config.personas.filter((persona) =>
-      persona.enabled && persona.paths.some((pattern) => changedFiles.some((file) => pathMatches(pattern, file.path))),
+      persona.enabled && persona.paths.some((pattern) => effectiveFiles.some((file) => pathMatches(pattern, file.path))),
     );
     span.setAttribute('ct.persona_count', applicable.length);
     span.setAttribute('ct.quorum_required', config.quorum);
@@ -284,7 +300,7 @@ export async function executePersonaPanel(options: {
 
     const settled = await Promise.all(applicable.map(async (persona) => {
       try {
-        return { persona, result: await runPersona(config, client, persona, changedFiles, repository, headSha, memoryRules) };
+        return { persona, result: await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules) };
       } catch (error: any) {
         return { persona, error: error?.message || String(error) };
       }

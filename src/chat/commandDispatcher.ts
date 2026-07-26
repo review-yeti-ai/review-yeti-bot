@@ -2,9 +2,10 @@ import { GitHubInstallationClient, ReviewComment } from '../github/installationC
 import { OmniRouteClient } from '../gateway/omniRouteClient';
 import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
+import { ReflectionCommandParser, LearningStore } from '../reflection';
 import { logger } from '../utils/logger';
 
-export type CommandType = 'review' | 'explain' | 'refactor' | 'summarize' | 'ask';
+export type CommandType = 'review' | 'explain' | 'refactor' | 'summarize' | 'ask' | 'learn';
 
 export interface ParsedCommand {
   command: CommandType;
@@ -39,7 +40,7 @@ export interface DispatchResult {
 
 export function parseCommand(commandStr: string): ParsedCommand | null {
   if (!commandStr || typeof commandStr !== 'string') return null;
-  const match = commandStr.match(/@(ct-review|ct-review-bot|bot)\s+(review|explain|refactor|summarize|ask)(?:\s+([\s\S]*))?/i);
+  const match = commandStr.match(/@(ct-review|ct-review-bot|bot)\s+(review|explain|refactor|summarize|ask|learn)(?:\s+([\s\S]*))?/i);
   if (!match) return null;
   return {
     command: match[2].toLowerCase() as CommandType,
@@ -76,6 +77,8 @@ export class CommandDispatcher {
         return this.handleSummarize(parsed, context);
       case 'ask':
         return this.handleAsk(parsed, context);
+      case 'learn':
+        return this.handleLearn(parsed, context);
       default:
         throw new Error(`Unsupported command: ${parsed.command}`);
     }
@@ -281,6 +284,37 @@ export class CommandDispatcher {
     }
 
     return { command: 'ask', success: true, output: replyBody };
+  }
+
+  private async handleLearn(parsed: ParsedCommand, context: ChatContext): Promise<DispatchResult> {
+    const reflectionParser = new ReflectionCommandParser();
+    const parsedCmd = reflectionParser.parse(parsed.rawText, { filePath: context.filePath });
+    if (!parsedCmd) {
+      const errorMsg = 'Failed to parse `@ct-review learn` command. Usage:\n- `@ct-review learn convention: <title> - <description>`\n- `@ct-review learn nit <pattern> [reason]`\n- `@ct-review learn adr <adr_number>: <title> | <rule> | <target_paths>`';
+      if (context.commentId) {
+        await context.github.replyToReviewComment(context.owner, context.repo, context.prNumber, context.commentId, errorMsg);
+      } else {
+        await context.github.postIssueComment(context.owner, context.repo, context.prNumber, errorMsg);
+      }
+      return { command: 'learn', success: false, output: errorMsg };
+    }
+
+    const learningStore = new LearningStore();
+    try {
+      await learningStore.saveCommandLearning(`${context.owner}/${context.repo}`, context.prNumber, parsedCmd);
+    } finally {
+      learningStore.close();
+    }
+
+    const replyBody = `### Team Memory Updated\n\nRecorded learning rule to repository persistent memory:\n- **Type**: \`${parsedCmd.type}\`\n- **Category**: \`${parsedCmd.category}\`\n- **Title**: ${parsedCmd.title}\n- **Details**: ${parsedCmd.description}`;
+
+    if (context.commentId) {
+      await context.github.replyToReviewComment(context.owner, context.repo, context.prNumber, context.commentId, replyBody);
+    } else {
+      await context.github.postIssueComment(context.owner, context.repo, context.prNumber, replyBody);
+    }
+
+    return { command: 'learn', success: true, output: replyBody };
   }
 }
 

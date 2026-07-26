@@ -189,4 +189,19 @@ const ApiClient = {
   async getAnalyticsIndexer() {
     return this.request('/api/analytics/indexer');
   },
+
+  // Onboarding Wizard API Methods
+  async scanOnboarding(repoPath) {
+    return this.request('/api/onboarding/wizard/scan', {
+      method: 'POST',
+      body: { repoPath },
+    });
+  },
+
+  async generateOnboardingConfig(payload) {
+    return this.request('/api/onboarding/wizard/generate', {
+      method: 'POST',
+      body: payload,
+    });
+  },
 };

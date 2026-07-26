@@ -41,6 +41,9 @@
         <div class="nav-item" data-view="integrations">
           <span class="nav-icon">🔌</span> Integrations & MCPs
         </div>
+        <div class="nav-item" data-view="onboarding">
+          <span class="nav-icon">🚀</span> Onboarding Wizard
+        </div>
       </nav>
     </aside>
     <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
@@ -402,6 +405,75 @@
                 <!-- Dynamically rendered -->
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 9. Onboarding Wizard View -->
+      <section class="view-panel" id="view-onboarding">
+        <div class="glass-panel" style="margin-bottom: 24px;">
+          <h2>🚀 Zero-Config Onboarding Wizard</h2>
+          <p class="kpi-subtext">Auto-detect repository tech stacks (&lt; 1 sec) &amp; generate optimized <code>.ct-review.yaml</code> configurations.</p>
+        </div>
+
+        <div class="glass-panel">
+          <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 24px; flex-wrap: wrap;">
+            <input type="text" class="input-control" id="onboarding-repo-path" placeholder="Repository Path (e.g. /workspace/my-app)" value="" style="flex: 1; min-width: 280px;">
+            <button class="btn-primary" id="start-scan-btn">⚡ Run Tech Stack Auto-Detection (&lt; 1s)</button>
+          </div>
+
+          <!-- Scan Results Box -->
+          <div id="scan-results-card" style="display: none; background: var(--bg-input); padding: 20px; border-radius: var(--radius-md); border: 1px solid var(--border-medium); margin-bottom: 24px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+              <h3 style="margin: 0;">Scan Results</h3>
+              <span class="pulse-badge" id="scan-speed-badge" style="background: var(--color-success-bg); color: var(--color-success); padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600;">Execution Time: -- ms</span>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+              <div>
+                <label style="font-weight: 600; font-size: 13px; color: var(--text-muted);">Detected Languages Composition</label>
+                <div id="scan-languages-list" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px;"></div>
+              </div>
+              <div>
+                <label style="font-weight: 600; font-size: 13px; color: var(--text-muted);">Frameworks &amp; Manifests Found</label>
+                <div id="scan-frameworks-list" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Configuration Options & Preview -->
+          <div id="wizard-config-section" style="display: none;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+              <div>
+                <h3>Customize Settings</h3>
+                <div class="form-group" style="margin-top: 16px;">
+                  <label for="wizard-profile-select">Review Profile</label>
+                  <select class="select-control" id="wizard-profile-select">
+                    <option value="chill">Chill (Low strictness, quick feedback)</option>
+                    <option value="balanced" selected>Balanced (Standard security &amp; architecture)</option>
+                    <option value="assertive">Assertive (Strict fail-closed enforcement)</option>
+                  </select>
+                </div>
+
+                <div class="form-group" style="margin-top: 16px;">
+                  <label for="wizard-ticket-select">Ticket Enforcement</label>
+                  <select class="select-control" id="wizard-ticket-select">
+                    <option value="false" selected>Disabled (No ticket key required)</option>
+                    <option value="true">Enabled (Require Jira / Issue key in PR)</option>
+                  </select>
+                </div>
+
+                <button class="btn-primary" id="generate-yaml-btn" style="margin-top: 16px;">Generate .ct-review.yaml</button>
+              </div>
+
+              <div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <h3>Generated <code>.ct-review.yaml</code></h3>
+                  <button class="btn-secondary" id="copy-yaml-btn">📋 Copy YAML</button>
+                </div>
+                <pre id="yaml-preview-box" style="background: var(--bg-input); padding: 16px; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); color: var(--color-info); height: 320px; overflow-y: auto; font-family: monospace; font-size: 12px; margin-top: 12px;">// Run scan to generate config...</pre>
+              </div>
+            </div>
           </div>
         </div>
       </section>

@@ -1,0 +1,106 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import request from 'supertest';
+import path from 'node:path';
+import { scanRepositoryStack } from '../../src/onboarding/stackScanner';
+import { generateCtReviewConfig } from '../../src/onboarding/configGenerator';
+import { createApp } from '../../src/app';
+
+describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
+  const currentRepoPath = path.resolve(__dirname, '../../');
+
+  describe('stackScanner', () => {
+    it('should scan repository stack in sub-second duration', async () => {
+      const scanResult = await scanRepositoryStack(currentRepoPath);
+
+      expect(scanResult).toBeDefined();
+      expect(scanResult.detection.scanDurationMs).toBeLessThan(1000);
+      expect(scanResult.detection.totalFilesScanned).toBeGreaterThan(0);
+      expect(scanResult.detection.manifestsFound).toContain('package.json');
+      expect(scanResult.detection.languages.TypeScript).toBeGreaterThan(0);
+
+      const personaIds = scanResult.recommendedPersonas.map((p) => p.id);
+      expect(personaIds).toContain('security-arbiter');
+      expect(personaIds).toContain('ts-node-architect');
+    });
+  });
+
+  describe('configGenerator', () => {
+    it('should auto-generate valid CtReviewConfigV3 YAML string', async () => {
+      const scanResult = await scanRepositoryStack(currentRepoPath);
+      const generated = generateCtReviewConfig({
+        scanResult,
+        profile: 'balanced',
+        ticketEnforcement: true,
+      });
+
+      expect(generated.yamlText).toContain('version: 3');
+      expect(generated.yamlText).toContain('profile: balanced');
+      expect(generated.yamlText).toContain('ticket_enforcement: true');
+      expect(generated.config.version).toBe(3);
+      expect(generated.config.personas.length).toBeGreaterThan(0);
+      expect(generated.config.personas.some((p) => p.required)).toBe(true);
+    });
+  });
+
+  describe('Onboarding REST API Endpoints', () => {
+    let app: any;
+    let authToken: string;
+
+    beforeEach(async () => {
+      process.env.GITHUB_APP_ID = '12345';
+      process.env.GITHUB_APP_PRIVATE_KEY = '-----BEGIN RSA PRIVATE KEY-----\nMIIEogIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----';
+      process.env.WEBHOOK_SECRET = 'secret';
+      process.env.OMNIROUTE_BASE_URL = 'http://localhost:8080';
+
+      app = createApp();
+
+      const loginRes = await request(app)
+        .post('/api/auth/login')
+        .send({ username: 'admin', password: 'admin123' });
+
+      authToken = loginRes.body.token;
+    });
+
+    it('POST /api/onboarding/wizard/scan should return stack scan results', async () => {
+      const res = await request(app)
+        .post('/api/onboarding/wizard/scan')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({ repoPath: currentRepoPath });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.scanResult.detection.scanDurationMs).toBeLessThan(1000);
+      expect(res.body.scanResult.detection.manifestsFound).toContain('package.json');
+    });
+
+    it('POST /api/onboarding/wizard/scan should return 400 for invalid repository path', async () => {
+      const res = await request(app)
+        .post('/api/onboarding/wizard/scan')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({ repoPath: '/invalid/nonexistent/directory/path' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toBe('Invalid repository path');
+    });
+
+    it('POST /api/onboarding/wizard/generate should return valid YAML text and config', async () => {
+      const scanResult = await scanRepositoryStack(currentRepoPath);
+
+      const res = await request(app)
+        .post('/api/onboarding/wizard/generate')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({
+          scanResult,
+          profile: 'assertive',
+          ticketEnforcement: true,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.yamlText).toContain('version: 3');
+      expect(res.body.yamlText).toContain('profile: assertive');
+      expect(res.body.config.version).toBe(3);
+    });
+  });
+});

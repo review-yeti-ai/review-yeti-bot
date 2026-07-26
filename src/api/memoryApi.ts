@@ -61,6 +61,58 @@ export function createMemoryRouter(options: MemoryApiOptions = {}): Router {
   const symbolGraphStore = options.symbolGraphStore || new SymbolGraphStore();
   const graphLearningEngine = options.graphLearningEngine || new GraphLearningEngine(prMemoryStore, symbolGraphStore);
 
+  // GET /api/memory/query
+  router.get('/memory/query', async (req: Request, res: Response) => {
+    try {
+      const repo = String(req.query.repo || req.query.repository || '');
+      if (!repo) {
+        return res.status(400).json({ success: false, error: 'repo parameter is required' });
+      }
+      const result = await prMemoryStore.queryLearnings(repo);
+      return res.status(200).json({
+        success: true,
+        repo,
+        ...result,
+      });
+    } catch (err: any) {
+      logger.error('Error handling GET /api/memory/query', { error: err?.message });
+      return res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // POST /api/memory/learn
+  router.post('/memory/learn', async (req: Request, res: Response) => {
+    try {
+      const { repo, command, pattern } = req.body;
+      const targetRepo = repo || 'default';
+      const textToParse = command || pattern || '';
+      const { parseLearnCommand } = await import('../reflection/commandParser');
+      const parsed = parseLearnCommand(textToParse);
+      const learnedPattern = parsed.pattern || textToParse.replace(/@ct-review\s+learn\s+/i, '').trim();
+
+      await prMemoryStore.recordLearning(targetRepo, 0, {
+        category: 'convention',
+        title: learnedPattern,
+        description: learnedPattern,
+      });
+      await prMemoryStore.recordResolvedNit(targetRepo, 0, {
+        pattern: learnedPattern,
+        filePath: '**',
+        reason: learnedPattern,
+      });
+
+      return res.status(200).json({
+        success: true,
+        repo: targetRepo,
+        learned: learnedPattern,
+        pattern: learnedPattern,
+      });
+    } catch (err: any) {
+      logger.error('Error handling POST /api/memory/learn', { error: err?.message });
+      return res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
   // 1. POST /api/memory/query
   router.post('/memory/query', async (req: Request, res: Response) => {
     try {
