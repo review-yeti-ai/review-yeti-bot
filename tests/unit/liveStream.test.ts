@@ -332,7 +332,7 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
       });
 
       expect(res.success).toBe(true);
-      expect(capturedBody).toContain('Watch Live Agent Review Stream & Terminal View');
+      expect(capturedBody).toContain('Live Terminal Dashboard');
       expect(capturedBody).toContain('/dashboard/live?jobId=job_calltelemetry_ct-meta_pr1448_a1b2c3d');
       expect(capturedBody).toContain('/dashboard/organization');
     });

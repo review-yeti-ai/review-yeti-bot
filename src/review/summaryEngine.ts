@@ -132,10 +132,14 @@ export function generatePRSummary(
     '## Executive Overview',
     overview,
     '',
-    '## Walkthrough',
+    '<details>',
+    '<summary><strong>🔍 Walkthrough & Module Changesets</strong></summary>',
+    '',
+    '### Walkthrough',
     ...walkthroughBullets,
     '',
-    '## Changesets',
+    '### Changesets',
     ...changesetSections,
+    '</details>',
   ].join('\n');
 }

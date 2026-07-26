@@ -42,8 +42,8 @@ describe('Comment Publisher Dashboard Links & Markdown Suite', () => {
       const orgUrl = 'https://review.example.com/dashboard/organization';
       const footer = formatDashboardFooter(liveUrl, orgUrl);
 
-      expect(footer).toContain('📺 **[Watch Live Agent Review Stream & Terminal View](https://review.example.com/dashboard/live?jobId=job_123)**');
-      expect(footer).toContain('⚙️ **[Organization Dashboard & Settings](https://review.example.com/dashboard/organization)**');
+      expect(footer).toContain('[📊 Live Terminal Dashboard](https://review.example.com/dashboard/live?jobId=job_123)');
+      expect(footer).toContain('[🏢 Org Settings](https://review.example.com/dashboard/organization)');
     });
   });
 
@@ -148,7 +148,7 @@ describe('Comment Publisher Dashboard Links & Markdown Suite', () => {
       });
 
       // Count occurrences of live stream text
-      const matches = capturedBody.match(/Watch Live Agent Review Stream/g);
+      const matches = capturedBody.match(/Live Terminal Dashboard/g);
       expect(matches?.length).toBe(1);
     });
   });

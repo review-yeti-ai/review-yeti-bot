@@ -78,20 +78,32 @@ async function main() {
   const summaryMarkdown = generatePRSummary(diff, mappedFindings, config);
   const mermaidDiagram = generateMermaidDiagram(diff);
 
-  const fullSummaryMarkdown = [
-    `# 🤖 ct-review-bot Quorum Summary (PR #${prNumber})`,
+  const sections: string[] = [
+    `# 🤖 ct-review-bot Summary (PR #${prNumber})`,
     `**Verdict**: \`${panelResult.arbiter?.verdict || 'SHIP'}\` | **Provider**: \`Synthetic (GLM-5.2)\``,
     '',
     summaryMarkdown,
-    '',
-    '## 🧬 Architecture Diagram',
-    '```mermaid',
-    mermaidDiagram,
-    '```',
+  ];
+
+  if (mermaidDiagram && mermaidDiagram.trim().length > 0) {
+    sections.push(
+      '',
+      '<details>',
+      '<summary><strong>🧬 Architecture Diagram</strong></summary>',
+      '',
+      mermaidDiagram,
+      '',
+      '</details>'
+    );
+  }
+
+  sections.push(
     '',
     '---',
-    `[📊 View Live Terminal Dashboard](https://review-bot.calltelemetry.com/dashboard/live?jobId=job_${repo.replace('/', '_')}_pr${prNumber}) | [🏢 Org Management](https://review-bot.calltelemetry.com/dashboard/organization)`,
-  ].join('\n');
+    `[📊 Live Terminal Dashboard](https://review-bot.calltelemetry.com/dashboard/live?jobId=job_${repo.replace('/', '_')}_pr${prNumber}) | [🏢 Org Settings](https://review-bot.calltelemetry.com/dashboard/organization)`
+  );
+
+  const fullSummaryMarkdown = sections.join('\n');
 
   const appId = process.env.GITHUB_APP_ID || '4385771';
   const installationId = process.env.GITHUB_INSTALLATION_ID || '148780830';
