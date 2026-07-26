@@ -14,8 +14,20 @@ export interface RepoDashboardSetting {
   updatedAt: string;
 }
 
+export interface PersonaSetting {
+  id: string;
+  displayName: string;
+  description: string;
+  enabled: boolean;
+  model: string;
+  effort: 'low' | 'medium' | 'high' | 'max';
+  confidenceThreshold: number;
+  customPrompt?: string;
+}
+
 export interface PlatformSettings {
   defaultModelOverrides: Record<string, string>;
+  personaSettings?: Record<string, PersonaSetting>;
   memoryEngineSettings: {
     autoSuppressNits: boolean;
     learningConfidenceThreshold: number;
@@ -165,6 +177,18 @@ export class DashboardStore {
           claude: 'claude/claude-opus-4-8',
           grok: 'grok-cli/grok-4.5',
           'agy-opus': 'agy/claude-opus-4-6-thinking',
+        },
+        personaSettings: {
+          security: { id: 'security', displayName: '🛡️ Security & Tenancy Guardian', description: 'Secret scanning, authentication, authorization, OWASP Top 10, multi-tenant isolation.', enabled: true, model: 'claude-5-sonnet', effort: 'max', confidenceThreshold: 85 },
+          architecture: { id: 'architecture', displayName: '🏛️ System Architecture & Design', description: 'Module boundaries, design patterns, microservice contracts, ADR compliance.', enabled: true, model: 'claude-5-sonnet', effort: 'high', confidenceThreshold: 75 },
+          performance: { id: 'performance', displayName: '⚡ Performance & Scalability', description: 'CPU/Memory hotspots, N+1 queries, unindexed lookups, memory leaks.', enabled: true, model: 'gpt-5.6-sol', effort: 'high', confidenceThreshold: 70 },
+          quality: { id: 'quality', displayName: '✨ Code Quality & Style', description: 'Idiomatic syntax, readability, type safety, error handling guidelines.', enabled: true, model: 'claude-5-sonnet', effort: 'medium', confidenceThreshold: 70 },
+          database: { id: 'database', displayName: '🗄️ Database & Persistence', description: 'Schema migrations, index efficiency, SQL injection, transaction safety.', enabled: true, model: 'gpt-5.6-sol', effort: 'high', confidenceThreshold: 80 },
+          api_contract: { id: 'api_contract', displayName: '🔌 API Contract & Integration', description: 'Breaking API changes, OpenAPI/REST schemas, backward compatibility.', enabled: true, model: 'claude-5-sonnet', effort: 'medium', confidenceThreshold: 75 },
+          reliability: { id: 'reliability', displayName: '💥 Reliability & Resilience (SRE)', description: 'Rate limiting, circuit breakers, timeout backoffs, fail-closed safety.', enabled: true, model: 'deepseek-v4-pro', effort: 'high', confidenceThreshold: 80 },
+          devops: { id: 'devops', displayName: '🐳 DevOps & Containers', description: 'K8s manifests, Dockerfile layer optimization, IAM privilege boundaries.', enabled: true, model: 'glm-5.2', effort: 'medium', confidenceThreshold: 75 },
+          docs_compliance: { id: 'docs_compliance', displayName: '📝 Documentation & Compliance', description: 'Inline docstrings, README updates, ADR registration, open-source licenses.', enabled: true, model: 'claude-5-sonnet', effort: 'low', confidenceThreshold: 60 },
+          finops: { id: 'finops', displayName: '💰 FinOps & Token Budget', description: 'Prompt token budget efficiency, model cost tiering, AST hunk filtering.', enabled: true, model: 'glm-5.2', effort: 'medium', confidenceThreshold: 70 },
         },
         memoryEngineSettings: {
           autoSuppressNits: true,

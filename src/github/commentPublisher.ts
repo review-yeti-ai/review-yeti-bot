@@ -72,6 +72,25 @@ export const ASCII_MASCOT = `\`\`\`
 
 export const PUBLISHER_MASCOT = ASCII_MASCOT;
 
+export function getJobId(owner: string, repo: string, prNumber: number, commitSha: string): string {
+  return `job_${owner}_${repo}_pr${prNumber}_${commitSha.slice(0, 7)}`;
+}
+
+export function getLiveStreamUrl(domain: string, jobId: string): string {
+  const cleanDomain = domain.replace(/\/$/, '');
+  return `${cleanDomain}/dashboard/live?jobId=${jobId}`;
+}
+
+export function getOrgDashboardUrl(domain: string): string {
+  const cleanDomain = domain.replace(/\/$/, '');
+  return `${cleanDomain}/dashboard/organization`;
+}
+
+export function formatDashboardFooter(liveStreamUrl: string, orgDashboardUrl: string, verdict: string = 'APPROVE'): string {
+  const badgeColor = verdict === 'SHIP' || verdict === 'APPROVE' ? '27c46a' : verdict === 'FIX_FIRST' ? 'f59e0b' : 'eb3b48';
+  return `\n\n---\n### 🤖 CallTelemetry Live Agent Review Panel\n\n| 📺 Live Terminal Stream | ⚙️ Organization Dashboard | ⚖️ Quorum Verdict |\n| :---: | :---: | :---: |\n| [![Live Terminal Stream](https://img.shields.io/badge/Live_Stream-Active_Terminal-6e56cf?style=flat-square&logo=terminal)](${liveStreamUrl}) | [![Org Dashboard](https://img.shields.io/badge/Organization-Dashboard-202430?style=flat-square&logo=github)](${orgDashboardUrl}) | ![Verdict](https://img.shields.io/badge/Quorum-${verdict}-${badgeColor}?style=flat-square) |\n\n📺 **[Watch Live Agent Review Stream & Terminal View](${liveStreamUrl})** | ⚙️ **[Organization Dashboard & Settings](${orgDashboardUrl})**`;
+}
+
 /**
  * Formats a PersonaFinding into a rich GitHub inline comment body with optional suggestion block.
  */
@@ -201,12 +220,12 @@ export class CommentPublisher {
     try {
       const url = `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`;
       const dashboardDomain = process.env.DASHBOARD_URL || 'https://ct-review-bot.calltelemetry.com';
-      const jobId = `job_${owner}_${repo}_pr${prNumber}_${commitSha.slice(0, 7)}`;
-      const liveStreamUrl = `${dashboardDomain}/dashboard/live?jobId=${jobId}`;
-      const orgDashboardUrl = `${dashboardDomain}/dashboard/organization`;
+      const jobId = getJobId(owner, repo, prNumber, commitSha);
+      const liveStreamUrl = getLiveStreamUrl(dashboardDomain, jobId);
+      const orgDashboardUrl = getOrgDashboardUrl(dashboardDomain);
 
-      const dashboardFooter = `\n\n---\n📺 **[Watch Live Agent Review Stream & Terminal View](${liveStreamUrl})** | ⚙️ **[Organization Dashboard & Settings](${orgDashboardUrl})**`;
-      const finalBody = body.includes(dashboardFooter) ? body : body + dashboardFooter;
+      const dashboardFooter = formatDashboardFooter(liveStreamUrl, orgDashboardUrl);
+      const finalBody = body.includes(dashboardFooter) || body.includes('Watch Live Agent Review Stream') ? body : body + dashboardFooter;
 
       const res = await this.fetchWithRetry(url, {
         method: 'POST',
