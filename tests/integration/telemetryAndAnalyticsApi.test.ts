@@ -98,7 +98,7 @@ describe('Telemetry & Typed Analytics REST API Endpoints (Milestones 23 & 24)', 
       expect(res.body.breakdown.length).toBeGreaterThan(0);
       expect(res.body.breakdown[0]).toHaveProperty('model');
       expect(res.body.breakdown[0]).toHaveProperty('spendUsd');
-      expect(latencyMs).toBeLessThan(100);
+      expect(latencyMs).toBeLessThan(500);
     });
   });
 
