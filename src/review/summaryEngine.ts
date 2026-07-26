@@ -92,8 +92,9 @@ export function generatePRSummary(
     walkthroughBullets.push('- Update core components and system configuration.');
   } else {
     for (const [moduleName, entry] of moduleMap.entries()) {
-      const fileList = entry.files.map((f) => f.split('/').pop()).join(', ');
-      walkthroughBullets.push(`- **${moduleName}**: Updated ${entry.files.length} file(s) (\`${fileList}\`).`);
+      const displayModule = moduleName && moduleName.trim().length > 0 ? moduleName : 'root';
+      const fileList = entry.files.map((f) => f.split('/').pop() || f).filter((f) => f && f.trim().length > 0).join(', ');
+      walkthroughBullets.push(`- **${displayModule}**: Updated ${entry.files.length} file(s)${fileList ? ` (\`${fileList}\`)` : ''}.`);
     }
   }
 
@@ -117,9 +118,12 @@ export function generatePRSummary(
     changesetSections.push('- General updates and baseline configuration changes.');
   } else {
     for (const [moduleName, entry] of moduleMap.entries()) {
-      changesetSections.push(`### \`${moduleName}\``);
+      const displayModule = moduleName && moduleName.trim().length > 0 ? moduleName : 'root';
+      changesetSections.push(`### \`${displayModule}\``);
       for (const file of entry.files) {
-        changesetSections.push(`- \`${file}\`: Modified in pull request.`);
+        if (file && file.trim().length > 0) {
+          changesetSections.push(`- \`${file}\`: Modified in pull request.`);
+        }
       }
     }
   }
