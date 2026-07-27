@@ -29,21 +29,32 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Cache Node Modules
+      - name: Cache Node Modules & Vitest Results
         uses: actions/cache@v4
         with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-24-${{ hashFiles('**/package-lock.json') }}
+          path: |
+            ~/.npm
+            node_modules/.vitest
+          key: ${{ runner.os }}-vitest-cache-${{ hashFiles('**/package-lock.json') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-node-24-
+            ${{ runner.os }}-vitest-cache-${{ hashFiles('**/package-lock.json') }}-
+            ${{ runner.os }}-vitest-cache-
 
       - run: npm ci
-      - name: Run Unit Tests
-        run: npm run test:unit
-      - name: Run Integration Tests
-        run: npm run test:integration
-      - name: Run E2E Tests
-        run: npm run test:e2e
+      
+      - name: Detect Changed Files & Run Relative Tests
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "Running relative test suite for pull request..."
+          npm run test:changed || npm run test:unit
+          
+      - name: Run Full Test Suite on Push to Main
+        if: github.event_name == 'push'
+        run: |
+          npm run test:unit
+          npm run test:integration
+          npm run test:e2e
+
       - name: Verify TypeScript Build
         run: npm run build
 
