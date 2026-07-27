@@ -10,6 +10,15 @@ export default defineConfig({
       'tests/e2e/**/*.test.ts',
       'tests/benchmark/**/*.test.ts'
     ],
+    cache: {
+      dir: 'node_modules/.vitest',
+    },
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        singleFork: true,
+      },
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
