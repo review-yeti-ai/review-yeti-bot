@@ -10,21 +10,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { PersonaSelector, PERSONA_METADATA } from '@/components/settings/persona-selector';
+import { PersonaConfigDrawer } from '@/components/settings/persona-config-drawer';
 import { PromptEditor } from '@/components/settings/prompt-editor';
 import { PromptTestModal } from '@/components/settings/prompt-test-modal';
 import { ProviderSettings } from '@/components/settings/provider-settings';
 import { fetchPersonas, updatePersona, fetchProviders } from '@/lib/api-client';
 import { PersonaSetting, ProviderConfigRecord, ModelRegistryItem } from '@/types/dashboard';
-
-const R4_ALLOWED_MODELS = [
-  'claude-3-5-sonnet',
-  'gpt-4o',
-  'deepseek-v3',
-  'glm-5.2',
-  'synthetic/v1',
-  'claude-5-sonnet',
-  'grok-cli/grok-4.5',
-];
 
 function getSearchParamsSafely(): URLSearchParams | null {
   try {
@@ -79,6 +70,7 @@ function SettingsContent() {
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [toastMessage, setToastMessage] = React.useState<string | null>(null);
+  const [isDrawerOpen, setIsDrawerOpen] = React.useState(false);
 
   const [providers, setProviders] = React.useState<Record<string, ProviderConfigRecord>>({});
   const [modelRegistry, setModelRegistry] = React.useState<Record<string, ModelRegistryItem>>({});
@@ -139,6 +131,35 @@ function SettingsContent() {
     const initialPrompt = p?.customPrompt || p?.systemPrompt || p?.charter || `builtin:${id}`;
     setActivePrompt(initialPrompt);
     setSavedPrompt(initialPrompt);
+  };
+
+  const handleConfigurePersona = (id: string) => {
+    handleSelectPersona(id);
+    setIsDrawerOpen(true);
+  };
+
+  const handleToggleActive = async (id: string, active: boolean) => {
+    const current = personas[id] || {
+      id,
+      displayName: PERSONA_METADATA[id as keyof typeof PERSONA_METADATA]?.name || id,
+      model: 'claude-3-5-sonnet',
+      effort: 'low',
+      confidenceThreshold: 80,
+      enabled: active,
+    };
+
+    const updated = { ...current, enabled: active };
+    setPersonas((prev) => ({
+      ...prev,
+      [id]: updated,
+    }));
+
+    try {
+      await updatePersona(id, { enabled: active });
+      setToastMessage(`Persona '${id}' set to ${active ? 'Active' : 'Disabled'}`);
+    } catch (err: any) {
+      setToastMessage(`Failed to update status for '${id}': ${err?.message}`);
+    }
   };
 
   const handleSaveCurrentPersona = async () => {
@@ -205,7 +226,6 @@ function SettingsContent() {
   };
 
   const activeCount = Object.values(personas).filter((p) => p.enabled !== false).length;
-
   const currentPersonaModel = activePersona.model || 'claude-3-5-sonnet';
   const enabledProviderList = Object.values(providers).filter((p) => p.enabled !== false && p.active !== false);
 
@@ -287,7 +307,7 @@ function SettingsContent() {
         <TabsList className="grid w-full grid-cols-2 max-w-md bg-card/80 border border-border/60">
           <TabsTrigger value="personas" className="flex items-center gap-2 text-xs font-semibold">
             <Sliders className="h-4 w-4 text-purple-400" />
-            Persona Editor
+            Persona Roster &amp; Grid
           </TabsTrigger>
           <TabsTrigger value="models" className="flex items-center gap-2 text-xs font-semibold">
             <Cpu className="h-4 w-4 text-indigo-400" />
@@ -304,9 +324,8 @@ function SettingsContent() {
           </div>
         )}
 
-        {/* Tab 1: Persona Editor */}
+        {/* Tab 1: Persona Editor Grid */}
         <TabsContent value="personas" className="space-y-6 mt-6">
-          {/* 11 Persona Selector Grid */}
           <Card className="glass-panel border-border/80">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base font-bold">
@@ -314,19 +333,21 @@ function SettingsContent() {
                 Domain-Specialized Persona Review Roster
               </CardTitle>
               <CardDescription>
-                Select a persona below to configure its system prompt, AI model, effort level, and arbitration threshold
+                Click any persona card or configure button below to launch the editor drawer and configure system prompt, AI model, effort level, and arbitration threshold.
               </CardDescription>
             </CardHeader>
             <CardContent>
               <PersonaSelector
                 selectedPersonaId={selectedId}
                 onSelectPersona={handleSelectPersona}
+                onConfigurePersona={handleConfigurePersona}
+                onToggleActive={handleToggleActive}
                 personas={personas}
               />
             </CardContent>
           </Card>
 
-          {/* Active Selected Persona Detail & Prompt Editor */}
+          {/* Active Selected Persona Detail & Prompt Editor Panel */}
           <div id="persona-settings-grid" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Left Column: Persona Configuration Controls */}
             <Card className="glass-panel border-border/80 lg:col-span-1">
@@ -486,6 +507,25 @@ function SettingsContent() {
               />
             </div>
           </div>
+
+          {/* Slide-Over Drawer / Modal Dialog for Persona Editing */}
+          <PersonaConfigDrawer
+            open={isDrawerOpen}
+            onOpenChange={setIsDrawerOpen}
+            persona={activePersona}
+            activePrompt={activePrompt}
+            savedPrompt={savedPrompt}
+            onPromptChange={setActivePrompt}
+            onUpdatePersonaField={updateActivePersonaField}
+            onSavePersona={handleSaveCurrentPersona}
+            onSaveAll={handleSaveAll}
+            onResetDefaults={handleResetDefaults}
+            isSaving={saving}
+            enabledProviderList={enabledProviderList}
+            dynamicModels={dynamicModels}
+            allAvailableModels={allAvailableModels}
+            modelRegistry={modelRegistry}
+          />
         </TabsContent>
 
         {/* Tab 2: AI Models & Providers */}

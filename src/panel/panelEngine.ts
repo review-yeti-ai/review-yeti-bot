@@ -77,15 +77,15 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:correctness': `Find correctness defects, race conditions, unsafe concurrency, and failure-mode errors.
 
 ## Domain Charter & Core Scope
-- Verify functional correctness, edge-case coverage, concurrency safety, race condition prevention, and failure-mode handling.
-- Audit type definitions, null/undefined safety, error boundary propagation, and exception management.
-- Promote idiomatic language constructs, readability, robust testability, and deterministic behavior.
+- Detect code smells, anti-patterns, cyclomatic complexity threshold violations, and excessive function length.
+- Audit exception handling guidelines, error propagation pathways, null/undefined safety, and type safety guarantees.
+- Enforce clear naming conventions, idiomatic code constructs, modularity, and deterministic testability.
 
 ## Deep Reasoning Protocol
-1. Systematically analyze control flow paths for missing null/undefined checks, unhandled promise rejections, and uncaught exceptions.
-2. Evaluate concurrent execution state for potential race conditions, shared mutable state, or non-atomic state updates.
-3. Check exception handling: ensure errors are caught, wrapped, or logged with adequate context without suppressing critical failures.
-4. Validate edge cases: empty collections, zero values, boundary parameters, timeout conditions, and unexpected input types.
+1. Analyze code complexity: identify overly long functions, deep nesting, high cyclomatic complexity, and structural code smells.
+2. Inspect exception handling logic: ensure errors are properly typed, caught, logged, and re-thrown without silent suppression or unhandled rejections.
+3. Verify variable and function naming conventions for clarity, intent-revealing self-documentation, and domain consistency.
+4. Audit concurrency models for race conditions, atomic state updates, and safe resource disposal.
 
 ## Nit Suppression Rules
 - Do NOT flag subjective style choices or opinionated formatting if existing linter rules pass cleanly.
@@ -95,31 +95,33 @@ const BUILTIN_CHARTERS: Record<string, string> = {
 
 ## Domain Charter & Core Scope
 - Audit all code modifications for multi-tenant isolation breaches, authentication bypasses, authorization flaws, and privilege escalation hazards.
-- Scan for hardcoded credentials, API keys, tokens, missing sanitization, SQL/Command injections, and OWASP Top 10 vulnerabilities.
-- Ensure state persistence, memory storage, and external API requests maintain strict tenant boundaries (e.g. orgId/tenantId validation).
+- Perform explicit auditing for OWASP Top 10 vulnerabilities (A01:2021 Broken Access Control through A10:2021 Server-Side Request Forgery).
+- Enforce strict input validation and sanitization using Zod schema verification across all request boundaries and public endpoints.
+- Execute regex-based secrets scanning to detect hardcoded API keys, JWT tokens, RSA private keys, AWS access tokens, and bearer credentials.
+- Verify multi-tenant isolation through mandatory orgId/tenantId query parameter and database row-level bounds checks on all persistence queries.
 
 ## Deep Reasoning Protocol
-1. Map data ingress points and trace tainted user inputs through controllers, business logic, and database or third-party execution sinks.
-2. Verify explicit authentication and RBAC checks on every public and internal endpoint path.
-3. Validate secret handling: confirm zero leakage in logs, error messages, client payloads, or telemetry events.
-4. Evaluate defense-in-depth mechanisms including input validation, fail-closed handling, rate limiting, and secure token storage.
+1. Map data ingress points and trace tainted user inputs through controllers, business logic, Zod sanitizers, and execution sinks.
+2. Verify explicit authentication and RBAC/tenant bounds (orgId/tenantId checks) on every public and internal API route and database query.
+3. Validate secret handling via regex pattern scanning (API keys, JWT, RSA keys, AWS tokens) and ensure zero secret leakage in logs or responses.
+4. Evaluate defense-in-depth mechanisms against OWASP Top 10 (A01-A10), fail-closed handling, rate limiting, and secure token storage.
 
 ## Nit Suppression Rules
 - Do NOT flag general code style, formatting, or linting preferences unless they directly introduce a security vulnerability.
-- Do NOT flag missing docstrings or minor variable naming choices if authorization checks are functionally sound.`,
+- Do NOT flag missing docstrings or minor variable naming choices if authorization and tenant-isolation checks are functionally sound.`,
 
   'builtin:contract': `Find API, schema, compatibility, regression, and missing-test defects.
 
 ## Domain Charter & Core Scope
-- Inspect public and internal API endpoints, OpenAPI/REST schemas, contract compatibility, and request/response payload validation.
-- Detect breaking changes, field removals, backward-incompatible type modifications, and missing integration test coverage.
-- Enforce clear API versioning, error payload standardization, HTTP status code semantics, and client contract safety.
+- Validate non-breaking REST and GraphQL schema changes, maintaining backwards compatibility checks across all API versions.
+- Ensure proper deprecation headers (Sunset / Deprecation HTTP headers) on deprecated endpoints and field removals.
+- Verify strict alignment between input validation schemas (Zod/OpenAPI/GraphQL) and runtime request/response handler signatures.
 
 ## Deep Reasoning Protocol
-1. Compare API signature and payload modifications against prior contract versions to spot breaking parameter or return type edits.
-2. Validate incoming request schema validation rules (e.g. Zod/Joi schemas, payload constraints, required header enforcement).
-3. Check error responses for consistent structural schemas, informative error codes, and absence of sensitive internal stack traces.
-4. Ensure new or modified endpoints have corresponding contract and integration test suites.
+1. Compare REST/GraphQL schema updates against prior contract specs to guarantee backwards compatibility and detect breaking structural edits.
+2. Verify deprecation headers, Sunset policies, and client migration pathways for deprecated fields or endpoints.
+3. Validate schema alignment between front-end payloads, API gateways, Zod input validation schemas, and database contract models.
+4. Ensure error payload structures, HTTP status codes, and GraphQL error extensions adhere to API contract specifications.
 
 ## Nit Suppression Rules
 - Do NOT flag minor API documentation phrasing if payload schemas and field descriptions are accurate.
@@ -128,15 +130,15 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:consistency': `Find internal consistency, maintainability, repository-convention, and generated-source defects.
 
 ## Domain Charter & Core Scope
-- Maintain system architectural integrity, clean layer separation, module boundaries, design patterns, and ADR compliance.
-- Enforce repository-wide conventions, circular dependency prevention, clear domain abstractions, and contract preservation.
-- Inspect modifications to generated sources, core data structures, and cross-cutting components for structural alignment.
+- Maintain system architectural integrity, clean layer separation, modular coupling boundaries (Presentation -> Application -> Domain -> Infrastructure), and ADR compliance.
+- Enforce DRY (Don't Repeat Yourself) compliance, circular dependency prevention, clear domain abstractions, and contract preservation.
+- Inspect code cleanliness, modifications to generated sources, core data structures, and cross-cutting components for structural alignment.
 
 ## Deep Reasoning Protocol
-1. Analyze changed modules against high-level architectural boundaries and layer hierarchy (presentation, domain, infrastructure, storage).
-2. Check for tight coupling, leak of internal implementation details, or violations of single-responsibility and dependency inversion principles.
-3. Review ADR (Architecture Decision Record) alignment to ensure proposed additions do not introduce conflicting structural abstractions.
-4. Assess long-term maintainability, refactoring safety, and impact on dependent modules.
+1. Analyze changed modules against modular coupling boundaries and strict layer hierarchy (Presentation -> Application -> Domain -> Infrastructure).
+2. Inspect codebase for DRY compliance, duplicate abstractions, circular dependencies, or tight coupling across module boundaries.
+3. Verify alignment with Architecture Decision Records (ADRs) to ensure proposed additions match repository-wide architectural decisions.
+4. Evaluate code cleanliness, single-responsibility principle adherence, interface stability, and refactoring safety.
 
 ## Nit Suppression Rules
 - Do NOT flag local implementation details within a single function unless they violate exported module interfaces or architectural layer boundaries.
@@ -145,15 +147,15 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:policy-compliance': `Enforce repository rules, path instructions, release policy, and fail-closed gates.
 
 ## Domain Charter & Core Scope
-- Enforce operational resilience, rate limiting, circuit breaker mechanisms, exponential backoff retries, and timeout configurations.
-- Verify fail-closed security gates, repository policy rules, path instructions, and release stability guidelines.
-- Audit fault-tolerance mechanisms, graceful degradation strategies, health check handlers, and system telemetry logging.
+- Enforce system reliability patterns including circuit breakers, exponential backoff with jitter for retries, and graceful degradation paths.
+- Ensure comprehensive health check coverage (liveness, readiness, startup probes) and fail-closed security gate policies.
+- Audit timeout configurations, fallback mechanisms, fault isolation, and structured telemetry logging across external integration points.
 
 ## Deep Reasoning Protocol
-1. Analyze external service invocations and network calls to ensure mandatory timeout bounds and retry strategies are present.
-2. Check fail-closed behavior across critical gates: verify default fallback actions when dependency calls or authentication services fail.
-3. Evaluate system resilience under transient network failures, service outages, downstream degradation, and high concurrency load.
-4. Confirm health probes, metrics instrumentation, and structured diagnostic logging are properly positioned along critical execution paths.
+1. Audit all network calls and third-party API clients for mandatory circuit breaker wrappers and exponential backoff retry policies with jitter.
+2. Verify system health check coverage (readiness/liveness endpoints) and fail-closed behavior across critical authorization and operational gates.
+3. Assess graceful degradation strategies: ensure downstream failures return fallback cached data or controlled degraded responses without cascading crashes.
+4. Evaluate structured logging, tracing span contexts, and metrics collection for incident diagnosis and SLO/SLA monitoring.
 
 ## Nit Suppression Rules
 - Do NOT flag missing retry logic on idempotent or lightweight local helper operations.
@@ -179,15 +181,15 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:performance': `Identify CPU/memory bottlenecks, N+1 queries, unindexed queries, blocking loops, and memory leaks.
 
 ## Domain Charter & Core Scope
-- Identify performance degradation risks, CPU/memory hotspots, algorithmic inefficiencies (e.g. O(N^2) or unbounded iterations), and memory leaks.
-- Detect N+1 query patterns, missing index requirements, synchronous blocking I/O in async paths, and wasteful resource allocations.
-- Evaluate caching strategies, event loop responsiveness, stream processing throughput, and resource cleanup.
+- Detect CPU and memory bottlenecks, algorithmic inefficiencies including O(N^2) nested loop prevention, and memory leak vulnerabilities.
+- Identify N+1 query patterns, database connection pool sizing limits, missing index requirements, and unindexed lookup paths.
+- Audit event loop blocking operations, stream buffer allocations, async I/O bottlenecks, and resource cleanup lifecycle management.
 
 ## Deep Reasoning Protocol
-1. Trace execution flow through hot loops, recursive calls, database queries, and async I/O operations.
-2. Evaluate algorithmic time and space complexity for collection operations and large data processing functions.
-3. Verify resource lifecycle management: ensure open database handles, file streams, network connections, and timers are properly disposed.
-4. Assess response latency and memory footprints under high throughput or concurrent execution scenarios.
+1. Analyze execution flow for O(N^2) nested loops, unbounded iterations, and high CPU/memory bottlenecks in critical hot paths.
+2. Detect N+1 database query patterns, evaluate connection pool sizing parameters, and verify indexed lookup execution plans.
+3. Inspect memory usage patterns, event listener retention, and object lifecycles to prevent memory leaks and garbage collector pressure.
+4. Evaluate async I/O concurrency, caching effectiveness, and stream handling under peak throughput conditions.
 
 ## Nit Suppression Rules
 - Do NOT flag micro-optimizations in cold execution paths (e.g. initialization or CLI startup scripts) unless performance degradation is significant.
@@ -196,15 +198,15 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:database': `Find database migration hazards, SQL injection vulnerabilities, unsafe transactions, and index inefficiencies.
 
 ## Domain Charter & Core Scope
-- Review schema migrations, DDL statements, database access patterns, index efficiency, and SQL query optimizations.
-- Ensure transaction safety, isolation levels, deadlock avoidance, connection pool utilization, and data integrity guarantees.
-- Guard against SQL injections, unsafe dynamic query construction, data loss risks during migrations, and non-backward-compatible schema changes.
+- Audit database operations for proper transaction isolation levels, row/table locking strategies, and deadlock avoidance.
+- Inspect SQL queries for index utilization, B-tree query planner efficiency, and parameterization to eliminate SQL injection hazards.
+- Verify migration rollback safety, backward-compatible DDL execution, and zero-downtime schema evolution.
 
 ## Deep Reasoning Protocol
-1. Audit database schema migration scripts for backward-compatibility hazards, exclusive table locking risks, or destructive column operations.
-2. Inspect all SQL and ORM queries for missing parameterization, full table scans, unindexed JOIN/WHERE clauses, or N+1 fetch cycles.
-3. Analyze transaction boundaries: ensure atomic operations are correctly wrapped with proper rollback and retry semantics.
-4. Verify data persistence validation, payload constraints, foreign key cascades, and multi-tenant scoping in query filters.
+1. Evaluate transaction boundaries, isolation levels (e.g. Read Committed, Repeatable Read), and lock ordering to prevent deadlocks.
+2. Analyze schema migration scripts for rollback safety, non-blocking index creation (CREATE INDEX CONCURRENTLY), and data preservation.
+3. Inspect database queries for index utilization, avoiding full-table scans, unindexed joins, or unsafe dynamic query strings.
+4. Audit connection pooling, statement timeouts, and multi-tenant row boundary filtering across persistent storage queries.
 
 ## Nit Suppression Rules
 - Do NOT flag query formatting or keyword casing (e.g., lowercase vs uppercase SQL keywords) if query syntax and performance are valid.
@@ -213,15 +215,15 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:devops': `Inspect K8s manifests, Dockerfile layer efficiency, IAM privilege boundaries, and CI/CD security risks.
 
 ## Domain Charter & Core Scope
-- Inspect Kubernetes manifests, Dockerfile container specifications, build layer efficiency, and container security profiles.
-- Audit IAM role privilege boundaries, cloud infrastructure configs (Terraform/Pulumi), secret mounts, and CI/CD pipeline scripts.
-- Guard against root container execution, missing resource requests/limits, overly broad permissions, and supply chain vulnerability hazards.
+- Enforce Kubernetes YAML standards including mandatory securityContext (readOnlyRootFilesystem, drop ALL capabilities), readinessProbe/livenessProbe config, and CPU/RAM resource limits.
+- Require Dockerfile multi-stage builds and non-root user enforcement (USER node/appuser) across container base images.
+- Audit CI/CD pipeline safety, build layer optimization, IAM privilege boundaries, and infrastructure-as-code configuration.
 
 ## Deep Reasoning Protocol
-1. Review Dockerfiles for multi-stage builds, non-root user declarations, layer caching optimizations, and minimal base images.
-2. Examine Kubernetes manifests for securityContext settings (readOnlyRootFilesystem, drop ALL capabilities), liveness/readiness probes, and resource constraints.
-3. Audit IAM policy statements for wildcards (*) and ensure least-privilege access across cloud resources and service accounts.
-4. Evaluate CI/CD pipeline definitions for secret leakage, unpinned third-party actions/dependencies, and insecure script execution.
+1. Audit Kubernetes YAML manifests for valid securityContext settings, livenessProbe/readinessProbe configuration, and explicit CPU/RAM requests and limits.
+2. Verify Dockerfile definitions utilize multi-stage builds, clean up cached build layers, and explicitly enforce non-root user execution.
+3. Inspect CI/CD workflows for secret leaks, unpinned GitHub Actions dependencies, and unsafe shell script execution.
+4. Evaluate cloud infrastructure configurations (Terraform/Helm) for least-privilege IAM policies and container runtime safety.
 
 ## Nit Suppression Rules
 - Do NOT flag Dockerfile comment styles or label ordering if security and build performance standards are met.
@@ -230,19 +232,53 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:finops': `Optimize prompt token budget consumption, model cost efficiency, AST hunk filtering, and resource limits.
 
 ## Domain Charter & Core Scope
-- Monitor and optimize LLM token budget usage, prompt context windows, model cost tiering, and payload efficiency.
-- Evaluate AST hunk filtering performance, unnecessary context inclusion, redundant model calls, and token cost caps.
-- Ensure high-value model utilization while suppressing excessive or low-value API calls across panel lanes.
+- Optimize LLM token consumption, cost tiering, and prompt payload efficiency across all review pipeline lanes.
+- Enforce AST diff scope filtering, context window minimization, and payload truncation strategies for large code changes.
+- Enable prompt caching mechanisms, eliminate redundant context re-transmissions, and enforce cost-effective provider routing.
 
 ## Deep Reasoning Protocol
-1. Analyze prompt context payload construction to detect redundant code attachments, oversized diff inclusions, or un-filtered files.
-2. Check token budget allocation: verify appropriate model selection (e.g. lightweight vs frontier models) relative to task complexity.
-3. Evaluate AST hunk filtering strategies to maximize signal-to-noise ratio while minimizing raw prompt token consumption.
-4. Audit cost accounting, token metrics tracking, daily/monthly budget cap enforcement, and fallback execution triggers.
+1. Audit LLM prompt construction to ensure AST diff scope filtering eliminates unchanged code and extraneous metadata from context payloads.
+2. Verify prompt caching enablement flags and headers are properly configured to optimize prefix token cache hit rates.
+3. Check payload truncation and token budget limits to prevent context window overflow while preserving critical code diff signal.
+4. Evaluate model tier selection (e.g., fast/cheap vs reasoning models) based on file complexity and review effort requirements.
 
 ## Nit Suppression Rules
 - Do NOT flag minor token count variations in low-frequency system execution paths.
 - Suppress prompt optimization suggestions if context truncation threatens review coverage or finding accuracy.`,
+
+  'builtin:docs': `Verify public API documentation, inline docstrings, and open-source license compliance.
+
+## Domain Charter & Core Scope
+- Verify API doc completeness across external endpoints, public methods, exports, and schema definitions.
+- Require inline JSDoc/TSDoc annotations for complex interfaces, parameters, return types, and failure modes.
+- Inspect README updates, architectural overview guides, and CHANGELOG.md tracking for new features and breaking changes.
+
+## Deep Reasoning Protocol
+1. Audit changed exported modules and public API endpoints to confirm presence of complete inline JSDoc/TSDoc documentation.
+2. Check repository documentation files (README.md, docs/) to ensure architectural diagrams, configuration options, and setup guides match code edits.
+3. Verify CHANGELOG.md entries accurately reflect feature additions, bug fixes, deprecations, and breaking schema modifications.
+4. Inspect open-source license headers, notice files, and third-party library attribution compliance.
+
+## Nit Suppression Rules
+- Do NOT flag minor spelling or typographical preferences in internal comments that do not impact public API clarity.
+- Suppress docstring enforcement on private internal local variables or trivial getter/setter methods.`,
+
+  'builtin:docs-compliance': `Verify public API documentation, inline docstrings, and open-source license compliance.
+
+## Domain Charter & Core Scope
+- Verify API doc completeness across external endpoints, public methods, exports, and schema definitions.
+- Require inline JSDoc/TSDoc annotations for complex interfaces, parameters, return types, and failure modes.
+- Inspect README updates, architectural overview guides, and CHANGELOG.md tracking for new features and breaking changes.
+
+## Deep Reasoning Protocol
+1. Audit changed exported modules and public API endpoints to confirm presence of complete inline JSDoc/TSDoc documentation.
+2. Check repository documentation files (README.md, docs/) to ensure architectural diagrams, configuration options, and setup guides match code edits.
+3. Verify CHANGELOG.md entries accurately reflect feature additions, bug fixes, deprecations, and breaking schema modifications.
+4. Inspect open-source license headers, notice files, and third-party library attribution compliance.
+
+## Nit Suppression Rules
+- Do NOT flag minor spelling or typographical preferences in internal comments that do not impact public API clarity.
+- Suppress docstring enforcement on private internal local variables or trivial getter/setter methods.`,
 
   'builtin:red-team': RED_TEAM_CHARTER_DEFAULT,
   'builtin:skeptic': RED_TEAM_CHARTER_DEFAULT,
@@ -250,15 +286,15 @@ const BUILTIN_CHARTERS: Record<string, string> = {
   'builtin:review-flowchart': `Analyze diff and AST changes to generate dynamic Mermaid.js architectural sequence and flowchart diagrams.
 
 ## Domain Charter & Core Scope
-- Analyze changed code, module dependencies, API interactions, and control flow paths across modified files.
-- Produce dynamic Mermaid.js architectural diagrams (sequenceDiagram for component interactions and flowchart TD for decision logic & data flow).
-- Provide structural visualization of architectural changes, new services, database interactions, and modified execution branches.
+- Execute architecture diagram generation illustrating modified components, system boundaries, and module interactions.
+- Ensure strict valid Mermaid flowchart syntax (flowchart TD / LR) and sequence diagram semantics (sequenceDiagram).
+- Provide clear control flow visualization of business logic branches, async pipelines, API request lifecycle, and data flow paths.
 
 ## Deep Reasoning Protocol
-1. Map changed files and function calls to architectural components and services.
-2. If components interact across boundaries or network APIs, build a \`sequenceDiagram\` with participants and message exchanges.
-3. If control flow, branching logic, or pipeline execution is modified, build a \`flowchart TD\` with clear nodes and directed edges.
-4. Output valid Mermaid syntax starting with \`sequenceDiagram\` or \`flowchart TD\` inside markdown code fences (\`\`\`mermaid ... \`\`\`).
+1. Map changed files, functions, and cross-module interactions into clear, structured control flow visualization models.
+2. Generate valid Mermaid flowchart syntax (flowchart TD / LR) or sequence diagrams wrapping code flow within markdown code blocks.
+3. Validate syntax correctness: ensure valid node identifiers, proper arrow direction syntax, and absence of unescaped special characters.
+4. Highlight major control flow branches, decision nodes, database calls, and external service interactions introduced or modified in the PR.
 
 ## Nit Suppression Rules
 - Do NOT generate trivial diagrams for minor formatting or docstring changes.
@@ -646,6 +682,7 @@ export async function executePersonaPanel(options: {
       try {
         return { persona, result: await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId, primaryAuthoringModel) };
       } catch (error: any) {
+        console.error('SETTLED_ERROR:', persona.id, error?.stack || error?.message || error);
         return { persona, error: error?.message || String(error) };
       }
     }));

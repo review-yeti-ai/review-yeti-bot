@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../utils/logger';
+import { postgresStore } from '../persistence/postgresStore';
 
 export interface PlatformPattern {
   id?: number;
@@ -116,7 +117,7 @@ export class PlatformMemoryStore {
         sourceRepoCount: newRepoCount,
       });
 
-      return {
+      const recordedPattern: PlatformPattern = {
         id: existing.id,
         category,
         pattern: sanitizedPattern,
@@ -127,6 +128,27 @@ export class PlatformMemoryStore {
         createdAt: existing.createdAt,
         updatedAt: now,
       };
+
+      if (postgresStore.isConfigured()) {
+        try {
+          await postgresStore.savePlatformPattern({
+            id: recordedPattern.id,
+            repo: sourceRepo,
+            category: recordedPattern.category,
+            pattern: recordedPattern.pattern,
+            sanitizedDescription: recordedPattern.sanitizedDescription,
+            sourceRepoCount: recordedPattern.sourceRepoCount,
+            occurrenceCount: recordedPattern.occurrenceCount,
+            confidenceScore: recordedPattern.confidenceScore,
+            createdAt: recordedPattern.createdAt,
+            updatedAt: recordedPattern.updatedAt,
+          });
+        } catch (err: any) {
+          logger.warn('Failed dual-write platform pattern to PostgreSQL', { error: err?.message });
+        }
+      }
+
+      return recordedPattern;
     } else {
       const stmt = this.db.prepare(`
         INSERT INTO platform_patterns (category, pattern, sanitizedDescription, sourceRepoCount, occurrenceCount, confidenceScore, createdAt, updatedAt)
@@ -140,7 +162,7 @@ export class PlatformMemoryStore {
         sourceRepo,
       });
 
-      return {
+      const recordedPattern: PlatformPattern = {
         id: Number(result.lastInsertRowid),
         category,
         pattern: sanitizedPattern,
@@ -151,6 +173,27 @@ export class PlatformMemoryStore {
         createdAt: now,
         updatedAt: now,
       };
+
+      if (postgresStore.isConfigured()) {
+        try {
+          await postgresStore.savePlatformPattern({
+            id: recordedPattern.id,
+            repo: sourceRepo,
+            category: recordedPattern.category,
+            pattern: recordedPattern.pattern,
+            sanitizedDescription: recordedPattern.sanitizedDescription,
+            sourceRepoCount: recordedPattern.sourceRepoCount,
+            occurrenceCount: recordedPattern.occurrenceCount,
+            confidenceScore: recordedPattern.confidenceScore,
+            createdAt: recordedPattern.createdAt,
+            updatedAt: recordedPattern.updatedAt,
+          });
+        } catch (err: any) {
+          logger.warn('Failed dual-write platform pattern to PostgreSQL', { error: err?.message });
+        }
+      }
+
+      return recordedPattern;
     }
   }
 
@@ -161,6 +204,14 @@ export class PlatformMemoryStore {
     category?: string,
     minConfidence: number = 75
   ): Promise<PlatformPattern[]> {
+    if (postgresStore.isConfigured()) {
+      try {
+        const pgPatterns = await postgresStore.queryPlatformPatterns(category, minConfidence);
+        return pgPatterns;
+      } catch (err: any) {
+        logger.warn('PostgreSQL queryPlatformPatterns failed, seamlessly falling back to local SQLite', { error: err?.message });
+      }
+    }
     if (category) {
       const rows = this.db.prepare(`
         SELECT * FROM platform_patterns

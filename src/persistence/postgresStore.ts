@@ -110,6 +110,62 @@ export class PostgresStore {
           data JSONB NOT NULL,
           updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS learned_rules (
+          id TEXT PRIMARY KEY,
+          repo TEXT,
+          rule TEXT,
+          category TEXT,
+          score REAL,
+          context TEXT,
+          created_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS suppressed_nits (
+          id TEXT PRIMARY KEY,
+          repo TEXT,
+          pattern TEXT,
+          reason TEXT,
+          category TEXT,
+          file_glob TEXT,
+          status TEXT,
+          hit_count INT DEFAULT 0,
+          created_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS adr_constraints (
+          id TEXT PRIMARY KEY,
+          repo TEXT,
+          adr_id TEXT,
+          title TEXT,
+          rule TEXT,
+          severity TEXT,
+          created_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS developer_feedback (
+          id TEXT PRIMARY KEY,
+          repo TEXT,
+          pr_number INT,
+          feedback_type TEXT,
+          comment TEXT,
+          action_taken TEXT,
+          created_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS platform_patterns (
+          id TEXT PRIMARY KEY,
+          repo TEXT,
+          pattern_type TEXT,
+          content JSONB,
+          frequency INT DEFAULT 1,
+          created_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ
+        );
       `);
 
       // 2. Check if database tables are empty and seed if initial startup
@@ -402,6 +458,429 @@ export class PostgresStore {
        ON CONFLICT (id) DO UPDATE SET repo = $2, pr_number = $3, entity_type = $4, data = $5, updated_at = NOW()`,
       [id, repo, prNumber, entityType, JSON.stringify(data)]
     );
+  }
+
+  // --- Learned Rules ---
+  public async saveLearnedRule(learning: {
+    id: string;
+    repo: string;
+    prNumber?: number;
+    category?: string;
+    title?: string;
+    description?: string;
+    filePath?: string;
+    confidence?: number;
+    createdAt?: string;
+    updatedAt?: string;
+  }): Promise<void> {
+    if (!this.isConfigured()) return;
+    const pool = this.getPool();
+    const now = new Date().toISOString();
+    const context = JSON.stringify({
+      prNumber: learning.prNumber || 0,
+      description: learning.description || learning.title || '',
+      filePath: learning.filePath || null,
+    });
+    await pool.query(
+      `INSERT INTO learned_rules (id, repo, rule, category, score, context, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (id) DO UPDATE SET
+         repo = $2, rule = $3, category = $4, score = $5, context = $6, updated_at = $8`,
+      [
+        learning.id,
+        learning.repo,
+        learning.title || learning.description || 'Learned Rule',
+        learning.category || 'convention',
+        learning.confidence ?? 1.0,
+        context,
+        learning.createdAt || now,
+        learning.updatedAt || now,
+      ]
+    );
+  }
+
+  // --- Suppressed Nits ---
+  public async saveSuppressedNit(nit: {
+    id: string;
+    repo: string;
+    prNumber?: number;
+    pattern: string;
+    filePath: string;
+    reason: string;
+    headSha?: string;
+    resolvedAt?: string;
+    suppressionCount?: number;
+    category?: string;
+  }): Promise<void> {
+    if (!this.isConfigured()) return;
+    const pool = this.getPool();
+    const now = nit.resolvedAt || new Date().toISOString();
+    const status = JSON.stringify({
+      prNumber: nit.prNumber || 0,
+      headSha: nit.headSha || null,
+    });
+    await pool.query(
+      `INSERT INTO suppressed_nits (id, repo, pattern, reason, category, file_glob, status, hit_count, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO UPDATE SET
+         repo = $2, pattern = $3, reason = $4, category = $5, file_glob = $6, status = $7, hit_count = $8, updated_at = $10`,
+      [
+        nit.id,
+        nit.repo,
+        nit.pattern,
+        nit.reason,
+        nit.category || 'nit',
+        nit.filePath,
+        status,
+        nit.suppressionCount || 0,
+        now,
+        now,
+      ]
+    );
+  }
+
+  public async incrementNitSuppression(id: string): Promise<void> {
+    if (!this.isConfigured()) return;
+    const pool = this.getPool();
+    await pool.query(
+      `UPDATE suppressed_nits SET hit_count = hit_count + 1, updated_at = NOW() WHERE id = $1`,
+      [id]
+    );
+  }
+
+  public async incrementNitSuppressionBatch(ids: string[]): Promise<void> {
+    if (!this.isConfigured() || ids.length === 0) return;
+    const pool = this.getPool();
+    await pool.query(
+      `UPDATE suppressed_nits SET hit_count = hit_count + 1, updated_at = NOW() WHERE id = ANY($1::text[])`,
+      [ids]
+    );
+  }
+
+  // --- ADR Constraints ---
+  public async saveADRConstraint(adr: {
+    id: string;
+    repo: string;
+    adrNumber?: number;
+    title: string;
+    status: string;
+    rule: string;
+    targetPaths?: string[];
+    createdAt?: string;
+  }): Promise<void> {
+    if (!this.isConfigured()) return;
+    const pool = this.getPool();
+    const now = adr.createdAt || new Date().toISOString();
+    const severity = JSON.stringify({
+      status: adr.status,
+      targetPaths: adr.targetPaths || [],
+    });
+    await pool.query(
+      `INSERT INTO adr_constraints (id, repo, adr_id, title, rule, severity, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         repo = $2, adr_id = $3, title = $4, rule = $5, severity = $6, updated_at = NOW()`,
+      [
+        adr.id,
+        adr.repo,
+        String(adr.adrNumber ?? 0),
+        adr.title,
+        adr.rule,
+        severity,
+        now,
+      ]
+    );
+  }
+
+  // --- Developer Feedback ---
+  public async saveDeveloperFeedback(feedback: {
+    id: string;
+    repo: string;
+    prNumber?: number;
+    feedbackType: string;
+    comment?: string;
+    actionTaken?: string;
+    createdAt?: string;
+  }): Promise<void> {
+    if (!this.isConfigured()) return;
+    const pool = this.getPool();
+    const now = feedback.createdAt || new Date().toISOString();
+    await pool.query(
+      `INSERT INTO developer_feedback (id, repo, pr_number, feedback_type, comment, action_taken, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         repo = $2, pr_number = $3, feedback_type = $4, comment = $5, action_taken = $6, updated_at = NOW()`,
+      [
+        feedback.id,
+        feedback.repo,
+        feedback.prNumber || null,
+        feedback.feedbackType,
+        feedback.comment || null,
+        feedback.actionTaken || null,
+        now,
+      ]
+    );
+  }
+
+  // --- Platform Patterns ---
+  public async savePlatformPattern(pattern: {
+    id?: string | number;
+    repo?: string;
+    category: string;
+    pattern: string;
+    sanitizedDescription: string;
+    sourceRepoCount?: number;
+    occurrenceCount?: number;
+    confidenceScore?: number;
+    createdAt?: string;
+    updatedAt?: string;
+  }): Promise<void> {
+    if (!this.isConfigured()) return;
+    const pool = this.getPool();
+    const patternId = String(pattern.id || `pat_${pattern.pattern}`);
+    const now = new Date().toISOString();
+    const content = JSON.stringify(pattern);
+    await pool.query(
+      `INSERT INTO platform_patterns (id, repo, pattern_type, content, frequency, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET
+         repo = $2, pattern_type = $3, content = $4, frequency = $5, updated_at = $7`,
+      [
+        patternId,
+        pattern.repo || 'global',
+        pattern.category,
+        content,
+        pattern.occurrenceCount || 1,
+        pattern.createdAt || now,
+        pattern.updatedAt || now,
+      ]
+    );
+  }
+
+  // --- Query Methods for Dual-Store Fallback ---
+
+  public async queryLearnings(
+    repo: string,
+    options: { category?: string; filePath?: string; query?: string } = {}
+  ): Promise<{ learnings: any[]; resolvedNits: any[]; adrConstraints: any[] }> {
+    if (!this.isConfigured()) {
+      throw new Error('PostgreSQL not configured');
+    }
+    const pool = this.getPool();
+
+    // 1. Query learned_rules
+    let lSql = 'SELECT * FROM learned_rules WHERE repo = $1';
+    const lParams: any[] = [repo];
+    if (options.category) {
+      lSql += ' AND category = $' + (lParams.length + 1);
+      lParams.push(options.category);
+    }
+    if (options.query) {
+      const q = `%${options.query.toLowerCase()}%`;
+      lSql += ` AND (LOWER(rule) LIKE $${lParams.length + 1} OR LOWER(context) LIKE $${lParams.length + 2})`;
+      lParams.push(q, q);
+    }
+
+    const lRes = await pool.query(lSql, lParams);
+    let learnings = lRes.rows.map((r) => {
+      let prNumber = 0;
+      let description = r.rule || '';
+      let filePath: string | undefined = undefined;
+
+      if (r.context) {
+        try {
+          const ctx = JSON.parse(r.context);
+          if (ctx && typeof ctx === 'object') {
+            prNumber = ctx.prNumber || 0;
+            description = ctx.description || r.rule;
+            filePath = ctx.filePath || undefined;
+          } else {
+            description = r.context;
+          }
+        } catch (_) {
+          description = r.context;
+        }
+      }
+
+      return {
+        id: r.id,
+        repo: r.repo,
+        prNumber,
+        category: r.category,
+        title: r.rule,
+        description,
+        filePath,
+        confidence: r.score != null ? Number(r.score) : 1.0,
+        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
+      };
+    });
+
+    if (options.filePath) {
+      learnings = learnings.filter(
+        (l) => !l.filePath || l.filePath === '' || l.filePath === options.filePath || l.filePath === '**'
+      );
+    }
+
+    // 2. Query suppressed_nits
+    let nSql = 'SELECT * FROM suppressed_nits WHERE repo = $1';
+    const nRes = await pool.query(nSql, [repo]);
+    let resolvedNits = nRes.rows.map((r) => {
+      let prNumber = 0;
+      let headSha: string | undefined = undefined;
+
+      if (r.status) {
+        try {
+          const st = JSON.parse(r.status);
+          if (st && typeof st === 'object') {
+            prNumber = st.prNumber || 0;
+            headSha = st.headSha || undefined;
+          }
+        } catch (_) {}
+      }
+
+      return {
+        id: r.id,
+        repo: r.repo,
+        prNumber,
+        pattern: r.pattern,
+        filePath: r.file_glob,
+        reason: r.reason,
+        headSha,
+        resolvedAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        suppressionCount: r.hit_count != null ? Number(r.hit_count) : 0,
+      };
+    });
+
+    if (options.filePath) {
+      resolvedNits = resolvedNits.filter(
+        (n) => !n.filePath || n.filePath === '' || n.filePath === options.filePath || n.filePath === '**'
+      );
+    }
+
+    // 3. Query adr_constraints
+    const aSql = 'SELECT * FROM adr_constraints WHERE repo = $1';
+    const aRes = await pool.query(aSql, [repo]);
+    const adrConstraints = aRes.rows
+      .map((r) => {
+        let status = 'accepted';
+        let targetPaths: string[] = [];
+
+        if (r.severity) {
+          try {
+            const sev = JSON.parse(r.severity);
+            if (sev && typeof sev === 'object') {
+              status = sev.status || 'accepted';
+              targetPaths = Array.isArray(sev.targetPaths) ? sev.targetPaths : [];
+            } else {
+              status = r.severity;
+            }
+          } catch (_) {
+            status = r.severity;
+          }
+        }
+
+        return {
+          id: r.id,
+          repo: r.repo,
+          adrNumber: Number(r.adr_id) || 0,
+          title: r.title,
+          status,
+          rule: r.rule,
+          targetPaths,
+          createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        };
+      })
+      .filter((a) => a.status === 'accepted');
+
+    return { learnings, resolvedNits, adrConstraints };
+  }
+
+  public async getFeedbackCounts(repo?: string): Promise<{ positiveFeedbackCount: number; negativeFeedbackCount: number }> {
+    if (!this.isConfigured()) {
+      throw new Error('PostgreSQL not configured');
+    }
+    const pool = this.getPool();
+    let sql = 'SELECT feedback_type, COUNT(*)::int as cnt FROM developer_feedback';
+    const params: any[] = [];
+    if (repo) {
+      sql += ' WHERE repo = $1';
+      params.push(repo);
+    }
+    sql += ' GROUP BY feedback_type';
+
+    const res = await pool.query(sql, params);
+    let positiveFeedbackCount = 0;
+    let negativeFeedbackCount = 0;
+
+    for (const row of res.rows) {
+      if (row.feedback_type === 'positive') {
+        positiveFeedbackCount = row.cnt;
+      } else if (row.feedback_type === 'negative') {
+        negativeFeedbackCount = row.cnt;
+      }
+    }
+
+    return { positiveFeedbackCount, negativeFeedbackCount };
+  }
+
+  public async getMemoryCounts(): Promise<{ learningsCount: number; suppressedNitsCount: number; adrConstraintsCount: number }> {
+    if (!this.isConfigured()) {
+      throw new Error('PostgreSQL not configured');
+    }
+    const pool = this.getPool();
+    const lRes = await pool.query('SELECT COUNT(*)::int as cnt FROM learned_rules');
+    const nRes = await pool.query('SELECT COUNT(*)::int as cnt FROM suppressed_nits');
+    const aRes = await pool.query('SELECT COUNT(*)::int as cnt FROM adr_constraints');
+
+    return {
+      learningsCount: lRes.rows[0]?.cnt || 0,
+      suppressedNitsCount: nRes.rows[0]?.cnt || 0,
+      adrConstraintsCount: aRes.rows[0]?.cnt || 0,
+    };
+  }
+
+  public async queryPlatformPatterns(category?: string, minConfidence: number = 75): Promise<any[]> {
+    if (!this.isConfigured()) {
+      throw new Error('PostgreSQL not configured');
+    }
+    const pool = this.getPool();
+    let sql = 'SELECT content FROM platform_patterns';
+    const params: any[] = [];
+    if (category) {
+      sql += ' WHERE pattern_type = $1';
+      params.push(category);
+    }
+
+    const res = await pool.query(sql, params);
+    const patterns: any[] = [];
+
+    for (const row of res.rows) {
+      let data = row.content;
+      if (typeof data === 'string') {
+        try { data = JSON.parse(data); } catch (_) {}
+      }
+      if (data && (data.confidenceScore == null || data.confidenceScore >= minConfidence)) {
+        patterns.push(data);
+      }
+    }
+
+    patterns.sort((a, b) => {
+      const confDiff = (b.confidenceScore ?? 80) - (a.confidenceScore ?? 80);
+      if (confDiff !== 0) return confDiff;
+      return (b.occurrenceCount ?? 1) - (a.occurrenceCount ?? 1);
+    });
+
+    return patterns;
+  }
+
+  public async clearRepoMemory(repo: string): Promise<void> {
+    if (!this.isConfigured()) return;
+    const pool = this.getPool();
+    await pool.query('DELETE FROM learned_rules WHERE repo = $1', [repo]);
+    await pool.query('DELETE FROM suppressed_nits WHERE repo = $1', [repo]);
+    await pool.query('DELETE FROM adr_constraints WHERE repo = $1', [repo]);
+    await pool.query('DELETE FROM developer_feedback WHERE repo = $1', [repo]);
   }
 
   public async close(): Promise<void> {

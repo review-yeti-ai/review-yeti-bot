@@ -343,8 +343,7 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
 
       const resetHeaderBtn = screen.getByRole('button', { name: /reset defaults/i });
       fireEvent.click(resetHeaderBtn);
-
-      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      const textarea = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
       expect(textarea.value).toBe('builtin:security');
       expect(screen.getByText("Reset prompt to default charter for 'security'")).toBeDefined();
     });
