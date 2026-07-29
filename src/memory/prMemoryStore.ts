@@ -58,7 +58,7 @@ export class PRMemoryStore {
       this.db = new DatabaseSync(':memory:');
     } else {
       const dir = path.dirname(this.dbPath);
-      if (!fs.existsSync(dir)) {
+      if (dir && dir !== '.' && !fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
       this.db = new DatabaseSync(this.dbPath);
@@ -68,7 +68,16 @@ export class PRMemoryStore {
 
   private initDatabase(): void {
     try {
+      this.db.exec('PRAGMA journal_mode = WAL;');
+    } catch (_) {}
+    try {
+      this.db.exec('PRAGMA synchronous = NORMAL;');
+    } catch (_) {}
+    try {
       this.db.exec('PRAGMA busy_timeout = 5000;');
+    } catch (_) {}
+    try {
+      this.db.exec('PRAGMA temp_store = MEMORY;');
     } catch (_) {}
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS learnings (
@@ -115,8 +124,11 @@ export class PRMemoryStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_learnings_repo ON learnings(repo);
+      CREATE INDEX IF NOT EXISTS idx_learnings_repo_cat_file ON learnings(repo, category, file_path);
       CREATE INDEX IF NOT EXISTS idx_nits_repo ON resolved_nits(repo);
+      CREATE INDEX IF NOT EXISTS idx_nits_repo_file ON resolved_nits(repo, file_path);
       CREATE INDEX IF NOT EXISTS idx_adr_repo ON adr_constraints(repo);
+      CREATE INDEX IF NOT EXISTS idx_adr_repo_status ON adr_constraints(repo, status);
       CREATE INDEX IF NOT EXISTS idx_feedback_repo ON feedback_events(repo);
     `);
   }
@@ -202,29 +214,63 @@ export class PRMemoryStore {
     return { id, repo, ...adr, createdAt };
   }
 
+  private incrementNitStmt?: any;
+
   public async incrementNitSuppression(id: string): Promise<void> {
-    this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE id = ?').run(id);
+    if (!this.incrementNitStmt) {
+      this.incrementNitStmt = this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE id = ?');
+    }
+    this.incrementNitStmt.run(id);
+  }
+
+  public async incrementNitSuppressionBatch(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    this.db.exec('BEGIN TRANSACTION;');
+    try {
+      if (!this.incrementNitStmt) {
+        this.incrementNitStmt = this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE id = ?');
+      }
+      for (const id of ids) {
+        this.incrementNitStmt.run(id);
+      }
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      this.db.exec('ROLLBACK;');
+      throw err;
+    }
   }
 
   public async queryLearnings(
     repo: string,
     options: { category?: string; filePath?: string; query?: string } = {}
   ): Promise<RepoMemoryState> {
-    let lRows = this.db.prepare('SELECT * FROM learnings WHERE repo = ?').all(repo) as any[];
-    let nRows = this.db.prepare('SELECT * FROM resolved_nits WHERE repo = ?').all(repo) as any[];
-    let aRows = this.db.prepare("SELECT * FROM adr_constraints WHERE repo = ? AND status = 'accepted'").all(repo) as any[];
-
+    let lSql = 'SELECT * FROM learnings WHERE repo = ?';
+    const lParams: any[] = [repo];
     if (options.category) {
-      lRows = lRows.filter((r) => r.category === options.category);
+      lSql += ' AND category = ?';
+      lParams.push(options.category);
     }
     if (options.filePath) {
-      lRows = lRows.filter((r) => !r.file_path || r.file_path === options.filePath || r.file_path === '**');
-      nRows = nRows.filter((r) => !r.file_path || r.file_path === options.filePath || r.file_path === '**');
+      lSql += " AND (file_path IS NULL OR file_path = '' OR file_path = ? OR file_path = '**')";
+      lParams.push(options.filePath);
     }
     if (options.query) {
-      const q = options.query.toLowerCase();
-      lRows = lRows.filter((r) => r.title.toLowerCase().includes(q) || r.description.toLowerCase().includes(q));
+      lSql += ' AND (LOWER(title) LIKE ? OR LOWER(description) LIKE ?)';
+      const q = `%${options.query.toLowerCase()}%`;
+      lParams.push(q, q);
     }
+    const lRows = this.db.prepare(lSql).all(...lParams) as any[];
+
+    let nSql = 'SELECT * FROM resolved_nits WHERE repo = ?';
+    const nParams: any[] = [repo];
+    if (options.filePath) {
+      nSql += " AND (file_path IS NULL OR file_path = '' OR file_path = ? OR file_path = '**')";
+      nParams.push(options.filePath);
+    }
+    const nRows = this.db.prepare(nSql).all(...nParams) as any[];
+
+    const aSql = "SELECT * FROM adr_constraints WHERE repo = ? AND status = 'accepted'";
+    const aRows = this.db.prepare(aSql).all(repo) as any[];
 
     const learnings: ReviewerLearning[] = lRows.map((r) => ({
       id: r.id,

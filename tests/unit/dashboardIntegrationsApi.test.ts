@@ -97,6 +97,14 @@ describe('Dashboard Integrations & MCP Fleet API Suite', () => {
     expect(res.body.error).toContain('Unauthorized');
   });
 
+  it('6b. rejects query parameter bypass attempts (GET /api/dashboard/integrations?bypass=/health) with 401 Unauthorized', async () => {
+    const res = await request(app).get('/api/dashboard/integrations?bypass=/health');
+
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error).toContain('Unauthorized');
+  });
+
   it('7. returns 400 Bad Request for malformed integration payloads', async () => {
     const res = await request(app)
       .post('/api/dashboard/integrations')

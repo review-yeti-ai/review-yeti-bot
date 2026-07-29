@@ -1,1 +1,1 @@
-export { requireAuth, AuthenticatedRequest } from '../api/authMiddleware';
+export { requireAuth, type AuthenticatedRequest } from '../api/authMiddleware';

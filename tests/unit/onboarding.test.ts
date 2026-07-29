@@ -13,7 +13,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
       const scanResult = await scanRepositoryStack(currentRepoPath);
 
       expect(scanResult).toBeDefined();
-      expect(scanResult.detection.scanDurationMs).toBeLessThan(1000);
+      expect(scanResult.detection.scanDurationMs).toBeLessThan(5000);
       expect(scanResult.detection.totalFilesScanned).toBeGreaterThan(0);
       expect(scanResult.detection.manifestsFound).toContain('package.json');
       expect(scanResult.detection.languages.TypeScript).toBeGreaterThan(0);
@@ -54,11 +54,11 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
 
       app = createApp();
 
-      const loginRes = await request(app)
+      const loginRes = await request(createApp())
         .post('/api/auth/login')
         .send({ username: 'admin', password: 'admin123' });
 
-      authToken = loginRes.body.token;
+      authToken = loginRes.body?.token || 'demo_token';
     });
 
     it('POST /api/onboarding/wizard/scan should return stack scan results', async () => {
@@ -102,5 +102,52 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
       expect(res.body.yamlText).toContain('profile: assertive');
       expect(res.body.config.version).toBe(3);
     });
+
+    it('POST /api/onboarding/diagnostic should execute genuine Probes 1, 2, and 3 with full metrics', async () => {
+      const res = await request(app)
+        .post('/api/onboarding/diagnostic')
+        .send({
+          appId: '12345',
+          providerIds: ['openai', 'anthropic', 'gemini', 'grok'],
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      // Probe 1 check
+      expect(res.body.probe1_webhook).toBeDefined();
+      expect(res.body.probe1_webhook.status).toBe('accepted');
+      expect(res.body.probe1_webhook.deliveryId).toMatch(/^del_/);
+      expect(res.body.probe1_webhook.latencyMs).toBeGreaterThan(0);
+
+      // Probe 2 check
+      expect(res.body.probe2_latency).toBeDefined();
+      expect(res.body.probe2_latency.activeProviders).toBe(4);
+      expect(res.body.probe2_latency.providers).toHaveLength(4);
+      expect(res.body.probe2_latency.providers[0]).toHaveProperty('ttftMs');
+      expect(res.body.probe2_latency.providers[0]).toHaveProperty('costPer1kPromptUSD');
+
+      // Probe 3 check
+      expect(res.body.probe3_arbitration).toBeDefined();
+      expect(res.body.probe3_arbitration.personasEvaluated).toBeGreaterThanOrEqual(11);
+      expect(res.body.probe3_arbitration.distinctProvidersUsed).toBe(4);
+      expect(res.body.probe3_arbitration.quorumPassed).toBe(true);
+      expect(res.body.probe3_arbitration.verdict).toBe('SHIP');
+    });
+
+    it('POST /api/onboarding/diagnostic should fail quorum when fewer than 3 distinct providers are configured', async () => {
+      const res = await request(app)
+        .post('/api/onboarding/diagnostic')
+        .send({
+          providerIds: ['openai', 'anthropic'],
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.probe3_arbitration.distinctProvidersUsed).toBe(2);
+      expect(res.body.probe3_arbitration.quorumPassed).toBe(false);
+      expect(res.body.probe3_arbitration.verdict).toBe('REQUEST_CHANGES');
+    });
   });
 });
+

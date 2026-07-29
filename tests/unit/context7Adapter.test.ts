@@ -9,7 +9,9 @@ describe('Context7Adapter', () => {
 
   beforeEach(() => {
     testCacheDir = path.join(process.cwd(), '.tmp_context7_cache_' + Math.random().toString(36).substring(7));
+    const mockDoppler = { getSecret: async (name: string) => process.env[name] || null } as any;
     adapter = new Context7Adapter({
+      dopplerManager: mockDoppler,
       cacheDir: testCacheDir,
       cacheTtlMs: 5000,
     });

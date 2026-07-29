@@ -1,25 +1,16 @@
-# Stage 1: builder
-FROM node:24-bookworm-slim AS builder
-
-WORKDIR /app
-
-COPY package.json package-lock.json ./
-RUN npm ci --omit=optional
-
-COPY src ./src
-COPY tsconfig.json ./
-RUN npm run build
-RUN npm prune --omit=dev --omit=optional
-
-# Stage 2: runner
 FROM node:24-bookworm-slim AS runner
 
 WORKDIR /app
 
-COPY --chown=node:node package.json ./
-COPY --chown=node:node --from=builder /app/node_modules ./node_modules
-COPY --chown=node:node --from=builder /app/dist ./dist
-COPY --chown=node:node public ./public
+ENV NODE_ENV=production
+ENV UV_THREADPOOL_SIZE=16
+ENV NODE_OPTIONS="--enable-source-maps --max-old-space-size=512"
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --omit=optional && npm cache clean --force
+
+COPY dist ./dist
+COPY public ./public
 
 RUN install -d -o node -g node /app/data
 USER node

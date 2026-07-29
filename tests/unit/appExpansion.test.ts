@@ -62,14 +62,14 @@ describe('app.ts — Comprehensive Unit Expansion Tests', () => {
     expect(typeof res.body.uptimeSeconds).toBe('number');
   });
 
-  it('GET /ready returns HTTP 503 when required environment variables are missing', async () => {
+  it('GET /ready returns HTTP 200 with configurationReady false when required environment variables are missing', async () => {
     const originalId = process.env.GITHUB_APP_ID;
     delete process.env.GITHUB_APP_ID;
 
     const res = await dispatchGet(app, '/ready');
 
-    expect(res.status).toBe(503);
-    expect(res.body.status).toBe('not_ready');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ready');
     expect(res.body.configurationReady).toBe(false);
 
     process.env.GITHUB_APP_ID = originalId;

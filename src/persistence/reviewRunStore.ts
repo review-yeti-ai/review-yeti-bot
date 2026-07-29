@@ -75,13 +75,29 @@ export class ReviewRunStore {
   getHead(arg1: string | number, arg2?: string | number, arg3?: number): string | undefined {
     this.data = this.read();
     const key = this.getKey(arg1, arg2, arg3);
-    return this.data.heads[key];
+    const val = this.data.heads[key];
+    if (val !== undefined) return val;
+    if (typeof arg3 === 'number') {
+      return this.data.heads[String(arg3)];
+    }
+    if (typeof arg1 === 'number') {
+      return this.data.heads[String(arg1)];
+    }
+    return undefined;
   }
 
   getPreviousHead(arg1: string | number, arg2?: string | number, arg3?: number): string | undefined {
     this.data = this.read();
     const key = this.getKey(arg1, arg2, arg3);
-    return this.data.previousHeads?.[key];
+    const val = this.data.previousHeads?.[key];
+    if (val !== undefined) return val;
+    if (typeof arg3 === 'number') {
+      return this.data.previousHeads?.[String(arg3)];
+    }
+    if (typeof arg1 === 'number') {
+      return this.data.previousHeads?.[String(arg1)];
+    }
+    return undefined;
   }
 
   markHead(arg1: string | number, arg2?: string | number, arg3?: number | string, arg4?: string): void {
@@ -118,7 +134,7 @@ export class ReviewRunStore {
   isCurrentHead(owner: string, repo: string, prNumber: number, headSha: string): boolean {
     this.data = this.read();
     const key = `${owner}/${repo}#${prNumber}`;
-    return this.data.heads[key] === headSha;
+    return this.data.heads[key] === headSha || this.data.heads[String(prNumber)] === headSha;
   }
 
   recordThread(prNumber: number, itemPath: string, line: number, title: string, state: string = 'ACTIVE'): void {

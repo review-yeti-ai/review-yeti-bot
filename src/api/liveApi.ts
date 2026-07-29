@@ -11,24 +11,45 @@ export function createLiveRouter(): Router {
    * GET /api/live/stream?jobId=...&token=...
    * SSE endpoint streaming real-time agent execution events and LLM turns.
    * Supports query parameter authentication token (`?token=...`).
+   * Gracefully falls back to public unauthenticated streaming if token is missing or invalid.
    */
   router.get('/stream', (req: Request, res: Response) => {
     const jobId = (req.query.jobId as string) || 'default-job';
     const queryToken = (req.query.token as string) || (req.query.access_token as string);
 
-    // If query token is provided, validate session or API key
+    let authenticated = false;
     if (queryToken) {
       const session = authService.validateSession(queryToken);
       const isApiKey = authService.validateApiKey(queryToken);
-      if (!session && !isApiKey) {
-        res.status(401).json({ error: 'Unauthorized: Invalid streaming token' });
-        return;
+      if (session || isApiKey) {
+        authenticated = true;
+        logger.info('Authenticated live SSE client connected', { jobId });
+      } else {
+        logger.info('Invalid streaming token provided, proceeding with unauthenticated live SSE stream', { jobId });
       }
+    } else {
+      logger.info('Public unauthenticated live SSE client connected', { jobId });
     }
 
-    logger.info('Client connected to live SSE review stream', { jobId });
+    logger.info('Client connected to live SSE review stream', { jobId, authenticated });
     bus.addClient(jobId, res);
   });
+
+  /**
+   * GET /api/live/active and GET /api/live/jobs
+   * Returns active/recent jobs from LiveStreamBus for dashboard sidebar.
+   */
+  const handleGetActiveJobs = (_req: Request, res: Response) => {
+    const jobs = bus.getActiveJobs();
+    res.json({
+      success: true,
+      count: jobs.length,
+      jobs,
+    });
+  };
+
+  router.get('/active', handleGetActiveJobs);
+  router.get('/jobs', handleGetActiveJobs);
 
   /**
    * GET /api/live/history?jobId=...

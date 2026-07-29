@@ -1,4 +1,6 @@
 import { PersonaFinding } from '../github/commentPublisher';
+import { PanelResult } from '../panel/panelEngine';
+import { isRedTeamPersona } from '../personas/redTeamPersona';
 
 export interface ModuleChangeset {
   module: string;
@@ -51,13 +53,162 @@ export function parseDiffModules(diff: string): Map<string, { files: string[]; a
 }
 
 /**
- * Generates CodeRabbit-grade PR summary containing Executive Overview, Walkthrough, and Changesets.
+ * Escapes table cell contents to prevent markdown table structure breakout and HTML disclosure corruption.
+ */
+export function escapeMarkdownTableCell(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/\r\n/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\|/g, '\\|')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Formats the collapsible Adversarial Attack & Defense Matrix markdown section.
+ */
+export function formatAdversarialMatrix(
+  findings: PersonaFinding[] = [],
+  panelResult?: PanelResult
+): string {
+  const redTeamFindings: Array<{
+    persona: string;
+    modelInfo?: string;
+    filePath: string;
+    lineNumber: number;
+    severity: string;
+    attackVector: string;
+    failureMode: string;
+    mitigation: string;
+  }> = [];
+
+  const crossExaminedModels = new Set<string>();
+
+  if (panelResult && Array.isArray(panelResult.personas)) {
+    for (const p of panelResult.personas.filter(Boolean)) {
+      const isRed = p.isRedTeam || isRedTeamPersona(p.id);
+      if (isRed) {
+        if (p.crossExaminedModel) crossExaminedModels.add(p.crossExaminedModel);
+        if (p.model) crossExaminedModels.add(p.model);
+        if (p.findings && Array.isArray(p.findings)) {
+          for (const pf of p.findings.filter(Boolean)) {
+            redTeamFindings.push({
+              persona: p.id,
+              modelInfo: p.crossExaminedModel || p.model,
+              filePath: pf.path || (pf as any).filePath || 'codebase',
+              lineNumber: pf.line || (pf as any).line || (pf as any).lineNumber || 1,
+              severity: String(pf.severity).toUpperCase(),
+              attackVector: pf.title || (pf.body ? pf.body.split('\n')[0] : undefined) || 'Adversarial Vulnerability',
+              failureMode: pf.body || 'Potential failure mode surfaced during cross-examination.',
+              mitigation: pf.recommendation || pf.suggestion || 'Enforce boundary checks, sanitization, and defensive error handling.',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (findings && Array.isArray(findings)) {
+    for (const f of findings.filter(Boolean)) {
+      const isRed =
+        f.isRedTeam ||
+        isRedTeamPersona(f.persona) ||
+        f.persona === 'red_team' ||
+        f.persona === 'red-team' ||
+        f.persona === 'skeptic';
+      if (isRed) {
+        if (f.crossExaminedModel) crossExaminedModels.add(f.crossExaminedModel);
+
+        const path = f.filePath || (f as any).path || 'codebase';
+        const line = f.lineNumber || (f as any).line || 1;
+        const vectorTitle =
+          f.attackVector || f.title || (f.comment ? f.comment.split('\n')[0] : undefined) || 'Adversarial Vulnerability';
+
+        const isDup = redTeamFindings.some(
+          (existing) =>
+            existing.persona === f.persona &&
+            existing.filePath === path &&
+            existing.lineNumber === line &&
+            existing.attackVector === vectorTitle
+        );
+
+        if (!isDup) {
+          redTeamFindings.push({
+            persona: f.persona,
+            modelInfo: f.crossExaminedModel,
+            filePath: path,
+            lineNumber: line,
+            severity: String(f.severity).toUpperCase(),
+            attackVector: vectorTitle,
+            failureMode: f.failureMode || f.comment || 'Potential failure mode surfaced during cross-examination.',
+            mitigation: f.mitigation || f.recommendation || f.suggestion || 'Enforce boundary checks, sanitization, and defensive error handling.',
+          });
+        }
+      }
+    }
+  }
+
+  let modelListStr = '';
+  if (crossExaminedModels.size > 0) {
+    modelListStr = Array.from(crossExaminedModels)
+      .map((m) => `\`${m}\``)
+      .join(', ');
+  } else {
+    modelListStr = '`gpt-5.6-sol`';
+  }
+
+  const lines: string[] = [
+    '<details>',
+    '<summary><strong>🧬 Adversarial Attack & Defense Matrix</strong></summary>',
+    '',
+    '### 🛡️ Red-Team Cross-Examination Audit',
+    `**Status**: 🧬 Active | **Cross-Examined Model(s)**: ${modelListStr}`,
+    '',
+  ];
+
+  if (redTeamFindings.length === 0) {
+    lines.push(
+      'All persona checks and dual-model cross-examinations passed. Zero adversarial attack vectors or failure modes were detected in this pull request.'
+    );
+  } else {
+    lines.push('| Persona / Model | Attack Vector / Target | Severity | Potential Failure Mode | Mitigation Recommendation |');
+    lines.push('|---|---|---|---|---|');
+
+    for (const item of redTeamFindings) {
+      const personaModelCell = item.modelInfo
+        ? `\`${escapeMarkdownTableCell(item.persona)}\` (\`${escapeMarkdownTableCell(item.modelInfo)}\`)`
+        : `\`${escapeMarkdownTableCell(item.persona)}\``;
+      const targetCell = `**${escapeMarkdownTableCell(item.attackVector)}**<br>\`${escapeMarkdownTableCell(item.filePath)}:${item.lineNumber}\``;
+      const severityCell = `\`${escapeMarkdownTableCell(item.severity)}\``;
+      const failureCell = escapeMarkdownTableCell(item.failureMode);
+      const mitigationCell = escapeMarkdownTableCell(item.mitigation);
+
+      lines.push(`| ${personaModelCell} | ${targetCell} | ${severityCell} | ${failureCell} | ${mitigationCell} |`);
+    }
+  }
+
+  lines.push('</details>');
+
+  return lines.join('\n');
+}
+
+/**
+ * Generates CodeRabbit-grade PR summary containing Executive Overview, Walkthrough, Changesets, and Adversarial Matrix.
  */
 export function generatePRSummary(
   diff: string,
   findings: PersonaFinding[] = [],
-  _repoConfig?: any,
+  optionsOrConfig?: any,
+  panelResult?: PanelResult
 ): string {
+  const actualPanelResult: PanelResult | undefined =
+    optionsOrConfig && (optionsOrConfig.headSha || optionsOrConfig.distinctProviders || optionsOrConfig.arbiter || optionsOrConfig.moderator)
+      ? optionsOrConfig
+      : panelResult;
+
+  const safeFindings = (findings || []).filter(Boolean);
+
   const moduleMap = parseDiffModules(diff);
   const totalFiles = Array.from(moduleMap.values()).reduce((sum, m) => sum + m.files.length, 0);
   const totalModules = moduleMap.size;
@@ -66,21 +217,21 @@ export function generatePRSummary(
   let overview = '';
   if (totalFiles === 0) {
     overview = 'This pull request includes updates to repository configurations and metadata. ';
-    if (findings.length > 0) {
-      overview += `Automated review detected ${findings.length} finding(s) requiring attention.`;
+    if (safeFindings.length > 0) {
+      overview += `Automated review detected ${safeFindings.length} finding(s) requiring attention.`;
     } else {
       overview += 'All persona checks passed with zero findings detected.';
     }
   } else {
     overview = `This pull request introduces changes across ${totalFiles} file(s) in ${totalModules} module(s). `;
-    if (findings.length > 0) {
-      const criticalCount = findings.filter(
+    if (safeFindings.length > 0) {
+      const criticalCount = safeFindings.filter(
         (f) => String(f.severity).toLowerCase() === 'critical' || String(f.severity) === 'P0'
       ).length;
-      const majorCount = findings.filter(
+      const majorCount = safeFindings.filter(
         (f) => String(f.severity).toLowerCase() === 'major' || String(f.severity) === 'P1'
       ).length;
-      overview += `Automated review detected ${findings.length} finding(s) (${criticalCount} critical, ${majorCount} major) requiring attention.`;
+      overview += `Automated review detected ${safeFindings.length} finding(s) (${criticalCount} critical, ${majorCount} major) requiring attention.`;
     } else {
       overview += 'All persona checks passed with zero findings detected.';
     }
@@ -98,9 +249,9 @@ export function generatePRSummary(
     }
   }
 
-  if (findings.length > 0) {
+  if (safeFindings.length > 0) {
     walkthroughBullets.push('- **Review Findings Summary**:');
-    for (const f of findings.slice(0, 5)) {
+    for (const f of safeFindings.slice(0, 5)) {
       const file = f.filePath || (f as any).path || 'codebase';
       const line = f.lineNumber || (f as any).line || 1;
       walkthroughBullets.push(
@@ -128,6 +279,8 @@ export function generatePRSummary(
     }
   }
 
+  const adversarialMatrix = formatAdversarialMatrix(safeFindings, actualPanelResult);
+
   return [
     '## Executive Overview',
     overview,
@@ -141,5 +294,8 @@ export function generatePRSummary(
     '### Changesets',
     ...changesetSections,
     '</details>',
+    '',
+    adversarialMatrix,
   ].join('\n');
 }
+

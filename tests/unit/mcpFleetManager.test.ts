@@ -81,15 +81,21 @@ describe('McpFleetManager Unit Tests', () => {
   });
 
   it('executes fetch_docs tool via context7 adapter', async () => {
-    const result = await mcpFleetManager.executeTool('fetch_docs', {
-      library: 'express',
-      query: 'router routing middleware',
-    });
+    const origKey = process.env.CONTEXT7_API_KEY;
+    delete process.env.CONTEXT7_API_KEY;
+    try {
+      const result = await mcpFleetManager.executeTool('fetch_docs', {
+        library: 'express',
+        query: 'router routing middleware',
+      });
 
-    expect(result.durationMs).toBeGreaterThanOrEqual(0);
-    expect(result.output).toBeDefined();
-    expect(result.output.library).toBe('express');
-  });
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+      expect(result.output).toBeDefined();
+      expect(result.output.library).toBe('express');
+    } finally {
+      if (origKey !== undefined) process.env.CONTEXT7_API_KEY = origKey;
+    }
+  }, 10000);
 
   it('executes linear_close_issue tool', async () => {
     const result = await mcpFleetManager.executeTool('linear_close_issue', {

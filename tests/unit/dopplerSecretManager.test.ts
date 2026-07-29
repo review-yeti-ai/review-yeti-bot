@@ -2,17 +2,19 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DopplerSecretManager } from '../../src/mcp/dopplerSecretManager';
 
 vi.mock('node:child_process', () => {
+  const execFile = vi.fn((file: string, args: string[], options: any, callback: any) => {
+    const cb = typeof options === 'function' ? options : callback;
+    if (args && args.includes('--version')) {
+      return cb(null, { stdout: 'doppler v3.60.0\n', stderr: '' });
+    }
+    if (args && args.includes('CLI_TEST_SECRET')) {
+      return cb(null, { stdout: 'cli_resolved_secret_val\n', stderr: '' });
+    }
+    return cb(new Error('Command failed'), { stdout: '', stderr: 'Secret not found' });
+  });
   return {
-    execFile: vi.fn((file: string, args: string[], options: any, callback: any) => {
-      const cb = typeof options === 'function' ? options : callback;
-      if (args && args.includes('--version')) {
-        return cb(null, { stdout: 'doppler v3.60.0\n', stderr: '' });
-      }
-      if (args && args.includes('CLI_TEST_SECRET')) {
-        return cb(null, { stdout: 'cli_resolved_secret_val\n', stderr: '' });
-      }
-      return cb(new Error('Command failed'), { stdout: '', stderr: 'Secret not found' });
-    }),
+    execFile,
+    default: { execFile },
   };
 });
 
