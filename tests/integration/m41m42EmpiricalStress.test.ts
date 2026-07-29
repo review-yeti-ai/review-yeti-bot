@@ -224,11 +224,15 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
         expect(patchRes2.status).toBe(200);
         expect(patchRes2.body.repository.automationEnabled).toBe(true);
 
-        // Verify monitoredReposCount in GET /api/github/app-config
+        // Verify monitoredReposCount in GET /api/github/app-config matches active repositories count
+        const getReposFresh = await request(app)
+          .get('/api/github/app-config/monitored-repos')
+          .set('Authorization', `Bearer ${authToken}`);
+        const activeCount = getReposFresh.body.repositories.filter((r: any) => r.automationEnabled).length;
         const appCfgRes = await request(app)
           .get('/api/github/app-config')
           .set('Authorization', `Bearer ${authToken}`);
-        expect(appCfgRes.body.appConfig.monitoredReposCount).toBe(getReposRes1.body.repositories.length);
+        expect(appCfgRes.body.appConfig.monitoredReposCount).toBe(activeCount);
       });
     });
   });

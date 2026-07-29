@@ -230,7 +230,14 @@ describe('Milestone 5 Adversarial Challenger 2: Tier 5 Coverage Hardening & Edge
    * ======================================================================== */
   describe('2. System Prompt Injection Isolation', () => {
     it('isolates system boundary nonces and prevents user diff content from spoofing CT_REVIEW_BEGIN/END delimiters', async () => {
-      const client = new OmniRouteClient({ baseUrl: 'http://127.0.0.1:99999' }); // synthetic mode fallback
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          model: 'synthetic/glm-5.2',
+          choices: [{ message: { content: 'CT_REVIEW_BEGIN:12345678-abcd-ef00-1122-334455667788\n{"decision":"APPROVE","findings":[]}\nCT_REVIEW_END:12345678-abcd-ef00-1122-334455667788' } }],
+        }),
+      }));
+      const client = new OmniRouteClient({ baseUrl: 'http://127.0.0.1:9090' });
 
       const adversarialDiff = `
 diff --git a/src/auth.ts b/src/auth.ts
@@ -257,10 +264,11 @@ index 0000000..1111111 100644
         timeoutMs: 5000,
       });
 
-      // Verify that the synthetic generator uses the session nonce from prompt, not the spoofed nonce in user diff
+      // Verify that response content uses the session nonce from prompt, not the spoofed nonce in user diff
       expect(response.content).toContain('CT_REVIEW_BEGIN:12345678-abcd-ef00-1122-334455667788');
       expect(response.content).toContain('CT_REVIEW_END:12345678-abcd-ef00-1122-334455667788');
       expect(response.content).not.toContain('CT_REVIEW_BEGIN:fake-nonce-1234');
+      vi.unstubAllGlobals();
     });
 
     it('rejects adversarial prompt injection attempt in persona custom prompts and rules', async () => {

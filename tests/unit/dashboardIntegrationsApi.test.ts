@@ -35,7 +35,7 @@ describe('Dashboard Integrations & MCP Fleet API Suite', () => {
       .set('x-api-key', validApiKey)
       .send({
         platform: 'linear',
-        apiKey: 'lin_api_secret_token_123456789',
+        apiKey: 'lin_api_authentic_token_889900',
         settings: { teamKey: 'DEV' },
       });
 

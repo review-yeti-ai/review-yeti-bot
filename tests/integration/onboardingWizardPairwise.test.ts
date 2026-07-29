@@ -98,7 +98,7 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
         .put('/api/dashboard/providers/openai')
         .set('Authorization', `Bearer ${authToken}`)
         .send({
-          apiKey: 'sk-proj-test-key-simultaneous-save-12345678',
+          apiKey: 'sk-proj-authentic_key_simultaneous_88997766',
           subscriptionTier: 'enterprise',
           enabled: true,
         }),
@@ -278,7 +278,7 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
   it('8. Pairwise F3+F5: Latency ping probe exercises provider base URLs while masking secret keys', async () => {
     // Configure OpenAI provider with raw key
     dashboardStore.updateProviderConfig('openai', {
-      apiKeyRaw: 'sk-proj-secretkeymaskingtest1234567890',
+      apiKeyRaw: 'sk-proj-secretkeymaskingtest9988776655',
       baseUrl: 'https://api.openai.com/v1',
     });
 
@@ -295,7 +295,7 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
 
     // Verify secret key is masked in provider configuration
     const providerConfig = dashboardStore.getProviderConfig('openai');
-    expect(providerConfig?.apiKeyMasked).toBe('sk-proj-...7890');
+    expect(providerConfig?.apiKeyMasked).toBe('sk-proj-...6655');
     expect(providerConfig?.apiKeyMasked).not.toContain('secretkeymaskingtest');
   });
 

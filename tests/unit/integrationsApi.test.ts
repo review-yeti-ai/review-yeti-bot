@@ -37,6 +37,7 @@ describe('Integrations REST API Unit Tests', () => {
   });
 
   it('GET /api/dashboard/integrations returns linked integrations with masked API keys', async () => {
+    dashboardStore.updateIntegration('linear', { apiKey: 'lin_api_99887766554433221100' });
     const res = await request(app).get('/api/dashboard/integrations');
 
     expect(res.status).toBe(200);
@@ -62,7 +63,7 @@ describe('Integrations REST API Unit Tests', () => {
       .send({
         platform: 'linear',
         apiKey: 'lin_api_99887766554433221100',
-        oauthClientSecret: 'sec_1234567890secret',
+        oauthClientSecret: 'sec_abcdef9876543210secret',
         settings: { teamKey: 'DEV' },
       });
 
@@ -71,7 +72,7 @@ describe('Integrations REST API Unit Tests', () => {
     expect(res.body.integration).toBeDefined();
     expect(res.body.integration.id).toBe('linear');
     expect(res.body.integration.apiKeyMasked).toBe('lin_api_...1100');
-    expect(res.body.integration.oauthClientSecretMasked).toBe('sec_1234...cret');
+    expect(res.body.integration.oauthClientSecretMasked).toBe('sec_abcd...cret');
     expect(res.body.integration.apiKey).toBeUndefined();
     expect(res.body.integration.oauthClientSecret).toBeUndefined();
     expect(res.body.integration.status).toBe('connected');
@@ -82,7 +83,7 @@ describe('Integrations REST API Unit Tests', () => {
       expect(updatedLinear.apiKey).toBeUndefined();
       expect(updatedLinear.oauthClientSecret).toBeUndefined();
       expect(updatedLinear.apiKeyMasked).toBe('lin_api_...1100');
-      expect(updatedLinear.oauthClientSecretMasked).toBe('sec_1234...cret');
+      expect(updatedLinear.oauthClientSecretMasked).toBe('sec_abcd...cret');
     }
   });
 

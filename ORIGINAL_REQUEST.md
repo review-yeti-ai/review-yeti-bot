@@ -235,6 +235,47 @@ Integrity mode: demo
 - [ ] `npm run build` static export and server compilation succeed with 0 errors.
 - [ ] `npm test` passes 100%.
 
+## Follow-up — 2026-07-29T02:22:42Z
 
+<USER_REQUEST>
+Migrate Codebase Memory concepts (Learned Rules, Developer Feedback, and Suppressed Nits) to SQL relational tables in Managed PostgreSQL, redesign the Persona Editor into an interactive card-based card grid interface, and augment all default reviewer persona prompts with domain best practices. (Symbol dependency graph migration is out of scope for this turn).
 
+Working directory: `/Users/jasonbarbee/.gemini/antigravity/worktrees/ai-workspace/build-github-review-bot/ct-review-bot`
+Integrity mode: demo
 
+## Requirements
+
+### R1. Durable PostgreSQL Memory Concept Storage (SQL-Based)
+- Migrate memory rules, developer feedback overrides, and suppressed nits from SQLite (`pr_memory.db`) to SQL relational tables in the Managed PostgreSQL database (connected via `DATABASE_URL` / `POSTGRES_URL`).
+- Provide dual-store fallback logic so rules/nits save to PVC local storage if PostgreSQL is disconnected.
+- Note: Symbol dependency graph database migration is out of scope for this turn and should remain unchanged.
+
+### R2. Interactive Card-Based Persona Grid UI
+- Redesign the Persona Editor ([`/settings?tab=personas`](https://review-bot.calltelemetry.com/settings?tab=personas)) layout:
+  - Replace the dropdown layout with a grid of interactive **Persona Cards** showcasing status badges, model assignment, effort tier, and active toggle switches.
+  - Clicking any card opens a slide-over drawer or modal dialog to edit the system prompt template, model overrides, and confidence threshold.
+
+### R3. augmented Default Persona Prompts
+- Analyze and update all 12 default reviewer persona prompt templates in `dashboardStore.ts` with advanced domain best practices:
+  - **Security Persona**: Explicit auditing rules for OWASP Top 10, sanitization, secrets scanning, and tenant isolation.
+  - **Architecture Persona**: Modular coupling boundaries, DRY compliance, ADR structure alignment, and code cleanliness.
+  - **Performance, API Contract, and DevOps Personas**: Optimized CPU/memory bottlenecks, API breaking changes, and CI/CD/Kubernetes YAML standards.
+
+### R4. Persistence & API Synchronization
+- Connect all augmented prompts, card settings, and PostgreSQL memory queries directly to REST API endpoints and `DashboardStore`.
+
+## Acceptance Criteria
+
+### PostgreSQL Memory Storage
+- [ ] Learned rules and nits are stored and queried from PostgreSQL relational tables when configured.
+- [ ] Schema table migration runs automatically on startup.
+- [ ] Symbol dependency graph features remain functional with original local database file.
+
+### Card-Based Persona UI & augmented Prompts
+- [ ] Persona editor renders as a grid of cards with toggles and editor drawers.
+- [ ] Default system prompts contain upgraded OWASP and ADR guidelines.
+
+### Verification & Testing
+- [ ] `npm run build` static export and server compilation succeed with 0 errors.
+- [ ] `npm test` passes 100%.
+</USER_REQUEST>
