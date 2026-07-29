@@ -138,4 +138,61 @@ describe('PRMemoryStore Unit Tests', () => {
     diskStore.close();
     fs.unlinkSync(tmpDbPath);
   });
+
+  it('dual-writes memory concepts to both PostgreSQL and SQLite when DATABASE_URL is configured', async () => {
+    const { postgresStore } = await import('../../src/persistence/postgresStore');
+    vi.spyOn(postgresStore, 'isConfigured').mockReturnValue(true);
+    const saveRuleSpy = vi.spyOn(postgresStore, 'saveLearnedRule').mockResolvedValue(undefined);
+    const saveNitSpy = vi.spyOn(postgresStore, 'saveSuppressedNit').mockResolvedValue(undefined);
+    const saveAdrSpy = vi.spyOn(postgresStore, 'saveADRConstraint').mockResolvedValue(undefined);
+    const saveFbSpy = vi.spyOn(postgresStore, 'saveDeveloperFeedback').mockResolvedValue(undefined);
+
+    await store.recordLearning('repo-dual', 100, {
+      category: 'security',
+      title: 'PG Dual Write Test',
+      description: 'Dual write verification',
+    });
+    expect(saveRuleSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'PG Dual Write Test' }));
+
+    await store.recordResolvedNit('repo-dual', 100, {
+      pattern: 'no-eval',
+      filePath: 'src/eval.ts',
+      reason: 'Eval is dangerous',
+    });
+    expect(saveNitSpy).toHaveBeenCalledWith(expect.objectContaining({ pattern: 'no-eval' }));
+
+    await store.recordADRConstraint('repo-dual', {
+      adrNumber: 5,
+      title: 'ADR Dual Write',
+      status: 'accepted',
+      rule: 'Rule for ADR',
+      targetPaths: ['src/**'],
+    });
+    expect(saveAdrSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'ADR Dual Write' }));
+
+    await store.recordFeedback('repo-dual', 'looks good', 'positive');
+    expect(saveFbSpy).toHaveBeenCalledWith(expect.objectContaining({ comment: 'looks good', feedbackType: 'positive' }));
+
+    vi.restoreAllMocks();
+  });
+
+  it('seamlessly falls back to local SQLite when PostgreSQL query fails or throws', async () => {
+    const { postgresStore } = await import('../../src/persistence/postgresStore');
+
+    // Populate local SQLite
+    await store.recordLearning('repo-fallback', 1, {
+      category: 'convention',
+      title: 'SQLite Local Learning',
+      description: 'Available on fallback',
+    });
+
+    vi.spyOn(postgresStore, 'isConfigured').mockReturnValue(true);
+    vi.spyOn(postgresStore, 'queryLearnings').mockRejectedValue(new Error('PostgreSQL Query Connection Timeout'));
+
+    const result = await store.queryLearnings('repo-fallback');
+    expect(result.learnings.length).toBe(1);
+    expect(result.learnings[0].title).toBe('SQLite Local Learning');
+
+    vi.restoreAllMocks();
+  });
 });

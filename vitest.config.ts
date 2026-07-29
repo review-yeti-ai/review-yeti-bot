@@ -24,6 +24,7 @@ export default defineConfig({
       ['**/liveStream*.test.ts', 'jsdom']
     ],
     include: [
+      'src/**/*.test.ts',
       'tests/unit/**/*.test.ts',
       'tests/unit/**/*.test.tsx',
       'tests/integration/**/*.test.ts',

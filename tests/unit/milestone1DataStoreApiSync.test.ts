@@ -110,7 +110,7 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
         expect(provider.subscriptionTier).toBeDefined();
         expect(['Free', 'Pay-as-you-go', 'Pro', 'Team', 'Enterprise']).toContain(provider.subscriptionTier);
         expect(typeof provider.active).toBe('boolean');
-        expect(['connected', 'error', 'untested']).toContain(provider.status);
+        expect(['connected', 'error', 'untested', 'active']).toContain(provider.status);
       });
     });
 

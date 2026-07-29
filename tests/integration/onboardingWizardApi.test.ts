@@ -449,62 +449,161 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
     });
 
     it('POST /api/onboarding/diagnostic - runs diagnostic scan with probe 1, 2, and 3', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/diagnostic')
-        .send({
-          appId: '123456',
-          providerIds: ['openai', 'anthropic', 'google', 'groq'],
-        });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init?: any) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/v1/chat/completions')) {
+          const body = JSON.parse(init?.body || '{}');
+          const messages = body.messages || [];
+          const promptText = messages.map((m: any) => m.content).join('\n');
+          const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
+          const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
+          let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };
+          if (promptText.includes('"role":"moderator"') || promptText.includes('"role": "moderator"')) {
+            mockObj = { decision: 'RECONCILED', findings: [] };
+          } else if (promptText.includes('"role":"arbiter"') || promptText.includes('"role": "arbiter"')) {
+            mockObj = { verdict: 'SHIP', rationale: 'All persona checks passed' };
+          }
+          const content = `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify(mockObj)}\nCT_REVIEW_END:${reqNonce}`;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: 'cmpl-mock',
+              model: body.model || 'glm-5.2',
+              choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
+            }),
+          } as any;
+        }
+        return { ok: true, status: 200, json: async () => ({}) } as any;
+      });
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
+      try {
+        const res = await request(app)
+          .post('/api/onboarding/diagnostic')
+          .send({
+            appId: '123456',
+            providerIds: ['openai', 'anthropic', 'google', 'groq'],
+          });
 
-      // Probe 1: Webhook delivery
-      expect(res.body.probe1_webhook).toBeDefined();
-      expect(res.body.probe1_webhook.status).toBe('accepted');
-      expect(res.body.probe1_webhook.deliveryId).toBeDefined();
-      expect(typeof res.body.probe1_webhook.latencyMs).toBe('number');
+        expect(res.status).toBe(200);
+        expect(res.body.success).toBe(true);
 
-      // Probe 2: Latency ping
-      expect(res.body.probe2_latency).toBeDefined();
-      expect(res.body.probe2_latency.activeProviders).toBe(4);
-      expect(Array.isArray(res.body.probe2_latency.providers)).toBe(true);
-      expect(res.body.probe2_latency.providers.length).toBe(4);
+        // Probe 1: Webhook delivery
+        expect(res.body.probe1_webhook).toBeDefined();
+        expect(res.body.probe1_webhook.status).toBe('accepted');
+        expect(res.body.probe1_webhook.deliveryId).toBeDefined();
+        expect(typeof res.body.probe1_webhook.latencyMs).toBe('number');
 
-      // Probe 3: Persona arbitration quorum
-      expect(res.body.probe3_arbitration).toBeDefined();
-      expect(res.body.probe3_arbitration.personasEvaluated).toBe(11);
-      expect(res.body.probe3_arbitration.quorumPassed).toBe(true);
-      expect(res.body.probe3_arbitration.verdict).toBe('SHIP');
+        // Probe 2: Latency ping
+        expect(res.body.probe2_latency).toBeDefined();
+        expect(res.body.probe2_latency.activeProviders).toBe(4);
+        expect(Array.isArray(res.body.probe2_latency.providers)).toBe(true);
+        expect(res.body.probe2_latency.providers.length).toBe(4);
+
+        // Probe 3: Persona arbitration quorum
+        expect(res.body.probe3_arbitration).toBeDefined();
+        expect(res.body.probe3_arbitration.personasEvaluated).toBe(11);
+        expect(res.body.probe3_arbitration.quorumPassed).toBe(true);
+        expect(res.body.probe3_arbitration.verdict).toBe('SHIP');
+      } finally {
+        fetchSpy.mockRestore();
+      }
     });
 
     it('POST /api/onboarding/diagnostic - accepts custom provider list and calculates metrics', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/diagnostic')
-        .send({
-          providerIds: ['openai', 'anthropic', 'xai'],
-        });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init?: any) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/v1/chat/completions')) {
+          const body = JSON.parse(init?.body || '{}');
+          const messages = body.messages || [];
+          const promptText = messages.map((m: any) => m.content).join('\n');
+          const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
+          const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
+          let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };
+          if (promptText.includes('"role":"moderator"') || promptText.includes('"role": "moderator"')) {
+            mockObj = { decision: 'RECONCILED', findings: [] };
+          } else if (promptText.includes('"role":"arbiter"') || promptText.includes('"role": "arbiter"')) {
+            mockObj = { verdict: 'SHIP', rationale: 'All persona checks passed' };
+          }
+          const content = `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify(mockObj)}\nCT_REVIEW_END:${reqNonce}`;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: 'cmpl-mock',
+              model: body.model || 'glm-5.2',
+              choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
+            }),
+          } as any;
+        }
+        return { ok: true, status: 200, json: async () => ({}) } as any;
+      });
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.probe2_latency.activeProviders).toBe(3);
-      expect(res.body.probe2_latency.providers).toHaveLength(3);
-      expect(res.body.probe3_arbitration.distinctProvidersUsed).toBe(3);
-      expect(res.body.probe3_arbitration.quorumPassed).toBe(true);
+      try {
+        const res = await request(app)
+          .post('/api/onboarding/diagnostic')
+          .send({
+            providerIds: ['openai', 'anthropic', 'xai'],
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.success).toBe(true);
+        expect(res.body.probe2_latency.activeProviders).toBe(3);
+        expect(res.body.probe2_latency.providers).toHaveLength(3);
+        expect(res.body.probe3_arbitration.distinctProvidersUsed).toBe(3);
+        expect(res.body.probe3_arbitration.quorumPassed).toBe(true);
+      } finally {
+        fetchSpy.mockRestore();
+      }
     });
 
     it('POST /api/onboarding/diagnostic - handles single provider and evaluates quorum accordingly', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/diagnostic')
-        .send({
-          providerIds: ['openai'],
-        });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init?: any) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/v1/chat/completions')) {
+          const body = JSON.parse(init?.body || '{}');
+          const messages = body.messages || [];
+          const promptText = messages.map((m: any) => m.content).join('\n');
+          const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
+          const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
+          let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };
+          if (promptText.includes('"role":"moderator"') || promptText.includes('"role": "moderator"')) {
+            mockObj = { decision: 'RECONCILED', findings: [] };
+          } else if (promptText.includes('"role":"arbiter"') || promptText.includes('"role": "arbiter"')) {
+            mockObj = { verdict: 'SHIP', rationale: 'All persona checks passed' };
+          }
+          const content = `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify(mockObj)}\nCT_REVIEW_END:${reqNonce}`;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: 'cmpl-mock',
+              model: body.model || 'glm-5.2',
+              choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
+            }),
+          } as any;
+        }
+        return { ok: true, status: 200, json: async () => ({}) } as any;
+      });
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.probe2_latency.activeProviders).toBe(1);
-      expect(res.body.probe3_arbitration.quorumPassed).toBe(false);
-      expect(res.body.probe3_arbitration.verdict).toBe('REQUEST_CHANGES');
+      try {
+        const res = await request(app)
+          .post('/api/onboarding/diagnostic')
+          .send({
+            providerIds: ['openai'],
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.success).toBe(true);
+        expect(res.body.probe2_latency.activeProviders).toBe(1);
+        expect(res.body.probe3_arbitration.quorumPassed).toBe(false);
+        expect(res.body.probe3_arbitration.verdict).toBe('REQUEST_CHANGES');
+      } finally {
+        fetchSpy.mockRestore();
+      }
     });
   });
 });

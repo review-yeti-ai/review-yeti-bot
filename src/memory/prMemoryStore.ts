@@ -2,8 +2,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { logger } from '../utils/logger';
+import { postgresStore } from '../persistence/postgresStore';
 
 export interface ReviewerLearning {
   id?: string;
@@ -162,7 +162,18 @@ export class PRMemoryStore {
       createdAt,
       updatedAt
     );
-    return { id, repo, prNumber, ...learning, category, title, description, createdAt, updatedAt };
+
+    const record = { id, repo, prNumber, ...learning, category, title, description, createdAt, updatedAt };
+
+    if (postgresStore.isConfigured()) {
+      try {
+        await postgresStore.saveLearnedRule(record);
+      } catch (err: any) {
+        logger.warn('Failed dual-write learned rule to PostgreSQL', { error: err?.message });
+      }
+    }
+
+    return record;
   }
 
   public async recordResolvedNit(
@@ -188,7 +199,18 @@ export class PRMemoryStore {
       resolvedAt,
       suppressionCount
     );
-    return { id, repo, prNumber, suppressionCount, ...nit, resolvedAt };
+
+    const record = { id, repo, prNumber, suppressionCount, ...nit, resolvedAt };
+
+    if (postgresStore.isConfigured()) {
+      try {
+        await postgresStore.saveSuppressedNit(record);
+      } catch (err: any) {
+        logger.warn('Failed dual-write suppressed nit to PostgreSQL', { error: err?.message });
+      }
+    }
+
+    return record;
   }
 
   public async recordADRConstraint(
@@ -211,7 +233,18 @@ export class PRMemoryStore {
       JSON.stringify(adr.targetPaths),
       createdAt
     );
-    return { id, repo, ...adr, createdAt };
+
+    const record = { id, repo, ...adr, createdAt };
+
+    if (postgresStore.isConfigured()) {
+      try {
+        await postgresStore.saveADRConstraint(record);
+      } catch (err: any) {
+        logger.warn('Failed dual-write ADR constraint to PostgreSQL', { error: err?.message });
+      }
+    }
+
+    return record;
   }
 
   private incrementNitStmt?: any;
@@ -221,6 +254,14 @@ export class PRMemoryStore {
       this.incrementNitStmt = this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE id = ?');
     }
     this.incrementNitStmt.run(id);
+
+    if (postgresStore.isConfigured()) {
+      try {
+        await postgresStore.incrementNitSuppression(id);
+      } catch (err: any) {
+        logger.warn('Failed dual-write incrementNitSuppression to PostgreSQL', { error: err?.message });
+      }
+    }
   }
 
   public async incrementNitSuppressionBatch(ids: string[]): Promise<void> {
@@ -238,12 +279,29 @@ export class PRMemoryStore {
       this.db.exec('ROLLBACK;');
       throw err;
     }
+
+    if (postgresStore.isConfigured()) {
+      try {
+        await postgresStore.incrementNitSuppressionBatch(ids);
+      } catch (err: any) {
+        logger.warn('Failed dual-write incrementNitSuppressionBatch to PostgreSQL', { error: err?.message });
+      }
+    }
   }
 
   public async queryLearnings(
     repo: string,
     options: { category?: string; filePath?: string; query?: string } = {}
   ): Promise<RepoMemoryState> {
+    if (postgresStore.isConfigured()) {
+      try {
+        const pgState = await postgresStore.queryLearnings(repo, options);
+        return pgState as RepoMemoryState;
+      } catch (err: any) {
+        logger.warn('PostgreSQL queryLearnings failed, seamlessly falling back to local SQLite', { error: err?.message });
+      }
+    }
+
     let lSql = 'SELECT * FROM learnings WHERE repo = ?';
     const lParams: any[] = [repo];
     if (options.category) {
@@ -318,6 +376,19 @@ export class PRMemoryStore {
       VALUES (?, ?, ?, ?)
     `);
     stmt.run(id, repo, reaction, feedbackType);
+
+    if (postgresStore.isConfigured()) {
+      try {
+        await postgresStore.saveDeveloperFeedback({
+          id,
+          repo,
+          feedbackType,
+          comment: reaction,
+        });
+      } catch (err: any) {
+        logger.warn('Failed dual-write feedback to PostgreSQL', { error: err?.message });
+      }
+    }
   }
 
   /**
@@ -391,6 +462,14 @@ export class PRMemoryStore {
     this.db.prepare('DELETE FROM resolved_nits WHERE repo = ?').run(repo);
     this.db.prepare('DELETE FROM adr_constraints WHERE repo = ?').run(repo);
     this.db.prepare('DELETE FROM feedback_events WHERE repo = ?').run(repo);
+
+    if (postgresStore.isConfigured()) {
+      try {
+        await postgresStore.clearRepoMemory(repo);
+      } catch (err: any) {
+        logger.warn('Failed clearRepoMemory on PostgreSQL', { error: err?.message });
+      }
+    }
   }
 
   public getCounts(): { learningsCount: number; suppressedNitsCount: number; adrConstraintsCount: number } {

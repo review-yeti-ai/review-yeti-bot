@@ -1,6 +1,21 @@
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { logger } from '../utils/logger';
 
+export class GatewayConnectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GatewayConnectionError';
+  }
+}
+
+export class OmniRouteConnectionError extends GatewayConnectionError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OmniRouteConnectionError';
+  }
+}
+
+
 export interface OmniRouteClientConfig {
   baseUrl: string;
   accessToken?: string;
@@ -38,6 +53,7 @@ const OMNIROUTE_PROVIDER_PROVENANCE: Record<string, readonly string[]> = {
   'grok-cli': ['grok-cli'],
   agy: ['agy'],
   claude: ['claude'],
+  synthetic: ['synthetic', 'glm-5.2', 'glm', 'zhipu'],
 };
 
 function getHeader(headers: any, name: string): string | null {
@@ -137,36 +153,8 @@ export class OmniRouteClient {
       if (networkErr.message?.startsWith('OmniRoute HTTP')) {
         throw networkErr;
       }
-      logger.info('OmniRoute endpoint offline, utilizing Synthetic GLM-5.2 fallback response generator', { error: networkErr.message });
-      
-      // Extract nonce from prompt if present
-      const promptText = request.messages.map(m => m.content).join('\n');
-      const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
-      const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
-
-      let mockObj: any = {
-        decision: 'APPROVE',
-        findings: [],
-        modFindings: [],
-        verdict: 'SHIP',
-        rationale: 'Synthetic GLM-5.2 high effort review verified code structure, safety, and performance constraints.',
-      };
-
-      if (/"role"\s*:\s*"moderator"/.test(promptText)) {
-        mockObj = { decision: 'RECONCILED', findings: [] };
-      } else if (/"role"\s*:\s*"arbiter"/.test(promptText)) {
-        mockObj = { verdict: 'SHIP', rationale: 'Synthetic GLM-5.2 high effort review verified code structure, safety, and performance constraints.' };
-      }
-
-      let mockVerdictJson = JSON.stringify(mockObj);
-
-      return {
-        model: request.model,
-        content: `CT_REVIEW_BEGIN:${reqNonce}\n${mockVerdictJson}\nCT_REVIEW_END:${reqNonce}`,
-        usage: { prompt: 150, completion: 45, total: 195 },
-        costUSD: 0.0012,
-        raw: { model: request.model },
-      };
+      logger.error('OmniRoute network failure or timeout', { error: networkErr.message, model: request.model });
+      throw new OmniRouteConnectionError(`OmniRoute connection failure for model ${request.model}: ${networkErr.message}`);
     }
 
     const resolvedModel = String(data.model || '');
