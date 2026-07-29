@@ -110,8 +110,8 @@ reviews:
 path_filters: "not an array"
 `;
       const config = parseAndValidateConfig(invalidTogglesYaml, true) as any;
-      expect(config.reviewer_effort).toBe('medium');
-      expect(config.reviews.reviewer_effort).toBe('medium');
+      expect(config.reviewer_effort).toBe('low');
+      expect(config.reviews.reviewer_effort).toBe('low');
       expect(config.path_instructions).toEqual([]);
       expect(config.path_filters).toEqual([]);
     });

@@ -49,15 +49,16 @@ export async function scanRepositoryStack(repoPath: string): Promise<StackScanRe
     if (depth > 3) return; // Cap depth for <1s guarantee
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.name.startsWith('.') && entry.name !== '.dockerignore') continue;
-        if (['node_modules', 'dist', 'build', 'target', 'vendor', '.git', 'coverage'].includes(entry.name)) continue;
+      await Promise.all(
+        entries.map(async (entry) => {
+          if (entry.name.startsWith('.') && entry.name !== '.dockerignore') return;
+          if (['node_modules', 'dist', 'build', 'target', 'vendor', '.git', 'coverage', 'out', 'tmp'].includes(entry.name)) return;
 
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          await inspectDir(fullPath, depth + 1);
-        } else if (entry.isFile()) {
-          totalFilesScanned++;
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            await inspectDir(fullPath, depth + 1);
+          } else if (entry.isFile()) {
+            totalFilesScanned++;
           const filename = entry.name.toLowerCase();
 
           // Manifest & Config Detection
@@ -122,8 +123,9 @@ export async function scanRepositoryStack(repoPath: string): Promise<StackScanRe
           else if (['.html', '.css', '.scss'].includes(ext)) counts.HTML_CSS++;
           else counts.Other++;
         }
-      }
-    } catch (_) {}
+      })
+    );
+  } catch (_) {}
   }
 
   await inspectDir(repoPath);

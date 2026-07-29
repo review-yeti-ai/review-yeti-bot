@@ -88,6 +88,8 @@ export class GraphLearningEngine {
     const filteredFindings: PanelFinding[] = [];
     const suppressedNits: Array<{ finding: PanelFinding; matchedPattern: ResolvedNitPattern }> = [];
 
+    const matchedNitIds: string[] = [];
+
     for (const finding of findings) {
       // 1. Check if finding matches a local repo resolved nit pattern
       const matchingNit = memory.resolvedNits.find((nit) => {
@@ -103,12 +105,22 @@ export class GraphLearningEngine {
 
       if (matchingNit) {
         if (matchingNit.id) {
-          await this.memoryStore.incrementNitSuppression(matchingNit.id);
+          matchedNitIds.push(matchingNit.id);
         }
         suppressedNits.push({ finding, matchedPattern: matchingNit });
         logger.info('Suppressed resolved nit finding via repo memory', { repo, path: finding.path, pattern: matchingNit.pattern });
       } else {
         filteredFindings.push(finding);
+      }
+    }
+
+    if (matchedNitIds.length > 0) {
+      if (typeof (this.memoryStore as any).incrementNitSuppressionBatch === 'function') {
+        await (this.memoryStore as any).incrementNitSuppressionBatch(matchedNitIds);
+      } else {
+        for (const id of matchedNitIds) {
+          await this.memoryStore.incrementNitSuppression(id);
+        }
       }
     }
 

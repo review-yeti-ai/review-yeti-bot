@@ -19,27 +19,48 @@ export interface PlatformPattern {
 export class PlatformMemoryStore {
   private static sharedDbMap: Map<string, any> = new Map();
   private db: any;
-  private dbPathKey: string;
+  private dbPathKey: string = '';
 
   constructor(dbPath?: string) {
-    const defaultPath = process.env.CT_REVIEW_PLATFORM_DB || path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'platform_memory.db');
+    const defaultPath = process.env.CT_REVIEW_PLATFORM_DB || (process.env.VITEST ? ':memory:' : path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'platform_memory.db'));
     const targetPath = dbPath || defaultPath;
-    this.dbPathKey = targetPath;
-    const dir = path.dirname(targetPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    try {
+      const dir = path.dirname(targetPath);
+      if (dir && dir !== '.' && !fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
 
-    if (PlatformMemoryStore.sharedDbMap.has(targetPath)) {
-      this.db = PlatformMemoryStore.sharedDbMap.get(targetPath);
-    } else {
-      this.db = new DatabaseSync(targetPath);
-      PlatformMemoryStore.sharedDbMap.set(targetPath, this.db);
-      this.initDatabase();
+      if (!fs.existsSync(targetPath) && targetPath !== ':memory:' && !targetPath.startsWith(':memory:')) {
+        PlatformMemoryStore.sharedDbMap.delete(targetPath);
+      }
+
+      if (PlatformMemoryStore.sharedDbMap.has(targetPath)) {
+        this.db = PlatformMemoryStore.sharedDbMap.get(targetPath);
+      } else {
+        this.db = new DatabaseSync(targetPath);
+        if (targetPath !== ':memory:' && !targetPath.startsWith(':memory:')) {
+          PlatformMemoryStore.sharedDbMap.set(targetPath, this.db);
+        }
+      }
+      this.dbPathKey = targetPath;
+    } catch (err: any) {
+      logger.warn('Failed to open database at targetPath, falling back to :memory:', { path: targetPath, error: err?.message });
+      this.dbPathKey = ':memory:';
+      this.db = new DatabaseSync(':memory:');
     }
+    this.initDatabase();
   }
 
   private initDatabase(): void {
+    try {
+      this.db.exec('PRAGMA journal_mode = WAL;');
+      this.db.exec('PRAGMA synchronous = NORMAL;');
+      this.db.exec('PRAGMA busy_timeout = 5000;');
+      this.db.exec('PRAGMA temp_store = MEMORY;');
+    } catch {
+      // In-memory databases or shared handles may ignore WAL mode
+    }
+
     try {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS platform_patterns (

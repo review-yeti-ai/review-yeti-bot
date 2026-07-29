@@ -22,13 +22,17 @@ export function analyzeDiffComplexity(diff: string): DiagramAnalysis {
 
   // Extract function / class / method additions & modifications from diff lines
   const functions: string[] = [];
+  const functionsSet = new Set<string>();
   const components: string[] = [];
+  const componentsSet = new Set<string>();
 
   const funcRegex = /(?:function|class|interface|type|async|const|let|var)\s+([a-zA-Z0-9_]+)/g;
   let match: RegExpExecArray | null;
   while ((match = funcRegex.exec(diff)) !== null) {
-    if (match[1] && !functions.includes(match[1]) && match[1].length > 2) {
-      functions.push(match[1]);
+    const fnName = match[1];
+    if (fnName && !functionsSet.has(fnName) && fnName.length > 2) {
+      functionsSet.add(fnName);
+      functions.push(fnName);
     }
   }
 

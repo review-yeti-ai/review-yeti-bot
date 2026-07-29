@@ -16,7 +16,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
     mascot: true,
     reviews: {
       profile: 'balanced',
-      reviewer_effort: 'medium',
+      reviewer_effort: 'low',
       confidence_threshold: 70,
       mascot: true,
       ticket_enforcement: false,
@@ -73,7 +73,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
           id: 'synthetic',
           enabled: true,
           model: 'glm-5.2',
-          effort: 'max',
+          effort: 'low',
           review_timeout_s: 30,
           arbiter_timeout_s: 30,
         },
@@ -81,7 +81,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
           id: 'codex',
           enabled: true,
           model: 'codex/gpt-5.6-sol-high',
-          effort: 'max',
+          effort: 'low',
           review_timeout_s: 30,
           arbiter_timeout_s: 30,
         },
@@ -89,7 +89,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
           id: 'claude',
           enabled: true,
           model: 'claude-5-sonnet',
-          effort: 'high',
+          effort: 'low',
           review_timeout_s: 30,
           arbiter_timeout_s: 30,
         },
@@ -145,9 +145,9 @@ export function translateCodeRabbitToV3(raw: any): any {
   }
   const ticket_enforcement = dials.ticket_enforcement ?? reviews.ticket_enforcement ?? false;
   
-  let reviewer_effort = reviews.reviewer_effort ?? rawObj.reviewer_effort ?? 'medium';
+  let reviewer_effort = reviews.reviewer_effort ?? rawObj.reviewer_effort ?? 'low';
   if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(reviewer_effort)) {
-    reviewer_effort = 'medium';
+    reviewer_effort = 'low';
   }
 
   const rawPathInst = reviews.path_instructions || rawObj.path_instructions;
@@ -216,7 +216,7 @@ export function translateLegacyConfigToV3(raw: any): CtReviewConfigV3 {
     ...defaultConfig,
     version: 3,
     profile: raw.profile || 'balanced',
-    reviewer_effort: raw.reviewer_effort || 'medium',
+    reviewer_effort: raw.reviewer_effort || 'low',
     confidence_threshold: raw.confidence_threshold,
     mascot: raw.mascot ?? true,
     path_instructions: raw.path_instructions || [],

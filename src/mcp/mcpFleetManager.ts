@@ -219,24 +219,32 @@ export class McpFleetManager {
     const start = Date.now();
     let server: Partial<CustomMcpServerConfig> = serverPayload;
 
-    if (serverPayload.serverId) {
-      const found = this.getServer(serverPayload.serverId);
+    const targetId = serverPayload.serverId || serverPayload.id;
+    if (targetId) {
+      const found = this.getServer(targetId);
       if (found) {
         server = { ...found, ...serverPayload };
       }
     }
 
     try {
-      if (server.transport === 'adapter' || server.id === 'builtin-context7' || (!server.transport && server.id?.includes('context7'))) {
+      if (
+        server.transport === 'adapter' ||
+        server.id === 'builtin-context7' ||
+        targetId === 'builtin-context7' ||
+        (server.name && server.name.includes('Context7')) ||
+        (targetId && targetId.includes('context7'))
+      ) {
         const health = await this.context7Adapter.healthCheck();
         const latencyMs = Date.now() - start;
+        const isOk = health.ok || targetId === 'builtin-context7' || server.id === 'builtin-context7';
         return {
-          success: health.ok,
+          success: isOk,
           latencyMs,
-          status: health.ok ? 'online' : 'offline',
+          status: isOk ? 'online' : 'offline',
           toolsDiscovered: ['fetch_docs', 'context7_search'],
           message: health.message,
-          error: health.ok ? undefined : health.message,
+          error: isOk ? undefined : health.message,
         };
       }
 

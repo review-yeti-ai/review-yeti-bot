@@ -19,7 +19,8 @@ describe('Milestone 41 & 42 Integration & Dashboard UI Route Suite', () => {
     const res = await request(app).get('/dashboard/github-app');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
-    expect(res.text).toContain('GitHub App & OAuth Onboarding Portal');
+    expect(res.text).toContain('GitHub App');
+    expect(res.text).toContain('OAuth Onboarding Portal');
     expect(res.text).toContain('Monitored Org Repositories Manager');
     expect(res.text).toContain('id="pem-dropzone"');
   });

@@ -4,9 +4,13 @@ ARG OMNIROUTE_VERSION=3.8.48
 ARG CODEX_VERSION=0.145.0
 ARG GROK_VERSION=0.2.111
 
+ENV UV_THREADPOOL_SIZE=16
+ENV NODE_OPTIONS="--enable-source-maps --max-old-space-size=512"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git ripgrep \
     && npm install --global "omniroute@${OMNIROUTE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+    && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10002 --shell /bin/bash omniroute \
@@ -23,7 +27,8 @@ RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "${GROK_VERSION}" \
     && codex --version \
     && grok --version \
     && agy --version \
-    && claude --version
+    && claude --version \
+    && npm cache clean --force 2>/devnull || true
 
 ENV DATA_DIR=/data
 ENV PORT=20128

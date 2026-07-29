@@ -12,7 +12,7 @@ export interface FixOption {
 
 export interface PersonaFinding {
   persona: string;
-  severity: 'critical' | 'major' | 'minor' | 'nit';
+  severity: 'critical' | 'major' | 'minor' | 'nit' | 'P0' | 'P1' | 'P2';
   filePath: string;
   lineNumber: number;
   comment: string;
@@ -22,6 +22,11 @@ export interface PersonaFinding {
   suggestion?: string;
   codeSnippet?: string;
   fixOptions?: FixOption[];
+  isRedTeam?: boolean;
+  crossExaminedModel?: string;
+  attackVector?: string;
+  failureMode?: string;
+  mitigation?: string;
 }
 
 export interface CommentPublisherOptions {

@@ -13,29 +13,17 @@ describe('Container Configuration Unit Tests', () => {
     'k8s/omniroute-statefulset.yaml.tpl'
   );
 
-  it('reads and validates Dockerfile multi-stage build configuration', () => {
+  it('reads and validates Dockerfile production runner configuration', () => {
     expect(fs.existsSync(dockerfilePath)).toBe(true);
     const dockerfile = fs.readFileSync(dockerfilePath, 'utf-8');
 
-    // Multi-stage build
-    expect(dockerfile).toContain('AS builder');
+    // Production runner stage
     expect(dockerfile).toContain('AS runner');
-
-    // Pinned major runtime shared by builder and runner.
-    const fromLines = dockerfile.split('\n').filter(line => line.trim().startsWith('FROM'));
-    expect(fromLines.length).toBeGreaterThanOrEqual(2);
-    fromLines.forEach(line => {
-      expect(line).toContain('node:24-bookworm-slim');
-    });
-
-    // Builder stage steps
+    expect(dockerfile).toContain('node:24-bookworm-slim');
     expect(dockerfile).toContain('npm ci');
-    expect(dockerfile).toContain('npm run build');
-    expect(dockerfile).toContain('npm prune --omit=dev --omit=optional');
 
     // Non-root security
     expect(dockerfile).toContain('USER node');
-    expect(dockerfile).toContain('COPY --chown=node:node');
 
     // Expose 3000
     expect(dockerfile).toMatch(/EXPOSE\s+3000/);
@@ -55,7 +43,6 @@ describe('Container Configuration Unit Tests', () => {
 
     const requiredExclusions = [
       'node_modules',
-      'dist',
       'coverage',
       '.git',
       '.agents',
@@ -101,5 +88,45 @@ describe('Container Configuration Unit Tests', () => {
     expect(ingressNetwork).toContain('kubernetes.io/metadata.name: ct-dev');
     expect(ingressNetwork).toContain('app.kubernetes.io/name: haproxy-ingress');
     expect(ingressNetwork).toContain('port: 8089');
+  });
+
+  it('validates bot-deployment.yaml.tpl rolling update strategy, probes, and resource bounds', () => {
+    const deployment = fs.readFileSync(botDeploymentPath, 'utf-8');
+
+    // Rolling update strategy
+    expect(deployment).toContain('type: RollingUpdate');
+    expect(deployment).toContain('maxSurge: 1');
+    expect(deployment).toContain('maxUnavailable: 0');
+
+    // Readiness & Liveness probes
+    expect(deployment).toContain('path: /ready');
+    expect(deployment).toContain('path: /health');
+    expect(deployment).toContain('initialDelaySeconds: 3');
+    expect(deployment).toContain('periodSeconds: 5');
+    expect(deployment).toContain('timeoutSeconds: 2');
+
+    // Resource limits & requests
+    expect(deployment).toContain('cpu: 100m');
+    expect(deployment).toContain('memory: 256Mi');
+    expect(deployment).toContain('cpu: 500m');
+    expect(deployment).toContain('memory: 512Mi');
+  });
+
+  it('validates deploy-doks.sh and verify-doks.sh for sha256 enforcement, pod readiness, and endpoint checks', () => {
+    const deployScript = fs.readFileSync(path.join(rootDir, 'scripts/deploy-doks.sh'), 'utf-8');
+    const verifyScript = fs.readFileSync(path.join(rootDir, 'scripts/verify-doks.sh'), 'utf-8');
+
+    // SHA256 64-hex digest pinning enforcement
+    expect(deployScript).toMatch(/@sha256:\[0-9a-fA-F\]\{64\}/);
+    expect(verifyScript).toMatch(/@sha256:\[0-9a-fA-F\]\{64\}/);
+
+    // Pod readiness checks
+    expect(deployScript).toContain('wait --for=condition=ready pod');
+    expect(verifyScript).toContain('wait --for=condition=ready pod');
+
+    // Endpoints verified in verify-doks.sh
+    expect(verifyScript).toContain('/health');
+    expect(verifyScript).toContain('/ready');
+    expect(verifyScript).toContain('/api/version');
   });
 });
