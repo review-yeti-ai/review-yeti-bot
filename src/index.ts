@@ -1,3 +1,7 @@
+if (!process.env.UV_THREADPOOL_SIZE) {
+  process.env.UV_THREADPOOL_SIZE = '16';
+}
+
 import { createApp } from './app';
 import { logger } from './utils/logger';
 

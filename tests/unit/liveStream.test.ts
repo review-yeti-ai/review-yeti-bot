@@ -106,6 +106,47 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
       bus.clearHistory();
       expect(bus.getHistory('job_clear_2').length).toBe(0);
     });
+
+    it('tracks active jobs metadata, persona progress, and LLM token usage', () => {
+      const jobId = 'job_calltelemetry_cisco-cdr_pr88_b2c3d4e';
+      bus.publishEvent({
+        jobId,
+        timestamp: new Date().toISOString(),
+        type: 'persona:start',
+        persona: 'security',
+        data: { message: 'Starting security scan' },
+      });
+
+      bus.publishEvent({
+        jobId,
+        timestamp: new Date().toISOString(),
+        type: 'persona:chunk',
+        persona: 'security',
+        data: { promptTokens: 100, completionTokens: 50, totalTokens: 150, costUSD: 0.002 },
+      });
+
+      bus.publishEvent({
+        jobId,
+        timestamp: new Date().toISOString(),
+        type: 'persona:complete',
+        persona: 'security',
+        data: { findingsCount: 2, message: 'Scan finished' },
+      });
+
+      const activeJobs = bus.getActiveJobs();
+      expect(activeJobs.length).toBe(1);
+      expect(activeJobs[0].jobId).toBe(jobId);
+      expect(activeJobs[0].repo).toBe('calltelemetry/cisco-cdr');
+      expect(activeJobs[0].prNumber).toBe(88);
+      expect(activeJobs[0].personaProgress.security.status).toBe('completed');
+      expect(activeJobs[0].personaProgress.security.findingsCount).toBe(2);
+      expect(activeJobs[0].tokenMetrics.totalTokens).toBe(150);
+      expect(activeJobs[0].tokenMetrics.estimatedCostUSD).toBe(0.002);
+
+      const jobStatus = bus.getJobStatus(jobId);
+      expect(jobStatus).toBeDefined();
+      expect(jobStatus?.eventCount).toBe(3);
+    });
   });
 
   describe('SSE Client Registration & Stream Lifecycle', () => {
@@ -251,6 +292,13 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
           responseData = data;
           resolve({ status: statusCode, body: data });
         };
+        res.flushHeaders = () => {
+          resolve({ status: statusCode, body: { streamStarted: true } });
+        };
+        res.write = (data: any) => {
+          resolve({ status: statusCode, body: { streamStarted: true, chunk: String(data) } });
+          return true;
+        };
 
         app(req, res);
       });
@@ -298,6 +346,37 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('Missing required parameters');
+    });
+
+    it('GET /api/live/stream allows public unauthenticated connection', async () => {
+      const res = await mockRequest(app, 'GET', '/api/live/stream?jobId=job_public_stream');
+      expect(res.status).toBe(200);
+    });
+
+    it('GET /api/live/stream gracefully handles invalid token without returning 401', async () => {
+      const res = await mockRequest(app, 'GET', '/api/live/stream?jobId=job_invalid_token&token=invalid_xyz');
+      expect(res.status).toBe(200);
+    });
+
+    it('GET /api/live/active and GET /api/live/jobs return active jobs list', async () => {
+      bus.publishEvent({
+        jobId: 'job_active_123',
+        timestamp: new Date().toISOString(),
+        type: 'persona:start',
+        persona: 'quality',
+        data: { repo: 'org/repo1', prNumber: 42 },
+      });
+
+      const resActive = await mockRequest(app, 'GET', '/api/live/active');
+      expect(resActive.status).toBe(200);
+      expect(resActive.body.success).toBe(true);
+      expect(resActive.body.count).toBe(1);
+      expect(resActive.body.jobs[0].jobId).toBe('job_active_123');
+
+      const resJobs = await mockRequest(app, 'GET', '/api/live/jobs');
+      expect(resJobs.status).toBe(200);
+      expect(resJobs.body.success).toBe(true);
+      expect(resJobs.body.count).toBe(1);
     });
   });
 

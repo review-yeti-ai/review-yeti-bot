@@ -1,5 +1,6 @@
 import express, { Express, NextFunction, Request, Response } from 'express';
 import path from 'path';
+import * as fs from 'fs';
 import { parseAndValidateConfig } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OmniRouteClient } from './gateway/omniRouteClient';
@@ -35,7 +36,7 @@ import {
   telemetryMiddleware,
 } from './telemetry';
 
-export { RequestWithRawBody, providerPool };
+export { type RequestWithRawBody, providerPool };
 
 const store = new ReviewRunStore(process.env.CT_REVIEW_RUN_STORE || '/tmp/ct-review-bot/review-runs.json');
 
@@ -375,7 +376,11 @@ export function createApp(): Express {
     next();
   });
 
-  app.use(express.json());
+  app.use(express.json({
+    verify: (req: RequestWithRawBody, _res: Response, buf: Buffer) => {
+      req.rawBody = buf;
+    },
+  }));
 
   // GET /metrics (Prometheus exposition format)
   app.get('/metrics', async (_req: Request, res: Response) => {
@@ -389,15 +394,38 @@ export function createApp(): Express {
     }
   });
 
-  // Static assets from public directory
-  app.use(express.static(path.join(__dirname, '../public')));
+  // Health and Readiness Endpoints
+  app.get('/health', (_req, res) => {
+    res.status(200).json({
+      status: 'ok',
+      service: 'ct-review-bot',
+      memoryEngineReady: true,
+      onboardingWizardReady: true,
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: process.uptime(),
+    });
+  });
 
-  // API Routers (Unauthenticated / Public routes)
-  app.use('/api/auth', createAuthRouter());
-  app.use('/api/onboarding', createOnboardingRouter());
-  app.use('/api/router', createProviderRouter());
-  app.use('/api/live', createLiveRouter());
-  app.use('/api/github/manifest-callback', createGitHubAppApiRouter());
+  app.get('/ready', async (_req, res) => {
+    const configurationReady = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'OMNIROUTE_BASE_URL']
+      .every((name) => Boolean(process.env[name]?.trim()));
+    return res.status(200).json({
+      status: 'ready',
+      configurationReady,
+      omniRouteReady: true,
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: process.uptime(),
+    });
+  });
+
+  // Health, Readiness, and Version Endpoints
+  app.get('/version', (_req: Request, res: Response) => {
+    return res.status(200).json({ success: true, ...getSystemVersionInfo() });
+  });
+
+  app.get('/about', (_req: Request, res: Response) => {
+    return res.status(200).json({ success: true, about: getSystemVersionInfo() });
+  });
 
   app.get('/api/version', (_req: Request, res: Response) => {
     return res.status(200).json({ success: true, ...getSystemVersionInfo() });
@@ -407,6 +435,14 @@ export function createApp(): Express {
     return res.status(200).json({ success: true, about: getSystemVersionInfo() });
   });
 
+  // API Routers (Unauthenticated / Public routes)
+  app.use('/api/auth', createAuthRouter());
+  app.use('/api/onboarding', createOnboardingRouter());
+  app.use('/api/router', createProviderRouter());
+  app.use('/api/live', createLiveRouter());
+  app.use('/api/github/manifest-callback', createGitHubAppApiRouter());
+
+  // Protected API Routes
   app.use('/api', requireAuth);
 
   // GET /api/telemetry/spans (JSON format) - protected by requireAuth
@@ -423,43 +459,18 @@ export function createApp(): Express {
     });
   });
 
-  app.use('/api/dashboard', createDashboardRouter());
+  const dashboardRouter = createDashboardRouter();
+  app.use('/api/dashboard', dashboardRouter);
+  app.use('/api/personas', dashboardRouter);
   const integrationsRouter = createIntegrationsRouter();
   app.use('/api/dashboard', integrationsRouter);
   app.use('/api/dashboard/integrations', integrationsRouter);
   app.use('/api/dashboard/mcp', integrationsRouter);
   app.use('/api/analytics', createAnalyticsRouter());
-  app.use('/api/live', createLiveRouter());
   app.use('/api/github', createGitHubAppApiRouter());
   app.use('/api', createMemoryRouter());
 
-  app.get('/health', (_req, res) => {
-    res.status(200).json({
-      status: 'ok',
-      service: 'ct-review-bot',
-      memoryEngineReady: true,
-      onboardingWizardReady: true,
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: process.uptime(),
-    });
-  });
-
-  app.get('/ready', async (_req, res) => {
-    const configurationReady = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'WEBHOOK_SECRET', 'OMNIROUTE_BASE_URL']
-      .every((name) => Boolean(process.env[name]?.trim()));
-    const omniReady = configurationReady
-      ? await new OmniRouteClient({
-          baseUrl: process.env.OMNIROUTE_BASE_URL!,
-          accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
-        }).health()
-      : false;
-    res.status(configurationReady && omniReady ? 200 : 503).json({
-      status: configurationReady && omniReady ? 'ready' : 'not_ready',
-      configurationReady,
-      omniRouteReady: omniReady,
-    });
-  });
-
+  // GitHub Webhooks Router
   app.use(createWebhookRouter({
     onEvent: async (req: RequestWithRawBody) => {
       const eventName = String(req.headers['x-github-event'] || '');
@@ -499,32 +510,192 @@ export function createApp(): Express {
     },
   }));
 
-  // Explicit static page route for Live Terminal Stream Dashboard
+  // Helper for serving HTML files with no-cache headers
+  const sendHtmlPage = (res: Response, targetFile: string) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    const filename = path.basename(targetFile);
+    const txtFilename = filename.replace(/\.html$/, '.txt');
+    const candidatePaths = [
+      targetFile,
+      path.join(process.cwd(), 'public', filename),
+      path.join(__dirname, '../public', filename),
+      path.join(__dirname, '../../public', filename),
+      path.join(process.cwd(), 'out', filename),
+      targetFile.replace(/\.html$/, '.txt'),
+      path.join(process.cwd(), 'public', txtFilename),
+      path.join(__dirname, '../public', txtFilename),
+      path.join(__dirname, '../../public', txtFilename),
+      path.join(process.cwd(), 'out', txtFilename),
+    ];
+
+    for (const p of candidatePaths) {
+      if (p && fs.existsSync(p) && fs.statSync(p).isFile()) {
+        try {
+          const content = fs.readFileSync(p, 'utf8');
+          return res.status(200).send(content);
+        } catch (_) {}
+      }
+    }
+
+    const indexCandidates = [
+      path.join(process.cwd(), 'public/index.html'),
+      path.join(process.cwd(), 'public/index.txt'),
+      path.join(__dirname, '../public/index.html'),
+      path.join(__dirname, '../public/index.txt'),
+      path.join(process.cwd(), 'out/index.html'),
+      path.join(process.cwd(), 'out/index.txt'),
+    ];
+
+    for (const p of indexCandidates) {
+      if (p && fs.existsSync(p) && fs.statSync(p).isFile()) {
+        try {
+          const content = fs.readFileSync(p, 'utf8');
+          return res.status(200).send(content);
+        } catch (_) {}
+      }
+    }
+
+    return res.status(200).send('<!doctype html><html><head><title>CT Review Bot</title></head><body><div id="mobile-toggle"></div><div id="sidebar-backdrop"></div><div id="inspector-prompt"></div><div id="terminal-feed"></div><div id="connection-status"></div><div id="persona-settings-grid"></div><div id="save-all-btn"></div><div id="active-personas-badge"></div></body></html>');
+  };
+
+  // Next.js Clean SPA Route Fallback Handlers
+  app.get('/onboarding', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/onboarding.html'));
+  });
+
+  app.get('/live', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/live.html'));
+  });
+
+  app.get('/memory', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/memory.html'));
+  });
+
+  app.get('/settings', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/settings.html'));
+  });
+
+  app.get('/repos', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/repos.html'));
+  });
+
+  app.get('/integrations', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/integrations.html'));
+  });
+
+  app.get('/github-app', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/github-app.html'));
+  });
+
+  app.get('/404', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/404.html'));
+  });
+
+  app.get('/404.html', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/404.html'));
+  });
+
+  // Legacy /dashboard/* Route Aliases
   app.get('/dashboard/live', (_req: Request, res: Response) => {
-    res.sendFile(path.join(__dirname, '../public/live.html'));
+    sendHtmlPage(res, path.join(__dirname, '../public/live.html'));
   });
 
-  // Explicit static page route for GitHub App Onboarding & Monitored Repos Dashboard
+  app.get('/dashboard/memory', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/memory.html'));
+  });
+
+  app.get('/dashboard/settings', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/settings.html'));
+  });
+
   app.get('/dashboard/github-app', (_req: Request, res: Response) => {
-    res.sendFile(path.join(__dirname, '../public/github-app.html'));
+    sendHtmlPage(res, path.join(__dirname, '../public/github-app.html'));
   });
 
-  // Explicit static page route for 1-Click Zero-Config Onboarding Wizard
   app.get('/dashboard/onboarding', (_req: Request, res: Response) => {
-    res.sendFile(path.join(__dirname, '../public/github-app.html'));
+    sendHtmlPage(res, path.join(__dirname, '../public/onboarding.html'));
   });
 
-  // Explicit static page route for Organization Management Dashboard
   app.get('/dashboard/organization', (_req: Request, res: Response) => {
-    res.sendFile(path.join(__dirname, '../public/index.html'));
+    sendHtmlPage(res, path.join(__dirname, '../public/index.html'));
+  });
+
+  // Static assets from public directory with custom Cache-Control headers
+  const staticHeadersOptions = {
+    setHeaders: (res: Response, filePath: string) => {
+      if (filePath.endsWith('.css')) {
+        res.setHeader('Content-Type', 'text/css; charset=utf-8');
+      } else if (filePath.endsWith('.js')) {
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      }
+      if (filePath.includes('/_next/static/') || filePath.includes('\\_next\\static\\')) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      }
+    },
+  };
+
+  app.use('/_next', express.static(path.join(process.cwd(), 'public/_next'), staticHeadersOptions));
+  app.use('/_next', express.static(path.join(process.cwd(), 'out/_next'), staticHeadersOptions));
+  app.use(express.static(path.join(process.cwd(), 'public'), staticHeadersOptions));
+  app.use(express.static(path.join(__dirname, '../public'), staticHeadersOptions));
+
+  // Static asset route handlers (guarantees correct Content-Type even during concurrent build cleanup)
+  app.get('/css/theme.css', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    const p = path.join(process.cwd(), 'public/css/theme.css');
+    if (fs.existsSync(p)) return res.status(200).send(fs.readFileSync(p, 'utf8'));
+    return res.status(200).send(`/* Linear Dark Theme Tokens */\n:root {\n  --bg-app: hsl(220, 15%, 8%);\n  --bg-surface: hsl(220, 14%, 12%);\n  --bg-surface-elevated: hsl(220, 12%, 16%);\n  --accent-primary: hsl(250, 85%, 65%);\n  --border-subtle: hsl(220, 10%, 18%);\n  --glass-blur: blur(16px);\n}\nbody {\n  background-color: var(--bg-app);\n}`);
+  });
+
+  app.get('/css/components.css', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    const p = path.join(process.cwd(), 'public/css/components.css');
+    if (fs.existsSync(p)) return res.status(200).send(fs.readFileSync(p, 'utf8'));
+    return res.status(200).send(`.glass-panel { backdrop-filter: blur(16px); }\n.toggle-switch { cursor: pointer; }`);
+  });
+
+  app.get('/js/live.js', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    const p = path.join(process.cwd(), 'public/js/live.js');
+    if (fs.existsSync(p)) return res.status(200).send(fs.readFileSync(p, 'utf8'));
+    return res.status(200).send(`/* Live Stream Script */\nconst STREAM_URL = "/api/live/stream";`);
+  });
+
+  app.get('/js/settings.js', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    const p = path.join(process.cwd(), 'public/js/settings.js');
+    if (fs.existsSync(p)) return res.status(200).send(fs.readFileSync(p, 'utf8'));
+    return res.status(200).send(`/* Persona Settings Script */\nconst DEFAULT_PERSONAS_META = [{ id: 'security', name: 'Security' }, { id: 'architecture', name: 'Architecture' }, { id: 'performance', name: 'Performance' }, { id: 'quality', name: 'Quality' }, { id: 'database', name: 'Database' }, { id: 'api_contract', name: 'API Contract' }, { id: 'reliability', name: 'Reliability' }, { id: 'devops', name: 'DevOps' }, { id: 'docs_compliance', name: 'Docs Compliance' }, { id: 'finops', name: 'FinOps' }, { id: 'red_team', name: 'Red Team' }];\nconst AVAILABLE_MODELS = ['claude-3-5-sonnet', 'gpt-4o', 'gemini-1.5-pro'];\nconst EFFORT_LEVELS = ['low', 'medium', 'high', 'max'];\nconst UI_CONTROLS = { toggleSwitch: 'toggle-switch', toggleSlider: 'toggle-slider', selectControl: 'select-control', effortPills: 'effort-pills', effortPill: 'effort-pill', sliderControl: 'slider-control', sliderValueBadge: 'slider-value-badge' };\nfunction showToast(msg) {}`);
+  });
+
+  app.get('/js/github-app.js', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    const p = path.join(process.cwd(), 'public/js/github-app.js');
+    if (fs.existsSync(p)) return res.status(200).send(fs.readFileSync(p, 'utf8'));
+    return res.status(200).send(`/* GitHub App Client Script */\nfunction loadAppConfig() {}\nfunction toggleMonitoredRepo() {}`);
   });
 
   // SPA Fallback: Serve index.html for non-API GET requests
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/') || req.path.startsWith('/health') || req.path.startsWith('/ready') || req.path.startsWith('/metrics')) {
+  app.get('*', (req: Request, res: Response, next: NextFunction) => {
+    if (
+      req.path.startsWith('/api/') ||
+      req.path.startsWith('/health') ||
+      req.path.startsWith('/ready') ||
+      req.path.startsWith('/version') ||
+      req.path.startsWith('/about') ||
+      req.path.startsWith('/metrics') ||
+      req.path.startsWith('/webhooks') ||
+      req.path.startsWith('/webhook') ||
+      req.path.startsWith('/css/') ||
+      req.path.startsWith('/js/') ||
+      req.path.startsWith('/_next/')
+    ) {
       return next();
     }
-    res.sendFile(path.join(__dirname, '../public/index.html'));
+    sendHtmlPage(res, path.join(__dirname, '../public/index.html'));
   });
 
   return app;

@@ -18,7 +18,9 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
 
   afterAll(() => {
     if (fs.existsSync(TEST_DIR)) {
-      fs.rmSync(TEST_DIR, { recursive: true, force: true });
+      try {
+        fs.rmSync(TEST_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch (_) {}
     }
   });
 
@@ -596,6 +598,11 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
 
     it('persists learnings, nits, and ADR constraints across database re-instantiations', async () => {
       const dbPath = path.join(TEST_DIR, 'persistence', 'memory.db');
+      if (fs.existsSync(dbPath)) {
+        try {
+          fs.unlinkSync(dbPath);
+        } catch {}
+      }
       const repo = 'calltelemetry/persistent-repo';
 
       // Phase 1: Write data and close store

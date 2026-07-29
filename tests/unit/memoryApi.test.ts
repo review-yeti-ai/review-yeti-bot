@@ -187,4 +187,67 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
+
+  it('GET and POST /api/memory/graph return symbol AST graph and node/edge stats', async () => {
+    const getRes = await request(app)
+      .get('/api/memory/graph?symbolName=createMemoryRouter')
+      .set('x-api-key', apiKey);
+
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.success).toBe(true);
+    expect(getRes.body.symbolName).toBe('createMemoryRouter');
+    expect(getRes.body.stats).toBeDefined();
+    expect(typeof getRes.body.nodes).toBe('number');
+    expect(typeof getRes.body.edges).toBe('number');
+
+    const postRes = await request(app)
+      .post('/api/memory/graph')
+      .set('x-api-key', apiKey)
+      .send({ symbolName: 'createMemoryRouter' });
+
+    expect(postRes.status).toBe(200);
+    expect(postRes.body.success).toBe(true);
+    expect(postRes.body.symbolName).toBe('createMemoryRouter');
+  });
+
+  it('GET and POST /api/memory/learnings return repo learnings, nits, and adrs', async () => {
+    const getRes = await request(app)
+      .get('/api/memory/learnings?repo=calltelemetry/cisco-cdr')
+      .set('x-api-key', apiKey);
+
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.success).toBe(true);
+    expect(getRes.body.repo).toBe('calltelemetry/cisco-cdr');
+    expect(Array.isArray(getRes.body.learnings)).toBe(true);
+    expect(Array.isArray(getRes.body.resolvedNits)).toBe(true);
+    expect(Array.isArray(getRes.body.adrConstraints)).toBe(true);
+
+    const postRes = await request(app)
+      .post('/api/memory/learnings')
+      .set('x-api-key', apiKey)
+      .send({ repo: 'calltelemetry/cisco-cdr' });
+
+    expect(postRes.status).toBe(200);
+    expect(postRes.body.success).toBe(true);
+  });
+
+  it('GET and POST /api/memory/search return semantic search results', async () => {
+    const getRes = await request(app)
+      .get('/api/memory/search?q=security&limit=5')
+      .set('x-api-key', apiKey);
+
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.success).toBe(true);
+    expect(getRes.body.query).toBe('security');
+    expect(Array.isArray(getRes.body.results)).toBe(true);
+
+    const postRes = await request(app)
+      .post('/api/memory/search')
+      .set('x-api-key', apiKey)
+      .send({ query: 'security', limit: 5 });
+
+    expect(postRes.status).toBe(200);
+    expect(postRes.body.success).toBe(true);
+    expect(Array.isArray(postRes.body.results)).toBe(true);
+  });
 });

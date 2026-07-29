@@ -80,11 +80,41 @@ export interface LiveStreamEvent {
   data: LiveStreamEventData;
 }
 
+export interface PersonaProgress {
+  persona: LiveStreamPersona;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  startedAt?: string;
+  completedAt?: string;
+  findingsCount?: number;
+  lastMessage?: string;
+}
+
+export interface TokenMetrics {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedCostUSD?: number;
+}
+
+export interface LiveJobSummary {
+  jobId: string;
+  repo?: string;
+  prNumber?: number;
+  status: 'active' | 'completed' | 'failed';
+  personaProgress: Record<string, PersonaProgress>;
+  tokenMetrics: TokenMetrics;
+  startTime: string;
+  endTime?: string;
+  eventCount: number;
+  lastEventTime: string;
+}
+
 export class LiveStreamBus extends EventEmitter {
   private static instance: LiveStreamBus;
   private clients: Map<string, Set<Response>> = new Map();
   private eventHistory: Map<string, LiveStreamEvent[]> = new Map();
   private pingIntervals: Map<Response, NodeJS.Timeout> = new Map();
+  private jobs: Map<string, LiveJobSummary> = new Map();
 
   private constructor() {
     super();
@@ -106,6 +136,8 @@ export class LiveStreamBus extends EventEmitter {
     if (!event.timestamp) {
       event.timestamp = new Date().toISOString();
     }
+
+    this.updateJobSummary(event);
 
     const history = this.eventHistory.get(event.jobId) || [];
     history.push(event);
@@ -207,11 +239,121 @@ export class LiveStreamBus extends EventEmitter {
     return this.eventHistory.get(jobId) || [];
   }
 
+  public getActiveJobs(): LiveJobSummary[] {
+    return Array.from(this.jobs.values());
+  }
+
+  public getJobStatus(jobId: string): LiveJobSummary | undefined {
+    return this.jobs.get(jobId);
+  }
+
   public clearHistory(jobId?: string): void {
     if (jobId) {
       this.eventHistory.delete(jobId);
+      this.jobs.delete(jobId);
     } else {
       this.eventHistory.clear();
+      this.jobs.clear();
+    }
+  }
+
+  private updateJobSummary(event: LiveStreamEvent): void {
+    let job = this.jobs.get(event.jobId);
+    if (!job) {
+      let repo: string | undefined = event.data?.repo;
+      let prNumber: number | undefined = event.data?.prNumber;
+
+      if (!repo || !prNumber) {
+        const match = event.jobId.match(/^job_([^_]+)_([^_]+)_pr(\d+)/i);
+        if (match) {
+          if (!repo) repo = `${match[1]}/${match[2]}`;
+          if (!prNumber) prNumber = parseInt(match[3], 10);
+        }
+      }
+
+      job = {
+        jobId: event.jobId,
+        repo,
+        prNumber,
+        status: 'active',
+        personaProgress: {},
+        tokenMetrics: {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          estimatedCostUSD: 0,
+        },
+        startTime: event.timestamp,
+        eventCount: 0,
+        lastEventTime: event.timestamp,
+      };
+      this.jobs.set(event.jobId, job);
+    }
+
+    job.eventCount += 1;
+    job.lastEventTime = event.timestamp;
+
+    if (!job.repo && event.data?.repo) job.repo = event.data.repo;
+    if (!job.prNumber && event.data?.prNumber) job.prNumber = event.data.prNumber;
+
+    const personaKey = String(event.persona);
+    if (personaKey) {
+      let progress = job.personaProgress[personaKey];
+      if (!progress) {
+        progress = {
+          persona: event.persona,
+          status: 'pending',
+        };
+        job.personaProgress[personaKey] = progress;
+      }
+
+      if (event.type === 'persona:start' || event.type === 'agent_start') {
+        progress.status = 'in_progress';
+        if (!progress.startedAt) progress.startedAt = event.timestamp;
+      } else if (event.type === 'persona:chunk' || event.type === 'llm_chunk' || event.type === 'llm:token') {
+        if (progress.status === 'pending') {
+          progress.status = 'in_progress';
+          if (!progress.startedAt) progress.startedAt = event.timestamp;
+        }
+      } else if (event.type === 'persona:complete' || event.type === 'agent_done' || event.type === 'quorum_verdict') {
+        progress.status = 'completed';
+        progress.completedAt = event.timestamp;
+        if (typeof event.data?.findingsCount === 'number') {
+          progress.findingsCount = event.data.findingsCount;
+        }
+      }
+
+      if (event.data?.message) {
+        progress.lastMessage = event.data.message;
+      }
+    }
+
+    if (event.data) {
+      const pTokens = event.data.promptTokens || (typeof event.data.tokensUsed === 'object' ? event.data.tokensUsed?.prompt : 0) || 0;
+      const cTokens = event.data.completionTokens || (typeof event.data.tokensUsed === 'object' ? event.data.tokensUsed?.completion : 0) || 0;
+      const tTokens = event.data.totalTokens || (typeof event.data.tokensUsed === 'number' ? event.data.tokensUsed : (typeof event.data.tokensUsed === 'object' ? event.data.tokensUsed?.total : 0)) || (pTokens + cTokens);
+
+      job.tokenMetrics.promptTokens += pTokens;
+      job.tokenMetrics.completionTokens += cTokens;
+      job.tokenMetrics.totalTokens += tTokens;
+
+      const cost = typeof event.data.costUSD === 'number' ? event.data.costUSD : (typeof event.data.totalCostUSD === 'number' ? event.data.totalCostUSD : 0);
+      if (cost) {
+        job.tokenMetrics.estimatedCostUSD = (job.tokenMetrics.estimatedCostUSD || 0) + cost;
+      }
+    }
+
+    if (event.type === 'job:complete') {
+      job.status = 'completed';
+      job.endTime = event.timestamp;
+    } else if (event.data?.status === 'completed' || event.data?.status === 'failed') {
+      job.status = event.data.status;
+      if (job.status === 'completed' || job.status === 'failed') {
+        job.endTime = event.timestamp;
+      }
+    } else if (event.persona === 'quorum' && (event.type === 'quorum_verdict' || event.type === 'persona:complete')) {
+      job.status = 'completed';
+      job.endTime = event.timestamp;
     }
   }
 }

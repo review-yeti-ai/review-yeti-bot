@@ -7,6 +7,13 @@ coverage/
 :memory:
 data/*.json
 data/*.sqlite*
+data/*.db
 .ct-memory/
 fixtures/tmp/
 k8s/rendered/
+.next/
+out/
+public/_next/
+screenshots/
+.tmp/
+test-results/

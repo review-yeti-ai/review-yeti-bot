@@ -7,6 +7,9 @@ import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 import { LiveStreamBus } from '../live/liveStreamBus';
+import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
+import { dashboardStore } from '../persistence/dashboardStore';
+import { generateMermaidDiagram } from '../review/mermaidEngine';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -32,6 +35,9 @@ export interface PersonaLaneResult {
   usage: TokensUsed | null;
   costUSD: number | null;
   durationMs: number;
+  isRedTeam?: boolean;
+  crossExaminedModel?: string;
+  mermaidDiagram?: string;
 }
 
 export interface PanelResult {
@@ -57,6 +63,7 @@ export interface PanelResult {
     costUSD: number | null;
     durationMs: number;
   };
+  mermaidDiagram?: string;
 }
 
 export class PanelConfigurationError extends Error {
@@ -67,16 +74,195 @@ export class PanelConfigurationError extends Error {
 }
 
 const BUILTIN_CHARTERS: Record<string, string> = {
-  'builtin:correctness': 'Find correctness defects, race conditions, unsafe concurrency, and failure-mode errors.',
-  'builtin:security': 'Find security, authentication, authorization, tenant-isolation, secret, and injection defects.',
-  'builtin:contract': 'Find API, schema, compatibility, regression, and missing-test defects.',
-  'builtin:consistency': 'Find internal consistency, maintainability, repository-convention, and generated-source defects.',
-  'builtin:policy-compliance': 'Enforce repository rules, path instructions, release policy, and fail-closed gates.',
-  'builtin:constitutional-goals': 'Protect the repository constitutional goals and durable system authority boundaries.',
-  'builtin:performance': 'Identify CPU/memory bottlenecks, N+1 queries, unindexed queries, blocking loops, and memory leaks.',
-  'builtin:database': 'Find database migration hazards, SQL injection vulnerabilities, unsafe transactions, and index inefficiencies.',
-  'builtin:devops': 'Inspect K8s manifests, Dockerfile layer efficiency, IAM privilege boundaries, and CI/CD security risks.',
-  'builtin:finops': 'Optimize prompt token budget consumption, model cost efficiency, AST hunk filtering, and resource limits.',
+  'builtin:correctness': `Find correctness defects, race conditions, unsafe concurrency, and failure-mode errors.
+
+## Domain Charter & Core Scope
+- Verify functional correctness, edge-case coverage, concurrency safety, race condition prevention, and failure-mode handling.
+- Audit type definitions, null/undefined safety, error boundary propagation, and exception management.
+- Promote idiomatic language constructs, readability, robust testability, and deterministic behavior.
+
+## Deep Reasoning Protocol
+1. Systematically analyze control flow paths for missing null/undefined checks, unhandled promise rejections, and uncaught exceptions.
+2. Evaluate concurrent execution state for potential race conditions, shared mutable state, or non-atomic state updates.
+3. Check exception handling: ensure errors are caught, wrapped, or logged with adequate context without suppressing critical failures.
+4. Validate edge cases: empty collections, zero values, boundary parameters, timeout conditions, and unexpected input types.
+
+## Nit Suppression Rules
+- Do NOT flag subjective style choices or opinionated formatting if existing linter rules pass cleanly.
+- Suppress minor variable naming feedback unless names are misleading or obfuscate code correctness.`,
+
+  'builtin:security': `Find security, authentication, authorization, tenant-isolation, secret, and injection defects.
+
+## Domain Charter & Core Scope
+- Audit all code modifications for multi-tenant isolation breaches, authentication bypasses, authorization flaws, and privilege escalation hazards.
+- Scan for hardcoded credentials, API keys, tokens, missing sanitization, SQL/Command injections, and OWASP Top 10 vulnerabilities.
+- Ensure state persistence, memory storage, and external API requests maintain strict tenant boundaries (e.g. orgId/tenantId validation).
+
+## Deep Reasoning Protocol
+1. Map data ingress points and trace tainted user inputs through controllers, business logic, and database or third-party execution sinks.
+2. Verify explicit authentication and RBAC checks on every public and internal endpoint path.
+3. Validate secret handling: confirm zero leakage in logs, error messages, client payloads, or telemetry events.
+4. Evaluate defense-in-depth mechanisms including input validation, fail-closed handling, rate limiting, and secure token storage.
+
+## Nit Suppression Rules
+- Do NOT flag general code style, formatting, or linting preferences unless they directly introduce a security vulnerability.
+- Do NOT flag missing docstrings or minor variable naming choices if authorization checks are functionally sound.`,
+
+  'builtin:contract': `Find API, schema, compatibility, regression, and missing-test defects.
+
+## Domain Charter & Core Scope
+- Inspect public and internal API endpoints, OpenAPI/REST schemas, contract compatibility, and request/response payload validation.
+- Detect breaking changes, field removals, backward-incompatible type modifications, and missing integration test coverage.
+- Enforce clear API versioning, error payload standardization, HTTP status code semantics, and client contract safety.
+
+## Deep Reasoning Protocol
+1. Compare API signature and payload modifications against prior contract versions to spot breaking parameter or return type edits.
+2. Validate incoming request schema validation rules (e.g. Zod/Joi schemas, payload constraints, required header enforcement).
+3. Check error responses for consistent structural schemas, informative error codes, and absence of sensitive internal stack traces.
+4. Ensure new or modified endpoints have corresponding contract and integration test suites.
+
+## Nit Suppression Rules
+- Do NOT flag minor API documentation phrasing if payload schemas and field descriptions are accurate.
+- Suppress cosmetic json field ordering suggestions unless strict key ordering is required by specification.`,
+
+  'builtin:consistency': `Find internal consistency, maintainability, repository-convention, and generated-source defects.
+
+## Domain Charter & Core Scope
+- Maintain system architectural integrity, clean layer separation, module boundaries, design patterns, and ADR compliance.
+- Enforce repository-wide conventions, circular dependency prevention, clear domain abstractions, and contract preservation.
+- Inspect modifications to generated sources, core data structures, and cross-cutting components for structural alignment.
+
+## Deep Reasoning Protocol
+1. Analyze changed modules against high-level architectural boundaries and layer hierarchy (presentation, domain, infrastructure, storage).
+2. Check for tight coupling, leak of internal implementation details, or violations of single-responsibility and dependency inversion principles.
+3. Review ADR (Architecture Decision Record) alignment to ensure proposed additions do not introduce conflicting structural abstractions.
+4. Assess long-term maintainability, refactoring safety, and impact on dependent modules.
+
+## Nit Suppression Rules
+- Do NOT flag local implementation details within a single function unless they violate exported module interfaces or architectural layer boundaries.
+- Suppress purely cosmetic suggestions that do not affect structural design or maintainability.`,
+
+  'builtin:policy-compliance': `Enforce repository rules, path instructions, release policy, and fail-closed gates.
+
+## Domain Charter & Core Scope
+- Enforce operational resilience, rate limiting, circuit breaker mechanisms, exponential backoff retries, and timeout configurations.
+- Verify fail-closed security gates, repository policy rules, path instructions, and release stability guidelines.
+- Audit fault-tolerance mechanisms, graceful degradation strategies, health check handlers, and system telemetry logging.
+
+## Deep Reasoning Protocol
+1. Analyze external service invocations and network calls to ensure mandatory timeout bounds and retry strategies are present.
+2. Check fail-closed behavior across critical gates: verify default fallback actions when dependency calls or authentication services fail.
+3. Evaluate system resilience under transient network failures, service outages, downstream degradation, and high concurrency load.
+4. Confirm health probes, metrics instrumentation, and structured diagnostic logging are properly positioned along critical execution paths.
+
+## Nit Suppression Rules
+- Do NOT flag missing retry logic on idempotent or lightweight local helper operations.
+- Suppress logging format suggestions unless essential context keys (e.g. requestId, tenantId) are omitted.`,
+
+  'builtin:constitutional-goals': `Protect the repository constitutional goals and durable system authority boundaries.
+
+## Domain Charter & Core Scope
+- Safeguard core repository architectural governance, system authority boundaries, and constitutional requirements.
+- Guard against unsafe override bypasses, unverified feature toggles, and unauthorized state manipulations.
+- Enforce auditability, system transparency, and compliance with high-level system safety constraints.
+
+## Deep Reasoning Protocol
+1. Verify system state mutations align with constitutional safety rules and governance specifications.
+2. Inspect authority boundary enforcement across internal controllers, management services, and background workers.
+3. Audit diagnostic logs and event payloads to ensure critical system decisions are traceable and non-repudiable.
+4. Validate fail-safe defaults across configuration overrides and environment initialization.
+
+## Nit Suppression Rules
+- Do NOT flag local code style or minor syntax variations if constitutional boundaries are preserved.
+- Suppress structural refactoring recommendations that do not impact authority boundaries.`,
+
+  'builtin:performance': `Identify CPU/memory bottlenecks, N+1 queries, unindexed queries, blocking loops, and memory leaks.
+
+## Domain Charter & Core Scope
+- Identify performance degradation risks, CPU/memory hotspots, algorithmic inefficiencies (e.g. O(N^2) or unbounded iterations), and memory leaks.
+- Detect N+1 query patterns, missing index requirements, synchronous blocking I/O in async paths, and wasteful resource allocations.
+- Evaluate caching strategies, event loop responsiveness, stream processing throughput, and resource cleanup.
+
+## Deep Reasoning Protocol
+1. Trace execution flow through hot loops, recursive calls, database queries, and async I/O operations.
+2. Evaluate algorithmic time and space complexity for collection operations and large data processing functions.
+3. Verify resource lifecycle management: ensure open database handles, file streams, network connections, and timers are properly disposed.
+4. Assess response latency and memory footprints under high throughput or concurrent execution scenarios.
+
+## Nit Suppression Rules
+- Do NOT flag micro-optimizations in cold execution paths (e.g. initialization or CLI startup scripts) unless performance degradation is significant.
+- Ignore minor string concatenation choices when total execution impact is negligible.`,
+
+  'builtin:database': `Find database migration hazards, SQL injection vulnerabilities, unsafe transactions, and index inefficiencies.
+
+## Domain Charter & Core Scope
+- Review schema migrations, DDL statements, database access patterns, index efficiency, and SQL query optimizations.
+- Ensure transaction safety, isolation levels, deadlock avoidance, connection pool utilization, and data integrity guarantees.
+- Guard against SQL injections, unsafe dynamic query construction, data loss risks during migrations, and non-backward-compatible schema changes.
+
+## Deep Reasoning Protocol
+1. Audit database schema migration scripts for backward-compatibility hazards, exclusive table locking risks, or destructive column operations.
+2. Inspect all SQL and ORM queries for missing parameterization, full table scans, unindexed JOIN/WHERE clauses, or N+1 fetch cycles.
+3. Analyze transaction boundaries: ensure atomic operations are correctly wrapped with proper rollback and retry semantics.
+4. Verify data persistence validation, payload constraints, foreign key cascades, and multi-tenant scoping in query filters.
+
+## Nit Suppression Rules
+- Do NOT flag query formatting or keyword casing (e.g., lowercase vs uppercase SQL keywords) if query syntax and performance are valid.
+- Suppress index recommendations on small lookup tables (<100 rows) unless proven to cause query bottlenecks.`,
+
+  'builtin:devops': `Inspect K8s manifests, Dockerfile layer efficiency, IAM privilege boundaries, and CI/CD security risks.
+
+## Domain Charter & Core Scope
+- Inspect Kubernetes manifests, Dockerfile container specifications, build layer efficiency, and container security profiles.
+- Audit IAM role privilege boundaries, cloud infrastructure configs (Terraform/Pulumi), secret mounts, and CI/CD pipeline scripts.
+- Guard against root container execution, missing resource requests/limits, overly broad permissions, and supply chain vulnerability hazards.
+
+## Deep Reasoning Protocol
+1. Review Dockerfiles for multi-stage builds, non-root user declarations, layer caching optimizations, and minimal base images.
+2. Examine Kubernetes manifests for securityContext settings (readOnlyRootFilesystem, drop ALL capabilities), liveness/readiness probes, and resource constraints.
+3. Audit IAM policy statements for wildcards (*) and ensure least-privilege access across cloud resources and service accounts.
+4. Evaluate CI/CD pipeline definitions for secret leakage, unpinned third-party actions/dependencies, and insecure script execution.
+
+## Nit Suppression Rules
+- Do NOT flag Dockerfile comment styles or label ordering if security and build performance standards are met.
+- Suppress warnings on development/testing container configs unless applied to production manifests.`,
+
+  'builtin:finops': `Optimize prompt token budget consumption, model cost efficiency, AST hunk filtering, and resource limits.
+
+## Domain Charter & Core Scope
+- Monitor and optimize LLM token budget usage, prompt context windows, model cost tiering, and payload efficiency.
+- Evaluate AST hunk filtering performance, unnecessary context inclusion, redundant model calls, and token cost caps.
+- Ensure high-value model utilization while suppressing excessive or low-value API calls across panel lanes.
+
+## Deep Reasoning Protocol
+1. Analyze prompt context payload construction to detect redundant code attachments, oversized diff inclusions, or un-filtered files.
+2. Check token budget allocation: verify appropriate model selection (e.g. lightweight vs frontier models) relative to task complexity.
+3. Evaluate AST hunk filtering strategies to maximize signal-to-noise ratio while minimizing raw prompt token consumption.
+4. Audit cost accounting, token metrics tracking, daily/monthly budget cap enforcement, and fallback execution triggers.
+
+## Nit Suppression Rules
+- Do NOT flag minor token count variations in low-frequency system execution paths.
+- Suppress prompt optimization suggestions if context truncation threatens review coverage or finding accuracy.`,
+
+  'builtin:red-team': RED_TEAM_CHARTER_DEFAULT,
+  'builtin:skeptic': RED_TEAM_CHARTER_DEFAULT,
+
+  'builtin:review-flowchart': `Analyze diff and AST changes to generate dynamic Mermaid.js architectural sequence and flowchart diagrams.
+
+## Domain Charter & Core Scope
+- Analyze changed code, module dependencies, API interactions, and control flow paths across modified files.
+- Produce dynamic Mermaid.js architectural diagrams (sequenceDiagram for component interactions and flowchart TD for decision logic & data flow).
+- Provide structural visualization of architectural changes, new services, database interactions, and modified execution branches.
+
+## Deep Reasoning Protocol
+1. Map changed files and function calls to architectural components and services.
+2. If components interact across boundaries or network APIs, build a \`sequenceDiagram\` with participants and message exchanges.
+3. If control flow, branching logic, or pipeline execution is modified, build a \`flowchart TD\` with clear nodes and directed edges.
+4. Output valid Mermaid syntax starting with \`sequenceDiagram\` or \`flowchart TD\` inside markdown code fences (\`\`\`mermaid ... \`\`\`).
+
+## Nit Suppression Rules
+- Do NOT generate trivial diagrams for minor formatting or docstring changes.
+- Ensure all component identifiers in Mermaid code use valid alphanumeric characters and clean labels.`,
 };
 
 function globRegex(pattern: string): RegExp {
@@ -184,10 +370,22 @@ async function runPersona(
   headSha: string,
   memoryRules: string[] = [],
   jobId?: string,
+  primaryModelContext?: string,
 ): Promise<PersonaLaneResult> {
   return runInSpan(`ct_persona_lane`, async (span) => {
     span.setAttribute('ct.persona.id', persona.id);
     span.setAttribute('ct.persona.required', persona.required);
+
+    const isRedTeam = isRedTeamPersona(persona.id, persona.charter);
+
+    const storeSettings = dashboardStore.getSettings();
+    const storePersona = storeSettings?.personaSettings?.[persona.id];
+    const customPromptOverride = (storePersona?.customPrompt && storePersona.customPrompt.trim())
+      ? storePersona.customPrompt
+      : ((persona as any).customPrompt && (persona as any).customPrompt.trim())
+        ? (persona as any).customPrompt
+        : undefined;
+    const effectiveCharter = customPromptOverride || BUILTIN_CHARTERS[persona.charter] || persona.charter;
 
     const bus = LiveStreamBus.getInstance();
     const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
@@ -199,7 +397,7 @@ async function runPersona(
       persona: persona.id,
       data: {
         personaId: persona.id,
-        charter: BUILTIN_CHARTERS[persona.charter] || persona.charter,
+        charter: effectiveCharter,
         paths: persona.paths,
         required: persona.required,
       },
@@ -220,8 +418,33 @@ async function runPersona(
       },
     });
 
-    for (const providerId of persona.providers) {
+    const candidateSpecs = persona.providers.map((pId) => {
+      const s = provider(config, pId);
+      return { id: pId, model: s.model };
+    });
+
+    let dualResolved: { providerId: ProviderId; model: string } | undefined;
+    if ((isRedTeam || persona.dual_model) && primaryModelContext) {
+      dualResolved = resolveDualModel(primaryModelContext, candidateSpecs, persona.adversarial_model);
+    }
+
+    const providersToTry = dualResolved
+      ? [dualResolved.providerId, ...persona.providers.filter((p) => p !== dualResolved!.providerId)]
+      : persona.providers;
+
+    for (const providerId of providersToTry) {
       const spec = provider(config, providerId);
+      let targetModel = spec.model;
+      if (persona.model) {
+        targetModel = persona.model;
+      } else if (dualResolved && providerId === dualResolved.providerId) {
+        targetModel = dualResolved.model;
+      } else if (isRedTeam && primaryModelContext) {
+        targetModel = resolveDualModel(primaryModelContext, [{ id: providerId, model: spec.model }], persona.adversarial_model).model;
+      } else if (storePersona?.model) {
+        targetModel = storePersona.model;
+      }
+
       try {
         bus.publishEvent({
           jobId: effectiveJobId,
@@ -230,22 +453,23 @@ async function runPersona(
           persona: persona.id,
           data: {
             provider: providerId,
-            model: spec.model,
+            model: targetModel,
             promptSnippet: `CT_REVIEW_NONCE: persona=${persona.id} repository=${repository} headSha=${headSha.slice(0, 7)}`,
           },
         });
 
-        const result = await invoke(client, spec.model, spec.review_timeout_s * 1_000, 'persona', {
+        const result = await invoke(client, targetModel, spec.review_timeout_s * 1_000, 'persona', {
           persona: persona.id,
-          charter: BUILTIN_CHARTERS[persona.charter] || persona.charter,
+          charter: effectiveCharter,
           repository,
           headSha,
           changedFiles: scopedFiles,
           pathInstructions: config.path_instructions,
-          rules: [...config.rules, ...memoryRules],
+          rules: [...(config.rules || []), ...memoryRules],
           outputSchema: {
             decision: 'APPROVE|FINDINGS',
             findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'optional string' }],
+            ...(persona.id === 'review_flowchart' ? { mermaidDiagram: 'string' } : {}),
           },
         });
         if (!['APPROVE', 'FINDINGS'].includes(result.parsed?.decision)) throw new Error('invalid persona decision');
@@ -275,7 +499,7 @@ async function runPersona(
           type: 'omniroute:metric',
           persona: persona.id,
           data: {
-            requestedModel: spec.model,
+            requestedModel: targetModel,
             resolvedModel: result.response.model,
             provider: providerId,
             latencyMs: result.durationMs,
@@ -319,6 +543,22 @@ async function runPersona(
           metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision: result.parsed.decision });
         } catch (_) {}
 
+        let personaMermaidDiagram: string | undefined = undefined;
+        if (persona.id === 'review_flowchart') {
+          if (typeof result.parsed?.mermaidDiagram === 'string' && result.parsed.mermaidDiagram.trim().length > 0) {
+            personaMermaidDiagram = result.parsed.mermaidDiagram;
+          } else if (typeof result.response?.content === 'string') {
+            const match = result.response.content.match(/```mermaid[\s\S]*?```/);
+            if (match) {
+              personaMermaidDiagram = match[0];
+            }
+          }
+          if (!personaMermaidDiagram) {
+            const combinedDiff = scopedFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
+            personaMermaidDiagram = generateMermaidDiagram(combinedDiff);
+          }
+        }
+
         return {
           id: persona.id,
           required: persona.required,
@@ -329,6 +569,9 @@ async function runPersona(
           usage: result.response.usage,
           costUSD: result.response.costUSD,
           durationMs: result.durationMs,
+          ...(personaMermaidDiagram ? { mermaidDiagram: personaMermaidDiagram } : {}),
+          ...(isRedTeam ? { isRedTeam: true } : {}),
+          ...(isRedTeam || dualResolved || persona.model ? { crossExaminedModel: targetModel } : {}),
         };
       } catch (error: any) {
         errors.push(`${providerId}: ${error?.message || String(error)}`);
@@ -346,9 +589,10 @@ export async function executePersonaPanel(options: {
   headSha: string;
   client: OmniRouteClient;
   jobId?: string;
+  generateArchitecturalFlowchart?: boolean;
 }): Promise<PanelResult> {
   return runInSpan('ct_persona_panel', async (span) => {
-    const { config, changedFiles, repository, headSha, client, jobId } = options;
+    const { config, changedFiles, repository, headSha, client, jobId, generateArchitecturalFlowchart } = options;
     const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
     span.setAttribute('ct.repo', repository);
     span.setAttribute('ct.head_sha', headSha);
@@ -387,9 +631,20 @@ export async function executePersonaPanel(options: {
       logger.warn('Failed to query PRMemoryStore during executePersonaPanel', { repository, error: err?.message });
     }
 
+    const nonRedTeamPersonas = applicable.filter((p) => !isRedTeamPersona(p.id, p.charter));
+    let primaryAuthoringModel: string | undefined;
+    if (nonRedTeamPersonas.length > 0) {
+      const primaryP = nonRedTeamPersonas[0];
+      const pSpec = config.reviewers.providers.find((prov) => prov.id === primaryP.providers[0]);
+      primaryAuthoringModel = primaryP.model || pSpec?.model;
+    } else {
+      const firstSpec = config.reviewers.providers.find((prov) => prov.enabled);
+      primaryAuthoringModel = firstSpec?.model;
+    }
+
     const settled = await Promise.all(applicable.map(async (persona) => {
       try {
-        return { persona, result: await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId) };
+        return { persona, result: await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId, primaryAuthoringModel) };
       } catch (error: any) {
         return { persona, error: error?.message || String(error) };
       }
@@ -526,6 +781,23 @@ export async function executePersonaPanel(options: {
       },
     });
 
+    const owner = repository.includes('/') ? repository.split('/')[0] : '';
+    const repoName = repository.includes('/') ? repository.split('/')[1] : repository;
+    const storeRepo = owner && repoName ? dashboardStore.getRepository(owner, repoName) : undefined;
+    const isFlowchartEnabled = generateArchitecturalFlowchart ?? storeRepo?.generateArchitecturalFlowchart ?? false;
+    const isFlowchartPersonaActive = applicable.some((p) => p.id === 'review_flowchart');
+
+    let mermaidDiagram: string | undefined = undefined;
+    if (isFlowchartEnabled || isFlowchartPersonaActive) {
+      const flowchartLane = personas.find((lane) => lane.id === 'review_flowchart' && lane.mermaidDiagram);
+      if (flowchartLane?.mermaidDiagram) {
+        mermaidDiagram = flowchartLane.mermaidDiagram;
+      } else {
+        const combinedDiff = effectiveFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
+        mermaidDiagram = generateMermaidDiagram(combinedDiff);
+      }
+    }
+
     return {
       headSha,
       personas,
@@ -541,6 +813,7 @@ export async function executePersonaPanel(options: {
         durationMs: moderatorRun.run.durationMs,
       },
       arbiter: arbiterResult,
+      ...(mermaidDiagram ? { mermaidDiagram } : {}),
     };
   });
 }

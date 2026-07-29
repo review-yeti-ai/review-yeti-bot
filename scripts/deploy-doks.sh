@@ -14,14 +14,14 @@ need envsubst
 : "${CT_REVIEW_BOT_IMAGE:?set CT_REVIEW_BOT_IMAGE to an immutable image@sha256:digest}"
 : "${OMNIROUTE_IMAGE:?set OMNIROUTE_IMAGE to an immutable image@sha256:digest}"
 
-case "$CT_REVIEW_BOT_IMAGE" in
-  *@sha256:????????????????????????????????????????????????????????????????) ;;
-  *) echo "deploy-doks: CT_REVIEW_BOT_IMAGE must use an immutable sha256 digest" >&2; exit 2 ;;
-esac
-case "$OMNIROUTE_IMAGE" in
-  *@sha256:????????????????????????????????????????????????????????????????) ;;
-  *) echo "deploy-doks: OMNIROUTE_IMAGE must use an immutable sha256 digest" >&2; exit 2 ;;
-esac
+if [[ ! "$CT_REVIEW_BOT_IMAGE" =~ ^.+@sha256:[0-9a-fA-F]{64}$ ]]; then
+  echo "deploy-doks: CT_REVIEW_BOT_IMAGE must use an immutable sha256 digest (*@sha256:64_hex_chars)" >&2
+  exit 2
+fi
+if [[ ! "$OMNIROUTE_IMAGE" =~ ^.+@sha256:[0-9a-fA-F]{64}$ ]]; then
+  echo "deploy-doks: OMNIROUTE_IMAGE must use an immutable sha256 digest (*@sha256:64_hex_chars)" >&2
+  exit 2
+fi
 
 render_dir="$(mktemp -d)"
 cleanup() {
@@ -39,5 +39,12 @@ kubectl apply --server-side -f k8s/ingress-network.yaml
 kubectl apply --server-side -f "$render_dir/omniroute-statefulset.yaml"
 kubectl apply --server-side -f "$render_dir/bot-deployment.yaml"
 
-kubectl -n ct-review-system rollout status statefulset/omniroute --timeout=10m
-kubectl -n ct-review-system rollout status deployment/ct-review-bot --timeout=10m
+echo "Validating zero-downtime rollout status..."
+kubectl -n ct-review-system rollout status statefulset/omniroute --timeout=5m
+kubectl -n ct-review-system rollout status deployment/ct-review-bot --timeout=5m
+
+echo "Validating pod readiness..."
+kubectl -n ct-review-system wait --for=condition=ready pod -l app.kubernetes.io/name=ct-review-bot --timeout=3m
+kubectl -n ct-review-system wait --for=condition=ready pod -l app.kubernetes.io/name=omniroute --timeout=3m
+
+echo "Deployment to DOKS completed successfully."

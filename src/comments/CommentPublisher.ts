@@ -17,12 +17,12 @@ import {
 
 export {
   CommentPublisher,
-  CommentPublisherOptions,
-  PublishReviewRequest,
-  PublishInlineCommentRequest,
-  PublishResult,
-  PersonaFinding,
-  FixOption,
+  type CommentPublisherOptions,
+  type PublishReviewRequest,
+  type PublishInlineCommentRequest,
+  type PublishResult,
+  type PersonaFinding,
+  type FixOption,
   formatInlineCommentBody,
   ASCII_MASCOT,
   PUBLISHER_MASCOT,

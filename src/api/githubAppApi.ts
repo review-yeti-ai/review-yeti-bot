@@ -79,9 +79,9 @@ export function createGitHubAppApiRouter(): Router {
    */
   router.post('/app-config/verify', async (req: Request, res: Response) => {
     const appConfig = dashboardStore.getGitHubAppConfig();
-    const appId = req.body?.appId || appConfig.appId;
-    const privateKeyPem = req.body?.privateKeyPem || appConfig.privateKeyPemRaw;
-    const installationId = req.body?.installationId || appConfig.installationId;
+    const appId = req.body?.appId !== undefined ? req.body.appId : appConfig.appId;
+    const privateKeyPem = req.body?.privateKeyPem !== undefined ? req.body.privateKeyPem : appConfig.privateKeyPemRaw;
+    const installationId = req.body?.installationId !== undefined ? req.body.installationId : appConfig.installationId;
 
     if (!appId || !privateKeyPem) {
       return res.status(400).json({
@@ -152,9 +152,29 @@ export function createGitHubAppApiRouter(): Router {
    * Updates 1-click monitoring toggle or custom profile for a repository.
    */
   const handleUpdateMonitoredRepo = (req: Request, res: Response) => {
-    const owner = req.params.owner || req.body.owner;
-    const repo = req.params.repo || req.body.repo;
-    const { automationEnabled, customProfile, modelOverrides } = req.body || {};
+    let owner = req.params.owner || req.body.owner;
+    let repo = req.params.repo || req.body.repo;
+    const id = req.body.id;
+    const full_name = req.body.full_name;
+
+    if ((!owner || !repo) && full_name && typeof full_name === 'string' && full_name.includes('/')) {
+      const parts = full_name.split('/');
+      owner = parts[0];
+      repo = parts[1];
+    }
+    if ((!owner || !repo) && id && typeof id === 'string') {
+      const matched = dashboardStore.getRepositories().find((r) => r.id === id || r.full_name === id);
+      if (matched) {
+        owner = matched.owner;
+        repo = matched.repo;
+      } else if (id.includes('/')) {
+        const parts = id.split('/');
+        owner = parts[0];
+        repo = parts[1];
+      }
+    }
+
+    const { automationEnabled, customProfile, strictnessProfile, modelOverrides, private: isPrivate, defaultBranch, name } = req.body || {};
 
     if (!owner || !repo) {
       return res.status(400).json({
@@ -163,17 +183,25 @@ export function createGitHubAppApiRouter(): Router {
       });
     }
 
+    const profileToSet = strictnessProfile || customProfile;
+
     const updated = dashboardStore.updateRepository(owner, repo, {
       ...(typeof automationEnabled === 'boolean' ? { automationEnabled } : {}),
-      ...(customProfile ? { customProfile } : {}),
+      ...(profileToSet ? { strictnessProfile: profileToSet, customProfile: profileToSet } : {}),
+      ...(typeof isPrivate === 'boolean' ? { private: isPrivate } : {}),
+      ...(defaultBranch ? { defaultBranch } : {}),
+      ...(name ? { name } : {}),
+      ...(full_name ? { full_name } : {}),
+      ...(id ? { id } : {}),
       ...(modelOverrides ? { modelOverrides } : {}),
     });
 
-    logger.info('Updated monitored repo status', { owner, repo, automationEnabled: updated.automationEnabled });
+    logger.info('Updated monitored repo status', { owner, repo, automationEnabled: updated.automationEnabled, strictnessProfile: updated.strictnessProfile });
 
     res.status(200).json({
       success: true,
       repository: updated,
+      repositories: dashboardStore.getRepositories(),
     });
   };
 

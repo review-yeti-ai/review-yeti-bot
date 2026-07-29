@@ -15,29 +15,8 @@ spec:
     - host: review-bot.calltelemetry.com
       http:
         paths:
-          - path: /webhook
+          - path: /
             pathType: Prefix
-            backend:
-              service:
-                name: ct-review-bot
-                port:
-                  number: 3000
-          - path: /api/webhook/github
-            pathType: Prefix
-            backend:
-              service:
-                name: ct-review-bot
-                port:
-                  number: 3000
-          - path: /health
-            pathType: Exact
-            backend:
-              service:
-                name: ct-review-bot
-                port:
-                  number: 3000
-          - path: /ready
-            pathType: Exact
             backend:
               service:
                 name: ct-review-bot
