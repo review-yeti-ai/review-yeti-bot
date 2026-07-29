@@ -161,7 +161,7 @@ describe('Challenger 2 Suite: AI Providers UI & Persona Sync Empirical Verificat
           subscriptionTier: 'free',
           activeModels: ['llama3.3', 'qwen2.5-coder', 'custom-ollama-v2'],
           customModels: ['custom-ollama-v2'],
-          apiKeyRaw: 'sk-ollama-test-key-12345',
+          apiKeyRaw: 'sk-ollama-authentic-token-7788',
         });
 
       expect(res.status).toBe(200);
@@ -169,7 +169,7 @@ describe('Challenger 2 Suite: AI Providers UI & Persona Sync Empirical Verificat
       expect(res.body.provider).toBeDefined();
       expect(res.body.provider.baseUrl).toBe('http://127.0.0.1:11434/v1');
       expect(res.body.provider.customModels).toContain('custom-ollama-v2');
-      expect(res.body.provider.apiKeyMasked).toBe('sk-ollam...2345');
+      expect(res.body.provider.apiKeyMasked).toBe('sk-ollam...7788');
 
       // Verify dynamic active models API reflects newly added model
       const getRes = await request(app)

@@ -93,6 +93,11 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
       expect(tables).toContain('providers');
       expect(tables).toContain('review_logs');
       expect(tables).toContain('memory_graph');
+      expect(tables).toContain('learned_rules');
+      expect(tables).toContain('suppressed_nits');
+      expect(tables).toContain('adr_constraints');
+      expect(tables).toContain('developer_feedback');
+      expect(tables).toContain('platform_patterns');
     } catch (err: any) {
       // If Postgres service is unavailable in CI container, ensure isConfigured is verified
       expect(store.isConfigured()).toBe(true);
