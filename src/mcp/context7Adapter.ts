@@ -156,7 +156,13 @@ export class Context7Adapter {
    * Health check to verify Context7 API connection and credentials.
    */
   public async healthCheck(): Promise<{ ok: boolean; message: string }> {
-    const apiKey = await this.dopplerManager.getSecret('CONTEXT7_API_KEY');
+    let apiKey: string | null = null;
+    try {
+      apiKey = await this.dopplerManager.getSecret('CONTEXT7_API_KEY');
+    } catch {
+      apiKey = null;
+    }
+    apiKey = apiKey || process.env.CONTEXT7_API_KEY || null;
     if (!apiKey) {
       return { ok: false, message: 'CONTEXT7_API_KEY unresolvable' };
     }

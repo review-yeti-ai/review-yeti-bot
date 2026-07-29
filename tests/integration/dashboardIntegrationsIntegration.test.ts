@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
+import { mcpFleetManager } from '../../src/mcp/mcpFleetManager';
 
 describe('Dashboard Integrations & Store E2E Integration Suite', () => {
   let app: any;
@@ -12,6 +13,7 @@ describe('Dashboard Integrations & Store E2E Integration Suite', () => {
   });
 
   beforeEach(() => {
+    vi.spyOn(mcpFleetManager, 'discoverTools').mockResolvedValue([]);
     app = createApp();
     const createdKey = dashboardStore.createApiKey('integration-e2e-key');
     apiKey = createdKey.rawKey;
@@ -50,7 +52,7 @@ describe('Dashboard Integrations & Store E2E Integration Suite', () => {
 
     // Step 4: Deregister MCP server
     const deleteRes = await request(app)
-      .delete(`/api/dashboard/mcp/${mcpId}`)
+      .delete(`/api/dashboard/mcp/servers/${mcpId}`)
       .set('x-api-key', apiKey);
     expect(deleteRes.status).toBe(200);
     expect(deleteRes.body.success).toBe(true);
@@ -97,7 +99,7 @@ describe('Dashboard Integrations & Store E2E Integration Suite', () => {
     expect(badPayloadRes.status).toBe(400);
 
     const notFoundRes = await request(app)
-      .delete('/api/dashboard/mcp/unknown-server-id-1234')
+      .delete('/api/dashboard/mcp/servers/unknown-server-id-1234')
       .set('x-api-key', apiKey);
     expect(notFoundRes.status).toBe(404);
   });

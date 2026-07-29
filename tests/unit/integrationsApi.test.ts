@@ -10,11 +10,14 @@ describe('Integrations REST API Unit Tests', () => {
   const testStorePath = '/tmp/ct-review-bot/integrations-api-test.json';
 
   beforeEach(() => {
-    process.env.CT_DASHBOARD_STORE = testStorePath;
-    process.env.CONTEXT7_API_KEY = process.env.CONTEXT7_API_KEY || 'test-context7-key';
     if (fs.existsSync(testStorePath)) {
-      fs.unlinkSync(testStorePath);
+      try {
+        fs.unlinkSync(testStorePath);
+      } catch {}
     }
+    process.env.CT_DASHBOARD_STORE = testStorePath;
+    dashboardStore.filePath = testStorePath;
+    process.env.CONTEXT7_API_KEY = process.env.CONTEXT7_API_KEY || 'test-context7-key';
     app = express();
     app.use(express.json());
     const router = createIntegrationsRouter();

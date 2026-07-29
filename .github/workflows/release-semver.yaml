@@ -31,7 +31,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: registry.digitalocean.com/calltelemetry/ct-review-bot:${{ github.ref_name }}
-          cache-from: type=gha,scope=bot
+          cache-from: type=gha,mode=max,scope=bot
           cache-to: type=gha,mode=max,scope=bot
 
       - name: Configure K8s cluster kubeconfig

@@ -54,13 +54,13 @@ describe('10-Persona Roster & Per-Persona Settings Dials Suite (Release v1.4.0)'
     expect(result.success).toBe(true);
   });
 
-  it('initializes DashboardStore with default settings for all 10 domain personas', () => {
+  it('initializes DashboardStore with default settings for all 11 domain personas', () => {
     const store = new DashboardStore('/tmp/test_dashboard_persona_10.json');
     const settings = store.getSettings();
 
     expect(settings.personaSettings).toBeDefined();
     const keys = Object.keys(settings.personaSettings!);
-    expect(keys).toHaveLength(10);
+    expect(keys).toHaveLength(12);
     expect(keys).toContain('security');
     expect(keys).toContain('architecture');
     expect(keys).toContain('performance');
@@ -71,12 +71,13 @@ describe('10-Persona Roster & Per-Persona Settings Dials Suite (Release v1.4.0)'
     expect(keys).toContain('devops');
     expect(keys).toContain('docs_compliance');
     expect(keys).toContain('finops');
+    expect(keys).toContain('red_team');
 
-    expect(settings.personaSettings!.security.effort).toBe('max');
+    expect(settings.personaSettings!.security.effort).toBe('low');
     expect(['claude-5-sonnet', 'claude-3-5-sonnet']).toContain(settings.personaSettings!.security.model);
-    expect(['gpt-5.6-sol', 'gpt-4o']).toContain(settings.personaSettings!.performance.model);
+    expect(['gpt-5.6-sol', 'gpt-4o', 'glm-5.2']).toContain(settings.personaSettings!.performance.model);
     expect(['deepseek-v4-pro', 'deepseek-v3']).toContain(settings.personaSettings!.reliability.model);
-    expect(['glm-5.2', 'glm-4']).toContain(settings.personaSettings!.devops.model);
+    expect(['glm-5.2', 'glm-4', 'deepseek-v3']).toContain(settings.personaSettings!.devops.model);
   });
 
   it('validates persona settings payload boundaries in DashboardStore', () => {

@@ -36,7 +36,7 @@ export function evaluateEffortAndBudget(
 
   const lineEstimate = Math.ceil(totalDiffLength / 40);
 
-  let effortTier: ReasoningEffortTier = 'medium';
+  let effortTier: ReasoningEffortTier = 'low';
 
   if (lineEstimate < 50 && sensitiveFileCount === 0) {
     effortTier = 'low';
@@ -44,15 +44,15 @@ export function evaluateEffortAndBudget(
     effortTier = 'high';
   }
 
-  switch (effortTier) {
-    case 'low':
+  switch (effortTier as ReasoningEffortTier) {
+    case 'medium':
       return {
-        effortTier: 'low',
-        maxPromptTokensPerPersona: 4000,
-        maxCompletionTokensPerPersona: 800,
-        maxTokens: 4800,
-        providerEffortSetting: 'low',
-        estimatedTotalCostUSD: 0.005,
+        effortTier: 'medium',
+        maxPromptTokensPerPersona: 12000,
+        maxCompletionTokensPerPersona: 2000,
+        maxTokens: 14000,
+        providerEffortSetting: 'medium',
+        estimatedTotalCostUSD: 0.02,
       };
     case 'high':
       return {
@@ -63,15 +63,15 @@ export function evaluateEffortAndBudget(
         providerEffortSetting: 'high',
         estimatedTotalCostUSD: 0.08,
       };
-    case 'medium':
+    case 'low':
     default:
       return {
-        effortTier: 'medium',
-        maxPromptTokensPerPersona: 12000,
-        maxCompletionTokensPerPersona: 2000,
-        maxTokens: 14000,
-        providerEffortSetting: 'medium',
-        estimatedTotalCostUSD: 0.02,
+        effortTier: 'low',
+        maxPromptTokensPerPersona: 4000,
+        maxCompletionTokensPerPersona: 800,
+        maxTokens: 4800,
+        providerEffortSetting: 'low',
+        estimatedTotalCostUSD: 0.005,
       };
   }
 }
@@ -80,14 +80,14 @@ export class TokenBudgetManager {
   public calculateBudget(options: CalculateBudgetOptions): TokenBudgetAllocation {
     if (options.effortLevel) {
       switch (options.effortLevel) {
-        case 'low':
+        case 'medium':
           return {
-            effortTier: 'low',
-            maxPromptTokensPerPersona: 4000,
-            maxCompletionTokensPerPersona: 800,
-            maxTokens: 4800,
-            providerEffortSetting: 'low',
-            estimatedTotalCostUSD: 0.005,
+            effortTier: 'medium',
+            maxPromptTokensPerPersona: 12000,
+            maxCompletionTokensPerPersona: 2000,
+            maxTokens: 14000,
+            providerEffortSetting: 'medium',
+            estimatedTotalCostUSD: 0.02,
           };
         case 'high':
           return {
@@ -98,15 +98,15 @@ export class TokenBudgetManager {
             providerEffortSetting: 'high',
             estimatedTotalCostUSD: 0.08,
           };
-        case 'medium':
+        case 'low':
         default:
           return {
-            effortTier: 'medium',
-            maxPromptTokensPerPersona: 12000,
-            maxCompletionTokensPerPersona: 2000,
-            maxTokens: 14000,
-            providerEffortSetting: 'medium',
-            estimatedTotalCostUSD: 0.02,
+            effortTier: 'low',
+            maxPromptTokensPerPersona: 4000,
+            maxCompletionTokensPerPersona: 800,
+            maxTokens: 4800,
+            providerEffortSetting: 'low',
+            estimatedTotalCostUSD: 0.005,
           };
       }
     }

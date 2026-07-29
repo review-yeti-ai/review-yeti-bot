@@ -3,23 +3,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 vi.mock('node:child_process', () => {
+  const execFile = vi.fn((file: string, args: string[], options: any, callback: any) => {
+    const cb = typeof options === 'function' ? options : callback;
+    if (typeof file === 'string' && file.includes('non_existent_doppler_binary')) {
+      return cb(new Error('ENOENT: no such file or directory'), { stdout: '', stderr: '' });
+    }
+    if (args && args.includes('--version')) {
+      return cb(null, { stdout: 'doppler v3.60.0\n', stderr: '' });
+    }
+    if (args && args.includes('CLI_MOCK_KEY')) {
+      return cb(null, { stdout: 'cli_mock_value_123\n', stderr: '' });
+    }
+    if (args && args.includes('CLI_FAIL_KEY')) {
+      return cb(new Error('Secret CLI_FAIL_KEY not found'), { stdout: '', stderr: 'Error: secret not found' });
+    }
+    return cb(new Error('Command failed'), { stdout: '', stderr: 'Execution error' });
+  });
   return {
-    execFile: vi.fn((file: string, args: string[], options: any, callback: any) => {
-      const cb = typeof options === 'function' ? options : callback;
-      if (typeof file === 'string' && file.includes('non_existent_doppler_binary')) {
-        return cb(new Error('ENOENT: no such file or directory'), { stdout: '', stderr: '' });
-      }
-      if (args && args.includes('--version')) {
-        return cb(null, { stdout: 'doppler v3.60.0\n', stderr: '' });
-      }
-      if (args && args.includes('CLI_MOCK_KEY')) {
-        return cb(null, { stdout: 'cli_mock_value_123\n', stderr: '' });
-      }
-      if (args && args.includes('CLI_FAIL_KEY')) {
-        return cb(new Error('Secret CLI_FAIL_KEY not found'), { stdout: '', stderr: 'Error: secret not found' });
-      }
-      return cb(new Error('Command failed'), { stdout: '', stderr: 'Execution error' });
-    }),
+    execFile,
+    default: { execFile },
   };
 });
 

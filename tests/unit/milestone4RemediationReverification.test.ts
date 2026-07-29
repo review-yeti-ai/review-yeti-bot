@@ -76,7 +76,7 @@ mascot: true
       expect(codexProvider).toBeDefined();
       expect(codexProvider?.enabled).toBe(true);
       expect(codexProvider?.model).toBe('codex/gpt-5.6-sol-high');
-      expect(codexProvider?.effort).toBe('max');
+      expect(codexProvider?.effort).toBe('low');
 
       // Tier 3: Arbiter configuration specifies valid provider order
       expect(v3.reviewers.arbiter).toBeDefined();

@@ -80,6 +80,86 @@ export function createMemoryRouter(options: MemoryApiOptions = {}): Router {
     }
   });
 
+  // GET & POST /api/memory/graph
+  router.all('/memory/graph', async (req: Request, res: Response) => {
+    try {
+      const symbolName = String(
+        req.query.symbolName || req.query.symbol || req.body?.symbolName || req.body?.symbol || 'createMemoryRouter'
+      );
+      const includeCallers = req.query.includeCallers !== undefined ? req.query.includeCallers === 'true' : (req.body?.includeCallers ?? true);
+      const includeCallees = req.query.includeCallees !== undefined ? req.query.includeCallees === 'true' : (req.body?.includeCallees ?? true);
+      const includeReferences = req.query.includeReferences !== undefined ? req.query.includeReferences === 'true' : (req.body?.includeReferences ?? true);
+
+      const result = await symbolGraphStore.querySymbols(symbolName, {
+        includeCallers,
+        includeCallees,
+        includeReferences,
+      });
+
+      const counts = symbolGraphStore.getCounts();
+
+      return res.status(200).json({
+        success: true,
+        symbolName,
+        definitions: result.definitions || [],
+        references: result.references || [],
+        callers: result.callers || [],
+        callees: result.callees || [],
+        stats: counts,
+        nodes: counts.nodes,
+        edges: counts.edges,
+      });
+    } catch (err: any) {
+      logger.error('Error handling /api/memory/graph', { error: err?.message });
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to fetch memory graph' });
+    }
+  });
+
+  // GET & POST /api/memory/learnings
+  router.all('/memory/learnings', async (req: Request, res: Response) => {
+    try {
+      const repo = String(req.query.repo || req.query.repository || req.body?.repo || req.body?.repository || 'calltelemetry/cisco-cdr');
+      const category = (req.query.category || req.body?.category) ? String(req.query.category || req.body?.category) : undefined;
+      const filePath = (req.query.filePath || req.body?.filePath) ? String(req.query.filePath || req.body?.filePath) : undefined;
+      const query = (req.query.query || req.query.q || req.body?.query || req.body?.q) ? String(req.query.query || req.query.q || req.body?.query || req.body?.q) : undefined;
+
+      const result = await prMemoryStore.queryLearnings(repo, { category, filePath, query });
+      const counts = prMemoryStore.getCounts();
+
+      return res.status(200).json({
+        success: true,
+        repo,
+        learnings: result.learnings || [],
+        resolvedNits: result.resolvedNits || [],
+        adrConstraints: result.adrConstraints || [],
+        counts,
+      });
+    } catch (err: any) {
+      logger.error('Error handling /api/memory/learnings', { error: err?.message });
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to fetch memory learnings' });
+    }
+  });
+
+  // GET & POST /api/memory/search
+  router.all('/memory/search', async (req: Request, res: Response) => {
+    try {
+      const query = String(req.query.q || req.query.query || req.body?.query || req.body?.q || 'security');
+      const limit = Number(req.query.limit || req.body?.limit || 10);
+
+      const results = await symbolGraphStore.semanticSearch(query, limit);
+
+      return res.status(200).json({
+        success: true,
+        query,
+        limit,
+        results: results || [],
+      });
+    } catch (err: any) {
+      logger.error('Error handling /api/memory/search', { error: err?.message });
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to search memory' });
+    }
+  });
+
   // POST /api/memory/learn
   router.post('/memory/learn', async (req: Request, res: Response) => {
     try {

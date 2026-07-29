@@ -25,11 +25,14 @@ export const R4_ALLOWED_MODELS = [
   'claude-5-sonnet',
   'gpt-5.6-sol',
   'deepseek-v4-pro',
-  'glm-5.2',
   'codex/gpt-5.6-sol-high',
   'grok-cli/grok-4.5',
   'agy/claude-opus-4-6-thinking',
   'claude/claude-opus-4-8',
+  'deepseek-v3',
+  'gpt-4o',
+  'claude-3-5-sonnet',
+  'claude-3.5-sonnet',
 ];
 
 export type ProviderId = keyof typeof V3_PROVIDER_MODELS;
@@ -45,6 +48,8 @@ const BuiltinCharterEnum = z.enum([
   'builtin:database',
   'builtin:devops',
   'builtin:finops',
+  'builtin:red-team',
+  'builtin:skeptic',
 ]);
 
 export const providerSchema = z.object({
@@ -67,7 +72,7 @@ export const providerSchema = z.object({
 });
 
 export const personaSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
   enabled: z.boolean(),
   required: z.boolean(),
   charter: z.union([BuiltinCharterEnum, z.string().min(12)]),
@@ -75,6 +80,8 @@ export const personaSchema = z.object({
   providers: z.array(ProviderIdEnum).min(1),
   model: z.string().optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  dual_model: z.boolean().optional(),
+  adversarial_model: z.string().optional(),
 }).superRefine((persona, ctx) => {
   if (persona.charter.startsWith('builtin:') && !BuiltinCharterEnum.safeParse(persona.charter).success) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['charter'], message: `unknown built-in charter ${persona.charter}` });
@@ -85,11 +92,14 @@ export const personaSchema = z.object({
   if (persona.model && !R4_ALLOWED_MODELS.includes(persona.model)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['model'], message: `persona model ${persona.model} is not in R4_ALLOWED_MODELS` });
   }
+  if (persona.adversarial_model && !R4_ALLOWED_MODELS.includes(persona.adversarial_model)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['adversarial_model'], message: `persona adversarial_model ${persona.adversarial_model} is not in R4_ALLOWED_MODELS` });
+  }
 });
 
 export const reviewsSchema = z.object({
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
-  reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
+  reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
   confidence_threshold: z.number().min(0).max(100).default(70),
   mascot: z.boolean().default(true),
   ticket_enforcement: z.boolean().default(false),

@@ -4,7 +4,7 @@ metadata:
   name: ct-review-bot
   namespace: ct-review-system
 spec:
-  replicas: 2
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -19,6 +19,8 @@ spec:
         app.kubernetes.io/name: ct-review-bot
     spec:
       serviceAccountName: ct-review-bot
+      imagePullSecrets:
+        - name: calltelemetry
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -52,25 +54,27 @@ spec:
           readinessProbe:
             httpGet:
               path: /ready
-              port: http
-            initialDelaySeconds: 5
+              port: 3000
+            initialDelaySeconds: 3
             periodSeconds: 5
+            timeoutSeconds: 2
             successThreshold: 1
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
-              port: http
-            initialDelaySeconds: 15
-            periodSeconds: 15
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
             failureThreshold: 3
           resources:
             requests:
-              cpu: 200m
+              cpu: 100m
               memory: 256Mi
             limits:
-              cpu: "2"
-              memory: 2Gi
+              cpu: 500m
+              memory: 512Mi
       volumes:
         - name: data
           persistentVolumeClaim:

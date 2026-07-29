@@ -1,12 +1,33 @@
 import { defineConfig } from 'vitest/config';
+import path from 'path';
 
 export default defineConfig({
+  oxc: {
+    jsx: {
+      runtime: 'automatic',
+    },
+  },
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
   test: {
     globals: true,
     environment: 'node',
+    setupFiles: ['./tests/setup.ts'],
+    environmentMatchGlobs: [
+      ['**/*.tsx', 'jsdom'],
+      ['tests/**/*.tsx', 'jsdom'],
+      ['tests/unit/components/**', 'jsdom'],
+      ['**/useSSE.test.ts', 'jsdom'],
+      ['**/liveStream*.test.ts', 'jsdom']
+    ],
     include: [
       'tests/unit/**/*.test.ts',
+      'tests/unit/**/*.test.tsx',
       'tests/integration/**/*.test.ts',
+      'tests/integration/**/*.test.tsx',
       'tests/e2e/**/*.test.ts',
       'tests/benchmark/**/*.test.ts'
     ],
@@ -16,9 +37,10 @@ export default defineConfig({
     pool: 'forks',
     poolOptions: {
       forks: {
-        singleFork: true,
+        singleFork: false,
       },
     },
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

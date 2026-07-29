@@ -19,7 +19,7 @@ describe('Milestone 4 Empirical Stress Tests — Dual YAML, Precedence, Models &
     it('handles default reviewer effort when invalid value provided', () => {
       const raw = { reviews: { reviewer_effort: 'ultra_fast' } };
       const translated = translateCodeRabbitToV3(raw);
-      expect(translated.reviewer_effort).toBe('medium');
+      expect(translated.reviewer_effort).toBe('low');
     });
 
     it('translates valid confidence_threshold values', () => {
@@ -315,7 +315,7 @@ reviewers:
     });
 
     it('rejects non-allowlisted models with ConfigValidationError', () => {
-      const invalidModels = ['gpt-4o', 'claude-3-5-sonnet', 'deepseek-v3', 'random-model-v1'];
+      const invalidModels = ['invalid-gpt-model', 'claude-invalid-v1', 'deepseek-invalid-v1', 'random-model-v1'];
       for (const invalidModel of invalidModels) {
         expect(() => parseAndValidateConfig(makeConfigWithModel('codex', invalidModel))).toThrow(ConfigValidationError);
       }

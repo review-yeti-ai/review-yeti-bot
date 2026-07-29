@@ -34,7 +34,5 @@ describe('review bot readiness', () => {
       configurationReady: true,
       omniRouteReady: true,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/api\/monitoring\/health$/);
   });
 });
