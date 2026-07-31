@@ -6,28 +6,24 @@ import { Radio, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 import { OverviewMetrics } from '@/components/dashboard/overview-metrics';
 import { RecentReviewsTable } from '@/components/dashboard/recent-reviews-table';
-import { PersonaStatusGrid } from '@/components/dashboard/persona-status-grid';
 import { TelemetryChartsGrid } from '@/components/dashboard/telemetry-charts-grid';
-import { fetchOverviewStats, fetchPersonas, fetchReviewLogs } from '@/lib/api-client';
-import { OverviewStats, PersonaSetting, ReviewJob } from '@/types/dashboard';
+import { fetchOverviewStats, fetchReviewLogs } from '@/lib/api-client';
+import { OverviewStats, ReviewJob } from '@/types/dashboard';
 
 export default function OverviewPage() {
   const [stats, setStats] = React.useState<OverviewStats | null>(null);
-  const [personas, setPersonas] = React.useState<Record<string, PersonaSetting>>({});
   const [reviewJobs, setReviewJobs] = React.useState<ReviewJob[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   const loadData = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [statsData, personasData, jobsData] = await Promise.allSettled([
+      const [statsData, jobsData] = await Promise.allSettled([
         fetchOverviewStats(),
-        fetchPersonas(),
         fetchReviewLogs(),
       ]);
 
       if (statsData.status === 'fulfilled') setStats(statsData.value);
-      if (personasData.status === 'fulfilled') setPersonas(personasData.value);
       if (jobsData.status === 'fulfilled') setReviewJobs(jobsData.value);
     } catch {
       // Fallbacks active
@@ -55,6 +51,9 @@ export default function OverviewPage() {
             <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-xs font-mono text-blue-400 border border-blue-500/20">
               Today: {stats?.todayDateBadge || new Date().toISOString().slice(0, 10)}
             </span>
+            <span className="inline-flex items-center gap-1 rounded-md bg-indigo-500/10 px-2 py-0.5 text-xs font-mono text-indigo-400 border border-indigo-500/20">
+              Trailing 24h: {stats?.trailing24hReviewsExecuted ?? 0} Reviews | {stats?.trailing24hAvgTokensPerPR ?? 0} tok/PR | ${(stats?.trailing24hAvgCostPerPR ?? 0).toFixed(4)}/PR
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -77,10 +76,7 @@ export default function OverviewPage() {
       {/* 3. Primary Operational Table */}
       <RecentReviewsTable jobs={reviewJobs} loading={loading} onRefresh={loadData} />
 
-      {/* 4. Persona Arbitration */}
-      <PersonaStatusGrid personas={personas} />
-
-      {/* 5. System Telemetry */}
+      {/* 4. System Telemetry */}
       <TelemetryChartsGrid stats={stats} />
 
       <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js" async />

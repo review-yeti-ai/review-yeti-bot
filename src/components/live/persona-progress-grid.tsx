@@ -47,6 +47,10 @@ export function PersonaProgressGrid({
   onPersonaClick,
   className = '',
 }: PersonaProgressGridProps) {
+  const personaKeys = Array.from(
+    new Set([...DEFAULT_PERSONAS, ...Object.keys(personaProgress || {}).filter((k) => k !== 'all')])
+  );
+
   return (
     <div className={`space-y-3 ${className}`}>
       <div className="flex items-center justify-between">
@@ -55,12 +59,12 @@ export function PersonaProgressGrid({
         </h3>
         <span className="text-xs text-slate-500 font-mono">
           {Object.values(personaProgress).filter((p) => p.status === 'COMPLETED').length} /{' '}
-          {DEFAULT_PERSONAS.length} Completed
+          {personaKeys.length} Completed
         </span>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-        {DEFAULT_PERSONAS.map((personaKey) => {
+        {personaKeys.map((personaKey) => {
           const state: PersonaProgressState = personaProgress[personaKey] || {
             persona: personaKey,
             status: 'PENDING',

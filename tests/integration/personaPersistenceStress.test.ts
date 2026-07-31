@@ -111,7 +111,7 @@ describe('Adversarial & Stress Verification for Persona Prompt Persistence', () 
       .send({
         customPrompt: 'Red Team Prompt: Actively search for auth bypass vulnerabilities.',
         confidenceThreshold: 88,
-        model: 'claude-3-5-sonnet',
+        model: 'claude-haiku-4.5',
         effort: 'max',
       });
 
