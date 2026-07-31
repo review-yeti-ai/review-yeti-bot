@@ -19,6 +19,7 @@ export const V3_PROVIDER_MODELS = {
 } as const;
 
 export const R4_ALLOWED_MODELS = [
+  'openrouter/google/gemini-2.0-flash-lite-001',
   'gpt-4o',
   'gpt-4o-mini',
   'gemini-1.5-pro',
