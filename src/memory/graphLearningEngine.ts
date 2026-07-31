@@ -160,6 +160,47 @@ export class GraphLearningEngine {
     await this.platformStore.recordPlatformPattern(platCategory, pattern, description, repo);
   }
 
+  /**
+   * Automatically extracts learnings from findings and scans changed files for ADR constraints.
+   */
+  public async autoLearnFromReview(
+    repo: string,
+    prIdentifier: string | number,
+    findings: PanelFinding[],
+    changedFiles: Array<{ path: string; patch?: string; content?: string }>
+  ): Promise<void> {
+    const prNum = typeof prIdentifier === 'number' ? prIdentifier : (parseInt(String(prIdentifier).replace(/\D/g, ''), 10) || 0);
+
+    for (const finding of findings) {
+      const categoryMap: Record<string, 'security' | 'architecture' | 'performance' | 'quality' | 'convention'> = {
+        P0: 'security',
+        P1: 'architecture',
+        P2: 'quality',
+      };
+      const cat = categoryMap[finding.severity] || 'convention';
+      await this.learnAndElevatePattern(repo, cat, finding.title, finding.body || finding.title, prNum);
+    }
+
+    for (const file of changedFiles) {
+      if (file.path.toLowerCase().includes('adr') && file.path.endsWith('.md')) {
+        const content = file.content || file.patch || '';
+        const matchNumber = file.path.match(/adr[-_]?(\d+)/i) || content.match(/ADR[-_\s]?#?(\d+)/i);
+        const adrNumber = matchNumber ? parseInt(matchNumber[1], 10) : 1;
+        const titleMatch = content.match(/#\s*(.+)/) || content.match(/Title:\s*(.+)/i);
+        const title = titleMatch ? titleMatch[1].trim() : `ADR #${adrNumber} ${file.path}`;
+
+        await this.memoryStore.recordADRConstraint(repo, {
+          adrNumber,
+          title,
+          status: 'accepted',
+          rule: `Enforce architectural constraints from ${file.path}`,
+          targetPaths: ['**'],
+        });
+        logger.info('Auto-recorded ADR constraint from PR changed file', { repo, path: file.path, adrNumber, title });
+      }
+    }
+  }
+
   private matchGlob(pattern: string, filePath: string): boolean {
     if (pattern === '*' || pattern === '**') return true;
 

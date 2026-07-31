@@ -110,6 +110,20 @@ export function useSSE(options: UseSSEOptions = {}) {
         const data = await res.json();
         if (data.jobs && Array.isArray(data.jobs)) {
           setActiveJobs(data.jobs);
+          if (data.jobs.length > 0) {
+            setJobId((prevJobId) => {
+              if (!prevJobId || prevJobId === 'default-job') {
+                const autoSelected = data.jobs[0].jobId;
+                if (typeof window !== 'undefined') {
+                  const url = new URL(window.location.href);
+                  url.searchParams.set('jobId', autoSelected);
+                  window.history.replaceState({}, '', url.toString());
+                }
+                return autoSelected;
+              }
+              return prevJobId;
+            });
+          }
         }
       }
     } catch {
@@ -441,6 +455,7 @@ export function useSSE(options: UseSSEOptions = {}) {
   // Connection management effect
   useEffect(() => {
     if (autoConnect) {
+      clearEvents();
       connect();
     }
 
@@ -461,7 +476,7 @@ export function useSSE(options: UseSSEOptions = {}) {
     return () => {
       disconnect();
     };
-  }, [jobId, autoConnect, connect, disconnect, handleReconnect]);
+  }, [jobId, autoConnect, clearEvents, connect, disconnect, handleReconnect]);
 
   // Initial fetch of active jobs
   useEffect(() => {

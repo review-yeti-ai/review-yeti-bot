@@ -107,7 +107,7 @@ describe('redTeamPersona unit tests', () => {
           overall_timeout_s: 120,
           providers: [
             { id: 'claude', enabled: true, model: 'claude-3-5-sonnet', effort: 'medium', review_timeout_s: 30, arbiter_timeout_s: 30 },
-            { id: 'codex', enabled: true, model: 'gpt-4o', effort: 'medium', review_timeout_s: 30, arbiter_timeout_s: 30 },
+            { id: 'codex', enabled: true, model: 'codex/gpt-5.6-sol-high', effort: 'medium', review_timeout_s: 30, arbiter_timeout_s: 30 },
           ],
           arbiter: { order: ['claude'] },
         },
@@ -191,21 +191,22 @@ describe('redTeamPersona unit tests', () => {
       mockClient.complete.mockImplementation(async (opts: any) => {
         const prompt = opts.messages[1].content as string;
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
-        const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+        const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+        const allMsg = JSON.stringify(opts.messages);
 
-        if (prompt.includes('"role":"moderator"')) {
-          return {
-            model: opts.model,
-            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
-            usage: { prompt: 10, completion: 10, total: 20 },
-            costUSD: 0.0001,
-          };
-        } else if (prompt.includes('"role":"arbiter"')) {
+        if (allMsg.includes('arbiter')) {
           return {
             model: opts.model,
             content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes cross-examination' })}\nCT_REVIEW_END:${nonce}`,
             usage: { prompt: 15, completion: 15, total: 30 },
             costUSD: 0.0002,
+          };
+        } else if (allMsg.includes('moderator')) {
+          return {
+            model: opts.model,
+            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+            usage: { prompt: 10, completion: 10, total: 20 },
+            costUSD: 0.0001,
           };
         } else {
           return {
@@ -266,19 +267,20 @@ describe('redTeamPersona unit tests', () => {
       mockClient.complete.mockImplementation(async (opts: any) => {
         const prompt = opts.messages[1].content as string;
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
-        const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+        const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+        const allMsg = JSON.stringify(opts.messages);
 
-        if (prompt.includes('"role":"moderator"')) {
-          return {
-            model: opts.model,
-            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
-            usage: null,
-            costUSD: null,
-          };
-        } else if (prompt.includes('"role":"arbiter"')) {
+        if (allMsg.includes('arbiter')) {
           return {
             model: opts.model,
             content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes' })}\nCT_REVIEW_END:${nonce}`,
+            usage: null,
+            costUSD: null,
+          };
+        } else if (allMsg.includes('moderator')) {
+          return {
+            model: opts.model,
+            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
             usage: null,
             costUSD: null,
           };
@@ -340,19 +342,20 @@ describe('redTeamPersona unit tests', () => {
       mockClient.complete.mockImplementation(async (opts: any) => {
         const prompt = opts.messages[1].content as string;
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
-        const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+        const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+        const allMsg = JSON.stringify(opts.messages);
 
-        if (prompt.includes('"role":"moderator"')) {
-          return {
-            model: opts.model,
-            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
-            usage: null,
-            costUSD: null,
-          };
-        } else if (prompt.includes('"role":"arbiter"')) {
+        if (allMsg.includes('arbiter')) {
           return {
             model: opts.model,
             content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes' })}\nCT_REVIEW_END:${nonce}`,
+            usage: null,
+            costUSD: null,
+          };
+        } else if (allMsg.includes('moderator')) {
+          return {
+            model: opts.model,
+            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
             usage: null,
             costUSD: null,
           };

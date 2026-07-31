@@ -105,7 +105,7 @@ function main() {
       defaultBaseUrl: 'https://api.anthropic.com/v1',
       provenancePrefixes: ['claude', 'anthropic'],
       defaultModel: 'claude-3-5-sonnet',
-      supportedModels: ['claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-opus-4-8'],
+      supportedModels: ['claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-5-sonnet', 'claude-opus-4-8'],
       supportsCustomModels: false,
       requiresApiKey: true,
     },
@@ -207,6 +207,9 @@ function main() {
     for (const model of provider.supportedModels) {
       allModelsSet.add(model);
     }
+  }
+  for (const model of allowedModels) {
+    allModelsSet.add(model);
   }
 
   const generatedCode = `/**

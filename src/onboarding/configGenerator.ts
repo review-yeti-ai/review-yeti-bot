@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../config/schema';
+import { CtReviewConfigV3, ctReviewConfigV3Schema, V3_PROVIDER_MODELS } from '../config/schema';
 import { StackScanResult } from './stackScanner';
 
 export interface ConfigGenerationOptions {
@@ -31,7 +31,7 @@ export function generateCtReviewConfig(options: ConfigGenerationOptions): { yaml
       charter: 'builtin:security',
       paths: ['**'],
       required: true,
-      providers: ['claude', 'codex'] as any,
+      providers: ['synthetic', 'codex'] as any,
     },
     {
       id: 'architect',
@@ -39,7 +39,7 @@ export function generateCtReviewConfig(options: ConfigGenerationOptions): { yaml
       charter: 'builtin:correctness',
       paths: ['**/*.ts', '**/*.js'],
       required: true,
-      providers: ['codex', 'grok'] as any,
+      providers: ['synthetic', 'codex'] as any,
     },
   ];
 
@@ -56,14 +56,29 @@ export function generateCtReviewConfig(options: ConfigGenerationOptions): { yaml
     providers: p.providers,
   }));
 
+  const usedProviders = new Set<string>();
+  personas.forEach((p) => p.providers.forEach((prov: string) => usedProviders.add(prov)));
+  usedProviders.add('synthetic');
+  usedProviders.add('codex');
+
+  const providerList = Array.from(usedProviders).map((id) => ({
+    id: id as any,
+    enabled: true,
+    model: (V3_PROVIDER_MODELS as any)[id] || 'synthetic',
+    effort: 'low' as const,
+    review_timeout_s: 60,
+    arbiter_timeout_s: 45,
+  }));
+
   const configObj: CtReviewConfigV3 = {
     version: 3,
     profile,
-    quorum: 2,
+    quorum: Math.min(2, providerList.length),
     personas,
     reviews: {
       profile,
       reviewer_effort: 'low',
+      default_max_turns: 20,
       confidence_threshold: 70,
       mascot: true,
       ticket_enforcement: ticketEnforcement,
@@ -111,42 +126,9 @@ export function generateCtReviewConfig(options: ConfigGenerationOptions): { yaml
       execution: 'personas',
       fallback: 'ordered',
       overall_timeout_s: 180,
-      providers: [
-        {
-          id: 'codex',
-          enabled: true,
-          model: 'codex/gpt-5.6-sol-high',
-          effort: 'low',
-          review_timeout_s: 60,
-          arbiter_timeout_s: 45,
-        },
-        {
-          id: 'grok',
-          enabled: true,
-          model: 'grok-cli/grok-4.5',
-          effort: 'low',
-          review_timeout_s: 60,
-          arbiter_timeout_s: 45,
-        },
-        {
-          id: 'agy-opus',
-          enabled: true,
-          model: 'agy/claude-opus-4-6-thinking',
-          effort: 'low',
-          review_timeout_s: 90,
-          arbiter_timeout_s: 60,
-        },
-        {
-          id: 'claude',
-          enabled: true,
-          model: 'claude/claude-opus-4-8',
-          effort: 'low',
-          review_timeout_s: 90,
-          arbiter_timeout_s: 60,
-        },
-      ],
+      providers: providerList,
       arbiter: {
-        order: ['claude', 'codex', 'grok'],
+        order: providerList.map((p) => p.id),
       },
     },
     path_instructions: [],

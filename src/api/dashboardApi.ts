@@ -306,21 +306,21 @@ export function createDashboardRouter(): Router {
       }
     } catch (err: any) {
       const isInternalOrTest = baseUrl.includes('internal') || baseUrl.includes('localhost') || baseUrl.includes('omniroute');
-      const latencyMs = isInternalOrTest ? Math.floor(Math.random() * 25) + 15 : Math.max(1, Date.now() - startMs);
+      const latencyMs = Date.now() - startMs;
       const isTimeout = err?.name === 'AbortError';
 
       if (isInternalOrTest && !isTimeout) {
         dashboardStore.updateProviderConfig(id, {
           status: 'connected',
-          latencyMs,
+          latencyMs: 0,
         });
 
         return res.status(200).json({
           success: true,
-          status: 'connected',
+          status: 'configured',
           statusCode: 200,
-          latencyMs,
-          message: `Connection to ${displayName} endpoint (${baseUrl}) verified successfully. HTTP 200 OK`,
+          latencyMs: 0,
+          message: `${displayName} endpoint (${baseUrl}) is configured as internal/local. Server-side connectivity not verified from dashboard.`,
         });
       }
 
@@ -422,12 +422,56 @@ export function createDashboardRouter(): Router {
       : { prompt: 48500, completion: 6200, total: 54700 };
     const costUSD = isCtMeta ? 0.365 : 0.547;
 
+    const personaSettings = dashboardStore.getPersonaSettings();
+    const personaLogs = [
+      {
+        persona: 'security',
+        displayName: 'Security & Tenancy Guardian',
+        decision: 'SHIP',
+        confidence: 0.98,
+        latencyMs: 420,
+        model: personaSettings['security']?.model || 'claude-5-sonnet',
+        findingsCount: 0,
+        summary: 'Verified multi-tenant Isolation bounds, zero SQL parameter leakage in 32k diff.',
+      },
+      {
+        persona: 'architecture',
+        displayName: 'System Architecture Auditor',
+        decision: 'SHIP',
+        confidence: 0.96,
+        latencyMs: 510,
+        model: personaSettings['architecture']?.model || 'grok-cli/grok-4.5',
+        findingsCount: 0,
+        summary: 'Approved ingestion layer interface contracts across 14 modified modules.',
+      },
+      {
+        persona: 'quality',
+        displayName: 'Code Quality & Style Enforcer',
+        decision: 'SHIP',
+        confidence: 0.94,
+        latencyMs: 380,
+        model: personaSettings['quality']?.model || 'claude-haiku-4.5',
+        findingsCount: 0,
+        summary: 'Clean TypeScript types with 100% test coverage.',
+      },
+      {
+        persona: 'database',
+        displayName: 'Database & Persistence Specialist',
+        decision: 'SHIP',
+        confidence: 0.92,
+        latencyMs: 410,
+        model: personaSettings['database']?.model || 'glm-5.2',
+        findingsCount: 0,
+        summary: 'Validated concurrent B-tree index creation statements.',
+      },
+    ];
+
     const testRun = {
-      id: `job-${Date.now()}`,
+      id: `job-test-${Date.now()}`,
       repo,
       repository: repo,
       prNumber,
-      title,
+      title: `[SYNTHETIC TEST] ${title}`,
       status: 'completed',
       personas,
       verdict,
@@ -439,49 +483,9 @@ export function createDashboardRouter(): Router {
       latencyMs: 1840,
       timestamp: new Date().toISOString(),
       headSha: crypto.randomBytes(4).toString('hex'),
-      quorum: '4/4',
-      personaLogs: [
-        {
-          persona: 'security',
-          displayName: 'Security & Tenancy Guardian',
-          decision: 'SHIP',
-          confidence: 0.98,
-          latencyMs: 420,
-          model: 'claude-5-sonnet',
-          findingsCount: 0,
-          summary: 'Verified multi-tenant Isolation bounds, zero SQL parameter leakage in 32k diff.',
-        },
-        {
-          persona: 'architecture',
-          displayName: 'System Architecture Auditor',
-          decision: 'SHIP',
-          confidence: 0.96,
-          latencyMs: 510,
-          model: 'grok-cli/grok-4.5',
-          findingsCount: 0,
-          summary: 'Approved ingestion layer interface contracts across 14 modified modules.',
-        },
-        {
-          persona: 'quality',
-          displayName: 'Code Quality & Style Enforcer',
-          decision: 'SHIP',
-          confidence: 0.94,
-          latencyMs: 380,
-          model: 'claude-3-5-sonnet',
-          findingsCount: 0,
-          summary: 'Clean TypeScript types with 100% test coverage.',
-        },
-        {
-          persona: 'database',
-          displayName: 'Database & Persistence Specialist',
-          decision: 'SHIP',
-          confidence: 0.92,
-          latencyMs: 410,
-          model: 'glm-5.2',
-          findingsCount: 0,
-          summary: 'Validated concurrent B-tree index creation statements.',
-        },
-      ],
+      quorum: `${personas.length}/${personas.length}`,
+      isSynthetic: true,
+      personaLogs: personaLogs.map((p: any) => ({ ...p, status: 'success' })),
       mermaidDiagram: `sequenceDiagram
   autonumber
   actor User as Developer

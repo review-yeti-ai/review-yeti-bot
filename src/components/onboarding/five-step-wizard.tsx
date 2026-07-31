@@ -167,7 +167,7 @@ export function FiveStepWizard() {
     setPersonas((prev) => ({
       ...prev,
       [personaId]: {
-        ...(prev[personaId] || { id: personaId, displayName: personaId, model: 'claude-3-5-sonnet', effort: 'low', confidenceThreshold: 75, enabled: true }),
+        ...(prev[personaId] || { id: personaId, displayName: personaId, model: 'claude-haiku-4.5', effort: 'low', confidenceThreshold: 75, enabled: true }),
         ...patch,
       },
     }));
