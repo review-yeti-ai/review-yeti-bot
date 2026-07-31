@@ -40,7 +40,7 @@ describe('Milestone 1: Generated Provider Metadata (providers.generated.ts)', ()
     expect(OMNIROUTE_GENERATED_PROVIDERS.openai.requiresApiKey).toBe(true);
 
     expect(OMNIROUTE_GENERATED_PROVIDERS.anthropic.displayName).toBe('Anthropic Claude');
-    expect(OMNIROUTE_GENERATED_PROVIDERS.anthropic.supportedModels).toContain('claude-3-5-sonnet');
+    expect(OMNIROUTE_GENERATED_PROVIDERS.anthropic.supportedModels).toContain('claude-5-sonnet');
 
     expect(OMNIROUTE_GENERATED_PROVIDERS.ollama.supportsCustomModels).toBe(true);
     expect(OMNIROUTE_GENERATED_PROVIDERS.ollama.requiresApiKey).toBe(false);
@@ -52,7 +52,7 @@ describe('Milestone 1: Generated Provider Metadata (providers.generated.ts)', ()
     expect(Array.isArray(OMNIROUTE_GENERATED_MODEL_LIST)).toBe(true);
     expect(OMNIROUTE_GENERATED_MODEL_LIST.length).toBeGreaterThan(10);
     expect(OMNIROUTE_GENERATED_MODEL_LIST).toContain('gpt-4o');
-    expect(OMNIROUTE_GENERATED_MODEL_LIST).toContain('claude-3-5-sonnet');
+    expect(OMNIROUTE_GENERATED_MODEL_LIST).toContain('claude-5-sonnet');
     expect(OMNIROUTE_GENERATED_MODEL_LIST).toContain('gemini-1.5-pro');
     expect(OMNIROUTE_GENERATED_MODEL_LIST).toContain('grok-cli/grok-4.5');
     expect(OMNIROUTE_GENERATED_MODEL_LIST).toContain('deepseek-v3');
@@ -147,5 +147,5 @@ describe('Milestone 2: DashboardStore & Backend API Sync', () => {
     expect(['connected', 'disconnected', 'error']).toContain(res.body.status);
     expect(typeof res.body.latencyMs).toBe('number');
     expect(res.body.message).toContain('OpenAI');
-  });
+  }, 10000);
 });

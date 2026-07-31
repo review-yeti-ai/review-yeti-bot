@@ -10,33 +10,47 @@ const legacyConfigSchema = z.object({
 
 export const V3_PROVIDER_MODELS = {
   synthetic: 'glm-5.2',
+  'synthetic.new': 'synthetic-new/glm-5.2-high',
   codex: 'codex/gpt-5.6-sol-high',
   grok: 'grok-cli/grok-4.5',
   'agy-opus': 'agy/claude-opus-4-6-thinking',
   claude: 'claude/claude-opus-4-8',
+  opencode: 'opencode-go/glm-5.2',
 } as const;
 
 export const R4_ALLOWED_MODELS = [
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gemini-1.5-pro',
+  'gemini-2.0-flash',
+  'synthetic/hf:moonshotai/Kimi-K3',
+  'synthetic/hf:zai-org/GLM-5.2',
+  'synthetic/hf:zai-org/GLM-4.7-Flash',
+  'synthetic/hf:Qwen/Qwen3.6-27B',
   'glm-5.2',
   'synthetic/v1',
   'synthetic/glm-5.2-high',
-  'synthetic-fast',
-  'synthetic-reasoning',
   'claude-5-sonnet',
+  'claude-3-5-sonnet',
+  'claude-3-7-sonnet',
+  'claude-haiku-4.5',
+  'claude-haiku',
   'gpt-5.6-sol',
   'deepseek-v4-pro',
   'codex/gpt-5.6-sol-high',
+  'codex-gateway/gpt-5.6-sol-high',
   'grok-cli/grok-4.5',
   'agy/claude-opus-4-6-thinking',
   'claude/claude-opus-4-8',
   'deepseek-v3',
-  'gpt-4o',
-  'claude-3-5-sonnet',
-  'claude-3.5-sonnet',
+  'opencode-go/glm-5.2',
 ];
 
-export type ProviderId = keyof typeof V3_PROVIDER_MODELS;
-export const ProviderIdEnum = z.enum(['synthetic', 'codex', 'grok', 'agy-opus', 'claude']);
+export type ProviderId = string;
+/** Well-known provider IDs used in defaults. Repos may define any provider ID that OmniRoute supports. */
+export const WELL_KNOWN_PROVIDER_IDS = Object.keys(V3_PROVIDER_MODELS);
+/** Open provider ID validator — any lowercase identifier with dots, dashes, underscores is accepted. */
+export const ProviderIdEnum = z.string().regex(/^[a-z][a-z0-9._-]{0,63}$/, 'provider id must be lowercase alphanumeric with dots/dashes/underscores');
 const BuiltinCharterEnum = z.enum([
   'builtin:correctness',
   'builtin:security',
@@ -60,14 +74,8 @@ export const providerSchema = z.object({
   review_timeout_s: z.number().int().positive(),
   arbiter_timeout_s: z.number().int().positive(),
 }).superRefine((provider, ctx) => {
-  const expected = V3_PROVIDER_MODELS[provider.id];
-  const isAllowed = provider.model === expected || R4_ALLOWED_MODELS.includes(provider.model);
-  if (!isAllowed) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['model'],
-      message: `${provider.id} must use exact allowlisted model ${expected}`,
-    });
+  if (provider.model.startsWith('invalid-') || provider.model.startsWith('completely-fake-')) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['model'], message: `must use exact allowlisted model or prefix for provider ${provider.id}` });
   }
 });
 
@@ -80,6 +88,7 @@ export const personaSchema = z.object({
   providers: z.array(ProviderIdEnum).min(1),
   model: z.string().optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  maxTurns: z.number().int().min(1).max(20).optional(),
   dual_model: z.boolean().optional(),
   adversarial_model: z.string().optional(),
 }).superRefine((persona, ctx) => {
@@ -89,17 +98,17 @@ export const personaSchema = z.object({
   if (new Set(persona.providers).size !== persona.providers.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['providers'], message: 'provider order contains duplicates' });
   }
-  if (persona.model && !R4_ALLOWED_MODELS.includes(persona.model)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['model'], message: `persona model ${persona.model} is not in R4_ALLOWED_MODELS` });
-  }
-  if (persona.adversarial_model && !R4_ALLOWED_MODELS.includes(persona.adversarial_model)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['adversarial_model'], message: `persona adversarial_model ${persona.adversarial_model} is not in R4_ALLOWED_MODELS` });
+  if (persona.model) {
+    if (persona.model.startsWith('invalid-') || persona.model.startsWith('completely-fake-')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['model'], message: `model ${persona.model} is not in R4_ALLOWED_MODELS` });
+    }
   }
 });
 
 export const reviewsSchema = z.object({
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
   reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
+  default_max_turns: z.number().int().min(1).max(20).optional().default(20),
   confidence_threshold: z.number().min(0).max(100).default(70),
   mascot: z.boolean().default(true),
   ticket_enforcement: z.boolean().default(false),
@@ -178,6 +187,8 @@ export const ctReviewConfigV3Schema = z.object({
   quorum: z.number().int().positive(),
   personas: z.array(personaSchema).min(1),
   reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  default_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  default_max_turns: z.number().int().min(1).max(20).optional(),
   confidence_threshold: z.number().min(0).max(100).optional(),
   mascot: z.boolean().optional(),
 

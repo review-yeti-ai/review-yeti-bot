@@ -11,7 +11,8 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { MermaidViewer } from './mermaid-viewer';
-import { ReviewJob, PersonaLogEntry, CodeNit } from '@/types/dashboard';
+import { PipelineFlowViewer } from './pipeline-flow-viewer';
+import { ReviewJob, PersonaLogEntry } from '@/types/dashboard';
 import {
   GitPullRequest,
   CheckCircle2,
@@ -31,6 +32,7 @@ import {
   Terminal,
   ListChecks,
 } from 'lucide-react';
+import { formatRelativeTime } from '@/lib/utils';
 
 class ModalErrorBoundary extends React.Component<
   { children: React.ReactNode; onReset: () => void },
@@ -95,159 +97,23 @@ export function PRReviewDetailModal({
 
   const personaLogs = React.useMemo(() => {
     if (!job) return [];
-    const defaultModelMap: Record<string, string> = {
-      security: 'claude-5-sonnet',
-      architecture: 'grok-cli/grok-4.5',
-      performance: 'glm-5.2',
-      quality: 'claude-5-sonnet',
-      database: 'gpt-4o',
-      api_contract: 'claude-3-5-sonnet',
-    };
-
-    const defaultReasoningMap: Record<string, string[]> = {
-      security: [
-        'Inspected pull request diff for memory leaks, authorization bypasses, and multi-tenant isolation.',
-        'Validated zero security boundary leaks or hardcoded credential exposures across modified files.',
-        'Verified JWT token verification pathways and cryptographic signature checking.',
-      ],
-      architecture: [
-        'Extracted modified AST symbols and mapped internal module dependencies.',
-        'Evaluated circular dependency risk and single responsibility principles.',
-        'Confirmed component structure and contract interfaces conform to ADR specifications.',
-      ],
-      performance: [
-        'Analyzed event loop blocking operations, async streaming, and query execution plans.',
-        'Evaluated heap allocation and memory leak risks in high-throughput data pipelines.',
-        'Validated execution latency stays well within sub-100ms SLA target.',
-      ],
-      quality: [
-        'Inspected code readability, error handling completeness, and type annotations.',
-        'Validated unit test coverage across all newly introduced logic branches.',
-        'Verified zero unhandled edge cases or missing null checks.',
-      ],
-      database: [
-        'Inspected SQL migration scripts, schema alter statements, and index configurations.',
-        'Verified transaction isolation levels and lock escalation prevention on production tables.',
-        'Checked query execution planner costs and database pool connections.',
-      ],
-      api_contract: [
-        'Validated OpenAPI v3 specification changes against contract schemas.',
-        'Checked for breaking payload format changes or schema regressions.',
-        'Confirmed error responses conform to RFC 7807 problem detail standards.',
-      ],
-    };
-
-    const defaultNitsMap: Record<string, CodeNit[]> = {
-      security: [
-        {
-          filePath: 'src/auth/jwt.ts',
-          lineNumber: 42,
-          severity: 'P1',
-          title: 'Timing attack vulnerability in signature verification',
-          description: 'Direct string comparison === can leak signature timing information during verification.',
-          suggestion: 'Use crypto.timingSafeEqual(bufferA, bufferB) for constant-time cryptographic comparison.',
-        },
-      ],
-      architecture: [
-        {
-          filePath: 'src/services/pipeline.ts',
-          lineNumber: 88,
-          severity: 'P2',
-          title: 'Monolithic function breaking single responsibility',
-          description: 'Inline data transformation logic should be decoupled from the core transport handler.',
-          suggestion: 'Refactor inline transformation into a dedicated PipelineMiddleware helper class.',
-        },
-      ],
-      performance: [
-        {
-          filePath: 'src/db/queries.ts',
-          lineNumber: 115,
-          severity: 'P2',
-          title: 'Missing compound index for paginated queries',
-          description: 'High cardinality filter on (tenant_id, created_at) leads to full table scans at scale.',
-          suggestion: 'CREATE INDEX CONCURRENTLY idx_cdr_tenant_date ON cdrs(tenant_id, created_at DESC);',
-        },
-      ],
-      quality: [
-        {
-          filePath: 'src/components/dashboard/pr-review-detail-modal.tsx',
-          lineNumber: 54,
-          severity: 'P2',
-          title: 'Missing explicit return type annotation',
-          description: 'Explicit return types improve IDE autocomplete speed and compiler diagnostics.',
-          suggestion: 'Add explicit return type annotation to togglePersona(personaKey: string): void',
-        },
-      ],
-      database: [
-        {
-          filePath: 'migrations/20260727_add_index.sql',
-          lineNumber: 12,
-          severity: 'P0',
-          title: 'Exclusive table lock during online schema migration',
-          description: 'Creating index without CONCURRENTLY locks writes on the production CDR table.',
-          suggestion: 'Use CREATE INDEX CONCURRENTLY to prevent blocking production writes during deployment.',
-        },
-      ],
-      api_contract: [
-        {
-          filePath: 'src/api/schema.ts',
-          lineNumber: 27,
-          severity: 'P1',
-          title: 'Nullable response field missing OpenAPI schema flag',
-          description: 'Field can return null at runtime but schema defines it as non-nullable string.',
-          suggestion: 'Set nullable: true on optional timestamp field in API contract definition.',
-        },
-      ],
-    };
 
     const rawLogs: PersonaLogEntry[] = (job.personaLogs && job.personaLogs.length > 0)
       ? job.personaLogs
-      : (job.personas || ['security', 'architecture', 'quality', 'database']).map((p) => {
-          const personaStr = typeof p === 'string' ? p : (p as any)?.persona || 'security';
-          const perPersonaLatency = job.latencyMs && job.personas && job.personas.length > 0
-            ? Math.round(job.latencyMs / job.personas.length)
-            : 420;
-          return {
-            persona: personaStr,
-            displayName: personaStr.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
-            decision: job.verdict || 'SHIP',
-            confidence: 0.95,
-            latencyMs: perPersonaLatency,
-            model: defaultModelMap[personaStr] || 'claude-5-sonnet',
-            findingsCount: 1,
-            summary: `Evaluation recorded for persona: ${personaStr.replace(/_/g, ' ')}. Verified zero contract regressions.`,
-          };
-        });
+      : [];
 
     return rawLogs.map((entry) => {
-      const personaStr = (entry && entry.persona) ? String(entry.persona) : 'security';
-      const personaKey = personaStr.toLowerCase();
-      const model = (entry && entry.model) || defaultModelMap[personaKey] || 'claude-5-sonnet';
+      const personaStr = (entry && entry.persona) ? String(entry.persona) : 'unknown';
+      const model = (entry && entry.model) || 'unknown';
       const reasoningChain = (entry && entry.reasoningChain && entry.reasoningChain.length > 0)
         ? entry.reasoningChain
-        : defaultReasoningMap[personaKey] || [
-            `Evaluated modified code against repository guidelines for persona ${personaStr}.`,
-            `Checked security boundaries, code quality, and AST schema compatibility.`,
-            `Verified zero blocking contract regressions across affected modules.`,
-          ];
+        : [];
       const nits = (entry && entry.nits && entry.nits.length > 0)
         ? entry.nits
-        : defaultNitsMap[personaKey] || [
-            {
-              filePath: 'src/components/dashboard/pr-review-detail-modal.tsx',
-              lineNumber: 42,
-              severity: 'P2',
-              title: 'Code Nit: Explicit return type recommended',
-              description: 'Adding explicit return types enhances type check clarity across persona modules.',
-              suggestion: 'Consider adding explicit return type annotation to persona panel event handlers.',
-            },
-          ];
-      const outputLog = (entry && entry.outputLog) || `[PERSONA_START] ${entry?.displayName || personaStr} (${model})
-[VERDICT] ${entry?.decision || 'SHIP'} (Confidence: ${Math.round(((entry && entry.confidence) || 0.95) * 100)}%)
-[REASONING_CHAIN]
-${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
-[NITS_INSPECTED] ${nits.length} finding(s) identified for inspection.
-[STATUS] Evaluation complete for ${job?.repo || 'calltelemetry/cisco-cdr'} #${job?.prNumber || 3056}. Zero blocking P0 regressions found.`;
+        : [];
+      const outputLog = (entry && entry.outputLog) || (entry?.apiError
+        ? `[API_ERROR] ${entry.apiError}`
+        : `[PERSONA] ${entry?.displayName || personaStr} (${model}) — ${entry?.decision || 'N/A'}`);
 
       return {
         ...entry,
@@ -310,13 +176,13 @@ ${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
 
 
 
-  const promptTokens = (job.tokenDetails?.prompt) || Math.round((job.tokens || 1000) * 0.7);
-  const completionTokens = (job.tokenDetails?.completion) || Math.round((job.tokens || 1000) * 0.3);
-  const totalTokens = (job.tokenDetails?.total) || job.tokens || 1000;
-  const quorum = job.quorum || '4/4';
-  const headSha = job.headSha || 'a8f192b';
-  const repoStr = job.repo || (job as any).repository || 'calltelemetry/cisco-cdr';
-  const prNumStr = job.prNumber || 3056;
+  const promptTokens = job.tokenDetails?.prompt ?? (job.tokens ? Math.round(job.tokens * 0.7) : 0);
+  const completionTokens = job.tokenDetails?.completion ?? (job.tokens ? Math.round(job.tokens * 0.3) : 0);
+  const totalTokens = job.tokenDetails?.total ?? job.tokens ?? 0;
+  const quorum = job.quorum || '—';
+  const headSha = job.headSha || '—';
+  const repoStr = job.repo || (job as any).repository || 'unknown/repo';
+  const prNumStr = job.prNumber ?? 0;
   const githubPrUrl = `https://github.com/${repoStr}/pull/${prNumStr}`;
 
   return (
@@ -359,9 +225,10 @@ ${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
               Commit: <code className="font-mono text-indigo-400">{headSha}</code>
             </span>
             <span>•</span>
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-muted-foreground" />
-              Executed: {job.timestamp}
+              Executed: <Badge variant="outline" className="text-[10px] font-mono py-0 px-1.5 border-border/80 text-foreground">⏱️ {formatRelativeTime(job.timestamp)}</Badge>
+              <span className="text-[11px] text-muted-foreground/70">({job.timestamp})</span>
             </span>
           </DialogDescription>
         </DialogHeader>
@@ -396,14 +263,14 @@ ${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
 
           <div className="p-3.5 rounded-lg border border-border bg-muted/20 space-y-1">
             <div className="flex items-center justify-between text-xs text-muted-foreground font-medium">
-              <span>Latency</span>
+              <span>Total Wall Time</span>
               <Clock className="w-3.5 h-3.5 text-amber-400" />
             </div>
             <div className="text-lg font-bold font-mono text-foreground">
-              {(job.latencyMs / 1000).toFixed(2)}s
+              {(((job as any).durationMs ?? job.latencyMs ?? 0) / 1000).toFixed(2)}s
             </div>
             <div className="text-[11px] text-muted-foreground font-mono">
-              {job.latencyMs} ms total
+              {(job as any).durationMs ?? job.latencyMs ?? 0} ms wall-clock
             </div>
           </div>
 
@@ -428,7 +295,14 @@ ${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
               <Bot className="w-4 h-4 text-indigo-400" /> Full Reviewer Output Logs & Code Nits
             </h4>
             <span className="text-xs text-muted-foreground">
-              {personaLogs.length} active persona agents (Click persona to inspect full logs & nits)
+              {(() => {
+                const successCount = personaLogs.filter(p => p.status !== 'error' && p.status !== 'timeout').length;
+                const errorCount = personaLogs.filter(p => p.status === 'error' || p.status === 'timeout').length;
+                if (errorCount > 0) {
+                  return `${successCount} active, ${errorCount} failed persona agent${errorCount !== 1 ? 's' : ''} (Click to inspect)`;
+                }
+                return `${successCount} active persona agent${successCount !== 1 ? 's' : ''} (Click persona to inspect full logs & nits)`;
+              })()}
             </span>
           </div>
 
@@ -436,11 +310,15 @@ ${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
             {personaLogs.map((entry, idx) => {
               const personaKey = entry.persona || `persona-${idx}`;
               const isExpanded = !!expandedPersonas[personaKey];
+              const isError = entry.status === 'error' || entry.status === 'timeout';
+              const borderClass = isError
+                ? 'border-red-500/40 bg-red-950/10'
+                : 'border-border/80 bg-muted/10';
 
               return (
                 <div
                   key={idx}
-                  className="rounded-lg border border-border/80 bg-muted/10 overflow-hidden text-xs transition-colors"
+                  className={`rounded-lg border ${borderClass} overflow-hidden text-xs transition-colors`}
                 >
                   <div
                     onClick={() => togglePersona(personaKey)}
@@ -461,46 +339,104 @@ ${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
                             {entry.model}
                           </span>
                         )}
+                        {/* Error/Status badge */}
+                        {isError && (
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                            entry.status === 'timeout'
+                              ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                              : 'bg-red-500/20 text-red-400 border-red-500/30'
+                          }`}>
+                            {entry.status === 'timeout' ? '⏱ TIMEOUT' : `⚠ API ERROR${entry.apiStatusCode ? ` ${entry.apiStatusCode}` : ''}`}
+                          </span>
+                        )}
+                        {entry.status === 'success' && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            ✓
+                          </span>
+                        )}
                       </div>
-                      {entry.summary && (
+                      {/* Error message display */}
+                      {isError && entry.apiError ? (
+                        <p className="text-red-400/80 leading-normal pl-6 font-mono text-[11px]">
+                          {entry.apiError.slice(0, 200)}{entry.apiError.length > 200 ? '…' : ''}
+                        </p>
+                      ) : entry.summary ? (
                         <p className="text-muted-foreground leading-normal pl-6">
                           {entry.summary}
                         </p>
-                      )}
+                      ) : null}
                     </div>
 
-                    <div className="flex items-center gap-4 flex-shrink-0 border-t sm:border-t-0 border-border/40 pt-2 sm:pt-0 pl-6 sm:pl-0">
-                      {entry.confidence !== undefined && (
+                    {!isError ? (
+                      <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap flex-shrink-0 border-t sm:border-t-0 border-border/40 pt-2 sm:pt-0 pl-6 sm:pl-0">
                         <div className="text-right">
-                          <div className="text-[10px] text-muted-foreground uppercase font-mono">Confidence</div>
-                          <div className="font-mono font-bold text-foreground">
-                            {Math.round(entry.confidence * 100)}%
+                          <div className="text-[10px] text-muted-foreground uppercase font-mono">Agent Harness</div>
+                          <div className="font-mono text-xs font-medium text-indigo-300">
+                            🔄 {entry.turnsCount ?? 1} {(entry.turnsCount ?? 1) === 1 ? 'turn' : 'turns'}
                           </div>
                         </div>
-                      )}
-                      {entry.latencyMs && (
                         <div className="text-right">
-                          <div className="text-[10px] text-muted-foreground uppercase font-mono">Latency</div>
-                          <div className="font-mono text-muted-foreground">
-                            {entry.latencyMs}ms
+                          <div className="text-[10px] text-muted-foreground uppercase font-mono">Tokens (In / Out)</div>
+                          <div className="font-mono text-xs text-muted-foreground">
+                            📥 {entry.promptTokens ?? 0} / 📤 {entry.completionTokens ?? 0}
                           </div>
                         </div>
-                      )}
-                      <div>
-                        {getVerdictBadge(entry.decision)}
+                        <div className="text-right">
+                          <div className="text-[10px] text-muted-foreground uppercase font-mono">Cost</div>
+                          <div className="font-mono text-xs font-semibold text-emerald-400">
+                            ${(entry.costUSD ?? 0).toFixed(5)}
+                          </div>
+                        </div>
+                        {entry.confidence !== undefined && entry.confidence > 0 && (
+                          <div className="text-right">
+                            <div className="text-[10px] text-muted-foreground uppercase font-mono">Confidence</div>
+                            <div className="font-mono font-bold text-foreground">
+                              {Math.round(entry.confidence * 100)}%
+                            </div>
+                          </div>
+                        )}
+                        {entry.latencyMs && (
+                          <div className="text-right">
+                            <div className="text-[10px] text-muted-foreground uppercase font-mono">Latency</div>
+                            <div className="font-mono text-muted-foreground">
+                              {entry.latencyMs}ms
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          {getVerdictBadge(entry.decision)}
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-2 pl-6 sm:pl-0">
+                        <div>
+                          <span className="font-mono text-[10px] px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20">
+                            No API response
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Expanded Full Logs, Reasoning Chain & Code Nits Inspector */}
                   {isExpanded && (
                     <div className="p-4 bg-black/40 border-t border-border/60 space-y-4">
+                      {/* Review Flowchart Persona — Render Mermaid Codebase Diagram */}
+                      {(entry.persona === 'review_flowchart' || entry.persona === 'flowchart-lane') && entry.outputLog && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1.5 text-xs text-sky-400 font-semibold">
+                            📊 Codebase Architectural Flowchart
+                          </div>
+                          <MermaidViewer diagram={entry.outputLog} />
+                        </div>
+                      )}
+
                       {/* Raw Reviewer Output Log */}
                       <div className="space-y-1.5 font-mono">
                         <div className="flex items-center justify-between text-muted-foreground text-[11px]">
                           <span className="flex items-center gap-1.5 font-semibold text-indigo-300">
                             <Terminal className="w-3.5 h-3.5 text-indigo-400" />
-                            Reviewer Output Log (Model Tag: {entry.model || 'claude-3-5-sonnet'})
+                            Reviewer Output Log (Model Tag: {entry.model || 'claude-haiku-4.5'})
                           </span>
                           <span>Persona: {entry.persona}</span>
                         </div>
@@ -603,20 +539,16 @@ ${reasoningChain.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}
               );
             })}
           </div>
+
+          {/* Agent Pipeline Workflow Diagram */}
+          <div className="space-y-3 my-4" data-testid="pr-detail-pipeline-section">
+            <h4 className="text-sm font-semibold text-foreground">
+              Agent Pipeline Workflow
+            </h4>
+            <PipelineFlowViewer job={job} personaLogs={personaLogs} />
+          </div>
         </div>
 
-        {/* Mermaid Sequence & Architectural Diagram */}
-        {(() => {
-          const diagramToRender = job.mermaidDiagram || personaLogs.find((p) => p.persona === 'review_flowchart')?.outputLog;
-          return (
-            <div className="space-y-3 my-4" data-testid="pr-detail-mermaid-section">
-              <h4 className="text-sm font-semibold text-foreground">
-                Architectural Sequence &amp; Flowchart
-              </h4>
-              <MermaidViewer diagram={diagramToRender} />
-            </div>
-          );
-        })()}
         </ModalErrorBoundary>
       </DialogContent>
     </Dialog>

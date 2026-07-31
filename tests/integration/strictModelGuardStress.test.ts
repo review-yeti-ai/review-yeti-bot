@@ -258,7 +258,7 @@ describe('Milestone 1: Strict Enabled Model Guard & Disablement Stress & Corner 
 
       const res = await request(app)
         .put('/api/dashboard/personas/security')
-        .send({ model: 'claude-3-5-sonnet' });
+        .send({ model: 'claude-haiku-4.5' });
 
       expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
@@ -266,6 +266,7 @@ describe('Milestone 1: Strict Enabled Model Guard & Disablement Stress & Corner 
     });
 
     it('PUT /api/dashboard/providers/:id returns 400 when disabling provider in-use', async () => {
+      store.updatePersonaSetting('security', { model: 'claude-haiku-4.5', enabled: true });
       const res = await request(app)
         .put('/api/dashboard/providers/anthropic')
         .send({ enabled: false, active: false });

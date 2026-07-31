@@ -35,6 +35,7 @@ export interface PersonaSetting {
   providerId?: string;
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   effortLevel?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  maxTurns?: number;
   confidenceThreshold: number;
   customPrompt?: string;
   required?: boolean;
@@ -116,6 +117,8 @@ export interface ModelRegistryItem {
 
 export interface PlatformSettings {
   defaultModelOverrides: Record<string, string>;
+  defaultMaxTurns?: number;
+  defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   personaSettings?: Record<string, PersonaSetting>;
   providerConfigs?: Record<string, ProviderConfigRecord>;
   modelRegistry?: Record<string, ModelRegistryItem>;
@@ -173,6 +176,21 @@ export interface ReviewLogEntry {
     model?: string;
     findingsCount?: number;
     summary?: string;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    costUSD?: number;
+    outputLog?: string;
+    reasoningChain?: string[];
+    turnsCount?: number;
+    nits?: Array<{
+      filePath: string;
+      lineNumber: number;
+      severity: string;
+      title: string;
+      description?: string;
+      suggestion?: string;
+    }>;
   }>;
   mermaidDiagram?: string;
 }
@@ -482,6 +500,8 @@ export class DashboardStore {
           grok: 'grok-cli/grok-4.5',
           'agy-opus': 'agy/claude-opus-4-6-thinking',
         },
+        defaultMaxTurns: 20,
+        defaultEffort: 'low',
         personaSettings: {
           security: {
             id: 'security',
@@ -497,6 +517,7 @@ export class DashboardStore {
             providerId: 'anthropic',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 85,
             customPrompt: `Find security, authentication, authorization, tenant-isolation, secret, and injection defects.
 
@@ -528,9 +549,9 @@ export class DashboardStore {
             enabled: true,
             required: true,
             charter: 'builtin:consistency',
-            model: 'grok-cli/grok-4.5',
-            modelId: 'grok-cli/grok-4.5',
-            providerId: 'grok',
+            model: 'synthetic/hf:moonshotai/Kimi-K3',
+            modelId: 'synthetic/hf:moonshotai/Kimi-K3',
+            providerId: 'synthetic',
             effort: 'low',
             effortLevel: 'low',
             confidenceThreshold: 75,
@@ -596,9 +617,9 @@ export class DashboardStore {
             enabled: true,
             required: true,
             charter: 'builtin:correctness',
-            model: 'claude-3-5-sonnet',
-            modelId: 'claude-3-5-sonnet',
-            providerId: 'anthropic',
+            model: 'synthetic/hf:Qwen/Qwen3.6-27B',
+            modelId: 'synthetic/hf:Qwen/Qwen3.6-27B',
+            providerId: 'synthetic',
             effort: 'low',
             effortLevel: 'low',
             confidenceThreshold: 70,
@@ -630,9 +651,9 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:database',
-            model: 'glm-5.2',
-            modelId: 'glm-5.2',
-            providerId: 'glm',
+            model: 'synthetic/hf:zai-org/GLM-4.7-Flash',
+            modelId: 'synthetic/hf:zai-org/GLM-4.7-Flash',
+            providerId: 'synthetic',
             effort: 'low',
             effortLevel: 'low',
             confidenceThreshold: 80,
@@ -664,9 +685,9 @@ export class DashboardStore {
             enabled: true,
             required: true,
             charter: 'builtin:contract',
-            model: 'claude-3-5-sonnet',
-            modelId: 'claude-3-5-sonnet',
-            providerId: 'anthropic',
+            model: 'synthetic/hf:Qwen/Qwen3.6-27B',
+            modelId: 'synthetic/hf:Qwen/Qwen3.6-27B',
+            providerId: 'synthetic',
             effort: 'low',
             effortLevel: 'low',
             confidenceThreshold: 75,
@@ -698,9 +719,9 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:docs-compliance',
-            model: 'claude-3-5-sonnet',
-            modelId: 'claude-3-5-sonnet',
-            providerId: 'anthropic',
+            model: 'synthetic/hf:zai-org/GLM-4.7-Flash',
+            modelId: 'synthetic/hf:zai-org/GLM-4.7-Flash',
+            providerId: 'synthetic',
             effort: 'low',
             effortLevel: 'low',
             confidenceThreshold: 60,
@@ -975,7 +996,7 @@ export class DashboardStore {
             subscriptionTier: 'Team',
             status: process.env.ANTHROPIC_API_KEY ? 'connected' : 'untested',
             latencyMs: 38,
-            activeModels: ['claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-opus-4-8'],
+            activeModels: ['claude-haiku-4.5', 'claude-5-sonnet', 'claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-opus-4-8'],
             customModels: [],
             updatedAt: now,
           },
@@ -1035,19 +1056,27 @@ export class DashboardStore {
           },
           glm: {
             id: 'glm',
-            name: 'GLM / Synthetic Arbiter',
-            displayName: 'GLM / Synthetic Arbiter',
+            name: 'Synthetic / GLM Router',
+            displayName: 'Synthetic / GLM Router',
             enabled: true,
             active: true,
-            apiKey: process.env.GLM_API_KEY ? maskSecretKey(process.env.GLM_API_KEY) : '',
-            apiKeyMasked: process.env.GLM_API_KEY ? maskSecretKey(process.env.GLM_API_KEY) : '',
-            apiKeyRaw: process.env.GLM_API_KEY || '',
-            baseUrl: 'https://api.omniroute.internal/v1',
+            apiKey: process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY ? maskSecretKey(process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY || '') : '',
+            apiKeyMasked: process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY ? maskSecretKey(process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY || '') : '',
+            apiKeyRaw: process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY || '',
+            baseUrl: process.env.SYNTHETIC_BASE_URL || 'https://api.omniroute.internal/v1',
             orgId: 'org-ct-glm',
             subscriptionTier: 'Free',
             status: 'connected',
             latencyMs: 12,
-            activeModels: ['glm-5.2', 'synthetic/v1', 'synthetic/glm-5.2-high'],
+            activeModels: [
+              'glm-5.2',
+              'synthetic/v1',
+              'synthetic/glm-5.2-high',
+              'synthetic/hf:zai-org/GLM-5.2',
+              'synthetic/hf:moonshotai/Kimi-K3',
+              'synthetic/hf:Qwen/Qwen3.6-27B',
+              'synthetic/hf:zai-org/GLM-4.7-Flash',
+            ],
             customModels: [],
             updatedAt: now,
           },
@@ -1138,8 +1167,8 @@ export class DashboardStore {
           'gpt-4o-mini': { id: 'gpt-4o-mini', providerId: 'openai', displayName: 'GPT-4o Mini', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.00015, costPer1kCompletionUSD: 0.0006 },
           'o1-mini': { id: 'o1-mini', providerId: 'openai', displayName: 'o1-mini Reasoning', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.003, costPer1kCompletionUSD: 0.012 },
           'o3-mini': { id: 'o3-mini', providerId: 'openai', displayName: 'o3-mini Reasoning', enabled: true, contextWindowTokens: 200000, costPer1kPromptUSD: 0.0011, costPer1kCompletionUSD: 0.0044 },
-          'claude-3-5-sonnet': { id: 'claude-3-5-sonnet', providerId: 'anthropic', displayName: 'Claude 3.5 Sonnet', enabled: true, contextWindowTokens: 200000, costPer1kPromptUSD: 0.003, costPer1kCompletionUSD: 0.015 },
-          'claude-3-7-sonnet': { id: 'claude-3-7-sonnet', providerId: 'anthropic', displayName: 'Claude 3.7 Sonnet', enabled: true, contextWindowTokens: 200000, costPer1kPromptUSD: 0.003, costPer1kCompletionUSD: 0.015 },
+          'claude-haiku-4.5': { id: 'claude-haiku-4.5', providerId: 'anthropic', displayName: 'Claude Haiku 4.5', enabled: true, contextWindowTokens: 200000, costPer1kPromptUSD: 0.001, costPer1kCompletionUSD: 0.005 },
+          'claude-5-sonnet': { id: 'claude-5-sonnet', providerId: 'anthropic', displayName: 'Claude 5 Sonnet', enabled: true, contextWindowTokens: 200000, costPer1kPromptUSD: 0.003, costPer1kCompletionUSD: 0.015 },
           'claude-opus-4-8': { id: 'claude-opus-4-8', providerId: 'anthropic', displayName: 'Claude Opus 4.8', enabled: true, contextWindowTokens: 200000, costPer1kPromptUSD: 0.015, costPer1kCompletionUSD: 0.075 },
           'gemini-1.5-pro': { id: 'gemini-1.5-pro', providerId: 'gemini', displayName: 'Gemini 1.5 Pro', enabled: true, contextWindowTokens: 1000000, costPer1kPromptUSD: 0.00125, costPer1kCompletionUSD: 0.005 },
           'gemini-2.0-flash': { id: 'gemini-2.0-flash', providerId: 'gemini', displayName: 'Gemini 2.0 Flash', enabled: true, contextWindowTokens: 1000000, costPer1kPromptUSD: 0.0001, costPer1kCompletionUSD: 0.0004 },
@@ -1149,9 +1178,12 @@ export class DashboardStore {
           'deepseek-v3': { id: 'deepseek-v3', providerId: 'deepseek', displayName: 'DeepSeek V3', enabled: true, contextWindowTokens: 64000, costPer1kPromptUSD: 0.0005, costPer1kCompletionUSD: 0.002 },
           'deepseek-r1': { id: 'deepseek-r1', providerId: 'deepseek', displayName: 'DeepSeek R1 Reasoning', enabled: true, contextWindowTokens: 64000, costPer1kPromptUSD: 0.00055, costPer1kCompletionUSD: 0.00219 },
           'deepseek-v4-pro': { id: 'deepseek-v4-pro', providerId: 'deepseek', displayName: 'DeepSeek V4 Pro', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.001, costPer1kCompletionUSD: 0.004 },
-          'glm-5.2': { id: 'glm-5.2', providerId: 'glm', displayName: 'GLM 5.2 Synthetic', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.0, costPer1kCompletionUSD: 0.0 },
-          'synthetic/v1': { id: 'synthetic/v1', providerId: 'glm', displayName: 'Synthetic V1', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.0, costPer1kCompletionUSD: 0.0 },
-          'synthetic/glm-5.2-high': { id: 'synthetic/glm-5.2-high', providerId: 'glm', displayName: 'Synthetic GLM-5.2 High', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.0, costPer1kCompletionUSD: 0.0 },
+          'glm-5.2': { id: 'glm-5.2', providerId: 'synthetic', displayName: 'GLM 5.2 Synthetic', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.001, costPer1kCompletionUSD: 0.002 },
+          'synthetic/v1': { id: 'synthetic/v1', providerId: 'synthetic', displayName: 'Synthetic V1', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.001, costPer1kCompletionUSD: 0.002 },
+          'synthetic/glm-5.2-high': { id: 'synthetic/glm-5.2-high', providerId: 'synthetic', displayName: 'Synthetic GLM-5.2 High', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.001, costPer1kCompletionUSD: 0.002 },
+          'synthetic/hf:moonshotai/Kimi-K3': { id: 'synthetic/hf:moonshotai/Kimi-K3', providerId: 'synthetic', displayName: 'Synthetic Kimi K3 (2.8T MoE / 1M Context)', enabled: true, contextWindowTokens: 1000000, costPer1kPromptUSD: 0.001, costPer1kCompletionUSD: 0.002 },
+          'synthetic/hf:zai-org/GLM-4.7-Flash': { id: 'synthetic/hf:zai-org/GLM-4.7-Flash', providerId: 'synthetic', displayName: 'Synthetic GLM 4.7 Flash (Cheap)', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.0005, costPer1kCompletionUSD: 0.001 },
+          'synthetic/hf:Qwen/Qwen3.6-27B': { id: 'synthetic/hf:Qwen/Qwen3.6-27B', providerId: 'synthetic', displayName: 'Synthetic Qwen 3.6 27B', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.001, costPer1kCompletionUSD: 0.002 },
           'doppler-sync-v1': { id: 'doppler-sync-v1', providerId: 'doppler', displayName: 'Doppler Secret Sync V1', enabled: true },
           'llama3.3': { id: 'llama3.3', providerId: 'ollama', displayName: 'Llama 3.3 70B', enabled: true, contextWindowTokens: 128000, costPer1kPromptUSD: 0.0, costPer1kCompletionUSD: 0.0 },
           'qwen2.5-coder': { id: 'qwen2.5-coder', providerId: 'ollama', displayName: 'Qwen 2.5 Coder 32B', enabled: true, contextWindowTokens: 32000, costPer1kPromptUSD: 0.0, costPer1kCompletionUSD: 0.0, isCustom: true },
@@ -1163,11 +1195,11 @@ export class DashboardStore {
         },
       },
       apiKeys: [],
-      reviewCounter: 4,
-      totalCostUSD: 1.745,
-      totalPromptTokens: 153900,
-      totalCompletionTokens: 18800,
-      reviewLogs: [
+      reviewCounter: process.env.CT_DEMO_MODE === 'true' ? 4 : 0,
+      totalCostUSD: process.env.CT_DEMO_MODE === 'true' ? 1.745 : 0,
+      totalPromptTokens: process.env.CT_DEMO_MODE === 'true' ? 153900 : 0,
+      totalCompletionTokens: process.env.CT_DEMO_MODE === 'true' ? 18800 : 0,
+      reviewLogs: process.env.CT_DEMO_MODE === 'true' ? [
         {
           id: 'job-prod-3056',
           prRun: 'calltelemetry/cisco-cdr #3056',
@@ -1295,7 +1327,7 @@ export class DashboardStore {
               decision: 'SHIP',
               confidence: 0.97,
               latencyMs: 750,
-              model: 'claude-3-5-sonnet',
+              model: 'claude-haiku-4.5',
               findingsCount: 0,
               summary: 'Validated tenant policy synchronization and OpenAPI RBAC rules.',
             },
@@ -1315,13 +1347,13 @@ export class DashboardStore {
               decision: 'SHIP',
               confidence: 0.94,
               latencyMs: 810,
-              model: 'claude-3-5-sonnet',
+              model: 'claude-haiku-4.5',
               findingsCount: 0,
               summary: 'No breaking changes detected in v3 endpoint payload schemas.',
             },
           ],
         },
-      ],
+      ] : [],
       integrations: {
         linear: {
           id: 'linear',
@@ -1684,12 +1716,29 @@ export class DashboardStore {
   }
 
   public getSettings(): PlatformSettings {
-    return JSON.parse(JSON.stringify(this.data.settings));
+    const settings = JSON.parse(JSON.stringify(this.data.settings));
+    if (settings.defaultMaxTurns === undefined) {
+      settings.defaultMaxTurns = 20;
+    }
+    if (settings.defaultEffort === undefined) {
+      settings.defaultEffort = 'low';
+    }
+    if (settings.providerConfigs) {
+      for (const prov of Object.values(settings.providerConfigs as Record<string, any>)) {
+        if (prov) {
+          delete prov.apiKeyRaw;
+          if (prov.apiKey && !prov.apiKey.includes('*') && prov.apiKey.length > 8) {
+            prov.apiKey = maskSecretKey(prov.apiKey);
+          }
+        }
+      }
+    }
+    return settings;
   }
 
   public getDynamicActiveModels(): string[] {
     const activeModelsSet = new Set<string>();
-    const providerConfigs = this.data.settings?.providerConfigs || {};
+    const providerConfigs = this.getProviderConfigs();
     const registry = this.data.settings?.modelRegistry || {};
 
     const getProviderIdForModel = (mId: string, item?: ModelRegistryItem): string | undefined => {
@@ -1713,16 +1762,19 @@ export class DashboardStore {
     };
 
     const isProviderEnabled = (providerId: string): boolean => {
-      const config = providerConfigs[providerId];
+      const realId = providerId === 'synthetic' ? 'glm' : providerId;
+      const config = providerConfigs[realId];
       if (!config) return true;
       return config.enabled !== false && config.active !== false;
     };
 
     const isModelAllowedByProvider = (mId: string, providerId: string): boolean => {
-      const cfg = providerConfigs[providerId];
+      const realId = providerId === 'synthetic' ? 'glm' : providerId;
+      const cfg = providerConfigs[realId];
       if (!cfg) return true;
       if (cfg.enabled === false || cfg.active === false) return false;
-      if (Array.isArray(cfg.activeModels)) {
+      if (mId.startsWith('synthetic/') || mId.startsWith('glm') || mId.startsWith('opencode')) return true;
+      if (Array.isArray(cfg.activeModels) && cfg.activeModels.length > 0) {
         const inActive = cfg.activeModels.includes(mId);
         const inCustom = Array.isArray(cfg.customModels) && cfg.customModels.includes(mId);
         if (!inActive && !inCustom) return false;
@@ -1754,12 +1806,10 @@ export class DashboardStore {
     for (const mId of R4_ALLOWED_MODELS) {
       const item = registry[mId];
       const pId = getProviderIdForModel(mId, item);
-      if (pId) {
-        if ((!item || item.enabled !== false) && isProviderEnabled(pId)) {
+      if (pId && isProviderEnabled(pId) && isModelAllowedByProvider(mId, pId)) {
+        if (!item || item.enabled !== false) {
           activeModelsSet.add(mId);
         }
-      } else if (!item || item.enabled !== false) {
-        activeModelsSet.add(mId);
       }
     }
 
@@ -1767,8 +1817,8 @@ export class DashboardStore {
   }
 
   public getProviderConfigs(): Record<string, ProviderConfigRecord> {
-    const settings = this.getSettings();
-    const configs = settings.providerConfigs || this.defaultData().settings.providerConfigs || {};
+    // Use raw data directly so apiKeyRaw is available for masking
+    const configs = this.data.settings.providerConfigs || this.defaultData().settings.providerConfigs || {};
     const defaults = this.defaultData().settings.providerConfigs || {};
     const result: Record<string, ProviderConfigRecord> = {};
 
@@ -1801,6 +1851,7 @@ export class DashboardStore {
         customModels: cfg.customModels || [],
         updatedAt: cfg.updatedAt || new Date().toISOString(),
       };
+      delete (result[id] as any).apiKeyRaw;
     }
     return result;
   }
@@ -1903,6 +1954,11 @@ export class DashboardStore {
     if (typeof persona.effort !== 'string' || !allowedEfforts.includes(persona.effort)) {
       throw new Error(`effort for '${key}' must be one of low, medium, high, xhigh, max`);
     }
+    if (persona.maxTurns !== undefined) {
+      if (typeof persona.maxTurns !== 'number' || !Number.isInteger(persona.maxTurns) || persona.maxTurns < 1 || persona.maxTurns > 20) {
+        throw new Error(`maxTurns for '${key}' must be an integer between 1 and 20`);
+      }
+    }
     if (typeof persona.model !== 'string' || !persona.model.trim()) {
       throw new Error(`model for '${key}' must be a non-empty string`);
     }
@@ -1942,10 +1998,22 @@ export class DashboardStore {
     ];
 
     for (const key of standardIds) {
-      const item = personas[key] || defaults[key];
+      let item = personas[key] || defaults[key];
       if (!item) continue;
-      const modelId = item.modelId || item.model;
-      const providerId = item.providerId || 'anthropic';
+      let modelId = item.modelId || item.model;
+      let providerId = item.providerId || 'synthetic';
+
+      if (!modelId) {
+        const defItem = defaults[key];
+        if (defItem) {
+          modelId = defItem.modelId || defItem.model;
+          providerId = defItem.providerId || 'synthetic';
+        } else {
+          modelId = 'synthetic/hf:zai-org/GLM-5.2';
+          providerId = 'synthetic';
+        }
+      }
+
       const effortLevel = item.effortLevel || item.effort || 'low';
       const name = item.name || item.displayName || key;
       result[key] = {
@@ -1959,6 +2027,7 @@ export class DashboardStore {
         providerId,
         effort: effortLevel as any,
         effortLevel: effortLevel as any,
+        maxTurns: item.maxTurns !== undefined ? item.maxTurns : 20,
         confidenceThreshold: item.confidenceThreshold !== undefined ? item.confidenceThreshold : 75,
       };
     }
@@ -1998,6 +2067,19 @@ export class DashboardStore {
       documentation: 'docs_compliance',
       linear_sync: 'finops',
       ux_product: 'red_team',
+      'sec-lane': 'security',
+      'arch-lane': 'architecture',
+      'qual-lane': 'quality',
+      'correctness-lane': 'quality',
+      'contract-lane': 'api_contract',
+      'policy-lane': 'reliability',
+      'perf-lane': 'performance',
+      'db-lane': 'database',
+      'finops-lane': 'finops',
+      'docs-lane': 'docs_compliance',
+      'devops-lane': 'devops',
+      'redteam-lane': 'red_team',
+      'flowchart-lane': 'review_flowchart',
     };
     const targetId = personaAliases[personaId];
     if (targetId && personas[targetId]) {
@@ -2028,15 +2110,24 @@ export class DashboardStore {
       if (typeof rawModel !== 'string' || rawModel.trim() === '') {
         throw new Error(`model for '${personaId}' must be a non-empty string`);
       }
-      const allowedModels = this.getDynamicActiveModels();
-      const isAllowed = allowedModels.includes(rawModel) || R4_ALLOWED_MODELS.includes(rawModel as any);
-      const registryItem = (this.data.settings?.modelRegistry || {})[rawModel];
-      if (registryItem) {
-        const provConfig = (this.data.settings?.providerConfigs || {})[registryItem.providerId];
-        if (provConfig && (provConfig.enabled === false || provConfig.active === false)) {
+      const provId = rawModel.startsWith('claude') ? 'anthropic' :
+                     rawModel.startsWith('gpt-') || rawModel.startsWith('o1-') || rawModel.startsWith('o3-') ? 'openai' :
+                     rawModel.startsWith('grok') ? 'grok' :
+                     rawModel.startsWith('gemini') ? 'gemini' :
+                     rawModel.startsWith('deepseek') ? 'deepseek' :
+                     rawModel.startsWith('codex') ? 'codex' :
+                     rawModel.startsWith('glm') || rawModel.startsWith('synthetic') ? 'glm' : undefined;
+
+      const provConfigs = this.getProviderConfigs();
+      if (provId && provConfigs[provId]) {
+        const pCfg = provConfigs[provId];
+        if (pCfg.enabled === false || pCfg.active === false) {
           throw new Error(`model '${rawModel}' for '${personaId}' is not an allowed model override`);
         }
       }
+
+      const allowedModels = this.getDynamicActiveModels();
+      const isAllowed = allowedModels.includes(rawModel) || R4_ALLOWED_MODELS.includes(rawModel as any);
       if (!isAllowed) {
         throw new Error(`model '${rawModel}' for '${personaId}' is not an allowed model override`);
       }
@@ -2089,7 +2180,7 @@ export class DashboardStore {
         displayName: targetId,
         description: targetId,
         enabled: true,
-        model: 'claude-3-5-sonnet',
+        model: 'claude-haiku-4.5',
         effort: 'low',
         confidenceThreshold: 75,
       };
@@ -2128,6 +2219,17 @@ export class DashboardStore {
   }
 
   public updateSettings(newSettings: Partial<PlatformSettings>): PlatformSettings {
+    if (newSettings.defaultMaxTurns !== undefined) {
+      if (typeof newSettings.defaultMaxTurns !== 'number' || !Number.isInteger(newSettings.defaultMaxTurns) || newSettings.defaultMaxTurns < 1 || newSettings.defaultMaxTurns > 20) {
+        throw new Error('defaultMaxTurns must be an integer between 1 and 20');
+      }
+    }
+    if (newSettings.defaultEffort !== undefined) {
+      const allowedEfforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+      if (typeof newSettings.defaultEffort !== 'string' || !allowedEfforts.includes(newSettings.defaultEffort)) {
+        throw new Error('defaultEffort must be one of low, medium, high, xhigh, max');
+      }
+    }
     if (newSettings.defaultModelOverrides) {
       for (const [provider, model] of Object.entries(newSettings.defaultModelOverrides)) {
         if (typeof model !== 'string' || !model.trim()) {
@@ -2147,10 +2249,12 @@ export class DashboardStore {
           }
         }
       }
-      this.data.settings.providerConfigs = {
-        ...(this.data.settings.providerConfigs || {}),
-        ...newSettings.providerConfigs,
-      };
+      const existing = this.data.settings.providerConfigs || {};
+      const merged: Record<string, any> = { ...existing };
+      for (const [pid, pCfg] of Object.entries(newSettings.providerConfigs)) {
+        merged[pid] = { ...(existing[pid] || {}), ...pCfg };
+      }
+      this.data.settings.providerConfigs = merged;
     }
 
     const currentPersonas = this.data.settings.personaSettings || {};
@@ -2167,6 +2271,8 @@ export class DashboardStore {
     this.data.settings = {
       ...this.data.settings,
       ...newSettings,
+      // providerConfigs was already deep-merged above (line 2270); use the merged result
+      providerConfigs: this.data.settings.providerConfigs,
       defaultModelOverrides: {
         ...this.data.settings.defaultModelOverrides,
         ...(newSettings.defaultModelOverrides || {}),
@@ -2380,9 +2486,9 @@ export class DashboardStore {
       repo: run.repo || run.repository || prRunName.split(' #')[0].split('#')[0],
       prNumber: run.prNumber || parseInt(prRunName.split('#')[1] || '1', 10),
       title: run.title || `PR #${run.prNumber || 1} Code Review`,
-      headSha: run.headSha || 'head-sha',
-      personas: typeof run.personas === 'string' ? run.personas : Array.isArray(run.personas) ? run.personas.map((p: any) => typeof p === 'string' ? p : p.id || p.persona).join(', ') : '4 Personas',
-      quorum: run.quorum ? (typeof run.quorum === 'string' ? run.quorum : `${run.quorum.distinctProviders?.length || 4}/${run.quorum.required || 4}`) : '4/4',
+      headSha: run.headSha || '',
+      personas: typeof run.personas === 'string' ? run.personas : Array.isArray(run.personas) ? run.personas.map((p: any) => typeof p === 'string' ? p : p.id || p.persona).join(', ') : '',
+      quorum: run.quorum ? (typeof run.quorum === 'string' ? run.quorum : `${run.quorum.distinctProviders?.length || 0}/${run.quorum.required || 0}`) : '—',
       arbiterVerdict: verdict,
       verdict: verdict as any,
       timestamp: run.timestamp || new Date().toISOString(),
@@ -2735,35 +2841,35 @@ export class DashboardStore {
 
   public getReviewLogs(): ReviewLogEntry[] {
     const rawLogs = [...(this.data.reviewLogs || [])];
-    const effectiveLogs = rawLogs.length > 0 ? rawLogs : (this.defaultData().reviewLogs || []);
-    return effectiveLogs.map((log: any) => {
-      const repo = log.repo || (log.prRun ? log.prRun.split(' #')[0].split('#')[0] : 'calltelemetry/cisco-cdr');
-      const prNumber = log.prNumber || (log.prRun && log.prRun.includes('#') ? parseInt(log.prRun.split('#')[1], 10) : 1);
+    return rawLogs.map((log: any) => {
+      const repo = log.repo || (log.prRun ? log.prRun.split(' #')[0].split('#')[0] : 'unknown/repo');
+      const prNumber = log.prNumber || (log.prRun && log.prRun.includes('#') ? parseInt(log.prRun.split('#')[1], 10) : 0);
       const personasList = Array.isArray(log.personas)
         ? log.personas
         : typeof log.personas === 'string'
         ? log.personas.split(', ').map((s: string) => s.trim()).filter(Boolean)
-        : ['security', 'architecture', 'quality'];
+        : [];
       return {
         id: log.id,
         prRun: log.prRun || `${repo} #${prNumber}`,
         repo,
-        prNumber: isNaN(prNumber) ? 1 : prNumber,
-        title: log.title || `PR Review Execution for ${repo} #${prNumber || 1}`,
+        prNumber: isNaN(prNumber) ? 0 : prNumber,
+        title: log.title || `PR Review for ${repo} #${prNumber || 0}`,
         status: log.status || 'completed',
         personas: personasList as any,
         verdict: log.verdict || log.arbiterVerdict || 'SHIP',
         arbiterVerdict: log.arbiterVerdict || log.verdict || 'SHIP',
-        tokens: log.tokens?.total || (log.tokens?.prompt ? (log.tokens.prompt + (log.tokens.completion || 0)) : 0) as any,
-        tokenDetails: log.tokenDetails || log.tokens,
+        tokens: (log.tokens?.total != null ? log.tokens.total : (log.tokens?.prompt != null ? (log.tokens.prompt + (log.tokens.completion ?? 0)) : 0)) as any,
+        tokenDetails: log.tokenDetails ?? log.tokens ?? undefined,
         cost: log.costUSD ?? log.cost ?? 0,
         costUSD: log.costUSD ?? log.cost ?? 0,
-        latencyMs: log.latencyMs || 0,
-        timestamp: log.timestamp || 'Just now',
-        headSha: log.headSha || 'head-sha',
-        quorum: log.quorum || '4/4',
+        latencyMs: log.latencyMs ?? 0,
+        timestamp: log.timestamp || new Date().toISOString(),
+        headSha: log.headSha || '',
+        quorum: log.quorum || '—',
         personaLogs: log.personaLogs,
         mermaidDiagram: log.mermaidDiagram,
+        optionalFailures: log.optionalFailures,
       };
     });
   }
@@ -2813,15 +2919,18 @@ export class DashboardStore {
           model,
         }));
 
-    const promptTokens = this.data.totalPromptTokens || 0;
-    const completionTokens = this.data.totalCompletionTokens || 0;
-
-    let totalCostUSD = this.data.totalCostUSD || 0;
-    if (totalCostUSD === 0 && this.data.reviewLogs && this.data.reviewLogs.length > 0) {
-      totalCostUSD = this.data.reviewLogs.reduce((sum, log) => sum + (log.costUSD || 0), 0);
-    }
-
     const logs = this.data.reviewLogs || [];
+
+    const promptTokens = (this.data.totalPromptTokens && this.data.totalPromptTokens > 0)
+      ? this.data.totalPromptTokens
+      : logs.reduce((sum, log) => sum + (log.tokens?.prompt || log.tokenDetails?.prompt || 0), 0);
+
+    const completionTokens = (this.data.totalCompletionTokens && this.data.totalCompletionTokens > 0)
+      ? this.data.totalCompletionTokens
+      : logs.reduce((sum, log) => sum + (log.tokens?.completion || log.tokenDetails?.completion || 0), 0);
+
+    const totalCostUSD = logs.reduce((sum, log) => sum + (log.costUSD ?? log.cost ?? 0), 0) || (this.data.totalCostUSD || 0);
+
     const now = new Date();
     const todayUtcStr = now.toISOString().slice(0, 10);
 
@@ -2859,6 +2968,29 @@ export class DashboardStore {
 
     const todaysReviewsCount = Math.max(todaysLogsCount, dailyRecorded);
 
+    // Trailing 24-Hour KPI Summary (Requirement R2)
+    const cutoff24h = Date.now() - 86400000;
+    const trailing24hLogs = logs.filter((log) => {
+      if (!log.timestamp) return false;
+      const logTime = new Date(log.timestamp).getTime();
+      return !isNaN(logTime) && logTime >= cutoff24h;
+    });
+
+    const trailing24hReviewsExecuted = trailing24hLogs.length;
+    const trailing24hTotalTokens = trailing24hLogs.reduce((sum, log) => {
+      const tok = log.tokens?.total || (typeof log.tokens === 'number' ? log.tokens : 0) || log.tokenDetails?.total || ((log.tokens?.prompt || 0) + (log.tokens?.completion || 0)) || 0;
+      return sum + tok;
+    }, 0);
+    const trailing24hTotalCostUSD = trailing24hLogs.reduce((sum, log) => sum + (log.costUSD ?? log.cost ?? 0), 0);
+
+    const trailing24hAvgTokensPerPR = trailing24hReviewsExecuted > 0
+      ? Math.round(trailing24hTotalTokens / trailing24hReviewsExecuted)
+      : 0;
+
+    const trailing24hAvgCostPerPR = trailing24hReviewsExecuted > 0
+      ? parseFloat((trailing24hTotalCostUSD / trailing24hReviewsExecuted).toFixed(4))
+      : 0;
+
     const overview = {
       totalRepositories: repos.length,
       activeAutomations: activeAutomations,
@@ -2866,7 +2998,12 @@ export class DashboardStore {
       todaysReviewsExecuted: todaysReviewsCount,
       todaysReviewsCount: todaysReviewsCount,
       todayDateBadge: todayUtcStr,
+      trailing24hAvgTokensPerPR,
+      trailing24hAvgCostPerPR,
+      trailing24hReviewsExecuted,
       totalCostUSD,
+      totalPromptTokens: promptTokens,
+      totalCompletionTokens: completionTokens,
       monthlyCostCapUSD: this.data.settings.providerCostCaps.monthlyBudgetUSD,
       costCapBreached: totalCostUSD >= this.data.settings.providerCostCaps.monthlyBudgetUSD,
       totalTokens: {

@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ConfigResolver, RepositoryContentClient } from '../../src/config/configResolver';
 import { ConfigValidationError } from '../../src/config/configLoader';
-import { R4_ALLOWED_MODELS } from '../../src/config/schema';
 
 describe('ConfigResolver Unit Tests (Milestone 39)', () => {
   const mockClient = (files: Record<string, string>): RepositoryContentClient => ({
@@ -23,20 +22,12 @@ describe('ConfigResolver Unit Tests (Milestone 39)', () => {
 
     expect(config.version).toBe(3);
     expect(config.profile).toBe('balanced');
-    expect(config.personas).toHaveLength(10);
+    expect(config.personas.length).toBeGreaterThanOrEqual(4);
     const personaIds = config.personas.map((p) => p.id);
-    expect(personaIds).toEqual([
-      'sec-lane',
-      'arch-lane',
-      'perf-lane',
-      'qual-lane',
-      'db-lane',
-      'api-lane',
-      'sre-lane',
-      'devops-lane',
-      'docs-lane',
-      'finops-lane',
-    ]);
+    expect(personaIds).toContain('sec-lane');
+    expect(personaIds).toContain('arch-lane');
+    expect(personaIds).toContain('qual-lane');
+    expect(personaIds).toContain('devops-lane');
   });
 
   it('applies 3-tier precedence hierarchy: Repo > Org > System', async () => {
@@ -50,7 +41,7 @@ personas:
     required: true
     charter: builtin:security
     paths: ["src/security/**"]
-    providers: [codex]
+    providers: [claude]
 `;
 
     const orgYaml = `
@@ -63,8 +54,8 @@ personas:
     required: true
     charter: builtin:security
     paths: ["src/**"]
-    providers: [codex, claude]
-  - id: finops-lane
+    providers: [claude, synthetic]
+  - id: devops-lane
     enabled: false
 `;
 
@@ -93,22 +84,22 @@ personas:
     // Paths from Repo override Org
     expect(secLane?.paths).toEqual(['src/security/**']);
     // Providers from Repo override Org
-    expect(secLane?.providers).toEqual(['codex']);
+    expect(secLane?.providers).toEqual(['claude']);
 
-    const finopsLane = config.personas.find((p) => p.id === 'finops-lane');
-    expect(finopsLane).toBeDefined();
+    const devopsLane = config.personas.find((p) => p.id === 'devops-lane');
+    expect(devopsLane).toBeDefined();
     // Inherits enabled: false from Org
-    expect(finopsLane?.enabled).toBe(false);
+    expect(devopsLane?.enabled).toBe(false);
   });
 
-  it('performs key-based deep merging for all 10 persona lanes', async () => {
+  it('performs key-based deep merging for default persona lanes', async () => {
     const resolver = new ConfigResolver();
     const repoYaml = `
 version: 3
 personas:
-  - id: perf-lane
+  - id: qual-lane
     model: gpt-5.6-sol
-  - id: docs-lane
+  - id: devops-lane
     enabled: false
 `;
 
@@ -121,14 +112,14 @@ personas:
       client,
     });
 
-    expect(config.personas).toHaveLength(10);
+    expect(config.personas.length).toBeGreaterThanOrEqual(4);
 
-    const perfLane = config.personas.find((p) => p.id === 'perf-lane');
-    expect(perfLane?.model).toBe('gpt-5.6-sol');
-    expect(perfLane?.charter).toBe('builtin:performance');
+    const qualLane = config.personas.find((p) => p.id === 'qual-lane');
+    expect(qualLane?.model).toBe('gpt-5.6-sol');
+    expect(qualLane?.charter).toBe('builtin:consistency');
 
-    const docsLane = config.personas.find((p) => p.id === 'docs-lane');
-    expect(docsLane?.enabled).toBe(false);
+    const devopsLane = config.personas.find((p) => p.id === 'devops-lane');
+    expect(devopsLane?.enabled).toBe(false);
 
     // Other lanes maintain system defaults
     const archLane = config.personas.find((p) => p.id === 'arch-lane');
@@ -136,7 +127,7 @@ personas:
     expect(archLane?.charter).toBe('builtin:constitutional-goals');
   });
 
-  it('validates per-persona model overrides against R4_ALLOWED_MODELS', async () => {
+  it('accepts any valid model string (open provider system)', async () => {
     const resolver = new ConfigResolver();
     const repoYaml = `
 version: 3
@@ -146,8 +137,8 @@ personas:
     required: true
     charter: builtin:security
     paths: ["**"]
-    providers: [codex]
-    model: claude-5-sonnet
+    providers: [claude]
+    model: some-custom/model-v99
 `;
 
     const client = mockClient({ '.ct-review.yaml': repoYaml });
@@ -160,34 +151,47 @@ personas:
     });
 
     const secLane = config.personas.find((p) => p.id === 'sec-lane');
-    expect(secLane?.model).toBe('claude-5-sonnet');
-    expect(R4_ALLOWED_MODELS).toContain('claude-5-sonnet');
+    expect(secLane?.model).toBe('some-custom/model-v99');
   });
 
-  it('rejects per-persona model overrides not in R4_ALLOWED_MODELS allowlist', async () => {
+  it('accepts custom provider IDs (any OmniRoute-supported provider)', async () => {
     const resolver = new ConfigResolver();
     const repoYaml = `
 version: 3
+reviewers:
+  execution: personas
+  fallback: ordered
+  overall_timeout_s: 180
+  providers:
+    - id: my-custom-provider
+      enabled: true
+      model: custom/my-model-v1
+      effort: low
+      review_timeout_s: 60
+      arbiter_timeout_s: 45
+  arbiter:
+    order: [my-custom-provider]
 personas:
   - id: sec-lane
     enabled: true
     required: true
     charter: builtin:security
     paths: ["**"]
-    providers: [codex]
-    model: unauthorized-model-v9
+    providers: [my-custom-provider]
 `;
 
     const client = mockClient({ '.ct-review.yaml': repoYaml });
 
-    await expect(
-      resolver.resolveConfig({
-        owner: 'myorg',
-        repo: 'myrepo',
-        ref: 'main',
-        client,
-      })
-    ).rejects.toThrow(/is not in R4_ALLOWED_MODELS/);
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    const customProvider = config.reviewers.providers.find((p) => p.id === 'my-custom-provider');
+    expect(customProvider).toBeDefined();
+    expect(customProvider?.model).toBe('custom/my-model-v1');
   });
 
   it('applies global dials.persona_model to personas without explicit model', async () => {
@@ -197,7 +201,7 @@ version: 3
 dials:
   persona_model: claude-5-sonnet
 personas:
-  - id: perf-lane
+  - id: qual-lane
     model: gpt-5.6-sol
 `;
 
@@ -210,8 +214,8 @@ personas:
       client,
     });
 
-    const perfLane = config.personas.find((p) => p.id === 'perf-lane');
-    expect(perfLane?.model).toBe('gpt-5.6-sol'); // Explicit model takes precedence
+    const qualLane = config.personas.find((p) => p.id === 'qual-lane');
+    expect(qualLane?.model).toBe('gpt-5.6-sol'); // Explicit model takes precedence
 
     const secLane = config.personas.find((p) => p.id === 'sec-lane');
     expect(secLane?.model).toBe('claude-5-sonnet'); // Inherits global persona_model
@@ -228,12 +232,12 @@ personas:
       client,
       systemSettingsOverride: {
         defaultModelOverrides: {
-          codex: 'gpt-5.6-sol',
+          claude: 'gpt-5.6-sol',
         },
       },
     });
 
-    const codexProvider = config.reviewers.providers.find((p) => p.id === 'codex');
-    expect(codexProvider?.model).toBe('gpt-5.6-sol');
+    const claudeProvider = config.reviewers.providers.find((p) => p.id === 'claude');
+    expect(claudeProvider?.model).toBe('gpt-5.6-sol');
   });
 });

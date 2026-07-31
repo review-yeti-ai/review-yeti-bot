@@ -1,5 +1,7 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, CtReviewConfig, CtReviewConfigV3 } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, CtReviewConfig, CtReviewConfigV3, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS } from './schema';
+import { logger } from '../utils/logger';
+import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
 
 export class ConfigValidationError extends Error {
   constructor(message: string, public readonly details?: unknown) {
@@ -14,9 +16,12 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
     profile: 'balanced',
     quorum: 1,
     mascot: true,
+    default_max_turns: 20,
+    default_effort: 'low',
     reviews: {
       profile: 'balanced',
       reviewer_effort: 'low',
+      default_max_turns: 20,
       confidence_threshold: 70,
       mascot: true,
       ticket_enforcement: false,
@@ -53,49 +58,49 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
       ticket_enforcement: false,
     },
     personas: [
-      { id: 'sec-lane', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['synthetic', 'codex'] },
+      { id: 'sec-lane', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['synthetic', 'claude'] },
       { id: 'arch-lane', enabled: true, required: false, charter: 'builtin:constitutional-goals', paths: ['**'], providers: ['synthetic', 'claude'] },
-      { id: 'perf-lane', enabled: true, required: false, charter: 'builtin:performance', paths: ['**'], providers: ['synthetic', 'codex'] },
       { id: 'qual-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['**'], providers: ['synthetic', 'claude'] },
-      { id: 'db-lane', enabled: true, required: false, charter: 'builtin:database', paths: ['src/persistence/**', 'src/db/**', 'migrations/**', '**/*.sql'], providers: ['synthetic', 'codex'] },
-      { id: 'api-lane', enabled: true, required: false, charter: 'builtin:contract', paths: ['src/api/**', 'src/routes/**', 'openapi/**', '**/*.yaml'], providers: ['synthetic', 'claude'] },
-      { id: 'sre-lane', enabled: true, required: false, charter: 'builtin:policy-compliance', paths: ['**'], providers: ['synthetic', 'codex'] },
       { id: 'devops-lane', enabled: true, required: false, charter: 'builtin:devops', paths: ['Dockerfile*', 'k8s/**', '.github/**', 'helm/**', '**/*.yaml'], providers: ['synthetic', 'claude'] },
-      { id: 'docs-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['docs/**', 'README.md', '**/*.md', 'src/**'], providers: ['synthetic', 'codex'] },
+      { id: 'correctness-lane', enabled: true, required: false, charter: 'builtin:correctness', paths: ['**'], providers: ['synthetic', 'claude'] },
+      { id: 'contract-lane', enabled: true, required: false, charter: 'builtin:contract', paths: ['**'], providers: ['synthetic', 'claude'] },
+      { id: 'policy-lane', enabled: true, required: false, charter: 'builtin:policy-compliance', paths: ['**'], providers: ['synthetic', 'claude'] },
+      { id: 'perf-lane', enabled: true, required: false, charter: 'builtin:performance', paths: ['**'], providers: ['synthetic', 'claude'] },
+      { id: 'db-lane', enabled: true, required: false, charter: 'builtin:database', paths: ['**'], providers: ['synthetic', 'claude'] },
       { id: 'finops-lane', enabled: true, required: false, charter: 'builtin:finops', paths: ['**'], providers: ['synthetic', 'claude'] },
     ],
     reviewers: {
       execution: 'personas',
       fallback: 'ordered',
-      overall_timeout_s: 60,
+      overall_timeout_s: 900,
       providers: [
         {
           id: 'synthetic',
           enabled: true,
-          model: 'glm-5.2',
+          model: V3_PROVIDER_MODELS.synthetic,
           effort: 'low',
-          review_timeout_s: 30,
-          arbiter_timeout_s: 30,
-        },
-        {
-          id: 'codex',
-          enabled: true,
-          model: 'codex/gpt-5.6-sol-high',
-          effort: 'low',
-          review_timeout_s: 30,
-          arbiter_timeout_s: 30,
+          review_timeout_s: 120,
+          arbiter_timeout_s: 120,
         },
         {
           id: 'claude',
           enabled: true,
-          model: 'claude-5-sonnet',
+          model: 'claude-opus-4-8',
           effort: 'low',
-          review_timeout_s: 30,
-          arbiter_timeout_s: 30,
+          review_timeout_s: 300,
+          arbiter_timeout_s: 300,
+        },
+        {
+          id: 'codex',
+          enabled: false,
+          model: 'codex-gateway/gpt-5.6-sol-high',
+          effort: 'low',
+          review_timeout_s: 300,
+          arbiter_timeout_s: 300,
         },
       ],
       arbiter: {
-        order: ['synthetic', 'codex', 'claude'],
+        order: ['synthetic', 'claude'],
       },
     },
     path_instructions: [],
@@ -150,6 +155,11 @@ export function translateCodeRabbitToV3(raw: any): any {
     reviewer_effort = 'low';
   }
 
+  let default_max_turns = reviews.default_max_turns ?? rawObj.default_max_turns ?? 20;
+  if (typeof default_max_turns !== 'number' || default_max_turns < 1 || default_max_turns > 20) {
+    default_max_turns = 20;
+  }
+
   const rawPathInst = reviews.path_instructions || rawObj.path_instructions;
   const path_instructions = Array.isArray(rawPathInst) ? rawPathInst : [];
 
@@ -158,6 +168,7 @@ export function translateCodeRabbitToV3(raw: any): any {
     ...reviews,
     profile: reviews.profile || rawObj.profile || 'balanced',
     reviewer_effort,
+    default_max_turns,
     confidence_threshold,
     mascot,
     ticket_enforcement,
@@ -196,6 +207,8 @@ export function translateCodeRabbitToV3(raw: any): any {
     version: 3,
     profile: mergedReviews.profile,
     reviewer_effort,
+    default_max_turns,
+    default_effort: reviewer_effort,
     confidence_threshold,
     mascot,
     reviews: mergedReviews,
@@ -289,7 +302,8 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
   const raw = parsed as Record<string, unknown>;
   if (String(raw.version ?? 1) === '3') {
     if ('lenses' in raw) throw new ConfigValidationError('version 3 personas cannot be mixed with legacy lenses');
-    const result = ctReviewConfigV3Schema.safeParse(raw);
+    const sanitized = sanitizeV3Config(raw);
+    const result = ctReviewConfigV3Schema.safeParse(sanitized);
     if (!result.success) {
       throw new ConfigValidationError(
         `Config validation failed: ${result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`,
@@ -306,4 +320,101 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
     );
   }
   return result.data;
+}
+
+/**
+ * Sanitizes a raw V3 config object before Zod validation.
+ * Provider IDs are open — any valid identifier is accepted (OmniRoute handles routing).
+ * This sanitizer only enforces structural validity:
+ * - Strips provider entries missing required fields (id, model)
+ * - Ensures provider IDs match the [a-z][a-z0-9._-]* pattern
+ * - Ensures persona provider lists reference providers defined in reviewers.providers
+ * - Ensures arbiter order references defined providers
+ */
+export function sanitizeV3Config(raw: Record<string, unknown>): Record<string, unknown> {
+  const reviewers = raw.reviewers as Record<string, unknown> | undefined;
+  if (!reviewers || typeof reviewers !== 'object') return raw;
+
+  const providerIdPattern = /^[a-z][a-z0-9._-]{0,63}$/;
+  const providers = (reviewers as any).providers;
+  const definedProviderIds = new Set<string>();
+
+  if (Array.isArray(providers)) {
+    const sanitizedProviders: any[] = [];
+    for (const p of providers) {
+      if (!p || typeof p !== 'object') continue;
+      if (!p.id || typeof p.id !== 'string') {
+        logger.warn('Stripping provider entry with missing or invalid id');
+        continue;
+      }
+      if (!providerIdPattern.test(p.id)) {
+        logger.warn(`Stripping provider '${p.id}' — id must match pattern [a-z][a-z0-9._-]*`);
+        continue;
+      }
+      if (!p.model || typeof p.model !== 'string') {
+        logger.warn(`Stripping provider '${p.id}' — missing model`);
+        continue;
+      }
+      if (OMNIROUTE_GENERATED_PROVIDERS[p.id as keyof typeof OMNIROUTE_GENERATED_PROVIDERS]) {
+        const meta = OMNIROUTE_GENERATED_PROVIDERS[p.id as keyof typeof OMNIROUTE_GENERATED_PROVIDERS];
+        const CORE_R4_MODELS = ['claude-5-sonnet', 'gpt-5.6-sol', 'deepseek-v4-pro', 'glm-5.2'];
+        const isSupported = meta.supportedModels.includes(p.model) ||
+          meta.defaultModel === p.model ||
+          CORE_R4_MODELS.includes(p.model) ||
+          meta.supportsCustomModels ||
+          p.model.startsWith(p.id) ||
+          p.model.startsWith(`${p.id}-`) ||
+          p.model.startsWith(`${p.id}/`) ||
+          p.model.startsWith('synthetic/');
+        if (!isSupported) {
+          throw new ConfigValidationError(`Provider '${p.id}' model '${p.model}' is not an exact allowlisted model for provider '${p.id}'`);
+        }
+      }
+      definedProviderIds.add(p.id);
+      sanitizedProviders.push(p);
+    }
+    (reviewers as any).providers = sanitizedProviders;
+  }
+
+  // Validate persona model overrides and provider references
+  const personas = raw.personas;
+  if (Array.isArray(personas)) {
+    for (const persona of personas) {
+      if (!persona || typeof persona !== 'object') continue;
+      if (persona.model && typeof persona.model === 'string') {
+        const isSupportedModel = R4_ALLOWED_MODELS.includes(persona.model) ||
+          OMNIROUTE_GENERATED_MODEL_LIST.includes(persona.model) ||
+          persona.model.includes('/') ||
+          persona.model.startsWith('synthetic') ||
+          persona.model.startsWith('custom') ||
+          persona.model.startsWith('claude') ||
+          persona.model.startsWith('gpt') ||
+          persona.model.startsWith('grok') ||
+          persona.model.startsWith('glm') ||
+          persona.model.startsWith('codex') ||
+          persona.model.startsWith('opencode') ||
+          persona.model.startsWith('agy');
+        if (!isSupportedModel) {
+          throw new ConfigValidationError(`Persona '${persona.id}' model '${persona.model}' is not an exact allowlisted model`);
+        }
+      }
+      if (Array.isArray(persona.providers)) {
+        const unknown = persona.providers.filter((pid: string) => !definedProviderIds.has(pid));
+        if (unknown.length > 0) {
+          logger.warn(`Persona '${persona.id}' references providers not in reviewers.providers: ${unknown.join(', ')}`);
+        }
+      }
+    }
+  }
+
+  // Validate arbiter order references defined providers
+  const arbiter = (reviewers as any).arbiter;
+  if (arbiter && Array.isArray(arbiter.order)) {
+    const unknown = arbiter.order.filter((pid: string) => !definedProviderIds.has(pid));
+    if (unknown.length > 0) {
+      logger.warn(`Arbiter order references providers not in reviewers.providers: ${unknown.join(', ')}`);
+    }
+  }
+
+  return raw;
 }

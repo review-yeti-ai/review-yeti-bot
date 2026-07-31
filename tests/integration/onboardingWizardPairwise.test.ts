@@ -268,7 +268,7 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
     expect(reviewRes.body.job.personaLogs).toHaveLength(4);
 
     const models = reviewRes.body.job.personaLogs.map((p: any) => p.model);
-    expect(models).toContain('claude-5-sonnet');
+    expect(models).toContain('gpt-4o');
     expect(models).toContain('grok-cli/grok-4.5');
     expect(models).toContain('claude-3-5-sonnet');
     expect(models).toContain('glm-5.2');

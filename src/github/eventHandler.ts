@@ -75,11 +75,11 @@ export class GitHubEventHandler {
         const repository = payload.repository || {};
         const parsedPayload: ParsedPRPayload = {
           installationId: String(payload.installation?.id || ''),
-          owner: repository.owner?.login || 'calltelemetry',
-          repo: repository.name || 'ai-workspace',
+          owner: repository.owner?.login || '',
+          repo: repository.name || '',
           prNumber: pr.number || payload.number || 0,
-          headSha: pr.head?.sha || 'head-sha-latest',
-          baseSha: pr.base?.sha || 'base-sha-latest',
+          headSha: pr.head?.sha || '',
+          baseSha: pr.base?.sha || '',
           title: pr.title || '',
           body: pr.body || '',
           sender,
@@ -92,6 +92,11 @@ export class GitHubEventHandler {
           mergedAt: pr.merged_at || new Date().toISOString(),
           targetBranch: pr.base?.ref || 'main',
         };
+
+        if (!parsedPayload.owner || !parsedPayload.repo) {
+          console.warn('Missing owner or repo in payload');
+          return { shouldTrigger: false, reason: 'Missing owner or repo in payload' };
+        }
 
         return {
           shouldTrigger: true,
@@ -117,11 +122,11 @@ export class GitHubEventHandler {
       const repository = payload.repository || {};
       const parsedPayload: ParsedPRPayload = {
         installationId: String(payload.installation?.id || ''),
-        owner: repository.owner?.login || 'calltelemetry',
-        repo: repository.name || 'ai-workspace',
+        owner: repository.owner?.login || '',
+        repo: repository.name || '',
         prNumber: pr.number || payload.number || 0,
-        headSha: pr.head?.sha || 'head-sha-latest',
-        baseSha: pr.base?.sha || 'base-sha-latest',
+        headSha: pr.head?.sha || '',
+        baseSha: pr.base?.sha || '',
         title: pr.title || '',
         body: pr.body || '',
         sender,
@@ -132,6 +137,12 @@ export class GitHubEventHandler {
         deliveryId,
         ...(pr.draft === true ? { isDraft: true } : {}),
       };
+
+      if (!parsedPayload.owner || !parsedPayload.repo) {
+        console.warn('Missing owner or repo in payload');
+        return { shouldTrigger: false, reason: 'Missing owner or repo in payload' };
+      }
+
       return {
         shouldTrigger: true,
         reason: pr.draft === true ? 'Draft PR policy precheck' : `PR ${action} event triggered review`,
@@ -151,27 +162,34 @@ export class GitHubEventHandler {
 
       const issue = payload.issue || payload.pull_request || {};
       const repository = payload.repository || {};
+      const parsedPayload: ParsedPRPayload = {
+        installationId: String(payload.installation?.id || ''),
+        owner: repository.owner?.login || '',
+        repo: repository.name || '',
+        prNumber: issue.number || payload.number || 0,
+        headSha: issue.head?.sha || payload.pull_request?.head?.sha || '',
+        baseSha: issue.base?.sha || payload.pull_request?.base?.sha || '',
+        title: issue.title || '',
+        body: issue.body || '',
+        sender,
+        labels: labels(issue),
+        triggerSource: 'comment_command',
+        triggerAction: payload.action || 'created',
+        commandText: commentBody,
+        commentId: payload.comment?.id,
+        inReplyToId: inReplyToId ? Number(inReplyToId) : undefined,
+        deliveryId,
+      };
+
+      if (!parsedPayload.owner || !parsedPayload.repo) {
+        console.warn('Missing owner or repo in payload');
+        return { shouldTrigger: false, reason: 'Missing owner or repo in payload' };
+      }
+
       return {
         shouldTrigger: true,
         reason: isInlineReply ? 'Inline comment reply detected' : 'Comment review command detected',
-        parsedPayload: {
-          installationId: String(payload.installation?.id || ''),
-          owner: repository.owner?.login || 'calltelemetry',
-          repo: repository.name || 'ai-workspace',
-          prNumber: issue.number || payload.number || 0,
-          headSha: issue.head?.sha || payload.pull_request?.head?.sha || 'head-sha-latest',
-          baseSha: issue.base?.sha || payload.pull_request?.base?.sha || 'base-sha-latest',
-          title: issue.title || '',
-          body: issue.body || '',
-          sender,
-          labels: labels(issue),
-          triggerSource: 'comment_command',
-          triggerAction: payload.action || 'created',
-          commandText: commentBody,
-          commentId: payload.comment?.id,
-          inReplyToId: inReplyToId ? Number(inReplyToId) : undefined,
-          deliveryId,
-        },
+        parsedPayload,
       };
     }
 

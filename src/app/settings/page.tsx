@@ -79,8 +79,9 @@ function SettingsContent() {
   const activePersona = personas[selectedId] || {
     id: selectedId,
     displayName: PERSONA_METADATA[selectedId as keyof typeof PERSONA_METADATA]?.name || selectedId,
-    model: 'claude-3-5-sonnet',
+    model: 'claude-haiku-4.5',
     effort: 'low',
+    maxTurns: 20,
     confidenceThreshold: 80,
     enabled: true,
     customPrompt: '',
@@ -142,7 +143,7 @@ function SettingsContent() {
     const current = personas[id] || {
       id,
       displayName: PERSONA_METADATA[id as keyof typeof PERSONA_METADATA]?.name || id,
-      model: 'claude-3-5-sonnet',
+      model: 'claude-haiku-4.5',
       effort: 'low',
       confidenceThreshold: 80,
       enabled: active,
@@ -169,6 +170,7 @@ function SettingsContent() {
         customPrompt: activePrompt,
         model: activePersona.model,
         effort: activePersona.effort,
+        maxTurns: activePersona.maxTurns ?? 20,
         confidenceThreshold: activePersona.confidenceThreshold,
         enabled: activePersona.enabled,
       });
@@ -196,6 +198,7 @@ function SettingsContent() {
           customPrompt,
           model: p.model,
           effort: p.effort,
+          maxTurns: p.maxTurns ?? 20,
           confidenceThreshold: p.confidenceThreshold,
           enabled: p.enabled,
         });
@@ -226,7 +229,7 @@ function SettingsContent() {
   };
 
   const activeCount = Object.values(personas).filter((p) => p.enabled !== false).length;
-  const currentPersonaModel = activePersona.model || 'claude-3-5-sonnet';
+  const currentPersonaModel = activePersona.model || 'claude-haiku-4.5';
   const enabledProviderList = Object.values(providers).filter((p) => p.enabled !== false && p.active !== false);
 
   const allAvailableModels = React.useMemo(() => {
@@ -446,6 +449,34 @@ function SettingsContent() {
                       <SelectItem value="max">Max (Maximum audit)</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-muted-foreground block">
+                    Max Exploration Turns: {activePersona.maxTurns ?? 20}
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min={1}
+                      max={20}
+                      value={activePersona.maxTurns ?? 20}
+                      onChange={(e) =>
+                        updateActivePersonaField({ maxTurns: Math.min(20, Math.max(1, parseInt(e.target.value, 10) || 1)) })
+                      }
+                      className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                    />
+                    <Input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={activePersona.maxTurns ?? 20}
+                      onChange={(e) =>
+                        updateActivePersonaField({ maxTurns: Math.min(20, Math.max(1, parseInt(e.target.value, 10) || 1)) })
+                      }
+                      className="font-mono text-xs bg-background/80 w-16 text-center shrink-0"
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-2">

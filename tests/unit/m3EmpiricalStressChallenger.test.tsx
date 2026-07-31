@@ -211,13 +211,13 @@ describe('Milestone 3 Empirical Stress Verification', () => {
     });
 
     it('3.3 Handles empty string diagram without crashing', () => {
-      render(<MermaidViewer diagram="" />);
+      const { container } = render(<MermaidViewer diagram="" />);
 
       const rawCodeBtn = screen.getByRole('button', { name: /Raw Code/i });
       fireEvent.click(rawCodeBtn);
 
       // Falls back to default diagram string
-      expect(screen.getByText(/Bot-->>User: Post Review \(SHIP\)/)).toBeInTheDocument();
+      expect(container.textContent).toContain('Post Review (SHIP)');
     });
 
     it('3.4 Handles malformed/invalid Mermaid syntax without throwing error', () => {

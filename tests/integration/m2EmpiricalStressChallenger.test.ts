@@ -154,20 +154,15 @@ describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback 
       const enabledValues = enabledOptions.map((o) => o.value);
 
       // Anthropic models disabled
-      expect(enabledValues).not.toContain('claude-3-5-sonnet');
-      expect(enabledValues).not.toContain('claude-3-7-sonnet');
+      expect(enabledValues).not.toContain('claude-5-sonnet');
+      expect(enabledValues).not.toContain('claude-haiku-4.5');
 
       // DeepSeek models disabled
       expect(enabledValues).not.toContain('deepseek-v3');
 
-      // OpenAI, Grok, GLM, Gemini, AGY, Codex models enabled
-      expect(enabledValues).toContain('gpt-4o');
-      expect(enabledValues).toContain('gpt-4o-mini');
-      expect(enabledValues).toContain('grok-cli/grok-4.5');
-      expect(enabledValues).toContain('glm-5.2');
-      expect(enabledValues).toContain('gemini-1.5-pro');
-      expect(enabledValues).toContain('agy/claude-opus-4-6-thinking');
-      expect(enabledValues).toContain('codex/gpt-5.6-sol-high');
+      // Synthetic models enabled
+      expect(enabledValues).toContain('synthetic/hf:zai-org/GLM-5.2');
+      expect(enabledValues).toContain('synthetic/hf:moonshotai/Kimi-K3');
     });
 
     it('handles edge case when ALL canonical providers are explicitly disabled', () => {
@@ -198,11 +193,11 @@ describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback 
   describe('3. Fallback Remapping Engine Stress & Edge Cases', () => {
     it('keeps current model if its provider is enabled', () => {
       const enabledOptions = [
-        { label: 'Claude 3.5 Sonnet', value: 'claude-3-5-sonnet' },
+        { label: 'Claude 5 Sonnet', value: 'claude-5-sonnet' },
         { label: 'GPT-4o', value: 'gpt-4o' },
       ];
 
-      const fallback = getFallbackModelForPersona('gpt-4o', enabledOptions, 'claude-3-5-sonnet');
+      const fallback = getFallbackModelForPersona('gpt-4o', enabledOptions, 'claude-5-sonnet');
       expect(fallback).toBe('gpt-4o');
     });
 
@@ -212,21 +207,21 @@ describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback 
         { label: 'Grok 4.5', value: 'grok-cli/grok-4.5' },
       ];
 
-      // Current model claude-3-5-sonnet is disabled
-      const fallback = getFallbackModelForPersona('claude-3-5-sonnet', enabledOptions, 'claude-3-5-sonnet');
+      // Current model claude-5-sonnet is disabled
+      const fallback = getFallbackModelForPersona('claude-5-sonnet', enabledOptions, 'claude-5-sonnet');
       expect(fallback).toBe('gpt-4o');
     });
 
     it('falls back to default fallback model when no options are enabled', () => {
-      const fallback = getFallbackModelForPersona('claude-3-5-sonnet', [], 'gpt-4o');
+      const fallback = getFallbackModelForPersona('claude-5-sonnet', [], 'gpt-4o');
       expect(fallback).toBe('gpt-4o');
     });
 
     it('verifies DashboardStore updateProviderConfig prevents disabling provider when active persona relies on its model', () => {
-      // Setup persona using anthropic claude-3-5-sonnet
+      // Setup persona using anthropic claude-haiku-4.5
       store.updatePersonaSetting('security', {
         enabled: true,
-        model: 'claude-3-5-sonnet',
+        model: 'claude-haiku-4.5',
       });
 
       // Attempting to disable anthropic should throw error because active persona relies on it

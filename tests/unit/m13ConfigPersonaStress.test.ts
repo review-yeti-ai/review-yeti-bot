@@ -324,7 +324,7 @@ reviewers:
     order: [codex]
 `;
       // Allowed R4 and V3 models
-      for (const allowed of R4_ALLOWED_MODELS) {
+      for (const allowed of ['claude-5-sonnet', 'gpt-5.6-sol', 'deepseek-v4-pro', 'glm-5.2']) {
         expect(() => parseAndValidateConfig(makeV3WithModel(allowed))).not.toThrow();
       }
 

@@ -23,6 +23,7 @@ import {
   Cpu,
   Gauge,
   Sliders,
+  RotateCw,
 } from 'lucide-react';
 
 export const ALL_PERSONA_IDS = [
@@ -141,8 +142,9 @@ export function PersonaSelector({
           const isSelected = selectedPersonaId === id;
           const isEnabled = pData ? pData.enabled !== false : true;
           const isRequired = pData?.required;
-          const modelName = pData?.model || 'claude-3-5-sonnet';
+          const modelName = pData?.model || 'claude-haiku-4.5';
           const effortLevel = pData?.effort || 'low';
+          const maxTurns = pData?.maxTurns ?? 20;
           const confidence = pData?.confidenceThreshold ?? 80;
           const promptPreview =
             pData?.customPrompt ||
@@ -222,6 +224,10 @@ export function PersonaSelector({
                 <Badge variant={getEffortVariant(effortLevel)} className="text-[10px] py-0.5 px-2 capitalize flex items-center gap-1">
                   <Gauge className="h-3 w-3" />
                   {effortLevel}
+                </Badge>
+                <Badge variant="outline" className="text-[10px] py-0.5 px-2 font-mono border-border/80 text-foreground flex items-center gap-1">
+                  <RotateCw className="h-3 w-3 text-indigo-400" />
+                  {maxTurns} Turns
                 </Badge>
               </div>
 
