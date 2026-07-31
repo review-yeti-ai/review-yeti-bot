@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
-import { CtReviewConfigV3, ctReviewConfigV3Schema, R4_ALLOWED_MODELS } from './schema';
-import { parseAndValidateConfig, createDefaultV3Config, ConfigValidationError, translateLegacyConfigToV3 } from './configLoader';
+import { CtReviewConfigV3, ctReviewConfigV3Schema } from './schema';
+import { parseAndValidateConfig, createDefaultV3Config, ConfigValidationError, translateLegacyConfigToV3, sanitizeV3Config } from './configLoader';
 
 export interface RepositoryContentClient {
   getFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null>;
@@ -104,6 +104,8 @@ export class ConfigResolver {
     const confidence_threshold = repoObj.confidence_threshold ?? orgObj.confidence_threshold ?? sys.confidence_threshold;
     const mascot = repoObj.mascot ?? orgObj.mascot ?? sys.mascot;
     const reviewer_effort = repoObj.reviewer_effort ?? orgObj.reviewer_effort ?? sys.reviewer_effort;
+    const default_effort = repoObj.default_effort ?? orgObj.default_effort ?? sys.default_effort ?? reviewer_effort;
+    const default_max_turns = repoObj.default_max_turns ?? repoObj.reviews?.default_max_turns ?? orgObj.default_max_turns ?? orgObj.reviews?.default_max_turns ?? sys.default_max_turns ?? sys.reviews?.default_max_turns ?? 20;
     const quorum = repoObj.quorum ?? orgObj.quorum ?? sys.quorum;
 
     // 2. Global persona model override dial if specified
@@ -170,6 +172,7 @@ export class ConfigResolver {
       ...(repoObj.reviews || {}),
       profile,
       reviewer_effort,
+      default_max_turns,
       confidence_threshold: confidence_threshold ?? sys.reviews.confidence_threshold,
       mascot: mascot ?? sys.reviews.mascot,
       path_instructions,
@@ -218,6 +221,8 @@ export class ConfigResolver {
       profile,
       quorum,
       ...(reviewer_effort ? { reviewer_effort } : {}),
+      ...(default_effort ? { default_effort } : {}),
+      ...(default_max_turns !== undefined ? { default_max_turns } : {}),
       ...(confidence_threshold !== undefined ? { confidence_threshold } : {}),
       ...(mascot !== undefined ? { mascot } : {}),
       personas: mergedPersonas,
@@ -252,12 +257,22 @@ export class ConfigResolver {
 
     for (const item of list) {
       if (!item.id) continue;
-      const existing = targetMap.get(item.id) || {};
+      const existing = targetMap.get(item.id) || {
+        id: item.id,
+        enabled: true,
+        required: false,
+        charter: 'builtin:correctness',
+        paths: ['**'],
+        providers: ['synthetic'],
+      };
       targetMap.set(item.id, {
         ...existing,
         ...item,
-        paths: item.paths ?? existing.paths,
-        providers: item.providers ?? existing.providers,
+        enabled: item.enabled ?? existing.enabled ?? true,
+        required: item.required ?? existing.required ?? false,
+        charter: item.charter || existing.charter || 'builtin:correctness',
+        paths: item.paths ?? existing.paths ?? ['**'],
+        providers: item.providers ?? existing.providers ?? ['synthetic'],
       });
     }
   }
@@ -285,6 +300,7 @@ export class ConfigResolver {
   }
 
   public validateResolvedConfig(config: any): CtReviewConfigV3 {
+    sanitizeV3Config(config);
     const parseResult = ctReviewConfigV3Schema.safeParse(config);
     if (!parseResult.success) {
       throw new ConfigValidationError(

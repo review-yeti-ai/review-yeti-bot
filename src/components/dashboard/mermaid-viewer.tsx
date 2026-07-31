@@ -16,20 +16,16 @@ export function MermaidViewer({ diagram, className }: MermaidViewerProps) {
   const [renderError, setRenderError] = React.useState(false);
 
   const cleanDiagram = React.useMemo(() => {
-    if (!diagram) {
+    if (!diagram || !diagram.trim()) {
       return `sequenceDiagram
-  autonumber
-  actor User as PR Author
-  participant Bot as CT Review Bot
-  participant Security as Security Sentinel
-  participant Arch as Arch Auditor
-  
-  User->>Bot: Submit Pull Request
-  Bot->>Security: Trigger Vulnerability Scan
-  Security-->>Bot: Clean (0 CVEs)
-  Bot->>Arch: Evaluate Boundary Rules
-  Arch-->>Bot: Approved
-  Bot-->>User: Post Review (SHIP)`;
+    autonumber
+    actor User as PR Author
+    participant Bot as Review Engine
+    participant Security as Security Sentinel
+    User->>Bot: Submit Pull Request
+    Bot->>Security: Trigger Vulnerability Scan
+    Security-->>Bot: Zero P0/P1 Secrets Detected
+    Bot-->>User: Post Review (SHIP)`;
     }
     // Remove markdown code fences if present
     return diagram

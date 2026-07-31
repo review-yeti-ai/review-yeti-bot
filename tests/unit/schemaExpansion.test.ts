@@ -13,6 +13,7 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     expect(V3_PROVIDER_MODELS.grok).toBe('grok-cli/grok-4.5');
     expect(V3_PROVIDER_MODELS['agy-opus']).toBe('agy/claude-opus-4-6-thinking');
     expect(V3_PROVIDER_MODELS.claude).toBe('claude/claude-opus-4-8');
+    expect(V3_PROVIDER_MODELS.opencode).toBe('opencode-go/glm-5.2');
   });
 
   it('R4_ALLOWED_MODELS includes required 4-persona models', () => {
@@ -22,7 +23,7 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     expect(R4_ALLOWED_MODELS).toContain('glm-5.2');
   });
 
-  it('providerSchema validates default or R4_ALLOWED_MODELS model names', () => {
+  it('providerSchema accepts any valid model string (open provider system)', () => {
     const validR4 = providerSchema.safeParse({
       id: 'claude',
       enabled: true,
@@ -33,7 +34,8 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     });
     expect(validR4.success).toBe(true);
 
-    const invalidModel = providerSchema.safeParse({
+    // Open system: any model string is valid (OmniRoute handles routing)
+    const customModel = providerSchema.safeParse({
       id: 'claude',
       enabled: true,
       model: 'unsupported-custom-model-x',
@@ -41,7 +43,7 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
       review_timeout_s: 30,
       arbiter_timeout_s: 30,
     });
-    expect(invalidModel.success).toBe(false);
+    expect(customModel.success).toBe(true);
   });
 
   it('providerSchema accepts all valid effort levels', () => {

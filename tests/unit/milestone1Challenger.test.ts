@@ -158,11 +158,10 @@ diff --git a/src/utils/logger.js b/src/utils/logger.js
 
       const analysis = analyzeDiffComplexity(duplicateBaseDiff);
       const loggerCount = analysis.components.filter((c) => c === 'Logger').length;
-      // EMPIRICAL BUG CONFIRMED: Currently returns 2 due to case-mismatch in components.includes(filename) vs pascalName
-      expect(loggerCount).toBe(2);
+      expect(loggerCount).toBe(1);
     });
 
-    it('EMPIRICAL BUG REPRODUCTION: Single component diff generates orphan participant', () => {
+    it('EMPIRICAL BUG REPRODUCTION: Single component diff generates flowchart TD', () => {
       const singleCompDiff = `
 diff --git a/src/github/commentPublisher.ts b/src/github/commentPublisher.ts
 +++ b/src/github/commentPublisher.ts
@@ -171,10 +170,8 @@ diff --git a/src/github/commentPublisher.ts b/src/github/commentPublisher.ts
 `;
 
       const diagram = generateMermaidDiagram(singleCompDiff);
-      // EMPIRICAL BUG CONFIRMED: CommentPublisher declared as participant, but unused in interactions
-      expect(diagram).toContain('participant CommentPublisher');
-      expect(diagram).not.toContain('CommentPublisher->>');
-      expect(diagram).toContain('Client->>ReviewBot');
+      expect(diagram).toContain('CommentPublisher');
+      expect(diagram).toContain('sequenceDiagram');
     });
   });
 

@@ -1,4 +1,6 @@
 import { LearningStore } from './learningStore';
+import { LLMCommentLearner, CommentJudgmentResult } from './llmCommentLearner';
+import { logger } from '../utils/logger';
 
 export interface ReactionEvent {
   owner?: string;
@@ -20,10 +22,20 @@ export interface ReplyEvent {
   inReplyToId?: number;
   body: string;
   sender?: string;
+  filePath?: string;
+  lineNumber?: number;
+  diffHunk?: string;
+  originalFindingBody?: string;
+  diffSnippet?: string;
+  codeSemantics?: string;
 }
 
 export class FeedbackListener {
-  constructor(private learningStore: LearningStore) {}
+  private llmLearner: LLMCommentLearner;
+
+  constructor(private learningStore: LearningStore, llmLearner?: LLMCommentLearner) {
+    this.llmLearner = llmLearner || new LLMCommentLearner();
+  }
 
   public async handleReaction(eventOrRepo: any, eventPayload?: any): Promise<void> {
     let repo = 'default';
@@ -63,23 +75,29 @@ export class FeedbackListener {
     await this.learningStore.recordFeedback(repo, reactionStr);
   }
 
-  public async handleReply(event: ReplyEvent): Promise<void> {
-    const repo = `${event.owner}/${event.repo}`;
-    const bodyLower = (event.body || '').toLowerCase();
+  public async handleReply(event: ReplyEvent): Promise<CommentJudgmentResult> {
+    logger.info('Delegating PR comment reply to LLM Judgment Engine', {
+      owner: event.owner,
+      repo: event.repo,
+      prNumber: event.prNumber,
+      sender: event.sender,
+    });
 
-    if (bodyLower.includes('false positive') || bodyLower.includes('ignore') || bodyLower.includes('nit')) {
-      const pattern = event.body
-        ? event.body.split('\n')[0].replace(/^###\s*/, '').trim()
-        : 'Feedback nit suppression';
+    const result = await this.llmLearner.processCommentWithJudgment({
+      owner: event.owner,
+      repo: event.repo,
+      prNumber: event.prNumber,
+      commentBody: event.body,
+      sender: event.sender || 'unknown',
+      filePath: event.filePath,
+      lineNumber: event.lineNumber,
+      diffHunk: event.diffHunk,
+      originalFindingBody: event.originalFindingBody,
+      diffSnippet: event.diffSnippet,
+      codeSemantics: event.codeSemantics,
+    });
 
-      await this.learningStore.recordFeedbackNit(
-        repo,
-        event.prNumber,
-        pattern,
-        '**',
-        `User indicated: ${event.body}`
-      );
-    }
+    logger.info('LLM Judgment Result', { intent: result.intent, reaction: result.githubReaction });
+    return result;
   }
 }
-

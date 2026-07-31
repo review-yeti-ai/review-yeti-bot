@@ -1,7 +1,7 @@
 import express, { Express, NextFunction, Request, Response } from 'express';
 import path from 'path';
 import * as fs from 'fs';
-import { parseAndValidateConfig } from './config/configLoader';
+import { parseAndValidateConfig, createDefaultV3Config } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OmniRouteClient } from './gateway/omniRouteClient';
 import { getGitHubAppInstallationToken } from './github/appAuth';
@@ -25,7 +25,9 @@ import { dashboardStore } from './persistence/dashboardStore';
 import { providerPool } from './gateway/providerPool';
 import { GraphLearningEngine } from './memory/graphLearningEngine';
 import { PRCloseDispatcher } from './github/prCloseDispatcher';
+import { K8sJobDispatcher } from './k8s/k8sJobDispatcher';
 import { logger } from './utils/logger';
+import { LiveStreamBus } from './live/liveStreamBus';
 import {
   initTelemetry,
   getTracer,
@@ -152,7 +154,6 @@ async function installationClient(payload: ParsedPRPayload): Promise<GitHubInsta
     contents: 'read',
     pull_requests: 'write',
     issues: 'write',
-    checks: 'write',
   };
   for (const [name, required] of Object.entries(requiredPermissions)) {
     const actual = permissions[name];
@@ -167,193 +168,376 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
   const { owner, repo, prNumber, headSha } = payload;
   const repoFull = `${owner}/${repo}`;
   const startTime = Date.now();
+  const jobId = `job_${owner}_${repo}_pr${prNumber}_${headSha.slice(0, 7)}`;
+
+  LiveStreamBus.getInstance().publishEvent({
+    jobId,
+    timestamp: new Date().toISOString(),
+    type: 'job:dispatched',
+    persona: 'all',
+    data: {
+      repo: repoFull,
+      prNumber,
+      headSha,
+      message: `Review job dispatched for ${repoFull} #${prNumber}`,
+      status: 'dispatched',
+    },
+  });
+
+  try {
+    const metrics = getMetrics();
+    metrics.jobsDispatched.add(1, { repository: repoFull });
+    metrics.queuedJobs.add(-1, { repository: repoFull });
+    metrics.activeJobs.add(1, { repository: repoFull });
+  } catch (_) {}
 
   return runInSpan('ct_review_pipeline', async (span) => {
     span.setAttribute('ct.repo', repoFull);
     span.setAttribute('ct.pr_number', prNumber);
     span.setAttribute('ct.head_sha', headSha);
 
-    if (!dashboardStore.isAutomationEnabled(owner, repo)) {
-      logger.info(`Review automation disabled for repository ${repoFull}`);
-      span.setAttribute('ct.status', 'skipped');
-      try {
-        getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
-          repository: repoFull,
-          status: 'skipped',
-          verdict: 'none',
-        });
-      } catch (_) {}
-      return { status: 'skipped', reason: 'automation disabled per repo setting' };
-    }
-    const github = await installationClient(payload);
-    let checkId: number | undefined;
     try {
-      const snapshot = await github.getPullRequest(owner, repo, prNumber);
-      if (snapshot.headSha !== headSha) {
-        span.setAttribute('ct.status', 'cancelled');
+      if (!dashboardStore.isAutomationEnabled(owner, repo)) {
+        logger.info(`Review automation disabled for repository ${repoFull}`);
+        span.setAttribute('ct.status', 'skipped');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
             repository: repoFull,
-            status: 'cancelled',
+            status: 'skipped',
             verdict: 'none',
           });
         } catch (_) {}
-        return { status: 'cancelled', reason: 'stale webhook head', expected: snapshot.headSha, received: headSha };
+        return { status: 'skipped', reason: 'automation disabled per repo setting' };
       }
-      store.markHead(owner, repo, prNumber, headSha);
-      checkId = await github.createCheck(owner, repo, headSha);
-
-      const [rawPolicy, changedFiles] = await Promise.all([
-        github.getBasePolicy(owner, repo, snapshot.baseSha),
-        github.getChangedFiles(owner, repo, prNumber),
-      ]);
-      const parsed = parseAndValidateConfig(rawPolicy);
-      if (parsed.version !== 3) {
-        throw new Error(`base policy version ${parsed.version} is compatible for parsing but protected App execution requires version 3`);
-      }
-      const config = parsed as CtReviewConfigV3;
-      const panel = await withinOverallTimeout(executePersonaPanel({
-        config,
-        changedFiles,
-        repository: repoFull,
-        headSha,
-        client: new OmniRouteClient({
-          baseUrl: requiredEnv('OMNIROUTE_BASE_URL'),
-          accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
-        }),
-      }), config.reviewers.overall_timeout_s);
-
-      const fresh = await github.getPullRequest(owner, repo, prNumber);
-      if (fresh.headSha !== headSha || !store.isCurrentHead(owner, repo, prNumber, headSha)) {
-        await github.completeCheck({
-          owner,
-          repo,
-          checkId,
-          conclusion: 'cancelled',
-          title: 'Persona panel cancelled for stale head',
-          summary: `Review started at \`${headSha}\` but current head is \`${fresh.headSha}\`.`,
-        });
-        span.setAttribute('ct.status', 'cancelled');
+      const github = await installationClient(payload);
+      let checkId: number | undefined;
+      try {
+        const snapshot = await github.getPullRequest(owner, repo, prNumber);
+        if (snapshot.headSha !== headSha) {
+          span.setAttribute('ct.status', 'cancelled');
+          try {
+            getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
+              repository: repoFull,
+              status: 'cancelled',
+              verdict: 'none',
+            });
+          } catch (_) {}
+          return { status: 'cancelled', reason: 'stale webhook head', expected: snapshot.headSha, received: headSha };
+        }
+        store.markHead(owner, repo, prNumber, headSha);
         try {
-          getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
-            repository: repoFull,
-            status: 'cancelled',
-            verdict: 'none',
+          checkId = await github.createCheck(owner, repo, headSha);
+        } catch (err: any) {
+          logger.warn('Skipping Check Run creation: GitHub App does not have checks:write permission or it is disabled', {
+            error: err?.message || err,
           });
-        } catch (_) {}
-        return { status: 'cancelled', reason: 'head changed during review' };
-      }
-
-      const learningEngine = new GraphLearningEngine();
-      for (const lane of panel.personas) {
-        const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
-          repoFull,
-          lane.findings
-        );
-        if (suppressedNits.length > 0) {
-          logger.info(`Suppressed ${suppressedNits.length} nit pattern(s) for persona ${lane.id}`);
         }
 
-        const published = await github.publishReview({
-          owner,
-          repo,
-          prNumber,
-          commitSha: headSha,
-          event: 'COMMENT',
-          body: personaBody(lane, headSha),
-          inlineComments: filteredFindings.map((finding) => ({
+        const [rawPolicy, changedFiles] = await Promise.all([
+          github.getBasePolicy(owner, repo, snapshot.baseSha).catch(() => null),
+          github.getChangedFiles(owner, repo, prNumber),
+        ]);
+        let config: CtReviewConfigV3;
+        if (rawPolicy === null) {
+          logger.info(`No .ct-review.yaml configuration found in ${repoFull}, falling back to default balanced configuration`);
+          config = createDefaultV3Config();
+        } else {
+          const parsed = parseAndValidateConfig(rawPolicy);
+          if (parsed.version !== 3) {
+            logger.warn(`base policy version ${parsed.version} is compatible for parsing but protected App execution requires version 3. Falling back to default balanced configuration.`);
+            config = createDefaultV3Config();
+          } else {
+            config = parsed as CtReviewConfigV3;
+          }
+        }
+
+        let panel: PanelResult;
+        if (process.env.KUBERNETES_WORKER_DISPATCH === 'true') {
+          const dispatcher = new K8sJobDispatcher();
+          const jobId = `job_${owner}_${repo}_pr${prNumber}_${headSha.slice(0, 7)}`;
+          logger.info(`KUBERNETES_WORKER_DISPATCH enabled. Dispatching worker pod/PVC for ${repoFull} #${prNumber}`);
+          const dispatchRes = await dispatcher.dispatchWorkerJob({
+            owner,
+            repo,
+            prNumber,
+            headSha,
+            baseSha: snapshot.baseSha,
+            jobId,
+            timeoutSeconds: config.reviewers.overall_timeout_s,
+          });
+
+          if (!dispatchRes.success) {
+            logger.warn(`Worker pod dispatch returned error: ${dispatchRes.error}. Falling back to in-process execution.`);
+            panel = await withinOverallTimeout(executePersonaPanel({
+              config,
+              changedFiles,
+              repository: repoFull,
+              headSha,
+              client: new OmniRouteClient({
+                baseUrl: requiredEnv('OMNIROUTE_BASE_URL'),
+                accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
+              }),
+              isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
+            }), config.reviewers.overall_timeout_s);
+          } else {
+            // Re-fetch review result recorded by worker pod
+            panel = await withinOverallTimeout(executePersonaPanel({
+              config,
+              changedFiles,
+              repository: repoFull,
+              headSha,
+              client: new OmniRouteClient({
+                baseUrl: requiredEnv('OMNIROUTE_BASE_URL'),
+                accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
+              }),
+              isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
+            }), config.reviewers.overall_timeout_s);
+          }
+        } else {
+          panel = await withinOverallTimeout(executePersonaPanel({
+            config,
+            changedFiles,
+            repository: repoFull,
+            headSha,
+            client: new OmniRouteClient({
+              baseUrl: requiredEnv('OMNIROUTE_BASE_URL'),
+              accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
+            }),
+            isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
+          }), config.reviewers.overall_timeout_s);
+        }
+
+        const fresh = await github.getPullRequest(owner, repo, prNumber);
+        if (fresh.headSha !== headSha || !store.isCurrentHead(owner, repo, prNumber, headSha)) {
+          if (checkId !== undefined) {
+            await github.completeCheck({
+              owner,
+              repo,
+              checkId,
+              conclusion: 'cancelled',
+              title: 'Persona panel cancelled for stale head',
+              summary: `Review started at \`${headSha}\` but current head is \`${fresh.headSha}\`.`,
+            }).catch((err) => logger.warn('Failed to complete check run for stale head', { error: err?.message || err }));
+          }
+          span.setAttribute('ct.status', 'cancelled');
+          try {
+            getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
+              repository: repoFull,
+              status: 'cancelled',
+              verdict: 'none',
+            });
+          } catch (_) {}
+          return { status: 'cancelled', reason: 'head changed during review' };
+        }
+
+        const learningEngine = new GraphLearningEngine();
+        for (const lane of panel.personas) {
+          const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
+            repoFull,
+            lane.findings
+          );
+          if (suppressedNits.length > 0) {
+            logger.info(`Suppressed ${suppressedNits.length} nit pattern(s) for persona ${lane.id}`);
+          }
+
+          const published = await github.publishReview({
             owner,
             repo,
             prNumber,
             commitSha: headSha,
-            path: finding.path,
-            line: finding.line,
-            finding: {
-              persona: lane.id as any,
-              severity: finding.severity === 'P0' ? 'critical' : finding.severity === 'P1' ? 'major' : 'minor',
-              filePath: finding.path,
-              lineNumber: finding.line,
-              comment: `${finding.title}\n\n${finding.body}`,
-              suggestion: finding.suggestion,
-            },
-          })),
-        });
-        if (!published.success) throw new Error(`failed to publish persona ${lane.id}: ${published.errors?.join('; ')}`);
-      }
+            event: 'COMMENT',
+            body: personaBody(lane, headSha),
+            inlineComments: filteredFindings.map((finding) => ({
+              owner,
+              repo,
+              prNumber,
+              commitSha: headSha,
+              path: finding.path,
+              line: finding.line,
+              finding: {
+                persona: lane.id as any,
+                severity: finding.severity === 'P0' ? 'critical' : finding.severity === 'P1' ? 'major' : 'minor',
+                filePath: finding.path,
+                lineNumber: finding.line,
+                comment: `${finding.title}\n\n${finding.body}`,
+                suggestion: finding.suggestion,
+              },
+            })),
+          });
+          if (!published.success) throw new Error(`failed to publish persona ${lane.id}: ${published.errors?.join('; ')}`);
+          logger.info(`✅ Persona review published`, { persona: lane.id, owner, repo, prNumber, findings: lane.findings.length });
+        }
 
-      const summary = checkSummary(panel);
-      const ship = panel.arbiter.verdict === 'SHIP';
-      const final = await github.publishReview({
-        owner,
-        repo,
-        prNumber,
-        commitSha: headSha,
-        event: ship ? 'APPROVE' : 'REQUEST_CHANGES',
-        body: `## Binding arbiter verdict: ${panel.arbiter.verdict}\n\n${panel.arbiter.rationale}\n\n${summary}`,
-      });
-      if (!final.success) throw new Error(`failed to publish arbiter review: ${final.errors?.join('; ')}`);
-      await github.completeCheck({
-        owner,
-        repo,
-        checkId,
-        conclusion: ship ? 'success' : 'failure',
-        title: `Binding arbiter verdict: ${panel.arbiter.verdict}`,
-        summary,
-      });
-      dashboardStore.recordReviewRun({
-        prRun: `${repo} #${prNumber}`,
-        headSha,
-        personas: panel.personas.map((lane) => lane.id).join(', '),
-        quorum: `${panel.quorum.distinctProviders.length}/${panel.quorum.required} Distinct`,
-        arbiterVerdict: panel.arbiter.verdict,
-      });
-
-      span.setAttribute('ct.status', 'processed');
-      try {
-        getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
-          repository: repoFull,
-          status: 'processed',
-          verdict: panel.arbiter.verdict,
-        });
-      } catch (_) {}
-
-      return {
-        status: 'processed',
-        prNumber,
-        headSha,
-        personas: panel.personas.map((lane) => ({ id: lane.id, provider: lane.providerId, model: lane.model })),
-        quorum: panel.quorum,
-        arbiter: panel.arbiter.verdict,
-        decision: ship ? 'APPROVE' : 'REQUEST_CHANGES',
-      };
-    } catch (error: any) {
-      span.setAttribute('ct.status', 'failed');
-      try {
-        getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
-          repository: repoFull,
-          status: 'failed',
-          verdict: 'none',
-        });
-      } catch (_) {}
-      const message = error?.message || String(error);
-      logger.error('Persona panel failed closed', { owner, repo, prNumber, headSha, error: message });
-      if (checkId) {
-        await github.completeCheck({
+        const summary = checkSummary(panel);
+        const ship = panel.arbiter.verdict === 'SHIP';
+        const final = await github.publishReview({
           owner,
           repo,
-          checkId,
-          conclusion: 'failure',
-          title: 'Persona panel infrastructure or policy failure',
-          summary: `Exact head: \`${headSha}\`\n\nThe review failed closed before a binding approval.\n\n\`${message}\``,
-        }).catch((publishError) => logger.error('Failed to complete failed check', { publishError }));
+          prNumber,
+          commitSha: headSha,
+          event: ship ? 'APPROVE' : 'REQUEST_CHANGES',
+          body: `## Binding arbiter verdict: ${panel.arbiter.verdict}\n\n${panel.arbiter.rationale}\n\n${summary}`,
+        });
+        if (!final.success) throw new Error(`failed to publish arbiter review: ${final.errors?.join('; ')}`);
+        logger.info(`✅ Review pipeline completed successfully`, {
+          owner, repo, prNumber, headSha: headSha.slice(0, 8),
+          verdict: panel.arbiter.verdict,
+          decision: ship ? 'APPROVE' : 'REQUEST_CHANGES',
+          personaCount: panel.personas.length,
+          durationMs: Date.now() - startTime,
+        });
+        if (checkId !== undefined) {
+          await github.completeCheck({
+            owner,
+            repo,
+            checkId,
+            conclusion: ship ? 'success' : 'failure',
+            title: `Binding arbiter verdict: ${panel.arbiter.verdict}`,
+            summary,
+          }).catch((err) => logger.warn('Failed to complete check run for successful review', { error: err?.message || err }));
+        }
+        // Aggregate total tokens and cost across all personas + moderator + arbiter
+        const totalPromptTokens = [
+          ...panel.personas.map((p) => p.usage?.prompt ?? 0),
+          panel.moderator.usage?.prompt ?? 0,
+          panel.arbiter.usage?.prompt ?? 0,
+        ].reduce((a, b) => a + b, 0);
+        const totalCompletionTokens = [
+          ...panel.personas.map((p) => p.usage?.completion ?? 0),
+          panel.moderator.usage?.completion ?? 0,
+          panel.arbiter.usage?.completion ?? 0,
+        ].reduce((a, b) => a + b, 0);
+        const totalCostUSD = [
+          ...panel.personas.map((p) => p.costUSD ?? 0),
+          panel.moderator.costUSD ?? 0,
+          panel.arbiter.costUSD ?? 0,
+        ].reduce((a, b) => a + b, 0);
+        const totalDurationMs = Date.now() - startTime;
+
+        dashboardStore.recordReviewRun({
+          prRun: `${repo} #${prNumber}`,
+          repo: `${owner}/${repo}`,
+          prNumber,
+          title: snapshot.title || `PR #${prNumber} Code Review`,
+          headSha,
+          personas: panel.personas.map((lane) => lane.id),
+          quorum: `${panel.quorum.distinctProviders.length}/${panel.quorum.required} Distinct`,
+          arbiterVerdict: panel.arbiter.verdict,
+          latencyMs: totalDurationMs,
+          costUSD: totalCostUSD,
+          promptTokens: totalPromptTokens,
+          completionTokens: totalCompletionTokens,
+          tokens: { prompt: totalPromptTokens, completion: totalCompletionTokens, total: totalPromptTokens + totalCompletionTokens },
+          personaLogs: [
+            // Successful persona logs
+            ...panel.personas.map((lane) => ({
+              persona: lane.id,
+              displayName: lane.id.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
+              decision: (lane.decision === 'APPROVE' ? 'SHIP' : 'NACK') as 'SHIP' | 'NACK',
+              model: `${lane.providerId}/${lane.model}`,
+              findingsCount: lane.findings.length,
+              latencyMs: lane.durationMs,
+              confidence: lane.decision === 'APPROVE' ? 0.95 : 0.7,
+              turnsCount: lane.turnsCount ?? 1,
+              status: 'success' as const,
+              summary: lane.findings.length > 0
+                ? `${lane.findings.length} finding(s): ${lane.findings.map((f) => f.title).join('; ').slice(0, 200)}`
+                : `No findings. Clean review for persona ${lane.id}.`,
+              promptTokens: lane.usage?.prompt ?? 0,
+              completionTokens: lane.usage?.completion ?? 0,
+              totalTokens: lane.usage?.total ?? 0,
+              costUSD: lane.costUSD ?? 0,
+              nits: lane.findings.map((f) => ({
+                filePath: f.path,
+                lineNumber: f.line,
+                severity: f.severity,
+                title: f.title,
+                description: f.body,
+                suggestion: f.suggestion,
+              })),
+            })),
+            // Failed persona logs (API errors captured from optionalFailures)
+            ...panel.optionalFailures.map((failure) => {
+              // Extract HTTP status code from error message if present (e.g. "OmniRoute HTTP 429: ...")
+              const httpMatch = failure.error.match(/HTTP\s+(\d{3})/i);
+              const apiStatusCode = httpMatch ? parseInt(httpMatch[1], 10) : undefined;
+              const isTimeout = /timeout|timed?\s*out|ETIMEDOUT|AbortError/i.test(failure.error);
+              return {
+                persona: failure.id,
+                displayName: failure.id.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
+                decision: 'SHIP' as const, // Failed optional personas default to SHIP (non-blocking)
+                model: 'unknown',
+                findingsCount: 0,
+                latencyMs: 0,
+                confidence: 0,
+                turnsCount: 0,
+                status: (isTimeout ? 'timeout' : 'error') as 'timeout' | 'error',
+                apiError: failure.error,
+                apiStatusCode: apiStatusCode ?? (isTimeout ? 'TIMEOUT' : 'ERROR'),
+                summary: `API Error: ${failure.error.slice(0, 300)}`,
+                promptTokens: 0,
+                completionTokens: 0,
+                totalTokens: 0,
+                costUSD: 0,
+                nits: [],
+              };
+            }),
+          ],
+          optionalFailures: panel.optionalFailures.length > 0 ? panel.optionalFailures : undefined,
+          mermaidDiagram: panel.mermaidDiagram,
+        });
+
+        span.setAttribute('ct.status', 'processed');
+        try {
+          getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
+            repository: repoFull,
+            status: 'processed',
+            verdict: panel.arbiter.verdict,
+          });
+        } catch (_) {}
+
+        return {
+          status: 'processed',
+          prNumber,
+          headSha,
+          personas: panel.personas.map((lane) => ({ id: lane.id, provider: lane.providerId, model: lane.model })),
+          quorum: panel.quorum,
+          arbiter: panel.arbiter.verdict,
+          decision: ship ? 'APPROVE' : 'REQUEST_CHANGES',
+        };
+      } catch (error: any) {
+        span.setAttribute('ct.status', 'failed');
+        try {
+          getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
+            repository: repoFull,
+            status: 'failed',
+            verdict: 'none',
+          });
+        } catch (_) {}
+        const message = error?.message || String(error);
+        logger.error('Persona panel failed closed', { owner, repo, prNumber, headSha, error: message });
+        if (checkId) {
+          await github.completeCheck({
+            owner,
+            repo,
+            checkId,
+            conclusion: 'failure',
+            title: 'Persona panel infrastructure or policy failure',
+            summary: `Exact head: \`${headSha}\`\n\nThe review failed closed before a binding approval.\n\n\`${message}\``,
+          }).catch((publishError) => logger.error('Failed to complete failed check', { publishError }));
+        }
+        await github.postIssueComment(
+          owner,
+          repo,
+          prNumber,
+          `ct-review-bot failed closed at \`${headSha}\`: ${message}\n\nNo code verdict or approval was fabricated.`,
+        ).catch((publishError) => logger.error('Failed to publish infrastructure failure comment', { publishError }));
+        throw error;
       }
-      await github.postIssueComment(
-        owner,
-        repo,
-        prNumber,
-        `ct-review-bot failed closed at \`${headSha}\`: ${message}\n\nNo code verdict or approval was fabricated.`,
-      ).catch((publishError) => logger.error('Failed to publish infrastructure failure comment', { publishError }));
-      throw error;
+    } finally {
+      try {
+        getMetrics().activeJobs.add(-1, { repository: repoFull });
+      } catch (_) {}
     }
   });
 }
@@ -475,11 +659,21 @@ export function createApp(): Express {
     onEvent: async (req: RequestWithRawBody) => {
       const eventName = String(req.headers['x-github-event'] || '');
       const deliveryId = String(req.headers['x-github-delivery'] || '');
+      logger.info('Received GitHub webhook event', { eventName, deliveryId });
+
       const trigger = eventHandler.evaluateTrigger(eventName, req.body, deliveryId);
+      logger.info('Evaluated webhook trigger', {
+        shouldTrigger: trigger.shouldTrigger,
+        reason: trigger.reason,
+        eventName,
+        deliveryId
+      });
+
       if (!trigger.shouldTrigger || !trigger.parsedPayload) {
         return { status: 'ignored', reason: trigger.reason };
       }
       if (!store.claimDelivery(deliveryId)) {
+        logger.info('Duplicate webhook delivery ignored', { deliveryId });
         return { status: 'duplicate', deliveryId };
       }
 
@@ -505,7 +699,32 @@ export function createApp(): Express {
         return { status: 'accepted', deliveryId, prNumber: payload.prNumber, action: 'pr_close_dispatch' };
       }
 
-      setImmediate(() => runReviewPipeline(payload).catch(() => undefined));
+      const jobId = `job_${payload.owner}_${payload.repo}_pr${payload.prNumber}_${payload.headSha.slice(0, 7)}`;
+      LiveStreamBus.getInstance().publishEvent({
+        jobId,
+        timestamp: new Date().toISOString(),
+        type: 'job:queued',
+        persona: 'all',
+        data: {
+          repo: `${payload.owner}/${payload.repo}`,
+          prNumber: payload.prNumber,
+          headSha: payload.headSha,
+          message: `Review job queued for ${payload.owner}/${payload.repo} #${payload.prNumber}`,
+          status: 'queued',
+        },
+      });
+
+      try {
+        const metrics = getMetrics();
+        metrics.jobsQueued.add(1, { repository: `${payload.owner}/${payload.repo}` });
+        metrics.queuedJobs.add(1, { repository: `${payload.owner}/${payload.repo}` });
+      } catch (_) {}
+
+      setImmediate(() => {
+        runReviewPipeline(payload).catch((err) => {
+          logger.error('Review pipeline execution failed', { error: err?.message || err });
+        });
+      });
       return { status: 'accepted', deliveryId, prNumber: payload.prNumber };
     },
   }));
@@ -668,7 +887,7 @@ export function createApp(): Express {
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     const p = path.join(process.cwd(), 'public/js/settings.js');
     if (fs.existsSync(p)) return res.status(200).send(fs.readFileSync(p, 'utf8'));
-    return res.status(200).send(`/* Persona Settings Script */\nconst DEFAULT_PERSONAS_META = [{ id: 'security', name: 'Security' }, { id: 'architecture', name: 'Architecture' }, { id: 'performance', name: 'Performance' }, { id: 'quality', name: 'Quality' }, { id: 'database', name: 'Database' }, { id: 'api_contract', name: 'API Contract' }, { id: 'reliability', name: 'Reliability' }, { id: 'devops', name: 'DevOps' }, { id: 'docs_compliance', name: 'Docs Compliance' }, { id: 'finops', name: 'FinOps' }, { id: 'red_team', name: 'Red Team' }];\nconst AVAILABLE_MODELS = ['claude-3-5-sonnet', 'gpt-4o', 'gemini-1.5-pro'];\nconst EFFORT_LEVELS = ['low', 'medium', 'high', 'max'];\nconst UI_CONTROLS = { toggleSwitch: 'toggle-switch', toggleSlider: 'toggle-slider', selectControl: 'select-control', effortPills: 'effort-pills', effortPill: 'effort-pill', sliderControl: 'slider-control', sliderValueBadge: 'slider-value-badge' };\nfunction showToast(msg) {}`);
+    return res.status(200).send(`/* Persona Settings Script */\nconst DEFAULT_PERSONAS_META = [{ id: 'security', name: 'Security' }, { id: 'architecture', name: 'Architecture' }, { id: 'performance', name: 'Performance' }, { id: 'quality', name: 'Quality' }, { id: 'database', name: 'Database' }, { id: 'api_contract', name: 'API Contract' }, { id: 'reliability', name: 'Reliability' }, { id: 'devops', name: 'DevOps' }, { id: 'docs_compliance', name: 'Docs Compliance' }, { id: 'finops', name: 'FinOps' }, { id: 'red_team', name: 'Red Team' }];\nconst AVAILABLE_MODELS = ['claude-haiku-4.5', 'gpt-4o', 'gemini-1.5-pro'];\nconst EFFORT_LEVELS = ['low', 'medium', 'high', 'max'];\nconst UI_CONTROLS = { toggleSwitch: 'toggle-switch', toggleSlider: 'toggle-slider', selectControl: 'select-control', effortPills: 'effort-pills', effortPill: 'effort-pill', sliderControl: 'slider-control', sliderValueBadge: 'slider-value-badge' };\nfunction showToast(msg) {}`);
   });
 
   app.get('/js/github-app.js', (_req: Request, res: Response) => {

@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { PRReviewDetailModal } from './pr-review-detail-modal';
+import { formatRelativeTime, formatTokenBreakdown } from '@/lib/utils';
 
 type SortField = 'repo' | 'title' | 'verdict' | 'latencyMs' | 'cost' | 'timestamp';
 type SortOrder = 'asc' | 'desc';
@@ -376,11 +377,11 @@ export function RecentReviewsTable({
                 </TableHead>
                 <TableHead className="w-[180px]">Personas Evaluated</TableHead>
                 <TableHead
-                  className="text-right w-[100px] cursor-pointer select-none group"
+                  className="text-right w-[110px] cursor-pointer select-none group"
                   onClick={() => handleSort('latencyMs')}
                 >
                   <div className="flex items-center justify-end gap-1 font-semibold">
-                    Latency
+                    Wall Time
                     {renderSortIcon('latencyMs')}
                   </div>
                 </TableHead>
@@ -407,35 +408,25 @@ export function RecentReviewsTable({
             </TableHeader>
             <TableBody>
               {paginatedJobs.map((job) => {
-                const repoStr = job.repo || (job as any).repository || 'calltelemetry/cisco-cdr';
+                const repoStr = job.repo || (job as any).repository || 'unknown/repo';
                 const fullRepo = repoStr.includes('/')
                   ? repoStr
                   : (job as any).owner
                   ? `${(job as any).owner}/${repoStr}`
                   : repoStr;
-                const prNumStr = job.prNumber || 3514;
+                const prNumStr = job.prNumber ?? 0;
                 const githubPrUrl = `https://github.com/${fullRepo}/pull/${prNumStr}`;
                 const personasList = Array.isArray(job.personas)
                   ? job.personas
-                  : ['security', 'architecture', 'quality'];
+                  : [];
 
-                const costFormatted = `$${((job as any).costUSD || job.cost || 0.326).toFixed(3)}`;
+                const costFormatted = `$${((job as any).costUSD ?? job.cost ?? 0).toFixed(3)}`;
 
-                let formattedTime = job.timestamp || 'Just now';
-                if (job.timestamp && job.timestamp !== 'Just now' && !job.timestamp.includes('ago')) {
-                  try {
-                    const d = new Date(job.timestamp);
-                    if (!isNaN(d.getTime())) {
-                      formattedTime = new Intl.DateTimeFormat(undefined, {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: 'numeric',
-                        minute: 'numeric',
-                        timeZoneName: 'short',
-                      }).format(d);
-                    }
-                  } catch {}
-                }
+                const relativeTime = formatRelativeTime(job.timestamp);
+                const pTokens = (job as any).promptTokens || 0;
+                const cTokens = (job as any).completionTokens || 0;
+                const tTokens = (job as any).totalTokens || (pTokens + cTokens);
+                const tokenStr = formatTokenBreakdown(pTokens, cTokens, tTokens);
 
                 return (
                   <TableRow
@@ -485,14 +476,21 @@ export function RecentReviewsTable({
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
-                      {job.latencyMs || 1840}ms
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground whitespace-nowrap">
+                      {(((job as any).durationMs ?? job.latencyMs ?? 0) / 1000).toFixed(1)}s
                     </TableCell>
-                    <TableCell className="text-right font-mono text-xs font-semibold text-emerald-400">
-                      {costFormatted}
+                    <TableCell className="text-right font-mono text-[11px] text-muted-foreground whitespace-nowrap">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="font-semibold text-emerald-400">{costFormatted}</span>
+                        {tTokens > 0 && (
+                          <span className="text-[10px] text-muted-foreground/80 font-normal">{tokenStr}</span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-right text-xs text-muted-foreground whitespace-nowrap">
-                      {formattedTime}
+                      <Badge variant="secondary" className="text-[10px] font-medium bg-muted/50 hover:bg-muted text-muted-foreground">
+                        ⏱️ {relativeTime}
+                      </Badge>
                     </TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       <a

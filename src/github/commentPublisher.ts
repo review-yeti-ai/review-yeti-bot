@@ -238,30 +238,61 @@ export class CommentPublisher {
       const dashboardFooter = formatDashboardFooter(liveStreamUrl, orgDashboardUrl);
       const finalBody = body.includes(liveStreamUrl) || body.includes('Live Terminal Dashboard') || body.includes(dashboardFooter) ? body : body + dashboardFooter;
 
-      const res = await this.fetchWithRetry(url, {
+      const payload = {
+        body: finalBody,
+        event,
+        commit_id: commitSha,
+        comments: inlineComments.map(({ path, line, side = 'RIGHT', startLine, finding }) => ({
+          path,
+          line,
+          side,
+          ...(startLine ? { start_line: startLine, start_side: side } : {}),
+          body: formatInlineCommentBody(finding, { mascot: req.mascot }),
+        })),
+      };
+
+      let res = await this.fetchWithRetry(url, {
         method: 'POST',
-        body: JSON.stringify({
-          body: finalBody,
-          event,
-          commit_id: commitSha,
-          comments: inlineComments.map(({ path, line, side = 'RIGHT', startLine, finding }) => ({
-            path,
-            line,
-            side,
-            ...(startLine ? { start_line: startLine, start_side: side } : {}),
-            body: formatInlineCommentBody(finding, { mascot: req.mascot }),
-          })),
-        }),
+        body: JSON.stringify(payload),
       });
+
+      let retriedWithoutInline = false;
+      if (!res.ok) {
+        const errorText = await res.text();
+        logger.warn(`Failed to publish review with inline comments. Status: ${res.status}, Error: ${errorText}`);
+
+        // If it's a 422 / line could not be resolved error, retry by appending inline comments to the review body.
+        if ((res.status === 422 || errorText.includes('Line could not be resolved') || errorText.includes('Unprocessable Entity')) && inlineComments.length > 0) {
+          logger.info(`Retrying review publication without inline comments due to line resolution error`);
+          retriedWithoutInline = true;
+          const fallbackBody = finalBody + '\n\n### 📝 Inline Findings (Fallback)\n\n' + inlineComments.map(ic => {
+            return `#### 📄 File: \`${ic.path}\` (Line ${ic.line})\n${formatInlineCommentBody(ic.finding, { mascot: false })}`
+          }).join('\n\n---\n\n');
+
+          res = await this.fetchWithRetry(url, {
+            method: 'POST',
+            body: JSON.stringify({
+              body: fallbackBody,
+              event,
+              commit_id: commitSha,
+            }),
+          });
+        }
+      }
 
       if (!res.ok) {
         const errorText = await res.text();
         if (errorText.includes('Can not approve your own pull request')) {
           // Fallback to issue comment API
           const issueUrl = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments`;
+          const fallbackBody = (inlineComments.length > 0 && retriedWithoutInline) ?
+            finalBody + '\n\n### 📝 Inline Findings (Fallback)\n\n' + inlineComments.map(ic => {
+              return `#### 📄 File: \`${ic.path}\` (Line ${ic.line})\n${formatInlineCommentBody(ic.finding, { mascot: false })}`
+            }).join('\n\n---\n\n') : finalBody;
+
           const issueRes = await this.fetchWithRetry(issueUrl, {
             method: 'POST',
-            body: JSON.stringify({ body: finalBody }),
+            body: JSON.stringify({ body: fallbackBody }),
           });
           if (issueRes.ok) {
             const issueData: any = await issueRes.json();
@@ -273,7 +304,7 @@ export class CommentPublisher {
       }
 
       const resData: any = await res.json();
-      commentsCreated = inlineComments.length;
+      commentsCreated = retriedWithoutInline ? 0 : inlineComments.length;
       const rateLimitHeader = res.headers.get('x-ratelimit-remaining');
       const rateLimitRemaining = rateLimitHeader ? parseInt(rateLimitHeader, 10) : undefined;
 

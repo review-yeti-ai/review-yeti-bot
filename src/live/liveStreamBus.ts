@@ -11,6 +11,8 @@ export type LiveStreamEventType =
   | 'omniroute:metric'
   | 'ast:lookup'
   | 'nit:suppression'
+  | 'job:queued'
+  | 'job:dispatched'
   | 'job:complete'
   // Legacy event type shims
   | 'agent_start'
@@ -96,11 +98,17 @@ export interface TokenMetrics {
   estimatedCostUSD?: number;
 }
 
+export interface LiveQueueMetrics {
+  activeJobsCount: number;
+  queuedJobsCount: number;
+  maxConcurrentJobs: number;
+}
+
 export interface LiveJobSummary {
   jobId: string;
   repo?: string;
   prNumber?: number;
-  status: 'active' | 'completed' | 'failed';
+  status: 'queued' | 'active' | 'completed' | 'failed' | 'dispatched';
   personaProgress: Record<string, PersonaProgress>;
   tokenMetrics: TokenMetrics;
   startTime: string;
@@ -146,24 +154,32 @@ export class LiveStreamBus extends EventEmitter {
     }
     this.eventHistory.set(event.jobId, history);
 
-    const clientSet = this.clients.get(event.jobId);
-    if (clientSet && clientSet.size > 0) {
+    const globalKeys = ['*', 'all', 'default-job'];
+    const targetSets = [
+      this.clients.get(event.jobId),
+      ...globalKeys.map((k) => this.clients.get(k)),
+    ].filter((s): s is Set<Response> => Boolean(s && s.size > 0));
+
+    if (targetSets.length > 0) {
       const dataStr = `data: ${JSON.stringify(event)}\n\n`;
-      const deadClients: Response[] = [];
+      const notified = new Set<Response>();
 
-      clientSet.forEach((res) => {
-        try {
-          res.write(dataStr);
-        } catch (err: any) {
-          logger.warn('Failed writing to SSE client stream, scheduling cleanup', {
-            jobId: event.jobId,
-            error: err.message,
-          });
-          deadClients.push(res);
-        }
-      });
-
-      deadClients.forEach((res) => this.removeClient(event.jobId, res));
+      for (const clientSet of targetSets) {
+        clientSet.forEach((res) => {
+          if (!notified.has(res)) {
+            notified.add(res);
+            try {
+              res.write(dataStr);
+            } catch (err: any) {
+              logger.warn('Failed writing to SSE client stream, cleaning up', {
+                jobId: event.jobId,
+                error: err?.message,
+              });
+              this.removeClient(event.jobId, res);
+            }
+          }
+        });
+      }
     }
 
     this.emit('event', event);
@@ -236,11 +252,111 @@ export class LiveStreamBus extends EventEmitter {
   }
 
   public getHistory(jobId: string): LiveStreamEvent[] {
-    return this.eventHistory.get(jobId) || [];
+    const history = this.eventHistory.get(jobId);
+    if (history && history.length > 0) {
+      return history;
+    }
+
+    try {
+      const { dashboardStore } = require('../persistence/dashboardStore');
+      const logs = dashboardStore.getReviewLogs();
+      const match = (logs || []).find(
+        (l: any) => l.id === jobId || jobId.includes(`pr${l.prNumber}`) || (l.repo && jobId.includes(l.repo.replace(/\//g, '_')))
+      );
+
+      if (match) {
+        const syntheticEvents: LiveStreamEvent[] = [];
+        const timestamp = match.timestamp || new Date().toISOString();
+        const repo = match.repo || 'unknown/repo';
+        const prNumber = match.prNumber ?? 0;
+
+        syntheticEvents.push({
+          jobId,
+          timestamp,
+          type: 'job:complete',
+          persona: 'all',
+          data: {
+            repo,
+            prNumber,
+            message: `Review completed for ${repo} #${prNumber}`,
+            status: 'completed',
+          },
+        });
+
+        const personas = match.personaLogs
+          ? Object.keys(match.personaLogs)
+          : ['security', 'architecture', 'performance', 'quality'];
+        const costPerPersona = (match.costUSD || 0.001) / personas.length;
+        const promptPerPersona = Math.round((match.tokens?.prompt || 1200) / personas.length);
+        const compPerPersona = Math.round((match.tokens?.completion || 400) / personas.length);
+
+        for (const p of personas) {
+          const pLog = match.personaLogs?.[p];
+          syntheticEvents.push({
+            jobId,
+            timestamp,
+            type: 'persona:start',
+            persona: p,
+            data: { personaId: p, message: `Evaluating ${repo} #${prNumber} for persona ${p}` },
+          });
+          syntheticEvents.push({
+            jobId,
+            timestamp,
+            type: 'llm:token',
+            persona: p,
+            data: {
+              promptTokens: promptPerPersona,
+              completionTokens: compPerPersona,
+              totalTokens: promptPerPersona + compPerPersona,
+              costUSD: costPerPersona,
+              latencyMs: pLog?.latencyMs || 850,
+            },
+          });
+          syntheticEvents.push({
+            jobId,
+            timestamp,
+            type: 'persona:complete',
+            persona: p,
+            data: {
+              findingsCount: pLog?.nitsCount || pLog?.findingsCount || 0,
+              message: pLog?.reasoningChain?.[0] || `Persona ${p} evaluation completed with verdict ${pLog?.verdict || 'SHIP'}`,
+            },
+          });
+        }
+
+        return syntheticEvents;
+      }
+    } catch {
+      // Ignore fallback errors
+    }
+
+    return [];
   }
 
   public getActiveJobs(): LiveJobSummary[] {
     return Array.from(this.jobs.values());
+  }
+
+  public getQueueMetrics(): LiveQueueMetrics {
+    const envMax = process.env.MAX_CONCURRENT_REVIEW_JOBS;
+    const maxConcurrentJobs = envMax && !isNaN(parseInt(envMax, 10)) ? parseInt(envMax, 10) : 3;
+
+    let activeJobsCount = 0;
+    let queuedJobsCount = 0;
+
+    for (const job of this.jobs.values()) {
+      if (job.status === 'queued') {
+        queuedJobsCount++;
+      } else if (job.status === 'active' || job.status === 'dispatched') {
+        activeJobsCount++;
+      }
+    }
+
+    return {
+      activeJobsCount,
+      queuedJobsCount,
+      maxConcurrentJobs,
+    };
   }
 
   public getJobStatus(jobId: string): LiveJobSummary | undefined {
@@ -271,11 +387,20 @@ export class LiveStreamBus extends EventEmitter {
         }
       }
 
+      let initialStatus: LiveJobSummary['status'] = 'active';
+      if (event.type === 'job:queued' || event.data?.status === 'queued') {
+        initialStatus = 'queued';
+      } else if (event.type === 'job:dispatched' || event.data?.status === 'dispatched') {
+        initialStatus = 'dispatched';
+      } else if (event.data?.status && ['queued', 'active', 'completed', 'failed', 'dispatched'].includes(event.data.status)) {
+        initialStatus = event.data.status;
+      }
+
       job = {
         jobId: event.jobId,
         repo,
         prNumber,
-        status: 'active',
+        status: initialStatus,
         personaProgress: {},
         tokenMetrics: {
           promptTokens: 0,
@@ -296,8 +421,25 @@ export class LiveStreamBus extends EventEmitter {
     if (!job.repo && event.data?.repo) job.repo = event.data.repo;
     if (!job.prNumber && event.data?.prNumber) job.prNumber = event.data.prNumber;
 
+    if (event.type === 'job:queued') {
+      job.status = 'queued';
+    } else if (event.type === 'job:dispatched') {
+      job.status = 'dispatched';
+    } else if (
+      event.type === 'persona:start' ||
+      event.type === 'persona:chunk' ||
+      event.type === 'llm:prompt' ||
+      event.type === 'llm:token' ||
+      event.type === 'agent_start' ||
+      event.type === 'llm_chunk'
+    ) {
+      if (job.status === 'queued' || job.status === 'dispatched') {
+        job.status = 'active';
+      }
+    }
+
     const personaKey = String(event.persona);
-    if (personaKey) {
+    if (personaKey && personaKey !== 'all') {
       let progress = job.personaProgress[personaKey];
       if (!progress) {
         progress = {
@@ -346,7 +488,7 @@ export class LiveStreamBus extends EventEmitter {
     if (event.type === 'job:complete') {
       job.status = 'completed';
       job.endTime = event.timestamp;
-    } else if (event.data?.status === 'completed' || event.data?.status === 'failed') {
+    } else if (event.data?.status && ['queued', 'active', 'completed', 'failed', 'dispatched'].includes(event.data.status)) {
       job.status = event.data.status;
       if (job.status === 'completed' || job.status === 'failed') {
         job.endTime = event.timestamp;

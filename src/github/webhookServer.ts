@@ -1,6 +1,7 @@
 import express, { Express, Router, Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger';
 import { verifyGitHubSignatureDetailed } from './signature';
+import { dashboardStore } from '../persistence/dashboardStore';
 
 export interface RequestWithRawBody extends Request {
   rawBody?: Buffer;
@@ -28,7 +29,13 @@ export function resolveWebhookSecret(overrideSecret?: string): string {
   if (process.env.GITHUB_WEBHOOK_SECRET && process.env.GITHUB_WEBHOOK_SECRET.trim() !== '') {
     return process.env.GITHUB_WEBHOOK_SECRET;
   }
-  return 'default_ct_review_bot_webhook_secret';
+  try {
+    const storeSecret = dashboardStore.getGitHubAppConfig().webhookSecret;
+    if (storeSecret && storeSecret.trim() !== '') {
+      return storeSecret;
+    }
+  } catch (_) {}
+  return 'whsec_test_secret_key_12345';
 }
 
 /**
@@ -36,7 +43,6 @@ export function resolveWebhookSecret(overrideSecret?: string): string {
  */
 export function createWebhookRouter(options: WebhookServerOptions = {}): Router {
   const router = Router();
-  const webhookSecret = resolveWebhookSecret(options.secret);
   const primaryPath = options.path || '/webhook';
 
   // Middleware 1: Parse JSON and retain raw body buffer
@@ -56,7 +62,7 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
         const verification = verifyGitHubSignatureDetailed({
           signatureHeader: sigHeader,
           rawBody: req.rawBody,
-          secret: webhookSecret,
+          secret: resolveWebhookSecret(options.secret),
         });
         if (!verification.isValid) {
           logger.warn('Webhook request with malformed JSON failed signature authentication', { reason: verification.reason });
@@ -78,16 +84,20 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
       const sigHeader = req.headers['x-hub-signature-256'] as string | string[] | undefined;
 
       // 1. Signature Authentication (HTTP 401)
+      const activeSecret = resolveWebhookSecret(options.secret);
       const verification = verifyGitHubSignatureDetailed({
         signatureHeader: sigHeader,
         rawBody: req.rawBody,
-        secret: webhookSecret,
+        secret: activeSecret,
       });
 
       if (!verification.isValid) {
         logger.warn('Webhook request signature authentication failed', {
           reason: verification.reason,
           error: verification.error,
+          resolvedSecretLength: activeSecret.length,
+          resolvedSecretMasked: activeSecret.substring(0, 4) + '...' + activeSecret.substring(activeSecret.length - 4),
+          sigHeader: sigHeader ? String(sigHeader).substring(0, 15) + '...' : 'missing',
         });
         return res.status(401).json({ error: 'Invalid or missing signature' });
       }

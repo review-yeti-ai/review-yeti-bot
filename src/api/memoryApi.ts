@@ -118,7 +118,8 @@ export function createMemoryRouter(options: MemoryApiOptions = {}): Router {
   // GET & POST /api/memory/learnings
   router.all('/memory/learnings', async (req: Request, res: Response) => {
     try {
-      const repo = String(req.query.repo || req.query.repository || req.body?.repo || req.body?.repository || 'calltelemetry/cisco-cdr');
+      const repo = String(req.query.repo || req.query.repository || req.body?.repo || req.body?.repository || '');
+      if (!repo) return res.status(400).json({ success: false, error: 'repo parameter is required' });
       const category = (req.query.category || req.body?.category) ? String(req.query.category || req.body?.category) : undefined;
       const filePath = (req.query.filePath || req.body?.filePath) ? String(req.query.filePath || req.body?.filePath) : undefined;
       const query = (req.query.query || req.query.q || req.body?.query || req.body?.q) ? String(req.query.query || req.query.q || req.body?.query || req.body?.q) : undefined;

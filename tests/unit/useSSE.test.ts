@@ -43,11 +43,11 @@ describe('useSSE Custom Hook Unit Tests', () => {
     vi.restoreAllMocks();
   });
 
-  it('createInitialPersonaProgress returns state for all 12 personas in PENDING status', () => {
+  it('createInitialPersonaProgress returns state for all default personas in PENDING status', () => {
     const initial = createInitialPersonaProgress();
-    expect(Object.keys(initial)).toHaveLength(12);
+    expect(Object.keys(initial)).toHaveLength(DEFAULT_PERSONAS.length);
     expect(DEFAULT_PERSONAS).toContain('security');
-    expect(DEFAULT_PERSONAS).toContain('red_team');
+    expect(DEFAULT_PERSONAS).toContain('quality');
 
     for (const personaKey of DEFAULT_PERSONAS) {
       expect(initial[personaKey]).toBeDefined();
