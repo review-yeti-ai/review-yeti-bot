@@ -1,9 +1,8 @@
 name: Release SemVer Pipeline
 
+# CI/CD DISABLED PER USER DIRECTIVE
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   release:

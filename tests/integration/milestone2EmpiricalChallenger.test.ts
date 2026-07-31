@@ -22,7 +22,7 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
       // Direct model checks
       expect(isModelEnabled('gpt-4o', providersDisabledOpenAI)).toBe(false);
       expect(isModelEnabled('gpt-4o-mini', providersDisabledOpenAI)).toBe(false);
-      expect(isModelEnabled('claude-3-5-sonnet', providersDisabledOpenAI)).toBe(true);
+      expect(isModelEnabled('claude-5-sonnet', providersDisabledOpenAI)).toBe(true);
 
       // Options list filtering
       const filteredOptions = getEnabledModelOptions(AVAILABLE_MODEL_OPTIONS, providersDisabledOpenAI);
@@ -30,8 +30,8 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
 
       expect(values).not.toContain('gpt-4o');
       expect(values).not.toContain('gpt-4o-mini');
-      expect(values).toContain('claude-3-5-sonnet');
-      expect(values).toContain('gemini-1.5-pro');
+      expect(values).toContain('claude-5-sonnet');
+      expect(values).toContain('claude-haiku-4.5');
     });
 
     it('excludes Gemini 1.5 Pro when Google (gemini) provider is disabled', () => {
@@ -50,8 +50,8 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
       const values = filteredOptions.map((opt) => opt.value);
 
       expect(values).not.toContain('gemini-1.5-pro');
-      expect(values).toContain('gpt-4o');
-      expect(values).toContain('claude-3-5-sonnet');
+      expect(values).toContain('claude-5-sonnet');
+      expect(values).toContain('claude-haiku-4.5');
     });
   });
 
@@ -107,7 +107,7 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
         isModelEnabled(opt.value, activeProvidersMap)
       );
 
-      const effectiveModelForGpt4o = getFallbackModelForPersona('gpt-4o', enabledModelOptions, 'claude-3-5-sonnet');
+      const effectiveModelForGpt4o = getFallbackModelForPersona('gpt-4o', enabledModelOptions, 'claude-5-sonnet');
       expect(effectiveModelForGpt4o).not.toBe('gpt-4o');
       expect(isModelEnabled(effectiveModelForGpt4o, activeProvidersMap)).toBe(true);
 

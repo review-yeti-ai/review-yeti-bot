@@ -99,17 +99,18 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
     const optionalConfig = parseAndValidateConfig(mockOptionalYaml) as unknown as CtReviewConfigV3;
 
     const mockComplete = vi.fn().mockImplementation(async (req: any) => {
-      if (req.persona === 'opt-lane' || req.messages[1]?.content?.includes('"persona":"opt-lane"')) {
+      const allMsg = JSON.stringify(req.messages);
+      if (allMsg.includes('"persona":"opt-lane"') || allMsg.includes('opt-lane')) {
         throw new GatewayConnectionError('Connection refused for optional lane');
       }
       const prompt = req.messages[req.messages.length - 1].content;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'nonce';
-      if (prompt.includes('"role":"moderator"')) {
-        return { model: req.model, content: `CT_REVIEW_BEGIN:${nonce}\n{"decision":"RECONCILED","findings":[]}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null, raw: {} };
-      }
-      if (prompt.includes('"role":"arbiter"')) {
+      if (allMsg.includes('arbiter')) {
         return { model: req.model, content: `CT_REVIEW_BEGIN:${nonce}\n{"verdict":"SHIP","rationale":"Clean"}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null, raw: {} };
+      }
+      if (allMsg.includes('moderator')) {
+        return { model: req.model, content: `CT_REVIEW_BEGIN:${nonce}\n{"decision":"RECONCILED","findings":[]}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null, raw: {} };
       }
       return { model: req.model, content: `CT_REVIEW_BEGIN:${nonce}\n{"decision":"APPROVE","findings":[]}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null, raw: {} };
     });

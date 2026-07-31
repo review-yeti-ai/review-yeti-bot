@@ -62,21 +62,22 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     mockClient.complete.mockImplementation(async (opts: any) => {
       const prompt = opts.messages[1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
-      const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const allMsg = JSON.stringify(opts.messages);
 
-      if (prompt.includes('"role":"moderator"')) {
-        return {
-          model: opts.model,
-          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
-          usage: { prompt: 10, completion: 10, total: 20 },
-          costUSD: 0.0001,
-        };
-      } else if (prompt.includes('"role":"arbiter"')) {
+      if (allMsg.includes('arbiter')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes cleanly' })}\nCT_REVIEW_END:${nonce}`,
           usage: { prompt: 15, completion: 15, total: 30 },
           costUSD: 0.0002,
+        };
+      } else if (allMsg.includes('moderator')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+          usage: { prompt: 10, completion: 10, total: 20 },
+          costUSD: 0.0001,
         };
       } else {
         return {
@@ -107,19 +108,20 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     mockClient.complete.mockImplementation(async (opts: any) => {
       const prompt = opts.messages[1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
-      const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const allMsg = JSON.stringify(opts.messages);
 
-      if (prompt.includes('"role":"moderator"')) {
-        return {
-          model: opts.model,
-          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
-          usage: null,
-          costUSD: null,
-        };
-      } else if (prompt.includes('"role":"arbiter"')) {
+      if (allMsg.includes('arbiter')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes' })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      } else if (allMsg.includes('moderator')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
           usage: null,
           costUSD: null,
         };
@@ -183,7 +185,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     mockClient.complete.mockImplementation(async (opts: any) => {
       const prompt = opts.messages[1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
-      const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
 
       return {
         model: opts.model,
@@ -211,19 +213,20 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     mockClient.complete.mockImplementation(async (opts: any) => {
       const prompt = opts.messages[1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
-      const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const allMsg = JSON.stringify(opts.messages);
 
-      if (prompt.includes('"role":"moderator"')) {
-        return {
-          model: opts.model,
-          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
-          usage: null,
-          costUSD: null,
-        };
-      } else if (prompt.includes('"role":"arbiter"')) {
+      if (allMsg.includes('arbiter')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'BLOCK', rationale: 'Critical security violation blocks merge.' })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      } else if (allMsg.includes('moderator')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
           usage: null,
           costUSD: null,
         };

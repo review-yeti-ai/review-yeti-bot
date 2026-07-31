@@ -31,6 +31,7 @@ describe('OmniRoute 3.8.48 OpenAI-compatible adapter', () => {
       model: 'codex/gpt-5.6-sol-high',
       messages: [{ role: 'user', content: 'review' }],
       timeoutMs: 1000,
+      stream: false,
     });
 
     expect(result.model).toBe('codex/gpt-5.6-sol-high');

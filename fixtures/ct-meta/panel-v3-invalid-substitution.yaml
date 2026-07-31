@@ -15,7 +15,7 @@ reviewers:
   providers:
     - id: codex
       enabled: true
-      model: openai/gpt-4o
+      model: gpt-4o
       effort: high
       review_timeout_s: 120
       arbiter_timeout_s: 120

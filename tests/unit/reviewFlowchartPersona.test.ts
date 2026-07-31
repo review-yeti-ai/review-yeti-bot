@@ -65,34 +65,28 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
+        const allMsg = JSON.stringify(opts.messages);
 
-        if (prompt.includes('"role":"persona"')) {
+        if (allMsg.includes('arbiter')) {
           return {
-            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({
-              decision: 'APPROVE',
-              findings: [],
-              mermaidDiagram: '```mermaid\nsequenceDiagram\n    autonumber\n    Client->>Service: Call API\n```',
-            })}\nCT_REVIEW_END:${reqNonce}`,
+            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All checks passed' })}\nCT_REVIEW_END:${reqNonce}`,
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
           };
-        } else if (prompt.includes('"role":"moderator"')) {
+        } else if (allMsg.includes('moderator')) {
           return {
-            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({
-              decision: 'RECONCILED',
-              findings: [],
-            })}\nCT_REVIEW_END:${reqNonce}`,
+            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${reqNonce}`,
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
           };
         } else {
-          // arbiter
           return {
             content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({
-              verdict: 'SHIP',
-              rationale: 'All checks passed',
+              decision: 'APPROVE',
+              findings: [],
+              mermaidDiagram: '```mermaid\nsequenceDiagram\n    autonumber\n    Client->>Service: Call API\n```',
             })}\nCT_REVIEW_END:${reqNonce}`,
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
@@ -140,24 +134,18 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
+        const allMsg = JSON.stringify(opts.messages);
 
-        if (prompt.includes('"role":"persona"')) {
+        if (allMsg.includes('arbiter')) {
           return {
-            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({
-              decision: 'APPROVE',
-              findings: [],
-              mermaidDiagram: '```mermaid\nflowchart TD\n    A[Input] --> B[Output]\n```',
-            })}\nCT_REVIEW_END:${reqNonce}`,
+            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Approved' })}\nCT_REVIEW_END:${reqNonce}`,
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
           };
-        } else if (prompt.includes('"role":"moderator"')) {
+        } else if (allMsg.includes('moderator')) {
           return {
-            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({
-              decision: 'RECONCILED',
-              findings: [],
-            })}\nCT_REVIEW_END:${reqNonce}`,
+            content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${reqNonce}`,
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
@@ -165,8 +153,9 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
         } else {
           return {
             content: `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({
-              verdict: 'SHIP',
-              rationale: 'Approved',
+              decision: 'APPROVE',
+              findings: [],
+              mermaidDiagram: '```mermaid\nflowchart TD\n    A[Input] --> B[Output]\n```',
             })}\nCT_REVIEW_END:${reqNonce}`,
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },

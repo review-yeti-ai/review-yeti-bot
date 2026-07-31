@@ -25,6 +25,10 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(metrics.tokensPrompt).toBeDefined();
     expect(metrics.tokensCompletion).toBeDefined();
     expect(metrics.reviewDuration).toBeDefined();
+    expect(metrics.jobsQueued).toBeDefined();
+    expect(metrics.jobsDispatched).toBeDefined();
+    expect(metrics.activeJobs).toBeDefined();
+    expect(metrics.queuedJobs).toBeDefined();
   });
 
   it('records metrics and serializes to Prometheus format via getPrometheusMetrics()', async () => {
@@ -35,6 +39,10 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     metrics.reviewDuration.record(1.2, { repository: 'owner/repo', status: 'processed', verdict: 'SHIP' });
     metrics.indexerAstDuration.record(0.045, { language: 'typescript' });
     metrics.indexerFilesIndexed.add(3, { language: 'typescript' });
+    metrics.jobsQueued.add(5, { repository: 'owner/repo' });
+    metrics.jobsDispatched.add(3, { repository: 'owner/repo' });
+    metrics.activeJobs.add(2, { repository: 'owner/repo' });
+    metrics.queuedJobs.add(2, { repository: 'owner/repo' });
 
     const prometheusText = await getPrometheusMetrics();
     expect(typeof prometheusText).toBe('string');
@@ -43,6 +51,10 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(prometheusText).toContain('ct_review_tokens_prompt_total{persona="security",provider="anthropic",model="claude-3-5-sonnet"} 150');
     expect(prometheusText).toContain('ct_review_duration_seconds');
     expect(prometheusText).toContain('ct_indexer_ast_duration_seconds');
+    expect(prometheusText).toContain('ct_queue_jobs_queued_total');
+    expect(prometheusText).toContain('ct_queue_jobs_dispatched_total');
+    expect(prometheusText).toContain('ct_queue_active_jobs');
+    expect(prometheusText).toContain('ct_queue_queued_jobs');
   });
 
   it('creates spans and retrieves them via getRecentSpans()', async () => {

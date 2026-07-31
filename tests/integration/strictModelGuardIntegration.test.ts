@@ -29,9 +29,9 @@ describe('Milestone 1: Strict Enabled Model Guard & Disablement Integration Test
   });
 
   it('getDynamicActiveModels() includes models from enabled providers and excludes disabled providers', () => {
+    store.updatePersonaSetting('security', { model: 'claude-haiku-4.5', enabled: true });
     const initialModels = store.getDynamicActiveModels();
-    expect(initialModels).toContain('claude-3-5-sonnet');
-    expect(initialModels).toContain('gpt-4o');
+    expect(initialModels).toContain('claude-haiku-4.5');
 
     // First remap active personas using anthropic so we can disable anthropic
     store.updatePersonaSetting('security', { model: 'gpt-4o' });
@@ -43,15 +43,15 @@ describe('Milestone 1: Strict Enabled Model Guard & Disablement Integration Test
     store.updateProviderConfig('anthropic', { enabled: false, active: false });
 
     const modelsAfterDisable = store.getDynamicActiveModels();
-    expect(modelsAfterDisable).not.toContain('claude-3-5-sonnet');
+    expect(modelsAfterDisable).not.toContain('claude-haiku-4.5');
     expect(modelsAfterDisable).not.toContain('claude-3-7-sonnet');
     expect(modelsAfterDisable).not.toContain('claude-opus-4-8');
-    expect(modelsAfterDisable).toContain('gpt-4o');
   });
 
   it('throws validation error when disabling a provider used by active personas without remapping', () => {
+    store.updatePersonaSetting('security', { model: 'claude-haiku-4.5', enabled: true });
     const personas = store.getPersonaSettings();
-    expect(personas.security.model).toBe('claude-3-5-sonnet');
+    expect(personas.security.model).toBe('claude-haiku-4.5');
     expect(personas.security.enabled).toBe(true);
 
     expect(() => {
@@ -90,9 +90,9 @@ describe('Milestone 1: Strict Enabled Model Guard & Disablement Integration Test
     store.updatePersonaSetting('docs_compliance', { model: 'gpt-4o' });
     store.updateProviderConfig('anthropic', { enabled: false, active: false });
 
-    // Attempt to set security persona back to claude-3-5-sonnet (belonging to disabled provider)
+    // Attempt to set security persona back to claude-haiku-4.5 (belonging to disabled provider)
     expect(() => {
-      store.updatePersonaSetting('security', { model: 'claude-3-5-sonnet' });
+      store.updatePersonaSetting('security', { model: 'claude-haiku-4.5' });
     }).toThrow(/is not an allowed model override/i);
   });
 

@@ -23,15 +23,15 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
   describe('1. Removal of Default Populated Mock Keys', () => {
     it('does not seed default mock keys in providerConfigs when env vars are unset', () => {
       const providers = store.getProviderConfigs();
-      expect(providers['openai']?.apiKeyRaw).not.toContain('mock');
+      expect(providers['openai']?.apiKeyRaw || '').not.toContain('mock');
       expect(providers['openai']?.apiKeyMasked || '').not.toContain('mock');
-      expect(providers['anthropic']?.apiKeyRaw).not.toContain('mock');
-      expect(providers['gemini']?.apiKeyRaw).not.toContain('mock');
-      expect(providers['grok']?.apiKeyRaw).not.toContain('mock');
-      expect(providers['deepseek']?.apiKeyRaw).not.toContain('mock');
-      expect(providers['doppler']?.apiKeyRaw).not.toContain('mock');
-      expect(providers['custom-openai']?.apiKeyRaw).not.toContain('mock');
-      expect(providers['glm']?.apiKeyRaw).not.toContain('mock');
+      expect(providers['anthropic']?.apiKeyRaw || '').not.toContain('mock');
+      expect(providers['gemini']?.apiKeyRaw || '').not.toContain('mock');
+      expect(providers['grok']?.apiKeyRaw || '').not.toContain('mock');
+      expect(providers['deepseek']?.apiKeyRaw || '').not.toContain('mock');
+      expect(providers['doppler']?.apiKeyRaw || '').not.toContain('mock');
+      expect(providers['custom-openai']?.apiKeyRaw || '').not.toContain('mock');
+      expect(providers['glm']?.apiKeyRaw || '').not.toContain('mock');
     });
 
     it('does not seed default mock keys in integrations when env vars are unset', () => {
@@ -124,12 +124,14 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
 
     it('allows updating platform settings with valid provider key', () => {
       const validAnthropic = 'sk-ant-api03-authentic_token_key_7788';
-      const settings = store.updateSettings({
+      store.updateSettings({
         providerConfigs: {
           anthropic: { apiKeyRaw: validAnthropic } as any,
         },
       });
-      expect(settings.providerConfigs?.anthropic.apiKeyRaw).toBe(validAnthropic);
+      // getProviderConfigs() strips apiKeyRaw for security; verify the masked key
+      const providers = store.getProviderConfigs();
+      expect(providers['anthropic']?.apiKeyMasked).toBe('sk-ant-a...7788');
     });
   });
 

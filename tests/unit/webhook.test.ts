@@ -201,6 +201,7 @@ describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
           number: 43,
           labels: [{ name: 'ct-review' }],
         },
+        repository: { name: 'ct-bot', owner: { login: 'calltelemetry' } },
         sender: { login: 'octocat' },
       };
 
@@ -239,6 +240,7 @@ describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
         issue: { number: 99, pull_request: {} },
         comment: { body: 'Please @ct-review review this change' },
         sender: { login: 'developer' },
+        repository: { owner: { login: 'testorg' }, name: 'testrepo' },
       };
 
       const evalResult = handler.evaluateTrigger('issue_comment', commentPayload);

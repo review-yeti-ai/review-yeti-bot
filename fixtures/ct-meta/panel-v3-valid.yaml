@@ -21,7 +21,7 @@ reviewers:
   providers:
     - id: codex
       enabled: true
-      model: codex/gpt-5.6-sol-high
+      model: codex-gateway/gpt-5.6-sol-high
       effort: high
       review_timeout_s: 240
       arbiter_timeout_s: 240

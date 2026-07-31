@@ -43,7 +43,7 @@ export function PersonaStatusGrid({ personas }: PersonaStatusGridProps) {
               </div>
 
               <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-1 border-t border-border/40">
-                <span className="font-mono">{p?.model || 'claude-3-5-sonnet'}</span>
+                <span className="font-mono">{p?.model || 'claude-haiku-4.5'}</span>
                 <span className="capitalize">Effort: <strong className="text-foreground">{p?.effort || 'low'}</strong></span>
               </div>
             </Card>

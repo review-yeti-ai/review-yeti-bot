@@ -28,6 +28,7 @@ export interface PersonaSetting {
   displayName: string;
   model: string;
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  maxTurns?: number;
   confidenceThreshold: number;
   enabled: boolean;
   required?: boolean;
@@ -45,6 +46,9 @@ export interface OverviewStats {
   todaysReviewsExecuted?: number;
   todaysReviewsCount?: number;
   todayDateBadge?: string;
+  trailing24hAvgTokensPerPR?: number;
+  trailing24hAvgCostPerPR?: number;
+  trailing24hReviewsExecuted?: number;
   totalCostUSD: number;
   monthlyCostCapUSD: number;
   costCapBreached: boolean;
@@ -99,6 +103,17 @@ export interface PersonaLogEntry {
   reasoningChain?: string[];
   outputLog?: string;
   nits?: CodeNit[];
+  turnsCount?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  costUSD?: number;
+  /** API-level error message if this persona failed */
+  apiError?: string;
+  /** HTTP status code or error classification from the API */
+  apiStatusCode?: number | string;
+  /** Whether this persona completed successfully */
+  status?: 'success' | 'error' | 'timeout' | 'skipped';
 }
 
 export interface ReviewJob {
@@ -122,6 +137,9 @@ export interface ReviewJob {
   quorum?: string;
   personaLogs?: PersonaLogEntry[];
   mermaidDiagram?: string;
+  /** Personas that failed with API errors (non-required, didn't block verdict) */
+  optionalFailures?: Array<{ id: string; error: string }>;
+  isSynthetic?: boolean;
 }
 
 export interface RepositorySetting {

@@ -125,7 +125,7 @@ export function getEnabledModelOptions<T extends { value: string }>(
 export function getFallbackModelForPersona(
   currentModel: string,
   enabledOptions: { label: string; value: string }[],
-  defaultFallback: string = 'claude-3-5-sonnet'
+  defaultFallback: string = 'claude-haiku-4.5'
 ): string {
   if (enabledOptions.some((opt) => opt.value === currentModel)) {
     return currentModel;
