@@ -23,6 +23,7 @@ describe('configLoader.ts — Comprehensive Unit Expansion Tests', () => {
     expect(v3.quorum).toBe(1);
     expect(v3.personas.length).toBeGreaterThan(0);
     expect(v3.reviewers.providers[0].id).toBe('synthetic');
+    expect(v3.reviewers.providers.length).toBeGreaterThan(0);
     expect(v3.confidence_threshold).toBe(70);
   });
 

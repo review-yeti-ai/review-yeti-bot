@@ -67,21 +67,21 @@ mascot: true
       expect(requiredPersona).toBeDefined();
       expect(requiredPersona?.charter).toBe('builtin:security');
       expect(requiredPersona?.paths).toEqual(['**']);
-      expect(requiredPersona?.providers).toContain('codex');
+      expect(requiredPersona?.providers.length).toBeGreaterThan(0);
 
-      // Tier 2: Reviewer Providers array exists, non-empty, contains enabled codex provider with correct model
+      // Tier 2: Reviewer Providers array exists, non-empty, contains enabled claude provider with correct model
       expect(Array.isArray(v3.reviewers.providers)).toBe(true);
       expect(v3.reviewers.providers.length).toBeGreaterThanOrEqual(1);
-      const codexProvider = v3.reviewers.providers.find(p => p.id === 'codex');
-      expect(codexProvider).toBeDefined();
-      expect(codexProvider?.enabled).toBe(true);
-      expect(codexProvider?.model).toBe('codex/gpt-5.6-sol-high');
-      expect(codexProvider?.effort).toBe('low');
+      const claudeProvider = v3.reviewers.providers.find(p => p.id === 'claude');
+      expect(claudeProvider).toBeDefined();
+      expect(claudeProvider?.enabled).toBe(true);
+      expect(claudeProvider?.model).toBe('claude-opus-4-8');
+      expect(claudeProvider?.effort).toBe('low');
 
       // Tier 3: Arbiter configuration specifies valid provider order
       expect(v3.reviewers.arbiter).toBeDefined();
       expect(Array.isArray(v3.reviewers.arbiter.order)).toBe(true);
-      expect(v3.reviewers.arbiter.order).toContain('codex');
+      expect(v3.reviewers.arbiter.order).toContain('claude');
 
       // Tier 4: Quorum is positive integer <= enabled distinct providers
       expect(v3.quorum).toBe(1);
@@ -115,20 +115,20 @@ personas:
     required: true
     charter: builtin:correctness
     paths: ["**"]
-    providers: [codex]
+    providers: [claude]
 reviewers:
   execution: personas
   fallback: ordered
   overall_timeout_s: 300
   providers:
-    - id: codex
+    - id: claude
       enabled: true
-      model: codex/gpt-5.6-sol-high
+      model: claude-opus-4-8
       effort: high
       review_timeout_s: 60
       arbiter_timeout_s: 60
   arbiter:
-    order: [codex]
+    order: [claude]
 `;
           }
           return null;

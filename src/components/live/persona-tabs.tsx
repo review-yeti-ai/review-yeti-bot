@@ -29,13 +29,23 @@ export function PersonaTabs({
   personaProgress = {},
   className = '',
 }: PersonaTabsProps) {
-  const allPersonas = useMemo(() => ['all', ...DEFAULT_PERSONAS], []);
+  const allPersonas = useMemo(() => {
+    const eventPersonaKeys = (events || []).map((e) => (e.persona ? e.persona.toLowerCase() : '')).filter(Boolean);
+    const keys = Array.from(
+      new Set([
+        ...DEFAULT_PERSONAS,
+        ...Object.keys(personaProgress || {}).filter((k) => k !== 'all'),
+        ...eventPersonaKeys,
+      ])
+    );
+    return ['all', ...keys];
+  }, [personaProgress, events]);
 
   // Event counters per persona
   const eventCounts = useMemo(() => {
     const counts: Record<string, number> = { all: events.length };
-    for (const p of DEFAULT_PERSONAS) {
-      counts[p] = 0;
+    for (const p of allPersonas) {
+      if (p !== 'all') counts[p] = 0;
     }
     for (const evt of events) {
       const p = evt.persona ? evt.persona.toLowerCase() : '';
@@ -44,7 +54,7 @@ export function PersonaTabs({
       }
     }
     return counts;
-  }, [events]);
+  }, [events, allPersonas]);
 
   return (
     <div className={`w-full overflow-x-auto scrollbar-none py-1 ${className}`}>

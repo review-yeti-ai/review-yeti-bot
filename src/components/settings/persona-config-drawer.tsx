@@ -18,7 +18,7 @@ import { PromptEditor } from '@/components/settings/prompt-editor';
 import { PromptTestModal } from '@/components/settings/prompt-test-modal';
 import { PERSONA_METADATA } from '@/components/settings/persona-selector';
 import { PersonaSetting, ProviderConfigRecord, ModelRegistryItem } from '@/types/dashboard';
-import { ShieldCheck, Sliders, Cpu, Gauge, Save, X, Sparkles } from 'lucide-react';
+import { ShieldCheck, Sliders, Cpu, Gauge, Save, X, Sparkles, RotateCw } from 'lucide-react';
 
 interface PersonaConfigDrawerProps {
   open: boolean;
@@ -61,7 +61,7 @@ export function PersonaConfigDrawer({
     color: 'text-indigo-400',
   };
   const Icon = meta.icon;
-  const currentModel = persona.model || 'claude-3-5-sonnet';
+  const currentModel = persona.model || 'claude-haiku-4.5';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -95,8 +95,8 @@ export function PersonaConfigDrawer({
         </DialogHeader>
 
         <div className="space-y-6 py-4">
-          {/* Quick Settings Bar: Model, Effort, Confidence, Active Toggle */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 p-4 rounded-xl border border-border/60 bg-background/40">
+          {/* Quick Settings Bar: Model, Effort, Max Turns, Confidence, Active Toggle */}
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 p-4 rounded-xl border border-border/60 bg-background/40">
             {/* 1. LLM Model Selector */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
@@ -186,6 +186,41 @@ export function PersonaConfigDrawer({
                   <SelectItem value="max">Max (Maximum audit)</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+
+            {/* 3. Max Exploration Turns Slider & Numeric Input */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <RotateCw className="h-3.5 w-3.5 text-indigo-400" />
+                  Max Turns
+                </span>
+                <span className="font-mono text-indigo-300 font-bold">
+                  {persona.maxTurns ?? 20}
+                </span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={1}
+                  max={20}
+                  value={persona.maxTurns ?? 20}
+                  onChange={(e) =>
+                    onUpdatePersonaField({ maxTurns: Math.min(20, Math.max(1, parseInt(e.target.value, 10) || 1)) })
+                  }
+                  className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={persona.maxTurns ?? 20}
+                  onChange={(e) =>
+                    onUpdatePersonaField({ maxTurns: Math.min(20, Math.max(1, parseInt(e.target.value, 10) || 1)) })
+                  }
+                  className="font-mono text-xs bg-background/80 w-14 text-center shrink-0 h-8 p-1"
+                />
+              </div>
             </div>
 
             {/* 3. Confidence Threshold Slider & Numeric Input */}

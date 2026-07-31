@@ -68,7 +68,7 @@ describe('Empirical Verification: Latency Stat Reporting Accuracy in POST /api/o
         let expectedNonce = '';
         if (reqBody.messages && Array.isArray(reqBody.messages)) {
           for (const m of reqBody.messages) {
-            const match = String(m.content).match(/CT_REVIEW_BEGIN:([a-f0-9\-]+)/i);
+            const match = String(m.content).match(/(?:CT_REVIEW_NONCE|CT_REVIEW_BEGIN):([a-f0-9\-]+)/i);
             if (match) {
               expectedNonce = match[1];
               break;

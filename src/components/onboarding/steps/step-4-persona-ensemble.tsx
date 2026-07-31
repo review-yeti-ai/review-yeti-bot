@@ -18,30 +18,36 @@ import {
 import { AlertTriangle } from 'lucide-react';
 
 export const PERSONA_ENSEMBLE_DEFINITIONS = [
-  { id: 'security', name: '🛡️ Security & Tenancy Guardian', defaultModel: 'claude-3-5-sonnet', provider: 'anthropic' },
-  { id: 'architecture', name: '🏛️ System Architecture & Design', defaultModel: 'grok-cli/grok-4.5', provider: 'grok' },
-  { id: 'performance', name: '⚡ Performance & Scalability', defaultModel: 'glm-5.2', provider: 'glm' },
-  { id: 'quality', name: '✨ Code Quality & Style', defaultModel: 'claude-3-5-sonnet', provider: 'anthropic' },
-  { id: 'database', name: '🗄️ Database & Persistence', defaultModel: 'glm-5.2', provider: 'glm' },
-  { id: 'api_contract', name: '🔌 API Contract & Integration', defaultModel: 'claude-3-5-sonnet', provider: 'anthropic' },
-  { id: 'documentation', name: '📝 Documentation & Compliance', defaultModel: 'claude-3-5-sonnet', provider: 'anthropic' },
-  { id: 'linear_sync', name: '📌 Linear Sync & Issue Tracking', defaultModel: 'gpt-4o-mini', provider: 'openai' },
-  { id: 'ux_product', name: '🎨 UX & Product Consistency', defaultModel: 'gpt-4o', provider: 'openai' },
-  { id: 'devops', name: '🐳 DevOps & Containers', defaultModel: 'deepseek-v3', provider: 'deepseek' },
-  { id: 'reliability', name: '💥 Reliability & Resilience', defaultModel: 'deepseek-v3', provider: 'deepseek' },
+  { id: 'security', name: '🛡️ Security & Tenancy Guardian', defaultModel: 'synthetic/hf:zai-org/GLM-5.2', provider: 'synthetic' },
+  { id: 'architecture', name: '🏛️ System Architecture & Design', defaultModel: 'synthetic/hf:openai/gpt-oss-120b', provider: 'synthetic' },
+  { id: 'performance', name: '⚡ Performance & Scalability', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
+  { id: 'quality', name: '✨ Code Quality & Style', defaultModel: 'synthetic/hf:Qwen/Qwen3.6-27B', provider: 'synthetic' },
+  { id: 'database', name: '🗄️ Database & Persistence', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
+  { id: 'api_contract', name: '🔌 API Contract & Integration', defaultModel: 'synthetic/hf:Qwen/Qwen3.6-27B', provider: 'synthetic' },
+  { id: 'documentation', name: '📝 Documentation & Compliance', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
+  { id: 'linear_sync', name: '📌 Linear Sync & Issue Tracking', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
+  { id: 'ux_product', name: '🎨 UX & Product Consistency', defaultModel: 'synthetic/hf:Qwen/Qwen3.6-27B', provider: 'synthetic' },
+  { id: 'devops', name: '🐳 DevOps & Containers', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
+  { id: 'reliability', name: '💥 Reliability & Resilience', defaultModel: 'synthetic/hf:zai-org/GLM-5.2', provider: 'synthetic' },
 ];
 
 export const AVAILABLE_MODEL_OPTIONS = [
+  { label: 'Synthetic Kimi K3 (Top-Tier 2.8T MoE)', value: 'synthetic/hf:moonshotai/Kimi-K3' },
+  { label: 'Synthetic GLM 5.2 (Zai Org)', value: 'synthetic/hf:zai-org/GLM-5.2' },
+  { label: 'Synthetic GLM 4.7 Flash (Cheap)', value: 'synthetic/hf:zai-org/GLM-4.7-Flash' },
+  { label: 'Synthetic Qwen 3.6 27B (Qwen)', value: 'synthetic/hf:Qwen/Qwen3.6-27B' },
+  { label: 'Claude Haiku 4.5 (Anthropic)', value: 'claude-haiku-4.5' },
+  { label: 'Claude 5 Sonnet (Anthropic)', value: 'claude-5-sonnet' },
   { label: 'Claude 3.5 Sonnet (Anthropic)', value: 'claude-3-5-sonnet' },
   { label: 'Claude 3.7 Sonnet (Anthropic)', value: 'claude-3-7-sonnet' },
   { label: 'GPT-4o (OpenAI)', value: 'gpt-4o' },
   { label: 'GPT-4o Mini (OpenAI)', value: 'gpt-4o-mini' },
-  { label: 'Grok 4.5 (xAI Grok)', value: 'grok-cli/grok-4.5' },
-  { label: 'GLM 5.2 (Zhipu GLM)', value: 'glm-5.2' },
-  { label: 'DeepSeek V3 (DeepSeek)', value: 'deepseek-v3' },
+  { label: 'Grok 4.5 (xAI)', value: 'grok-cli/grok-4.5' },
+  { label: 'GLM 5.2 (Synthetic Arbiter)', value: 'glm-5.2' },
   { label: 'Gemini 1.5 Pro (Google)', value: 'gemini-1.5-pro' },
   { label: 'AGY Opus Thinking (AGY)', value: 'agy/claude-opus-4-6-thinking' },
-  { label: 'Codex GPT-5.6 (Codex)', value: 'codex/gpt-5.6-sol-high' },
+  { label: 'Codex GPT-5.6 Sol High (Codex)', value: 'codex/gpt-5.6-sol-high' },
+  { label: 'DeepSeek V3 (DeepSeek)', value: 'deepseek-v3' },
 ];
 
 interface Step4PersonaEnsembleProps {
