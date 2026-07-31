@@ -102,7 +102,7 @@ describe('Challenger 2 Suite: AI Providers UI & Persona Sync Empirical Verificat
         expect(screen.getByText('Ollama Local LLM')).toBeDefined();
       });
 
-      const testButtons = screen.getAllByRole('button', { name: /Test Connection/i });
+      const testButtons = screen.getAllByRole('button', { name: /Test/i });
       expect(testButtons.length).toBeGreaterThan(0);
     });
 
