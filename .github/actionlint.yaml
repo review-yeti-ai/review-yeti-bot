@@ -1,0 +1,12 @@
+self-hosted-runner:
+  labels:
+    - blacksmith-2vcpu-ubuntu-2204
+    - blacksmith-2vcpu-ubuntu-2204-arm
+    - ARM64
+    - macOS
+    - metal
+    - ct-runner
+    - gh-runner-intel-x
+    - gh-runner-m3-x
+
+config-variables: null

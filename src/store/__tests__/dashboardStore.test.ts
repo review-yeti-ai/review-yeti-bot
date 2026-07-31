@@ -149,4 +149,22 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
       expect(updated.status).toBe('connected');
     });
   });
+
+  describe('6. Default Persona Model Configuration (Requirement R4)', () => {
+    it('ensures all default persona model configurations default to openrouter/google/gemini-2.0-flash-lite-001', () => {
+      const personas = store.getPersonaSettings();
+      const personaKeys = Object.keys(personas);
+      expect(personaKeys.length).toBeGreaterThan(0);
+
+      for (const [key, persona] of Object.entries(personas)) {
+        expect(persona.model, `Persona '${key}' model should default to openrouter/google/gemini-2.0-flash-lite-001`).toBe('openrouter/google/gemini-2.0-flash-lite-001');
+        if (persona.modelId) {
+          expect(persona.modelId, `Persona '${key}' modelId should default to openrouter/google/gemini-2.0-flash-lite-001`).toBe('openrouter/google/gemini-2.0-flash-lite-001');
+        }
+        if (persona.providerId) {
+          expect(persona.providerId, `Persona '${key}' providerId should default to openrouter`).toBe('openrouter');
+        }
+      }
+    });
+  });
 });
