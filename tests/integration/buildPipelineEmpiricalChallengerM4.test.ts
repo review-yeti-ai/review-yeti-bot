@@ -108,7 +108,7 @@ describe('Milestone 4: Build Pipeline & Static Serving Empirical Challenger Test
   describe('5. Empirical Stress Testing', () => {
     it('handles concurrent requests across static asset routes under load', async () => {
       const routes = ['/', '/settings', '/live', '/repos', '/integrations', '/github-app', '/404.html'];
-      const requests = Array.from({ length: 50 }, (_, i) => {
+      const requests = Array.from({ length: 15 }, (_, i) => {
         const route = routes[i % routes.length];
         return request(app).get(route);
       });

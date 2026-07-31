@@ -21,6 +21,10 @@ export interface MetricCounters {
   indexerFilesIndexed: ReturnType<any>;
   indexerSymbolsExtracted: ReturnType<any>;
   arbiterVerdicts: ReturnType<any>;
+  jobsQueued: ReturnType<any>;
+  jobsDispatched: ReturnType<any>;
+  activeJobs: ReturnType<any>;
+  queuedJobs: ReturnType<any>;
 }
 
 let metricsInstance: MetricCounters | null = null;
@@ -90,6 +94,18 @@ export function initMetrics(): MetricCounters {
     arbiterVerdicts: meter.createCounter('ct_arbiter_verdicts_total', {
       description: 'Arbiter final verdict count.',
     }),
+    jobsQueued: meter.createCounter('ct_queue_jobs_queued_total', {
+      description: 'Total queue jobs queued.',
+    }),
+    jobsDispatched: meter.createCounter('ct_queue_jobs_dispatched_total', {
+      description: 'Total queue jobs dispatched.',
+    }),
+    activeJobs: meter.createUpDownCounter('ct_queue_active_jobs', {
+      description: 'Current active review jobs.',
+    }),
+    queuedJobs: meter.createUpDownCounter('ct_queue_queued_jobs', {
+      description: 'Current queued review jobs.',
+    }),
   };
 
   return metricsInstance;
@@ -134,6 +150,8 @@ export async function getPrometheusMetrics(): Promise<string> {
       lines.push(`# HELP ${name} ${description || ''}`);
       if (metric.descriptor.type === 'HISTOGRAM') {
         lines.push(`# TYPE ${name} histogram`);
+      } else if (metric.descriptor.type === 'UP_DOWN_COUNTER' || typeStr.includes('updown') || typeStr.includes('gauge')) {
+        lines.push(`# TYPE ${name} gauge`);
       } else {
         lines.push(`# TYPE ${name} counter`);
       }
@@ -194,6 +212,10 @@ export async function getPrometheusMetrics(): Promise<string> {
     { name: 'ct_indexer_files_indexed_total', desc: 'Total files parsed.', type: 'counter' },
     { name: 'ct_indexer_symbols_extracted_total', desc: 'Total symbols extracted.', type: 'counter' },
     { name: 'ct_arbiter_verdicts_total', desc: 'Arbiter final verdict count.', type: 'counter' },
+    { name: 'ct_queue_jobs_queued_total', desc: 'Total queue jobs queued.', type: 'counter' },
+    { name: 'ct_queue_jobs_dispatched_total', desc: 'Total queue jobs dispatched.', type: 'counter' },
+    { name: 'ct_queue_active_jobs', desc: 'Current active review jobs.', type: 'gauge' },
+    { name: 'ct_queue_queued_jobs', desc: 'Current queued review jobs.', type: 'gauge' },
   ];
 
   for (const inst of knownInstruments) {

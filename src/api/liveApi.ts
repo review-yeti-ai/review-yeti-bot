@@ -40,16 +40,70 @@ export function createLiveRouter(): Router {
    * Returns active/recent jobs from LiveStreamBus for dashboard sidebar.
    */
   const handleGetActiveJobs = (_req: Request, res: Response) => {
-    const jobs = bus.getActiveJobs();
+    let jobs = bus.getActiveJobs();
+    if (jobs.length === 0) {
+      try {
+        const { dashboardStore } = require('../persistence/dashboardStore');
+        const logs = dashboardStore.getReviewLogs();
+        if (logs && logs.length > 0) {
+          jobs = logs.slice(0, 10).map((log: any) => {
+            const jobId = log.id || `job_${(log.repo || 'unknown/repo').replace(/\//g, '_')}_pr${log.prNumber ?? 0}`;
+            const promptTokens = log.tokens?.prompt ?? 0;
+            const completionTokens = log.tokens?.completion ?? 0;
+            const totalTokens = log.tokens?.total || promptTokens + completionTokens;
+
+            return {
+              jobId,
+              repo: log.repo || 'unknown/repo',
+              prNumber: log.prNumber ?? 0,
+              status: 'completed',
+              personaProgress: {},
+              tokenMetrics: {
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                estimatedCostUSD: log.costUSD ?? 0,
+              },
+              startTime: log.timestamp || new Date().toISOString(),
+              endTime: log.timestamp || new Date().toISOString(),
+              eventCount: log.personaLogs ? Object.keys(log.personaLogs).length * 3 : 12,
+              lastEventTime: log.timestamp || new Date().toISOString(),
+            };
+          });
+        }
+      } catch {
+        // Ignore fallback errors
+      }
+    }
+    const queueMetrics = bus.getQueueMetrics();
     res.json({
       success: true,
       count: jobs.length,
+      activeJobsCount: queueMetrics.activeJobsCount,
+      queuedJobsCount: queueMetrics.queuedJobsCount,
+      maxConcurrentJobs: queueMetrics.maxConcurrentJobs,
+      queueMetrics,
       jobs,
     });
   };
 
   router.get('/active', handleGetActiveJobs);
   router.get('/jobs', handleGetActiveJobs);
+
+  /**
+   * GET /api/live/queue
+   * Returns current queue metrics and concurrency limits.
+   */
+  router.get('/queue', (_req: Request, res: Response) => {
+    const queueMetrics = bus.getQueueMetrics();
+    res.json({
+      success: true,
+      activeJobsCount: queueMetrics.activeJobsCount,
+      queuedJobsCount: queueMetrics.queuedJobsCount,
+      maxConcurrentJobs: queueMetrics.maxConcurrentJobs,
+      queueMetrics,
+    });
+  });
 
   /**
    * GET /api/live/history?jobId=...

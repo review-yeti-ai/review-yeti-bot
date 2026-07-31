@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ct-review-worker-manager
+  namespace: ct-review-system
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ct-review-worker-manager-binding
+  namespace: ct-review-system
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: ct-review-system
+roleRef:
+  kind: Role
+  name: ct-review-worker-manager
+  apiGroup: rbac.authorization.k8s.io

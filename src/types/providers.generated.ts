@@ -58,6 +58,7 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
     "supportedModels": [
       "claude-3-5-sonnet",
       "claude-3-7-sonnet",
+      "claude-5-sonnet",
       "claude-opus-4-8"
     ],
     "supportsCustomModels": false,
@@ -181,7 +182,7 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "codex",
       "cx"
     ],
-    "defaultModel": "codex/gpt-5.6-sol-high",
+    "defaultModel": "codex-gateway/gpt-5.6-sol-high",
     "supportedModels": [
       "codex/gpt-5.6-sol-high",
       "gpt-5.6-sol"
@@ -212,6 +213,7 @@ export const OMNIROUTE_GENERATED_MODEL_LIST: readonly string[] = [
   "o3-mini",
   "claude-3-5-sonnet",
   "claude-3-7-sonnet",
+  "claude-5-sonnet",
   "claude-opus-4-8",
   "gemini-1.5-pro",
   "gemini-2.0-flash",
@@ -231,5 +233,14 @@ export const OMNIROUTE_GENERATED_MODEL_LIST: readonly string[] = [
   "custom-model-v1",
   "codex/gpt-5.6-sol-high",
   "gpt-5.6-sol",
-  "agy/claude-opus-4-6-thinking"
+  "agy/claude-opus-4-6-thinking",
+  "synthetic/hf:moonshotai/Kimi-K3",
+  "synthetic/hf:zai-org/GLM-5.2",
+  "synthetic/hf:zai-org/GLM-4.7-Flash",
+  "synthetic/hf:Qwen/Qwen3.6-27B",
+  "claude-haiku-4.5",
+  "claude-haiku",
+  "codex-gateway/gpt-5.6-sol-high",
+  "claude/claude-opus-4-8",
+  "opencode-go/glm-5.2"
 ];

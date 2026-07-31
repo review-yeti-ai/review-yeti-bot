@@ -364,6 +364,7 @@ export function createOnboardingRouter(): Router {
         reviews: {
           profile: 'balanced',
           reviewer_effort: 'low',
+          default_max_turns: 20,
           confidence_threshold: 70,
           mascot: true,
           ticket_enforcement: false,

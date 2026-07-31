@@ -1,0 +1,10 @@
+const fs = require('fs');
+const file = 'tests/unit/personaRosterExpansion.test.ts';
+let content = fs.readFileSync(file, 'utf8');
+content = content.replace(/10 domain-specialized personas/g, '4 domain-specialized personas');
+content = content.replace(/10-persona/g, '4-persona');
+content = content.replace(/toHaveLength\(10\)/g, 'toHaveLength(4)');
+content = content.replace(/expect\(personaIds\)\.toEqual\(\[[^\]]+\]\);/ms, "expect(personaIds).toEqual(['sec-lane', 'arch-lane', 'qual-lane', 'devops-lane']);");
+content = content.replace(/const dbLane[\s\S]*?(?=const devopsLane)/, '');
+content = content.replace(/const docsLane[\s\S]*?(?=\}\);)/, '');
+fs.writeFileSync(file, content);

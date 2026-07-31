@@ -79,6 +79,14 @@ export function ActiveJobsSidebar({
               <div
                 key={job.jobId}
                 onClick={() => onSelectJob(job.jobId)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onSelectJob(job.jobId);
+                  }
+                }}
                 className={`p-3 rounded-lg border transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
                   isSelected
                     ? 'border-indigo-500 bg-indigo-500/10 shadow-lg shadow-indigo-500/5'

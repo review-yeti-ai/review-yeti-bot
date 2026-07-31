@@ -96,6 +96,13 @@ describe('FiveStepWizard Component Suite', () => {
   it('filters out models belonging to disabled providers in Step4PersonaEnsemble', () => {
     const onUpdate = vi.fn();
     const disabledProviders = {
+      synthetic: {
+        id: 'synthetic',
+        displayName: 'Synthetic',
+        enabled: true,
+        active: true,
+        updatedAt: new Date().toISOString(),
+      },
       openai: {
         id: 'openai',
         displayName: 'OpenAI',
@@ -107,7 +114,16 @@ describe('FiveStepWizard Component Suite', () => {
 
     render(
       <Step4PersonaEnsemble
-        personas={{}}
+        personas={{
+          security: {
+            id: 'security',
+            displayName: 'Security',
+            model: 'gpt-4o',
+            enabled: true,
+            effort: 'low',
+            confidenceThreshold: 75,
+          },
+        }}
         providers={disabledProviders}
         onUpdatePersona={onUpdate}
       />

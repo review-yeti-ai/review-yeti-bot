@@ -51,6 +51,7 @@ function LiveStreamContent() {
     e.preventDefault();
     if (inputJobId.trim()) {
       const newJob = inputJobId.trim();
+      clearEvents();
       setJobId(newJob);
       if (typeof window !== 'undefined') {
         const url = new URL(window.location.href);
@@ -61,6 +62,7 @@ function LiveStreamContent() {
   };
 
   const handleSelectJob = (newJob: string) => {
+    clearEvents();
     setJobId(newJob);
     setInputJobId(newJob);
     if (typeof window !== 'undefined') {

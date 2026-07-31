@@ -103,36 +103,29 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
       const prompt = messages[messages.length - 1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
+      const allMsg = JSON.stringify(messages);
       
-      const payloadLine = prompt.split('\n').slice(3).join('\n');
-      try {
-        const payload = JSON.parse(payloadLine);
-        if (payload.role === 'persona' && payload.persona) {
-          capturedPersonaCharters[payload.persona] = payload.charter;
-          return {
-            model,
-            content: fenced(nonce, { decision: 'APPROVE', findings: [] }),
-            usage: { prompt: 100, completion: 50, total: 150 },
-            costUSD: 0.001,
-          };
-        }
-      } catch {
-        // non-json payload
+      const personaMatch = prompt.match(/\("persona":"([^"]+)"\)/);
+      const persona = personaMatch ? personaMatch[1] : undefined;
+      const charterMatch = prompt.match(/Charter:\s*(.+)$/m);
+      const charter = charterMatch ? charterMatch[1].trim() : undefined;
+      if (persona && charter && !['moderator', 'arbiter'].includes(persona)) {
+        capturedPersonaCharters[persona] = charter;
       }
 
-      if (prompt.includes('"role":"moderator"')) {
+      if (allMsg.includes('arbiter')) {
         return {
           model,
-          content: fenced(nonce, { decision: 'RECONCILED', findings: [] }),
+          content: fenced(nonce, { verdict: 'SHIP', rationale: 'Approved.' }),
           usage: { prompt: 100, completion: 50, total: 150 },
           costUSD: 0.001,
         };
       }
 
-      if (prompt.includes('"role":"arbiter"')) {
+      if (allMsg.includes('moderator')) {
         return {
           model,
-          content: fenced(nonce, { verdict: 'SHIP', rationale: 'Approved.' }),
+          content: fenced(nonce, { decision: 'RECONCILED', findings: [] }),
           usage: { prompt: 100, completion: 50, total: 150 },
           costUSD: 0.001,
         };
@@ -185,20 +178,21 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
       const prompt = messages[messages.length - 1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
-      const payloadLine = prompt.split('\n').slice(3).join('\n');
-
-      try {
-        const payload = JSON.parse(payloadLine);
-        if (payload.role === 'persona' && payload.persona) {
-          capturedPersonaCharters[payload.persona] = payload.charter;
-        }
-      } catch {}
-
-      if (prompt.includes('"role":"moderator"')) {
-        return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };
+      
+      const personaMatch = prompt.match(/\("persona":"([^"]+)"\)/);
+      const persona = personaMatch ? personaMatch[1] : undefined;
+      const charterMatch = prompt.match(/Charter:\s*(.+)$/m);
+      const charter = charterMatch ? charterMatch[1].trim() : undefined;
+      if (persona && charter) {
+        capturedPersonaCharters[persona] = charter;
       }
-      if (prompt.includes('"role":"arbiter"')) {
+
+      const allMsg = JSON.stringify(messages);
+      if (allMsg.includes('arbiter')) {
         return { model, content: fenced(nonce, { verdict: 'SHIP', rationale: 'OK' }), usage: null, costUSD: null };
+      }
+      if (allMsg.includes('moderator')) {
+        return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };
       }
       return { model, content: fenced(nonce, { decision: 'APPROVE', findings: [] }), usage: null, costUSD: null };
     };
@@ -220,19 +214,21 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
       const prompt = messages[messages.length - 1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
-      const payloadLine = prompt.split('\n').slice(3).join('\n');
-      try {
-        const payload = JSON.parse(payloadLine);
-        if (payload.role === 'persona' && payload.persona) {
-          capturedChartersPhase2[payload.persona] = payload.charter;
-        }
-      } catch {}
-
-      if (prompt.includes('"role":"moderator"')) {
-        return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };
+      
+      const personaMatch = prompt.match(/\("persona":"([^"]+)"\)/);
+      const persona = personaMatch ? personaMatch[1] : undefined;
+      const charterMatch = prompt.match(/Charter:\s*(.+)$/m);
+      const charter = charterMatch ? charterMatch[1].trim() : undefined;
+      if (persona && charter) {
+        capturedChartersPhase2[persona] = charter;
       }
-      if (prompt.includes('"role":"arbiter"')) {
+
+      const allMsg2 = JSON.stringify(messages);
+      if (allMsg2.includes('arbiter')) {
         return { model, content: fenced(nonce, { verdict: 'SHIP', rationale: 'OK' }), usage: null, costUSD: null };
+      }
+      if (allMsg2.includes('moderator')) {
+        return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };
       }
       return { model, content: fenced(nonce, { decision: 'APPROVE', findings: [] }), usage: null, costUSD: null };
     };
@@ -260,20 +256,21 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
       const prompt = messages[messages.length - 1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
-      const payloadLine = prompt.split('\n').slice(3).join('\n');
-
-      try {
-        const payload = JSON.parse(payloadLine);
-        if (payload.role === 'persona' && payload.persona) {
-          capturedPersonaCharters[payload.persona] = payload.charter;
-        }
-      } catch {}
-
-      if (prompt.includes('"role":"moderator"')) {
-        return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };
+      
+      const personaMatch = prompt.match(/\("persona":"([^"]+)"\)/);
+      const persona = personaMatch ? personaMatch[1] : undefined;
+      const charterMatch = prompt.match(/Charter:\s*(.+)$/m);
+      const charter = charterMatch ? charterMatch[1].trim() : undefined;
+      if (persona && charter) {
+        capturedPersonaCharters[persona] = charter;
       }
-      if (prompt.includes('"role":"arbiter"')) {
+
+      const allMsg3 = JSON.stringify(messages);
+      if (allMsg3.includes('arbiter')) {
         return { model, content: fenced(nonce, { verdict: 'SHIP', rationale: 'OK' }), usage: null, costUSD: null };
+      }
+      if (allMsg3.includes('moderator')) {
+        return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };
       }
       return { model, content: fenced(nonce, { decision: 'APPROVE', findings: [] }), usage: null, costUSD: null };
     };
