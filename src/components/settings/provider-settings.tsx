@@ -41,6 +41,7 @@ import {
   Zap,
   Sliders,
   Shield,
+  Search,
 } from 'lucide-react';
 import { ProviderConfigRecord, ModelRegistryItem, PersonaSetting } from '@/types/dashboard';
 import {
@@ -60,6 +61,7 @@ const TARGET_PROVIDER_IDS = [
   'grok',
   'deepseek',
   'glm',
+  'openrouter',
   'doppler',
   'ollama',
   'custom-openai',
@@ -71,7 +73,8 @@ const PROVIDER_ICONS: Record<string, string> = {
   gemini: '🔵',
   grok: '⚡',
   deepseek: '🐳',
-  glm: '🤖',
+  glm: '🧬',
+  openrouter: '🌐',
   doppler: '🔒',
   ollama: '🦙',
   'custom-openai': '🔌',
@@ -86,10 +89,12 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   grok: 'https://api.x.ai/v1',
   deepseek: 'https://api.deepseek.com/v1',
   glm: 'https://api.omniroute.internal/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
   doppler: 'https://api.doppler.com/v3',
   ollama: 'http://localhost:11434/v1',
   'custom-openai': 'https://api.custom-llm.com/v1',
 };
+
 
 interface ProviderSettingsProps {
   onProvidersUpdated?: () => void;
@@ -109,6 +114,9 @@ export function ProviderSettings({ onProvidersUpdated }: ProviderSettingsProps) 
   const [rawApiKeys, setRawApiKeys] = React.useState<Record<string, string>>({});
   const [savingId, setSavingId] = React.useState<string | null>(null);
   const [toastMessage, setToastMessage] = React.useState<string | null>(null);
+  const [providerSearch, setProviderSearch] = React.useState('');
+  const [modelSearch, setModelSearch] = React.useState('');
+  const [expandedProviderId, setExpandedProviderId] = React.useState<string | null>(null);
 
   // Model Remapping Dialog state
   const [remappingDialogOpen, setRemappingDialogOpen] = React.useState(false);
@@ -363,9 +371,20 @@ export function ProviderSettings({ onProvidersUpdated }: ProviderSettingsProps) 
     }
 
     handleFieldChange(providerId, { enabled: nextEnabled });
+    setSavingId(providerId);
+    try {
+      const updated = await updateProvider(providerId, { enabled: nextEnabled });
+      setProviders((prev) => ({ ...prev, [providerId]: updated }));
+      setToastMessage(`Provider '${updated.displayName}' set to ${nextEnabled ? 'Enabled' : 'Disabled'}`);
+      if (onProvidersUpdated) onProvidersUpdated();
+    } catch (err: any) {
+      setToastMessage(`Failed to update provider status: ${err?.message}`);
+    } finally {
+      setSavingId(null);
+    }
   };
 
-  const handleToggleModelActive = (providerId: string, modelName: string) => {
+  const handleToggleModelActive = async (providerId: string, modelName: string) => {
     const provider = providers[providerId];
     if (!provider) return;
 
@@ -395,6 +414,17 @@ export function ProviderSettings({ onProvidersUpdated }: ProviderSettingsProps) 
     }
 
     handleFieldChange(providerId, { activeModels: newActive });
+    setSavingId(providerId);
+    try {
+      const updated = await updateProvider(providerId, { activeModels: newActive });
+      setProviders((prev) => ({ ...prev, [providerId]: updated }));
+      setToastMessage(`Model '${modelName}' set to ${isActive ? 'Disabled' : 'Active'} for ${updated.displayName}`);
+      if (onProvidersUpdated) onProvidersUpdated();
+    } catch (err: any) {
+      setToastMessage(`Failed to update model status: ${err?.message}`);
+    } finally {
+      setSavingId(null);
+    }
   };
 
   const handleConfirmRemap = async (remappedPersonas: Record<string, string>) => {
@@ -434,6 +464,28 @@ export function ProviderSettings({ onProvidersUpdated }: ProviderSettingsProps) 
     new Set([...TARGET_PROVIDER_IDS, ...Object.keys(providers)])
   );
 
+  const filteredProviderKeys = allProviderKeys.filter((id) => {
+    if (!providerSearch.trim()) return true;
+    const term = providerSearch.toLowerCase().trim();
+    const p = providers[id];
+    const displayName = p?.displayName?.toLowerCase() || '';
+    const baseUrl = p?.baseUrl?.toLowerCase() || '';
+    return id.toLowerCase().includes(term) || displayName.includes(term) || baseUrl.includes(term);
+  }).sort((a, b) => {
+    const pA = providers[a]?.enabled ?? false;
+    const pB = providers[b]?.enabled ?? false;
+    if (pA && !pB) return -1;
+    if (!pA && pB) return 1;
+    
+    // Maintain TARGET_PROVIDER_IDS order within groups
+    const idxA = TARGET_PROVIDER_IDS.indexOf(a);
+    const idxB = TARGET_PROVIDER_IDS.indexOf(b);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
   if (loading && Object.keys(providers).length === 0) {
     return (
       <div className="p-8 text-center text-muted-foreground flex items-center justify-center gap-3">
@@ -462,271 +514,305 @@ export function ProviderSettings({ onProvidersUpdated }: ProviderSettingsProps) 
 
       {/* Provider Configurations Grid */}
       <div>
-        <div className="mb-4">
-          <h3 className="text-lg font-bold text-foreground flex items-center gap-2">
-            <Cpu className="h-5 w-5 text-indigo-400" />
-            AI Provider Credentials &amp; Infrastructure Endpoints
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            Configure API keys, base URLs, subscription tiers, and active status for all supported provider families
-          </p>
+        <div className="mb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-bold text-foreground flex items-center gap-2">
+              <Cpu className="h-5 w-5 text-indigo-400" />
+              AI Provider Credentials &amp; Infrastructure Endpoints
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Configure API keys, base URLs, subscription tiers, and active status for all supported provider families
+            </p>
+          </div>
+          <div className="relative w-full md:w-72">
+            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search providers (name, ID, URL)..."
+              value={providerSearch}
+              onChange={(e) => setProviderSearch(e.target.value)}
+              className="pl-8 text-xs bg-background/80 h-8 font-mono"
+            />
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-          {allProviderKeys.map((id) => {
-            const provider = providers[id] || {
-              id,
-              displayName: id.toUpperCase(),
-              enabled: false,
-              baseUrl: DEFAULT_BASE_URLS[id] || '',
-              subscriptionTier: 'pay-as-you-go',
-              activeModels: [],
-              customModels: [],
-              updatedAt: new Date().toISOString(),
-            };
+        <div className="rounded-md border border-border/80 overflow-hidden">
+          <Table>
+            <TableBody>
+              {filteredProviderKeys.map((id, index) => {
+                const provider = providers[id] || {
+                  id,
+                  displayName: id.toUpperCase(),
+                  enabled: false,
+                  baseUrl: DEFAULT_BASE_URLS[id] || '',
+                  subscriptionTier: 'pay-as-you-go',
+                  activeModels: [],
+                  customModels: [],
+                  updatedAt: new Date().toISOString(),
+                };
 
-            const testResult = testResults[id];
-            const isTesting = testingId === id;
-            const isSaving = savingId === id;
-            const icon = PROVIDER_ICONS[id] || '⚙️';
-            const supportsCustom = id === 'ollama' || id === 'custom-openai' || id === 'openai' || id === 'deepseek';
+                const testResult = testResults[id];
+                const isTesting = testingId === id;
+                const isSaving = savingId === id;
+                const icon = PROVIDER_ICONS[id] || '⚙️';
+                const supportsCustom = id === 'ollama' || id === 'custom-openai' || id === 'openai' || id === 'deepseek';
+                const isExpanded = expandedProviderId === id;
+                const isConnected = testResult?.success;
+                const isError = testResult && !testResult.success;
 
-            return (
-              <Card
-                key={id}
-                className={`glass-panel border-border/80 flex flex-col justify-between transition-all ${
-                  provider.enabled ? 'border-indigo-500/40 bg-indigo-950/10' : 'opacity-85'
-                }`}
-              >
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{icon}</span>
-                      <CardTitle className="text-sm font-bold">{provider.displayName}</CardTitle>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge
-                        variant={provider.enabled ? 'success' : 'secondary'}
-                        className="text-[10px] uppercase font-semibold px-2 py-0.5"
-                      >
-                        {provider.enabled ? 'Enabled' : 'Disabled'}
-                      </Badge>
-                      <Button
-                        variant={provider.enabled ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => {
-                          const nextEnabled = !provider.enabled;
-                          checkAndToggleProviderEnabled(id, nextEnabled);
-                        }}
-                        className="h-6 text-[10px] px-2"
-                      >
-                        {provider.enabled ? 'Active' : 'Enable'}
-                      </Button>
-                    </div>
-                  </div>
-                  <CardDescription className="text-[11px] font-mono text-muted-foreground">
-                    ID: {id}
-                  </CardDescription>
-                </CardHeader>
-
-                <CardContent className="space-y-3.5 text-xs flex-1">
-                  {/* API Key Input */}
-                  {id !== 'glm' && (
-                    <div>
-                      <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center justify-between">
-                        <span className="flex items-center gap-1">
-                          <Key className="h-3 w-3 text-indigo-400" />
-                          API Key / Secret Token
-                        </span>
-                        {provider.apiKeyMasked && (
-                          <span className="text-[10px] font-mono text-emerald-400">
-                            Stored: {provider.apiKeyMasked}
-                          </span>
-                        )}
-                      </label>
-                      <div className="relative flex items-center">
-                        <Input
-                          type={showKeys[id] ? 'text' : 'password'}
-                          placeholder={provider.apiKeyMasked || 'Enter API Key (sk-...)'}
-                          value={rawApiKeys[id] !== undefined ? rawApiKeys[id] : ''}
-                          onChange={(e) =>
-                            setRawApiKeys((prev) => ({ ...prev, [id]: e.target.value }))
-                          }
-                          className="font-mono text-xs pr-8 bg-background/80"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => toggleShowKey(id)}
-                          className="absolute right-2 text-muted-foreground hover:text-foreground"
-                          title="Toggle visibility"
-                        >
-                          {showKeys[id] ? (
-                            <EyeOff className="h-3.5 w-3.5" />
-                          ) : (
-                            <Eye className="h-3.5 w-3.5" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Base URL Input */}
-                  <div>
-                    <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1">
-                      <Globe className="h-3 w-3 text-purple-400" />
-                      API Base URL
-                    </label>
-                    <Input
-                      type="text"
-                      placeholder={DEFAULT_BASE_URLS[id] || 'https://api.example.com/v1'}
-                      value={provider.baseUrl || ''}
-                      onChange={(e) => handleFieldChange(id, { baseUrl: e.target.value })}
-                      className="font-mono text-xs bg-background/80"
-                    />
-                  </div>
-
-                  {/* Subscription Tier Selector */}
-                  <div>
-                    <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1">
-                      <Zap className="h-3 w-3 text-amber-400" />
-                      Subscription Tier
-                    </label>
-                    <Select
-                      value={provider.subscriptionTier || 'pay-as-you-go'}
-                      onValueChange={(tier: any) => handleFieldChange(id, { subscriptionTier: tier })}
+                return (
+                  <React.Fragment key={id}>
+                    <TableRow 
+                      className={`h-12 border-b border-border/40 transition-colors hover:bg-accent/30 ${index % 2 === 0 ? 'bg-muted/5' : 'bg-transparent'} ${provider.enabled ? 'bg-indigo-950/10' : ''}`}
                     >
-                      <SelectTrigger className="text-xs bg-background/80 h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="free">Free / Community</SelectItem>
-                        <SelectItem value="pay-as-you-go">Pay-as-you-go</SelectItem>
-                        <SelectItem value="pro">Pro (Tier 1-2)</SelectItem>
-                        <SelectItem value="team">Team (Tier 3-4)</SelectItem>
-                        <SelectItem value="enterprise">Enterprise (Tier 5)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* Custom Model Management for Ollama/Custom OpenAI */}
-                  {supportsCustom && (
-                    <div className="pt-2 border-t border-border/40 space-y-2">
-                      <label className="text-[11px] font-semibold text-muted-foreground block">
-                        Add Custom Model Name
-                      </label>
-                      <div className="flex gap-2">
-                        <Input
-                          type="text"
-                          placeholder="e.g. llama3.3:70b, my-model-v1"
-                          value={customModelInput[id] || ''}
-                          onChange={(e) =>
-                            setCustomModelInput((prev) => ({ ...prev, [id]: e.target.value }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleAddCustomModel(id);
-                          }}
-                          className="font-mono text-xs bg-background/80 h-8 flex-1"
-                        />
+                      <TableCell className="w-[60px] text-center p-2">
                         <Button
+                          variant="ghost"
                           size="sm"
-                          variant="outline"
-                          onClick={() => handleAddCustomModel(id)}
-                          className="h-8 text-xs px-2.5 shrink-0"
+                          className="h-8 w-8 p-0 rounded-full"
+                          onClick={() => {
+                            const nextEnabled = !provider.enabled;
+                            checkAndToggleProviderEnabled(id, nextEnabled);
+                          }}
                         >
-                          <Plus className="h-3.5 w-3.5 mr-1" />
-                          Add
+                          {provider.enabled ? (
+                            <span className="text-emerald-400 text-lg">🟢</span>
+                          ) : (
+                            <span className="text-zinc-600 text-lg">⚫</span>
+                          )}
                         </Button>
-                      </div>
-
-                      {provider.customModels && provider.customModels.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 pt-1">
-                          {provider.customModels.map((customName) => (
-                            <span
-                              key={customName}
-                              className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30"
-                            >
-                              {customName}
-                              <button
-                                onClick={() => handleRemoveCustomModel(id, customName)}
-                                className="text-indigo-400 hover:text-red-400 ml-0.5"
-                                title="Remove custom model"
-                              >
-                                ×
-                              </button>
-                            </span>
-                          ))}
+                      </TableCell>
+                      <TableCell className="p-2 min-w-[150px]">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                            <span>{icon}</span> {provider.displayName}
+                          </span>
+                          <span className="text-[10px] font-mono text-muted-foreground ml-6">
+                            {id}
+                          </span>
                         </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Connection Test Output Badge */}
-                  {testResult && (
-                    <div
-                      className={`p-2 rounded text-[11px] flex items-center gap-2 border ${
-                        testResult.success
-                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                          : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-                      }`}
-                    >
-                      {testResult.success ? (
-                        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-                      ) : (
-                        <XCircle className="h-4 w-4 shrink-0 text-rose-400" />
-                      )}
-                      <div className="flex-1 truncate">
-                        <span>{testResult.message}</span>
-                        {testResult.latencyMs !== undefined && (
-                          <span className="font-mono text-[10px] ml-1.5 opacity-80">
-                            ({testResult.latencyMs}ms)
+                      </TableCell>
+                      <TableCell className="p-2">
+                        <div className="flex items-center gap-2">
+                          <span className="flex h-2 w-2 rounded-full relative">
+                            {isConnected && <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping" />}
+                            <span className={`relative inline-flex rounded-full h-2 w-2 ${isConnected ? 'bg-emerald-500' : isError ? 'bg-rose-500' : provider.enabled ? 'bg-amber-400' : 'bg-zinc-500'}`} />
+                          </span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {isConnected ? `Connected (${testResult.latencyMs}ms)` : isError ? 'Error' : provider.enabled ? 'Configured' : 'Untested'}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="p-2 hidden md:table-cell">
+                        {id === 'glm' ? (
+                          <span className="text-muted-foreground text-[11px]">—</span>
+                        ) : (
+                          <span className="font-mono text-[11px] text-muted-foreground">
+                            {provider.apiKeyMasked ? provider.apiKeyMasked : '—'}
                           </span>
                         )}
-                      </div>
-                    </div>
-                  )}
+                      </TableCell>
+                      <TableCell className="p-2 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setExpandedProviderId(isExpanded ? null : id)}
+                            className="h-7 text-[11px] px-2 text-muted-foreground hover:text-foreground"
+                          >
+                            ✏️ Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleTestConnection(id)}
+                            disabled={isTesting}
+                            className="h-7 text-[11px] px-2 text-muted-foreground hover:text-foreground"
+                          >
+                            {isTesting ? (
+                              <RefreshCw className="h-3 w-3 animate-spin mr-1 text-indigo-400" />
+                            ) : (
+                              <span className="mr-1">🧪</span>
+                            )}
+                            Test
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    {isExpanded && (
+                      <TableRow className="border-b border-border/40 bg-muted/10">
+                        <TableCell colSpan={5} className="p-0">
+                          <div className="p-4 pl-14 border-l-2 border-indigo-500/50 flex flex-col gap-4 animate-in slide-in-from-top-2 duration-200">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {/* API Key Input */}
+                              {id !== 'glm' && (
+                                <div>
+                                  <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center justify-between">
+                                    <span className="flex items-center gap-1">
+                                      <Key className="h-3 w-3 text-indigo-400" />
+                                      API Key / Secret Token
+                                    </span>
+                                  </label>
+                                  <div className="relative flex items-center">
+                                    <Input
+                                      type={showKeys[id] ? 'text' : 'password'}
+                                      placeholder={provider.apiKeyMasked || 'Enter API Key (sk-...)'}
+                                      value={rawApiKeys[id] !== undefined ? rawApiKeys[id] : ''}
+                                      onChange={(e) =>
+                                        setRawApiKeys((prev) => ({ ...prev, [id]: e.target.value }))
+                                      }
+                                      className="font-mono text-xs pr-8 bg-background/80"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleShowKey(id)}
+                                      className="absolute right-2 text-muted-foreground hover:text-foreground"
+                                      title="Toggle visibility"
+                                    >
+                                      {showKeys[id] ? (
+                                        <EyeOff className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <Eye className="h-3.5 w-3.5" />
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
 
-                  {/* Footer Actions */}
-                  <div className="pt-2 flex items-center justify-between gap-2 border-t border-border/40">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleTestConnection(id)}
-                      disabled={isTesting}
-                      className="h-7 text-[11px] px-2.5 text-muted-foreground hover:text-foreground"
-                    >
-                      {isTesting ? (
-                        <RefreshCw className="h-3 w-3 animate-spin mr-1 text-indigo-400" />
-                      ) : (
-                        <Zap className="h-3 w-3 mr-1 text-amber-400" />
-                      )}
-                      Test Connection
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => handleSaveProvider(id)}
-                      disabled={isSaving}
-                      className="h-7 text-[11px] px-3 bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
-                    >
-                      {isSaving ? 'Saving...' : 'Save Provider'}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
+                              {/* Base URL Input */}
+                              <div>
+                                <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1">
+                                  <Globe className="h-3 w-3 text-purple-400" />
+                                  API Base URL
+                                </label>
+                                <Input
+                                  type="text"
+                                  placeholder={DEFAULT_BASE_URLS[id] || 'https://api.example.com/v1'}
+                                  value={provider.baseUrl || ''}
+                                  onChange={(e) => handleFieldChange(id, { baseUrl: e.target.value })}
+                                  className="font-mono text-xs bg-background/80"
+                                />
+                              </div>
+
+                              {/* Subscription Tier Selector */}
+                              <div>
+                                <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1">
+                                  <Zap className="h-3 w-3 text-amber-400" />
+                                  Subscription Tier
+                                </label>
+                                <Select
+                                  value={provider.subscriptionTier || 'pay-as-you-go'}
+                                  onValueChange={(tier: any) => handleFieldChange(id, { subscriptionTier: tier })}
+                                >
+                                  <SelectTrigger className="text-xs bg-background/80 h-8">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="free">Free / Community</SelectItem>
+                                    <SelectItem value="pay-as-you-go">Pay-as-you-go</SelectItem>
+                                    <SelectItem value="pro">Pro (Tier 1-2)</SelectItem>
+                                    <SelectItem value="team">Team (Tier 3-4)</SelectItem>
+                                    <SelectItem value="enterprise">Enterprise (Tier 5)</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              
+                              {/* Custom Model Management for Ollama/Custom OpenAI */}
+                              {supportsCustom && (
+                                <div className="space-y-2">
+                                  <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
+                                    Add Custom Model Name
+                                  </label>
+                                  <div className="flex gap-2">
+                                    <Input
+                                      type="text"
+                                      placeholder="e.g. llama3.3:70b, my-model-v1"
+                                      value={customModelInput[id] || ''}
+                                      onChange={(e) =>
+                                        setCustomModelInput((prev) => ({ ...prev, [id]: e.target.value }))
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') handleAddCustomModel(id);
+                                      }}
+                                      className="font-mono text-xs bg-background/80 h-8 flex-1"
+                                    />
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleAddCustomModel(id)}
+                                      className="h-8 text-xs px-2.5 shrink-0"
+                                    >
+                                      <Plus className="h-3.5 w-3.5 mr-1" />
+                                      Add
+                                    </Button>
+                                  </div>
+
+                                  {provider.customModels && provider.customModels.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5 pt-1">
+                                      {provider.customModels.map((customName) => (
+                                        <span
+                                          key={customName}
+                                          className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30"
+                                        >
+                                          {customName}
+                                          <button
+                                            onClick={() => handleRemoveCustomModel(id, customName)}
+                                            className="text-indigo-400 hover:text-red-400 ml-0.5"
+                                            title="Remove custom model"
+                                          >
+                                            ×
+                                          </button>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex justify-end mt-2">
+                              <Button
+                                size="sm"
+                                onClick={() => handleSaveProvider(id)}
+                                disabled={isSaving}
+                                className="h-8 text-xs px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
+                              >
+                                {isSaving ? 'Saving...' : 'Save Changes'}
+                              </Button>
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </TableBody>
+          </Table>
         </div>
       </div>
 
       {/* Model Registry Controls & Table */}
       <Card className="glass-panel border-border/80">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base font-bold text-foreground">
-            <Layers className="h-5 w-5 text-purple-400" />
-            Global AI Model Registry &amp; Cost Control Table
-          </CardTitle>
-          <CardDescription className="text-xs text-muted-foreground">
-            Manage available models, context window token caps, and cost per 1k prompt/completion tokens. Enabled models dynamically populate reviewer persona selection dropdowns.
-          </CardDescription>
+        <CardHeader className="pb-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base font-bold text-foreground">
+              <Layers className="h-5 w-5 text-purple-400" />
+              Global AI Model Registry &amp; Cost Control Table
+            </CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">
+              Manage available models, context window token caps, and cost per 1k prompt/completion tokens. Enabled models dynamically populate reviewer persona selection dropdowns.
+            </CardDescription>
+          </div>
+          <div className="relative w-full md:w-72">
+            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search models (ID, name, provider)..."
+              value={modelSearch}
+              onChange={(e) => setModelSearch(e.target.value)}
+              className="pl-8 text-xs bg-background/80 h-8 font-mono"
+            />
+          </div>
         </CardHeader>
         <CardContent>
           <Table>
@@ -740,7 +826,17 @@ export function ProviderSettings({ onProvidersUpdated }: ProviderSettingsProps) 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {Object.values(modelRegistry).map((model) => {
+              {Object.values(modelRegistry)
+                .filter((model) => {
+                  if (!modelSearch.trim()) return true;
+                  const term = modelSearch.toLowerCase().trim();
+                  return (
+                    model.id.toLowerCase().includes(term) ||
+                    (model.displayName && model.displayName.toLowerCase().includes(term)) ||
+                    (model.providerId && model.providerId.toLowerCase().includes(term))
+                  );
+                })
+                .map((model) => {
                 const provider = providers[model.providerId];
                 const isModelActive = provider?.activeModels.includes(model.id) ?? model.enabled;
 

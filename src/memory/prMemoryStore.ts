@@ -41,6 +41,14 @@ export interface ADRConstraint {
   createdAt?: string;
 }
 
+export interface PathInstructionRule {
+  id?: string;
+  repo: string;
+  pathPattern: string;
+  instructions: string;
+  createdAt?: string;
+}
+
 export interface RepoMemoryState {
   learnings: ReviewerLearning[];
   resolvedNits: ResolvedNitPattern[];
@@ -123,6 +131,14 @@ export class PRMemoryStore {
         feedback_type TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS path_instructions (
+        id TEXT PRIMARY KEY,
+        repo TEXT NOT NULL,
+        path_pattern TEXT NOT NULL,
+        instructions TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_learnings_repo ON learnings(repo);
       CREATE INDEX IF NOT EXISTS idx_learnings_repo_cat_file ON learnings(repo, category, file_path);
       CREATE INDEX IF NOT EXISTS idx_nits_repo ON resolved_nits(repo);
@@ -130,6 +146,7 @@ export class PRMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_adr_repo ON adr_constraints(repo);
       CREATE INDEX IF NOT EXISTS idx_adr_repo_status ON adr_constraints(repo, status);
       CREATE INDEX IF NOT EXISTS idx_feedback_repo ON feedback_events(repo);
+      CREATE INDEX IF NOT EXISTS idx_path_inst_repo ON path_instructions(repo);
     `);
   }
 
@@ -245,6 +262,36 @@ export class PRMemoryStore {
     }
 
     return record;
+  }
+
+  public async recordPathInstruction(
+    repo: string,
+    rule: Omit<PathInstructionRule, 'repo'>
+  ): Promise<PathInstructionRule> {
+    const id = rule.id || `inst_${crypto.randomUUID().slice(0, 8)}`;
+    const createdAt = rule.createdAt || new Date().toISOString();
+    const stmt = this.db.prepare(`
+      INSERT INTO path_instructions (id, repo, path_pattern, instructions, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(id, repo, rule.pathPattern, rule.instructions, createdAt);
+    return { id, repo, ...rule, createdAt };
+  }
+
+  public queryPathInstructions(repo: string): PathInstructionRule[] {
+    try {
+      const stmt = this.db.prepare('SELECT * FROM path_instructions WHERE repo = ?');
+      const rows = stmt.all(repo) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        repo: r.repo,
+        pathPattern: r.path_pattern,
+        instructions: r.instructions,
+        createdAt: r.created_at,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   private incrementNitStmt?: any;

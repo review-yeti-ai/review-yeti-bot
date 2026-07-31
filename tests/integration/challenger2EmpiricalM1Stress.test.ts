@@ -324,7 +324,7 @@ describe('Challenger 2 — Milestone 1: Schema Validation & Model Ensemble Mappi
       expect(R4_ALLOWED_MODELS).toContain('gpt-5.6-sol');
       expect(R4_ALLOWED_MODELS).toContain('deepseek-v4-pro');
       expect(R4_ALLOWED_MODELS).toContain('glm-5.2');
-      expect(R4_ALLOWED_MODELS).toContain('gpt-4o');
+      expect(R4_ALLOWED_MODELS).toContain('claude-3-7-sonnet');
       expect(R4_ALLOWED_MODELS).toContain('claude-3-5-sonnet');
     });
 

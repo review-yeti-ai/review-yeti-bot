@@ -147,6 +147,56 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
       expect(jobStatus).toBeDefined();
       expect(jobStatus?.eventCount).toBe(3);
     });
+
+    it('tracks queued, dispatched, active, and completed statuses and returns queue metrics', () => {
+      bus.publishEvent({
+        jobId: 'job_queue_test_1',
+        timestamp: new Date().toISOString(),
+        type: 'job:queued',
+        persona: 'all',
+        data: { message: 'Queued PR 100' },
+      });
+
+      bus.publishEvent({
+        jobId: 'job_dispatch_test_2',
+        timestamp: new Date().toISOString(),
+        type: 'job:dispatched',
+        persona: 'all',
+        data: { message: 'Dispatched PR 101' },
+      });
+
+      let metrics = bus.getQueueMetrics();
+      expect(metrics.queuedJobsCount).toBe(1);
+      expect(metrics.activeJobsCount).toBe(1);
+      expect(metrics.maxConcurrentJobs).toBe(3);
+
+      expect(bus.getJobStatus('job_queue_test_1')?.status).toBe('queued');
+      expect(bus.getJobStatus('job_dispatch_test_2')?.status).toBe('dispatched');
+
+      // Transition dispatched job to active when persona starts
+      bus.publishEvent({
+        jobId: 'job_dispatch_test_2',
+        timestamp: new Date().toISOString(),
+        type: 'persona:start',
+        persona: 'security',
+        data: { message: 'Starting security lane' },
+      });
+      expect(bus.getJobStatus('job_dispatch_test_2')?.status).toBe('active');
+
+      // Complete job
+      bus.publishEvent({
+        jobId: 'job_dispatch_test_2',
+        timestamp: new Date().toISOString(),
+        type: 'job:complete',
+        persona: 'all',
+        data: { message: 'Complete' },
+      });
+      expect(bus.getJobStatus('job_dispatch_test_2')?.status).toBe('completed');
+
+      metrics = bus.getQueueMetrics();
+      expect(metrics.activeJobsCount).toBe(0);
+      expect(metrics.queuedJobsCount).toBe(1);
+    });
   });
 
   describe('SSE Client Registration & Stream Lifecycle', () => {
@@ -270,6 +320,8 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
         req.query = queryParams;
         req.headers = { 'content-type': 'application/json' };
         req.body = body;
+        req.unpipe = () => {};
+        req._readableState = { pipes: [] };
 
         let statusCode = 200;
         let responseData: any = null;
@@ -287,10 +339,17 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
         res.json = (data: any) => {
           responseData = data;
           resolve({ status: statusCode, body: data });
+          res.emit('finish');
         };
         res.send = (data: any) => {
           responseData = data;
           resolve({ status: statusCode, body: data });
+          res.emit('finish');
+        };
+        res.end = (data: any) => {
+          if (data) responseData = data;
+          resolve({ status: statusCode, body: responseData });
+          res.emit('finish');
         };
         res.flushHeaders = () => {
           resolve({ status: statusCode, body: { streamStarted: true } });
@@ -372,11 +431,34 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
       expect(resActive.body.success).toBe(true);
       expect(resActive.body.count).toBe(1);
       expect(resActive.body.jobs[0].jobId).toBe('job_active_123');
+      expect(resActive.body.activeJobsCount).toBeDefined();
+      expect(resActive.body.queuedJobsCount).toBeDefined();
+      expect(resActive.body.maxConcurrentJobs).toBe(3);
+      expect(resActive.body.queueMetrics).toBeDefined();
 
       const resJobs = await mockRequest(app, 'GET', '/api/live/jobs');
       expect(resJobs.status).toBe(200);
       expect(resJobs.body.success).toBe(true);
       expect(resJobs.body.count).toBe(1);
+      expect(resJobs.body.activeJobsCount).toBeDefined();
+      expect(resJobs.body.maxConcurrentJobs).toBe(3);
+    });
+
+    it('GET /api/live/queue returns queue metrics and concurrency limit', async () => {
+      bus.publishEvent({
+        jobId: 'job_queued_test_1',
+        timestamp: new Date().toISOString(),
+        type: 'job:queued',
+        persona: 'all',
+        data: { message: 'Job in queue' },
+      });
+
+      const res = await mockRequest(app, 'GET', '/api/live/queue');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.queuedJobsCount).toBeGreaterThanOrEqual(1);
+      expect(res.body.maxConcurrentJobs).toBe(3);
+      expect(res.body.queueMetrics.queuedJobsCount).toBeGreaterThanOrEqual(1);
     });
   });
 
