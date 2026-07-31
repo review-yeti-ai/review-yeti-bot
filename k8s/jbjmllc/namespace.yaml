@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jbjmllc-review-system
+  labels:
+    app.kubernetes.io/part-of: ct-review
+    instance: jbjmllc
