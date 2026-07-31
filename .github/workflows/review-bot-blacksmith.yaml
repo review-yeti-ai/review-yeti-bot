@@ -1,0 +1,52 @@
+name: Review Bot (Blacksmith Runner)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  repository_dispatch:
+    types: [review-requested, re-review-requested, dispatch-review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Execute AI Review Pipeline
+    runs-on: blacksmith-2vcpu-ubuntu-2204
+    defaults:
+      run:
+        working-directory: ct-review-bot
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.ref || github.event.pull_request.head.sha || github.ref }}
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ct-review-bot/package-lock.json
+
+      - name: Multi-Layer Caching
+        uses: actions/cache@v4
+        with:
+          path: |
+            ct-review-bot/node_modules
+            ct-review-bot/.next/cache
+            ct-review-bot/.cache
+            ~/.npm
+          key: ${{ runner.os }}-multi-layer-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-multi-layer-
+
+      - name: Fast Dependency Installation
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Execute Review Pipeline
+        run: node .github/workflows/pipelines/review-pipeline.js
