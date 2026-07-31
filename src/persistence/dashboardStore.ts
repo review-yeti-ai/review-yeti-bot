@@ -449,7 +449,7 @@ export class DashboardStore {
   private defaultData(): DashboardData {
     const now = new Date().toISOString();
     return {
-      repositories: [
+      repositories: process.env.CT_DEMO_MODE === 'true' ? [
         {
           id: 'repo-cisco-cdr',
           name: 'cisco-cdr',
@@ -492,7 +492,7 @@ export class DashboardStore {
           defaultBranch: 'main',
           updatedAt: now,
         },
-      ],
+      ] : [],
       settings: {
         defaultModelOverrides: {
           codex: 'codex/gpt-5.6-sol-high',
@@ -927,16 +927,16 @@ export class DashboardStore {
           actionOnCapBreach: 'fail_closed',
         },
         githubAppConfig: {
-          appId: process.env.GITHUB_APP_ID || '1029384',
-          installationId: process.env.GITHUB_INSTALLATION_ID || '59302194',
-          webhookUrl: process.env.WEBHOOK_URL || 'https://api.calltelemetry.com/api/webhooks/github',
-          webhookSecret: process.env.WEBHOOK_SECRET || 'whsec_test_secret_key_12345',
-          webhookSecretConfigured: Boolean(process.env.WEBHOOK_SECRET || true),
-          webhookSecretRaw: process.env.WEBHOOK_SECRET || 'whsec_test_secret_key_12345',
-          privateKeyPem: process.env.GITHUB_APP_PRIVATE_KEY || '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0M...\n-----END RSA PRIVATE KEY-----',
-          privateKeyConfigured: Boolean(process.env.GITHUB_APP_PRIVATE_KEY || true),
-          privateKeyPemRaw: process.env.GITHUB_APP_PRIVATE_KEY || '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0M...\n-----END RSA PRIVATE KEY-----',
-          isVerified: true,
+          appId: process.env.GITHUB_APP_ID || '',
+          installationId: process.env.GITHUB_INSTALLATION_ID || '',
+          webhookUrl: process.env.WEBHOOK_URL || '/api/webhooks/github',
+          webhookSecret: process.env.WEBHOOK_SECRET || '',
+          webhookSecretConfigured: Boolean(process.env.WEBHOOK_SECRET),
+          webhookSecretRaw: process.env.WEBHOOK_SECRET || '',
+          privateKeyPem: process.env.GITHUB_APP_PRIVATE_KEY || '',
+          privateKeyConfigured: Boolean(process.env.GITHUB_APP_PRIVATE_KEY),
+          privateKeyPemRaw: process.env.GITHUB_APP_PRIVATE_KEY || '',
+          isVerified: Boolean(process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY),
           oauthClientId: process.env.GITHUB_OAUTH_CLIENT_ID || '',
           oauthClientSecretMasked: maskSecretKey(process.env.GITHUB_OAUTH_CLIENT_SECRET),
           oauthClientSecretRaw: process.env.GITHUB_OAUTH_CLIENT_SECRET || '',
@@ -1635,8 +1635,8 @@ export class DashboardStore {
 
   public getRepositories(): RepoDashboardSetting[] {
     return this.data.repositories.map((r) => {
-      const owner = r.owner || (r.full_name ? r.full_name.split('/')[0] : 'calltelemetry');
-      const repo = r.repo || (r.full_name ? r.full_name.split('/')[1] : r.name || 'cisco-cdr');
+      const owner = r.owner || (r.full_name && r.full_name.includes('/') ? r.full_name.split('/')[0] : '');
+      const repo = r.repo || (r.full_name && r.full_name.includes('/') ? r.full_name.split('/')[1] : r.name || '');
       const full_name = r.full_name || `${owner}/${repo}`;
       const name = r.name || repo;
       const id = r.id || full_name;
@@ -2313,11 +2313,11 @@ export class DashboardStore {
       this.data.settings.githubAppConfig = { ...defaults };
     }
     const cfg = this.data.settings.githubAppConfig;
-    const rawWebhook = cfg.webhookSecretRaw || cfg.webhookSecret || process.env.WEBHOOK_SECRET || 'whsec_test_secret_key_12345';
+    const rawWebhook = cfg.webhookSecretRaw || cfg.webhookSecret || process.env.WEBHOOK_SECRET || '';
     const rawPem = cfg.privateKeyPemRaw || cfg.privateKeyPem || process.env.GITHUB_APP_PRIVATE_KEY || '';
-    const appId = cfg.appId || process.env.GITHUB_APP_ID || '1029384';
-    const installationId = cfg.installationId || process.env.GITHUB_INSTALLATION_ID || '59302194';
-    const webhookUrl = cfg.webhookUrl || process.env.WEBHOOK_URL || 'https://api.calltelemetry.com/api/webhooks/github';
+    const appId = cfg.appId || process.env.GITHUB_APP_ID || '';
+    const installationId = cfg.installationId || process.env.GITHUB_INSTALLATION_ID || '';
+    const webhookUrl = cfg.webhookUrl || process.env.WEBHOOK_URL || '/api/webhooks/github';
 
     return {
       appId,
@@ -2383,7 +2383,7 @@ export class DashboardStore {
     const resetConfig: GitHubAppConfigRecord = {
       appId: '',
       installationId: '',
-      webhookUrl: 'https://api.calltelemetry.com/api/webhooks/github',
+      webhookUrl: process.env.WEBHOOK_URL || '/api/webhooks/github',
       webhookSecret: '',
       webhookSecretConfigured: false,
       webhookSecretRaw: '',
