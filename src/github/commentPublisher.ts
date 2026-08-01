@@ -32,11 +32,30 @@ export interface PersonaFinding {
 export interface CommentPublisherOptions {
   githubToken?: string;
   baseUrl?: string;
+  /** Canonical injectable HTTP boundary used by replay tests. */
+  fetchImplementation?: FetchImplementation;
+  /** @deprecated Use fetchImplementation. */
+  fetchImpl?: FetchImplementation;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
   maxRetries?: number;
   initialRetryDelayMs?: number;
   maxDelayMs?: number;
   userAgent?: string;
   allowUserToken?: boolean;
+}
+
+export type FetchImplementation = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export interface BoundaryOptions {
+  fetchImplementation?: FetchImplementation;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
 }
 
 export interface PublishInlineCommentRequest {
@@ -159,6 +178,10 @@ export class CommentPublisher {
   private maxRetries: number;
   private initialRetryDelayMs: number;
   private maxDelayMs: number;
+  private readonly fetchImplementation: FetchImplementation;
+  private readonly now: () => number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly random: () => number;
 
   constructor(options: CommentPublisherOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com').replace(/\/$/, '');
@@ -175,6 +198,10 @@ export class CommentPublisher {
     this.maxRetries = options.maxRetries ?? 3;
     this.initialRetryDelayMs = options.initialRetryDelayMs ?? 100;
     this.maxDelayMs = options.maxDelayMs ?? 2000;
+    this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
+    this.now = options.now || Date.now;
+    this.sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.random = options.random || Math.random;
   }
 
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
@@ -188,7 +215,7 @@ export class CommentPublisher {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
-        const response = await fetch(url, requestInit);
+        const response = await this.fetchImplementation(url, requestInit);
 
         if (response.status === 429 || response.status === 403) {
           const retryAfter = response.headers.get('retry-after');
@@ -199,15 +226,15 @@ export class CommentPublisher {
             waitMs = parseInt(retryAfter, 10) * 1000;
           } else if (rateLimitReset) {
             const resetTimeMs = parseInt(rateLimitReset, 10) * 1000;
-            waitMs = Math.max(0, resetTimeMs - Date.now());
+            waitMs = Math.max(0, resetTimeMs - this.now());
           }
 
           waitMs = Math.min(waitMs, this.maxDelayMs);
-          const jitter = Math.floor(Math.random() * 50);
+          const jitter = Math.floor(this.random() * 50);
 
           if (attempt < this.maxRetries) {
             logger.warn(`Rate limited by GitHub API (${response.status}). Retrying in ${waitMs + jitter}ms... (attempt ${attempt + 1})`);
-            await new Promise((resolve) => setTimeout(resolve, waitMs + jitter));
+            await this.sleep(waitMs + jitter);
             delay *= 2;
             continue;
           }
@@ -216,7 +243,7 @@ export class CommentPublisher {
         return response;
       } catch (err) {
         if (attempt === this.maxRetries) throw err;
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await this.sleep(delay);
         delay *= 2;
       }
     }
@@ -257,8 +284,9 @@ export class CommentPublisher {
       });
 
       let retriedWithoutInline = false;
+      let errorText = '';
       if (!res.ok) {
-        const errorText = await res.text();
+        errorText = await res.text();
         logger.warn(`Failed to publish review with inline comments. Status: ${res.status}, Error: ${errorText}`);
 
         // If it's a 422 / line could not be resolved error, retry by appending inline comments to the review body.
@@ -281,7 +309,9 @@ export class CommentPublisher {
       }
 
       if (!res.ok) {
-        const errorText = await res.text();
+        if (retriedWithoutInline) {
+          errorText = await res.text();
+        }
         if (errorText.includes('Can not approve your own pull request')) {
           // Fallback to issue comment API
           const issueUrl = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments`;

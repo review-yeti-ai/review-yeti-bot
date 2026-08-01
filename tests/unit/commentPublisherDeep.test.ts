@@ -111,6 +111,44 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     vi.unstubAllGlobals();
   });
 
+  it('uses injectable fetch, clock, sleep, and jitter without touching global fetch', async () => {
+    const fetchImplementation = vi.fn()
+      .mockResolvedValueOnce(new Response('Rate limited', {
+        status: 429,
+        headers: { 'retry-after': '1' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 778 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    const publisher = new CommentPublisher({
+      githubToken: 'ghs_injected_token',
+      fetchImplementation,
+      now: () => 1_700_000_000_000,
+      sleep,
+      random: () => 0,
+      maxRetries: 1,
+      maxDelayMs: 100,
+    });
+
+    const result = await publisher.publishReview({
+      owner: 'calltelemetry',
+      repo: 'bot',
+      prNumber: 44,
+      commitSha: 'head-sha-injected',
+      event: 'COMMENT',
+      body: 'injected transport',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.reviewId).toBe(778);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(100);
+    expect((fetchImplementation.mock.calls[0][1] as RequestInit).headers).toBeInstanceOf(Headers);
+  });
+
   it('CommentPublisher retries on HTTP 403 Forbidden with x-ratelimit-reset header', async () => {
     const resetTimestampSeconds = Math.floor(Date.now() / 1000) + 1;
     const mockFetch = vi.fn()

@@ -120,6 +120,53 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     expect(arbitration.rationale).not.toContain('12');
     expect(arbitration.rationale).toContain('2');
   });
+
+  it('fails closed when a provider lane returns ERROR instead of producing SHIP', () => {
+    const arbitration = computeArbitrationQuorum([
+      { personaId: 'security', decision: 'ERROR', findings: [], error: 'provider unavailable' },
+      { personaId: 'testing', decision: 'APPROVE', findings: [] },
+    ], 2);
+
+    expect(arbitration.verdict).toBe('BLOCK');
+    expect(arbitration.quorumSatisfied).toBe(false);
+    expect(arbitration.rationale).toContain('provider failures');
+  });
+});
+
+describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () => {
+  it('runs gh pr comment with an explicit --repo and injected filesystem/clock', () => {
+    const writes = new Map<string, string>();
+    let command: { executable: string; args: string[]; options: any } | undefined;
+    const fileSystem = {
+      writeFileSync(filePath: string, body: string) {
+        writes.set(filePath, body);
+      },
+      unlinkSync(filePath: string) {
+        writes.delete(filePath);
+      },
+    };
+    const commandRunner = (executable: string, args: string[], options: any) => {
+      command = { executable, args, options };
+      return { status: 0, stdout: '', stderr: '' };
+    };
+
+    const result = pipeline.postOrOutputComment('replayed body', {
+      prNumber: '42',
+      repo: 'calltelemetry/ct-review-bot',
+    }, {
+      now: () => 1_700_000_000_000,
+      tempDirectory: '/tmp',
+      fileSystem,
+      commandRunner,
+    });
+
+    expect(result).toEqual({ success: true, postedViaGh: true });
+    expect(command).toMatchObject({
+      executable: 'gh',
+      args: ['pr', 'comment', '42', '--body-file', '/tmp/review-comment-1700000000000.md', '--repo', 'calltelemetry/ct-review-bot'],
+    });
+    expect(writes).toHaveLength(0);
+  });
 });
 
 describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', () => {
