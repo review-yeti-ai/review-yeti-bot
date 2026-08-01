@@ -745,14 +745,119 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
  * @param {object} env - Environment to read `ACTIVE_PERSONAS` from.
  * @returns {string[]} Persona ids in charter order.
  */
-function resolvePersonaRoster(payload = {}, localConfig = null, env = process.env) {
-  const builtins = new Map(PERSONA_CHARTERS.map((p) => [p.id, p]));
+const PERSONA_DIR = path.join('.ct-review', 'personas');
+
+/**
+ * Loads persona definitions from `.ct-review/personas/*.md`.
+ *
+ * One file per reviewer, so a charter can be as long as it needs to be: optional YAML
+ * frontmatter carries the metadata, and the markdown body is the charter itself.
+ *
+ *     ---
+ *     name: "🏢 Multi-Tenant Isolation"
+ *     ---
+ *     Every query touching customer data must be scoped by orgId.
+ *
+ * The id defaults to the filename, so dropping a file in is enough to define a reviewer.
+ *
+ * @param {string} repoRoot - Directory of the repository under review.
+ * @returns {{personas: object[], errors: string[]}}
+ */
+function loadPersonaFiles(repoRoot = process.cwd()) {
+  const dir = path.resolve(repoRoot, PERSONA_DIR);
+  const personas = [];
   const errors = [];
 
-  // Repository-defined personas. An entry supplying a charter either defines a new reviewer or
-  // overrides a built-in one; an entry without a charter may only reference a built-in.
-  const localEntries = Array.isArray(localConfig?.parsed?.personas) ? localConfig.parsed.personas : [];
+  if (!fs.existsSync(dir)) return { personas, errors };
+
+  let jsYaml = null;
+  try { jsYaml = require('js-yaml'); } catch (_) {}
+
+  // Sorted so persona ordering in the review comment is stable across runs.
+  const files = fs.readdirSync(dir).filter((f) => /\.mdx?$/i.test(f)).sort();
+
+  for (const file of files) {
+    const rel = path.join(PERSONA_DIR, file);
+    let raw;
+    try {
+      raw = fs.readFileSync(path.join(dir, file), 'utf-8');
+    } catch (err) {
+      errors.push(`Could not read persona file ${rel}: ${err.message}`);
+      continue;
+    }
+
+    let meta = {};
+    let body = raw;
+
+    const fm = raw.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+    if (fm) {
+      body = fm[2];
+      const header = fm[1].trim();
+      if (header) {
+        if (!jsYaml) {
+          errors.push(`Persona file ${rel} has frontmatter but js-yaml is unavailable to parse it.`);
+          continue;
+        }
+        try {
+          const parsed = jsYaml.load(header);
+          if (parsed && typeof parsed === 'object') meta = parsed;
+        } catch (err) {
+          errors.push(`Persona file ${rel} has malformed frontmatter: ${err.message}`);
+          continue;
+        }
+      }
+    }
+
+    const charter = body.trim();
+    if (!charter) {
+      errors.push(`Persona file ${rel} has no charter body. The markdown below the frontmatter is the reviewer's instructions.`);
+      continue;
+    }
+
+    const id = String(meta.id || file.replace(/\.mdx?$/i, '')).trim();
+    if (!id) {
+      errors.push(`Persona file ${rel} resolves to an empty id.`);
+      continue;
+    }
+
+    personas.push({
+      id,
+      name: meta.name,
+      model: meta.model,
+      enabled: meta.enabled !== false,
+      charter,
+      source: rel,
+    });
+  }
+
+  return { personas, errors };
+}
+
+function resolvePersonaRoster(payload = {}, localConfig = null, env = process.env, filePersonas = []) {
+  const builtins = new Map(PERSONA_CHARTERS.map((p) => [p.id, p]));
+  const errors = [];
   const declared = new Map();
+
+  // Personas defined one-per-file under .ct-review/personas/.
+  for (const fp of filePersonas) {
+    if (!fp || !fp.id) continue;
+    const builtin = builtins.get(fp.id);
+    declared.set(fp.id, {
+      persona: {
+        id: fp.id,
+        name: fp.name || builtin?.name || `🔎 ${fp.id}`,
+        model: fp.model || builtin?.model || DEFAULT_MODEL,
+        charter: fp.charter,
+      },
+      enabled: fp.enabled !== false,
+      source: fp.source || PERSONA_DIR,
+    });
+  }
+
+  // Repository-defined personas declared inline. An entry supplying a charter either defines a
+  // new reviewer or overrides a built-in one; an entry without a charter may only reference a
+  // built-in.
+  const localEntries = Array.isArray(localConfig?.parsed?.personas) ? localConfig.parsed.personas : [];
 
   for (const entry of localEntries) {
     if (!entry || typeof entry !== 'object') continue;
@@ -774,6 +879,16 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
       continue;
     }
 
+    // Declaring one id in two places has no obvious winner, so refuse rather than invent one.
+    const existing = declared.get(id);
+    if (existing?.source) {
+      errors.push(
+        `Persona "${id}" is declared both in ${existing.source} and inline in ${localConfig.file}. ` +
+        `Keep it in one place.`
+      );
+      continue;
+    }
+
     const builtin = builtins.get(id);
     declared.set(id, {
       persona: {
@@ -783,6 +898,7 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
         charter: charter || builtin.charter,
       },
       enabled: entry.enabled !== false,
+      source: localConfig.file,
     });
   }
 
@@ -793,8 +909,13 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
   } else if (payload?.personaSettings && typeof payload.personaSettings === 'object') {
     selected = Object.keys(payload.personaSettings)
       .filter((k) => payload.personaSettings[k]?.enabled !== false);
-  } else if (declared.size > 0) {
-    selected = [...declared.entries()].filter(([, v]) => v.enabled).map(([id]) => id);
+  } else if (localEntries.length > 0) {
+    // An inline `personas:` list is an explicit roster: it governs which reviewers run.
+    // Persona files, by contrast, extend the default roster rather than replacing it, so that
+    // dropping one file in does not silently switch every built-in off.
+    selected = [...declared.entries()]
+      .filter(([, v]) => v.enabled && v.source === localConfig.file)
+      .map(([id]) => id);
   } else if (typeof env.ACTIVE_PERSONAS === 'string' && env.ACTIVE_PERSONAS.trim()) {
     const raw = env.ACTIVE_PERSONAS.trim();
     try {
@@ -1118,7 +1239,13 @@ async function main() {
 
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
-  const roster = resolvePersonaRoster(payload, localConfig, process.env);
+  const fileRoster = loadPersonaFiles(process.cwd());
+  if (fileRoster.personas.length > 0) {
+    console.log(`[Personas] Loaded ${fileRoster.personas.length} persona file(s) from ${PERSONA_DIR}/.`);
+  }
+
+  const roster = resolvePersonaRoster(payload, localConfig, process.env, fileRoster.personas);
+  roster.errors.unshift(...fileRoster.errors);
 
   // A misconfigured roster must never fall through to a green verdict: an unknown id used to
   // yield zero personas and a cheerful SHIP, which reads exactly like a passing review.
@@ -1230,6 +1357,7 @@ module.exports = {
   parseDiff,
   getPRDiffAndContext,
   resolvePersonaRoster,
+  loadPersonaFiles,
   resolveModelConfig,
   reviewWithModel,
   parseFindingsPayload,

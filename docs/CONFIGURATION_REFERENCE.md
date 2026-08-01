@@ -255,6 +255,48 @@ personas:
 | `enabled` | no | Set `false` to exclude. Defaults to `true`. |
 | `model` | no | Per-persona model override. Defaults to the workflow's model. |
 
+### Persona Files (`.ct-review/personas/*.md`)
+
+A charter long enough to be useful is awkward as a YAML string. Each reviewer may instead live
+in its own markdown file, where optional YAML frontmatter carries the metadata and the body is
+the charter:
+
+```markdown
+<!-- .ct-review/personas/tenancy.md -->
+---
+name: "🏢 Multi-Tenant Isolation"
+enabled: true
+model: anthropic/claude-sonnet-4
+---
+
+Every query that touches customer data must be scoped by `orgId`.
+
+## What to flag
+- Repository methods accepting a raw `id` without a tenant bound
+
+## What not to flag
+- Admin-only endpoints under `src/admin/**`, which are intentionally cross-tenant
+```
+
+| Frontmatter key | Required | Description |
+| :--- | :--- | :--- |
+| `id` | no | Defaults to the filename without its extension. |
+| `name` | no | Display name. Falls back to a built-in's name when overriding one, else the id. |
+| `enabled` | no | Set `false` to keep the file without running the reviewer. |
+| `model` | no | Per-persona model override. |
+
+Rules:
+
+- **Frontmatter is optional.** A file containing only prose is a valid persona; its id comes from
+  the filename.
+- **Files extend the default roster.** Adding one persona file does not switch the twelve
+  built-ins off. Narrow the roster with a `personas:` list or the action's `personas:` input.
+- **A file may override a built-in** by using its id; the body replaces that reviewer's charter.
+- **Declaring one id in two places is an error.** A file and an inline `personas:` entry with the
+  same id fails the run rather than silently picking a winner.
+- **An empty body is an error**, as is malformed frontmatter. Both fail the run rather than
+  dropping the reviewer silently.
+
 > **Unknown ids are fatal.** An id that is neither a built-in nor accompanied by a `charter`
 > fails the run with a non-zero exit and a message listing the valid ids. This is deliberate:
 > an unrecognised id previously selected zero reviewers, and a review with zero reviewers
