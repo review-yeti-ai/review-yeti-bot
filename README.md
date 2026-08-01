@@ -33,9 +33,9 @@ jobs:
           llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-That is the whole setup. The action reads the pull request diff, runs the reviewers in parallel,
-and comments on the PR using your workflow's built-in `GITHUB_TOKEN` — no personal access token
-required.
+That is the whole setup — note there is no `actions/checkout` step, and none is needed. The
+action reads the pull request diff, runs the reviewers in parallel, and comments on the PR using
+your workflow's built-in `GITHUB_TOKEN`; no personal access token required.
 
 You supply an API key for any OpenAI-compatible endpoint. **You own the key and the prompts**;
 nothing is sent to a third-party review service.
@@ -81,6 +81,35 @@ Findings that name a file outside the diff are discarded before posting, so the 
 comment on code that isn't there.
 
 ---
+
+## Where reviewer configuration is read from
+
+Reviewer charters are prompts executed with **your** API key, so the action deliberately does
+**not** read them from the pull request under review. `.ct-review.yaml` and
+`.ct-review/personas/` are fetched over the API from the pull request's **base** branch — code
+that is already merged and reviewed.
+
+Without this, a pull request could add its own persona files, rewrite the instructions of the
+reviewer examining it, and declare as many reviewers as it liked against your account. Point
+`config-ref` at a different ref to override, and `max-personas` bounds how large a roster may
+grow regardless.
+
+A consequence worth knowing: **changes to reviewer configuration take effect once merged**, not
+on the pull request that proposes them.
+
+### What is sent to your model provider
+
+The pull request diff is sent to whichever endpoint you configure. The default `openrouter/auto`
+lets OpenRouter select a provider, which means you cannot state in advance which vendor received
+your code or what their retention policy is. If that matters — proprietary code, regulated data,
+a customer commitment — pin an explicit model and provider:
+
+```yaml
+        with:
+          model: anthropic/claude-sonnet-4
+          llm-base-url: https://api.anthropic.com/v1
+          llm-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
 
 ## Why this rather than a hosted review service
 

@@ -949,6 +949,20 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
  * @returns {string[]} Persona ids in charter order.
  */
 const PERSONA_DIR = path.join('.ct-review', 'personas');
+const DEFAULT_MAX_PERSONAS = 25;
+
+/**
+ * Directory to read repository configuration from.
+ *
+ * This must not be the pull request's own checkout. Reviewer charters are prompts executed with
+ * the repository's API key, so sourcing them from the head of a pull request lets that pull
+ * request rewrite the instructions reviewing it. The action fetches configuration from the base
+ * ref into a separate directory and points here at it; falling back to the working directory
+ * keeps local runs working.
+ */
+function resolveConfigRoot(env = process.env) {
+  return env.CT_REVIEW_CONFIG_DIR || process.cwd();
+}
 
 /**
  * Loads persona definitions from `.ct-review/personas/*.md`.
@@ -1166,6 +1180,16 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
     errors.push(
       `Unknown persona id "${id}". Valid built-in ids: ${[...builtins.keys()].join(', ')}. ` +
       `To define a custom persona, declare it in .ct-review.yaml with a charter.`
+    );
+  }
+
+  // Each reviewer is one request per push, so an unbounded roster is unbounded spend. Cap it
+  // rather than discovering the limit on an invoice.
+  const maxPersonas = parseInt(env.MAX_PERSONAS || '', 10) || DEFAULT_MAX_PERSONAS;
+  if (personas.length > maxPersonas) {
+    errors.push(
+      `Roster resolves to ${personas.length} reviewers, above the limit of ${maxPersonas}. ` +
+      `Each reviewer is one model request per push. Narrow the roster, or raise max-personas deliberately.`
     );
   }
 
@@ -1412,10 +1436,10 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT) {
  * Reads local repository .ct-review.yaml or .coderabbit.yaml if present in checked-out repo.
  * Allows local repository overrides for active personas, path filters, model overrides, and effort levels.
  */
-function loadLocalRepoConfig() {
+function loadLocalRepoConfig(configRoot = resolveConfigRoot()) {
   const candidates = ['.ct-review.yaml', '.ct-review.yml', '.coderabbit.yaml', '.coderabbit.yml'];
   for (const file of candidates) {
-    const fullPath = path.resolve(process.cwd(), file);
+    const fullPath = path.resolve(configRoot, file);
     if (fs.existsSync(fullPath)) {
       try {
         let jsYaml = null;
@@ -1457,7 +1481,11 @@ async function main() {
     } catch (_) {}
   }
 
-  const localConfig = loadLocalRepoConfig();
+  const configRoot = resolveConfigRoot();
+  if (process.env.CT_REVIEW_CONFIG_DIR) {
+    console.log(`[Config] Reading repository configuration from the trusted base ref, not the pull request head.`);
+  }
+  const localConfig = loadLocalRepoConfig(configRoot);
 
   const mcpFleetInfo = await initMcpFleet(prContext.eventData?.client_payload);
   console.log(`[MCP] ${mcpFleetInfo.mcpStatusSummary}`);
@@ -1477,7 +1505,7 @@ async function main() {
 
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
-  const fileRoster = loadPersonaFiles(process.cwd());
+  const fileRoster = loadPersonaFiles(configRoot);
   if (fileRoster.personas.length > 0) {
     console.log(`[Personas] Loaded ${fileRoster.personas.length} persona file(s) from ${PERSONA_DIR}/.`);
   }
@@ -1597,6 +1625,7 @@ module.exports = {
   getPRDiffAndContext,
   resolvePersonaRoster,
   loadPersonaFiles,
+  resolveConfigRoot,
   resolveModelConfig,
   reviewWithModel,
   parseFindingsPayload,
