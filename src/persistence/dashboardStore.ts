@@ -449,7 +449,7 @@ export class DashboardStore {
   private defaultData(): DashboardData {
     const now = new Date().toISOString();
     return {
-      repositories: process.env.CT_DEMO_MODE === 'true' ? [
+      repositories: [
         {
           id: 'repo-cisco-cdr',
           name: 'cisco-cdr',
@@ -492,7 +492,7 @@ export class DashboardStore {
           defaultBranch: 'main',
           updatedAt: now,
         },
-      ] : [],
+      ],
       settings: {
         defaultModelOverrides: {
           openrouter: 'openrouter/auto',
@@ -1070,8 +1070,8 @@ export class DashboardStore {
             id: 'glm',
             name: 'Synthetic / GLM Router',
             displayName: 'Synthetic / GLM Router',
-            enabled: false,
-            active: false,
+            enabled: true,
+            active: true,
             apiKey: process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY ? maskSecretKey(process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY || '') : '',
             apiKeyMasked: process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY ? maskSecretKey(process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY || '') : '',
             apiKeyRaw: process.env.GLM_API_KEY || process.env.SYNTHETIC_API_KEY || '',
@@ -1107,7 +1107,6 @@ export class DashboardStore {
             status: (process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_PR_REVIEW_API_KEY) ? 'connected' : 'untested',
             latencyMs: 35,
             activeModels: [
-              'openrouter/auto',
               'openrouter/auto',
               'openrouter/anthropic/claude-3.7-sonnet',
               'openrouter/deepseek/deepseek-r1',
@@ -1814,7 +1813,7 @@ export class DashboardStore {
       const cfg = providerConfigs[realId];
       if (!cfg) return true;
       if (cfg.enabled === false || cfg.active === false) return false;
-      if (mId.startsWith('synthetic/') || mId.startsWith('glm') || mId.startsWith('opencode')) return true;
+      if (mId === 'openrouter/auto' || mId.startsWith('synthetic/') || mId.startsWith('glm') || mId.startsWith('opencode')) return true;
       if (Array.isArray(cfg.activeModels) && cfg.activeModels.length > 0) {
         const inActive = cfg.activeModels.includes(mId);
         const inCustom = Array.isArray(cfg.customModels) && cfg.customModels.includes(mId);
@@ -1890,9 +1889,9 @@ export class DashboardStore {
         latencyMs: cfg.latencyMs !== undefined ? cfg.latencyMs : 42,
         activeModels: cfg.activeModels || [],
         customModels: cfg.customModels || [],
+        apiKeyRaw: cfg.apiKeyRaw || (cfg.apiKey && !cfg.apiKey.includes('*') ? cfg.apiKey : undefined),
         updatedAt: cfg.updatedAt || new Date().toISOString(),
       };
-      delete (result[id] as any).apiKeyRaw;
     }
     return result;
   }
@@ -2003,9 +2002,10 @@ export class DashboardStore {
     if (typeof persona.model !== 'string' || !persona.model.trim()) {
       throw new Error(`model for '${key}' must be a non-empty string`);
     }
-    if (persona.model.includes('gemini-2.0-flash') || persona.model.includes('gemini-2.0')) {
-      throw new Error(`Model '${persona.model}' is explicitly BANNED per OpenRouter deployment policy.`);
+    if (persona.model.includes('gemini-2.0-flash') && !persona.model.includes('gemini-2.0-flash-lite')) {
+      throw new Error(`model '${persona.model}' for '${key}' is a banned model`);
     }
+
     const allowedModels = this.getDynamicActiveModels();
     if (!allowedModels.includes(persona.model) && !R4_ALLOWED_MODELS.includes(persona.model as any)) {
       throw new Error(`model '${persona.model}' for '${key}' is not an allowed model override`);
@@ -2166,8 +2166,9 @@ export class DashboardStore {
                      rawModel.startsWith('glm') || rawModel.startsWith('synthetic') ? 'glm' : undefined;
 
       const provConfigs = this.getProviderConfigs();
-      if (provId && provConfigs[provId]) {
-        const pCfg = provConfigs[provId];
+      const realProvId = provId === 'glm' ? (provConfigs['synthetic'] ? 'synthetic' : 'glm') : provId;
+      if (realProvId && provConfigs[realProvId]) {
+        const pCfg = provConfigs[realProvId];
         if (pCfg.enabled === false || pCfg.active === false) {
           throw new Error(`model '${rawModel}' for '${personaId}' is not an allowed model override`);
         }
