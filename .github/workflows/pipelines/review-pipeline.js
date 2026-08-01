@@ -115,6 +115,190 @@ const PERSONA_CHARTERS = [
   },
 ];
 
+const SEVERITIES = ['P0', 'P1', 'P2'];
+const DEFAULT_MAX_DIFF_CHARS = 24_000;
+
+/**
+ * Resolves LLM endpoint configuration from the environment.
+ *
+ * Any OpenAI-compatible `/chat/completions` endpoint works; OpenRouter is the default because
+ * OPENROUTER_API_KEY is already plumbed through the workflow.
+ *
+ * @returns {{enabled: boolean, apiKey: string, baseUrl: string, model: string, maxDiffChars: number}}
+ */
+function resolveModelConfig(env = process.env) {
+  const apiKey = env.LLM_API_KEY || env.OPENROUTER_API_KEY || '';
+  const baseUrl = (env.LLM_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+  const model = env.OPENROUTER_MODEL || 'openrouter/auto';
+  const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || DEFAULT_MAX_DIFF_CHARS;
+
+  return { enabled: Boolean(apiKey), apiKey, baseUrl, model, maxDiffChars };
+}
+
+/**
+ * Extracts a findings array from a model response, tolerating prose and markdown fences.
+ * Returns null when nothing parseable is present.
+ */
+function parseFindingsPayload(content) {
+  if (!content || typeof content !== 'string') return null;
+
+  const candidates = [];
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) candidates.push(fenced[1]);
+  candidates.push(content);
+
+  // Fall back to the outermost brace-delimited object embedded in prose.
+  const firstBrace = content.indexOf('{');
+  const lastBrace = content.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(content.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate.trim());
+      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed?.findings)) return parsed.findings;
+    } catch (_) {}
+  }
+  return null;
+}
+
+/**
+ * Normalizes and validates model-produced findings.
+ *
+ * Findings naming a file outside the diff are dropped: a reviewer that invents file paths posts
+ * comments GitHub cannot anchor, and erodes trust in every other finding it reports.
+ */
+function sanitizeFindings(rawFindings, diffFiles) {
+  const knownPaths = new Set(diffFiles.map((f) => f.path));
+
+  return rawFindings
+    .filter((f) => f && typeof f === 'object')
+    .filter((f) => knownPaths.has(f.path))
+    .map((f) => ({
+      severity: SEVERITIES.includes(f.severity) ? f.severity : 'P2',
+      path: f.path,
+      line: Number.isInteger(f.line) && f.line > 0 ? f.line : 1,
+      title: String(f.title || 'Review finding').slice(0, 200),
+      body: String(f.body || f.title || '').slice(0, 2_000),
+      suggestion: f.suggestion ? String(f.suggestion).slice(0, 2_000) : undefined,
+    }));
+}
+
+/**
+ * Renders the diff for a prompt, capped at a character budget.
+ *
+ * The cap is a cost control as much as a context-window one: this runs once per persona per push,
+ * so an unbounded diff multiplies straight into the bill.
+ */
+function renderDiffForPrompt(diffFiles, maxDiffChars) {
+  let out = '';
+  let truncated = false;
+
+  for (const file of diffFiles) {
+    const block = `\n--- FILE: ${file.path} ---\n${file.patch || ''}`;
+    if (out.length + block.length > maxDiffChars) {
+      out += `\n--- FILE: ${file.path} ---\n[diff truncated to fit the ${maxDiffChars} character review budget]\n`;
+      truncated = true;
+      break;
+    }
+    out += block;
+  }
+
+  if (truncated) {
+    out += '\n[Some files were truncated. Report only on what you can see above.]\n';
+  }
+  return out;
+}
+
+/**
+ * Evaluates one persona charter against the diff using an LLM.
+ *
+ * Never throws: a failed lane degrades to zero findings with an `error` set, so one bad persona
+ * cannot take down a whole review.
+ */
+async function reviewWithModel(persona, diffFiles, prContext, sessionContext, options = {}) {
+  const cfg = { ...resolveModelConfig(), ...options };
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
+
+  const priorContext = sessionContext?.augmentedHeader
+    ? `\n\nPrior review context for this PR — do not repeat findings the author has already rejected:\n${sessionContext.augmentedHeader}`
+    : '';
+
+  const systemPrompt = [
+    `You are ${persona.name}, one reviewer on a code review panel.`,
+    '',
+    'Your charter:',
+    persona.charter,
+    priorContext,
+    '',
+    'Review the unified diff supplied by the user against your charter and nothing else.',
+    'Another reviewer covers every other concern; staying in your lane is what makes the panel work.',
+    '',
+    'Rules:',
+    '- Report only defects you can point to in the diff. Do not speculate about unseen code.',
+    '- Use the exact file path as given in the diff headers.',
+    '- Severity: P0 = exploitable or data-losing, P1 = must fix before merge, P2 = nit.',
+    '- If the diff is clean by your charter, return an empty findings array. Finding nothing is a valid, useful result.',
+    '',
+    'Respond with JSON only, in exactly this shape:',
+    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
+  ].join('\n');
+
+  const userPrompt = [
+    `Repository: ${prContext.repo || 'unknown'}`,
+    prContext.prNumber ? `Pull request: #${prContext.prNumber}` : '',
+    prContext.title ? `Title: ${prContext.title}` : '',
+    '',
+    'Unified diff under review:',
+    renderDiffForPrompt(diffFiles, maxDiffChars),
+  ].filter(Boolean).join('\n');
+
+  const base = { personaId: persona.id, displayName: persona.name, model: cfg.model };
+
+  try {
+    const response = await fetchImpl(`${cfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+      }),
+      // fetch has no default timeout; without this a stalled provider hangs the job until
+      // GitHub's 6 hour ceiling.
+      signal: AbortSignal.timeout(options.timeoutMs || 120_000),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      return { ...base, decision: 'ERROR', findings: [], error: `HTTP ${response.status}: ${String(detail).slice(0, 200)}` };
+    }
+
+    const payload = await response.json();
+    const content = payload?.choices?.[0]?.message?.content;
+    const rawFindings = parseFindingsPayload(content);
+
+    if (rawFindings === null) {
+      return { ...base, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
+    }
+
+    const findings = sanitizeFindings(rawFindings, diffFiles);
+    return { ...base, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings };
+  } catch (err) {
+    return { ...base, decision: 'ERROR', findings: [], error: err.message };
+  }
+}
+
 /**
  * Parses raw git diff text into per-file diff structures.
  */
@@ -636,7 +820,7 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
  * Formats persona evaluation findings into a GitHub PR comment containing
  * a Mermaid summary graph/diagram and persona findings breakdown.
  */
-function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}) {
+function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}) {
   const verdictBadge = arbitration.verdict === 'SHIP'
     ? '🟢 **Verdict: SHIP**'
     : arbitration.verdict === 'FIX_FIRST'
@@ -692,17 +876,28 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     });
   }
 
+  // State the review mode plainly. A heuristic pass dressed up as a model review is worse than
+  // no review, because it is trusted like one.
+  const reviewMode = modelConfig.enabled
+    ? `Model-backed (\`${modelConfig.model}\`)`
+    : '⚠️ Static heuristics only — no model configured, findings are regex-level';
+
+  const failedLanes = personaResults.filter((r) => r.decision === 'ERROR');
+  const failureNote = failedLanes.length > 0
+    ? `\n- **Degraded Lanes**: ${failedLanes.length} persona(s) failed and were excluded — ${failedLanes.map(l => `${l.displayName} (${l.error})`).join('; ')}`
+    : '';
+
   const commentMarkdown = `## ${verdictBadge}
 
 ### 📊 PI.dev Review Quorum Summary
 - **Repository**: \`${prContext.repo}\`
 - **Commit SHA**: \`${prContext.headSha.slice(0, 7)}\`
-- **Default LLM Model**: \`${DEFAULT_MODEL}\`
+- **Review Mode**: ${reviewMode}
 - **Parallel Personas Evaluated**: \`${arbitration.completedPersonas}/${arbitration.totalPersonas}\`
-- **Quorum Status**: \`${arbitration.quorumSatisfied ? 'SATISFIED (12/12)' : 'DEGRADED'}\`
+- **Quorum Status**: \`${arbitration.quorumSatisfied ? 'SATISFIED' : 'DEGRADED'}\`
 - **MCP Server Telemetry**: ${mcpStatusLine}
 - **Total Findings**: P0: \`${arbitration.metrics.p0Count}\` | P1: \`${arbitration.metrics.p1Count}\` | P2: \`${arbitration.metrics.p2Count}\`
-- **Rationale**: ${arbitration.rationale}
+- **Rationale**: ${arbitration.rationale}${failureNote}
 
 ### 🧬 Architectural Pipeline Flow
 ${mermaidLines.join('\n')}
@@ -822,6 +1017,16 @@ async function main() {
   const diffFiles = parseDiff(prContext.diffText);
   console.log(`[Payload] Parsed ${diffFiles.length} file(s) from PR diff payload.`);
 
+  if (diffFiles.length === 0) {
+    console.log('[Payload] Diff is empty; nothing to review. Exiting without posting a comment.');
+    return;
+  }
+
+  const modelConfig = resolveModelConfig();
+  console.log(modelConfig.enabled
+    ? `[Model] Model-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
+    : '[Model] No API key configured; heuristic-only mode.');
+
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
   const activePersonaIds = resolveActivePersonas(payload, localConfig, process.env);
@@ -843,19 +1048,38 @@ async function main() {
       metrics: { p0Count: 0, p1Count: 0, p2Count: 0 },
     };
   } else {
-    console.log('[Parallel Evaluation] Launching parallel persona lane evaluations...');
-    personaResults = await Promise.all(
-      enabledPersonas.map((persona) => evaluatePersonaLane(persona, diffFiles, prContext, sessionContext))
-    );
+    if (modelConfig.enabled) {
+      console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
+      personaResults = await Promise.all(
+        enabledPersonas.map((persona) => reviewWithModel(persona, diffFiles, prContext, sessionContext, modelConfig))
+      );
+
+      const failed = personaResults.filter((r) => r.decision === 'ERROR');
+      for (const lane of failed) {
+        console.warn(`[Persona ${lane.personaId}] Lane failed: ${lane.error}`);
+      }
+      if (failed.length === personaResults.length) {
+        console.error('[Review] Every persona lane failed. Refusing to post a verdict derived from zero completed reviews.');
+        process.exitCode = 1;
+        return;
+      }
+    } else {
+      console.warn('[Review] No LLM API key configured (set OPENROUTER_API_KEY or LLM_API_KEY).');
+      console.warn('[Review] Falling back to static heuristic checks. This is NOT a model-backed review.');
+      personaResults = await Promise.all(
+        enabledPersonas.map((persona) => evaluatePersonaLane(persona, diffFiles, prContext, sessionContext))
+      );
+    }
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
-    arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length);
+    const completed = personaResults.filter((r) => r.decision !== 'ERROR');
+    arbitration = computeArbitrationQuorum(completed, enabledPersonas.length);
   }
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
 
   console.log('[Formatting] Formatting GitHub PR comment output with Mermaid diagram and MCP telemetry...');
-  const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo);
+  const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig);
 
   console.log('[Publishing] Executing PR comment publishing...');
   postOrOutputComment(commentMarkdown, prContext);
@@ -902,6 +1126,10 @@ module.exports = {
   parseDiff,
   getPRDiffAndContext,
   resolveActivePersonas,
+  resolveModelConfig,
+  reviewWithModel,
+  parseFindingsPayload,
+  sanitizeFindings,
   loadLocalRepoConfig,
   initMcpFleet,
   evaluatePersonaLane,
