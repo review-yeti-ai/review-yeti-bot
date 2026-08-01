@@ -219,23 +219,51 @@ dials:
 ## 👥 Multi-LLM Personas & Provider Schema
 
 ### Persona Definition (`personas`)
-Each persona defines a review lane with specific file paths, required status, and LLM providers:
+
+A `personas:` list in `.ct-review.yaml` selects which reviewers run, and may define new ones.
+When the key is absent, every built-in persona runs.
+
+**Built-in ids** — `security`, `performance`, `architecture`, `style`, `testing`,
+`documentation`, `accessibility`, `database`, `devops`, `i18n`, `dependencies`, `licensing`.
 
 ```yaml
 personas:
-  - id: "sec-lane"
-    enabled: true
-    required: true
-    charter: "builtin:security"
-    paths: ["**"]
-    providers: ["codex", "claude"]
-  - id: "arch-lane"
-    enabled: true
-    required: true
-    charter: "builtin:contract"
-    paths: ["src/core/**", "src/api/**"]
-    providers: ["codex"]
+  # Reference a built-in by id.
+  - id: security
+
+  # Disable one explicitly.
+  - id: style
+    enabled: false
+
+  # Override a built-in's instructions, keeping its id and name.
+  - id: architecture
+    charter: "Flag any import that crosses a module boundary without going through its index."
+
+  # Define a reviewer of your own. Custom personas require a charter.
+  - id: tenancy
+    name: "🏢 Multi-Tenant Isolation"
+    charter: |
+      Every query touching customer data must be scoped by orgId.
+      Flag any repository method accepting a raw id without a tenant bound.
 ```
+
+| Key | Required | Description |
+| :--- | :--- | :--- |
+| `id` | yes | Built-in id, or a new id for a custom persona. |
+| `charter` | for custom personas | Instructions used as the reviewer's system prompt. |
+| `name` | no | Display name in the review comment. Defaults to the built-in's name, or the id. |
+| `enabled` | no | Set `false` to exclude. Defaults to `true`. |
+| `model` | no | Per-persona model override. Defaults to the workflow's model. |
+
+> **Unknown ids are fatal.** An id that is neither a built-in nor accompanied by a `charter`
+> fails the run with a non-zero exit and a message listing the valid ids. This is deliberate:
+> an unrecognised id previously selected zero reviewers, and a review with zero reviewers
+> reports `SHIP` — a typo would silently turn the bot into a rubber stamp.
+
+> **Not implemented on the Action path.** Earlier revisions of this document described
+> `paths:`, `providers:` and `required:` keys, and a `charter: "builtin:security"` indirection.
+> Those belong to the `src/panel/panelEngine.ts` configuration schema, not to the GitHub Action,
+> and are ignored by it. Path scoping for personas is not currently available.
 
 ### Reviewers & Arbiter Definition (`reviewers`)
 Defines execution mode, provider pool details, and binding arbiter order:
