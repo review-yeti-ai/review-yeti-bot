@@ -243,24 +243,10 @@ function getPRDiffAndContext() {
     } catch (_) {}
   }
 
-  // 5. Fallback sample diff for standalone node execution verification
-  if (!diffText) {
-    diffText = `diff --git a/src/server.ts b/src/server.ts
-index e69de29..b712345 100644
---- a/src/server.ts
-+++ b/src/server.ts
-@@ -1,5 +1,12 @@
- import express from 'express';
- const app = express();
-
-+app.get('/api/v1/user', (req, res) => {
-+  const userId = req.query.id;
-+  // TODO: Add authentication & orgId tenant check
-+  res.json({ id: userId, status: 'active' });
-+});
-+
- app.listen(3000);
-`;
+  // 5. PR_REPO wins over everything: the runner checks out the central review repository, so
+  // GITHUB_REPOSITORY names the runner, not the repository actually under review.
+  if (process.env.PR_REPO) {
+    repo = process.env.PR_REPO;
   }
 
   return { diffText, prNumber, repo, headSha, title, eventData };
@@ -564,9 +550,55 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
 }
 
 /**
- * Computes binding arbitration quorum verdict from 12 persona evaluation results.
+ * Resolves which persona charters should run for this review.
+ *
+ * Precedence: dispatch client_payload > local repository config > environment > all personas.
+ * Defaulting to every persona matters: an unconfigured repository must get a real review, not a
+ * silent no-op that always reports SHIP. An explicitly empty list is still honored as an opt-out.
+ *
+ * @param {object} payload - `client_payload` from a repository_dispatch event.
+ * @param {object|null} localConfig - Result of `loadLocalRepoConfig()` for the target repository.
+ * @param {object} env - Environment to read `ACTIVE_PERSONAS` from.
+ * @returns {string[]} Persona ids in charter order.
  */
-function computeArbitrationQuorum(personaResults) {
+function resolveActivePersonas(payload = {}, localConfig = null, env = process.env) {
+  const knownIds = PERSONA_CHARTERS.map((p) => p.id);
+  let selected = null;
+
+  if (Array.isArray(payload?.activePersonas)) {
+    selected = payload.activePersonas;
+  } else if (payload?.personaSettings && typeof payload.personaSettings === 'object') {
+    selected = Object.keys(payload.personaSettings)
+      .filter((k) => payload.personaSettings[k]?.enabled !== false);
+  } else if (Array.isArray(localConfig?.parsed?.personas)) {
+    selected = localConfig.parsed.personas
+      .filter((p) => p && p.enabled !== false)
+      .map((p) => p.id || p.personaId || p.name);
+  } else if (typeof env.ACTIVE_PERSONAS === 'string' && env.ACTIVE_PERSONAS.trim()) {
+    const raw = env.ACTIVE_PERSONAS.trim();
+    try {
+      const parsed = JSON.parse(raw);
+      // GitHub Actions renders `toJson(<missing>)` as the string "null" on non-dispatch events.
+      if (Array.isArray(parsed)) selected = parsed;
+    } catch (_) {
+      selected = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+  }
+
+  if (selected === null) return knownIds;
+
+  const wanted = new Set(selected.filter((id) => typeof id === 'string').map((id) => id.trim()));
+  return knownIds.filter((id) => wanted.has(id));
+}
+
+/**
+ * Computes binding arbitration quorum verdict from persona evaluation results.
+ *
+ * @param {object[]} personaResults - Completed persona lane results.
+ * @param {number} [expectedPersonas] - How many personas were expected to run; quorum is degraded
+ *   when fewer completed. Defaults to the number of results supplied.
+ */
+function computeArbitrationQuorum(personaResults, expectedPersonas = personaResults.length) {
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
@@ -580,7 +612,7 @@ function computeArbitrationQuorum(personaResults) {
   }
 
   let verdict = 'SHIP';
-  let rationale = 'All 12 persona evaluations passed or contained only minor nits. Quorum satisfied for release.';
+  let rationale = `All ${personaResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
 
   if (p0Count > 0 || p1Count >= 3) {
     verdict = 'BLOCK';
@@ -591,9 +623,9 @@ function computeArbitrationQuorum(personaResults) {
   }
 
   return {
-    totalPersonas: personaResults.length,
+    totalPersonas: expectedPersonas,
     completedPersonas: personaResults.length,
-    quorumSatisfied: personaResults.length === 12,
+    quorumSatisfied: personaResults.length === expectedPersonas,
     verdict,
     rationale,
     metrics: { p0Count, p1Count, p2Count, totalFindings: p0Count + p1Count + p2Count },
@@ -696,7 +728,14 @@ function postOrOutputComment(commentBody, prContext) {
       const tempPath = path.join('/tmp', `review-comment-${Date.now()}.md`);
       fs.writeFileSync(tempPath, commentBody, 'utf-8');
 
-      const result = spawnSync('gh', ['pr', 'comment', String(prNumber), '--body-file', tempPath], {
+      // --repo is required: the review runner checks out the central review repository, so the
+      // target PR is almost never the repository `gh` would infer from the working directory.
+      const args = ['pr', 'comment', String(prNumber), '--body-file', tempPath];
+      if (prContext.repo && prContext.repo.includes('/')) {
+        args.push('--repo', prContext.repo);
+      }
+
+      const result = spawnSync('gh', args, {
         encoding: 'utf-8',
         env: process.env,
       });
@@ -785,27 +824,10 @@ async function main() {
 
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
-  let activePersonaIds = null;
-  if (Array.isArray(payload.activePersonas)) {
-    activePersonaIds = payload.activePersonas;
-  } else if (payload.personaSettings && typeof payload.personaSettings === 'object') {
-    activePersonaIds = Object.keys(payload.personaSettings).filter(k => payload.personaSettings[k]?.enabled !== false);
-  } else if (localConfig?.parsed?.personas && Array.isArray(localConfig.parsed.personas)) {
-    activePersonaIds = localConfig.parsed.personas
-      .filter(p => p && p.enabled !== false)
-      .map(p => p.id || p.personaId || p.name);
-    console.log(`[Config] Derived ${activePersonaIds.length} active persona(s) from local ${localConfig.file}`);
-  } else if (process.env.ACTIVE_PERSONAS) {
-    try { activePersonaIds = JSON.parse(process.env.ACTIVE_PERSONAS); } catch (_) {
-      activePersonaIds = process.env.ACTIVE_PERSONAS.split(',').map(s => s.trim());
-    }
-  }
+  const activePersonaIds = resolveActivePersonas(payload, localConfig, process.env);
+  const enabledPersonas = PERSONA_CHARTERS.filter(p => activePersonaIds.includes(p.id));
 
-  const enabledPersonas = activePersonaIds !== null
-    ? PERSONA_CHARTERS.filter(p => activePersonaIds.includes(p.id))
-    : [];
-
-  console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) out of 12 total with model ${DEFAULT_MODEL}...`);
+  console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) out of ${PERSONA_CHARTERS.length} total with model ${DEFAULT_MODEL}...`);
 
   let personaResults = [];
   let arbitration = null;
@@ -827,7 +849,7 @@ async function main() {
     );
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
-    arbitration = computeArbitrationQuorum(personaResults);
+    arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length);
   }
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
@@ -879,6 +901,8 @@ module.exports = {
   DEFAULT_MODEL,
   parseDiff,
   getPRDiffAndContext,
+  resolveActivePersonas,
+  loadLocalRepoConfig,
   initMcpFleet,
   evaluatePersonaLane,
   computeArbitrationQuorum,
