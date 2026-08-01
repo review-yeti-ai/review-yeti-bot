@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * PI.dev Review Workflow Pipeline Script
+ * Review Panel Pipeline Script
  * .github/workflows/pipelines/review-pipeline.js
  *
  * Evaluates PR diff payloads in parallel across 12 persona charters,
@@ -39,81 +39,282 @@ try {
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 
-// 12 Persona Charters configured with default model openrouter/auto
+// Whitelabel display name used in the posted comment. Override with BOT_NAME.
+const BOT_LABEL = process.env.BOT_NAME || 'AI Review Panel';
+
+// Built-in reviewer charters.
+//
+// Each charter is a system prompt, so it is written as instructions rather than as a list of
+// topics: what the reviewer covers, what it must leave alone, and how to grade severity. The
+// "do not flag" section carries most of the weight — an unconstrained reviewer reports every
+// observation it can justify, and a review nobody trusts is worse than no review.
+//
+// `defaultEnabled` marks the reviewers that apply to essentially any codebase. The rest are
+// situational and are opted into by id.
 const PERSONA_CHARTERS = [
   {
     id: 'security',
     name: '🛡️ Security & Tenancy Guardian',
     model: DEFAULT_MODEL,
-    charter: 'Audit for authentication bypasses, authorization flaws, OWASP Top 10 vulnerabilities, secret scanning (hardcoded API keys, JWTs, RSA keys), tenant isolation breaches, injection vulnerabilities, and unvalidated request boundaries.',
+    defaultEnabled: true,
+    charter: `You review changes for security defects that are demonstrable in the diff.
+
+Flag:
+- Credentials, tokens or private keys committed as literals.
+- User-controlled input reaching a query, command, path, template or redirect without validation or parameterisation.
+- Authentication or authorisation checks that are missing, bypassable, or applied after the protected work has happened.
+- Data access that crosses a tenant, user or organisation boundary without a scoping predicate.
+- Secrets or personal data written to logs, error messages or telemetry.
+
+Do not flag:
+- Test fixtures, example values and obvious placeholders such as "sk-test", "changeme" or "user@example.com".
+- Missing defence-in-depth on a path that is already correctly guarded.
+- Generic advice to "consider adding validation" with no specific untrusted input identified.
+- Framework behaviour you cannot see in the diff, such as assuming an ORM does not parameterise.
+
+Severity: P0 for something an attacker could exploit or that leaks real data. P1 for a missing check on a reachable path. P2 for hardening worth doing but not urgent.`,
   },
   {
     id: 'performance',
     name: '⚡ Performance & Scalability Specialist',
     model: DEFAULT_MODEL,
-    charter: 'Identify CPU and memory bottlenecks, algorithmic inefficiencies (O(N^2) nested loops), N+1 database query patterns, missing index requirements, synchronous blocking I/O, memory leaks, and inefficient resource allocation.',
+    defaultEnabled: true,
+    charter: `You review changes for performance defects that will matter at realistic scale.
+
+Flag:
+- Queries or network calls issued inside a loop over a collection that grows with data (the N+1 pattern).
+- Work that is quadratic or worse in the size of an input that is not bounded.
+- Blocking or synchronous I/O on a request path or inside an event loop.
+- Unbounded accumulation: caches without eviction, arrays that only ever grow, listeners never removed.
+- Loading an entire dataset into memory when the operation only needs a page or an aggregate.
+
+Do not flag:
+- Micro-optimisations with no measurable effect, such as loop style, string concatenation, or caching a trivially cheap expression.
+- Work on collections that are fixed and small by construction, such as iterating a config list or a set of enum values.
+- Anything in tests, build scripts, migrations or CLI tooling, where latency does not matter.
+- Speculative scaling concerns without a concrete growth path visible in the change.
+
+Severity: P0 only for something that will exhaust memory or hang in production. P1 for a real regression on a hot path. P2 for inefficiency worth cleaning up.`,
   },
   {
     id: 'architecture',
     name: '🏛️ System Architecture & Design',
     model: DEFAULT_MODEL,
-    charter: 'Inspect modular coupling boundaries, clean layer separation (Presentation -> Application -> Domain -> Infrastructure), DRY compliance, circular dependency prevention, clear domain abstractions, ADR alignment, and interface stability.',
+    defaultEnabled: true,
+    charter: `You review changes for structural problems that will make the codebase harder to change.
+
+Flag:
+- Dependencies pointing the wrong way through the layering, such as domain logic importing infrastructure or presentation code.
+- Business rules duplicated into a second place rather than reused, where the copies will drift.
+- New circular dependencies between modules.
+- Public interfaces changed in a way that silently breaks existing callers.
+- Logic placed in a layer that cannot test it, such as decisions embedded in a controller or a UI component.
+
+Do not flag:
+- Patterns the surrounding code already uses consistently. Match the codebase rather than an ideal.
+- Requests for abstraction that is not yet needed. Two similar call sites are not duplication.
+- Renaming, file moves, or preferences about directory layout.
+- Design opinions unsupported by a concrete maintenance cost you can name.
+
+Severity: P0 is almost never appropriate here. P1 for a boundary violation or a breaking interface change that should be fixed before merge. P2 for structure worth revisiting.`,
   },
   {
     id: 'style',
     name: '✨ Code Style & Idioms Specialist',
     model: DEFAULT_MODEL,
-    charter: 'Enforce language idioms, code readability, naming conventions, structural code cleanliness, anti-patterns, cyclomatic complexity control, and clean code formatting standards.',
+    defaultEnabled: false,
+    charter: `You review changes for readability problems that a formatter or linter would not catch.
+
+Flag:
+- Names that actively mislead, such as a function named "get" that mutates state.
+- Control flow tangled enough that a reader cannot determine the conditions under which a branch runs.
+- Dead code, unreachable branches, and commented-out blocks left in the change.
+- Debug output left behind in application code, where the surrounding code uses a logger.
+
+Do not flag:
+- Anything a formatter owns: indentation, quotes, semicolons, line length, trailing commas.
+- Console output in CLI tools, build scripts, test helpers or anything whose job is to print. Intentional program output is not a leftover debug statement.
+- Naming preferences where the existing name is clear enough.
+- Suggestions to decompose a function that is long but linear and readable.
+
+Severity: P1 only where the code is genuinely misleading and likely to cause a future bug. Everything else is P2.`,
   },
   {
     id: 'testing',
     name: '🧪 Testing & Quality Assurance',
     model: DEFAULT_MODEL,
-    charter: 'Verify test coverage for modified and new functionality, unit and integration test validity, boundary and edge case coverage, test isolation, mock correctness, and flaky test hazards.',
+    defaultEnabled: true,
+    charter: `You review whether the change is adequately covered by tests, and whether those tests would fail if the code broke.
+
+Flag:
+- New branching logic, error handling or boundary conditions with no accompanying test.
+- Tests asserting on incidental detail rather than behaviour, so they pass when the feature is broken or fail when it is merely refactored.
+- Exclusive or skipped markers left active, which silently disable the rest of a suite.
+- Shared mutable state between tests, or dependence on execution order, clock or network.
+
+Do not flag:
+- Absence of tests for pure renames, formatting, comments, configuration or documentation.
+- Demands for a coverage percentage.
+- Requests to test framework behaviour or third-party libraries.
+- Missing end-to-end tests where unit coverage is proportionate to the change.
+
+Severity: P1 for untested logic that can silently break, or an active exclusive marker. P2 for coverage worth adding. Reserve P0 for a change that disables an entire suite.`,
   },
   {
     id: 'documentation',
     name: '📝 Documentation & API Specs',
     model: DEFAULT_MODEL,
-    charter: 'Check for inline JSDoc/TSDoc comments on exported interfaces/functions, public API endpoint documentation, updated README and docs guides, CHANGELOG entries, and parameter/return descriptions.',
+    defaultEnabled: false,
+    charter: `You review whether the change leaves the project's documentation accurate.
+
+Flag:
+- Documentation, README sections or comments that the change makes factually wrong.
+- New or changed public interfaces, configuration keys, environment variables or CLI flags that nothing documents.
+- Comments describing behaviour the code no longer has.
+- Documented examples that would now fail if a reader followed them.
+
+Do not flag:
+- Missing docstrings on self-explanatory or internal functions.
+- Requests for comments restating what the code plainly says.
+- Absence of a changelog entry unless the repository visibly maintains one.
+- Style preferences about comment formatting.
+
+Severity: P1 for documentation that is now actively wrong or a public interface left undocumented. P2 for documentation worth adding. P0 does not apply.`,
   },
   {
     id: 'accessibility',
     name: '♿ Accessibility (a11y) & Usability',
     model: DEFAULT_MODEL,
-    charter: 'Audit HTML and UI components for WCAG 2.1 compliance, proper ARIA roles and attributes, image alt attributes, keyboard navigation support, color contrast, and semantic element usage.',
+    defaultEnabled: false,
+    charter: `You review user interface changes for barriers to people using assistive technology.
+
+Flag:
+- Interactive elements that cannot be reached or operated by keyboard.
+- Controls with no accessible name: icon-only buttons, unlabelled inputs, images conveying meaning without alt text.
+- Meaning carried by colour alone.
+- Custom widgets reimplementing a native control without the roles, states and focus behaviour that control provides.
+- Focus that is lost, trapped, or never moved when content appears or disappears.
+
+Do not flag:
+- Files that render no user interface.
+- Decorative images that correctly use an empty alt attribute.
+- Colour contrast you cannot compute from the diff, where the values are not visible.
+- Speculative concerns about a component's rendered output that the change does not show.
+
+Severity: P1 where the interface becomes unusable with a keyboard or screen reader. P2 for degraded experience. P0 does not apply.`,
   },
   {
     id: 'database',
     name: '🗄️ Database & Persistence Specialist',
     model: DEFAULT_MODEL,
-    charter: 'Review database schema migrations for zero-downtime rollback safety, non-blocking index creation (CREATE INDEX CONCURRENTLY), transaction isolation boundaries, deadlock hazards, parameterized query safety, and connection pool sizing.',
+    defaultEnabled: false,
+    charter: `You review schema changes and data access for risks to production data.
+
+Flag:
+- Destructive migrations: dropping or renaming a column or table still referenced by deployed code.
+- Migrations that lock a large table, such as adding a non-null column with a default, or building an index without a concurrent option where the engine supports one.
+- Migrations with no viable path backwards once partially applied.
+- Queries filtering or joining on columns with no supporting index, where the table grows unbounded.
+- String-interpolated SQL.
+
+Do not flag:
+- Migrations on tables that are obviously small or newly created.
+- Index suggestions for queries that run rarely or off the request path.
+- Normalisation preferences absent a concrete correctness or performance problem.
+- Anything in test fixtures or seed data.
+
+Severity: P0 for possible data loss or a production-wide lock. P1 for a migration needing a safer sequence. P2 for indexing and hygiene.`,
   },
   {
     id: 'devops',
-    name: '🐳 DevOps & Containerization',
+    name: '🐳 DevOps & CI/CD',
     model: DEFAULT_MODEL,
-    charter: 'Inspect Dockerfile multi-stage build optimization, non-root user enforcement, Kubernetes YAML securityContext (readOnlyRootFilesystem, drop ALL), CPU/memory requests and limits, CI/CD pipeline safety, and infrastructure configs.',
+    defaultEnabled: false,
+    charter: `You review build, container and pipeline configuration for correctness and safety.
+
+Flag:
+- Secrets committed into build files, pipeline definitions or container images.
+- Pipeline steps that mask failure, so a broken build reports success. Suppressed exit codes and blanket error suppression belong here.
+- Containers running as root, or images shipping build tooling and credentials into the runtime layer.
+- Untrusted input flowing into a privileged pipeline step.
+- Dependencies fetched at build time from mutable or unpinned sources.
+
+Do not flag:
+- Layer-count or image-size micro-optimisations with no meaningful effect.
+- Preferences between equivalent pipeline tools or runners.
+- Missing infrastructure the project has deliberately not adopted. Review what the change contains, not what a different deployment model would need.
+- Absence of a resource limit where no orchestrator is in use.
+
+Severity: P0 for an exposed secret or a pipeline that cannot fail. P1 for a real supply chain or privilege problem. P2 for hygiene.`,
   },
   {
     id: 'i18n',
     name: '🌐 Internationalization & Localizability',
     model: DEFAULT_MODEL,
-    charter: 'Audit for hardcoded user-visible UI strings, missing translation keys, date/time/currency formatting abstractions, locale-aware sorting, and right-to-left (RTL) layout compatibility.',
+    defaultEnabled: false,
+    charter: `You review changes in projects that localise their interface, for text and formatting that will not translate.
+
+Flag:
+- User-visible strings written inline where the project uses a translation mechanism.
+- Sentences assembled by concatenating fragments, which cannot be reordered for another grammar.
+- Dates, times, numbers and currency formatted manually rather than through a locale-aware API.
+- Assumptions that text length, direction or sort order match the source language.
+
+Do not flag:
+- Anything in a project with no translation mechanism in use. If nothing in the diff suggests localisation exists, report nothing.
+- Log messages, error text for developers, code comments, test strings and internal tooling output.
+- Identifiers, keys, enum values and other strings never shown to a user.
+
+Severity: P1 for user-visible text that cannot be translated in a project that translates. P2 for formatting that will read incorrectly in another locale. P0 does not apply.`,
   },
   {
     id: 'dependencies',
     name: '📦 Dependency Safety & Supply Chain',
     model: DEFAULT_MODEL,
-    charter: 'Check for vulnerable or outdated dependencies, wildcard version specifiers (* or latest), supply chain security risks, package-lock integrity, and unverified third-party library imports.',
+    defaultEnabled: true,
+    charter: `You review changes to a project's dependencies.
+
+Flag:
+- Version specifiers that float, such as "*" or "latest", making builds unreproducible.
+- Manifest changes not reflected in the lockfile, or a lockfile edited inconsistently with the manifest.
+- New dependencies pulled from a fork, a URL, a git reference or an unusual registry rather than the project's normal source.
+- A heavy dependency added for functionality the standard library or an existing dependency already provides.
+- Dependencies with names suspiciously close to a popular package.
+
+Do not flag:
+- Routine version bumps within the project's existing constraints.
+- Advice to audit or update dependencies generally, with no specific problem in the diff.
+- Vulnerability claims about specific versions, which you cannot verify from a diff alone.
+- Preferences between comparable, well-established libraries.
+
+Severity: P0 for a plausible supply chain compromise. P1 for unreproducible builds or an inconsistent lockfile. P2 for weight and duplication.`,
   },
   {
     id: 'licensing',
     name: '📄 License & IP Compliance',
     model: DEFAULT_MODEL,
-    charter: 'Verify open-source license compatibility (MIT, Apache 2.0, BSD vs copyleft GPL/AGPL), third-party attribution requirements, open-source license headers, and corporate IP policy adherence.',
+    defaultEnabled: false,
+    charter: `You review changes for licence obligations the project may be taking on.
+
+Flag:
+- A dependency added under a copyleft licence, such as GPL or AGPL, in a project distributed under a permissive one.
+- Substantial code that appears copied from another project without attribution.
+- Removal or alteration of an existing copyright or licence notice.
+- A project licence changed in a way that conflicts with what it already depends on.
+
+Do not flag:
+- Missing licence headers on individual files. Most projects do not use per-file headers, and demanding them on every new file is noise. Raise this only where the surrounding files visibly carry headers already.
+- Dependencies under permissive licences such as MIT, Apache 2.0, BSD or ISC.
+- Licence questions you cannot answer from the diff.
+
+Severity: P1 for an incompatible licence obligation or a removed notice. P2 for attribution worth adding. P0 does not apply.`,
   },
 ];
+
+// Reviewers that apply to essentially any codebase. The rest are situational: enabling all twelve
+// everywhere produces findings about internationalisation in projects that ship one language, and
+// licence headers in projects that use none.
+const DEFAULT_PERSONA_IDS = PERSONA_CHARTERS.filter((p) => p.defaultEnabled).map((p) => p.id);
 
 const SEVERITIES = ['P0', 'P1', 'P2'];
 const DEFAULT_MAX_DIFF_CHARS = 24_000;
@@ -240,8 +441,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     'Rules:',
     '- Report only defects you can point to in the diff. Do not speculate about unseen code.',
     '- Use the exact file path as given in the diff headers.',
-    '- Severity: P0 = exploitable or data-losing, P1 = must fix before merge, P2 = nit.',
-    '- If the diff is clean by your charter, return an empty findings array. Finding nothing is a valid, useful result.',
+    '- Every finding must name what breaks and under what conditions. If you cannot, do not report it.',
+    '- Severity: P0 = exploitable, data-losing or outage-causing. P1 = a defect that must be fixed before merge. P2 = worth doing, safe to merge without.',
+    '- P1 and P0 are rare. When unsure between two levels, choose the lower one.',
+    '- If the diff is clean by your charter, return an empty findings array. Finding nothing is the expected result on most changes, and is more useful than a speculative finding.',
     '',
     'Respond with JSON only, in exactly this shape:',
     '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
@@ -927,9 +1130,21 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
     }
   }
 
-  // Unconfigured means every built-in, plus anything the repository defined.
+  // Unconfigured means the default reviewers, plus anything the repository defined. Running all
+  // twelve everywhere reports on internationalisation in single-language projects and licence
+  // headers in projects that use none, which is how a reviewer teaches people to ignore it.
   if (selected === null) {
-    selected = [...builtins.keys(), ...[...declared.keys()].filter((id) => !builtins.has(id))];
+    selected = [...DEFAULT_PERSONA_IDS, ...[...declared.keys()].filter((id) => !builtins.has(id))];
+  }
+
+  // "all" opts back into the complete built-in roster.
+  if (selected.some((id) => typeof id === 'string' && id.trim().toLowerCase() === 'all')) {
+    selected = [
+      ...builtins.keys(),
+      ...[...declared.keys()].filter((id) => !builtins.has(id)),
+      ...selected.filter((id) => typeof id === 'string' && id.trim().toLowerCase() !== 'all' && !builtins.has(id.trim())),
+    ];
+    selected = [...new Set(selected)];
   }
 
   const personas = [];
@@ -954,6 +1169,15 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
     );
   }
 
+  // Built-ins in charter order, then repository-defined reviewers in declaration order, so the
+  // review comment reads the same regardless of how the configuration happened to be written.
+  const builtinOrder = [...builtins.keys()];
+  personas.sort((a, b) => {
+    const ai = builtinOrder.indexOf(a.id);
+    const bi = builtinOrder.indexOf(b.id);
+    return (ai === -1 ? builtinOrder.length : ai) - (bi === -1 ? builtinOrder.length : bi);
+  });
+
   return { personas, errors };
 }
 
@@ -977,15 +1201,28 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
     }
   }
 
+  // Thresholds scale with the size of the panel. Fixed counts were calibrated for sparse regex
+  // hits; with a dozen model-driven reviewers each free to raise a concern, a flat "3 P1s blocks"
+  // means essentially every pull request blocks, and a reviewer that always blocks is ignored.
+  const panelSize = Math.max(1, personaResults.length);
+  const blockP1 = Math.max(3, Math.ceil(panelSize / 2));
+  const fixP2 = Math.max(5, panelSize);
+
   let verdict = 'SHIP';
   let rationale = `All ${personaResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
 
-  if (p0Count > 0 || p1Count >= 3) {
+  if (p0Count > 0) {
     verdict = 'BLOCK';
-    rationale = `Arbitration engine blocked merge due to ${p0Count} critical P0 finding(s) and ${p1Count} P1 finding(s).`;
-  } else if (p1Count > 0 || p2Count >= 5) {
+    rationale = `Blocked on ${p0Count} critical P0 finding(s).`;
+  } else if (p1Count >= blockP1) {
+    verdict = 'BLOCK';
+    rationale = `Blocked on ${p1Count} P1 finding(s) across ${panelSize} reviewer(s), at or above the blocking threshold of ${blockP1}.`;
+  } else if (p1Count > 0) {
     verdict = 'FIX_FIRST';
-    rationale = `Arbitration engine requested changes due to ${p1Count} P1 finding(s) and ${p2Count} P2 nit(s).`;
+    rationale = `Changes requested for ${p1Count} P1 finding(s) and ${p2Count} P2 nit(s).`;
+  } else if (p2Count >= fixP2) {
+    verdict = 'FIX_FIRST';
+    rationale = `Changes requested for ${p2Count} P2 nit(s) across ${panelSize} reviewer(s), at or above the nit threshold of ${fixP2}.`;
   }
 
   return {
@@ -994,6 +1231,7 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
     quorumSatisfied: personaResults.length === expectedPersonas,
     verdict,
     rationale,
+    thresholds: { blockP1, fixP2 },
     metrics: { p0Count, p1Count, p2Count, totalFindings: p0Count + p1Count + p2Count },
   };
 }
@@ -1071,7 +1309,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
 
   const commentMarkdown = `## ${verdictBadge}
 
-### 📊 PI.dev Review Quorum Summary
+### 📊 ${BOT_LABEL} Summary
 - **Repository**: \`${prContext.repo}\`
 - **Commit SHA**: \`${prContext.headSha.slice(0, 7)}\`
 - **Review Mode**: ${reviewMode}
@@ -1120,23 +1358,23 @@ function postOrOutputComment(commentBody, prContext) {
       try { fs.unlinkSync(tempPath); } catch (_) {}
 
       if (result.status === 0) {
-        console.log(`[PI.dev Review Pipeline] Successfully posted PR comment to PR #${prNumber} via gh CLI.`);
+        console.log(`[Publish] Successfully posted PR comment to PR #${prNumber} via gh CLI.`);
         return { success: true, postedViaGh: true };
       } else {
-        console.warn(`[PI.dev Review Pipeline] gh CLI comment returned non-zero status (${result.status}): ${result.stderr || result.stdout}`);
+        console.warn(`[Publish] gh CLI comment returned non-zero status (${result.status}): ${result.stderr || result.stdout}`);
       }
     } catch (err) {
-      console.warn(`[PI.dev Review Pipeline] Error executing gh pr comment CLI: ${err.message}`);
+      console.warn(`[Publish] Error executing gh pr comment CLI: ${err.message}`);
     }
   } else {
-    console.log('[PI.dev Review Pipeline] No PR_NUMBER found in event context; skipping `gh pr comment` invocation.');
+    console.log('[Publish] No PR_NUMBER found in event context; skipping `gh pr comment` invocation.');
   }
 
   // Fallback to outputting comment to file & stdout
   const commentFilePath = path.join(process.cwd(), 'review-comment.md');
   try {
     fs.writeFileSync(commentFilePath, commentBody, 'utf-8');
-    console.log(`[PI.dev Review Pipeline] Saved formatted review comment to ${commentFilePath}`);
+    console.log(`[Publish] Saved formatted review comment to ${commentFilePath}`);
   } catch (_) {}
 
   return { success: true, postedViaGh: false };
@@ -1199,7 +1437,7 @@ function loadLocalRepoConfig() {
  */
 async function main() {
   console.log('=====================================================');
-  console.log('🚀 PI.dev Review Workflow Pipeline Engine');
+  console.log(`🚀 ${BOT_LABEL}`);
   console.log('=====================================================');
 
   const prContext = getPRDiffAndContext();
@@ -1353,6 +1591,7 @@ if (require.main === module) {
 
 module.exports = {
   PERSONA_CHARTERS,
+  DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
   parseDiff,
   getPRDiffAndContext,
