@@ -12,23 +12,23 @@ const pipeline = require(pipelinePath);
 const workflowPath = path.join(rootRepoDir, '.github/workflows/review-bot-blacksmith.yaml');
 
 describe('Dispatch path: persona resolution defaults', () => {
-  const { resolvePersonaRoster, PERSONA_CHARTERS } = pipeline;
-  const allIds = PERSONA_CHARTERS.map((p: any) => p.id);
+  const { resolvePersonaRoster, DEFAULT_PERSONA_IDS } = pipeline;
+  const defaultIds = DEFAULT_PERSONA_IDS;
   const ids = (payload: any, cfg: any, env: any) =>
     resolvePersonaRoster(payload, cfg, env).personas.map((p: any) => p.id);
 
-  it('defaults to all 12 personas when nothing is configured', () => {
-    expect(ids({}, null, {})).toEqual(allIds);
+  it('defaults to the default reviewer set when nothing is configured', () => {
+    expect(ids({}, null, {})).toEqual(defaultIds);
   });
 
-  it('defaults to all 12 personas when ACTIVE_PERSONAS is the literal string "null"', () => {
+  it('defaults to the default reviewer set when ACTIVE_PERSONAS is the literal string "null"', () => {
     // GitHub Actions renders toJson(<missing>) as the string "null" on pull_request events.
-    expect(ids({}, null, { ACTIVE_PERSONAS: 'null' })).toEqual(allIds);
+    expect(ids({}, null, { ACTIVE_PERSONAS: 'null' })).toEqual(defaultIds);
   });
 
-  it('defaults to all 12 personas when ACTIVE_PERSONAS is empty or whitespace', () => {
-    expect(ids({}, null, { ACTIVE_PERSONAS: '' })).toEqual(allIds);
-    expect(ids({}, null, { ACTIVE_PERSONAS: '   ' })).toEqual(allIds);
+  it('defaults to the default reviewer set when ACTIVE_PERSONAS is empty or whitespace', () => {
+    expect(ids({}, null, { ACTIVE_PERSONAS: '' })).toEqual(defaultIds);
+    expect(ids({}, null, { ACTIVE_PERSONAS: '   ' })).toEqual(defaultIds);
   });
 
   it('honors an explicit activePersonas array from the dispatch client_payload', () => {
