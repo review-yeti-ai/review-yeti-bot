@@ -173,7 +173,7 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
           id: 'security',
           confidenceThreshold: 85,
           effort: 'low',
-          model: 'openrouter/google/gemini-2.0-flash-lite-001',
+          model: 'openrouter/google/gemini-2.0-flash',
           enabled: true
         });
       }).toThrow(/banned/i);
