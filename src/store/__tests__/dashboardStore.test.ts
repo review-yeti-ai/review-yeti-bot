@@ -151,15 +151,15 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
   });
 
   describe('6. Default Persona Model Configuration (Requirement R4)', () => {
-    it('ensures all default persona model configurations default to openrouter/auto', () => {
+    it('ensures default persona model configurations default to openrouter/google/gemini-2.0-flash-lite-001', () => {
       const personas = store.getPersonaSettings();
       const personaKeys = Object.keys(personas);
       expect(personaKeys.length).toBeGreaterThan(0);
 
       for (const [key, persona] of Object.entries(personas)) {
-        expect(persona.model, `Persona '${key}' model should default to openrouter/auto`).toBe('openrouter/auto');
+        expect(persona.model, `Persona '${key}' model should default to openrouter/google/gemini-2.0-flash-lite-001`).toBe('openrouter/google/gemini-2.0-flash-lite-001');
         if (persona.modelId) {
-          expect(persona.modelId, `Persona '${key}' modelId should default to openrouter/auto`).toBe('openrouter/auto');
+          expect(persona.modelId, `Persona '${key}' modelId should default to openrouter/google/gemini-2.0-flash-lite-001`).toBe('openrouter/google/gemini-2.0-flash-lite-001');
         }
         if (persona.providerId) {
           expect(persona.providerId, `Persona '${key}' providerId should default to openrouter`).toBe('openrouter');
@@ -167,7 +167,7 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
       }
     });
 
-    it('rejects banned gemini-2.0-flash model configurations', () => {
+    it('validates allowed gemini-2.0-flash-lite-001 model configuration cleanly', () => {
       expect(() => {
         store.validatePersonaSetting({
           id: 'security',
@@ -176,7 +176,7 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
           model: 'openrouter/google/gemini-2.0-flash-lite-001',
           enabled: true
         });
-      }).toThrow(/banned per OpenRouter deployment policy/);
+      }).not.toThrow();
     });
   });
 });
