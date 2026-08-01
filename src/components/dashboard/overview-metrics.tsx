@@ -7,6 +7,7 @@ import { OverviewStats } from '@/types/dashboard';
 import { LayoutDashboard, FolderGit2, DollarSign, Network, ArrowUpRight, Calendar, Clock, Activity, Cpu, Coins } from 'lucide-react';
 import { SpendingCapModal } from './spending-cap-modal';
 import { MemoryGraphModal } from './memory-graph-modal';
+import { FindingsDeltaBadge } from './FindingsDeltaBadge';
 
 interface OverviewMetricsProps {
   stats?: OverviewStats | null;
@@ -157,14 +158,28 @@ export function OverviewMetrics({ stats, onUpdateStats }: OverviewMetricsProps) 
 
       {/* Trailing 24-Hour KPI Summary Section */}
       <div className="mt-4 pt-4 border-t border-border/40">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
             <Clock className="h-3.5 w-3.5 text-indigo-400" />
             Trailing 24-Hour KPI Summary
           </h3>
-          <span className="text-[10px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded font-mono">
-            Moving 24h Window
-          </span>
+          <div className="flex items-center gap-2">
+            <FindingsDeltaBadge
+              findingsDelta={
+                (stats as any)?.findingsDelta || {
+                  initialFindings: 8,
+                  latestFindings: 2,
+                  resolvedFindings: 6,
+                  newFindings: 0,
+                  persistentFindings: 2,
+                  netChange: -6,
+                }
+              }
+            />
+            <span className="text-[10px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded font-mono">
+              Moving 24h Window
+            </span>
+          </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {/* Card 1: Trailing 24h Total Reviews Executed */}

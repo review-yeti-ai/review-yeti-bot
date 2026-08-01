@@ -21,13 +21,22 @@ describe('Follow-Up PR Action Personas Suite', () => {
   };
 
   const mockGithub: any = {
-    getChangedFiles: vi.fn().mockResolvedValue([{ path: 'src/api/routes.ts' }]),
-    getBranchRef: vi.fn().mockResolvedValue('main-ref-sha'),
-    createBranch: vi.fn().mockResolvedValue(undefined),
-    createOrUpdateFile: vi.fn().mockResolvedValue({ sha: 'file-sha-123' }),
-    createPullRequest: vi.fn().mockResolvedValue({ number: 301, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/301' }),
-    postIssueComment: vi.fn().mockResolvedValue(undefined),
+    getChangedFiles: vi.fn(),
+    getBranchRef: vi.fn(),
+    createBranch: vi.fn(),
+    createOrUpdateFile: vi.fn(),
+    createPullRequest: vi.fn(),
+    postIssueComment: vi.fn(),
   };
+
+  beforeEach(() => {
+    mockGithub.getChangedFiles.mockResolvedValue([{ path: 'src/api/routes.ts' }]);
+    mockGithub.getBranchRef.mockResolvedValue('main-ref-sha');
+    mockGithub.createBranch.mockResolvedValue(undefined);
+    mockGithub.createOrUpdateFile.mockResolvedValue({ sha: 'file-sha-123' });
+    mockGithub.createPullRequest.mockResolvedValue({ number: 301, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/301' });
+    mockGithub.postIssueComment.mockResolvedValue(undefined);
+  });
 
   it('1. executes docs-persona for API documentation update generation', async () => {
     const res = await executeDocsPersona({

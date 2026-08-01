@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { PRReviewDetailModal } from './pr-review-detail-modal';
+import { FindingsDeltaBadge } from './FindingsDeltaBadge';
 import { formatRelativeTime, formatTokenBreakdown } from '@/lib/utils';
 
 type SortField = 'repo' | 'title' | 'verdict' | 'latencyMs' | 'cost' | 'timestamp';
@@ -449,18 +450,23 @@ export function RecentReviewsTable({
                       {job.title || 'PR Review Evaluation'}
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        variant={
-                          job.verdict === 'SHIP'
-                            ? 'success'
-                            : job.verdict === 'NACK'
-                            ? 'destructive'
-                            : 'warning'
-                        }
-                        className="text-[10px] font-bold"
-                      >
-                        {job.verdict || 'SHIP'}
-                      </Badge>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <Badge
+                          variant={
+                            job.verdict === 'SHIP'
+                              ? 'success'
+                              : job.verdict === 'NACK'
+                              ? 'destructive'
+                              : 'warning'
+                          }
+                          className="text-[10px] font-bold"
+                        >
+                          {job.verdict || 'SHIP'}
+                        </Badge>
+                        {job.findingsDelta && (
+                          <FindingsDeltaBadge findingsDelta={job.findingsDelta} showDetails={false} />
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">

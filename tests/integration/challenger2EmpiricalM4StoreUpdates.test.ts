@@ -242,7 +242,7 @@ describe('Challenger 2 Empirical M4: Provider Config Updates & Store State Persi
   });
 
   describe('6. Empirical Assessment & Characterization of Store Edge Cases', () => {
-    it('empirical finding 1: repeated updateProviderConfig calls fail to update providerPool due to swallowed registration error', () => {
+    it('empirical finding 1: repeated updateProviderConfig calls update providerPool cleanly', () => {
       const key1 = 'sk-proj-valid_key_first_call_abcdef9988';
       const key2 = 'sk-proj-valid_key_second_call_abcdef9988';
 
@@ -250,16 +250,16 @@ describe('Challenger 2 Empirical M4: Provider Config Updates & Store State Persi
       store.updateProviderConfig('openai', { apiKeyRaw: key1, baseUrl: 'https://api.openai.com/v1' });
       expect(providerPool.getProvider('openai')?.apiKey).toBe(key1);
 
-      // Second update to same provider updates DashboardStore memory & disk...
+      // Second update to same provider updates DashboardStore memory & disk and providerPool
       store.updateProviderConfig('openai', { apiKeyRaw: key2, baseUrl: 'https://api.openai.com/v1' });
       expect(store.getProviderConfig('openai')?.apiKeyRaw).toBe(key2);
 
-      // ...BUT providerPool retains key1 because registerProvider throws 'already registered' and try-catch swallows it
+      // providerPool is properly updated with key2
       const poolEntry2 = providerPool.getProvider('openai');
-      expect(poolEntry2?.apiKey).toBe(key1); // Documents the providerPool stale key edge case
+      expect(poolEntry2?.apiKey).toBe(key2);
     });
 
-    it('empirical finding 2: empty string baseUrl in default provider config causes Zod validation failure in providerPool', () => {
+    it('empirical finding 2: empty string baseUrl in provider config is normalized and succeeds in providerPool', () => {
       providerPool.removeProvider('openai');
       const keyViaApiKeyProp = 'sk-proj-valid_key_via_apikey_prop_abcdef99';
 
@@ -269,9 +269,10 @@ describe('Challenger 2 Empirical M4: Provider Config Updates & Store State Persi
       // DashboardStore properly sets apiKeyRaw
       expect(store.getProviderConfig('openai')?.apiKeyRaw).toBe(keyViaApiKeyProp);
 
-      // BUT providerPool registration fails Zod schema validation because baseUrl is empty string "" (which violates min(1))
+      // providerPool registration succeeds because empty baseUrl is omitted/normalized
       const poolEntry = providerPool.getProvider('openai');
-      expect(poolEntry).toBeUndefined(); // Documents Zod schema mismatch edge case
+      expect(poolEntry).toBeDefined();
+      expect(poolEntry?.apiKey).toBe(keyViaApiKeyProp);
     });
 
     it('empirical finding 3: updateSettings leaves in-memory providerConfigs dirty when subsequent persona validation fails', () => {

@@ -40,6 +40,7 @@ describe('Milestone 22 Empirical Challenger Stress Suite', () => {
         action: 'closed',
         pull_request: { number: 11, merged: true },
         sender: null,
+        repository: { owner: { login: 'owner' }, name: 'repo' },
       };
       const resNull = handler.evaluateTrigger('pull_request', payloadNullSender, 'd-null-sender');
       expect(resNull.shouldTrigger).toBe(true);
@@ -50,6 +51,7 @@ describe('Milestone 22 Empirical Challenger Stress Suite', () => {
         action: 'closed',
         pull_request: { number: 12, merged: true },
         sender: { login: 'dependabot[bot]' },
+        repository: { owner: { login: 'owner' }, name: 'repo' },
       };
       const resBotLower = handler.evaluateTrigger('pull_request', payloadBotLower, 'd-bot-lower');
       expect(resBotLower.shouldTrigger).toBe(false);
@@ -60,6 +62,7 @@ describe('Milestone 22 Empirical Challenger Stress Suite', () => {
         action: 'closed',
         pull_request: { number: 13, merged: true },
         sender: { login: 'SOME-OTHER-BOT[BOT]' },
+        repository: { owner: { login: 'owner' }, name: 'repo' },
       };
       const resBotUpper = handler.evaluateTrigger('pull_request', payloadBotUpper, 'd-bot-upper');
       expect(resBotUpper.shouldTrigger).toBe(true); // Demonstrates case-sensitivity finding
