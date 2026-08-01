@@ -61,13 +61,13 @@ describe('resolveModelConfig', () => {
     expect(cfg.model).toBe('openrouter/auto');
   });
 
-  it('allows a fully custom OpenAI-compatible endpoint', () => {
+  it('allows an explicitly configured OpenRouter-compatible endpoint', () => {
     const cfg = resolveModelConfig({
-      LLM_API_KEY: 'k',
-      LLM_BASE_URL: 'https://api.example.com/v1/',
+      OPENROUTER_API_KEY: 'k',
+      OPENROUTER_BASE_URL: 'https://openrouter.example/v1/',
       OPENROUTER_MODEL: 'some/model',
     });
-    expect(cfg.baseUrl).toBe('https://api.example.com/v1');
+    expect(cfg.baseUrl).toBe('https://openrouter.example/v1');
     expect(cfg.model).toBe('some/model');
   });
 });

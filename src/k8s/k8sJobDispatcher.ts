@@ -139,8 +139,8 @@ export class K8sJobDispatcher {
                   { name: 'HEAD_SHA', value: options.headSha },
                   { name: 'BASE_SHA', value: options.baseSha || '' },
                   { name: 'JOB_ID', value: options.jobId },
-                  { name: 'OMNIROUTE_BASE_URL', value: process.env.OMNIROUTE_BASE_URL || 'http://omniroute-service:8000' },
-                  { name: 'OMNIROUTE_ACCESS_TOKEN', value: process.env.OMNIROUTE_ACCESS_TOKEN || '' },
+                  { name: 'OPENROUTER_BASE_URL', value: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' },
+                  { name: 'OPENROUTER_API_KEY', value: process.env.OPENROUTER_API_KEY || '' },
                   { name: 'WORKSPACE_DIR', value: '/app/data/pr-workspace' },
                 ],
                 resources: {

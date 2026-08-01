@@ -216,4 +216,45 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
 
     vi.unstubAllGlobals();
   });
+
+  it('uses an exact-head idempotency marker to avoid duplicate reviews on rerun', async () => {
+    let posted = false;
+    const fetchImplementation = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'GET' && input.includes('/pulls/9/reviews')) {
+        return new Response(JSON.stringify(posted
+          ? [{ id: 919, body: '<!-- ct-review-bot:v1:calltelemetry/bot#9:head-9:persona:security -->' }]
+          : []), { status: 200 });
+      }
+      if (init?.method === 'GET') return new Response('[]', { status: 200 });
+      posted = true;
+      return new Response(JSON.stringify({ id: 919 }), { status: 200 });
+    });
+    const publisher = new CommentPublisher({
+      githubToken: 'ghs_idempotency_token',
+      fetchImplementation,
+      sleep: vi.fn().mockResolvedValue(undefined),
+    });
+    const input = {
+      owner: 'calltelemetry',
+      repo: 'bot',
+      prNumber: 9,
+      commitSha: 'head-9',
+      event: 'COMMENT' as const,
+      body: 'persona result',
+      idempotencyKey: 'persona:security',
+      inlineComments: [{
+        owner: 'calltelemetry',
+        repo: 'bot',
+        prNumber: 9,
+        commitSha: 'head-9',
+        path: 'src/app.ts',
+        line: 4,
+        finding: baseFinding,
+      }],
+    };
+
+    await expect(publisher.publishReview(input)).resolves.toMatchObject({ success: true, commentsCreated: 1 });
+    await expect(publisher.publishReview(input)).resolves.toMatchObject({ success: true, reviewId: 919, commentsCreated: 0 });
+    expect(fetchImplementation.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1);
+  });
 });

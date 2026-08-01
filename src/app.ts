@@ -3,7 +3,7 @@ import path from 'path';
 import * as fs from 'fs';
 import { parseAndValidateConfig, createDefaultV3Config } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
-import { OmniRouteClient } from './gateway/omniRouteClient';
+import { OpenRouterClient } from './gateway/openRouterClient';
 import { getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
@@ -50,6 +50,13 @@ function requiredEnv(name: string): string {
 
 function privateKey(): string {
   return requiredEnv('GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
+}
+
+function openRouterClient(): OpenRouterClient {
+  return new OpenRouterClient({
+    baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    apiKey: process.env.OPENROUTER_API_KEY || (process.env.VITEST ? 'vitest-test-key' : requiredEnv('OPENROUTER_API_KEY')),
+  });
 }
 
 function usage(value: { prompt: number; completion: number; total: number } | null): string {
@@ -273,10 +280,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
               changedFiles,
               repository: repoFull,
               headSha,
-              client: new OmniRouteClient({
-                baseUrl: requiredEnv('OMNIROUTE_BASE_URL'),
-                accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
-              }),
+              client: openRouterClient(),
               isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
             }), config.reviewers.overall_timeout_s);
           } else {
@@ -286,10 +290,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
               changedFiles,
               repository: repoFull,
               headSha,
-              client: new OmniRouteClient({
-                baseUrl: requiredEnv('OMNIROUTE_BASE_URL'),
-                accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
-              }),
+              client: openRouterClient(),
               isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
             }), config.reviewers.overall_timeout_s);
           }
@@ -299,10 +300,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             changedFiles,
             repository: repoFull,
             headSha,
-            client: new OmniRouteClient({
-              baseUrl: requiredEnv('OMNIROUTE_BASE_URL'),
-              accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
-            }),
+            client: openRouterClient(),
             isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
           }), config.reviewers.overall_timeout_s);
         }
@@ -330,8 +328,20 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           return { status: 'cancelled', reason: 'head changed during review' };
         }
 
+        if (panel.optionalFailures.length > 0) {
+          throw new Error(`optional persona failure; refusing to publish a green verdict: ${panel.optionalFailures.map((failure) => `${failure.id}: ${failure.error}`).join(' | ')}`);
+        }
+
+        const assertCurrentHead = async () => {
+          const current = await github.getPullRequest(owner, repo, prNumber);
+          if (current.headSha !== headSha || !store.isCurrentHead(owner, repo, prNumber, headSha)) {
+            throw new Error(`head changed before publication: expected ${headSha}, found ${current.headSha}`);
+          }
+        };
+
         const learningEngine = new GraphLearningEngine();
         for (const lane of panel.personas) {
+          await assertCurrentHead();
           const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
             repoFull,
             lane.findings
@@ -347,6 +357,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             commitSha: headSha,
             event: 'COMMENT',
             body: personaBody(lane, headSha),
+            idempotencyKey: `persona:${lane.id}`,
             inlineComments: filteredFindings.map((finding) => ({
               owner,
               repo,
@@ -370,6 +381,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
 
         const summary = checkSummary(panel);
         const ship = panel.arbiter.verdict === 'SHIP';
+        await assertCurrentHead();
         const final = await github.publishReview({
           owner,
           repo,
@@ -377,6 +389,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           commitSha: headSha,
           event: ship ? 'APPROVE' : 'REQUEST_CHANGES',
           body: `## Binding arbiter verdict: ${panel.arbiter.verdict}\n\n${panel.arbiter.rationale}\n\n${summary}`,
+          idempotencyKey: 'arbiter',
         });
         if (!final.success) throw new Error(`failed to publish arbiter review: ${final.errors?.join('; ')}`);
         logger.info(`✅ Review pipeline completed successfully`, {
@@ -458,14 +471,14 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             })),
             // Failed persona logs (API errors captured from optionalFailures)
             ...panel.optionalFailures.map((failure) => {
-              // Extract HTTP status code from error message if present (e.g. "OmniRoute HTTP 429: ...")
+              // Extract HTTP status code from error message if present (for example OpenRouter 429).
               const httpMatch = failure.error.match(/HTTP\s+(\d{3})/i);
               const apiStatusCode = httpMatch ? parseInt(httpMatch[1], 10) : undefined;
               const isTimeout = /timeout|timed?\s*out|ETIMEDOUT|AbortError/i.test(failure.error);
               return {
                 persona: failure.id,
                 displayName: failure.id.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
-                decision: 'SHIP' as const, // Failed optional personas default to SHIP (non-blocking)
+                decision: 'NACK' as const,
                 model: 'unknown',
                 findingsCount: 0,
                 latencyMs: 0,
@@ -591,12 +604,12 @@ export function createApp(): Express {
   });
 
   app.get('/ready', async (_req, res) => {
-    const configurationReady = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'OMNIROUTE_BASE_URL']
+    const configurationReady = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'OPENROUTER_API_KEY']
       .every((name) => Boolean(process.env[name]?.trim()));
     return res.status(200).json({
       status: 'ready',
       configurationReady,
-      omniRouteReady: true,
+      openRouterReady: configurationReady,
       timestamp: new Date().toISOString(),
       uptimeSeconds: process.uptime(),
     });
@@ -683,14 +696,7 @@ export function createApp(): Express {
         setImmediate(async () => {
           try {
             const github = await installationClient(payload);
-            const omniRouteUrl = process.env.OMNIROUTE_BASE_URL;
-            const omniRouteClient = omniRouteUrl
-              ? new OmniRouteClient({
-                  baseUrl: omniRouteUrl,
-                  accessToken: process.env.OMNIROUTE_ACCESS_TOKEN,
-                })
-              : undefined;
-            const dispatcher = new PRCloseDispatcher(omniRouteClient);
+            const dispatcher = new PRCloseDispatcher();
             await dispatcher.dispatchPRCloseActions(payload, github);
           } catch (err) {
             logger.error('Failed processing PR close event pipeline', { error: err });
@@ -919,4 +925,3 @@ export function createApp(): Express {
 
   return app;
 }
-

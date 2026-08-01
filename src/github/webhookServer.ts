@@ -35,7 +35,7 @@ export function resolveWebhookSecret(overrideSecret?: string): string {
       return storeSecret;
     }
   } catch (_) {}
-  return 'whsec_test_secret_key_12345';
+  throw new Error('GitHub webhook secret is not configured; refusing to accept unsigned or unverifiable events');
 }
 
 /**

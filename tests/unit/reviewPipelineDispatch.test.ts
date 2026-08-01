@@ -133,6 +133,15 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
   });
 });
 
+describe('Dispatch path: OpenRouter is the only model boundary', () => {
+  it('does not treat a legacy provider key or base URL as a review provider', () => {
+    expect(pipeline.resolveModelConfig({ LLM_API_KEY: 'legacy-key', LLM_BASE_URL: 'https://legacy.example' })).toMatchObject({
+      enabled: false,
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+  });
+});
+
 describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () => {
   it('runs gh pr comment with an explicit --repo and injected filesystem/clock', () => {
     const writes = new Map<string, string>();
@@ -166,6 +175,25 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       args: ['pr', 'comment', '42', '--body-file', '/tmp/review-comment-1700000000000.md', '--repo', 'calltelemetry/ct-review-bot'],
     });
     expect(writes).toHaveLength(0);
+  });
+
+  it('binds the action review to the authoritative GitHub head SHA', () => {
+    const commandRunner = () => ({
+      status: 0,
+      stdout: JSON.stringify({ headRefOid: 'exact-head', baseRefOid: 'exact-base' }),
+      stderr: '',
+    });
+    expect(pipeline.assertCurrentPullRequest({
+      prNumber: '42',
+      repo: 'calltelemetry/ct-review-bot',
+      headSha: 'exact-head',
+    }, { commandRunner })).toEqual({ headRefOid: 'exact-head', baseRefOid: 'exact-base' });
+
+    expect(() => pipeline.assertCurrentPullRequest({
+      prNumber: '42',
+      repo: 'calltelemetry/ct-review-bot',
+      headSha: 'stale-head',
+    }, { commandRunner })).toThrow('PR head changed during review');
   });
 });
 
