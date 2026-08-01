@@ -2,8 +2,6 @@
 
 [![CI/CD Pipeline](https://github.com/calltelemetry/ct-review-bot/actions/workflows/ci-cd.yaml/badge.svg)](https://github.com/calltelemetry/ct-review-bot/actions/workflows/ci-cd.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Kubernetes](https://img.shields.io/badge/K8s-DigitalOcean%20DOKS-326CE5.svg)](https://digitalocean.com)
-[![Blacksmith CI](https://img.shields.io/badge/CI%2FCD-Blacksmith-black.svg)](https://blacksmith.sh)
 
 `ct-review-bot` is an enterprise-grade, quorum-based GitHub Review Platform competing directly with CodeRabbit and Greptile. It combines multi-LLM review panels, an **In-House $0-Cost AST Codebase Indexer**, **Linear-Style Dark Mode Web Dashboard & Auth Portal**, **1:1 CodeRabbit Schema Alignment**, **Context7 MCP integration via Doppler**, **Persistent PR Memory**, and **Automated Mermaid Architecture Visualizers**.
 
@@ -93,53 +91,79 @@ sequenceDiagram
 
 ---
 
-## 🚀 Getting Started Guide
+## 🚀 Getting Started
 
-### Prerequisites
-- Node.js >= 20.x
-- Docker & `doctl` (for Kubernetes deployment)
-- GitHub App installed on target organization
-- Doppler CLI / Token (optional, for Context7 MCP secrets)
+### Install it on a repository
 
----
+Add one workflow file to any repository you want reviewed. No app to install, no webhook to
+configure, no server to host.
 
-### Step 1: Install Dependencies & Run Tests
-```bash
-# Clone the repository
-git clone https://github.com/calltelemetry/ct-review-bot.git
-cd ct-review-bot
+```yaml
+# .github/workflows/review.yml
+name: Review
+on: pull_request
 
-# Install npm dependencies
-npm install
-
-# Run passing unit, integration, and benchmark tests
-npm test
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: JBJMLLC/ct-review-bot@v1
+        with:
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
----
+That is the entire installation. The action reads the pull request diff, runs the reviewer
+personas, and posts a single consolidated comment. It uses the workflow's built-in
+`GITHUB_TOKEN`, so no personal access token is required for same-repository reviews.
 
-### Step 2: Configure Environment (`.env`)
-Create a `.env` file in the root directory:
-```ini
-GITHUB_APP_ID=4385771
-GITHUB_APP_CLIENT_ID=Iv23liHmE9qxSkdvGMMJ
-GITHUB_APP_CLIENT_SECRET=your_client_secret
-GITHUB_WEBHOOK_SECRET=your_webhook_secret
-GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n..."
+> **Without `llm-api-key`** the action still runs, but falls back to static heuristic checks
+> and labels the posted comment accordingly. It will not present regex matches as a model
+> review.
 
-# Web Dashboard Administrative Authentication
-ADMIN_PASSWORD=your_secure_admin_password
+### Action inputs
 
-# Doppler Secret Routing for Context7 MCP
-DOPPLER_TOKEN=dp.pt.your_doppler_token
+| Input | Default | Description |
+| :--- | :--- | :--- |
+| `llm-api-key` | — | Key for an OpenAI-compatible endpoint. Omit for heuristic-only mode. |
+| `llm-base-url` | `https://openrouter.ai/api/v1` | Set alongside the key for a non-OpenRouter provider. |
+| `model` | `openrouter/auto` | Model identifier passed to the provider. |
+| `personas` | all twelve | Comma-separated persona ids, or a JSON array. |
+| `max-diff-chars` | `24000` | Per-persona diff budget. Each persona is one request per push, so this bounds cost. |
+| `pr-number` | triggering PR | Pull request to review. |
+| `repo` | current repo | Repository owning the PR, as `owner/name`. |
+| `github-token` | `github.token` | Token used to read the diff and post the comment. |
 
-# OmniRoute Provider Routing
-OMNIROUTE_BASE_URL=http://localhost:3000
+### Action outputs
+
+`verdict` (`SHIP`, `FIX_FIRST` or `BLOCK`), `findings-count`, `p0-count`, `p1-count`,
+`p2-count`, `personas-completed`. Gate a merge on them:
+
+```yaml
+      - uses: JBJMLLC/ct-review-bot@v1
+        id: review
+        with:
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+      - if: steps.review.outputs.verdict == 'BLOCK'
+        run: exit 1
 ```
 
+### Central review repository (dispatch mode)
+
+Alternatively, keep personas, prompts and keys in one repository and have others dispatch
+into it. The receiving workflow lives at `.github/workflows/review-bot-blacksmith.yaml` and
+accepts a `repository_dispatch` with a `client_payload` of `{ target_repo, pr_number }`.
+
+This mode needs two tokens — one in the calling repository allowed to dispatch here, and a
+`REVIEW_BOT_TOKEN` here allowed to read and comment on the calling repository — because the
+default `GITHUB_TOKEN` is scoped to a single repository. Prefer the action above unless you
+specifically need centralized keys and session data.
+
 ---
 
-### Step 3: Add Repository Configuration (`.ct-review.yaml`)
+### Repository Configuration (`.ct-review.yaml`)
 Place `.ct-review.yaml` or `.coderabbit.yaml` in your repository root:
 ```yaml
 version: 3
@@ -179,25 +203,12 @@ auto_review:
 
 ---
 
-### Step 4: Deploy to DigitalOcean Kubernetes (DOKS)
-```bash
-# Log in to DigitalOcean Container Registry
-doctl registry login
-
-# Build & Push linux/amd64 multi-arch container image
-docker buildx build --platform linux/amd64 -t registry.digitalocean.com/calltelemetry/ct-review-bot:v1.0.7 --push .
-
-# Apply Kubernetes manifests
-kubectl apply -f k8s/configmap.yaml
-kubectl apply -f k8s/secret.yaml
-kubectl apply -f k8s/deployment.yaml
-kubectl apply -f k8s/service.yaml
-kubectl apply -f k8s/ingress.yaml
-```
-
 ---
 
 ## 📡 REST API Reference
+
+> The endpoints below belong to the optional self-hosted dashboard service (`npm start`), not to
+> the GitHub Action. Reviewing pull requests requires none of them.
 
 `ct-review-bot` exposes high-speed REST endpoints for Web Dashboard management, local CLI agents, and review pipelines:
 

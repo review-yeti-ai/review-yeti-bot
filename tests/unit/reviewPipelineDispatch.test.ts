@@ -121,18 +121,25 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
 
 describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', () => {
   const workflow = fs.readFileSync(workflowPath, 'utf-8');
+  const action = fs.readFileSync(path.join(rootRepoDir, 'action.yml'), 'utf-8');
 
   it('does not depend on Blacksmith runners or actions', () => {
     expect(workflow).not.toContain('blacksmith-');
     expect(workflow).not.toContain('useblacksmith/');
   });
 
-  it('supplies the PR diff to the pipeline explicitly', () => {
-    expect(workflow).toContain('PR_DIFF');
+  it('delegates the review to this repository\'s own action, so runs exercise the published path', () => {
+    expect(workflow).toContain('uses: ./');
   });
 
-  it('supplies the PR number to the pipeline explicitly', () => {
-    expect(workflow).toContain('PR_NUMBER');
+  it('forwards the resolved target repo and PR number to the action', () => {
+    expect(workflow).toContain('client_payload.target_repo');
+    expect(workflow).toContain('client_payload.pr_number');
+  });
+
+  it('supplies the PR diff and number to the pipeline explicitly via the action', () => {
+    expect(action).toContain('PR_DIFF');
+    expect(action).toContain('PR_NUMBER');
   });
 
   it('does not push commits back to the checked-out repository', () => {
