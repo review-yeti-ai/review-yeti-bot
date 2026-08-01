@@ -1,5 +1,15 @@
-name: Review Bot (Blacksmith Runner)
+name: Review Bot
 
+# Central review repository runner.
+#
+# Two entry points:
+#   1. pull_request       — reviews PRs raised against this repository itself.
+#   2. repository_dispatch — another repository dispatches here with a target_repo/pr_number
+#                            client_payload; this repo holds the personas, prompts and keys and
+#                            comments back on the originating PR.
+#
+# The review itself is delegated to this repository's own action.yml, so every run exercises the
+# same code path third-party consumers get via `uses: JBJMLLC/ct-review-bot@v1`.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -7,70 +17,70 @@ on:
     types: [review-requested, re-review-requested, dispatch-review]
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
+
+concurrency:
+  group: review-${{ github.event.client_payload.target_repo || github.repository }}-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
     name: Execute AI Review Pipeline
-    runs-on: blacksmith-2vcpu-ubuntu-2204
-    env:
-      # Whitelabel Branding & Git Commitment Variables
-      BOT_NAME: ${{ vars.BOT_NAME || 'review-bot[bot]' }}
-      BOT_EMAIL: ${{ vars.BOT_EMAIL || 'bot@review-bot.internal' }}
-
-      # Workflow Execution & Model Routing Settings
-      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
-      ENABLE_FLOWCHART: ${{ vars.ENABLE_FLOWCHART || 'true' }}
-      MAX_TURNS: ${{ vars.MAX_TURNS || '20' }}
-      REASONING_EFFORT: ${{ vars.REASONING_EFFORT || 'low' }}
-      ACTIVE_PERSONAS: ${{ toJson(github.event.client_payload.activePersonas) }}
-
-      # Secrets & Authentication
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      MCP_CONFIG_JSON: ${{ secrets.MCP_CONFIG_JSON }}
-      CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
-      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
-      PRODUCTLANE_API_KEY: ${{ secrets.PRODUCTLANE_API_KEY }}
-      LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository (Blacksmith Git Caching)
-        uses: useblacksmith/checkout@v1
+      - name: Checkout Review Runner (this repository)
+        uses: actions/checkout@v4
+
+      # "Central repo controls all personas and settings and each repo can override with a local
+      # file." On the dispatch path the workspace holds this repository, so the target's override
+      # is fetched in. On the pull_request path the workspace is already the repo under review.
+      - name: Fetch Target Repository Override Config
+        if: github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.event.client_payload.target_repo }}
+        run: |
+          for f in .ct-review.yaml .ct-review.yml .coderabbit.yaml .coderabbit.yml; do
+            if gh api "repos/$TARGET_REPO/contents/$f" -H "Accept: application/vnd.github.raw" > "$f" 2>/dev/null; then
+              echo "Applied override config $f from $TARGET_REPO."
+              break
+            fi
+            rm -f "$f"
+          done
+
+      - name: Execute AI Review Panel
+        id: review
+        uses: ./
         with:
-          repository: ${{ github.event.client_payload.target_repo || github.repository }}
-          ref: ${{ github.event.client_payload.ref || github.event.pull_request.head.sha || github.ref }}
+          repo: ${{ github.event.client_payload.target_repo || github.repository }}
+          pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+          personas: ${{ vars.ACTIVE_PERSONAS }}
+          model: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
+          max-diff-chars: ${{ vars.MAX_DIFF_CHARS || '24000' }}
+          # Key and endpoint are set together on purpose. Falling back from one vendor's key to
+          # another vendor's default URL would 401 every persona lane.
+          llm-api-key: ${{ secrets.LLM_API_KEY || secrets.OPENROUTER_API_KEY }}
+          llm-base-url: ${{ vars.LLM_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
+          # scoped to this repository and cannot read or comment on another repository's PR.
+          github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Setup Node.js Environment
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Multi-Layer Caching
-        uses: actions/cache@v4
-        with:
-          path: |
-            node_modules
-            .next/cache
-            .cache
-            ~/.npm
-          key: ${{ runner.os }}-multi-layer-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-multi-layer-
-
-      - name: Fast Dependency Installation
-        run: npm ci --prefer-offline --no-audit
-
-      - name: Execute Review Pipeline
-        run: node .github/workflows/pipelines/review-pipeline.js
-
-      - name: Persist Session Logs (GitOps Ledger Commit)
+      - name: Report Verdict
         if: always()
         run: |
-          git config user.name "${{ env.BOT_NAME }}"
-          git config user.email "${{ env.BOT_EMAIL }}"
-          git add sessions/ || true
-          git commit -m "chrono(session): persist PR #${{ github.event.client_payload.pr_number || github.event.pull_request.number || 1 }} session turn log [skip ci]" || true
-          git push origin HEAD || true
+          echo "Verdict: ${{ steps.review.outputs.verdict }}"
+          echo "Findings: ${{ steps.review.outputs.findings-count }} (P0: ${{ steps.review.outputs.p0-count }}, P1: ${{ steps.review.outputs.p1-count }}, P2: ${{ steps.review.outputs.p2-count }})"
+
+      # Session logs are uploaded rather than committed. Pushing back into the checked-out
+      # repository fails on detached PR checkouts and cannot work for a cross-repo target.
+      - name: Upload Session Ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-ledger-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+          path: |
+            sessions/
+            review-comment.md
+          if-no-files-found: ignore
+          retention-days: 14
