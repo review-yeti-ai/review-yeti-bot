@@ -33,8 +33,15 @@ jobs:
       BOT_NAME: ${{ vars.BOT_NAME || 'review-bot[bot]' }}
       BOT_EMAIL: ${{ vars.BOT_EMAIL || 'bot@review-bot.internal' }}
 
-      # Workflow Execution & Model Routing Settings
+      # Model routing. Any OpenAI-compatible /chat/completions endpoint works; LLM_BASE_URL
+      # defaults to OpenRouter. Without a key the pipeline runs static heuristics and says so
+      # in the posted comment rather than passing them off as a model review.
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+      LLM_API_KEY: ${{ secrets.OPENROUTER_API_KEY || secrets.CT_REVIEW_OMNIROUTE_API_KEY }}
+      # Per-persona diff budget. This runs once per persona per push, so an unbounded diff
+      # multiplies straight into the bill.
+      MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '24000' }}
       ENABLE_FLOWCHART: ${{ vars.ENABLE_FLOWCHART || 'true' }}
       MAX_TURNS: ${{ vars.MAX_TURNS || '20' }}
       REASONING_EFFORT: ${{ vars.REASONING_EFFORT || 'low' }}
