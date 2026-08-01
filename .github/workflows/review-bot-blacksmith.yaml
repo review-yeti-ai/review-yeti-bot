@@ -18,7 +18,6 @@ jobs:
       # Whitelabel Branding & Git Commitment Variables
       BOT_NAME: ${{ vars.BOT_NAME || 'review-bot[bot]' }}
       BOT_EMAIL: ${{ vars.BOT_EMAIL || 'bot@review-bot.internal' }}
-      BOT_FOOTER: ${{ vars.BOT_FOOTER || 'Powered by Review Bot Engine & Blacksmith GitHub Action Runners' }}
 
       # Workflow Execution & Model Routing Settings
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
