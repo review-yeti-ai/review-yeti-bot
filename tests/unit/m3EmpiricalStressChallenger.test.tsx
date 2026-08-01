@@ -2,6 +2,14 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
 import { RepoTable } from '../../src/components/repos/repo-table';
 import { PersonaSelector, ALL_PERSONA_IDS, PERSONA_METADATA } from '../../src/components/settings/persona-selector';
 import { PRReviewDetailModal } from '../../src/components/dashboard/pr-review-detail-modal';

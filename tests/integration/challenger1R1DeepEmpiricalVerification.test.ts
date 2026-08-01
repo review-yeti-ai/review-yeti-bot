@@ -7,11 +7,9 @@ import { PlatformMemoryStore } from '../../src/memory/platformMemoryStore';
 import { SymbolGraphStore } from '../../src/indexer/symbolGraphStore';
 
 describe('Empirical Verification: R1 PostgreSQL Memory Storage & Dual-Store Fallback Logic', () => {
-  const originalEnv = { ...process.env };
   const tempTestDir = path.join(process.cwd(), 'data', 'test-challenger-r1-verification');
 
   beforeEach(() => {
-    process.env = { ...originalEnv };
     delete process.env.DATABASE_URL;
     delete process.env.POSTGRES_URL;
 
@@ -21,15 +19,16 @@ describe('Empirical Verification: R1 PostgreSQL Memory Storage & Dual-Store Fall
   });
 
   afterEach(async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
+    vi.restoreAllMocks();
     await postgresStore.close();
-    process.env = { ...originalEnv };
 
     if (fs.existsSync(tempTestDir)) {
       try {
         fs.rmSync(tempTestDir, { recursive: true, force: true });
       } catch {}
     }
-    vi.restoreAllMocks();
   });
 
   describe('1. Schema Auto-Migration Under Advisory Lock 1029384', () => {
