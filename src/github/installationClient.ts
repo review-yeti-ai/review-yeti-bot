@@ -1,4 +1,4 @@
-import { CommentPublisher, PublishReviewRequest, PublishResult } from './commentPublisher';
+import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -25,14 +25,34 @@ export class GitHubInstallationClient {
   private readonly baseUrl: string;
   private readonly token: string;
   private readonly publisher: CommentPublisher;
+  private readonly now: () => number;
+  private readonly fetchImplementation: FetchImplementation;
 
-  constructor(options: { token: string; baseUrl?: string }) {
+  constructor(options: {
+    token: string;
+    baseUrl?: string;
+    fetchImplementation?: FetchImplementation;
+    /** @deprecated Use fetchImplementation. */
+    fetchImpl?: FetchImplementation;
+    now?: () => number;
+    sleep?: (milliseconds: number) => Promise<void>;
+    random?: () => number;
+  }) {
     if (!options.token.startsWith('ghs_')) {
       throw new Error('GitHubInstallationClient requires a ghs_ installation token');
     }
     this.token = options.token;
     this.baseUrl = (options.baseUrl || 'https://api.github.com').replace(/\/+$/, '');
-    this.publisher = new CommentPublisher({ githubToken: options.token, baseUrl: this.baseUrl });
+    this.now = options.now || Date.now;
+    this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
+    this.publisher = new CommentPublisher({
+      githubToken: options.token,
+      baseUrl: this.baseUrl,
+      fetchImplementation: options.fetchImplementation || options.fetchImpl,
+      now: this.now,
+      sleep: options.sleep,
+      random: options.random,
+    });
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<any> {
@@ -42,7 +62,7 @@ export class GitHubInstallationClient {
     headers.set('User-Agent', 'ct-review-bot[bot]');
     headers.set('X-GitHub-Api-Version', '2022-11-28');
     if (init.body) headers.set('Content-Type', 'application/json');
-    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    const response = await this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers });
     const text = await response.text();
     const data = text ? JSON.parse(text) : {};
     if (!response.ok) throw new Error(`GitHub API ${response.status} ${path}: ${text}`);
@@ -114,7 +134,7 @@ export class GitHubInstallationClient {
       body: JSON.stringify({
         status: 'completed',
         conclusion: options.conclusion,
-        completed_at: new Date().toISOString(),
+        completed_at: new Date(this.now()).toISOString(),
         output: { title: options.title, summary: options.summary.slice(0, 65_000) },
       }),
     });

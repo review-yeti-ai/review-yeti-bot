@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://llm.test/replay?a=1&b=2",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "a": "first",
+          "b": 1
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "value": "first"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://llm.test/replay",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "a": "second",
+          "b": 2
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "value": "second"
+        }
+      }
+    }
+  ]
+}
