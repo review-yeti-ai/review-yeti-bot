@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'fs';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { OmniRouteClient, OmniRouteResponse, TokensUsed } from '../gateway/omniRouteClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
@@ -13,6 +14,8 @@ import { dashboardStore } from '../persistence/dashboardStore';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
+import { executeMillerTool } from '../services/millerTool';
+import { ASTParser } from '../indexer/astParser';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -486,12 +489,17 @@ async function invoke(
       content: `You are an automated fail-closed CallTelemetry PR review engine for ${repoStr}. Perform a rigorous code review for persona '${personaName}' based on the charter and diff provided.
 
 === MULTI-TURN EXPLORATION & TOOL INVOCATION PROTOCOL ===
-- You have access to Pi.dev exploration tools (read_file, search_code, get_diff) AND connected MCP tools (${mcpToolListStr}).
+- Permitted Tool Categories:
+  1. Code Reading: view_file, read_file, get_diff
+  2. AST Context: miller (Miller Tool)
+  3. Context Searching: grep_search, find_files, symbol_search, search_code
+  4. Dashboard MCPs: mcp_* or connected MCP tools (${mcpToolListStr})
 - You are granted up to ${maxTurns} execution turns for active codebase exploration.
 - Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.
 ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 `- ACTIVE DEEP EXPLORATION REQUIRED: Perform multi-turn tool calls to search symbol dependencies, inspect related imported files, verify caller/callee context, and audit cross-file contracts before rendering your final decision.` :
 `- Perform tool calls as needed to inspect file contents and verify code context.`}
+- NOTE: Non-read-only tools (file writing, shell execution, command tools) are strictly prohibited and will be rejected.
 - When tool execution is required, output a valid JSON block specifying the tool name and arguments.
 - You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`,
     },
@@ -530,23 +538,79 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
       if (toolCall && toolCall.tool) {
         turnsCount++;
-        let toolOutput = `Tool '${toolCall.tool}' execution result:\n`;
-        const targetPath = toolCall.args?.path || '';
-        const searchQ = toolCall.args?.query || '';
+        const tName = toolCall.tool;
+        const targetPath = toolCall.args?.path || toolCall.args?.filePath || '';
+        const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
 
-        if (toolCall.tool === 'read_file' || toolCall.tool === 'get_diff') {
-          const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
-          toolOutput += matched ? (matched.patch || matched.content || 'File present in PR scope.') : `File '${targetPath}' not in PR.`;
-        } else if (toolCall.tool === 'search_code') {
-          const hits = changedFiles.filter((f: any) => (f.patch || f.content || '').toLowerCase().includes(searchQ.toLowerCase()));
-          toolOutput += hits.length > 0 ? `Matches found in: ${hits.map((h: any) => h.path).join(', ')}` : `No matches for '${searchQ}'.`;
+        // Whitelist check: Code Reading, Miller, Context Searching, Dashboard MCPs
+        const isCodeReading = ['view_file', 'read_file', 'get_diff'].includes(tName);
+        const isMiller = tName === 'miller';
+        const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code'].includes(tName);
+        const availableMcpNames = availableMcpTools.map((t) => t.name);
+        const isMcp = tName.startsWith('mcp_') || availableMcpNames.includes(tName) || ['fetch_docs', 'context7_search', 'productlane_ticket', 'linear_close_issue'].includes(tName);
+
+        const isAllowed = isCodeReading || isMiller || isSearching || isMcp;
+
+        let toolOutput = '';
+
+        if (!isAllowed) {
+          toolOutput = `Tool '${tName}' execution rejected: Permission denied. Reviewer personas are restricted strictly to read-only code, Miller, search, and MCP tools.`;
         } else {
-          // Dispatch to MCP Fleet Manager for MCP tool execution (Context7, Productlane, Linear, custom MCP servers)
-          try {
-            const mcpResult = await mcpFleetManager.executeTool(toolCall.tool, toolCall.args || {});
-            toolOutput += mcpResult.success ? JSON.stringify(mcpResult.output, null, 2) : `MCP Error: ${mcpResult.error || 'Execution failed'}`;
-          } catch (err: any) {
-            toolOutput += `Tool '${toolCall.tool}' executed cleanly via Pi harness.`;
+          toolOutput = `Tool '${tName}' execution result:\n`;
+          if (isMiller) {
+            try {
+              const patch = toolCall.args?.patch || changedFiles.find((f: any) => f.path === targetPath)?.patch;
+              const millerRes = await executeMillerTool({
+                filePath: targetPath,
+                patch,
+                maxDepth: toolCall.args?.maxDepth,
+              });
+              toolOutput += millerRes.miller;
+            } catch (err: any) {
+              toolOutput += `Miller Tool Error: ${err.message || String(err)}`;
+            }
+          } else if (isCodeReading) {
+            const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
+            if (matched) {
+              toolOutput += matched.patch || matched.content || 'File present in PR scope.';
+            } else {
+              try {
+                if (targetPath && fs.existsSync(targetPath)) {
+                  toolOutput += fs.readFileSync(targetPath, 'utf8');
+                } else {
+                  toolOutput += `File '${targetPath}' not found in PR scope or local disk.`;
+                }
+              } catch (_) {
+                toolOutput += `File '${targetPath}' not in PR.`;
+              }
+            }
+          } else if (tName === 'search_code' || tName === 'grep_search') {
+            const hits = changedFiles.filter((f: any) => (f.patch || f.content || '').toLowerCase().includes(searchQ.toLowerCase()));
+            toolOutput += hits.length > 0 ? `Matches found in: ${hits.map((h: any) => h.path).join(', ')}` : `No matches for '${searchQ}'.`;
+          } else if (tName === 'find_files') {
+            const hits = changedFiles.filter((f: any) => f.path.toLowerCase().includes(searchQ.toLowerCase()));
+            toolOutput += hits.length > 0 ? `Files found: ${hits.map((h: any) => h.path).join(', ')}` : `No files found matching '${searchQ}'.`;
+          } else if (tName === 'symbol_search') {
+            const parser = new ASTParser();
+            const hits: string[] = [];
+            for (const f of changedFiles) {
+              if (f.patch || f.content) {
+                const res = parser.parseSource(f.path, f.content || f.patch || '');
+                const matchedSyms = res.symbols.filter((s) => s.name.toLowerCase().includes(searchQ.toLowerCase()));
+                if (matchedSyms.length > 0) {
+                  hits.push(`${f.path}: ${matchedSyms.map((s) => `${s.kind} ${s.name}`).join(', ')}`);
+                }
+              }
+            }
+            toolOutput += hits.length > 0 ? hits.join('\n') : `No symbols found matching '${searchQ}'.`;
+          } else {
+            // Dispatch to MCP Fleet Manager for MCP tool execution (Context7, Productlane, Linear, custom MCP servers)
+            try {
+              const mcpResult = await mcpFleetManager.executeTool(tName, toolCall.args || {});
+              toolOutput += mcpResult.success ? JSON.stringify(mcpResult.output, null, 2) : `MCP Error: ${mcpResult.error || 'Execution failed'}`;
+            } catch (err: any) {
+              toolOutput += `Tool '${tName}' executed cleanly via Pi harness.`;
+            }
           }
         }
 

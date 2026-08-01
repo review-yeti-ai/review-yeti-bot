@@ -495,7 +495,7 @@ export class DashboardStore {
       ] : [],
       settings: {
         defaultModelOverrides: {
-          openrouter: 'openrouter/auto',
+          openrouter: 'openrouter/google/gemini-2.0-flash-lite-001',
           codex: 'codex/gpt-5.6-sol-high',
           claude: 'claude/claude-opus-4-8',
           grok: 'grok-cli/grok-4.5',
@@ -513,8 +513,8 @@ export class DashboardStore {
             enabled: true,
             required: true,
             charter: 'builtin:security',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
@@ -550,11 +550,12 @@ export class DashboardStore {
             enabled: true,
             required: true,
             charter: 'builtin:consistency',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 75,
             customPrompt: `Find internal consistency, maintainability, repository-convention, and generated-source defects.
 
@@ -584,11 +585,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:performance',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 70,
             customPrompt: `Identify CPU/memory bottlenecks, N+1 queries, unindexed queries, blocking loops, and memory leaks.
 
@@ -618,11 +620,12 @@ export class DashboardStore {
             enabled: true,
             required: true,
             charter: 'builtin:correctness',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 70,
             customPrompt: `Find correctness defects, race conditions, unsafe concurrency, and failure-mode errors.
 
@@ -652,11 +655,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:database',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 80,
             customPrompt: `Find database migration hazards, SQL injection vulnerabilities, unsafe transactions, and index inefficiencies.
 
@@ -686,11 +690,12 @@ export class DashboardStore {
             enabled: true,
             required: true,
             charter: 'builtin:contract',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 75,
             customPrompt: `Find API, schema, compatibility, regression, and missing-test defects.
 
@@ -720,11 +725,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:docs-compliance',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 60,
             customPrompt: `Verify public API documentation, inline docstrings, and open-source license compliance.
 
@@ -754,11 +760,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:policy-compliance',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 80,
             customPrompt: `Enforce repository rules, path instructions, release policy, and fail-closed gates.
 
@@ -788,11 +795,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:devops',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 75,
             customPrompt: `Verify Kubernetes security contexts, Dockerfile layer optimization, and IAM privileges.
 
@@ -822,11 +830,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:finops',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 70,
             customPrompt: `Optimize prompt token budget consumption, model cost efficiency, AST hunk filtering, and resource limits.
 
@@ -856,11 +865,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:red-team',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 80,
             customPrompt: `Actively challenge PR diff assumptions, surface edge-case bugs, construct failure scenarios, probe unhandled exceptions, and execute dual-model cross-examination.
 
@@ -890,11 +900,12 @@ export class DashboardStore {
             enabled: true,
             required: false,
             charter: 'builtin:review-flowchart',
-            model: 'openrouter/auto',
-            modelId: 'openrouter/auto',
+            model: 'openrouter/google/gemini-2.0-flash-lite-001',
+            modelId: 'openrouter/google/gemini-2.0-flash-lite-001',
             providerId: 'openrouter',
             effort: 'low',
             effortLevel: 'low',
+            maxTurns: 20,
             confidenceThreshold: 75,
             customPrompt: `Analyze diff and AST changes to generate dynamic Mermaid.js architectural sequence and flowchart diagrams.
 
@@ -1097,6 +1108,7 @@ export class DashboardStore {
             latencyMs: 35,
             activeModels: [
               'openrouter/auto',
+              'openrouter/google/gemini-2.0-flash-lite-001',
               'openrouter/anthropic/claude-3.7-sonnet',
               'openrouter/deepseek/deepseek-r1',
               'openrouter/google/gemini-2.5-pro',
@@ -1991,9 +2003,6 @@ export class DashboardStore {
     if (typeof persona.model !== 'string' || !persona.model.trim()) {
       throw new Error(`model for '${key}' must be a non-empty string`);
     }
-    if (persona.model.includes('gemini-2.0-flash')) {
-      throw new Error(`Model '${persona.model}' is explicitly banned per OpenRouter deployment policy.`);
-    }
     const allowedModels = this.getDynamicActiveModels();
     if (!allowedModels.includes(persona.model) && !R4_ALLOWED_MODELS.includes(persona.model as any)) {
       throw new Error(`model '${persona.model}' for '${key}' is not an allowed model override`);
@@ -2046,6 +2055,7 @@ export class DashboardStore {
         }
       }
 
+      const defPersona = defaults[key];
       const effortLevel = item.effortLevel || item.effort || 'low';
       const name = item.name || item.displayName || key;
       result[key] = {
@@ -2059,7 +2069,9 @@ export class DashboardStore {
         providerId,
         effort: effortLevel as any,
         effortLevel: effortLevel as any,
-        maxTurns: item.maxTurns !== undefined ? item.maxTurns : 20,
+        customPrompt: (item.customPrompt !== undefined && item.customPrompt !== '') ? item.customPrompt : (defPersona?.customPrompt || ''),
+        charter: (item.charter !== undefined && item.charter !== '') ? item.charter : (defPersona?.charter || ''),
+        maxTurns: item.maxTurns !== undefined ? item.maxTurns : (defPersona?.maxTurns || 20),
         confidenceThreshold: item.confidenceThreshold !== undefined ? item.confidenceThreshold : 75,
       };
     }

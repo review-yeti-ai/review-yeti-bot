@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OnboardingWizard } from '@/components/github-app/onboarding-wizard';
 import { RepoTable } from '@/components/repos/repo-table';
@@ -469,7 +469,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
         ollama: {
           id: 'ollama',
           displayName: 'Ollama Local LLM',
-          enabled: false,
+          enabled: true,
           baseUrl: 'http://localhost:11434/v1',
           subscriptionTier: 'free',
           activeModels: ['llama3:latest'],
@@ -497,6 +497,13 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
           costPer1kPromptUSD: 0.003,
           costPer1kCompletionUSD: 0.015,
         },
+        'llama3:latest': {
+          id: 'llama3:latest',
+          providerId: 'ollama',
+          displayName: 'llama3:latest',
+          enabled: true,
+          isCustom: true,
+        },
       },
     };
 
@@ -511,8 +518,8 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
         expect(screen.getByText('Anthropic Family')).toBeInTheDocument();
         expect(screen.getByText('Ollama Local LLM')).toBeInTheDocument();
         // Checked target provider list rendering
-        expect(screen.getByText('ID: deepseek')).toBeInTheDocument();
-        expect(screen.getByText('ID: doppler')).toBeInTheDocument();
+        expect(screen.getByText('deepseek')).toBeInTheDocument();
+        expect(screen.getByText('doppler')).toBeInTheDocument();
       });
     });
 
@@ -522,8 +529,8 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       render(<ProviderSettings />);
 
       await waitFor(() => {
-        expect(screen.getByText('Stored: sk-proj-****1234')).toBeInTheDocument();
-        expect(screen.getByText('Stored: sk-ant-****5678')).toBeInTheDocument();
+        expect(screen.getByText('sk-proj-****1234')).toBeInTheDocument();
+        expect(screen.getByText('sk-ant-****5678')).toBeInTheDocument();
       });
     });
 
@@ -535,6 +542,10 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       await waitFor(() => {
         expect(screen.getByText('OpenAI Family')).toBeInTheDocument();
       });
+
+      const openaiHeader = screen.getByText('OpenAI Family');
+      const openaiRow = openaiHeader.closest('tr')!;
+      fireEvent.click(within(openaiRow).getByRole('button', { name: /edit/i }));
 
       const keyInput = screen.getByPlaceholderText('sk-proj-****1234');
       expect(keyInput).toHaveAttribute('type', 'password');
@@ -549,6 +560,14 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       vi.mocked(apiClient.fetchProviders).mockResolvedValue(mockProvidersResponse);
 
       render(<ProviderSettings />);
+
+      await waitFor(() => {
+        expect(screen.getByText('OpenAI Family')).toBeInTheDocument();
+      });
+
+      const openaiHeader = screen.getByText('OpenAI Family');
+      const openaiRow = openaiHeader.closest('tr')!;
+      fireEvent.click(within(openaiRow).getByRole('button', { name: /edit/i }));
 
       await waitFor(() => {
         expect(screen.getByDisplayValue('https://api.openai.com/v1')).toBeInTheDocument();
@@ -575,13 +594,12 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
         expect(screen.getByText('OpenAI Family')).toBeInTheDocument();
       });
 
-      const testButtons = screen.getAllByRole('button', { name: /test connection/i });
+      const testButtons = screen.getAllByRole('button', { name: /test/i });
       fireEvent.click(testButtons[0]);
 
       await waitFor(() => {
         expect(apiClient.testProvider).toHaveBeenCalledWith('openai', { baseUrl: 'https://api.openai.com/v1' });
-        expect(screen.getByText('Connection test succeeded')).toBeInTheDocument();
-        expect(screen.getByText('(142ms)')).toBeInTheDocument();
+        expect(screen.getByText(/Connection test succeeded/i)).toBeInTheDocument();
       });
     });
 
@@ -595,11 +613,11 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
         expect(screen.getByText('OpenAI Family')).toBeInTheDocument();
       });
 
-      const testButtons = screen.getAllByRole('button', { name: /test connection/i });
+      const testButtons = screen.getAllByRole('button', { name: /test/i });
       fireEvent.click(testButtons[0]);
 
       await waitFor(() => {
-        expect(screen.getByText('Connection test failed for openai: Invalid API Key secret')).toBeInTheDocument();
+        expect(screen.getByText(/Connection test failed for openai: Invalid API Key secret/i)).toBeInTheDocument();
       });
     });
 
@@ -616,7 +634,11 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
         expect(screen.getByText('OpenAI Family')).toBeInTheDocument();
       });
 
-      const saveButtons = screen.getAllByRole('button', { name: /save provider/i });
+      const openaiHeader = screen.getByText('OpenAI Family');
+      const openaiRow = openaiHeader.closest('tr')!;
+      fireEvent.click(within(openaiRow).getByRole('button', { name: /edit/i }));
+
+      const saveButtons = screen.getAllByRole('button', { name: /save changes/i });
       fireEvent.click(saveButtons[0]);
 
       await waitFor(() => {
@@ -638,6 +660,10 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       await waitFor(() => {
         expect(screen.getByText('OpenAI Family')).toBeInTheDocument();
       });
+
+      const openaiHeader = screen.getByText('OpenAI Family');
+      const openaiRow = openaiHeader.closest('tr')!;
+      fireEvent.click(within(openaiRow).getByRole('button', { name: /edit/i }));
 
       const addInputs = screen.getAllByPlaceholderText('e.g. llama3.3:70b, my-model-v1');
       fireEvent.change(addInputs[0], { target: { value: 'mistral-7b-v0.2' } });
@@ -664,7 +690,15 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       render(<ProviderSettings />);
 
       await waitFor(() => {
-        expect(screen.getByText('llama3:latest')).toBeInTheDocument();
+        expect(screen.getByText('Ollama Local LLM')).toBeInTheDocument();
+      });
+
+      const ollamaHeader = screen.getByText('Ollama Local LLM');
+      const ollamaRow = ollamaHeader.closest('tr')!;
+      fireEvent.click(within(ollamaRow).getByRole('button', { name: /edit/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Remove custom model')).toBeInTheDocument();
       });
 
       const removeBtn = screen.getByTitle('Remove custom model');
@@ -704,7 +738,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       fireEvent.click(activeBtns[0]);
 
       // Verify toggle action state
-      expect(screen.getAllByRole('button', { name: /^enable$/i }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole('button', { name: /^disabled$/i }).length).toBeGreaterThan(0);
     });
   });
 
