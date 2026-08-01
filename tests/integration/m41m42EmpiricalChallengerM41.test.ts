@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import { dashboardStore } from '../../src/persistence/dashboardStore';
 describe('Empirical Challenger M4_1: UI Routes, SSE Stream, Terminal Logs, Settings & Dark Mode Suite', () => {
   let app: any;
   let authToken = '';
+  const origAdminPassword = process.env.ADMIN_PASSWORD;
 
   beforeAll(async () => {
     process.env.WEBHOOK_SECRET = 'test_webhook_secret_m41';
@@ -20,6 +21,14 @@ describe('Empirical Challenger M4_1: UI Routes, SSE Stream, Terminal Logs, Setti
       .post('/api/auth/login')
       .send({ username: 'admin', password: 'admin_m41_pass' });
     authToken = loginRes.body.token || '';
+  });
+
+  afterAll(() => {
+    if (origAdminPassword === undefined) {
+      delete process.env.ADMIN_PASSWORD;
+    } else {
+      process.env.ADMIN_PASSWORD = origAdminPassword;
+    }
   });
 
   describe('1. UI Route & HTML Serving Verification (/dashboard/live and /dashboard/settings)', () => {
