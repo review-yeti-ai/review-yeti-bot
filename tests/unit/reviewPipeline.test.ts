@@ -16,9 +16,9 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     expect(content).toContain('#!/usr/bin/env node');
   });
 
-  it('2. Loads 12 persona charters with default model openrouter/google/gemini-2.0-flash-lite-001', () => {
+  it('2. Loads 12 persona charters with default model openrouter/auto', () => {
     const { PERSONA_CHARTERS, DEFAULT_MODEL } = pipeline;
-    expect(DEFAULT_MODEL).toBe('openrouter/google/gemini-2.0-flash-lite-001');
+    expect(DEFAULT_MODEL).toBe('openrouter/auto');
     expect(PERSONA_CHARTERS).toHaveLength(12);
 
     const expectedPersonas = [
@@ -40,7 +40,7 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     expect(actualPersonas).toEqual(expectedPersonas);
 
     PERSONA_CHARTERS.forEach((persona: any) => {
-      expect(persona.model).toBe('openrouter/google/gemini-2.0-flash-lite-001');
+      expect(persona.model).toBe('openrouter/auto');
       expect(persona.charter).toBeDefined();
       expect(persona.charter.length).toBeGreaterThan(10);
     });
@@ -124,7 +124,7 @@ index 123456..789abc 100644
     expect(formattedComment).toContain('## 🟢 **Verdict: SHIP**');
     expect(formattedComment).toContain('```mermaid');
     expect(formattedComment).toContain('flowchart TD');
-    expect(formattedComment).toContain('openrouter/google/gemini-2.0-flash-lite-001');
+    expect(formattedComment).toContain('openrouter/auto');
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
     expect(formattedComment).toContain('📄 License & IP Compliance');
   });
