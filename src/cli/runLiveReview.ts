@@ -20,10 +20,13 @@ async function main() {
 
   // Register Synthetic API provider into providerPool
   if (!providerPool.hasProvider('synthetic')) {
+    if (!process.env.SYNTHETIC_API_KEY) {
+      throw new Error('SYNTHETIC_API_KEY is not set. Export it, or provide it via Doppler; there is deliberately no baked-in fallback key.');
+    }
     providerPool.registerProvider({
       id: 'synthetic',
       type: 'synthetic',
-      apiKey: process.env.SYNTHETIC_API_KEY || 'syn_caed4a04054f3d66e707e63b31cae88e',
+      apiKey: process.env.SYNTHETIC_API_KEY,
       baseUrl: process.env.SYNTHETIC_BASE_URL || 'https://api.synthetic.com/v1',
       models: ['glm-5.2', 'synthetic/v1', 'synthetic/glm-5.2-high', 'synthetic-fast', 'synthetic-reasoning'],
     });
