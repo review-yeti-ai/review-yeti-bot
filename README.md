@@ -150,6 +150,38 @@ personas, and posts a single consolidated comment. It uses the workflow's built-
         run: exit 1
 ```
 
+### Which reviewers run
+
+Five reviewers apply to essentially any codebase and are **on by default**:
+
+`security` · `performance` · `architecture` · `testing` · `dependencies`
+
+Seven more are situational and **off by default**, because enabling them everywhere produces
+findings about internationalisation in single-language projects and licence headers in projects
+that use none:
+
+`style` · `documentation` · `accessibility` · `database` · `devops` · `i18n` · `licensing`
+
+Opt in by id, or ask for the lot with `all`:
+
+```yaml
+          personas: security,database,devops    # a specific set
+          personas: all                         # every built-in
+```
+
+### How verdicts are decided
+
+| Verdict | Condition |
+| :--- | :--- |
+| `BLOCK` | any P0, or P1 count reaching `max(3, reviewers / 2)` |
+| `FIX_FIRST` | any P1, or P2 count reaching `max(5, reviewers)` |
+| `SHIP` | everything else |
+
+Thresholds scale with the size of the panel. A fixed "three P1s blocks" was calibrated for
+sparse pattern matches; with a dozen reviewers each free to raise a concern it means nearly
+every pull request blocks, and a reviewer that always blocks gets ignored. The posted comment
+names the thresholds it applied.
+
 ### Defining your own reviewers
 
 Drop a `.ct-review.yaml` in the repository being reviewed to pick which personas run — and to
