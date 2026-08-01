@@ -150,6 +150,30 @@ personas, and posts a single consolidated comment. It uses the workflow's built-
         run: exit 1
 ```
 
+### Defining your own reviewers
+
+Drop a `.ct-review.yaml` in the repository being reviewed to pick which personas run — and to
+write reviewers that know your codebase's own rules:
+
+```yaml
+personas:
+  - id: security                        # a built-in
+  - id: style
+    enabled: false                      # turn one off
+  - id: tenancy                         # one of your own
+    name: "🏢 Multi-Tenant Isolation"
+    charter: |
+      Every query touching customer data must be scoped by orgId.
+      Flag any repository method accepting a raw id without a tenant bound.
+```
+
+A custom persona needs a `charter`; it becomes that reviewer's system prompt. Supplying a
+`charter` for a built-in id overrides its instructions instead. An id that is neither built-in
+nor given a charter fails the run rather than quietly reviewing nothing.
+
+See the [Configuration Reference](docs/CONFIGURATION_REFERENCE.md#persona-definition-personas)
+for the full key list.
+
 ### Central review repository (dispatch mode)
 
 Alternatively, keep personas, prompts and keys in one repository and have others dispatch

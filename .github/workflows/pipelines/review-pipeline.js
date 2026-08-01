@@ -745,19 +745,56 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
  * @param {object} env - Environment to read `ACTIVE_PERSONAS` from.
  * @returns {string[]} Persona ids in charter order.
  */
-function resolveActivePersonas(payload = {}, localConfig = null, env = process.env) {
-  const knownIds = PERSONA_CHARTERS.map((p) => p.id);
-  let selected = null;
+function resolvePersonaRoster(payload = {}, localConfig = null, env = process.env) {
+  const builtins = new Map(PERSONA_CHARTERS.map((p) => [p.id, p]));
+  const errors = [];
 
+  // Repository-defined personas. An entry supplying a charter either defines a new reviewer or
+  // overrides a built-in one; an entry without a charter may only reference a built-in.
+  const localEntries = Array.isArray(localConfig?.parsed?.personas) ? localConfig.parsed.personas : [];
+  const declared = new Map();
+
+  for (const entry of localEntries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const id = String(entry.id || entry.personaId || entry.name || '').trim();
+    if (!id) continue;
+
+    const charter = typeof entry.charter === 'string' ? entry.charter.trim() : '';
+
+    if (!charter && !builtins.has(id)) {
+      errors.push(
+        `Unknown persona id "${id}" in ${localConfig.file}. ` +
+        `Valid built-in ids: ${[...builtins.keys()].join(', ')}. ` +
+        `To define a custom persona, supply a charter describing what it should review.`
+      );
+      continue;
+    }
+    if (entry.charter !== undefined && !charter) {
+      errors.push(`Persona "${id}" in ${localConfig.file} declares an empty charter. Give it instructions or remove the key.`);
+      continue;
+    }
+
+    const builtin = builtins.get(id);
+    declared.set(id, {
+      persona: {
+        id,
+        name: entry.name || builtin?.name || `🔎 ${id}`,
+        model: entry.model || builtin?.model || DEFAULT_MODEL,
+        charter: charter || builtin.charter,
+      },
+      enabled: entry.enabled !== false,
+    });
+  }
+
+  // Selection source, most specific first.
+  let selected = null;
   if (Array.isArray(payload?.activePersonas)) {
     selected = payload.activePersonas;
   } else if (payload?.personaSettings && typeof payload.personaSettings === 'object') {
     selected = Object.keys(payload.personaSettings)
       .filter((k) => payload.personaSettings[k]?.enabled !== false);
-  } else if (Array.isArray(localConfig?.parsed?.personas)) {
-    selected = localConfig.parsed.personas
-      .filter((p) => p && p.enabled !== false)
-      .map((p) => p.id || p.personaId || p.name);
+  } else if (declared.size > 0) {
+    selected = [...declared.entries()].filter(([, v]) => v.enabled).map(([id]) => id);
   } else if (typeof env.ACTIVE_PERSONAS === 'string' && env.ACTIVE_PERSONAS.trim()) {
     const raw = env.ACTIVE_PERSONAS.trim();
     try {
@@ -769,10 +806,34 @@ function resolveActivePersonas(payload = {}, localConfig = null, env = process.e
     }
   }
 
-  if (selected === null) return knownIds;
+  // Unconfigured means every built-in, plus anything the repository defined.
+  if (selected === null) {
+    selected = [...builtins.keys(), ...[...declared.keys()].filter((id) => !builtins.has(id))];
+  }
 
-  const wanted = new Set(selected.filter((id) => typeof id === 'string').map((id) => id.trim()));
-  return knownIds.filter((id) => wanted.has(id));
+  const personas = [];
+  for (const raw of selected) {
+    if (typeof raw !== 'string') continue;
+    const id = raw.trim();
+    if (!id) continue;
+
+    const local = declared.get(id);
+    if (local) {
+      if (local.enabled) personas.push(local.persona);
+      continue;
+    }
+    if (builtins.has(id)) {
+      personas.push(builtins.get(id));
+      continue;
+    }
+    // A typo must not quietly halve review coverage, so this is fatal rather than skipped.
+    errors.push(
+      `Unknown persona id "${id}". Valid built-in ids: ${[...builtins.keys()].join(', ')}. ` +
+      `To define a custom persona, declare it in .ct-review.yaml with a charter.`
+    );
+  }
+
+  return { personas, errors };
 }
 
 /**
@@ -1057,10 +1118,21 @@ async function main() {
 
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
-  const activePersonaIds = resolveActivePersonas(payload, localConfig, process.env);
-  const enabledPersonas = PERSONA_CHARTERS.filter(p => activePersonaIds.includes(p.id));
+  const roster = resolvePersonaRoster(payload, localConfig, process.env);
 
-  console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) out of ${PERSONA_CHARTERS.length} total with model ${DEFAULT_MODEL}...`);
+  // A misconfigured roster must never fall through to a green verdict: an unknown id used to
+  // yield zero personas and a cheerful SHIP, which reads exactly like a passing review.
+  if (roster.errors.length > 0) {
+    console.error('[Personas] Reviewer configuration is invalid:');
+    for (const e of roster.errors) console.error(`  - ${e}`);
+    console.error('[Personas] Refusing to post a verdict from a misconfigured roster.');
+    process.exitCode = 1;
+    return;
+  }
+
+  const enabledPersonas = roster.personas;
+  const customCount = enabledPersonas.filter(p => !PERSONA_CHARTERS.some(b => b.id === p.id)).length;
+  console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) with model ${DEFAULT_MODEL}${customCount ? ` (${customCount} repository-defined)` : ''}...`);
 
   let personaResults = [];
   let arbitration = null;
@@ -1145,8 +1217,10 @@ async function main() {
 
 if (require.main === module) {
   main().catch((err) => {
+    // Exit non-zero. Swallowing a crash into a green check is indistinguishable from a clean
+    // review, which is the worst outcome available to a review tool.
     console.error('Fatal error during review pipeline execution:', err);
-    process.exit(0);
+    process.exit(1);
   });
 }
 
@@ -1155,7 +1229,7 @@ module.exports = {
   DEFAULT_MODEL,
   parseDiff,
   getPRDiffAndContext,
-  resolveActivePersonas,
+  resolvePersonaRoster,
   resolveModelConfig,
   reviewWithModel,
   parseFindingsPayload,
