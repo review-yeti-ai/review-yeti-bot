@@ -17,6 +17,10 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_MODEL: 'openrouter/auto'
+      ENABLE_FLOWCHART: 'true'
+      MAX_TURNS: '20'
+      REASONING_EFFORT: 'low'
     steps:
       - name: Checkout Repository (Blacksmith Git Caching)
         uses: useblacksmith/checkout@v1
