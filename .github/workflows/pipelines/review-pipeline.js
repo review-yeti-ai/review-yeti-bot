@@ -316,8 +316,17 @@ async function initMcpFleet(clientPayload) {
  * Evaluates a single persona charter against changed files.
  * Performs deep pattern analysis and charter verification.
  */
-async function evaluatePersonaLane(persona, diffFiles, prContext) {
+async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext) {
   const findings = [];
+
+  // Composable multi-turn context header prepended at the top of all persona prompts
+  let promptHeader = '';
+  if (sessionContext?.augmentedHeader) {
+    promptHeader = `${sessionContext.augmentedHeader}\n\n`;
+    console.log(`[Persona ${persona.id}] Prepended multi-turn session ledger context header to prompt.`);
+  }
+
+  const activeCharter = `${promptHeader}${persona.charter || ''}`;
 
   for (const file of diffFiles) {
     const patch = file.patch || '';
@@ -651,7 +660,6 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     });
   }
 
-const BOT_FOOTER = process.env.BOT_FOOTER || 'Powered by Review Bot Engine & Blacksmith GitHub Action Runners';
   const commentMarkdown = `## ${verdictBadge}
 
 ### 📊 PI.dev Review Quorum Summary
@@ -671,10 +679,7 @@ ${mermaidLines.join('\n')}
 | Reviewer Persona | Model | Decision | Findings |
 |---|---|---|---|
 ${breakdownRows}
-${findingsDetails}
-
----
-*${BOT_FOOTER}*`;
+${findingsDetails}`;
 
   return commentMarkdown;
 }
@@ -756,6 +761,20 @@ async function main() {
   const prContext = getPRDiffAndContext();
   console.log(`[Context] Repo: ${prContext.repo} | PR #: ${prContext.prNumber || 'N/A'} | SHA: ${prContext.headSha.slice(0, 7)}`);
 
+  let sessionContext = null;
+  if (SessionLedger) {
+    try {
+      const ledger = new SessionLedger();
+      const repoParts = prContext.repo.split('/');
+      const owner = repoParts.length > 1 ? repoParts[0] : 'calltelemetry';
+      const repoName = repoParts.length > 1 ? repoParts[1] : prContext.repo;
+      sessionContext = ledger.getPreviousTurnContext(owner, repoName, prContext.prNumber || 1);
+      if (sessionContext?.hasHistory) {
+        console.log(`[Session] Loaded previous review history (Turn ${sessionContext.previousTurn}). Remaining turn budget: ${sessionContext.remainingTurns}`);
+      }
+    } catch (_) {}
+  }
+
   const localConfig = loadLocalRepoConfig();
 
   const mcpFleetInfo = await initMcpFleet(prContext.eventData?.client_payload);
@@ -804,7 +823,7 @@ async function main() {
   } else {
     console.log('[Parallel Evaluation] Launching parallel persona lane evaluations...');
     personaResults = await Promise.all(
-      enabledPersonas.map((persona) => evaluatePersonaLane(persona, diffFiles, prContext))
+      enabledPersonas.map((persona) => evaluatePersonaLane(persona, diffFiles, prContext, sessionContext))
     );
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
