@@ -79,6 +79,8 @@ export interface PublishReviewRequest {
   body: string;
   inlineComments?: PublishInlineCommentRequest[];
   mascot?: boolean;
+  /** Stable marker used to make reruns and ambiguous POST outcomes idempotent. */
+  idempotencyKey?: string;
 }
 
 export interface PublishResult {
@@ -250,6 +252,31 @@ export class CommentPublisher {
     throw new Error('Max retries reached during GitHub API request');
   }
 
+  private async findExistingReview(marker: string, owner: string, repo: string, prNumber: number): Promise<number | undefined> {
+    const endpoints = [
+      `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100`,
+      `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
+    ];
+    for (const endpoint of endpoints) {
+      try {
+        const response = await this.fetchWithRetry(endpoint, { method: 'GET' });
+        if (!response.ok) continue;
+        const data = await response.json();
+        if (!Array.isArray(data)) continue;
+        const existing = data.find((entry: any) => typeof entry?.body === 'string' && entry.body.includes(marker));
+        if (existing && Number.isFinite(Number(existing.id))) return Number(existing.id);
+      } catch (error: any) {
+        logger.warn('Unable to inspect existing review marker; continuing with publication', {
+          owner,
+          repo,
+          prNumber,
+          error: error?.message || String(error),
+        });
+      }
+    }
+    return undefined;
+  }
+
   public async publishReview(req: PublishReviewRequest): Promise<PublishResult> {
     const { owner, repo, prNumber, commitSha, event, body, inlineComments = [] } = req;
     let commentsCreated = 0;
@@ -263,7 +290,20 @@ export class CommentPublisher {
       const orgDashboardUrl = getOrgDashboardUrl(dashboardDomain);
 
       const dashboardFooter = formatDashboardFooter(liveStreamUrl, orgDashboardUrl);
-      const finalBody = body.includes(liveStreamUrl) || body.includes('Live Terminal Dashboard') || body.includes(dashboardFooter) ? body : body + dashboardFooter;
+      const marker = req.idempotencyKey
+        ? `<!-- ct-review-bot:v1:${owner}/${repo}#${prNumber}:${commitSha}:${req.idempotencyKey} -->`
+        : '';
+      const bodyWithMarker = marker && !body.includes(marker) ? `${body}\n\n${marker}` : body;
+      const finalBody = bodyWithMarker.includes(liveStreamUrl) || bodyWithMarker.includes('Live Terminal Dashboard') || bodyWithMarker.includes(dashboardFooter)
+        ? bodyWithMarker
+        : bodyWithMarker + dashboardFooter;
+
+      if (marker) {
+        const existingReviewId = await this.findExistingReview(marker, owner, repo, prNumber);
+        if (existingReviewId !== undefined) {
+          return { success: true, reviewId: existingReviewId, commentsCreated: 0 };
+        }
+      }
 
       const payload = {
         body: finalBody,

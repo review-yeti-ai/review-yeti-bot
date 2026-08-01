@@ -24,10 +24,15 @@
 Review-bot external boundaries follow the deterministic operator patterns used by `ct-pr-operator`:
 
 - HTTP clients and model calls accept injectable fetch implementations. Retry clocks, sleeps, and jitter are injectable as well.
+- The live review engine uses OpenRouter as its sole model transport. Legacy OmniRoute variables are not a provider fallback.
 - Fixtures are synthetic, deterministic, credential-free, and bind review assertions to the exact PR head and base references.
+- Every action/app run re-checks the authoritative PR head before model execution and before each publication side effect.
 - Replay is the default and is fail-closed: an unmatched request throws immediately and `assertComplete()` rejects unconsumed interactions.
 - Replay tests do not permit real GitHub, model-provider, or other network traffic. The cassettes under `tests/fixtures/cassettes/` are the complete boundary.
 - Provider failures, malformed provider JSON, and incomplete persona quorum must never become a successful `SHIP` verdict.
+- Optional persona/provider failures are treated as infrastructure failure by the production webhook path; they cannot be recorded as a green lane.
+- Reviewer tool execution is read-only and limited to changed-file context plus approved documentation search. Arbitrary local paths, shell, Linear, Productlane, GitHub, and custom MCP writes are rejected.
+- GitHub publication bodies carry a stable exact-head idempotency marker so reruns do not duplicate inline findings or fallback comments.
 - GitHub publication and shell side effects require explicit command-boundary tests. The `gh pr comment` invocation is tested with an injected command runner and filesystem adapter.
 
 Run the replay suite without credentials or network access:

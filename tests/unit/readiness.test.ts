@@ -10,21 +10,14 @@ describe('review bot readiness', () => {
     vi.restoreAllMocks();
   });
 
-  it('depends on OmniRoute health, not catalog advertisement of every exact route', async () => {
+  it('requires an OpenRouter key for review execution readiness', async () => {
     const privateKey = generateKeyPairSync('rsa', { modulusLength: 2048 })
       .privateKey.export({ type: 'pkcs8', format: 'pem' })
       .toString();
     vi.stubEnv('GITHUB_APP_ID', '4385771');
     vi.stubEnv('GITHUB_APP_PRIVATE_KEY', privateKey);
     vi.stubEnv('WEBHOOK_SECRET', 'test-webhook-secret');
-    vi.stubEnv('OMNIROUTE_BASE_URL', 'http://omniroute.test');
-
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      status: 'healthy',
-      cryptography: { status: 'healthy' },
-      providerSummary: { configuredCount: 9, activeCount: 8 },
-    }), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('OPENROUTER_API_KEY', 'test-openrouter-key');
 
     const response = await request(createApp()).get('/ready');
 
@@ -32,7 +25,7 @@ describe('review bot readiness', () => {
     expect(response.body).toMatchObject({
       status: 'ready',
       configurationReady: true,
-      omniRouteReady: true,
+      openRouterReady: true,
     });
   });
 });
