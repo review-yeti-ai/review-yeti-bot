@@ -63,16 +63,14 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const prompt = opts.messages[1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
-      const allMsg = JSON.stringify(opts.messages);
-
-      if (allMsg.includes('arbiter')) {
+      if (prompt.includes('Role: ARBITER')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes cleanly' })}\nCT_REVIEW_END:${nonce}`,
           usage: { prompt: 15, completion: 15, total: 30 },
           costUSD: 0.0002,
         };
-      } else if (allMsg.includes('moderator')) {
+      } else if (prompt.includes('Role: MODERATOR')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
@@ -109,16 +107,14 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const prompt = opts.messages[1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
-      const allMsg = JSON.stringify(opts.messages);
-
-      if (allMsg.includes('arbiter')) {
+      if (prompt.includes('Role: ARBITER')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes' })}\nCT_REVIEW_END:${nonce}`,
           usage: null,
           costUSD: null,
         };
-      } else if (allMsg.includes('moderator')) {
+      } else if (prompt.includes('Role: MODERATOR')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
@@ -214,16 +210,14 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const prompt = opts.messages[1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
-      const allMsg = JSON.stringify(opts.messages);
-
-      if (allMsg.includes('arbiter')) {
+      if (prompt.includes('Role: ARBITER')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'BLOCK', rationale: 'Critical security violation blocks merge.' })}\nCT_REVIEW_END:${nonce}`,
           usage: null,
           costUSD: null,
         };
-      } else if (allMsg.includes('moderator')) {
+      } else if (prompt.includes('Role: MODERATOR')) {
         return {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,

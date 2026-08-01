@@ -9,6 +9,7 @@ export type LiveStreamEventType =
   | 'llm:prompt'
   | 'llm:token'
   | 'omniroute:metric'
+  | 'openrouter:metric'
   | 'ast:lookup'
   | 'nit:suppression'
   | 'job:queued'

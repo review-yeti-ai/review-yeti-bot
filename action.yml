@@ -9,12 +9,11 @@ branding:
 inputs:
   llm-api-key:
     description: >-
-      API key for an OpenAI-compatible chat completions endpoint. Without it the action runs
-      static heuristic checks and labels the posted comment as such.
+      OpenRouter API key. Without it the action fails closed and posts no successful verdict.
     required: false
     default: ''
   llm-base-url:
-    description: 'Base URL of an OpenAI-compatible API. Set this alongside llm-api-key when using a provider other than OpenRouter.'
+    description: 'Optional OpenRouter-compatible base URL. Defaults to https://openrouter.ai/api/v1.'
     required: false
     default: 'https://openrouter.ai/api/v1'
   model:
@@ -58,7 +57,7 @@ inputs:
 
 outputs:
   verdict:
-    description: 'SHIP, FIX_FIRST or BLOCK.'
+    description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely.'
     value: ${{ steps.review.outputs.verdict }}
   findings-count:
     description: 'Total findings across all personas.'
@@ -173,8 +172,8 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        LLM_API_KEY: ${{ inputs.llm-api-key }}
-        LLM_BASE_URL: ${{ inputs.llm-base-url }}
+        OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
+        OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}

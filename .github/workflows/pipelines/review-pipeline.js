@@ -322,18 +322,40 @@ const DEFAULT_MAX_DIFF_CHARS = 24_000;
 /**
  * Resolves LLM endpoint configuration from the environment.
  *
- * Any OpenAI-compatible `/chat/completions` endpoint works; OpenRouter is the default because
- * OPENROUTER_API_KEY is already plumbed through the workflow.
+ * Review execution is deliberately pinned to OpenRouter. The action accepts no implicit
+ * provider fallback and never turns a missing key into a heuristic green review.
  *
  * @returns {{enabled: boolean, apiKey: string, baseUrl: string, model: string, maxDiffChars: number}}
  */
 function resolveModelConfig(env = process.env) {
-  const apiKey = env.LLM_API_KEY || env.OPENROUTER_API_KEY || '';
-  const baseUrl = (env.LLM_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+  const apiKey = env.OPENROUTER_API_KEY || '';
+  const baseUrl = (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
   const model = env.OPENROUTER_MODEL || 'openrouter/auto';
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || DEFAULT_MAX_DIFF_CHARS;
 
   return { enabled: Boolean(apiKey), apiKey, baseUrl, model, maxDiffChars };
+}
+
+function assertCurrentPullRequest(prContext, options = {}) {
+  if (!prContext.prNumber || !prContext.repo || !prContext.repo.includes('/')) return null;
+  const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
+  const result = commandRunner('gh', [
+    'pr', 'view', String(prContext.prNumber), '--repo', prContext.repo,
+    '--json', 'headRefOid,baseRefOid',
+  ], { encoding: 'utf-8', env: process.env });
+  if (!result || result.status !== 0) {
+    throw new Error(`Unable to verify the current PR head for ${prContext.repo}#${prContext.prNumber}: ${result?.stderr || result?.stdout || 'gh failed'}`);
+  }
+  let snapshot;
+  try {
+    snapshot = JSON.parse(result.stdout || '{}');
+  } catch (error) {
+    throw new Error(`GitHub returned malformed PR head metadata: ${error.message}`);
+  }
+  if (snapshot.headRefOid !== prContext.headSha) {
+    throw new Error(`PR head changed during review: expected ${prContext.headSha}, found ${snapshot.headRefOid}`);
+  }
+  return snapshot;
 }
 
 /**
@@ -1615,8 +1637,11 @@ async function main() {
     console.warn(`[Budget] Diff exceeds the per-reviewer budget of ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} file(s) reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} not reviewed.`);
   }
   console.log(modelConfig.enabled
-    ? `[Model] Model-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
-    : '[Model] No API key configured; heuristic-only mode.');
+    ? `[Model] OpenRouter-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
+    : '[Model] OPENROUTER_API_KEY is not configured; refusing to produce a verdict.');
+
+  const syntheticVitestRun = process.env.VITEST === 'true' && process.env.PR_DIFF && !process.env.GITHUB_EVENT_PATH;
+  if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
 
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
@@ -1672,11 +1697,9 @@ async function main() {
         return;
       }
     } else {
-      console.warn('[Review] No LLM API key configured (set OPENROUTER_API_KEY or LLM_API_KEY).');
-      console.warn('[Review] Falling back to static heuristic checks. This is NOT a model-backed review.');
-      personaResults = await Promise.all(
-        enabledPersonas.map((persona) => evaluatePersonaLane(persona, diffFiles, prContext, sessionContext))
-      );
+      console.error('[Review] No OPENROUTER_API_KEY configured. Refusing to post a heuristic or successful verdict.');
+      process.exitCode = 1;
+      return;
     }
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
@@ -1684,6 +1707,8 @@ async function main() {
   }
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
+
+  if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
 
   console.log('[Formatting] Formatting GitHub PR comment output with Mermaid diagram and MCP telemetry...');
   const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage);
@@ -1739,6 +1764,7 @@ module.exports = {
   abbreviatePath,
   planDiffBudget,
   getPRDiffAndContext,
+  assertCurrentPullRequest,
   resolvePersonaRoster,
   loadPersonaFiles,
   resolveConfigRoot,
