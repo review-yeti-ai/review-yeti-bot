@@ -12,30 +12,31 @@ const pipeline = require(pipelinePath);
 const workflowPath = path.join(rootRepoDir, '.github/workflows/review-bot-blacksmith.yaml');
 
 describe('Dispatch path: persona resolution defaults', () => {
-  const { resolveActivePersonas, PERSONA_CHARTERS } = pipeline;
+  const { resolvePersonaRoster, PERSONA_CHARTERS } = pipeline;
   const allIds = PERSONA_CHARTERS.map((p: any) => p.id);
+  const ids = (payload: any, cfg: any, env: any) =>
+    resolvePersonaRoster(payload, cfg, env).personas.map((p: any) => p.id);
 
   it('defaults to all 12 personas when nothing is configured', () => {
-    expect(resolveActivePersonas({}, null, {})).toEqual(allIds);
+    expect(ids({}, null, {})).toEqual(allIds);
   });
 
   it('defaults to all 12 personas when ACTIVE_PERSONAS is the literal string "null"', () => {
     // GitHub Actions renders toJson(<missing>) as the string "null" on pull_request events.
-    expect(resolveActivePersonas({}, null, { ACTIVE_PERSONAS: 'null' })).toEqual(allIds);
+    expect(ids({}, null, { ACTIVE_PERSONAS: 'null' })).toEqual(allIds);
   });
 
   it('defaults to all 12 personas when ACTIVE_PERSONAS is empty or whitespace', () => {
-    expect(resolveActivePersonas({}, null, { ACTIVE_PERSONAS: '' })).toEqual(allIds);
-    expect(resolveActivePersonas({}, null, { ACTIVE_PERSONAS: '   ' })).toEqual(allIds);
+    expect(ids({}, null, { ACTIVE_PERSONAS: '' })).toEqual(allIds);
+    expect(ids({}, null, { ACTIVE_PERSONAS: '   ' })).toEqual(allIds);
   });
 
   it('honors an explicit activePersonas array from the dispatch client_payload', () => {
-    const payload = { activePersonas: ['security', 'devops'] };
-    expect(resolveActivePersonas(payload, null, {})).toEqual(['security', 'devops']);
+    expect(ids({ activePersonas: ['security', 'devops'] }, null, {})).toEqual(['security', 'devops']);
   });
 
   it('honors an explicit empty activePersonas array as a real opt-out', () => {
-    expect(resolveActivePersonas({ activePersonas: [] }, null, {})).toEqual([]);
+    expect(ids({ activePersonas: [] }, null, {})).toEqual([]);
   });
 
   it('honors personaSettings toggles from the dispatch client_payload', () => {
@@ -46,7 +47,7 @@ describe('Dispatch path: persona resolution defaults', () => {
         testing: {},
       },
     };
-    expect(resolveActivePersonas(payload, null, {})).toEqual(['security', 'testing']);
+    expect(ids(payload, null, {})).toEqual(['security', 'testing']);
   });
 
   it('honors a personas: array from local .ct-review.yaml', () => {
@@ -54,15 +55,17 @@ describe('Dispatch path: persona resolution defaults', () => {
       file: '.ct-review.yaml',
       parsed: { personas: [{ id: 'security' }, { id: 'style', enabled: false }, { id: 'database' }] },
     };
-    expect(resolveActivePersonas({}, localConfig, {})).toEqual(['security', 'database']);
+    expect(ids({}, localConfig, {})).toEqual(['security', 'database']);
   });
 
   it('accepts a comma-separated ACTIVE_PERSONAS string', () => {
-    expect(resolveActivePersonas({}, null, { ACTIVE_PERSONAS: 'security, devops' })).toEqual(['security', 'devops']);
+    expect(ids({}, null, { ACTIVE_PERSONAS: 'security, devops' })).toEqual(['security', 'devops']);
   });
 
-  it('ignores unknown persona ids rather than silently reviewing nothing', () => {
-    expect(resolveActivePersonas({ activePersonas: ['security', 'astrology'] }, null, {})).toEqual(['security']);
+  it('rejects unknown persona ids rather than silently reviewing nothing', () => {
+    const r = resolvePersonaRoster({ activePersonas: ['security', 'astrology'] }, null, {});
+    expect(r.errors.length).toBeGreaterThan(0);
+    expect(r.errors[0]).toContain('astrology');
   });
 });
 
