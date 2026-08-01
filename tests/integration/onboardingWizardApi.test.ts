@@ -28,6 +28,23 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
     app = createApp();
     const keyRecord = dashboardStore.createApiKey(`test-key-${Date.now()}`);
     validApiKey = keyRecord.rawKey;
+
+    const testProviders = ['openai', 'anthropic', 'google', 'groq', 'xai', 'gemini', 'codex', 'grok', 'claude'];
+    const getKey = (p: string) => {
+      if (p === 'anthropic' || p === 'claude') return 'sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2';
+      if (p === 'google' || p === 'gemini') return 'AIzaSya1b2c3d4e5f6g7h8i9j0k1l2';
+      if (p === 'grok' || p === 'xai') return 'xai-a1b2c3d4e5f6g7h8i9j0k1l2';
+      if (p === 'groq') return 'gsk_a1b2c3d4e5f6g7h8i9j0k1l2';
+      return 'sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2';
+    };
+    for (const p of testProviders) {
+      dashboardStore.updateProviderConfig(p, {
+        status: 'connected',
+        apiKeyRaw: getKey(p),
+        enabled: true,
+        active: true,
+      });
+    }
   });
 
   // =========================================================================

@@ -1,16 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PRMemoryStore } from '../../src/memory/prMemoryStore';
+import { postgresStore } from '../../src/persistence/postgresStore';
 
 describe('PRMemoryStore Unit Tests', () => {
   let store: PRMemoryStore;
 
   beforeEach(() => {
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
     store = new PRMemoryStore(':memory:');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
+    vi.restoreAllMocks();
+    await postgresStore.close();
     store.close();
   });
 
@@ -140,7 +147,7 @@ describe('PRMemoryStore Unit Tests', () => {
   });
 
   it('dual-writes memory concepts to both PostgreSQL and SQLite when DATABASE_URL is configured', async () => {
-    const { postgresStore } = await import('../../src/persistence/postgresStore');
+    process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/postgres';
     vi.spyOn(postgresStore, 'isConfigured').mockReturnValue(true);
     const saveRuleSpy = vi.spyOn(postgresStore, 'saveLearnedRule').mockResolvedValue(undefined);
     const saveNitSpy = vi.spyOn(postgresStore, 'saveSuppressedNit').mockResolvedValue(undefined);
@@ -172,13 +179,10 @@ describe('PRMemoryStore Unit Tests', () => {
 
     await store.recordFeedback('repo-dual', 'looks good', 'positive');
     expect(saveFbSpy).toHaveBeenCalledWith(expect.objectContaining({ comment: 'looks good', feedbackType: 'positive' }));
-
-    vi.restoreAllMocks();
   });
 
   it('seamlessly falls back to local SQLite when PostgreSQL query fails or throws', async () => {
-    const { postgresStore } = await import('../../src/persistence/postgresStore');
-
+    process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/postgres';
     // Populate local SQLite
     await store.recordLearning('repo-fallback', 1, {
       category: 'convention',
@@ -192,7 +196,6 @@ describe('PRMemoryStore Unit Tests', () => {
     const result = await store.queryLearnings('repo-fallback');
     expect(result.learnings.length).toBe(1);
     expect(result.learnings[0].title).toBe('SQLite Local Learning');
-
-    vi.restoreAllMocks();
   });
 });
+

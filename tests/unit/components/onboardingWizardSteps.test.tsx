@@ -33,6 +33,8 @@ vi.mock('@/lib/api-client', () => ({
 describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(apiClient.fetchPersonas).mockResolvedValue({});
+    vi.mocked(apiClient.fetchProviders).mockResolvedValue({ success: true, providers: {}, models: [], modelRegistry: {} });
   });
 
   // =========================================================================

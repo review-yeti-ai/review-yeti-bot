@@ -17,13 +17,22 @@ describe('Milestone 18: Follow-up PR Personas Engine', () => {
   };
 
   const mockGithub: any = {
-    getChangedFiles: vi.fn().mockResolvedValue([{ path: 'src/app.ts' }]),
-    getBranchRef: vi.fn().mockResolvedValue('main-ref-sha'),
-    createBranch: vi.fn().mockResolvedValue(undefined),
-    createOrUpdateFile: vi.fn().mockResolvedValue({ sha: 'file-sha' }),
-    createPullRequest: vi.fn().mockResolvedValue({ number: 108, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/108' }),
-    postIssueComment: vi.fn().mockResolvedValue(undefined),
+    getChangedFiles: vi.fn(),
+    getBranchRef: vi.fn(),
+    createBranch: vi.fn(),
+    createOrUpdateFile: vi.fn(),
+    createPullRequest: vi.fn(),
+    postIssueComment: vi.fn(),
   };
+
+  beforeEach(() => {
+    mockGithub.getChangedFiles.mockResolvedValue([{ path: 'src/app.ts' }]);
+    mockGithub.getBranchRef.mockResolvedValue('main-ref-sha');
+    mockGithub.createBranch.mockResolvedValue(undefined);
+    mockGithub.createOrUpdateFile.mockResolvedValue({ sha: 'file-sha' });
+    mockGithub.createPullRequest.mockResolvedValue({ number: 108, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/108' });
+    mockGithub.postIssueComment.mockResolvedValue(undefined);
+  });
 
   describe('docsPersona', () => {
     it('generates follow-up documentation PR', async () => {
