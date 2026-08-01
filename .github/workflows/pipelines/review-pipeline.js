@@ -730,7 +730,7 @@ async function main() {
 
   const enabledPersonas = activePersonaIds !== null
     ? PERSONA_CHARTERS.filter(p => activePersonaIds.includes(p.id))
-    : PERSONA_CHARTERS;
+    : [];
 
   console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) out of 12 total with model ${DEFAULT_MODEL}...`);
 
