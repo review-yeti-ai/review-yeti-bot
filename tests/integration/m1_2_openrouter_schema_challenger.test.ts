@@ -49,7 +49,7 @@ describe('Milestone 1 (R4) — OpenRouter Default Model & Schema Validation Stre
   });
 
   describe('2. OpenRouter Default Model Clean Validation Pass', () => {
-    const openrouterModel = 'openrouter/google/gemini-2.0-flash-lite-001';
+    const openrouterModel = 'openrouter/auto';
 
     it('personaSchema validates persona override using openrouter model', () => {
       const persona = {
