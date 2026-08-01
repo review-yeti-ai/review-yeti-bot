@@ -171,6 +171,38 @@ A custom persona needs a `charter`; it becomes that reviewer's system prompt. Su
 `charter` for a built-in id overrides its instructions instead. An id that is neither built-in
 nor given a charter fails the run rather than quietly reviewing nothing.
 
+#### One file per reviewer
+
+Charters worth writing are usually too long for a YAML string. Put each reviewer in its own
+markdown file under `.ct-review/personas/` instead — optional frontmatter for the metadata, and
+the body is the charter:
+
+```markdown
+<!-- .ct-review/personas/tenancy.md -->
+---
+name: "🏢 Multi-Tenant Isolation"
+---
+
+Every query that touches customer data must be scoped by `orgId`.
+
+## What to flag
+- Repository methods accepting a raw `id` without a tenant bound
+- Raw SQL missing a `WHERE org_id = $n` clause
+- Cache keys omitting the tenant prefix
+
+## What not to flag
+- Admin-only endpoints under `src/admin/**`, which are intentionally cross-tenant
+- Migrations, which run outside request context
+```
+
+The id defaults to the filename, so `tenancy.md` defines the `tenancy` reviewer and no other
+configuration is needed — frontmatter is optional, and a file containing nothing but prose works.
+
+Persona files **add to** the default roster rather than replacing it, so dropping one in does not
+silently switch the built-ins off. To narrow the roster, list the ids you want in
+`.ct-review.yaml` or in the action's `personas:` input. Declaring the same id in both a file and
+`.ct-review.yaml` is an error rather than a guess about precedence.
+
 See the [Configuration Reference](docs/CONFIGURATION_REFERENCE.md#persona-definition-personas)
 for the full key list.
 
