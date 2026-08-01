@@ -26,9 +26,9 @@ try {
   } catch (_) {}
 }
 
-const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
+const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/google/gemini-2.0-flash-lite-001';
 
-// 12 Persona Charters configured with default model openrouter/auto
+// 12 Persona Charters configured with default model openrouter/google/gemini-2.0-flash-lite-001
 const PERSONA_CHARTERS = [
   {
     id: 'security',
@@ -611,8 +611,10 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   let findingsDetails = '';
   const findingLanes = personaResults.filter(r => r.findings.length > 0);
 
-  if (findingLanes.length === 0) {
-    findingsDetails = '\n> 🎉 **No issues detected across all 12 reviewer personas!**\n';
+  if (personaResults.length === 0) {
+    findingsDetails = '\nAll reviewer personas disabled in repository settings.\n';
+  } else if (findingLanes.length === 0) {
+    findingsDetails = '\n> 🎉 **No issues detected across enabled reviewer personas!**\n';
   } else {
     findingLanes.forEach((lane) => {
       findingsDetails += `\n<details open>\n<summary><b>${lane.displayName} (${lane.findings.length} findings)</b></summary>\n\n`;
@@ -713,16 +715,48 @@ async function main() {
   const diffFiles = parseDiff(prContext.diffText);
   console.log(`[Payload] Parsed ${diffFiles.length} file(s) from PR diff payload.`);
 
-  console.log(`[Personas] Loading 12 persona charters with model ${DEFAULT_MODEL}...`);
-  console.log('[Parallel Evaluation] Launching parallel persona lane evaluations...');
+  // Determine active/enabled personas from dispatch payload or environment
+  const payload = prContext.eventData?.client_payload || {};
+  let activePersonaIds = null;
+  if (Array.isArray(payload.activePersonas)) {
+    activePersonaIds = payload.activePersonas;
+  } else if (payload.personaSettings && typeof payload.personaSettings === 'object') {
+    activePersonaIds = Object.keys(payload.personaSettings).filter(k => payload.personaSettings[k]?.enabled !== false);
+  } else if (process.env.ACTIVE_PERSONAS) {
+    try { activePersonaIds = JSON.parse(process.env.ACTIVE_PERSONAS); } catch (_) {
+      activePersonaIds = process.env.ACTIVE_PERSONAS.split(',').map(s => s.trim());
+    }
+  }
 
-  // Evaluate all 12 personas in parallel
-  const personaResults = await Promise.all(
-    PERSONA_CHARTERS.map((persona) => evaluatePersonaLane(persona, diffFiles, prContext))
-  );
+  const enabledPersonas = activePersonaIds !== null
+    ? PERSONA_CHARTERS.filter(p => activePersonaIds.includes(p.id))
+    : PERSONA_CHARTERS;
 
-  console.log('[Arbitration] Computing binding arbitration quorum...');
-  const arbitration = computeArbitrationQuorum(personaResults);
+  console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) out of 12 total with model ${DEFAULT_MODEL}...`);
+
+  let personaResults = [];
+  let arbitration = null;
+
+  if (enabledPersonas.length === 0) {
+    console.log('[Personas] All reviewer personas are disabled in repository/org settings. Skipping LLM persona evaluations.');
+    arbitration = {
+      verdict: 'SHIP',
+      rationale: 'All reviewer personas disabled in repository settings.',
+      quorumSatisfied: true,
+      completedPersonas: 0,
+      totalPersonas: 0,
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0 },
+    };
+  } else {
+    console.log('[Parallel Evaluation] Launching parallel persona lane evaluations...');
+    personaResults = await Promise.all(
+      enabledPersonas.map((persona) => evaluatePersonaLane(persona, diffFiles, prContext))
+    );
+
+    console.log('[Arbitration] Computing binding arbitration quorum...');
+    arbitration = computeArbitrationQuorum(personaResults);
+  }
+
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
 
   console.log('[Formatting] Formatting GitHub PR comment output with Mermaid diagram and MCP telemetry...');
