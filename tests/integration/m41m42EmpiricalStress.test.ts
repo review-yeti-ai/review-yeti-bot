@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,6 +12,7 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
   let app: any;
   let authToken = '';
   let sampleRsaPrivateKeyPem: string;
+  const origAdminPassword = process.env.ADMIN_PASSWORD;
 
   beforeAll(async () => {
     // Generate a real 2048-bit RSA private key in PEM format for cryptographic testing
@@ -33,6 +34,14 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
       .post('/api/auth/login')
       .send({ username: 'admin', password: 'admin_stress_test_pass' });
     authToken = loginRes.body.token || '';
+  });
+
+  afterAll(() => {
+    if (origAdminPassword === undefined) {
+      delete process.env.ADMIN_PASSWORD;
+    } else {
+      process.env.ADMIN_PASSWORD = origAdminPassword;
+    }
   });
 
   // ==========================================
