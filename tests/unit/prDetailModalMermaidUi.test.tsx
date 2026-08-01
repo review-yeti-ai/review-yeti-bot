@@ -2,6 +2,15 @@
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 import { PRReviewDetailModal } from '../../src/components/dashboard/pr-review-detail-modal';
 import { MermaidViewer } from '../../src/components/dashboard/mermaid-viewer';
 import { ReviewJob } from '../../src/types/dashboard';
