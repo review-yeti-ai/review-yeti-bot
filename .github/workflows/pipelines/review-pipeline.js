@@ -467,7 +467,7 @@ function planDiffBudget(diffFiles, maxDiffChars) {
  */
 async function reviewWithModel(persona, diffFiles, prContext, sessionContext, options = {}) {
   const cfg = { ...resolveModelConfig(), ...options };
-  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
 
   const priorContext = sessionContext?.augmentedHeader
@@ -1283,8 +1283,10 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
+  const failedLanes = personaResults.filter((res) => res.decision === 'ERROR');
+  const completedResults = personaResults.filter((res) => res.decision !== 'ERROR');
 
-  for (const res of personaResults) {
+  for (const res of completedResults) {
     for (const f of res.findings) {
       if (f.severity === 'P0') p0Count++;
       else if (f.severity === 'P1') p1Count++;
@@ -1295,14 +1297,17 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
   // Thresholds scale with the size of the panel. Fixed counts were calibrated for sparse regex
   // hits; with a dozen model-driven reviewers each free to raise a concern, a flat "3 P1s blocks"
   // means essentially every pull request blocks, and a reviewer that always blocks is ignored.
-  const panelSize = Math.max(1, personaResults.length);
+  const panelSize = Math.max(1, completedResults.length);
   const blockP1 = Math.max(3, Math.ceil(panelSize / 2));
   const fixP2 = Math.max(5, panelSize);
 
   let verdict = 'SHIP';
-  let rationale = `All ${personaResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
+  let rationale = `All ${completedResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
 
-  if (p0Count > 0) {
+  if (failedLanes.length > 0) {
+    verdict = 'BLOCK';
+    rationale = `Blocked because ${failedLanes.length} persona lane(s) failed; provider failures cannot produce a successful verdict.`;
+  } else if (p0Count > 0) {
     verdict = 'BLOCK';
     rationale = `Blocked on ${p0Count} critical P0 finding(s).`;
   } else if (p1Count >= blockP1) {
@@ -1318,8 +1323,8 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
 
   return {
     totalPersonas: expectedPersonas,
-    completedPersonas: personaResults.length,
-    quorumSatisfied: personaResults.length === expectedPersonas,
+    completedPersonas: completedResults.length,
+    quorumSatisfied: failedLanes.length === 0 && completedResults.length === expectedPersonas,
     verdict,
     rationale,
     thresholds: { blockP1, fixP2 },
@@ -1459,13 +1464,17 @@ ${findingsDetails}`;
  * Posts formatted PR comment via `gh pr comment` CLI when PR number is available,
  * or outputs to stdout/file.
  */
-function postOrOutputComment(commentBody, prContext) {
+function postOrOutputComment(commentBody, prContext, options = {}) {
   const prNumber = prContext.prNumber;
+  const now = options.now || Date.now;
+  const fileSystem = options.fileSystem || fs;
+  const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
+  const cwd = options.cwd || process.cwd();
 
   if (prNumber) {
     try {
-      const tempPath = path.join('/tmp', `review-comment-${Date.now()}.md`);
-      fs.writeFileSync(tempPath, commentBody, 'utf-8');
+      const tempPath = path.join(options.tempDirectory || '/tmp', `review-comment-${now()}.md`);
+      fileSystem.writeFileSync(tempPath, commentBody, 'utf-8');
 
       // --repo is required: the review runner checks out the central review repository, so the
       // target PR is almost never the repository `gh` would infer from the working directory.
@@ -1474,12 +1483,12 @@ function postOrOutputComment(commentBody, prContext) {
         args.push('--repo', prContext.repo);
       }
 
-      const result = spawnSync('gh', args, {
+      const result = commandRunner('gh', args, {
         encoding: 'utf-8',
         env: process.env,
       });
 
-      try { fs.unlinkSync(tempPath); } catch (_) {}
+      try { fileSystem.unlinkSync(tempPath); } catch (_) {}
 
       if (result.status === 0) {
         console.log(`[Publish] Successfully posted PR comment to PR #${prNumber} via gh CLI.`);
@@ -1495,9 +1504,9 @@ function postOrOutputComment(commentBody, prContext) {
   }
 
   // Fallback to outputting comment to file & stdout
-  const commentFilePath = path.join(process.cwd(), 'review-comment.md');
+  const commentFilePath = path.join(cwd, 'review-comment.md');
   try {
-    fs.writeFileSync(commentFilePath, commentBody, 'utf-8');
+    fileSystem.writeFileSync(commentFilePath, commentBody, 'utf-8');
     console.log(`[Publish] Saved formatted review comment to ${commentFilePath}`);
   } catch (_) {}
 
@@ -1671,8 +1680,7 @@ async function main() {
     }
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
-    const completed = personaResults.filter((r) => r.decision !== 'ERROR');
-    arbitration = computeArbitrationQuorum(completed, enabledPersonas.length);
+    arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length);
   }
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);

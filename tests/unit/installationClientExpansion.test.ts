@@ -48,6 +48,39 @@ describe('installationClient.ts — Comprehensive Unit Expansion Tests', () => {
     vi.unstubAllGlobals();
   });
 
+  it('uses the injected fetch boundary and preserves exact GitHub request headers', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      head: { sha: 'exact-head-sha' },
+      base: { sha: 'exact-base-sha' },
+      title: 'Exact head review',
+      body: 'body',
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const injectedClient = new GitHubInstallationClient({
+      token,
+      baseUrl: 'https://github.test',
+      fetchImplementation,
+      now: () => 1_700_000_000_000,
+    });
+
+    await expect(injectedClient.getPullRequest('calltelemetry', 'repo-1', 42)).resolves.toMatchObject({
+      headSha: 'exact-head-sha',
+      baseSha: 'exact-base-sha',
+    });
+
+    expect(fetchImplementation).toHaveBeenCalledWith(
+      'https://github.test/repos/calltelemetry/repo-1/pulls/42',
+      expect.anything(),
+    );
+    const requestHeaders = new Headers(fetchImplementation.mock.calls[0][1].headers);
+    expect(requestHeaders.get('accept')).toBe('application/vnd.github+json');
+    expect(requestHeaders.get('authorization')).toBe(`Bearer ${token}`);
+    expect(requestHeaders.get('x-github-api-version')).toBe('2022-11-28');
+    expect(requestHeaders.get('user-agent')).toBe('ct-review-bot[bot]');
+  });
+
   it('getBasePolicy fetches and decodes base64 .ct-review.yaml content', async () => {
     const yamlContent = 'version: 3\nprofile: balanced';
     const base64Content = Buffer.from(yamlContent).toString('base64');

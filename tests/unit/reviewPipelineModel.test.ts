@@ -87,6 +87,23 @@ describe('reviewWithModel', () => {
     expect(system).toContain(securityPersona.charter);
   });
 
+  it('uses the canonical fetchImplementation boundary and fails closed on malformed provider JSON', async () => {
+    const fetchImplementation = async () => new Response('{not-json', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://llm.test/v1',
+      model: 'synthetic-reviewer',
+      fetchImplementation,
+    });
+
+    expect(res.decision).toBe('ERROR');
+    expect(res.findings).toEqual([]);
+    expect(res.error).toBeTruthy();
+  });
+
   it('returns structured findings parsed from the model response', async () => {
     const { impl } = stubFetch(validFindings);
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
