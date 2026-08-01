@@ -7,7 +7,7 @@ import { generateCtReviewConfig } from '../onboarding/configGenerator';
 import { logger } from '../utils/logger';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { executePersonaPanel } from '../panel/panelEngine';
-import { OmniRouteClient } from '../gateway/omniRouteClient';
+import { OpenRouterClient } from '../gateway/openRouterClient';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
 
 export function createOnboardingRouter(): Router {
@@ -158,7 +158,7 @@ export function createOnboardingRouter(): Router {
       // Verify each target provider has valid active credentials
       for (const pId of targetProviderIds) {
         const cfg = getProviderConfigRecord(pId, providerConfigs);
-        const envKey = process.env[`${pId.toUpperCase()}_API_KEY`] || process.env.OMNIROUTE_BASE_URL || (process.env.VITEST ? 'vitest-test-key' : undefined);
+        const envKey = process.env[`${pId.toUpperCase()}_API_KEY`] || process.env.OPENROUTER_API_KEY || (process.env.VITEST ? 'vitest-test-key' : undefined);
 
         if (
           pId === 'invalid_provider' ||
@@ -244,7 +244,7 @@ export function createOnboardingRouter(): Router {
       };
 
       // -----------------------------------------------------------------------
-      // Probe 2: Model Latency & TTFT across active OmniRoute AI providers
+      // Probe 2: Model Latency & TTFT across configured OpenRouter model routes
       // -----------------------------------------------------------------------
       const modelRegistry = dashboardStore.getModelRegistry();
 
@@ -402,8 +402,9 @@ export function createOnboardingRouter(): Router {
         rules: [],
       };
 
-      const omniClient = new OmniRouteClient({
-        baseUrl: process.env.OMNIROUTE_BASE_URL || 'http://localhost:8080',
+      const openRouterClient = new OpenRouterClient({
+        baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+        apiKey: process.env.OPENROUTER_API_KEY || (process.env.VITEST ? 'vitest-test-key' : undefined),
       });
 
       const panelStart = Date.now();
@@ -412,7 +413,7 @@ export function createOnboardingRouter(): Router {
         changedFiles: sampleFiles,
         repository: repoId || 'calltelemetry/cisco-cdr',
         headSha: 'a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4',
-        client: omniClient,
+        client: openRouterClient,
       });
       const panelDuration = Date.now() - panelStart;
 
@@ -459,4 +460,3 @@ export function createOnboardingRouter(): Router {
 
   return router;
 }
-

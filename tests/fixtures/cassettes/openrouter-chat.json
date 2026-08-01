@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.test/api/v1/chat/completions",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "messages": [
+            {
+              "content": "replay this review",
+              "role": "user"
+            }
+          ],
+          "model": "openai/gpt-4o-mini",
+          "stream": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "choices": [
+            {
+              "message": {
+                "content": "{\"verdict\":\"SHIP\"}",
+                "role": "assistant"
+              }
+            }
+          ],
+          "model": "openai/gpt-4o-mini",
+          "usage": {
+            "completion_tokens": 4,
+            "prompt_tokens": 10,
+            "total_tokens": 14
+          }
+        }
+      }
+    }
+  ]
+}

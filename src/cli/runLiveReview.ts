@@ -4,8 +4,7 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
-import { OmniRouteClient } from '../gateway/omniRouteClient';
-import { providerPool } from '../gateway/providerPool';
+import { OpenRouterClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { logger } from '../utils/logger';
 
@@ -18,28 +17,14 @@ async function main() {
   // Fetch target PR head commit SHA from GitHub API
   const headSha = execSync(`gh pr view ${prNumber} --repo ${repo} --json headRefOid --jq .headRefOid`, { encoding: 'utf-8' }).trim();
 
-  // Register Synthetic API provider into providerPool
-  if (!providerPool.hasProvider('synthetic')) {
-    if (!process.env.SYNTHETIC_API_KEY) {
-      throw new Error('SYNTHETIC_API_KEY is not set. Export it, or provide it via Doppler; there is deliberately no baked-in fallback key.');
-    }
-    providerPool.registerProvider({
-      id: 'synthetic',
-      type: 'synthetic',
-      apiKey: process.env.SYNTHETIC_API_KEY,
-      baseUrl: process.env.SYNTHETIC_BASE_URL || 'https://api.synthetic.com/v1',
-      models: ['glm-5.2', 'synthetic/v1', 'synthetic/glm-5.2-high', 'synthetic-fast', 'synthetic-reasoning'],
-    });
-  }
-
   // Fetch PR diff via gh CLI
   const diff = execSync(`gh pr diff ${prNumber} --repo ${repo}`, { encoding: 'utf-8' });
 
   // Initialize 10-persona Panel Engine
   const config = createDefaultV3Config();
-  const client = new OmniRouteClient({
-    baseUrl: process.env.OMNIROUTE_BASE_URL || 'http://localhost:8080',
-    accessToken: process.env.OMNIROUTE_TOKEN || 'omni_token_dev',
+  const client = new OpenRouterClient({
+    baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    apiKey: process.env.OPENROUTER_API_KEY,
   });
 
   // Parse files from diff
@@ -58,7 +43,7 @@ async function main() {
     changedFiles.push({ path: 'PR_CHANGES.md', patch: diff });
   }
 
-  // Execute persona panel review fan-out using Synthetic GLM-5.2 default provider
+  // Execute persona panel review through the OpenRouter-only model boundary.
   const panelResult = await executePersonaPanel({
     config,
     changedFiles,
@@ -83,7 +68,7 @@ async function main() {
 
   const sections: string[] = [
     `# 🤖 ct-review-bot Summary (PR #${prNumber})`,
-    `**Verdict**: \`${panelResult.arbiter?.verdict || 'SHIP'}\` | **Provider**: \`Synthetic (GLM-5.2)\``,
+    `**Verdict**: \`${panelResult.arbiter?.verdict || 'BLOCK'}\` | **Provider**: \`OpenRouter\``,
     '',
     summaryMarkdown,
   ];
@@ -150,8 +135,9 @@ async function main() {
     repo: repo.split('/')[1],
     prNumber,
     commitSha: headSha,
-    event: 'APPROVE',
+    event: panelResult.arbiter?.verdict === 'SHIP' ? 'APPROVE' : 'REQUEST_CHANGES',
     body: fullSummaryMarkdown,
+    idempotencyKey: 'worker-arbiter',
   });
 
   logger.info('Successfully posted ct-review-bot review comment', { publishRes });

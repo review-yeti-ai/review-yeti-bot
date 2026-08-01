@@ -8,8 +8,7 @@ data:
   HOST: "0.0.0.0"
   NODE_ENV: "production"
   LOG_LEVEL: "info"
-  # Share OmniRoute from ct-review-system via cross-namespace DNS
-  OMNIROUTE_BASE_URL: "http://omniroute.ct-review-system.svc.cluster.local:20128"
+  OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
   CT_REVIEW_RUN_STORE: "/app/data/review-runs.json"
 ---
 apiVersion: v1

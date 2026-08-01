@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
-import fs from 'fs';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
-import { OmniRouteClient, OmniRouteResponse, TokensUsed } from '../gateway/omniRouteClient';
+import { OpenRouterResponse, ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
@@ -422,7 +421,7 @@ function validateFindings(value: unknown): PanelFinding[] {
 }
 
 async function invoke(
-  client: OmniRouteClient,
+  client: ReviewModelClient,
   model: string,
   timeoutMs: number,
   role: string,
@@ -431,7 +430,7 @@ async function invoke(
     maxTurns?: number;
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }
-): Promise<{ response: OmniRouteResponse; parsed: any; durationMs: number; turnsCount?: number }> {
+): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number }> {
   const requestNonce = nonce();
 
   // Extract changed files, rules, and charter cleanly for prompt formatting
@@ -477,7 +476,8 @@ async function invoke(
 
   const started = Date.now();
 
-  const availableMcpTools = piWorkflowRegistry.getAvailableMcpTools();
+  const availableMcpTools = piWorkflowRegistry.getAvailableMcpTools()
+    .filter((tool) => tool.name === 'fetch_docs' || tool.name === 'context7_search');
   const mcpToolListStr = availableMcpTools.map((t) => `${t.name} (${t.description})`).join(', ');
 
   const maxTurns = Math.min(20, Math.max(1, options?.maxTurns ?? 20));
@@ -493,20 +493,20 @@ async function invoke(
   1. Code Reading: view_file, read_file, get_diff
   2. AST Context: miller (Miller Tool)
   3. Context Searching: grep_search, find_files, symbol_search, search_code
-  4. Dashboard MCPs: mcp_* or connected MCP tools (${mcpToolListStr})
+  4. Documentation MCPs only: ${mcpToolListStr || 'none'}
 - You are granted up to ${maxTurns} execution turns for active codebase exploration.
 - Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.
 ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 `- ACTIVE DEEP EXPLORATION REQUIRED: Perform multi-turn tool calls to search symbol dependencies, inspect related imported files, verify caller/callee context, and audit cross-file contracts before rendering your final decision.` :
 `- Perform tool calls as needed to inspect file contents and verify code context.`}
-- NOTE: Non-read-only tools (file writing, shell execution, command tools) are strictly prohibited and will be rejected.
+- NOTE: All file reads are limited to the supplied changed-file patches. File writes, shell execution, Linear/Productlane/GitHub actions, custom MCPs, and arbitrary local paths are strictly prohibited and will be rejected.
 - When tool execution is required, output a valid JSON block specifying the tool name and arguments.
 - You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`,
     },
     { role: 'user', content: prompt },
   ];
 
-  let finalResponse: OmniRouteResponse | null = null;
+  let finalResponse: OpenRouterResponse | null = null;
   let parsedResult: any = null;
   let turnsCount = 1;
 
@@ -546,8 +546,8 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         const isCodeReading = ['view_file', 'read_file', 'get_diff'].includes(tName);
         const isMiller = tName === 'miller';
         const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code'].includes(tName);
-        const availableMcpNames = availableMcpTools.map((t) => t.name);
-        const isMcp = tName.startsWith('mcp_') || availableMcpNames.includes(tName) || ['fetch_docs', 'context7_search', 'productlane_ticket', 'linear_close_issue'].includes(tName);
+        const readOnlyMcpNames = new Set(['fetch_docs', 'context7_search', 'mcp_context7_query']);
+        const isMcp = readOnlyMcpNames.has(tName);
 
         const isAllowed = isCodeReading || isMiller || isSearching || isMcp;
 
@@ -574,15 +574,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             if (matched) {
               toolOutput += matched.patch || matched.content || 'File present in PR scope.';
             } else {
-              try {
-                if (targetPath && fs.existsSync(targetPath)) {
-                  toolOutput += fs.readFileSync(targetPath, 'utf8');
-                } else {
-                  toolOutput += `File '${targetPath}' not found in PR scope or local disk.`;
-                }
-              } catch (_) {
-                toolOutput += `File '${targetPath}' not in PR.`;
-              }
+              toolOutput += `File '${targetPath}' is outside the reviewed PR scope.`;
             }
           } else if (tName === 'search_code' || tName === 'grep_search') {
             const hits = changedFiles.filter((f: any) => (f.patch || f.content || '').toLowerCase().includes(searchQ.toLowerCase()));
@@ -604,7 +596,8 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             }
             toolOutput += hits.length > 0 ? hits.join('\n') : `No symbols found matching '${searchQ}'.`;
           } else {
-            // Dispatch to MCP Fleet Manager for MCP tool execution (Context7, Productlane, Linear, custom MCP servers)
+            // Only documentation/search MCPs are permitted. Review execution must never mutate
+            // Linear, Productlane, GitHub, or an arbitrary custom MCP server.
             try {
               const mcpResult = await mcpFleetManager.executeTool(tName, toolCall.args || {});
               toolOutput += mcpResult.success ? JSON.stringify(mcpResult.output, null, 2) : `MCP Error: ${mcpResult.error || 'Execution failed'}`;
@@ -636,7 +629,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
 async function runPersona(
   config: CtReviewConfigV3,
-  client: OmniRouteClient,
+  client: ReviewModelClient,
   persona: CtReviewConfigV3['personas'][number],
   changedFiles: Array<{ path: string; patch?: string; content?: string }>,
   repository: string,
@@ -783,7 +776,7 @@ async function runPersona(
           bus.publishEvent({
             jobId: effectiveJobId,
             timestamp: new Date().toISOString(),
-            type: 'omniroute:metric',
+            type: 'openrouter:metric',
             persona: persona.id,
             data: {
               requestedModel: targetModel,
@@ -887,7 +880,7 @@ export async function executePersonaPanel(options: {
   changedFiles: Array<{ path: string; patch?: string; content?: string }>;
   repository: string;
   headSha: string;
-  client: OmniRouteClient;
+  client: ReviewModelClient;
   jobId?: string;
   generateArchitecturalFlowchart?: boolean;
   isCurrentHead?: () => boolean;
@@ -926,31 +919,7 @@ export async function executePersonaPanel(options: {
     span.setAttribute('ct.quorum_required', config.quorum);
 
     if (applicable.length === 0) {
-      logger.info(`No enabled personas apply to ${repository} #${headSha}.`);
-      return {
-        headSha,
-        personas: [],
-        optionalFailures: [],
-        quorum: { required: config.quorum, distinctProviders: ['system'], satisfied: true },
-        moderator: {
-          providerId: 'synthetic',
-          model: 'none',
-          decision: 'RECONCILED',
-          findings: [],
-          usage: null,
-          costUSD: 0,
-          durationMs: 0,
-        },
-        arbiter: {
-          providerId: 'synthetic',
-          model: 'none',
-          verdict: 'SHIP',
-          rationale: 'All reviewer personas disabled in repository settings.',
-          usage: null,
-          costUSD: 0,
-          durationMs: 0,
-        },
-      };
+      throw new PanelConfigurationError(`no enabled persona applies to the changed paths for ${repository} #${headSha}`);
     }
 
     let memoryRules: string[] = [];
@@ -1068,11 +1037,14 @@ export async function executePersonaPanel(options: {
           if (verdict === 'APPROVE' || verdict === 'PASSED' || verdict === 'SUCCESS') verdict = 'SHIP';
           if (verdict === 'REJECT' || verdict === 'FAILED') verdict = 'BLOCK';
           if (!['SHIP', 'FIX_FIRST', 'BLOCK'].includes(verdict)) {
-            verdict = moderatedFindings.length > 0 ? 'FIX_FIRST' : 'SHIP';
+            throw new PanelConfigurationError('arbiter returned an invalid or missing verdict; refusing to infer a successful result');
           }
           const rationale = typeof run.parsed?.rationale === 'string' && run.parsed.rationale.trim()
             ? run.parsed.rationale
-            : 'All review personas completed evaluation.';
+            : null;
+          if (!rationale) {
+            throw new PanelConfigurationError('arbiter returned no rationale; refusing to publish a binding verdict');
+          }
 
           run.parsed = { ...run.parsed, verdict, rationale };
 

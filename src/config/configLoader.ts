@@ -324,7 +324,8 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
 
 /**
  * Sanitizes a raw V3 config object before Zod validation.
- * Provider IDs are open — any valid identifier is accepted (OmniRoute handles routing).
+ * Provider IDs are open — any valid identifier is accepted. The review runtime normalizes
+ * legacy provider labels at the OpenRouter boundary.
  * This sanitizer only enforces structural validity:
  * - Strips provider entries missing required fields (id, model)
  * - Ensures provider IDs match the [a-z][a-z0-9._-]* pattern

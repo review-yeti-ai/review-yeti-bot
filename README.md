@@ -37,11 +37,11 @@ That is the whole setup — note there is no `actions/checkout` step, and none i
 action reads the pull request diff, runs the reviewers in parallel, and comments on the PR using
 your workflow's built-in `GITHUB_TOKEN`; no personal access token required.
 
-You supply an API key for any OpenAI-compatible endpoint. **You own the key and the prompts**;
-nothing is sent to a third-party review service.
+You supply an OpenRouter API key (and may override its compatible base URL). **You own the key
+and the prompts**; nothing is sent to a third-party review service beyond OpenRouter.
 
-> **No key yet?** The action still runs, but falls back to static pattern checks and says so in
-> the comment. It will not present regex matches as a model review.
+> **No key yet?** The action fails closed without posting a successful verdict. It never presents
+> static pattern checks as a model review.
 
 ---
 
