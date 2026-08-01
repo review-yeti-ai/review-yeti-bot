@@ -961,6 +961,34 @@ function postOrOutputComment(commentBody, prContext) {
 }
 
 /**
+ * Publishes the verdict as GitHub Actions step outputs so a consuming workflow can gate on it,
+ * e.g. `if: steps.review.outputs.verdict == 'BLOCK'`.
+ *
+ * @param {object} arbitration - Computed arbitration result.
+ * @param {string} [outputPath] - Path to GITHUB_OUTPUT. No-op when absent (local runs).
+ */
+function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT) {
+  if (!outputPath) return;
+
+  const m = arbitration.metrics || {};
+  const lines = [
+    `verdict=${arbitration.verdict}`,
+    `findings-count=${m.totalFindings || 0}`,
+    `p0-count=${m.p0Count || 0}`,
+    `p1-count=${m.p1Count || 0}`,
+    `p2-count=${m.p2Count || 0}`,
+    `personas-completed=${arbitration.completedPersonas || 0}`,
+    `personas-total=${arbitration.totalPersonas || 0}`,
+  ];
+
+  try {
+    fs.appendFileSync(outputPath, lines.join('\n') + '\n', 'utf-8');
+  } catch (err) {
+    console.warn(`[Outputs] Could not write step outputs: ${err.message}`);
+  }
+}
+
+/**
  * Reads local repository .ct-review.yaml or .coderabbit.yaml if present in checked-out repo.
  * Allows local repository overrides for active personas, path filters, model overrides, and effort levels.
  */
@@ -1084,6 +1112,8 @@ async function main() {
   console.log('[Publishing] Executing PR comment publishing...');
   postOrOutputComment(commentMarkdown, prContext);
 
+  writeStepOutputs(arbitration);
+
   // Persist session log artifacts under sessions/ directory
   if (SessionLedger) {
     try {
@@ -1131,6 +1161,7 @@ module.exports = {
   parseFindingsPayload,
   sanitizeFindings,
   loadLocalRepoConfig,
+  writeStepOutputs,
   initMcpFleet,
   evaluatePersonaLane,
   computeArbitrationQuorum,
