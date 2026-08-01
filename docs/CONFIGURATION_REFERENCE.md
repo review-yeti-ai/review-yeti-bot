@@ -223,8 +223,13 @@ dials:
 A `personas:` list in `.ct-review.yaml` selects which reviewers run, and may define new ones.
 When the key is absent, every built-in persona runs.
 
-**Built-in ids** — `security`, `performance`, `architecture`, `style`, `testing`,
-`documentation`, `accessibility`, `database`, `devops`, `i18n`, `dependencies`, `licensing`.
+**On by default** — `security`, `performance`, `architecture`, `testing`, `dependencies`. These
+apply to essentially any codebase.
+
+**Situational, off by default** — `style`, `documentation`, `accessibility`, `database`,
+`devops`, `i18n`, `licensing`. Running all twelve everywhere reports on internationalisation in
+projects that ship one language and licence headers in projects that use none, which teaches
+people to ignore the bot. Opt in by id, or use `all` for the complete roster.
 
 ```yaml
 personas:
