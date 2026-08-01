@@ -699,6 +699,30 @@ function postOrOutputComment(commentBody, prContext) {
 }
 
 /**
+ * Reads local repository .ct-review.yaml or .coderabbit.yaml if present in checked-out repo.
+ * Allows local repository overrides for active personas, path filters, model overrides, and effort levels.
+ */
+function loadLocalRepoConfig() {
+  const candidates = ['.ct-review.yaml', '.ct-review.yml', '.coderabbit.yaml', '.coderabbit.yml'];
+  for (const file of candidates) {
+    const fullPath = path.resolve(process.cwd(), file);
+    if (fs.existsSync(fullPath)) {
+      try {
+        let jsYaml = null;
+        try { jsYaml = require('js-yaml'); } catch (_) {}
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        const parsed = jsYaml ? jsYaml.load(content) : null;
+        console.log(`[Config] Loaded local repository override configuration from ${file}`);
+        return { file, parsed, raw: content };
+      } catch (err) {
+        console.warn(`[Config] Failed to parse local config file ${file}: ${err.message}`);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Main entry point for pipeline execution.
  */
 async function main() {
@@ -709,19 +733,26 @@ async function main() {
   const prContext = getPRDiffAndContext();
   console.log(`[Context] Repo: ${prContext.repo} | PR #: ${prContext.prNumber || 'N/A'} | SHA: ${prContext.headSha.slice(0, 7)}`);
 
+  const localConfig = loadLocalRepoConfig();
+
   const mcpFleetInfo = await initMcpFleet(prContext.eventData?.client_payload);
   console.log(`[MCP] ${mcpFleetInfo.mcpStatusSummary}`);
 
   const diffFiles = parseDiff(prContext.diffText);
   console.log(`[Payload] Parsed ${diffFiles.length} file(s) from PR diff payload.`);
 
-  // Determine active/enabled personas from dispatch payload or environment
+  // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
   let activePersonaIds = null;
   if (Array.isArray(payload.activePersonas)) {
     activePersonaIds = payload.activePersonas;
   } else if (payload.personaSettings && typeof payload.personaSettings === 'object') {
     activePersonaIds = Object.keys(payload.personaSettings).filter(k => payload.personaSettings[k]?.enabled !== false);
+  } else if (localConfig?.parsed?.personas && Array.isArray(localConfig.parsed.personas)) {
+    activePersonaIds = localConfig.parsed.personas
+      .filter(p => p && p.enabled !== false)
+      .map(p => p.id || p.personaId || p.name);
+    console.log(`[Config] Derived ${activePersonaIds.length} active persona(s) from local ${localConfig.file}`);
   } else if (process.env.ACTIVE_PERSONAS) {
     try { activePersonaIds = JSON.parse(process.env.ACTIVE_PERSONAS); } catch (_) {
       activePersonaIds = process.env.ACTIVE_PERSONAS.split(',').map(s => s.trim());
