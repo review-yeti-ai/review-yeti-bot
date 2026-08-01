@@ -7,8 +7,8 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 
-const { resolvePersonaRoster, PERSONA_CHARTERS } = pipeline;
-const allIds = PERSONA_CHARTERS.map((p: any) => p.id);
+const { resolvePersonaRoster, PERSONA_CHARTERS, DEFAULT_PERSONA_IDS } = pipeline;
+const allIds = DEFAULT_PERSONA_IDS;
 
 /** Wraps a parsed .ct-review.yaml body in the shape loadLocalRepoConfig returns. */
 const cfg = (parsed: any) => ({ file: '.ct-review.yaml', parsed });
@@ -16,7 +16,7 @@ const cfg = (parsed: any) => ({ file: '.ct-review.yaml', parsed });
 const ids = (result: any) => result.personas.map((p: any) => p.id);
 
 describe('resolvePersonaRoster — built-in selection', () => {
-  it('defaults to all twelve built-ins when nothing is configured', () => {
+  it('defaults to the default reviewer set when nothing is configured', () => {
     const r = resolvePersonaRoster({}, null, {});
     expect(ids(r)).toEqual(allIds);
     expect(r.errors).toEqual([]);

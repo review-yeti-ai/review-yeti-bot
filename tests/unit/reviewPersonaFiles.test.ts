@@ -8,7 +8,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 
-const { loadPersonaFiles, resolvePersonaRoster, PERSONA_CHARTERS } = pipeline;
+const { loadPersonaFiles, resolvePersonaRoster, PERSONA_CHARTERS, DEFAULT_PERSONA_IDS } = pipeline;
 
 let repo: string;
 
@@ -113,7 +113,7 @@ describe('resolvePersonaRoster with persona files', () => {
     expect(r.errors).toEqual([]);
     expect(r.personas.map((p: any) => p.id)).toContain('tenancy');
     expect(r.personas.map((p: any) => p.id)).toContain('security');
-    expect(r.personas).toHaveLength(PERSONA_CHARTERS.length + 1);
+    expect(r.personas).toHaveLength(DEFAULT_PERSONA_IDS.length + 1);
   });
 
   it('excludes a file persona disabled in its frontmatter', () => {
