@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * PI.dev Review Workflow Pipeline Script
+ * Review Panel Pipeline Script
  * .github/workflows/pipelines/review-pipeline.js
  *
  * Evaluates PR diff payloads in parallel across 12 persona charters,
@@ -38,6 +38,9 @@ try {
 }
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
+
+// Whitelabel display name used in the posted comment. Override with BOT_NAME.
+const BOT_LABEL = process.env.BOT_NAME || 'AI Review Panel';
 
 // Built-in reviewer charters.
 //
@@ -1306,7 +1309,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
 
   const commentMarkdown = `## ${verdictBadge}
 
-### 📊 PI.dev Review Quorum Summary
+### 📊 ${BOT_LABEL} Summary
 - **Repository**: \`${prContext.repo}\`
 - **Commit SHA**: \`${prContext.headSha.slice(0, 7)}\`
 - **Review Mode**: ${reviewMode}
@@ -1355,23 +1358,23 @@ function postOrOutputComment(commentBody, prContext) {
       try { fs.unlinkSync(tempPath); } catch (_) {}
 
       if (result.status === 0) {
-        console.log(`[PI.dev Review Pipeline] Successfully posted PR comment to PR #${prNumber} via gh CLI.`);
+        console.log(`[Publish] Successfully posted PR comment to PR #${prNumber} via gh CLI.`);
         return { success: true, postedViaGh: true };
       } else {
-        console.warn(`[PI.dev Review Pipeline] gh CLI comment returned non-zero status (${result.status}): ${result.stderr || result.stdout}`);
+        console.warn(`[Publish] gh CLI comment returned non-zero status (${result.status}): ${result.stderr || result.stdout}`);
       }
     } catch (err) {
-      console.warn(`[PI.dev Review Pipeline] Error executing gh pr comment CLI: ${err.message}`);
+      console.warn(`[Publish] Error executing gh pr comment CLI: ${err.message}`);
     }
   } else {
-    console.log('[PI.dev Review Pipeline] No PR_NUMBER found in event context; skipping `gh pr comment` invocation.');
+    console.log('[Publish] No PR_NUMBER found in event context; skipping `gh pr comment` invocation.');
   }
 
   // Fallback to outputting comment to file & stdout
   const commentFilePath = path.join(process.cwd(), 'review-comment.md');
   try {
     fs.writeFileSync(commentFilePath, commentBody, 'utf-8');
-    console.log(`[PI.dev Review Pipeline] Saved formatted review comment to ${commentFilePath}`);
+    console.log(`[Publish] Saved formatted review comment to ${commentFilePath}`);
   } catch (_) {}
 
   return { success: true, postedViaGh: false };
@@ -1434,7 +1437,7 @@ function loadLocalRepoConfig() {
  */
 async function main() {
   console.log('=====================================================');
-  console.log('🚀 PI.dev Review Workflow Pipeline Engine');
+  console.log(`🚀 ${BOT_LABEL}`);
   console.log('=====================================================');
 
   const prContext = getPRDiffAndContext();
