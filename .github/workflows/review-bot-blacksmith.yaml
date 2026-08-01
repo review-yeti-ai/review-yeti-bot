@@ -21,6 +21,7 @@ jobs:
       ENABLE_FLOWCHART: 'true'
       MAX_TURNS: '20'
       REASONING_EFFORT: 'low'
+      ACTIVE_PERSONAS: ${{ toJson(github.event.client_payload.activePersonas) }}
       MCP_CONFIG_JSON: ${{ secrets.MCP_CONFIG_JSON }}
       CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
