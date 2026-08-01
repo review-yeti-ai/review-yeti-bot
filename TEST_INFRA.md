@@ -19,6 +19,25 @@
 - Test environment: JSDOM for UI components, Node for API endpoints
 - Dynamic test runner script: `npm test`
 
+## Boundary Replay and Cassette Rules
+
+Review-bot external boundaries follow the deterministic operator patterns used by `ct-pr-operator`:
+
+- HTTP clients and model calls accept injectable fetch implementations. Retry clocks, sleeps, and jitter are injectable as well.
+- Fixtures are synthetic, deterministic, credential-free, and bind review assertions to the exact PR head and base references.
+- Replay is the default and is fail-closed: an unmatched request throws immediately and `assertComplete()` rejects unconsumed interactions.
+- Replay tests do not permit real GitHub, model-provider, or other network traffic. The cassettes under `tests/fixtures/cassettes/` are the complete boundary.
+- Provider failures, malformed provider JSON, and incomplete persona quorum must never become a successful `SHIP` verdict.
+- GitHub publication and shell side effects require explicit command-boundary tests. The `gh pr comment` invocation is tested with an injected command runner and filesystem adapter.
+
+Run the replay suite without credentials or network access:
+
+```bash
+npm run test:replay
+```
+
+Recording is an explicit maintenance operation. It requires both `CT_REVIEW_VCR=record` and an endpoint origin in the harness allowlist; it is never enabled implicitly by a missing cassette or an environment credential. Review generated cassettes for secrets and customer data before committing them.
+
 ## Real-World Application Scenarios (Tier 4)
 | # | Scenario | Features Exercised | Complexity |
 |---|----------|--------------------|------------|
