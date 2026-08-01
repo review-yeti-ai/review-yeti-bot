@@ -25,14 +25,14 @@ reviewers:
 ### 1. Doppler Secret Management (Recommended)
 Store `SYNTHETIC_API_KEY` securely in Doppler:
 ```bash
-doppler secrets set SYNTHETIC_API_KEY=syn_caed4a04054f3d66e707e63b31cae88e --project ct-review-bot --config dev
+doppler secrets set SYNTHETIC_API_KEY=${SYNTHETIC_API_KEY} --project ct-review-bot --config dev
 ```
 
 ### 2. Kubernetes Secret Deployment (DOKS Cluster)
 Deploy the secret to your DigitalOcean Kubernetes cluster (`ct-review-bot` namespace):
 ```bash
 kubectl create secret generic ct-review-bot-secrets \
-  --from-literal=SYNTHETIC_API_KEY=syn_caed4a04054f3d66e707e63b31cae88e \
+  --from-literal=SYNTHETIC_API_KEY=${SYNTHETIC_API_KEY} \
   --namespace=ct-review-bot
 ```
 
