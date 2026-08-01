@@ -58,3 +58,12 @@ jobs:
 
       - name: Execute Review Pipeline
         run: node .github/workflows/pipelines/review-pipeline.js
+
+      - name: Persist Session Logs (GitOps Ledger Commit)
+        if: always()
+        run: |
+          git config user.name "ct-review-bot[bot]"
+          git config user.email "bot@calltelemetry.com"
+          git add sessions/ || true
+          git commit -m "chrono(session): persist PR #${{ github.event.client_payload.pr_number || github.event.pull_request.number || 1 }} session turn log [skip ci]" || true
+          git push origin HEAD || true
