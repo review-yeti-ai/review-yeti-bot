@@ -393,24 +393,70 @@ function sanitizeFindings(rawFindings, diffFiles) {
  * The cap is a cost control as much as a context-window one: this runs once per persona per push,
  * so an unbounded diff multiplies straight into the bill.
  */
-function renderDiffForPrompt(diffFiles, maxDiffChars) {
-  let out = '';
-  let truncated = false;
+// Below this, a file's diff is too small a fragment to review meaningfully; it is better to
+// declare the file unreviewed than to show a reviewer a sliver of it and imply coverage.
+const MIN_USEFUL_FILE_CHARS = 800;
 
-  for (const file of diffFiles) {
-    const block = `\n--- FILE: ${file.path} ---\n${file.patch || ''}`;
-    if (out.length + block.length > maxDiffChars) {
-      out += `\n--- FILE: ${file.path} ---\n[diff truncated to fit the ${maxDiffChars} character review budget]\n`;
-      truncated = true;
-      break;
+/**
+ * Allocates the diff budget across the changed files, and reports what that cost.
+ *
+ * The budget is per-persona and each persona is one request per push, so a large pull request
+ * cannot be shown in full. What matters is that the shortfall is *accounted for*: the previous
+ * implementation consumed the budget in file order and then stopped, so every file after the
+ * cut-off vanished without leaving its name anywhere a human would see.
+ *
+ * Allocation: if everything fits, everything is shown. Otherwise each file gets an equal share,
+ * down to MIN_USEFUL_FILE_CHARS; if there are more files than that allows, the remainder are
+ * reported as not reviewed rather than dropped.
+ *
+ * @returns {{text: string, reviewed: string[], truncated: string[], omitted: string[]}}
+ */
+function planDiffBudget(diffFiles, maxDiffChars) {
+  const reviewed = [];
+  const truncated = [];
+  const omitted = [];
+
+  if (!diffFiles || diffFiles.length === 0) {
+    return { text: '', reviewed, truncated, omitted };
+  }
+
+  const total = diffFiles.reduce((n, f) => n + (f.patch || '').length, 0);
+
+  if (total <= maxDiffChars) {
+    const text = diffFiles.map((f) => `\n--- FILE: ${f.path} ---\n${f.patch || ''}`).join('');
+    return { text, reviewed: diffFiles.map((f) => f.path), truncated, omitted };
+  }
+
+  // Share the budget evenly, but never below the point where a fragment stops being useful.
+  const fairShare = Math.floor(maxDiffChars / diffFiles.length);
+  const perFile = Math.max(MIN_USEFUL_FILE_CHARS, fairShare);
+  const capacity = Math.max(1, Math.floor(maxDiffChars / perFile));
+
+  let text = '';
+  diffFiles.forEach((f, i) => {
+    if (i >= capacity) {
+      omitted.push(f.path);
+      return;
     }
-    out += block;
-  }
+    const patch = f.patch || '';
+    reviewed.push(f.path);
+    if (patch.length > perFile) {
+      truncated.push(f.path);
+      text += `\n--- FILE: ${f.path} ---\n${patch.slice(0, perFile)}\n[this file's diff is truncated]\n`;
+    } else {
+      text += `\n--- FILE: ${f.path} ---\n${patch}`;
+    }
+  });
 
-  if (truncated) {
-    out += '\n[Some files were truncated. Report only on what you can see above.]\n';
+  if (truncated.length > 0) {
+    text += `\n[${truncated.length} file(s) above are shown only in part.]\n`;
   }
-  return out;
+  if (omitted.length > 0) {
+    text += `\n[${omitted.length} changed file(s) are not shown at all: ${omitted.slice(0, 20).join(', ')}${omitted.length > 20 ? ', …' : ''}]\n`;
+  }
+  text += '\nReport only on what you can see above. Do not infer defects in code you were not shown.\n';
+
+  return { text, reviewed, truncated, omitted };
 }
 
 /**
@@ -456,7 +502,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     prContext.title ? `Title: ${prContext.title}` : '',
     '',
     'Unified diff under review:',
-    renderDiffForPrompt(diffFiles, maxDiffChars),
+    planDiffBudget(diffFiles, maxDiffChars).text,
   ].filter(Boolean).join('\n');
 
   const base = { personaId: persona.id, displayName: persona.name, model: cfg.model };
@@ -1285,7 +1331,7 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
  * Formats persona evaluation findings into a GitHub PR comment containing
  * a Mermaid summary graph/diagram and persona findings breakdown.
  */
-function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}) {
+function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}, coverage = null) {
   const verdictBadge = arbitration.verdict === 'SHIP'
     ? '🟢 **Verdict: SHIP**'
     : arbitration.verdict === 'FIX_FIRST'
@@ -1366,6 +1412,25 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     ? `\n- **Degraded Lanes**: ${failedLanes.length} persona(s) failed and were excluded — ${failedLanes.map(l => `${l.displayName} (${l.error})`).join('; ')}`
     : '';
 
+  // A verdict derived from part of a diff must not read like a verdict on the whole one. If the
+  // budget forced anything out, say so where the reader sees the verdict, not only in the prompt.
+  let coverageNote = '';
+  if (coverage && (coverage.omitted?.length || coverage.truncated?.length)) {
+    const parts = [];
+    if (coverage.omitted?.length) {
+      const list = coverage.omitted.slice(0, 15).map((f) => `\`${f}\``).join(', ');
+      const more = coverage.omitted.length > 15 ? ` and ${coverage.omitted.length - 15} more` : '';
+      parts.push(`**${coverage.omitted.length} file(s) were not reviewed** — ${list}${more}.`);
+    }
+    if (coverage.truncated?.length) {
+      parts.push(`${coverage.truncated.length} file(s) were truncated and reviewed only in part.`);
+    }
+    coverageNote =
+      `\n\n> ⚠️ **This verdict covers part of the change.** ${parts.join(' ')}\n> ` +
+      `The diff exceeded the per-reviewer budget of ${modelConfig.maxDiffChars || DEFAULT_MAX_DIFF_CHARS} characters. ` +
+      `Raise \`max-diff-chars\`, narrow the reviewer roster, or split the pull request.`;
+  }
+
   const commentMarkdown = `## ${verdictBadge}
 
 ### 📊 ${BOT_LABEL} Summary
@@ -1376,7 +1441,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
 - **Quorum Status**: \`${arbitration.quorumSatisfied ? 'SATISFIED' : 'DEGRADED'}\`
 - **MCP Server Telemetry**: ${mcpStatusLine}
 - **Total Findings**: P0: \`${arbitration.metrics.p0Count}\` | P1: \`${arbitration.metrics.p1Count}\` | P2: \`${arbitration.metrics.p2Count}\`
-- **Rationale**: ${arbitration.rationale}${failureNote}
+- **Rationale**: ${arbitration.rationale}${failureNote}${coverageNote}
 
 ### 🧬 Architectural Pipeline Flow
 ${mermaidLines.join('\n')}
@@ -1446,7 +1511,7 @@ function postOrOutputComment(commentBody, prContext) {
  * @param {object} arbitration - Computed arbitration result.
  * @param {string} [outputPath] - Path to GITHUB_OUTPUT. No-op when absent (local runs).
  */
-function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT) {
+function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null) {
   if (!outputPath) return;
 
   const m = arbitration.metrics || {};
@@ -1458,6 +1523,8 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT) {
     `p2-count=${m.p2Count || 0}`,
     `personas-completed=${arbitration.completedPersonas || 0}`,
     `personas-total=${arbitration.totalPersonas || 0}`,
+    `files-reviewed=${coverage?.reviewed?.length || 0}`,
+    `files-omitted=${coverage?.omitted?.length || 0}`,
   ];
 
   try {
@@ -1534,6 +1601,10 @@ async function main() {
   }
 
   const modelConfig = resolveModelConfig();
+  const coverage = planDiffBudget(diffFiles, modelConfig.maxDiffChars);
+  if (coverage.omitted.length > 0 || coverage.truncated.length > 0) {
+    console.warn(`[Budget] Diff exceeds the per-reviewer budget of ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} file(s) reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} not reviewed.`);
+  }
   console.log(modelConfig.enabled
     ? `[Model] Model-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
     : '[Model] No API key configured; heuristic-only mode.');
@@ -1607,12 +1678,12 @@ async function main() {
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
 
   console.log('[Formatting] Formatting GitHub PR comment output with Mermaid diagram and MCP telemetry...');
-  const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig);
+  const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage);
 
   console.log('[Publishing] Executing PR comment publishing...');
   postOrOutputComment(commentMarkdown, prContext);
 
-  writeStepOutputs(arbitration);
+  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage);
 
   // Persist session log artifacts under sessions/ directory
   if (SessionLedger) {
@@ -1658,6 +1729,7 @@ module.exports = {
   DEFAULT_MODEL,
   parseDiff,
   abbreviatePath,
+  planDiffBudget,
   getPRDiffAndContext,
   resolvePersonaRoster,
   loadPersonaFiles,

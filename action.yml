@@ -75,6 +75,12 @@ outputs:
   personas-completed:
     description: 'Persona lanes that completed successfully.'
     value: ${{ steps.review.outputs.personas-completed }}
+  files-reviewed:
+    description: 'Changed files the reviewers were shown.'
+    value: ${{ steps.review.outputs.files-reviewed }}
+  files-omitted:
+    description: 'Changed files the diff budget excluded. Non-zero means the verdict covers only part of the change.'
+    value: ${{ steps.review.outputs.files-omitted }}
 
 runs:
   using: composite
