@@ -197,7 +197,18 @@ function getPRDiffAndContext() {
           title = eventData.pull_request.title;
         }
       }
-      if (eventData.repository && eventData.repository.full_name) {
+      if (eventData.client_payload) {
+        if (eventData.client_payload.target_repo || eventData.client_payload.repo) {
+          repo = eventData.client_payload.target_repo || eventData.client_payload.repo;
+        }
+        if (eventData.client_payload.pr_number || eventData.client_payload.prNumber) {
+          prNumber = String(eventData.client_payload.pr_number || eventData.client_payload.prNumber);
+        }
+        if (eventData.client_payload.head_sha || eventData.client_payload.headSha) {
+          headSha = eventData.client_payload.head_sha || eventData.client_payload.headSha;
+        }
+      }
+      if (!repo && eventData.repository && eventData.repository.full_name) {
         repo = eventData.repository.full_name;
       }
       if (!diffText && eventData.diff) {
