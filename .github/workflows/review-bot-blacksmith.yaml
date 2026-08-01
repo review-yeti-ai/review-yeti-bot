@@ -37,8 +37,10 @@ jobs:
       # defaults to OpenRouter. Without a key the pipeline runs static heuristics and says so
       # in the posted comment rather than passing them off as a model review.
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
+      # Key and endpoint are set together on purpose. Falling back across providers would pair a
+      # key from one vendor with another vendor's URL and 401 every lane.
       LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
-      LLM_API_KEY: ${{ secrets.OPENROUTER_API_KEY || secrets.CT_REVIEW_OMNIROUTE_API_KEY }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.OPENROUTER_API_KEY }}
       # Per-persona diff budget. This runs once per persona per push, so an unbounded diff
       # multiplies straight into the bill.
       MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '24000' }}
