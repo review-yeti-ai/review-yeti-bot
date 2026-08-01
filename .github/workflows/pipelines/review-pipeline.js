@@ -168,7 +168,7 @@ function parseDiff(diffText) {
 function getPRDiffAndContext() {
   let diffText = '';
   let prNumber = process.env.PR_NUMBER || null;
-  let repo = process.env.GITHUB_REPOSITORY || 'calltelemetry/ct-review-bot';
+  let repo = process.env.GITHUB_REPOSITORY || 'review-bot/review-bot';
   let headSha = process.env.GITHUB_SHA || 'main';
   let title = 'Automated PR Review';
   let eventData = null;
@@ -651,6 +651,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     });
   }
 
+const BOT_FOOTER = process.env.BOT_FOOTER || 'Powered by Review Bot Engine & Blacksmith GitHub Action Runners';
   const commentMarkdown = `## ${verdictBadge}
 
 ### 📊 PI.dev Review Quorum Summary
@@ -673,7 +674,7 @@ ${breakdownRows}
 ${findingsDetails}
 
 ---
-*Powered by CallTelemetry PI.dev Review Engine & Blacksmith GitHub Action Runners*`;
+*${BOT_FOOTER}*`;
 
   return commentMarkdown;
 }
