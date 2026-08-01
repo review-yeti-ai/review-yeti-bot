@@ -1,0 +1,126 @@
+name: 'AI PR Review Panel'
+description: 'Reviews a pull request with a panel of AI reviewer personas and posts a single consolidated comment.'
+author: 'JBJMLLC'
+
+branding:
+  icon: 'check-circle'
+  color: 'purple'
+
+inputs:
+  llm-api-key:
+    description: >-
+      API key for an OpenAI-compatible chat completions endpoint. Without it the action runs
+      static heuristic checks and labels the posted comment as such.
+    required: false
+    default: ''
+  llm-base-url:
+    description: 'Base URL of an OpenAI-compatible API. Set this alongside llm-api-key when using a provider other than OpenRouter.'
+    required: false
+    default: 'https://openrouter.ai/api/v1'
+  model:
+    description: 'Model identifier passed to the provider.'
+    required: false
+    default: 'openrouter/auto'
+  personas:
+    description: >-
+      Comma-separated reviewer persona ids, or a JSON array. Defaults to all twelve.
+      Available: security, performance, architecture, style, testing, documentation,
+      accessibility, database, devops, i18n, dependencies, licensing.
+    required: false
+    default: ''
+  max-diff-chars:
+    description: 'Per-persona diff budget. Each persona is one request per push, so this bounds cost on large PRs.'
+    required: false
+    default: '24000'
+  pr-number:
+    description: 'Pull request to review. Defaults to the PR that triggered the workflow.'
+    required: false
+    default: ''
+  repo:
+    description: 'Repository owning the pull request, as owner/name. Defaults to the current repository.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token used to read the diff and post the review comment. The default workflow token is sufficient for same-repository reviews.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: 'SHIP, FIX_FIRST or BLOCK.'
+    value: ${{ steps.review.outputs.verdict }}
+  findings-count:
+    description: 'Total findings across all personas.'
+    value: ${{ steps.review.outputs.findings-count }}
+  p0-count:
+    description: 'Count of P0 (exploitable or data-losing) findings.'
+    value: ${{ steps.review.outputs.p0-count }}
+  p1-count:
+    description: 'Count of P1 (must fix before merge) findings.'
+    value: ${{ steps.review.outputs.p1-count }}
+  p2-count:
+    description: 'Count of P2 (nit) findings.'
+    value: ${{ steps.review.outputs.p2-count }}
+  personas-completed:
+    description: 'Persona lanes that completed successfully.'
+    value: ${{ steps.review.outputs.personas-completed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve target pull request
+      id: target
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_PR: ${{ inputs.pr-number }}
+        EVENT_PR: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        REPO="${INPUT_REPO:-${{ github.repository }}}"
+        PR="${INPUT_PR:-$EVENT_PR}"
+
+        if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+          echo "::error::No pull request number available. Run this action on a pull_request event, or set the pr-number input."
+          exit 1
+        fi
+
+        echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+        echo "pr=$PR" >> "$GITHUB_OUTPUT"
+        echo "Reviewing $REPO#$PR"
+
+    - name: Fetch pull request diff
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        gh pr diff "${{ steps.target.outputs.pr }}" \
+          --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/ct-review.diff"
+        echo "Fetched $(wc -l < "${RUNNER_TEMP}/ct-review.diff") diff lines."
+
+    # Installed under the action path, not the consumer's workspace, so reviewing a repository
+    # never leaves a stray node_modules in its checkout.
+    - name: Install pipeline dependencies
+      shell: bash
+      run: npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 --no-save --no-audit --no-fund --silent
+
+    - name: Run review panel
+      id: review
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        LLM_API_KEY: ${{ inputs.llm-api-key }}
+        LLM_BASE_URL: ${{ inputs.llm-base-url }}
+        OPENROUTER_MODEL: ${{ inputs.model }}
+        ACTIVE_PERSONAS: ${{ inputs.personas }}
+        MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+        PR_NUMBER: ${{ steps.target.outputs.pr }}
+        PR_REPO: ${{ steps.target.outputs.repo }}
+      run: |
+        # cwd stays the consumer's workspace so a repository-local .ct-review.yaml override
+        # is picked up, while the pipeline itself is resolved from the action path.
+        PR_DIFF="$(cat "${RUNNER_TEMP}/ct-review.diff")" \
+          node "$GITHUB_ACTION_PATH/.github/workflows/pipelines/review-pipeline.js"
