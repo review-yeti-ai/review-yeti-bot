@@ -9,7 +9,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
 const pipeline = require(pipelinePath);
 
-const workflowPath = path.join(rootRepoDir, '.github/workflows/review-bot-blacksmith.yaml');
+const workflowPath = path.join(rootRepoDir, '.github/workflows/review-bot.yaml');
 
 describe('Dispatch path: persona resolution defaults', () => {
   const { resolvePersonaRoster, DEFAULT_PERSONA_IDS } = pipeline;
