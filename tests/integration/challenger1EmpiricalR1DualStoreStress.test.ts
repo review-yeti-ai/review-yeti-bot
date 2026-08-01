@@ -5,12 +5,10 @@ import { PostgresStore, ADVISORY_LOCK_ID, postgresStore } from '../../src/persis
 import { DashboardStore, DashboardData } from '../../src/persistence/dashboardStore';
 
 describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Architecture', () => {
-  const originalEnv = { ...process.env };
   const tempTestDir = path.join(process.cwd(), 'data', 'test-challenger-r1-dualstore');
   const tempStorePath = path.join(tempTestDir, 'test-dashboard.json');
 
   beforeEach(() => {
-    process.env = { ...originalEnv };
     delete process.env.DATABASE_URL;
     delete process.env.POSTGRES_URL;
 
@@ -20,15 +18,16 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
   });
 
   afterEach(async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
+    vi.restoreAllMocks();
     await postgresStore.close();
-    process.env = { ...originalEnv };
 
     if (fs.existsSync(tempTestDir)) {
       try {
         fs.rmSync(tempTestDir, { recursive: true, force: true });
       } catch {}
     }
-    vi.restoreAllMocks();
   });
 
   describe('1. Mode Switches & Connection String Resolution', () => {

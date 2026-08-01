@@ -10,6 +10,7 @@ import { PersonaStatusGrid } from '@/components/dashboard/persona-status-grid';
 import { DashboardStore } from '@/persistence/dashboardStore';
 import { createDefaultV3Config, translateCodeRabbitToV3, translateLegacyConfigToV3 } from '@/config/configLoader';
 import { generateCtReviewConfig } from '@/onboarding/configGenerator';
+import * as apiClient from '@/lib/api-client';
 
 // Polyfills for Radix UI primitives in JSDOM
 if (typeof window !== 'undefined') {
@@ -44,6 +45,12 @@ vi.mock('@/lib/api-client', () => ({
 }));
 
 describe('Empirical Challenge Suite — Milestone 1: Default Persona Effort to Low', () => {
+  beforeEach(() => {
+    vi.mocked(apiClient.fetchPersonas).mockResolvedValue({
+      security: { id: 'security', displayName: 'Security', model: 'claude-3-5-sonnet', effort: 'low', confidenceThreshold: 85, enabled: true },
+    } as any);
+    vi.mocked(apiClient.fetchProviders).mockResolvedValue({ providers: {}, modelRegistry: {}, models: [] } as any);
+  });
 
   describe('1. Step4PersonaEnsemble UI Component Effort Defaults', () => {
     it('defaults effort select trigger for all 11 personas to "low" when personas prop is empty', () => {

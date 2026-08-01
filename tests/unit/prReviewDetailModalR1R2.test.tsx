@@ -80,15 +80,15 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
 
       expect(screen.getByText('calltelemetry/cisco-cdr')).toBeInTheDocument();
       expect(screen.getByText('#3050')).toBeInTheDocument();
-      expect(screen.getByText('feat(ingestion): refactor CDR payload parsing pipeline')).toBeInTheDocument();
+      expect(screen.getAllByText('feat(ingestion): refactor CDR payload parsing pipeline').length).toBeGreaterThan(0);
 
       // Check model tags are rendered
-      expect(screen.getByText('claude-3-5-sonnet')).toBeInTheDocument();
-      expect(screen.getByText('deepseek-v3')).toBeInTheDocument();
+      expect(screen.getAllByText('claude-3-5-sonnet').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('deepseek-v3').length).toBeGreaterThan(0);
 
       // Check confidence scores are rendered
-      expect(screen.getByText('98%')).toBeInTheDocument();
-      expect(screen.getByText('92%')).toBeInTheDocument();
+      expect(screen.getAllByText('98%').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('92%').length).toBeGreaterThan(0);
     });
 
     it('expands collapsible reviewer output logs, reasoning chain, and code nits when clicked', () => {
@@ -98,7 +98,7 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
       expect(screen.queryByText('Timing attack vulnerability in signature verification')).not.toBeInTheDocument();
 
       // Click security persona card to expand
-      const securityCard = screen.getByText('Security Agent');
+      const securityCard = screen.getAllByText('Security Agent')[0];
       fireEvent.click(securityCard);
 
       // Verify raw agent output log is rendered
@@ -130,11 +130,11 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
 
       // Verify default model tags are rendered for included personas (security, performance, quality, database)
       expect(screen.getAllByText(/claude/i).length).toBeGreaterThan(0);
-      expect(screen.getByText('glm-5.2')).toBeInTheDocument();
-      expect(screen.getByText('gpt-4o')).toBeInTheDocument();
+      expect(screen.getAllByText('glm-5.2').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('gpt-4o').length).toBeGreaterThan(0);
 
       // Expand quality persona
-      const qualityCard = screen.getByText('Quality');
+      const qualityCard = screen.getAllByText('Quality')[0];
       fireEvent.click(qualityCard);
 
       // Verify reasoning chain & nits are populated
@@ -184,6 +184,58 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
         'href',
         'https://github.com/custom-org/my-app/pull/999'
       );
+    });
+  });
+
+  describe('Requirement R4: Session Metadata Refactor — Turn Progress Bar, Timeline & Findings Delta', () => {
+    it('renders TurnProgressBar and FindingsDeltaCard in PRReviewDetailModal', () => {
+      const jobWithMetadata: ReviewJob = {
+        ...mockJob,
+        findingsDelta: {
+          initialFindings: 4,
+          latestFindings: 1,
+          resolvedFindings: 3,
+          newFindings: 0,
+          persistentFindings: 1,
+          netChange: -3,
+        },
+        personaLogs: [
+          {
+            ...mockJob.personaLogs![0],
+            turnsCount: 4,
+            turns: [
+              {
+                turn: 1,
+                action: 'analyze_diff',
+                input: { path: 'src/auth/jwt.ts' },
+                output: 'Found 1 timing attack nit',
+                timestamp: '2026-07-31T22:00:00Z',
+                tokensBurned: 1200,
+                latencyMs: 300,
+              },
+            ],
+          },
+        ],
+      };
+
+      render(<PRReviewDetailModal job={jobWithMetadata} open={true} onOpenChange={() => {}} />);
+
+      // Verify FindingsDeltaCard is rendered
+      expect(screen.getByTestId('findings-delta-card')).toBeInTheDocument();
+      expect(screen.getByTestId('resolved-findings').textContent).toBe('3');
+
+      // Verify TurnProgressBar is rendered
+      const progressBars = screen.getAllByTestId('turn-progress-bar');
+      expect(progressBars.length).toBeGreaterThan(0);
+
+      // Expand persona to inspect timeline
+      const securityCard = screen.getAllByText('Security Agent')[0];
+      fireEvent.click(securityCard);
+
+      // Verify SessionTurnTimeline is rendered inside expanded persona log
+      expect(screen.getByTestId('session-turn-timeline')).toBeInTheDocument();
+      expect(screen.getByText('Turn #1')).toBeInTheDocument();
+      expect(screen.getByText('analyze_diff')).toBeInTheDocument();
     });
   });
 });
