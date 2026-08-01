@@ -4,12 +4,12 @@ name: Review Bot
 #
 # Two entry points:
 #   1. pull_request       — reviews PRs raised against this repository itself.
-#   2. repository_dispatch — any other repository dispatches here with a target_repo/pr_number
+#   2. repository_dispatch — another repository dispatches here with a target_repo/pr_number
 #                            client_payload; this repo holds the personas, prompts and keys and
 #                            comments back on the originating PR.
 #
-# The workspace always contains THIS repository (the runner and its settings). The target
-# repository is never checked out — only its PR diff and optional override config are fetched.
+# The review itself is delegated to this repository's own action.yml, so every run exercises the
+# same code path third-party consumers get via `uses: JBJMLLC/ct-review-bot@v1`.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -28,108 +28,57 @@ jobs:
   review:
     name: Execute AI Review Pipeline
     runs-on: ubuntu-latest
-    env:
-      # Whitelabel Branding
-      BOT_NAME: ${{ vars.BOT_NAME || 'review-bot[bot]' }}
-      BOT_EMAIL: ${{ vars.BOT_EMAIL || 'bot@review-bot.internal' }}
-
-      # Model routing. Any OpenAI-compatible /chat/completions endpoint works; LLM_BASE_URL
-      # defaults to OpenRouter. Without a key the pipeline runs static heuristics and says so
-      # in the posted comment rather than passing them off as a model review.
-      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
-      # Key and endpoint are set together on purpose. Falling back across providers would pair a
-      # key from one vendor with another vendor's URL and 401 every lane.
-      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
-      LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.OPENROUTER_API_KEY }}
-      # Per-persona diff budget. This runs once per persona per push, so an unbounded diff
-      # multiplies straight into the bill.
-      MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '24000' }}
-      ENABLE_FLOWCHART: ${{ vars.ENABLE_FLOWCHART || 'true' }}
-      MAX_TURNS: ${{ vars.MAX_TURNS || '20' }}
-      REASONING_EFFORT: ${{ vars.REASONING_EFFORT || 'low' }}
-
-      # Persona selection. Unset means "run every persona" — see resolveActivePersonas().
-      ACTIVE_PERSONAS: ${{ vars.ACTIVE_PERSONAS }}
-
-      # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is scoped
-      # to this repository only and cannot read or comment on another repository's PR.
-      GH_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      MCP_CONFIG_JSON: ${{ secrets.MCP_CONFIG_JSON }}
-      CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
-      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
-      PRODUCTLANE_API_KEY: ${{ secrets.PRODUCTLANE_API_KEY }}
-      LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
     steps:
       - name: Checkout Review Runner (this repository)
         uses: actions/checkout@v4
 
-      - name: Setup Node.js Environment
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      # The review pipeline is dependency-free apart from YAML parsing for repository overrides.
-      # Installing only js-yaml keeps the review job at a few seconds instead of a full npm ci.
-      - name: Install Pipeline Dependencies
-        run: npm install js-yaml@4 --no-save --no-audit --no-fund
-
-      - name: Resolve Target PR
-        id: target
-        run: |
-          set -euo pipefail
-          TARGET_REPO="${{ github.event.client_payload.target_repo || github.repository }}"
-          PR_NUMBER="${{ github.event.client_payload.pr_number || github.event.pull_request.number }}"
-
-          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-            echo "::error::No PR number resolved. Dispatch payload must include pr_number."
-            exit 1
-          fi
-
-          echo "Reviewing $TARGET_REPO#$PR_NUMBER"
-          echo "target_repo=$TARGET_REPO" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-
-          HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid --jq .headRefOid)
-          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch PR Diff
-        run: |
-          set -euo pipefail
-          gh pr diff "${{ steps.target.outputs.pr_number }}" \
-            --repo "${{ steps.target.outputs.target_repo }}" > /tmp/pr.diff
-          echo "Fetched $(wc -l < /tmp/pr.diff) diff lines."
-
       # "Central repo controls all personas and settings and each repo can override with a local
-      # file" — pull the target repository's override config into the workspace so that
-      # loadLocalRepoConfig() resolves it without checking out the whole repository.
+      # file." On the dispatch path the workspace holds this repository, so the target's override
+      # is fetched in. On the pull_request path the workspace is already the repo under review.
       - name: Fetch Target Repository Override Config
+        if: github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.event.client_payload.target_repo }}
         run: |
           for f in .ct-review.yaml .ct-review.yml .coderabbit.yaml .coderabbit.yml; do
-            if gh api "repos/${{ steps.target.outputs.target_repo }}/contents/$f?ref=${{ steps.target.outputs.head_sha }}" \
-                 -H "Accept: application/vnd.github.raw" > "$f" 2>/dev/null; then
-              echo "Applied override config $f from target repository."
+            if gh api "repos/$TARGET_REPO/contents/$f" -H "Accept: application/vnd.github.raw" > "$f" 2>/dev/null; then
+              echo "Applied override config $f from $TARGET_REPO."
               break
             fi
             rm -f "$f"
           done
 
-      - name: Execute Review Pipeline
-        env:
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          PR_REPO: ${{ steps.target.outputs.target_repo }}
-          GITHUB_SHA: ${{ steps.target.outputs.head_sha }}
+      - name: Execute AI Review Panel
+        id: review
+        uses: ./
+        with:
+          repo: ${{ github.event.client_payload.target_repo || github.repository }}
+          pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+          personas: ${{ vars.ACTIVE_PERSONAS }}
+          model: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
+          max-diff-chars: ${{ vars.MAX_DIFF_CHARS || '24000' }}
+          # Key and endpoint are set together on purpose. Falling back from one vendor's key to
+          # another vendor's default URL would 401 every persona lane.
+          llm-api-key: ${{ secrets.LLM_API_KEY || secrets.OPENROUTER_API_KEY }}
+          llm-base-url: ${{ vars.LLM_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
+          # scoped to this repository and cannot read or comment on another repository's PR.
+          github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Report Verdict
+        if: always()
         run: |
-          PR_DIFF="$(cat /tmp/pr.diff)" node .github/workflows/pipelines/review-pipeline.js
+          echo "Verdict: ${{ steps.review.outputs.verdict }}"
+          echo "Findings: ${{ steps.review.outputs.findings-count }} (P0: ${{ steps.review.outputs.p0-count }}, P1: ${{ steps.review.outputs.p1-count }}, P2: ${{ steps.review.outputs.p2-count }})"
 
       # Session logs are uploaded rather than committed. Pushing back into the checked-out
-      # repository fails on detached PR checkouts and cannot work at all for a cross-repo target.
+      # repository fails on detached PR checkouts and cannot work for a cross-repo target.
       - name: Upload Session Ledger
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: session-ledger-${{ steps.target.outputs.pr_number }}
+          name: session-ledger-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           path: |
             sessions/
             review-comment.md
