@@ -8,7 +8,7 @@ describe('Empirical Challenge: DashboardStore OpenRouter Default Model Configura
   const testStoreFile = path.join(tmpDir, 'test_r4_empirical_store.json');
   let store: DashboardStore;
 
-  const EXPECTED_DEFAULT_MODEL = 'openrouter/google/gemini-2.0-flash-lite-001';
+  const EXPECTED_DEFAULT_MODEL = 'openrouter/auto';
   const EXPECTED_DEFAULT_PROVIDER = 'openrouter';
 
   const STANDARD_PERSONA_IDS = [
@@ -63,7 +63,7 @@ describe('Empirical Challenge: DashboardStore OpenRouter Default Model Configura
   });
 
   describe('1. Default Persona Initialization', () => {
-    it('initializes all 12 standard personas with openrouter/google/gemini-2.0-flash-lite-001', () => {
+    it('initializes all 12 standard personas with openrouter/auto', () => {
       store = new DashboardStore(testStoreFile);
       const personas = store.getPersonaSettings();
 
@@ -78,7 +78,7 @@ describe('Empirical Challenge: DashboardStore OpenRouter Default Model Configura
       }
     });
 
-    it('returns openrouter/google/gemini-2.0-flash-lite-001 for individual getPersonaSetting queries', () => {
+    it('returns openrouter/auto for individual getPersonaSetting queries', () => {
       store = new DashboardStore(testStoreFile);
 
       for (const id of STANDARD_PERSONA_IDS) {
@@ -90,7 +90,7 @@ describe('Empirical Challenge: DashboardStore OpenRouter Default Model Configura
       }
     });
 
-    it('returns openrouter/google/gemini-2.0-flash-lite-001 for all alias persona lookups', () => {
+    it('returns openrouter/auto for all alias persona lookups', () => {
       store = new DashboardStore(testStoreFile);
 
       for (const [alias, targetId] of Object.entries(ALIAS_MAPPINGS)) {

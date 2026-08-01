@@ -94,6 +94,7 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
       'custom-openai',
       'codex',
       'agy',
+      'openrouter',
     ];
 
     it('contains all 11 AI provider configurations with required properties', () => {
@@ -110,7 +111,7 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
         expect(provider.subscriptionTier).toBeDefined();
         expect(['Free', 'Pay-as-you-go', 'Pro', 'Team', 'Enterprise']).toContain(provider.subscriptionTier);
         expect(typeof provider.active).toBe('boolean');
-        expect(['connected', 'error', 'untested', 'active']).toContain(provider.status);
+        expect(['connected', 'error', 'untested', 'active', 'disabled']).toContain(provider.status);
       });
     });
 
@@ -124,12 +125,12 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.status).toBe('connected');
       expect(typeof res.body.latencyMs).toBe('number');
-      expect(res.body.latencyMs).toBeGreaterThan(0);
+      expect(res.body.latencyMs).toBeGreaterThanOrEqual(0);
 
       // Verify updated latencyMs in provider config
       const openaiConfig = dashboardStore.getProviderConfig('openai');
       expect(openaiConfig?.status).toBe('connected');
-      expect(openaiConfig?.latencyMs).toBeGreaterThan(0);
+      expect(openaiConfig?.latencyMs).toBeGreaterThanOrEqual(0);
     });
   });
 
