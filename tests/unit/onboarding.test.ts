@@ -4,6 +4,7 @@ import path from 'node:path';
 import { scanRepositoryStack } from '../../src/onboarding/stackScanner';
 import { generateCtReviewConfig } from '../../src/onboarding/configGenerator';
 import { createApp } from '../../src/app';
+import { dashboardStore } from '../../src/persistence/dashboardStore';
 
 describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
   const currentRepoPath = path.resolve(__dirname, '../../');
@@ -53,6 +54,23 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
       process.env.OMNIROUTE_BASE_URL = 'http://localhost:8080';
 
       app = createApp();
+
+      const testProviders = ['openai', 'anthropic', 'gemini', 'grok', 'google', 'groq', 'xai'];
+      const getKey = (p: string) => {
+        if (p === 'anthropic' || p === 'claude') return 'sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2';
+        if (p === 'google' || p === 'gemini') return 'AIzaSya1b2c3d4e5f6g7h8i9j0k1l2';
+        if (p === 'grok' || p === 'xai') return 'xai-a1b2c3d4e5f6g7h8i9j0k1l2';
+        if (p === 'groq') return 'gsk_a1b2c3d4e5f6g7h8i9j0k1l2';
+        return 'sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2';
+      };
+      for (const p of testProviders) {
+        dashboardStore.updateProviderConfig(p, {
+          status: 'connected',
+          apiKeyRaw: getKey(p),
+          enabled: true,
+          active: true,
+        });
+      }
 
       const loginRes = await request(createApp())
         .post('/api/auth/login')

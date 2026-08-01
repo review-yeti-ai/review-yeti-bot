@@ -103,7 +103,7 @@ describe('Milestone 3: AI Providers UI & Persona Sync Component Tests', () => {
       expect(screen.getByText('Ollama Local LLM')).toBeDefined();
     });
 
-    const testButtons = screen.getAllByRole('button', { name: /Test Connection/i });
+    const testButtons = screen.getAllByRole('button', { name: /Test/i });
     expect(testButtons.length).toBeGreaterThan(0);
   });
 
@@ -142,7 +142,14 @@ describe('Milestone 3: AI Providers UI & Persona Sync Component Tests', () => {
       success: true,
       providers: mockProviders as any,
       models: ['gpt-4o', 'claude-3-5-sonnet'],
-      modelRegistry: {} as any,
+      modelRegistry: {
+        'claude-3-5-sonnet': {
+          id: 'claude-3-5-sonnet',
+          providerId: 'anthropic',
+          displayName: 'Claude 3.5 Sonnet',
+          enabled: true,
+        },
+      } as any,
     });
 
     vi.spyOn(apiClient, 'fetchPersonas').mockResolvedValue(mockPersonas as any);

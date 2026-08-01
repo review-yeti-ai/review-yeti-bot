@@ -5,15 +5,18 @@ import path from 'path';
 import fs from 'fs';
 
 describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
-  const originalEnv = { ...process.env };
   const tmpDashboardPath = path.join('/tmp', `test_pg_dashboard_${Date.now()}.json`);
 
   beforeEach(() => {
-    process.env = { ...originalEnv };
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
   });
 
   afterEach(async () => {
-    process.env = { ...originalEnv };
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
+    vi.restoreAllMocks();
+    await postgresStore.close();
     if (fs.existsSync(tmpDashboardPath)) {
       try { fs.unlinkSync(tmpDashboardPath); } catch (_) {}
     }
@@ -202,6 +205,7 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
   });
 
   it('synchronizes persona and provider settings to postgresStore when DashboardStore.saveData is invoked', async () => {
+    process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/postgres';
     vi.spyOn(postgresStore, 'isConfigured').mockReturnValue(true);
     const savePersonaSpy = vi.spyOn(postgresStore, 'savePersona').mockResolvedValue(undefined);
     const saveProviderSpy = vi.spyOn(postgresStore, 'saveProvider').mockResolvedValue(undefined);

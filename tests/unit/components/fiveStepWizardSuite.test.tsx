@@ -12,6 +12,7 @@ import { Step5DiagnosticScan } from '@/components/onboarding/steps/step-5-diagno
 
 import { ManifestDrawer } from '@/components/onboarding/manifest-drawer';
 import { CostEstimatorCard } from '@/components/onboarding/cost-estimator-card';
+import * as apiClient from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
   fetchGitHubAppConfig: vi.fn().mockResolvedValue({ appId: '1048293', status: 'configured' }),
@@ -32,6 +33,8 @@ vi.mock('@/lib/api-client', () => ({
 describe('FiveStepWizard Component Suite', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(apiClient.fetchPersonas).mockResolvedValue({});
+    vi.mocked(apiClient.fetchProviders).mockResolvedValue({ providers: {} } as any);
   });
 
   it('renders StepIndicator with all 5 steps', () => {
