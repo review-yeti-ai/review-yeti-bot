@@ -32,6 +32,17 @@ inputs:
     description: 'Per-persona diff budget. Each persona is one request per push, so this bounds cost on large PRs.'
     required: false
     default: '24000'
+  max-personas:
+    description: 'Maximum reviewers a resolved roster may contain. Each is one model request per push, so this bounds what a configuration change can spend.'
+    required: false
+    default: '25'
+  config-ref:
+    description: >-
+      Git ref to read .ct-review.yaml and .ct-review/personas from. Defaults to the pull
+      request's base branch. Reviewer charters are prompts run with your API key, so they are
+      deliberately not read from the pull request's own head.
+    required: false
+    default: ''
   pr-number:
     description: 'Pull request to review. Defaults to the PR that triggered the workflow.'
     required: false
@@ -106,6 +117,50 @@ runs:
       shell: bash
       run: npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 --no-save --no-audit --no-fund --silent
 
+    # Reviewer charters are prompts executed with the caller's API key. Reading them from the
+    # pull request's own checkout would let a pull request rewrite the instructions reviewing it,
+    # and declare as many reviewers as it likes. They are fetched from the base ref instead, over
+    # the API, into a directory the pull request cannot write to. This also means the caller does
+    # not need to check the repository out at all.
+    - name: Fetch reviewer configuration from the trusted base ref
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CONFIG_REF: ${{ inputs.config-ref }}
+        BASE_REF: ${{ github.event.pull_request.base.sha }}
+      run: |
+        set -euo pipefail
+        REPO="${{ steps.target.outputs.repo }}"
+        REF="${CONFIG_REF:-${BASE_REF:-}}"
+        DEST="${RUNNER_TEMP}/ct-review-config"
+        mkdir -p "$DEST/.ct-review/personas"
+
+        if [ -z "$REF" ]; then
+          REF=$(gh api "repos/$REPO" --jq .default_branch)
+        fi
+        echo "Reading reviewer configuration from $REPO@$REF"
+
+        for f in .ct-review.yaml .ct-review.yml .coderabbit.yaml .coderabbit.yml; do
+          if gh api "repos/$REPO/contents/$f?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/$f" 2>/dev/null; then
+            echo "  found $f"
+            break
+          fi
+          rm -f "$DEST/$f"
+        done
+
+        # Persona files are one markdown file per reviewer; enumerate the directory then fetch each.
+        if gh api "repos/$REPO/contents/.ct-review/personas?ref=$REF" --jq '.[].name' > "${RUNNER_TEMP}/persona-names" 2>/dev/null; then
+          while read -r name; do
+            case "$name" in
+              *.md|*.mdx)
+                gh api "repos/$REPO/contents/.ct-review/personas/$name?ref=$REF" \
+                  -H "Accept: application/vnd.github.raw" > "$DEST/.ct-review/personas/$name" 2>/dev/null \
+                  && echo "  found persona $name"
+                ;;
+            esac
+          done < "${RUNNER_TEMP}/persona-names"
+        fi
+
     - name: Run review panel
       id: review
       shell: bash
@@ -117,10 +172,10 @@ runs:
         OPENROUTER_MODEL: ${{ inputs.model }}
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+        MAX_PERSONAS: ${{ inputs.max-personas }}
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
+        CT_REVIEW_CONFIG_DIR: ${{ runner.temp }}/ct-review-config
       run: |
-        # cwd stays the consumer's workspace so a repository-local .ct-review.yaml override
-        # is picked up, while the pipeline itself is resolved from the action path.
         PR_DIFF="$(cat "${RUNNER_TEMP}/ct-review.diff")" \
           node "$GITHUB_ACTION_PATH/.github/workflows/pipelines/review-pipeline.js"
