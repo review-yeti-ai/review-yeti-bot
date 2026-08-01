@@ -40,7 +40,7 @@ db.transaction(() => {
   console.log("Inserted Custom Codex Gateway node pointing to synthetic server.");
 
   // 3. Insert Codex connection with the synthetic key and synthetic baseUrl
-  const syntheticKeyEncrypted = encrypt('syn_caed4a04054f3d66e707e63b31cae88e');
+  const syntheticKeyEncrypted = encrypt(process.env.SYNTHETIC_API_KEY || '');
   db.prepare(`
     INSERT INTO provider_connections (
       id, provider, auth_type, name, is_active, test_status, api_key, provider_specific_data, created_at, updated_at
