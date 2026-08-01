@@ -952,6 +952,27 @@ const PERSONA_DIR = path.join('.ct-review', 'personas');
 const DEFAULT_MAX_PERSONAS = 25;
 
 /**
+ * Shortens a long path for display, keeping the first segment for orientation and the filename,
+ * which carries the most meaning. The full path is still used for the link target.
+ *
+ *   server/CoolFocus/Services/Inbox/SmsComplianceWayCoolReviewSupportNotifier.cs
+ *   → server/…/SmsComplianceWayCoolReviewSupportNotifier.cs
+ */
+function abbreviatePath(filePath, maxLength = 48) {
+  if (!filePath || filePath.length <= maxLength) return filePath;
+
+  const segments = filePath.split('/');
+  if (segments.length <= 2) return filePath;
+
+  const first = segments[0];
+  const last = segments[segments.length - 1];
+  const abbreviated = `${first}/…/${last}`;
+
+  // A single very long filename cannot be shortened without hiding what matters; leave it.
+  return abbreviated.length < filePath.length ? abbreviated : filePath;
+}
+
+/**
  * Directory to read repository configuration from.
  *
  * This must not be the pull request's own checkout. Reviewer charters are prompts executed with
@@ -1299,6 +1320,10 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   });
 
   // Build Findings Details
+  //
+  // Rendered as stacked blocks rather than a table. A markdown table gives the path its own
+  // column, so a single deeply-nested filename crushes the title and suggestion into columns one
+  // word wide.
   let findingsDetails = '';
   const findingLanes = personaResults.filter(r => r.findings.length > 0);
 
@@ -1308,14 +1333,24 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     findingsDetails = '\n> 🎉 **No issues detected across enabled reviewer personas!**\n';
   } else {
     findingLanes.forEach((lane) => {
-      findingsDetails += `\n<details open>\n<summary><b>${lane.displayName} (${lane.findings.length} findings)</b></summary>\n\n`;
-      findingsDetails += '| Severity | Path | Line | Title | Suggestion |\n';
-      findingsDetails += '|---|---|---|---|---|\n';
-      lane.findings.forEach((f) => {
-        const sevBadge = f.severity === 'P0' ? '🔴 P0' : f.severity === 'P1' ? '🟠 P1' : '🟡 P2';
-        const sugg = (f.suggestion || f.body || '').replace(/\|/g, '\\|');
-        findingsDetails += `| ${sevBadge} | \`${f.path}\` | ${f.line} | **${f.title}** | ${sugg} |\n`;
+      const plural = lane.findings.length === 1 ? 'finding' : 'findings';
+      findingsDetails += `\n<details open>\n<summary><b>${lane.displayName} (${lane.findings.length} ${plural})</b></summary>\n\n`;
+
+      lane.findings.forEach((f, i) => {
+        const sevBadge = f.severity === 'P0' ? '🔴 **P0**' : f.severity === 'P1' ? '🟠 **P1**' : '🟡 **P2**';
+        const shown = `${abbreviatePath(f.path)}:${f.line}`;
+        // Link to the exact line on the reviewed commit when we know which commit that was.
+        const location = prContext.repo && prContext.headSha
+          ? `[\`${shown}\`](https://github.com/${prContext.repo}/blob/${prContext.headSha}/${f.path}#L${f.line})`
+          : `\`${shown}\``;
+
+        if (i > 0) findingsDetails += '\n';
+        findingsDetails += `${sevBadge} · **${f.title}**\n`;
+        findingsDetails += `${location}\n`;
+        if (f.body) findingsDetails += `\n${f.body}\n`;
+        if (f.suggestion) findingsDetails += `\n> **Fix:** ${f.suggestion}\n`;
       });
+
       findingsDetails += '\n</details>\n';
     });
   }
@@ -1622,6 +1657,7 @@ module.exports = {
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
   parseDiff,
+  abbreviatePath,
   getPRDiffAndContext,
   resolvePersonaRoster,
   loadPersonaFiles,
