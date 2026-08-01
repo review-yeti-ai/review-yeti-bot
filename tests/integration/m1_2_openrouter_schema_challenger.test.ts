@@ -13,12 +13,12 @@ import { sanitizeV3Config, ConfigValidationError } from '../../src/config/config
 describe('Milestone 1 (R4) — OpenRouter Default Model & Schema Validation Stress Test', () => {
 
   describe('1. R4_ALLOWED_MODELS & V3_PROVIDER_MODELS Constant Inspections', () => {
-    it('contains openrouter/google/gemini-2.0-flash-lite-001 in R4_ALLOWED_MODELS', () => {
-      expect(R4_ALLOWED_MODELS).toContain('openrouter/google/gemini-2.0-flash-lite-001');
+    it('contains openrouter/auto in R4_ALLOWED_MODELS', () => {
+      expect(R4_ALLOWED_MODELS).toContain('openrouter/auto');
     });
 
-    it('verifies openrouter/google/gemini-2.0-flash-lite-001 is the first entry in R4_ALLOWED_MODELS', () => {
-      expect(R4_ALLOWED_MODELS[0]).toBe('openrouter/google/gemini-2.0-flash-lite-001');
+    it('verifies openrouter/auto is the first entry in R4_ALLOWED_MODELS', () => {
+      expect(R4_ALLOWED_MODELS[0]).toBe('openrouter/auto');
     });
 
     it('validates structure and contents of R4_ALLOWED_MODELS', () => {
