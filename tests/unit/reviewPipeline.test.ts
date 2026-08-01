@@ -3,7 +3,9 @@ import path from 'path';
 import fs from 'fs';
 
 // Resolve path to root repository .github/workflows/pipelines/review-pipeline.js
-const rootRepoDir = path.resolve(__dirname, '../../..');
+const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
+  ? path.resolve(__dirname, '../..')
+  : path.resolve(__dirname, '../../..');
 const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
 const pipeline = require(pipelinePath);
 
