@@ -151,20 +151,32 @@ describe('DashboardStore API Key Integrity & Validation (Requirement R3)', () =>
   });
 
   describe('6. Default Persona Model Configuration (Requirement R4)', () => {
-    it('ensures all default persona model configurations default to openrouter/google/gemini-2.0-flash-lite-001', () => {
+    it('ensures all default persona model configurations default to openrouter/auto', () => {
       const personas = store.getPersonaSettings();
       const personaKeys = Object.keys(personas);
       expect(personaKeys.length).toBeGreaterThan(0);
 
       for (const [key, persona] of Object.entries(personas)) {
-        expect(persona.model, `Persona '${key}' model should default to openrouter/google/gemini-2.0-flash-lite-001`).toBe('openrouter/google/gemini-2.0-flash-lite-001');
+        expect(persona.model, `Persona '${key}' model should default to openrouter/auto`).toBe('openrouter/auto');
         if (persona.modelId) {
-          expect(persona.modelId, `Persona '${key}' modelId should default to openrouter/google/gemini-2.0-flash-lite-001`).toBe('openrouter/google/gemini-2.0-flash-lite-001');
+          expect(persona.modelId, `Persona '${key}' modelId should default to openrouter/auto`).toBe('openrouter/auto');
         }
         if (persona.providerId) {
           expect(persona.providerId, `Persona '${key}' providerId should default to openrouter`).toBe('openrouter');
         }
       }
+    });
+
+    it('rejects banned gemini-2.0-flash model configurations', () => {
+      expect(() => {
+        store.validatePersonaSetting({
+          id: 'security',
+          confidenceThreshold: 85,
+          effort: 'low',
+          model: 'openrouter/google/gemini-2.0-flash-lite-001',
+          enabled: true
+        });
+      }).toThrow(/banned per OpenRouter deployment policy/);
     });
   });
 });

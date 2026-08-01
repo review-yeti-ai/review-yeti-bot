@@ -19,11 +19,14 @@ export const V3_PROVIDER_MODELS = {
 } as const;
 
 export const R4_ALLOWED_MODELS = [
-  'openrouter/google/gemini-2.0-flash-lite-001',
+  'openrouter/auto',
+  'openrouter/anthropic/claude-3.7-sonnet',
+  'openrouter/deepseek/deepseek-r1',
+  'openrouter/google/gemini-2.5-pro',
+  'openrouter/qwen/qwen-2.5-72b-instruct',
   'gpt-4o',
   'gpt-4o-mini',
   'gemini-1.5-pro',
-  'gemini-2.0-flash',
   'synthetic/hf:moonshotai/Kimi-K3',
   'synthetic/hf:zai-org/GLM-5.2',
   'synthetic/hf:zai-org/GLM-4.7-Flash',
