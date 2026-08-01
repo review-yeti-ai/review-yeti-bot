@@ -26,6 +26,17 @@ try {
   } catch (_) {}
 }
 
+let SessionLedger = null;
+try {
+  const ledgerModule = require('../../../src/memory/sessionLedger');
+  SessionLedger = ledgerModule.SessionLedger;
+} catch (_) {
+  try {
+    const ledgerModule = require('../../src/memory/sessionLedger');
+    SessionLedger = ledgerModule.SessionLedger;
+  } catch (_) {}
+}
+
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 
 // 12 Persona Charters configured with default model openrouter/auto
@@ -806,6 +817,30 @@ async function main() {
 
   console.log('[Publishing] Executing PR comment publishing...');
   postOrOutputComment(commentMarkdown, prContext);
+
+  // Persist session log artifacts under sessions/ directory
+  if (SessionLedger) {
+    try {
+      const ledger = new SessionLedger();
+      const repoParts = prContext.repo.split('/');
+      const owner = repoParts.length > 1 ? repoParts[0] : 'calltelemetry';
+      const repoName = repoParts.length > 1 ? repoParts[1] : prContext.repo;
+      const recordRes = ledger.recordTurn({
+        owner,
+        repo: repoName,
+        prNumber: prContext.prNumber || 1,
+        headSha: prContext.headSha,
+        title: prContext.title,
+        currentTurn: (sessionContext?.previousTurn || 0) + 1,
+        maxTurns: 20,
+        arbitration,
+        personaResults,
+      });
+      console.log(`[Session Ledger] Persisted turn log to ${recordRes.sessionDir}`);
+    } catch (err) {
+      console.warn(`[Session Ledger] Failed to record turn log: ${err.message}`);
+    }
+  }
 
   console.log('=====================================================');
   console.log(`✅ Review Pipeline Completed cleanly. Verdict: ${arbitration.verdict}`);
