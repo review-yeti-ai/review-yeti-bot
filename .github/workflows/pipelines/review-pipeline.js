@@ -26,9 +26,9 @@ try {
   } catch (_) {}
 }
 
-const DEFAULT_MODEL = 'openrouter/google/gemini-2.0-flash-lite-001';
+const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 
-// 12 Persona Charters configured with default model openrouter/google/gemini-2.0-flash-lite-001
+// 12 Persona Charters configured with default model openrouter/auto
 const PERSONA_CHARTERS = [
   {
     id: 'security',
