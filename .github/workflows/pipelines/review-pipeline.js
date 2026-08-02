@@ -56,7 +56,7 @@ const PERSONA_CHARTERS = [
   {
     id: 'security',
     name: '🛡️ Security & Tenancy Guardian',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/anthropic/claude-3.5-sonnet',
     defaultEnabled: true,
     charter: `You review changes for security defects that are demonstrable in the diff.
 
@@ -78,7 +78,7 @@ Severity: P0 for something an attacker could exploit or that leaks real data. P1
   {
     id: 'performance',
     name: '⚡ Performance & Scalability Specialist',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/meta-llama/llama-3.3-70b-instruct',
     defaultEnabled: true,
     charter: `You review changes for performance defects that will matter at realistic scale.
 
@@ -100,7 +100,7 @@ Severity: P0 only for something that will exhaust memory or hang in production. 
   {
     id: 'architecture',
     name: '🏛️ System Architecture & Design',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/deepseek/deepseek-chat',
     defaultEnabled: true,
     charter: `You review changes for structural problems that will make the codebase harder to change.
 
@@ -122,7 +122,7 @@ Severity: P0 is almost never appropriate here. P1 for a boundary violation or a 
   {
     id: 'style',
     name: '✨ Code Style & Idioms Specialist',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: false,
     charter: `You review changes for readability problems that a formatter or linter would not catch.
 
@@ -143,7 +143,7 @@ Severity: P1 only where the code is genuinely misleading and likely to cause a f
   {
     id: 'testing',
     name: '🧪 Testing & Quality Assurance',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/meta-llama/llama-3.3-70b-instruct',
     defaultEnabled: true,
     charter: `You review whether the change is adequately covered by tests, and whether those tests would fail if the code broke.
 
@@ -164,7 +164,7 @@ Severity: P1 for untested logic that can silently break, or an active exclusive 
   {
     id: 'documentation',
     name: '📝 Documentation & API Specs',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: false,
     charter: `You review whether the change leaves the project's documentation accurate.
 
@@ -185,7 +185,7 @@ Severity: P1 for documentation that is now actively wrong or a public interface 
   {
     id: 'accessibility',
     name: '♿ Accessibility (a11y) & Usability',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: false,
     charter: `You review user interface changes for barriers to people using assistive technology.
 
@@ -207,7 +207,7 @@ Severity: P1 where the interface becomes unusable with a keyboard or screen read
   {
     id: 'database',
     name: '🗄️ Database & Persistence Specialist',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/deepseek/deepseek-chat',
     defaultEnabled: false,
     charter: `You review schema changes and data access for risks to production data.
 
@@ -229,7 +229,7 @@ Severity: P0 for possible data loss or a production-wide lock. P1 for a migratio
   {
     id: 'devops',
     name: '🐳 DevOps & CI/CD',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: false,
     charter: `You review build, container and pipeline configuration for correctness and safety.
 
@@ -251,7 +251,7 @@ Severity: P0 for an exposed secret or a pipeline that cannot fail. P1 for a real
   {
     id: 'i18n',
     name: '🌐 Internationalization & Localizability',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: false,
     charter: `You review changes in projects that localise their interface, for text and formatting that will not translate.
 
@@ -271,7 +271,7 @@ Severity: P1 for user-visible text that cannot be translated in a project that t
   {
     id: 'dependencies',
     name: '📦 Dependency Safety & Supply Chain',
-    model: DEFAULT_MODEL,
+    model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: true,
     charter: `You review changes to a project's dependencies.
 
@@ -292,8 +292,8 @@ Severity: P0 for a plausible supply chain compromise. P1 for unreproducible buil
   },
   {
     id: 'licensing',
-    name: '📄 License & IP Compliance',
-    model: DEFAULT_MODEL,
+    name: '⚖️ Licence & Copyright Compliance',
+    model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: false,
     charter: `You review changes for licence obligations the project may be taking on.
 
@@ -584,7 +584,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     planDiffBudget(diffFiles, maxDiffChars).text,
   ].filter(Boolean).join('\n');
 
-  const base = { personaId: persona.id, displayName: persona.name, model: cfg.model };
+  const targetModel = options.model || persona?.model || cfg.model;
+  const base = { personaId: persona.id, displayName: persona.name, model: targetModel };
 
   try {
     const response = await fetchImpl(`${cfg.baseUrl}/chat/completions`, {
@@ -594,7 +595,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         Authorization: `Bearer ${cfg.apiKey}`,
       },
       body: JSON.stringify({
-        model: cfg.model,
+        model: targetModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -815,6 +816,9 @@ async function initMcpFleet(clientPayload) {
  * Performs deep pattern analysis and charter verification.
  */
 async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext) {
+  if (!persona || typeof persona !== 'object') {
+    persona = { id: 'unknown', name: 'Unknown Persona', model: DEFAULT_MODEL, charter: '' };
+  }
   const findings = [];
 
   // Composable multi-turn context header prepended at the top of all persona prompts
@@ -906,6 +910,7 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
+      case 'quality':
       case 'style': {
         for (let i = 0; i < addedLines.length; i++) {
           if (addedLines[i].text.includes('console.log(') && !file.path.includes('test')) {
@@ -922,6 +927,7 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
+      case 'reliability':
       case 'testing': {
         if (patch.includes('.only(') || patch.includes('fit(')) {
           findings.push({
@@ -936,6 +942,7 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
+      case 'docs_compliance':
       case 'documentation': {
         if (file.path.endsWith('.ts') || file.path.endsWith('.js')) {
           if (patch.includes('export function') || patch.includes('export class')) {
@@ -954,6 +961,7 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
+      case 'api_contract':
       case 'accessibility': {
         if (file.path.endsWith('.tsx') || file.path.endsWith('.jsx') || file.path.endsWith('.html')) {
           if (patch.includes('<img') && !patch.includes('alt=')) {
@@ -1000,6 +1008,7 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
+      case 'finops':
       case 'i18n': {
         if (file.path.includes('/components/') || file.path.includes('/app/')) {
           if (patch.includes('<h1>') || patch.includes('<span>') || patch.includes('<button>')) {
@@ -1018,6 +1027,7 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
+      case 'red_team':
       case 'dependencies': {
         if (file.path.endsWith('package.json')) {
           if (patch.includes('"*"') || patch.includes('"latest"')) {
@@ -1034,6 +1044,7 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
+      case 'review_flowchart':
       case 'licensing': {
         if (file.path.endsWith('.go') || file.path.endsWith('.ts') || file.path.endsWith('.py')) {
           if (!patch.includes('Copyright') && !patch.includes('License') && addedLines.length > 50) {
@@ -1318,8 +1329,19 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
       if (local.enabled) personas.push(local.persona);
       continue;
     }
-    if (builtins.has(id)) {
-      personas.push(builtins.get(id));
+    const aliasMap = {
+      quality: 'style',
+      reliability: 'testing',
+      docs_compliance: 'documentation',
+      api_contract: 'accessibility',
+      finops: 'i18n',
+      red_team: 'dependencies',
+      review_flowchart: 'licensing',
+    };
+    const targetId = aliasMap[id] || id;
+
+    if (builtins.has(targetId)) {
+      personas.push({ ...builtins.get(targetId), id });
       continue;
     }
     // A typo must not quietly halve review coverage, so this is fatal rather than skipped.

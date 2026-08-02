@@ -79,7 +79,7 @@ function SettingsContent() {
   const activePersona = personas[selectedId] || {
     id: selectedId,
     displayName: PERSONA_METADATA[selectedId as keyof typeof PERSONA_METADATA]?.name || selectedId,
-    model: 'claude-haiku-4.5',
+    model: 'openrouter/auto',
     effort: 'low',
     maxTurns: 20,
     confidenceThreshold: 80,
@@ -143,7 +143,7 @@ function SettingsContent() {
     const current = personas[id] || {
       id,
       displayName: PERSONA_METADATA[id as keyof typeof PERSONA_METADATA]?.name || id,
-      model: 'claude-haiku-4.5',
+      model: 'openrouter/auto',
       effort: 'low',
       confidenceThreshold: 80,
       enabled: active,
@@ -229,7 +229,7 @@ function SettingsContent() {
   };
 
   const activeCount = Object.values(personas).filter((p) => p.enabled !== false).length;
-  const currentPersonaModel = activePersona.model || 'claude-haiku-4.5';
+  const currentPersonaModel = activePersona.model || 'openrouter/auto';
   const enabledProviderList = Object.values(providers).filter((p) => p.enabled !== false && p.active !== false);
 
   const allAvailableModels = React.useMemo(() => {
