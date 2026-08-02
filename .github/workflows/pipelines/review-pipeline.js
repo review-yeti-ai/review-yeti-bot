@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync, execSync } = require('child_process');
+const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanitizeCanonicalFindings } = require('../../../src/review/reviewCore');
 
 let mcpFleetManager = null;
 try {
@@ -318,6 +319,17 @@ const DEFAULT_PERSONA_IDS = PERSONA_CHARTERS.filter((p) => p.defaultEnabled).map
 
 const SEVERITIES = ['P0', 'P1', 'P2'];
 const DEFAULT_MAX_DIFF_CHARS = 24_000;
+const ACTION_MAX_DIFF_CAP = 2_000_000;
+const DEFAULT_SUBMODULE_POLICY = {
+  mode: 'metadata_only',
+  max_depth: 1,
+  max_files: 500,
+  require_pinned_commit: true,
+  missing_access: 'block',
+  allowed_repositories: [],
+  allowed_hosts: ['github.com'],
+  url_change: 'block',
+};
 
 /**
  * Resolves LLM endpoint configuration from the environment.
@@ -334,6 +346,51 @@ function resolveModelConfig(env = process.env) {
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || DEFAULT_MAX_DIFF_CHARS;
 
   return { enabled: Boolean(apiKey), apiKey, baseUrl, model, maxDiffChars };
+}
+
+/**
+ * Resolves only trusted base-ref execution controls. Pull-request payloads never participate in
+ * this merge, and numeric settings are capped before they reach model or diff boundaries.
+ */
+function resolveActionReviewPolicy(localConfig, env = process.env) {
+  const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object' ? localConfig.parsed : {};
+  const limits = parsed.limits && typeof parsed.limits === 'object' ? parsed.limits : {};
+  const configuredDiff = Number(limits.max_diff_bytes);
+  const requestedDiff = Number(env.MAX_DIFF_CHARS || configuredDiff || DEFAULT_MAX_DIFF_CHARS);
+  const maxDiffChars = Math.max(1, Math.min(Number.isFinite(requestedDiff) ? requestedDiff : DEFAULT_MAX_DIFF_CHARS, ACTION_MAX_DIFF_CAP));
+  const rawSubmodules = parsed.submodules && typeof parsed.submodules === 'object' ? parsed.submodules : {};
+  const submodules = {
+    ...DEFAULT_SUBMODULE_POLICY,
+    ...rawSubmodules,
+    max_depth: Math.max(0, Math.min(Number(rawSubmodules.max_depth ?? DEFAULT_SUBMODULE_POLICY.max_depth) || 0, 5)),
+  };
+  return { maxDiffChars, submodules };
+}
+
+function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY) {
+  let coverageComplete = true;
+  const files = [];
+  for (const file of Array.isArray(diffFiles) ? diffFiles : []) {
+    const submoduleLines = typeof file.patch === 'string'
+      ? [...file.patch.matchAll(/^[+-]Subproject commit ([0-9a-f]{40})$/gim)].map((match) => match[1])
+      : [];
+    if (submoduleLines.length === 0) {
+      files.push(file);
+      continue;
+    }
+    const submoduleFile = {
+      ...file,
+      isSubmodule: true,
+      mode: '160000',
+      oldSha: submoduleLines[0],
+      newSha: submoduleLines[1],
+    };
+    if (policy.mode === 'ignore') continue;
+    if (policy.require_pinned_commit && (!submoduleFile.oldSha || !submoduleFile.newSha)) coverageComplete = false;
+    if (policy.mode === 'recursive') coverageComplete = false;
+    files.push(submoduleFile);
+  }
+  return { files, coverageComplete };
 }
 
 function assertCurrentPullRequest(prContext, options = {}) {
@@ -1301,7 +1358,7 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
  * @param {number} [expectedPersonas] - How many personas were expected to run; quorum is degraded
  *   when fewer completed. Defaults to the number of results supplied.
  */
-function computeArbitrationQuorum(personaResults, expectedPersonas = personaResults.length) {
+function computeArbitrationQuorumLegacy(personaResults, expectedPersonas = personaResults.length) {
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
@@ -1352,6 +1409,14 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
     thresholds: { blockP1, fixP2 },
     metrics: { p0Count, p1Count, p2Count, totalFindings: p0Count + p1Count + p2Count },
   };
+}
+
+/**
+ * Canonical arbitration boundary shared with the typed App runtime.
+ * The legacy implementation above is retained only as a readable migration reference.
+ */
+function computeArbitrationQuorum(personaResults, expectedPersonas = personaResults.length, options = {}) {
+  return computeCanonicalArbitration(personaResults, expectedPersonas, options);
 }
 
 /**
@@ -1651,6 +1716,7 @@ async function main() {
     console.log(`[Config] Reading repository configuration from the trusted base ref, not the pull request head.`);
   }
   const localConfig = loadLocalRepoConfig(configRoot);
+  const actionPolicy = resolveActionReviewPolicy(localConfig, process.env);
 
   const mcpFleetInfo = await initMcpFleet(prContext.eventData?.client_payload);
   console.log(`[MCP] ${mcpFleetInfo.mcpStatusSummary}`);
@@ -1663,8 +1729,15 @@ async function main() {
     return;
   }
 
-  const modelConfig = resolveModelConfig();
-  const coverage = planDiffBudget(diffFiles, modelConfig.maxDiffChars);
+  const submoduleReview = applyActionSubmodulePolicy(diffFiles, actionPolicy.submodules);
+  const reviewDiffFiles = submoduleReview.files;
+  if (reviewDiffFiles.length === 0) {
+    console.log('[Payload] All changed files were excluded by the trusted submodule policy; no model verdict was posted.');
+    return;
+  }
+
+  const modelConfig = { ...resolveModelConfig(), maxDiffChars: actionPolicy.maxDiffChars };
+  const coverage = planDiffBudget(reviewDiffFiles, modelConfig.maxDiffChars);
   if (coverage.omitted.length > 0 || coverage.truncated.length > 0) {
     console.warn(`[Budget] Diff exceeds the per-reviewer budget of ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} file(s) reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} not reviewed.`);
   }
@@ -1705,9 +1778,10 @@ async function main() {
   if (enabledPersonas.length === 0) {
     console.log('[Personas] All reviewer personas are disabled in repository/org settings. Skipping LLM persona evaluations.');
     arbitration = {
-      verdict: 'SHIP',
-      rationale: 'All reviewer personas disabled in repository settings.',
-      quorumSatisfied: true,
+      verdict: 'BLOCK',
+      status: 'INCOMPLETE_REVIEW',
+      rationale: 'All reviewer personas are disabled; no review evidence exists, so the run cannot produce a successful verdict.',
+      quorumSatisfied: false,
       completedPersonas: 0,
       totalPersonas: 0,
       metrics: { p0Count: 0, p1Count: 0, p2Count: 0 },
@@ -1716,7 +1790,7 @@ async function main() {
     if (modelConfig.enabled) {
       console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
       personaResults = await Promise.all(
-        enabledPersonas.map((persona) => reviewWithModel(persona, diffFiles, prContext, sessionContext, modelConfig))
+        enabledPersonas.map((persona) => reviewWithModel(persona, reviewDiffFiles, prContext, sessionContext, modelConfig))
       );
 
       const failed = personaResults.filter((r) => r.decision === 'ERROR');
@@ -1728,6 +1802,10 @@ async function main() {
         process.exitCode = 1;
         return;
       }
+      personaResults = personaResults.map((lane) => ({
+        ...lane,
+        findings: sanitizeCanonicalFindings(lane.findings, reviewDiffFiles),
+      }));
     } else {
       console.error('[Review] No OPENROUTER_API_KEY configured. Refusing to post a heuristic or successful verdict.');
       process.exitCode = 1;
@@ -1735,7 +1813,10 @@ async function main() {
     }
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
-    arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length);
+    arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
+      changedFiles: reviewDiffFiles,
+      coverageComplete: submoduleReview.coverageComplete,
+    });
   }
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
@@ -1806,6 +1887,8 @@ module.exports = {
   loadPersonaFiles,
   resolveConfigRoot,
   resolveModelConfig,
+  resolveActionReviewPolicy,
+  applyActionSubmodulePolicy,
   reviewWithModel,
   parseFindingsPayload,
   sanitizeFindings,
