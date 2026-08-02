@@ -292,7 +292,7 @@ Severity: P0 for a plausible supply chain compromise. P1 for unreproducible buil
   },
   {
     id: 'licensing',
-    name: '⚖️ Licence & Copyright Compliance',
+    name: '📄 License & IP Compliance',
     model: 'openrouter/google/gemini-2.0-flash-lite-001',
     defaultEnabled: false,
     charter: `You review changes for licence obligations the project may be taking on.
@@ -353,10 +353,14 @@ function resolveModelConfig(env = process.env) {
  * this merge, and numeric settings are capped before they reach model or diff boundaries.
  */
 function resolveActionReviewPolicy(localConfig, env = process.env) {
-  const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object' ? localConfig.parsed : {};
+  const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object'
+    ? localConfig.parsed
+    : (localConfig && typeof localConfig === 'object' ? localConfig : {});
   const limits = parsed.limits && typeof parsed.limits === 'object' ? parsed.limits : {};
   const configuredDiff = Number(limits.max_diff_bytes);
-  const requestedDiff = Number(env.MAX_DIFF_CHARS || configuredDiff || DEFAULT_MAX_DIFF_CHARS);
+  const policyDiff = Number.isFinite(configuredDiff) && configuredDiff > 0 ? configuredDiff : DEFAULT_MAX_DIFF_CHARS;
+  const envDiff = Number(env.MAX_DIFF_CHARS);
+  const requestedDiff = Number.isFinite(envDiff) && envDiff > 0 ? Math.min(envDiff, policyDiff) : policyDiff;
   const maxDiffChars = Math.max(1, Math.min(Number.isFinite(requestedDiff) ? requestedDiff : DEFAULT_MAX_DIFF_CHARS, ACTION_MAX_DIFF_CAP));
   const rawSubmodules = parsed.submodules && typeof parsed.submodules === 'object' ? parsed.submodules : {};
   const submodules = {
@@ -367,14 +371,96 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
   return { maxDiffChars, submodules };
 }
 
-function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY) {
+function isGitlinkMode(file) {
+  if (file?.isSubmodule === true) return true;
+  return [file?.mode, file?.oldMode, file?.newMode, file?.old_mode, file?.new_mode]
+    .some((mode) => String(mode || '') === '160000');
+}
+
+function firstSha(...values) {
+  return values.find((value) => typeof value === 'string' && value.trim())?.trim();
+}
+
+function parseGitlinkPatch(patch) {
+  const result = {};
+  if (typeof patch !== 'string') return result;
+  const meaningfulLines = patch.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith('diff --git') && !line.startsWith('index ') && !line.startsWith('old mode ') && !line.startsWith('new mode ') && !line.startsWith('new file mode ') && !line.startsWith('deleted file mode ') && !line.startsWith('--- ') && !line.startsWith('+++ ') && !line.startsWith(' ') && !/^@@ /u.test(line) && !/^\\ No newline/u.test(line));
+  for (const match of patch.matchAll(/^([+-])Subproject commit ([0-9a-f]{40})\r?$/gim)) {
+    if (match[1] === '-') result.oldSha = match[2];
+    if (match[1] === '+') result.newSha = match[2];
+  }
+  if ((result.oldSha || result.newSha) && meaningfulLines.some((line) => !/^([+-])Subproject commit [0-9a-f]{40}$/i.test(line))) return {};
+  return result;
+}
+
+function loadActionSubmoduleUrls(repoRoot, parentRepository) {
+  const filePath = path.resolve(repoRoot, '.gitmodules');
+  if (!fs.existsSync(filePath)) return {};
+  let content;
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return {};
+  }
+  const result = Object.create(null);
+  let current;
+  const flush = () => {
+    if (!current?.path || !current.url) return;
+    try {
+      result[current.path] = current.url.startsWith('./') || current.url.startsWith('../')
+        ? new URL(current.url, `https://github.com/${parentRepository}/`).toString()
+        : current.url;
+    } catch (_) {
+      result[current.path] = current.url;
+    }
+  };
+  for (const line of content.split(/\r?\n/)) {
+    if (/^\s*\[submodule\s+(?:"[^"]+"|'[^']+'|[^\]]+)\]\s*$/.test(line)) {
+      flush();
+      current = {};
+      continue;
+    }
+    if (/^\s*\[[^\]]+\]\s*$/.test(line)) {
+      flush();
+      current = undefined;
+      continue;
+    }
+    if (!current) continue;
+    const pathMatch = line.match(/^\s*path\s*=\s*(.+?)\s*$/);
+    const urlMatch = line.match(/^\s*url\s*=\s*(.+?)\s*$/);
+    if (pathMatch) current.path = pathMatch[1].trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, (_, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted);
+    if (urlMatch) current.url = urlMatch[1].trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, (_, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted);
+  }
+  flush();
+  return result;
+}
+
+function hasPinnedGitlinkTransition(file) {
+  const oldSha = typeof file.oldSha === 'string' ? file.oldSha.trim() : '';
+  const newSha = typeof file.newSha === 'string' ? file.newSha.trim() : '';
+  const hasOldSha = oldSha.length > 0;
+  const hasNewSha = newSha.length > 0;
+  return (hasOldSha || hasNewSha)
+    && (!hasOldSha || /^[0-9a-f]{40}$/i.test(oldSha))
+    && (!hasNewSha || /^[0-9a-f]{40}$/i.test(newSha));
+}
+
+function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY, options = {}) {
   let coverageComplete = true;
   const files = [];
   for (const file of Array.isArray(diffFiles) ? diffFiles : []) {
-    const submoduleLines = typeof file.patch === 'string'
-      ? [...file.patch.matchAll(/^[+-]Subproject commit ([0-9a-f]{40})$/gim)].map((match) => match[1])
-      : [];
-    if (submoduleLines.length === 0) {
+    const patchTransition = parseGitlinkPatch(file.patch);
+    const nativeGitlink = isGitlinkMode(file);
+    if (!nativeGitlink && (patchTransition.oldSha || patchTransition.newSha)) {
+      // A matching `Subproject commit` line is not enough to prove a gitlink:
+      // ordinary text can contain that literal. Keep it as a normal file so
+      // changed-line sanitization remains strict, and fail closed until native
+      // mode metadata confirms the submodule boundary.
+      coverageComplete = false;
+      files.push(file);
+      continue;
+    }
+    if (!nativeGitlink) {
       files.push(file);
       continue;
     }
@@ -382,24 +468,68 @@ function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY
       ...file,
       isSubmodule: true,
       mode: '160000',
-      oldSha: submoduleLines[0],
-      newSha: submoduleLines[1],
+      ...(firstSha(patchTransition.oldSha, file.oldSha, file.previous_sha, file.previousSha, file.old_sha)
+        ? { oldSha: firstSha(patchTransition.oldSha, file.oldSha, file.previous_sha, file.previousSha, file.old_sha) }
+        : {}),
+      ...(firstSha(patchTransition.newSha, file.newSha, file.sha, file.new_sha)
+        ? { newSha: firstSha(patchTransition.newSha, file.newSha, file.sha, file.new_sha) }
+        : {}),
+      ...((options.baseSubmoduleUrls || {})[file.path] ? { oldSubmoduleUrl: options.baseSubmoduleUrls[file.path] } : {}),
+      ...((options.submoduleUrls || {})[file.path] ? { newSubmoduleUrl: options.submoduleUrls[file.path] } : {}),
+      ...(((options.baseSubmoduleUrls || {})[file.path] || (options.submoduleUrls || {})[file.path])
+        && (options.baseSubmoduleUrls || {})[file.path] !== (options.submoduleUrls || {})[file.path]
+        ? { submoduleUrlChanged: true }
+        : {}),
     };
     if (policy.mode === 'ignore') continue;
-    if (policy.require_pinned_commit && (!submoduleFile.oldSha || !submoduleFile.newSha)) coverageComplete = false;
+    if (policy.require_pinned_commit && !hasPinnedGitlinkTransition(submoduleFile)) coverageComplete = false;
     if (policy.mode === 'recursive') coverageComplete = false;
+    const urlChangePolicy = policy.url_change ?? 'block';
+    if (hasActionSubmoduleUrlChange(submoduleFile) && urlChangePolicy === 'block') coverageComplete = false;
+    if ((policy.allowed_hosts?.length || policy.allowed_repositories?.length) && resolveActionSubmoduleOrigin(submoduleFile, policy, options) === 'blocked') coverageComplete = false;
     files.push(submoduleFile);
   }
   return { files, coverageComplete };
 }
 
+function hasActionSubmoduleUrlChange(file) {
+  if (file.submoduleUrlChanged === true) return true;
+  const oldUrl = typeof file.oldSubmoduleUrl === 'string' ? file.oldSubmoduleUrl.trim() : '';
+  const newUrl = typeof file.newSubmoduleUrl === 'string' ? file.newSubmoduleUrl.trim() : '';
+  return oldUrl.length > 0 && newUrl.length > 0 && oldUrl !== newUrl;
+}
+
+function resolveActionSubmoduleOrigin(file, policy, options = {}) {
+  const allowedHosts = (policy.allowed_hosts || []).map((host) => String(host).toLowerCase().replace(/^\.+|\.+$/g, '')).filter(Boolean);
+  const allowedRepositories = (policy.allowed_repositories || []).map((repository) => String(repository).toLowerCase().replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')).filter(Boolean);
+  const raw = file.newSubmoduleUrl || file.submoduleUrl || file.oldSubmoduleUrl || (options.submoduleUrls || {})[file.path];
+  if (typeof raw !== 'string' || !raw.trim()) return policy.missing_access === 'metadata_only' ? 'review' : 'blocked';
+  if (allowedHosts.length === 0 && allowedRepositories.length === 0) return 'allowed';
+  try {
+    const scp = /^https?:\/\//iu.test(raw) ? null : raw.match(/^[^@]+@([^:]+):(.+)$/);
+    const parentRepository = options.parentRepository || process.env.GITHUB_REPOSITORY || '';
+    const parsed = scp ? null : new URL(raw, parentRepository.includes('/') ? `https://github.com/${parentRepository}/` : undefined);
+    const host = String(scp ? scp[1] : parsed?.hostname || '').toLowerCase();
+    const repository = String(scp ? scp[2] : parsed?.pathname || '').replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '').toLowerCase();
+    if (!host || !repository) return 'blocked';
+    return (allowedHosts.length === 0 || allowedHosts.includes(host))
+      && (allowedRepositories.length === 0 || allowedRepositories.includes(repository))
+      ? 'allowed'
+      : 'blocked';
+  } catch (_) {
+    return 'blocked';
+  }
+}
+
 function assertCurrentPullRequest(prContext, options = {}) {
-  if (!prContext.prNumber || !prContext.repo || !prContext.repo.includes('/')) return null;
+  if (!prContext.prNumber || !prContext.repo || !prContext.repo.includes('/') || !prContext.headSha || !prContext.baseSha) {
+    throw new Error('Cannot verify the current PR revision without prNumber, repo, headSha, and baseSha');
+  }
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const result = commandRunner('gh', [
     'pr', 'view', String(prContext.prNumber), '--repo', prContext.repo,
     '--json', 'headRefOid,baseRefOid',
-  ], { encoding: 'utf-8', env: process.env });
+  ], { encoding: 'utf-8', env: process.env, timeout: 60_000 });
   if (!result || result.status !== 0) {
     throw new Error(`Unable to verify the current PR head for ${prContext.repo}#${prContext.prNumber}: ${result?.stderr || result?.stdout || 'gh failed'}`);
   }
@@ -411,6 +541,9 @@ function assertCurrentPullRequest(prContext, options = {}) {
   }
   if (snapshot.headRefOid !== prContext.headSha) {
     throw new Error(`PR head changed during review: expected ${prContext.headSha}, found ${snapshot.headRefOid}`);
+  }
+  if (snapshot.baseRefOid !== prContext.baseSha) {
+    throw new Error(`PR base changed during review: expected ${prContext.baseSha}, found ${snapshot.baseRefOid}`);
   }
   return snapshot;
 }
@@ -466,76 +599,56 @@ function sanitizeFindings(rawFindings, diffFiles) {
     }));
 }
 
-/**
- * Renders the diff for a prompt, capped at a character budget.
- *
- * The cap is a cost control as much as a context-window one: this runs once per persona per push,
- * so an unbounded diff multiplies straight into the bill.
- */
-// Below this, a file's diff is too small a fragment to review meaningfully; it is better to
-// declare the file unreviewed than to show a reviewer a sliver of it and imply coverage.
+// A fragment smaller than this is too small to review meaningfully. Report it as omitted rather
+// than implying that a reviewer saw the entire file.
 const MIN_USEFUL_FILE_CHARS = 800;
 
 /**
- * Allocates the diff budget across the changed files, and reports what that cost.
- *
- * The budget is per-persona and each persona is one request per push, so a large pull request
- * cannot be shown in full. What matters is that the shortfall is *accounted for*: the previous
- * implementation consumed the budget in file order and then stopped, so every file after the
- * cut-off vanished without leaving its name anywhere a human would see.
- *
- * Allocation: if everything fits, everything is shown. Otherwise each file gets an equal share,
- * down to MIN_USEFUL_FILE_CHARS; if there are more files than that allows, the remainder are
- * reported as not reviewed rather than dropped.
- *
- * @returns {{text: string, reviewed: string[], truncated: string[], omitted: string[]}}
+ * Allocates the per-persona diff budget and records every file that was reviewed, truncated, or
+ * omitted. The accounting is included in the prompt and the human-facing comment.
  */
 function planDiffBudget(diffFiles, maxDiffChars) {
   const reviewed = [];
   const truncated = [];
   const omitted = [];
+  if (!Array.isArray(diffFiles) || diffFiles.length === 0) return { text: '', reviewed, truncated, omitted };
 
-  if (!diffFiles || diffFiles.length === 0) {
-    return { text: '', reviewed, truncated, omitted };
-  }
-
-  const total = diffFiles.reduce((n, f) => n + (f.patch || '').length, 0);
-
+  const total = diffFiles.reduce((sum, file) => sum + String(file.patch || '').length, 0);
   if (total <= maxDiffChars) {
-    const text = diffFiles.map((f) => `\n--- FILE: ${f.path} ---\n${f.patch || ''}`).join('');
-    return { text, reviewed: diffFiles.map((f) => f.path), truncated, omitted };
+    return {
+      text: diffFiles.map((file) => `\n--- FILE: ${file.path} ---\n${file.patch || ''}`).join(''),
+      reviewed: diffFiles.map((file) => file.path),
+      truncated,
+      omitted,
+    };
   }
 
-  // Share the budget evenly, but never below the point where a fragment stops being useful.
   const fairShare = Math.floor(maxDiffChars / diffFiles.length);
   const perFile = Math.max(MIN_USEFUL_FILE_CHARS, fairShare);
   const capacity = Math.max(1, Math.floor(maxDiffChars / perFile));
-
   let text = '';
-  diffFiles.forEach((f, i) => {
-    if (i >= capacity) {
-      omitted.push(f.path);
+  diffFiles.forEach((file, index) => {
+    if (index >= capacity) {
+      omitted.push(file.path);
       return;
     }
-    const patch = f.patch || '';
-    reviewed.push(f.path);
+    const patch = String(file.patch || '');
+    reviewed.push(file.path);
     if (patch.length > perFile) {
-      truncated.push(f.path);
-      text += `\n--- FILE: ${f.path} ---\n${patch.slice(0, perFile)}\n[this file's diff is truncated]\n`;
+      truncated.push(file.path);
+      text += `\n--- FILE: ${file.path} ---\n${patch.slice(0, perFile)}\n[this file's diff is truncated]\n`;
     } else {
-      text += `\n--- FILE: ${f.path} ---\n${patch}`;
+      text += `\n--- FILE: ${file.path} ---\n${patch}`;
     }
   });
-
-  if (truncated.length > 0) {
-    text += `\n[${truncated.length} file(s) above are shown only in part.]\n`;
-  }
-  if (omitted.length > 0) {
-    text += `\n[${omitted.length} changed file(s) are not shown at all: ${omitted.slice(0, 20).join(', ')}${omitted.length > 20 ? ', …' : ''}]\n`;
-  }
+  if (truncated.length > 0) text += `\n[${truncated.length} file(s) above are shown only in part.]\n`;
+  if (omitted.length > 0) text += `\n[${omitted.length} changed file(s) are not shown at all: ${omitted.slice(0, 20).join(', ')}${omitted.length > 20 ? ', …' : ''}]\n`;
   text += '\nReport only on what you can see above. Do not infer defects in code you were not shown.\n';
-
   return { text, reviewed, truncated, omitted };
+}
+
+function renderDiffForPrompt(diffFiles, maxDiffChars) {
+  return planDiffBudget(diffFiles, maxDiffChars).text;
 }
 
 /**
@@ -575,17 +688,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
   ].join('\n');
 
+  const coverage = planDiffBudget(diffFiles, maxDiffChars);
   const userPrompt = [
     `Repository: ${prContext.repo || 'unknown'}`,
     prContext.prNumber ? `Pull request: #${prContext.prNumber}` : '',
     prContext.title ? `Title: ${prContext.title}` : '',
     '',
     'Unified diff under review:',
-    planDiffBudget(diffFiles, maxDiffChars).text,
+    coverage.text,
   ].filter(Boolean).join('\n');
 
-  const targetModel = options.model || persona?.model || cfg.model;
-  const base = { personaId: persona.id, displayName: persona.name, model: targetModel };
+  const base = { personaId: persona.id, displayName: persona.name, model: cfg.model };
 
   try {
     const response = await fetchImpl(`${cfg.baseUrl}/chat/completions`, {
@@ -595,7 +708,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         Authorization: `Bearer ${cfg.apiKey}`,
       },
       body: JSON.stringify({
-        model: targetModel,
+        model: cfg.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -622,7 +735,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     }
 
     const findings = sanitizeFindings(rawFindings, diffFiles);
-    return { ...base, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings };
+    return { ...base, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
   } catch (err) {
     return { ...base, decision: 'ERROR', findings: [], error: err.message };
   }
@@ -634,7 +747,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 function parseDiff(diffText) {
   if (!diffText || typeof diffText !== 'string') return [];
   const files = [];
-  const lines = diffText.split('\n');
+  const lines = diffText.split(/\r?\n/);
   let currentFile = null;
 
   for (const line of lines) {
@@ -654,6 +767,10 @@ function parseDiff(diffText) {
       }
     } else if (currentFile) {
       currentFile.patch += line + '\n';
+      if (line === 'old mode 160000' || line === 'new mode 160000' || line === 'new file mode 160000' || line === 'deleted file mode 160000' || /^index [0-9a-f]+\.\.[0-9a-f]+ 160000$/iu.test(line)) {
+        currentFile.mode = '160000';
+        currentFile.isSubmodule = true;
+      }
       if (line.startsWith('+') && !line.startsWith('+++')) {
         currentFile.addedLines.push({ text: line.slice(1) });
       } else if (line.startsWith('-') && !line.startsWith('---')) {
@@ -682,11 +799,20 @@ function getPRDiffAndContext() {
   let diffText = '';
   let prNumber = process.env.PR_NUMBER || null;
   let repo = process.env.GITHUB_REPOSITORY || 'review-bot/review-bot';
-  let headSha = process.env.GITHUB_SHA || 'main';
+  let headSha = process.env.PR_HEAD_SHA || process.env.GITHUB_SHA || 'main';
+  let baseSha = process.env.PR_BASE_SHA || null;
   let title = 'Automated PR Review';
   let eventData = null;
 
-  // 1. Check process.env.PR_DIFF
+  // 1. Prefer a file boundary for real action runs. Passing a large unified diff through an
+  // environment variable counts toward execve's argument limit and fails on large PRs.
+  if (process.env.PR_DIFF_FILE && fs.existsSync(process.env.PR_DIFF_FILE)) {
+    try {
+      diffText = fs.readFileSync(process.env.PR_DIFF_FILE, 'utf8');
+    } catch (_) {}
+  }
+
+  // 2. Check process.env.PR_DIFF for small synthetic/test payloads and backwards compatibility.
   if (process.env.PR_DIFF) {
     const raw = process.env.PR_DIFF.trim();
     if (raw.startsWith('{')) {
@@ -696,6 +822,7 @@ function getPRDiffAndContext() {
         if (parsed.prNumber) prNumber = String(parsed.prNumber);
         if (parsed.repo) repo = parsed.repo;
         if (parsed.headSha) headSha = parsed.headSha;
+        if (parsed.baseSha) baseSha = parsed.baseSha;
         if (parsed.title) title = parsed.title;
       } catch (_) {
         diffText = raw;
@@ -705,7 +832,7 @@ function getPRDiffAndContext() {
     }
   }
 
-  // 2. Check process.env.GITHUB_EVENT_PATH
+  // 3. Check process.env.GITHUB_EVENT_PATH
   if (process.env.GITHUB_EVENT_PATH && fs.existsSync(process.env.GITHUB_EVENT_PATH)) {
     try {
       const eventContent = fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf-8');
@@ -716,6 +843,9 @@ function getPRDiffAndContext() {
         }
         if (eventData.pull_request.head && eventData.pull_request.head.sha) {
           headSha = eventData.pull_request.head.sha;
+        }
+        if (eventData.pull_request.base && eventData.pull_request.base.sha) {
+          baseSha = eventData.pull_request.base.sha;
         }
         if (eventData.pull_request.title) {
           title = eventData.pull_request.title;
@@ -731,6 +861,9 @@ function getPRDiffAndContext() {
         if (eventData.client_payload.head_sha || eventData.client_payload.headSha) {
           headSha = eventData.client_payload.head_sha || eventData.client_payload.headSha;
         }
+        if (eventData.client_payload.base_sha || eventData.client_payload.baseSha) {
+          baseSha = eventData.client_payload.base_sha || eventData.client_payload.baseSha;
+        }
       }
       if (!repo && eventData.repository && eventData.repository.full_name) {
         repo = eventData.repository.full_name;
@@ -741,7 +874,7 @@ function getPRDiffAndContext() {
     } catch (_) {}
   }
 
-  // 3. Extract PR number from GITHUB_REF (e.g. refs/pull/42/merge)
+  // 4. Extract PR number from GITHUB_REF (e.g. refs/pull/42/merge)
   if (!prNumber && process.env.GITHUB_REF) {
     const refMatch = process.env.GITHUB_REF.match(/refs\/pull\/(\d+)/);
     if (refMatch) {
@@ -749,20 +882,20 @@ function getPRDiffAndContext() {
     }
   }
 
-  // 4. Fallback to git command if no diff found yet
+  // 5. Fallback to git command if no diff found yet
   if (!diffText) {
     try {
       diffText = execSync('git diff HEAD~1 2>/dev/null || git diff 2>/dev/null', { encoding: 'utf-8' }) || '';
     } catch (_) {}
   }
 
-  // 5. PR_REPO wins over everything: the runner checks out the central review repository, so
+  // 6. PR_REPO wins over everything: the runner checks out the central review repository, so
   // GITHUB_REPOSITORY names the runner, not the repository actually under review.
   if (process.env.PR_REPO) {
     repo = process.env.PR_REPO;
   }
 
-  return { diffText, prNumber, repo, headSha, title, eventData };
+  return { diffText, prNumber, repo, headSha, baseSha, title, eventData };
 }
 
 /**
@@ -816,9 +949,6 @@ async function initMcpFleet(clientPayload) {
  * Performs deep pattern analysis and charter verification.
  */
 async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext) {
-  if (!persona || typeof persona !== 'object') {
-    persona = { id: 'unknown', name: 'Unknown Persona', model: DEFAULT_MODEL, charter: '' };
-  }
   const findings = [];
 
   // Composable multi-turn context header prepended at the top of all persona prompts
@@ -910,7 +1040,6 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
-      case 'quality':
       case 'style': {
         for (let i = 0; i < addedLines.length; i++) {
           if (addedLines[i].text.includes('console.log(') && !file.path.includes('test')) {
@@ -927,7 +1056,6 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
-      case 'reliability':
       case 'testing': {
         if (patch.includes('.only(') || patch.includes('fit(')) {
           findings.push({
@@ -942,7 +1070,6 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
-      case 'docs_compliance':
       case 'documentation': {
         if (file.path.endsWith('.ts') || file.path.endsWith('.js')) {
           if (patch.includes('export function') || patch.includes('export class')) {
@@ -961,7 +1088,6 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
-      case 'api_contract':
       case 'accessibility': {
         if (file.path.endsWith('.tsx') || file.path.endsWith('.jsx') || file.path.endsWith('.html')) {
           if (patch.includes('<img') && !patch.includes('alt=')) {
@@ -1008,7 +1134,6 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
-      case 'finops':
       case 'i18n': {
         if (file.path.includes('/components/') || file.path.includes('/app/')) {
           if (patch.includes('<h1>') || patch.includes('<span>') || patch.includes('<button>')) {
@@ -1027,7 +1152,6 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
-      case 'red_team':
       case 'dependencies': {
         if (file.path.endsWith('package.json')) {
           if (patch.includes('"*"') || patch.includes('"latest"')) {
@@ -1044,7 +1168,6 @@ async function evaluatePersonaLane(persona, diffFiles, prContext, sessionContext
         break;
       }
 
-      case 'review_flowchart':
       case 'licensing': {
         if (file.path.endsWith('.go') || file.path.endsWith('.ts') || file.path.endsWith('.py')) {
           if (!patch.includes('Copyright') && !patch.includes('License') && addedLines.length > 50) {
@@ -1329,19 +1452,8 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
       if (local.enabled) personas.push(local.persona);
       continue;
     }
-    const aliasMap = {
-      quality: 'style',
-      reliability: 'testing',
-      docs_compliance: 'documentation',
-      api_contract: 'accessibility',
-      finops: 'i18n',
-      red_team: 'dependencies',
-      review_flowchart: 'licensing',
-    };
-    const targetId = aliasMap[id] || id;
-
-    if (builtins.has(targetId)) {
-      personas.push({ ...builtins.get(targetId), id });
+    if (builtins.has(id)) {
+      personas.push(builtins.get(id));
       continue;
     }
     // A typo must not quietly halve review coverage, so this is fatal rather than skipped.
@@ -1525,25 +1637,18 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   const failureNote = failedLanes.length > 0
     ? `\n- **Degraded Lanes**: ${failedLanes.length} persona(s) failed and were excluded — ${failedLanes.map(l => `${l.displayName} (${l.error})`).join('; ')}`
     : '';
-
-  // A verdict derived from part of a diff must not read like a verdict on the whole one. If the
-  // budget forced anything out, say so where the reader sees the verdict, not only in the prompt.
-  let coverageNote = '';
-  if (coverage && (coverage.omitted?.length || coverage.truncated?.length)) {
-    const parts = [];
-    if (coverage.omitted?.length) {
-      const list = coverage.omitted.slice(0, 15).map((f) => `\`${f}\``).join(', ');
-      const more = coverage.omitted.length > 15 ? ` and ${coverage.omitted.length - 15} more` : '';
-      parts.push(`**${coverage.omitted.length} file(s) were not reviewed** — ${list}${more}.`);
-    }
-    if (coverage.truncated?.length) {
-      parts.push(`${coverage.truncated.length} file(s) were truncated and reviewed only in part.`);
-    }
-    coverageNote =
-      `\n\n> ⚠️ **This verdict covers part of the change.** ${parts.join(' ')}\n> ` +
-      `The diff exceeded the per-reviewer budget of ${modelConfig.maxDiffChars || DEFAULT_MAX_DIFF_CHARS} characters. ` +
-      `Raise \`max-diff-chars\`, narrow the reviewer roster, or split the pull request.`;
+  const coverageParts = [];
+  if (coverage?.omitted?.length) {
+    const files = coverage.omitted.slice(0, 15).map((file) => `\`${file}\``).join(', ');
+    const more = coverage.omitted.length > 15 ? ` and ${coverage.omitted.length - 15} more` : '';
+    coverageParts.push(`**${coverage.omitted.length} file(s) were not reviewed** — ${files}${more}.`);
   }
+  if (coverage?.truncated?.length) {
+    coverageParts.push(`${coverage.truncated.length} file(s) were truncated and reviewed only in part.`);
+  }
+  const coverageNote = coverageParts.length > 0
+    ? `\n\n> ⚠️ **This verdict covers part of the change.** ${coverageParts.join(' ')}\n> The diff exceeded the per-reviewer budget of ${modelConfig.maxDiffChars || DEFAULT_MAX_DIFF_CHARS} characters.`
+    : '';
 
   const commentMarkdown = `## ${verdictBadge}
 
@@ -1751,7 +1856,9 @@ async function main() {
     return;
   }
 
-  const submoduleReview = applyActionSubmodulePolicy(diffFiles, actionPolicy.submodules);
+  const baseSubmoduleUrls = loadActionSubmoduleUrls(configRoot, prContext.repo);
+  const submoduleUrls = loadActionSubmoduleUrls(process.cwd(), prContext.repo);
+  const submoduleReview = applyActionSubmodulePolicy(diffFiles, actionPolicy.submodules, { baseSubmoduleUrls, submoduleUrls, parentRepository: prContext.repo });
   const reviewDiffFiles = submoduleReview.files;
   if (reviewDiffFiles.length === 0) {
     console.log('[Payload] All changed files were excluded by the trusted submodule policy; no model verdict was posted.');
@@ -1761,13 +1868,17 @@ async function main() {
   const modelConfig = { ...resolveModelConfig(), maxDiffChars: actionPolicy.maxDiffChars };
   const coverage = planDiffBudget(reviewDiffFiles, modelConfig.maxDiffChars);
   if (coverage.omitted.length > 0 || coverage.truncated.length > 0) {
-    console.warn(`[Budget] Diff exceeds the per-reviewer budget of ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} file(s) reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} not reviewed.`);
+    console.warn(`[Budget] Diff exceeds ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} omitted.`);
   }
   console.log(modelConfig.enabled
     ? `[Model] OpenRouter-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
     : '[Model] OPENROUTER_API_KEY is not configured; refusing to produce a verdict.');
 
-  const syntheticVitestRun = process.env.VITEST === 'true' && process.env.PR_DIFF && !process.env.GITHUB_EVENT_PATH;
+  // Never allow a workflow-supplied variable to disable exact-head verification on a real runner.
+  const syntheticVitestRun = process.env.GITHUB_ACTIONS !== 'true'
+    && process.env.VITEST === 'true'
+    && process.env.PR_DIFF
+    && !process.env.GITHUB_EVENT_PATH;
   if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
 
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
@@ -1902,7 +2013,6 @@ module.exports = {
   DEFAULT_MODEL,
   parseDiff,
   abbreviatePath,
-  planDiffBudget,
   getPRDiffAndContext,
   assertCurrentPullRequest,
   resolvePersonaRoster,
@@ -1911,6 +2021,7 @@ module.exports = {
   resolveModelConfig,
   resolveActionReviewPolicy,
   applyActionSubmodulePolicy,
+  planDiffBudget,
   reviewWithModel,
   parseFindingsPayload,
   sanitizeFindings,

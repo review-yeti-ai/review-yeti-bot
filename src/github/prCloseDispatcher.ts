@@ -5,7 +5,7 @@ import { CtReviewConfigV3 } from '../config/schema';
 import { executeDocsPersona } from '../personas/docsPersona';
 import { executeMarketingPersona } from '../personas/marketingPersona';
 import { executeLinearSyncPersona } from '../personas/linearSyncPersona';
-import { OmniRouteClient } from '../gateway/omniRouteClient';
+import { ReviewModelClient } from '../gateway/openRouterClient';
 import { logger } from '../utils/logger';
 
 export interface PRCloseDispatchResult {
@@ -19,7 +19,7 @@ export interface PRCloseDispatchResult {
 }
 
 export class PRCloseDispatcher {
-  constructor(private readonly omniRoute?: OmniRouteClient) {}
+  constructor(private readonly modelClient?: ReviewModelClient) {}
 
   public async dispatchPRCloseActions(
     payload: ParsedPRPayload,
@@ -56,13 +56,13 @@ export class PRCloseDispatcher {
       for (const personaType of policy.create_followup_prs) {
         try {
           if (personaType === 'docs') {
-            const docsRes = await executeDocsPersona({ payload, config, github, omniRoute: this.omniRoute });
+            const docsRes = await executeDocsPersona({ payload, config, github, modelClient: this.modelClient });
             if (docsRes.created) {
               result.actionsExecuted.push('create_followup_prs:docs');
               result.followupPRsCreated.push({ persona: 'docs', prNumber: docsRes.prNumber, url: docsRes.url });
             }
           } else if (personaType === 'marketing') {
-            const mktRes = await executeMarketingPersona({ payload, config, github, omniRoute: this.omniRoute });
+            const mktRes = await executeMarketingPersona({ payload, config, github, modelClient: this.modelClient });
             if (mktRes.created) {
               result.actionsExecuted.push('create_followup_prs:marketing');
               result.followupPRsCreated.push({ persona: 'marketing', prNumber: mktRes.prNumber, url: mktRes.url });

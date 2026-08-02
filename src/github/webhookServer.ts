@@ -126,7 +126,7 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
       if (!res.headersSent) {
         return res.status(500).json({
           error: 'Internal Server Error',
-          message: err?.message || 'Webhook processing failed',
+          message: 'Webhook processing failed',
         });
       }
       next(err);

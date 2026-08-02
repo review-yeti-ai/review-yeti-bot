@@ -33,6 +33,15 @@ reviewers:
     order: [claude, codex, grok, agy-opus]
 `;
 
+const RECURSIVE_SUBMODULE_POLICY = `${POLICY.replace('version: 3', 'version: 4')}
+submodules:
+  mode: recursive
+`;
+
+const SINGLE_PERSONA_POLICY = POLICY
+  .replace('quorum: 2', 'quorum: 1')
+  .replace('  - id: constitutional-goals\n    enabled: true', '  - id: constitutional-goals\n    enabled: false');
+
 const privateKey = generateKeyPairSync('rsa', { modulusLength: 2048 })
   .privateKey.export({ type: 'pkcs8', format: 'pem' })
   .toString();
@@ -83,7 +92,13 @@ function fencedCompletion(request: any): Response {
   });
 }
 
-function route(options: { staleAfterPanel?: boolean; omniOutage?: boolean } = {}) {
+function route(options: {
+  staleAfterPanel?: boolean;
+  staleOnPublication?: boolean;
+  recursiveSubmodule?: boolean;
+  singlePersona?: boolean;
+  omniOutage?: boolean;
+} = {}) {
   const requests: Array<{ url: string; method: string; body: any }> = [];
   let pullReads = 0;
   const fetchMock = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -105,7 +120,11 @@ function route(options: { staleAfterPanel?: boolean; omniOutage?: boolean } = {}
     if (/\/pulls\/\d+$/.test(url)) {
       pullReads += 1;
       const prNumber = Number(/\/pulls\/(\d+)$/.exec(url)?.[1]);
-      const stale = options.staleAfterPanel && pullReads > 1;
+      const stale = options.staleAfterPanel
+        ? pullReads > 1
+        : options.staleOnPublication
+          ? pullReads > 3
+          : false;
       return json({
         head: { sha: stale ? `new-head-${prNumber}` : `head-${prNumber}` },
         base: { sha: `base-${prNumber}` },
@@ -114,10 +133,23 @@ function route(options: { staleAfterPanel?: boolean; omniOutage?: boolean } = {}
       });
     }
     if (url.includes('/contents/.ct-review.yaml?ref=')) {
-      return json({ encoding: 'base64', content: Buffer.from(POLICY).toString('base64') });
+      const policy = options.recursiveSubmodule
+        ? RECURSIVE_SUBMODULE_POLICY
+        : options.singlePersona
+          ? SINGLE_PERSONA_POLICY
+          : POLICY;
+      return json({ encoding: 'base64', content: Buffer.from(policy).toString('base64') });
     }
     if (url.includes('/files?per_page=100&page=1')) {
-      return json([{ filename: 'src/proof.ts', patch: '@@ -0,0 +1 @@\n+export const proof = true;' }]);
+      return options.recursiveSubmodule
+        ? json([{
+          filename: 'src/vendor/lib',
+          status: 'modified',
+          mode: '160000',
+          previous_sha: 'a'.repeat(40),
+          sha: 'b'.repeat(40),
+        }])
+        : json([{ filename: 'src/proof.ts', patch: '@@ -0,0 +1 @@\n+export const proof = true;' }]);
     }
     if (url.endsWith('/check-runs') && method === 'POST') return json({ id: 991 }, 201);
     if (url.includes('/check-runs/991') && method === 'PATCH') return json({});
@@ -151,8 +183,8 @@ describe('GitHub App configurable persona pipeline', () => {
     expect(result).toMatchObject({
       status: 'processed',
       personas: [
-        { id: 'security-tenancy', provider: 'grok', model: 'grok-cli/grok-4.5' },
-        { id: 'constitutional-goals', provider: 'codex', model: 'codex/gpt-5.6-sol-high' },
+        { id: 'security-tenancy', provider: 'grok', model: 'x-ai/grok-4.5' },
+        { id: 'constitutional-goals', provider: 'codex', model: 'openai/gpt-5.6-sol' },
       ],
       quorum: { required: 2, satisfied: true },
       arbiter: 'SHIP',
@@ -183,6 +215,28 @@ describe('GitHub App configurable persona pipeline', () => {
       request.url.includes('/check-runs/991') && request.method === 'PATCH',
     );
     expect(completion?.body.conclusion).toBe('cancelled');
+  });
+
+  it('rechecks the exact head through the App GitHub client before the first publication write', async () => {
+    const mock = route({ staleOnPublication: true, singlePersona: true });
+    vi.stubGlobal('fetch', mock.fetchMock);
+
+    await expect(runReviewPipeline(payload(9104))).rejects.toThrow(/head changed before publication/i);
+    expect(mock.requests.filter((request) => request.url.endsWith('/reviews'))).toHaveLength(0);
+  });
+
+  it('turns incomplete recursive submodule context into a non-SHIP App verdict', async () => {
+    const mock = route({ recursiveSubmodule: true });
+    vi.stubGlobal('fetch', mock.fetchMock);
+
+    await expect(runReviewPipeline(payload(9105))).resolves.toMatchObject({
+      status: 'processed',
+      arbiter: 'BLOCK',
+      decision: 'REQUEST_CHANGES',
+    });
+    const reviews = mock.requests.filter((request) => request.url.endsWith('/reviews'));
+    expect(reviews.at(-1)?.body.event).toBe('REQUEST_CHANGES');
+    expect(reviews.at(-1)?.body.body).toContain('Binding arbiter verdict: BLOCK');
   });
 
   it('fails closed with a failed check and infrastructure comment during provider outage', async () => {

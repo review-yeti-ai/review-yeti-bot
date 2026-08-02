@@ -390,35 +390,34 @@ function provider(config: CtReviewConfigV3, id: ProviderId) {
 
 function validateFindings(value: unknown): PanelFinding[] {
   if (!value || !Array.isArray(value)) return [];
-  const valid: PanelFinding[] = [];
-  for (const finding of value) {
-    if (!finding || typeof finding !== 'object') continue;
-    if (!['P0', 'P1', 'P2'].includes(finding.severity)) continue;
-    if (!finding.title || typeof finding.title !== 'string') continue;
-    if (!finding.body || typeof finding.body !== 'string') continue;
-    if (!finding.path || typeof finding.path !== 'string') continue;
-
+  return value.map((finding: any) => {
+    let severity: 'P0' | 'P1' | 'P2' = 'P2';
+    if (finding && ['P0', 'P1', 'P2'].includes(finding.severity)) {
+      severity = finding.severity;
+    }
+    const path = (finding && typeof finding.path === 'string') ? finding.path : 'unknown';
     let line = 1;
-    if (finding.line !== undefined) {
+    if (finding && finding.line !== undefined) {
       const parsedLine = parseInt(finding.line, 10);
       if (Number.isInteger(parsedLine) && parsedLine >= 1) {
         line = parsedLine;
       }
     }
+    const title = (finding && typeof finding.title === 'string') ? finding.title : 'Review Finding';
+    const body = (finding && typeof finding.body === 'string') ? finding.body : '';
 
-    valid.push({
-      severity: finding.severity,
-      path: finding.path,
+    return {
+      severity,
+      path,
       line,
-      title: finding.title,
-      body: finding.body,
-      ...(typeof finding.suggestion === 'string' ? { suggestion: finding.suggestion } : {}),
-      ...(typeof finding.confidence === 'number' ? { confidence: finding.confidence } : {}),
-      ...(typeof finding.recommendation === 'string' ? { recommendation: finding.recommendation } : {}),
-      ...(Array.isArray(finding.fixOptions) ? { fixOptions: finding.fixOptions } : {}),
-    });
-  }
-  return valid;
+      title,
+      body,
+      ...(finding && typeof finding.suggestion === 'string' ? { suggestion: finding.suggestion } : {}),
+      ...(finding && typeof finding.confidence === 'number' ? { confidence: finding.confidence } : {}),
+      ...(finding && typeof finding.recommendation === 'string' ? { recommendation: finding.recommendation } : {}),
+      ...(finding && Array.isArray(finding.fixOptions) ? { fixOptions: finding.fixOptions } : {}),
+    };
+  });
 }
 
 async function invoke(
@@ -646,11 +645,11 @@ async function runPersona(
     const isRedTeam = isRedTeamPersona(persona.id, persona.charter);
 
     const storePersona = dashboardStore.getPersonaSetting(persona.id);
-    const rawStorePrompt = dashboardStore.getSettings()?.personaSettings?.[persona.id]?.customPrompt?.trim();
-    const storePrompt = (rawStorePrompt && rawStorePrompt !== '') ? rawStorePrompt : undefined;
-    const yamlPrompt = (persona as any).customPrompt?.trim();
-    const customPromptOverride = storePrompt || yamlPrompt;
-
+    const customPromptOverride = (storePersona?.customPrompt && storePersona.customPrompt.trim())
+      ? storePersona.customPrompt
+      : ((persona as any).customPrompt && (persona as any).customPrompt.trim())
+        ? (persona as any).customPrompt
+        : undefined;
     const effectiveCharter = customPromptOverride || BUILTIN_CHARTERS[persona.charter] || persona.charter;
 
     const bus = LiveStreamBus.getInstance();
@@ -701,11 +700,20 @@ async function runPersona(
 
     const providersToTry = [...new Set([...baseProviders, 'synthetic', 'glm'])].filter((p) => availableProviderIds.includes(p as any));
 
-    const primaryProviderId = baseProviders[0];
     for (const providerId of providersToTry) {
       const spec = provider(config, providerId);
-      const isPrimary = providerId === primaryProviderId;
-      let targetModel = isPrimary ? (persona.model || (storePersona?.model && storePersona.model !== 'openrouter/auto' ? storePersona.model : spec.model)) : spec.model;
+      // The dashboard's openrouter/auto value is the default sentinel, not an
+      // explicit model override. Also keep a persona-specific override bound
+      // to its primary provider; fallback providers must use their own model
+      // contract instead of receiving an incompatible primary-provider model.
+      const dashboardModel = storePersona?.model && storePersona.model !== 'openrouter/auto'
+        ? storePersona.model
+        : undefined;
+      const requestedModel = persona.model || dashboardModel;
+      const primaryProviderId = dualResolved?.providerId || persona.providers[0];
+      let targetModel = providerId === primaryProviderId && requestedModel
+        ? requestedModel
+        : spec.model;
       if (dualResolved && providerId === dualResolved.providerId) {
         targetModel = dualResolved.model;
       } else if (isRedTeam && primaryModelContext) {
