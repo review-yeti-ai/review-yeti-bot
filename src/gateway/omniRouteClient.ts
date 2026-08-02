@@ -85,6 +85,7 @@ function validateProvenance(
   }
   if (responseModel && responseModel !== requestedRoute && responseModel !== requestedModel) {
     logger.info(`OmniRoute resolved model ${responseModel} for ${requestedRoute}`);
+    throw new Error(`OmniRoute silently substituted model ${responseModel} for ${requestedRoute}`);
   }
   if (headerModel && headerModel !== requestedRoute && headerModel !== requestedModel) {
     logger.info(`OmniRoute resolved header model ${headerModel} for ${requestedRoute}`);

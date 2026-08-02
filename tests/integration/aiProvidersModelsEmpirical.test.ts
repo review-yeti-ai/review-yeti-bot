@@ -66,11 +66,11 @@ describe('AI Providers & Models Management System Empirical Test Suite', () => {
   beforeAll(() => {
     process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'test-webhook-secret-12345';
     app = createApp();
-    const keyRecord = dashboardStore.createApiKey('challenger-ai-providers-key');
-    apiKey = keyRecord.rawKey;
   });
 
   beforeEach(() => {
+    const keyRecord = dashboardStore.createApiKey('challenger-ai-providers-key');
+    apiKey = keyRecord.rawKey;
     providerPool.clear();
   });
 

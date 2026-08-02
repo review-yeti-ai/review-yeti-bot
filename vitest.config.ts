@@ -42,6 +42,7 @@ export default defineConfig({
       },
     },
     fileParallelism: false,
+    isolate: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

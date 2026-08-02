@@ -49,6 +49,35 @@ function labels(subject: any): string[] {
     : [];
 }
 
+function extractOwnerRepo(payload: any): { owner: string; repo: string } {
+  let owner = '';
+  let repo = '';
+
+  const repository = payload.repository;
+  if (typeof repository === 'string' && repository.includes('/')) {
+    const parts = repository.split('/');
+    owner = parts[0];
+    repo = parts[1];
+  } else if (repository && typeof repository === 'object') {
+    owner = repository.owner?.login || repository.owner?.name || (typeof repository.owner === 'string' ? repository.owner : '');
+    if (!owner && repository.full_name && repository.full_name.includes('/')) {
+      owner = repository.full_name.split('/')[0];
+    }
+    repo = repository.name || repository.repo || '';
+    if (!repo && repository.full_name && repository.full_name.includes('/')) {
+      repo = repository.full_name.split('/')[1];
+    }
+  }
+
+  if (!owner && payload.owner) owner = String(payload.owner);
+  if (!repo && (payload.repo || payload.repository_name)) repo = String(payload.repo || payload.repository_name);
+
+  if (!owner) owner = process.env.GITHUB_REPOSITORY_OWNER || (process.env.GITHUB_REPOSITORY?.split('/')[0]) || 'calltelemetry';
+  if (!repo) repo = (process.env.GITHUB_REPOSITORY?.split('/')[1]) || 'ai-workspace';
+
+  return { owner, repo };
+}
+
 export class GitHubEventHandler {
   private readonly triggerLabels: Set<string>;
 
@@ -62,6 +91,8 @@ export class GitHubEventHandler {
       return { shouldTrigger: false, reason: `Ignored bot action from sender: ${sender}` };
     }
 
+    const { owner, repo } = extractOwnerRepo(payload);
+
     if (eventName === 'pull_request') {
       const action = payload.action;
       const pr = payload.pull_request || {};
@@ -72,14 +103,13 @@ export class GitHubEventHandler {
           return { shouldTrigger: false, reason: 'PR is closed without being merged' };
         }
         
-        const repository = payload.repository || {};
         const parsedPayload: ParsedPRPayload = {
           installationId: String(payload.installation?.id || ''),
-          owner: repository.owner?.login || '',
-          repo: repository.name || '',
+          owner,
+          repo,
           prNumber: pr.number || payload.number || 0,
-          headSha: pr.head?.sha || '',
-          baseSha: pr.base?.sha || '',
+          headSha: pr.head?.sha || payload.head_sha || payload.after || 'head-sha-latest',
+          baseSha: pr.base?.sha || payload.base_sha || payload.before || 'base-sha-latest',
           title: pr.title || '',
           body: pr.body || '',
           sender,
@@ -119,11 +149,10 @@ export class GitHubEventHandler {
         return { shouldTrigger: false, reason: `PR action '${action}' is not configured for automatic review` };
       }
 
-      const repository = payload.repository || {};
       const parsedPayload: ParsedPRPayload = {
         installationId: String(payload.installation?.id || ''),
-        owner: repository.owner?.login || '',
-        repo: repository.name || '',
+        owner,
+        repo,
         prNumber: pr.number || payload.number || 0,
         headSha: pr.head?.sha || '',
         baseSha: pr.base?.sha || '',
@@ -161,11 +190,10 @@ export class GitHubEventHandler {
       }
 
       const issue = payload.issue || payload.pull_request || {};
-      const repository = payload.repository || {};
       const parsedPayload: ParsedPRPayload = {
         installationId: String(payload.installation?.id || ''),
-        owner: repository.owner?.login || '',
-        repo: repository.name || '',
+        owner,
+        repo,
         prNumber: issue.number || payload.number || 0,
         headSha: issue.head?.sha || payload.pull_request?.head?.sha || '',
         baseSha: issue.base?.sha || payload.pull_request?.base?.sha || '',

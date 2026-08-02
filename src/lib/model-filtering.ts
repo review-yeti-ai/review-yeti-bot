@@ -1,5 +1,6 @@
 import { ProviderConfigRecord, ModelRegistryItem } from '@/types/dashboard';
 import { OMNIROUTE_GENERATED_PROVIDERS, ProviderType } from '@/types/providers.generated';
+import { R4_ALLOWED_MODELS } from '@/config/schema';
 
 /**
  * Canonical mapping for legacy or variant provider IDs.
@@ -10,9 +11,10 @@ export const CANONICAL_PROVIDER_IDS: Record<string, string> = {
 };
 
 /**
- * List of all 11 canonical OmniRoute providers.
+ * List of all canonical OmniRoute providers.
  */
-export const ALL_CANONICAL_PROVIDERS: ProviderType[] = [
+export const ALL_CANONICAL_PROVIDERS: (ProviderType | string)[] = [
+  'openrouter',
   'anthropic',
   'openai',
   'grok',
@@ -42,6 +44,11 @@ export function getProviderIdForModel(
     return CANONICAL_PROVIDER_IDS[registryProvider] || registryProvider;
   }
 
+  const lower = canonicalModelId.toLowerCase();
+  if (lower === 'openrouter' || lower.startsWith('openrouter/')) {
+    return 'openrouter';
+  }
+
   // Check generated provider metadata
   for (const [pId, meta] of Object.entries(OMNIROUTE_GENERATED_PROVIDERS)) {
     if (meta.supportedModels.includes(canonicalModelId) || meta.defaultModel === canonicalModelId) {
@@ -50,7 +57,7 @@ export function getProviderIdForModel(
   }
 
   // Fallback prefix matching
-  const lower = canonicalModelId.toLowerCase();
+  if (lower.startsWith('openrouter')) return 'openrouter';
   if (lower.startsWith('claude') || lower.startsWith('anthropic')) return 'anthropic';
   if (lower.startsWith('gpt-') || lower.startsWith('o1-') || lower.startsWith('o3-') || lower.startsWith('openai')) return 'openai';
   if (lower.startsWith('deepseek')) return 'deepseek';
@@ -96,6 +103,18 @@ export function isModelEnabled(
   modelRegistry?: Record<string, ModelRegistryItem>
 ): boolean {
   const providerId = getProviderIdForModel(modelId, modelRegistry);
+  const canonicalModelId = modelId ? modelId.trim() : '';
+
+  if (providerId === 'openrouter' || canonicalModelId.startsWith('openrouter/')) {
+    const config = providers?.['openrouter'] || providers?.[CANONICAL_PROVIDER_IDS['openrouter'] || 'openrouter'];
+    if (config && (config.enabled === false || config.active === false)) {
+      return false;
+    }
+    if (R4_ALLOWED_MODELS.includes(canonicalModelId as any) || canonicalModelId.startsWith('openrouter/')) {
+      return true;
+    }
+  }
+
   return isProviderEnabled(providerId, providers);
 }
 

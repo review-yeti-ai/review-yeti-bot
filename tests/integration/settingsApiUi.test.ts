@@ -12,6 +12,7 @@ describe('Settings API & DashboardStore Persistence Suite (Milestone 40)', () =>
   });
 
   beforeEach(() => {
+    dashboardStore.reset();
     app = createApp();
     const createdKey = dashboardStore.createApiKey('test-settings-key');
     validApiKey = createdKey.rawKey;

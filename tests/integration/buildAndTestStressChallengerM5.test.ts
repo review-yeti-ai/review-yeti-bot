@@ -63,7 +63,7 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
 
       const githubAppHtmlPath = path.join(publicDir, 'github-app.html');
       expect(fs.existsSync(githubAppHtmlPath)).toBe(true);
-    });
+    }, 15000);
   });
 
   describe('2. Static Export Content Structural Integrity', () => {

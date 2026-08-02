@@ -41,8 +41,8 @@ describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback 
       expect(CANONICAL_PROVIDER_IDS['agy_thinking']).toBe('agy');
     });
 
-    it('verifies ALL_CANONICAL_PROVIDERS contains all 11 providers with normalized IDs', () => {
-      expect(ALL_CANONICAL_PROVIDERS).toHaveLength(11);
+    it('verifies ALL_CANONICAL_PROVIDERS contains all providers with normalized IDs', () => {
+      expect(ALL_CANONICAL_PROVIDERS).toHaveLength(12);
       expect(ALL_CANONICAL_PROVIDERS).toContain('custom-openai');
       expect(ALL_CANONICAL_PROVIDERS).toContain('agy');
       expect(ALL_CANONICAL_PROVIDERS).not.toContain('custom_openai');

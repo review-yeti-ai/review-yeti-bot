@@ -15,6 +15,9 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
   const origAdminPassword = process.env.ADMIN_PASSWORD;
 
   beforeAll(async () => {
+    const tmpStorePath = path.join(path.resolve(__dirname, '../../node_modules/.tmp'), `dashboard-m41m42-${Date.now()}-${Math.random().toString(36).substring(2)}.json`);
+    dashboardStore.filePath = tmpStorePath;
+
     // Generate a real 2048-bit RSA private key in PEM format for cryptographic testing
     const { privateKey } = crypto.generateKeyPairSync('rsa', {
       modulusLength: 2048,
@@ -233,11 +236,11 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
         expect(patchRes2.status).toBe(200);
         expect(patchRes2.body.repository.automationEnabled).toBe(true);
 
-        // Verify monitoredReposCount in GET /api/github/app-config matches active repositories count
         const getReposFresh = await request(app)
           .get('/api/github/app-config/monitored-repos')
           .set('Authorization', `Bearer ${authToken}`);
-        const activeCount = getReposFresh.body.repositories.filter((r: any) => r.automationEnabled).length;
+        const reposList = (getReposFresh.body && Array.isArray(getReposFresh.body.repositories)) ? getReposFresh.body.repositories : [];
+        const activeCount = reposList.filter((r: any) => r.automationEnabled).length;
         const appCfgRes = await request(app)
           .get('/api/github/app-config')
           .set('Authorization', `Bearer ${authToken}`);
@@ -390,6 +393,16 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
       });
 
       it('should preserve previously configured custom API base URLs during partial updates', async () => {
+        // Set initial omniroute_base_url first to make test self-contained
+        await request(app)
+          .put('/api/dashboard/settings')
+          .set('Authorization', `Bearer ${authToken}`)
+          .send({
+            customApiBases: {
+              omniroute_base_url: 'http://omniroute.enterprise.local:8000',
+            },
+          });
+
         const partialPayload = {
           customApiBases: {
             deepseek_base_url: 'http://updated-deepseek.internal:9000/v1',
@@ -403,7 +416,7 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
 
         expect(updateRes.status).toBe(200);
         expect(updateRes.body.settings.customApiBases.deepseek_base_url).toBe('http://updated-deepseek.internal:9000/v1');
-        // Check that omniroute_base_url set in previous test remains preserved
+        // Check that omniroute_base_url set previously remains preserved
         expect(updateRes.body.settings.customApiBases.omniroute_base_url).toBe('http://omniroute.enterprise.local:8000');
       });
     });

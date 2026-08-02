@@ -142,7 +142,7 @@ export function PersonaSelector({
           const isSelected = selectedPersonaId === id;
           const isEnabled = pData ? pData.enabled !== false : true;
           const isRequired = pData?.required;
-          const modelName = pData?.model || 'claude-haiku-4.5';
+          const modelName = pData?.model || 'openrouter/auto';
           const effortLevel = pData?.effort || 'low';
           const maxTurns = pData?.maxTurns ?? 20;
           const confidence = pData?.confidenceThreshold ?? 80;

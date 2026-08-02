@@ -57,11 +57,13 @@ describe('Milestone 5 Empirical Challenger 1: Build Cleanliness, Process Isolati
 
   describe('2. Process Isolation under Vitest Execution (singleFork: false)', () => {
     it('vitest.config.ts sets pool to forks', () => {
-      expect(config.test?.pool).toBe('forks');
+      const rawConfig = (config as any).test ? config : (config as any).default || config;
+      expect(rawConfig.test?.pool).toBe('forks');
     });
 
     it('vitest.config.ts configures poolOptions.forks.singleFork to false', () => {
-      const poolOptions = config.test?.poolOptions as any;
+      const rawConfig = (config as any).test ? config : (config as any).default || config;
+      const poolOptions = rawConfig.test?.poolOptions as any;
       expect(poolOptions).toBeDefined();
       expect(poolOptions.forks).toBeDefined();
       expect(poolOptions.forks.singleFork).toBe(false);

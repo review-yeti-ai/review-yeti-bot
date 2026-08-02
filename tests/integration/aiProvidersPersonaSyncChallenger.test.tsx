@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import * as React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -33,6 +33,10 @@ describe('Challenger 2 Suite: AI Providers UI & Persona Sync Empirical Verificat
     app = createApp();
     const createdKey = dashboardStore.createApiKey('challenger-provider-key');
     validApiKey = createdKey.rawKey;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   // ==========================================

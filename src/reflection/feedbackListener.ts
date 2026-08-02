@@ -34,7 +34,7 @@ export class FeedbackListener {
   private llmLearner: LLMCommentLearner;
 
   constructor(private learningStore: LearningStore, llmLearner?: LLMCommentLearner) {
-    this.llmLearner = llmLearner || new LLMCommentLearner();
+    this.llmLearner = llmLearner || new LLMCommentLearner(undefined, learningStore?.getMemoryStore());
   }
 
   public async handleReaction(eventOrRepo: any, eventPayload?: any): Promise<void> {
@@ -96,6 +96,15 @@ export class FeedbackListener {
       diffSnippet: event.diffSnippet,
       codeSemantics: event.codeSemantics,
     });
+
+    if (result.learnedRule || result.intent === 'FALSE_POSITIVE_CORRECTION' || result.intent === 'REJECTED_SUGGESTION' || result.intent === 'REFUTATION') {
+      const fullRepo = `${event.owner}/${event.repo}`;
+      const pattern = result.learnedRule?.pattern || event.body.slice(0, 40);
+      const reason = result.learnedRule?.rule || `User reply refutation: ${event.body}`;
+      if (!result.learnedRule && this.learningStore?.recordFeedbackNit) {
+        await this.learningStore.recordFeedbackNit(fullRepo, event.prNumber, pattern, event.filePath || '**', reason);
+      }
+    }
 
     logger.info('LLM Judgment Result', { intent: result.intent, reaction: result.githubReaction });
     return result;

@@ -448,7 +448,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
   });
 
   describe('3. CLI Parsing & Output File Execution', () => {
-    it('executes runCLI for stats, list, inspect, search, help, and writes file output', () => {
+    it('executes runCLI for stats, list, inspect, search, help, and writes file output', async () => {
       createDiskSession(
         'cisco-cdr',
         'ct-review-bot',
@@ -458,53 +458,53 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       );
 
       // Help command
-      const helpResult = runCLI(['help']);
+      const helpResult = await runCLI(['help']);
       expect(helpResult.exitCode).toBe(0);
       expect(helpResult.output).toContain('USAGE:');
 
       // Stats command with JSON format
-      const statsResult = runCLI(['stats', '--dir', tempDir, '-f', 'json']);
+      const statsResult = await runCLI(['stats', '--dir', tempDir, '-f', 'json']);
       expect(statsResult.exitCode).toBe(0);
       const parsedStats = JSON.parse(statsResult.output);
       expect(parsedStats.kpis.totalSessions).toBe(1);
 
       // List command with Table format
-      const listResult = runCLI(['list', '--dir', tempDir, '-f', 'table']);
+      const listResult = await runCLI(['list', '--dir', tempDir, '-f', 'table']);
       expect(listResult.exitCode).toBe(0);
       expect(listResult.output).toContain('cisco-cdr/ct-review-bot#1');
 
       // Inspect command with Markdown format
-      const inspectResult = runCLI(['inspect', 'cisco-cdr/ct-review-bot#1', '--dir', tempDir, '-f', 'markdown']);
+      const inspectResult = await runCLI(['inspect', 'cisco-cdr/ct-review-bot#1', '--dir', tempDir, '-f', 'markdown']);
       expect(inspectResult.exitCode).toBe(0);
       expect(inspectResult.output).toContain('# 🔍 Session Detail: `cisco-cdr/ct-review-bot#1`');
 
       // Search command
-      const searchResult = runCLI(['search', 'Feature', '--dir', tempDir, '-f', 'okf']);
+      const searchResult = await runCLI(['search', 'Feature', '--dir', tempDir, '-f', 'okf']);
       expect(searchResult.exitCode).toBe(0);
       expect(searchResult.output).toContain('=== OKF: SESSION ANALYTICS LIST ===');
 
       // File output flag (-o)
       const outFile = path.join(tempDir, 'output', 'report.okf');
-      const outResult = runCLI(['stats', '--dir', tempDir, '-f', 'okf', '-o', outFile]);
+      const outResult = await runCLI(['stats', '--dir', tempDir, '-f', 'okf', '-o', outFile]);
       expect(outResult.exitCode).toBe(0);
       expect(outResult.outPath).toBe(outFile);
       expect(fs.existsSync(outFile)).toBe(true);
       expect(fs.readFileSync(outFile, 'utf-8')).toContain('=== OKF: SESSION KEY PERFORMANCE INDICATORS ===');
 
       // Error case: inspect without targetId
-      const errInspect = runCLI(['inspect']);
+      const errInspect = await runCLI(['inspect']);
       expect(errInspect.exitCode).toBe(1);
       expect(errInspect.output).toContain('Error: Session ID required for inspect command.');
 
       // Error case: inspect non-existent ID
-      const missingInspect = runCLI(['inspect', 'non-existent-id', '--dir', tempDir]);
+      const missingInspect = await runCLI(['inspect', 'non-existent-id', '--dir', tempDir]);
       expect(missingInspect.exitCode).toBe(1);
       expect(missingInspect.output).toContain('Error: Session not found for ID: non-existent-id');
     });
   });
 
   describe('4. Adversarial Edge Cases & Stress Tests', () => {
-    it('handles empty session repository gracefully without NaN or division by zero', () => {
+    it('handles empty session repository gracefully without NaN or division by zero', async () => {
       const emptyDir = path.join(tempDir, 'empty');
       fs.mkdirSync(emptyDir);
 
@@ -519,12 +519,12 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       expect(kpis.passRatePercent).toBe(0);
       expect(kpis.findingsResolutionRatePercent).toBe(100);
 
-      const statsRes = runCLI(['stats', '--dir', emptyDir, '-f', 'json']);
+      const statsRes = await runCLI(['stats', '--dir', emptyDir, '-f', 'json']);
       expect(statsRes.exitCode).toBe(0);
       const parsed = JSON.parse(statsRes.output);
       expect(parsed.kpis.totalSessions).toBe(0);
 
-      const listRes = runCLI(['list', '--dir', emptyDir, '-f', 'table']);
+      const listRes = await runCLI(['list', '--dir', emptyDir, '-f', 'table']);
       expect(listRes.exitCode).toBe(0);
       expect(listRes.output).toBe('No sessions found.');
     });
