@@ -8,6 +8,26 @@ import { OpenRouterClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { logger } from '../utils/logger';
 
+export interface WorkerAuthConfig {
+  appId: string;
+  privateKey: string;
+  installationId: string;
+}
+
+function requiredWorkerEnv(env: NodeJS.ProcessEnv, name: string): string {
+  const value = env[name]?.trim();
+  if (!value) throw new Error(`${name} is required for GitHub App worker authentication`);
+  return value;
+}
+
+export function resolveWorkerAuthConfig(env: NodeJS.ProcessEnv = process.env): WorkerAuthConfig {
+  return {
+    appId: requiredWorkerEnv(env, 'GITHUB_APP_ID'),
+    privateKey: requiredWorkerEnv(env, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n'),
+    installationId: requiredWorkerEnv(env, 'GITHUB_INSTALLATION_ID'),
+  };
+}
+
 async function main() {
   const prNumber = parseInt(process.argv[2] || '1', 10);
   const repo = process.argv[3] || 'JBJMLLC/ct-review-bot';
@@ -93,42 +113,21 @@ async function main() {
 
   const fullSummaryMarkdown = sections.join('\n');
 
-  const appId = process.env.GITHUB_APP_ID || '4385771';
-  const installationId = process.env.GITHUB_INSTALLATION_ID || '148780830';
-  let privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
-
-  if (!privateKey) {
-    try {
-      privateKey = execSync('doppler secrets get GITHUB_APP_PRIVATE_KEY --plain', { encoding: 'utf-8' }).trim();
-    } catch {
-      // Doppler CLI fallback
-    }
+  const auth = resolveWorkerAuthConfig();
+  const tokenRes = await getGitHubAppInstallationToken(auth);
+  if (!tokenRes.token.startsWith('ghs_')) {
+    throw new Error('GitHub App token exchange returned a non-installation token');
   }
-
-  let token = process.env.GITHUB_TOKEN || execSync('gh auth token', { encoding: 'utf-8' }).trim();
-  let allowUserToken = true;
-
-  if (privateKey) {
-    try {
-      const tokenRes = await getGitHubAppInstallationToken({
-        appId,
-        privateKey,
-        installationId,
-      });
-      token = tokenRes.token;
-      allowUserToken = false;
-      logger.info('Authenticating review post via GitHub App Installation Token (ct-review-bot[bot])', { appId, installationId });
-    } catch (err: any) {
-      logger.warn('Failed to obtain GitHub App installation token, falling back to active user token', { error: err.message });
-    }
-  } else {
-    logger.info('GITHUB_APP_PRIVATE_KEY not detected in environment. To post as ct-review-bot[bot], store GITHUB_APP_PRIVATE_KEY in Doppler or K8s secrets.', { appId, installationId });
-  }
+  const token = tokenRes.token;
+  logger.info('Authenticating review post via GitHub App Installation Token (ct-review-bot[bot])', {
+    appId: auth.appId,
+    installationId: auth.installationId,
+  });
 
   // Post top-level review comment via GitHub REST API
   logger.info('Posting ct-review-bot summary comment to GitHub via REST API', { repo, prNumber });
 
-  const publisher = new CommentPublisher({ githubToken: token, allowUserToken });
+  const publisher = new CommentPublisher({ githubToken: token });
 
   const publishRes = await publisher.publishReview({
     owner: repo.split('/')[0],
@@ -143,7 +142,9 @@ async function main() {
   logger.info('Successfully posted ct-review-bot review comment', { publishRes });
 }
 
-main().catch((err) => {
-  logger.error('Failed live ct-review-bot review dispatch', { error: err.message });
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    logger.error('Failed live ct-review-bot review dispatch', { error: err.message });
+    process.exit(1);
+  });
+}

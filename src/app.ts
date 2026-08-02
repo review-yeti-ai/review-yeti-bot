@@ -25,7 +25,6 @@ import { dashboardStore } from './persistence/dashboardStore';
 import { providerPool } from './gateway/providerPool';
 import { GraphLearningEngine } from './memory/graphLearningEngine';
 import { PRCloseDispatcher } from './github/prCloseDispatcher';
-import { K8sJobDispatcher } from './k8s/k8sJobDispatcher';
 import { logger } from './utils/logger';
 import { LiveStreamBus } from './live/liveStreamBus';
 import {
@@ -50,6 +49,16 @@ function requiredEnv(name: string): string {
 
 function privateKey(): string {
   return requiredEnv('GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
+}
+
+/**
+ * The Kubernetes worker currently publishes its own review but has no durable result handoff
+ * back to this process. Refuse the flag explicitly rather than executing the same review twice.
+ */
+export function assertSupportedReviewExecution(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.KUBERNETES_WORKER_DISPATCH === 'true') {
+    throw new Error('Kubernetes worker dispatch is disabled until a durable worker result handoff is implemented');
+  }
 }
 
 function openRouterClient(): OpenRouterClient {
@@ -258,52 +267,15 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           }
         }
 
-        let panel: PanelResult;
-        if (process.env.KUBERNETES_WORKER_DISPATCH === 'true') {
-          const dispatcher = new K8sJobDispatcher();
-          const jobId = `job_${owner}_${repo}_pr${prNumber}_${headSha.slice(0, 7)}`;
-          logger.info(`KUBERNETES_WORKER_DISPATCH enabled. Dispatching worker pod/PVC for ${repoFull} #${prNumber}`);
-          const dispatchRes = await dispatcher.dispatchWorkerJob({
-            owner,
-            repo,
-            prNumber,
-            headSha,
-            baseSha: snapshot.baseSha,
-            jobId,
-            timeoutSeconds: config.reviewers.overall_timeout_s,
-          });
-
-          if (!dispatchRes.success) {
-            logger.warn(`Worker pod dispatch returned error: ${dispatchRes.error}. Falling back to in-process execution.`);
-            panel = await withinOverallTimeout(executePersonaPanel({
-              config,
-              changedFiles,
-              repository: repoFull,
-              headSha,
-              client: openRouterClient(),
-              isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
-            }), config.reviewers.overall_timeout_s);
-          } else {
-            // Re-fetch review result recorded by worker pod
-            panel = await withinOverallTimeout(executePersonaPanel({
-              config,
-              changedFiles,
-              repository: repoFull,
-              headSha,
-              client: openRouterClient(),
-              isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
-            }), config.reviewers.overall_timeout_s);
-          }
-        } else {
-          panel = await withinOverallTimeout(executePersonaPanel({
-            config,
-            changedFiles,
-            repository: repoFull,
-            headSha,
-            client: openRouterClient(),
-            isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
-          }), config.reviewers.overall_timeout_s);
-        }
+        assertSupportedReviewExecution();
+        const panel: PanelResult = await withinOverallTimeout(executePersonaPanel({
+          config,
+          changedFiles,
+          repository: repoFull,
+          headSha,
+          client: openRouterClient(),
+          isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
+        }), config.reviewers.overall_timeout_s);
 
         const fresh = await github.getPullRequest(owner, repo, prNumber);
         if (fresh.headSha !== headSha || !store.isCurrentHead(owner, repo, prNumber, headSha)) {
@@ -604,10 +576,10 @@ export function createApp(): Express {
   });
 
   app.get('/ready', async (_req, res) => {
-    const configurationReady = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'OPENROUTER_API_KEY']
+    const configurationReady = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'WEBHOOK_SECRET', 'OPENROUTER_API_KEY']
       .every((name) => Boolean(process.env[name]?.trim()));
-    return res.status(200).json({
-      status: 'ready',
+    return res.status(configurationReady ? 200 : 503).json({
+      status: configurationReady ? 'ready' : 'not_ready',
       configurationReady,
       openRouterReady: configurationReady,
       timestamp: new Date().toISOString(),
