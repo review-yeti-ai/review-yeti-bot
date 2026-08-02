@@ -34,6 +34,9 @@ Review-bot external boundaries follow the deterministic operator patterns used b
 - Reviewer tool execution is read-only and limited to changed-file context plus approved documentation search. Arbitrary local paths, shell, Linear, Productlane, GitHub, and custom MCP writes are rejected.
 - GitHub publication bodies carry a stable exact-head idempotency marker so reruns do not duplicate inline findings or fallback comments.
 - GitHub publication and shell side effects require explicit command-boundary tests. The `gh pr comment` invocation is tested with an injected command runner and filesystem adapter.
+- A failed `gh api` marker lookup or `gh pr comment` publication is a failed review, never a successful local-file fallback.
+- `/ready` returns HTTP 503 until GitHub App, webhook, and OpenRouter configuration is present.
+- `KUBERNETES_WORKER_DISPATCH=true` fails closed until the worker has a durable, exact-head result handoff; the service never runs a worker review and then repeats it locally.
 
 Run the replay suite without credentials or network access:
 
