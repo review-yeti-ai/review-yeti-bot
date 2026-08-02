@@ -1,6 +1,7 @@
 import express, { Express, NextFunction, Request, Response } from 'express';
 import path from 'path';
 import * as fs from 'fs';
+import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient } from './gateway/openRouterClient';
@@ -11,6 +12,7 @@ import { createWebhookRouter, RequestWithRawBody } from './github/webhookServer'
 import { executePersonaPanel, PanelResult } from './panel/panelEngine';
 import { ReviewRunStore } from './persistence/reviewRunStore';
 import { PostgresReviewRunRepository, ReviewRunRepository } from './persistence/reviewRunRepository';
+import { PostgresReviewArtifactStore, ReviewArtifactStore } from './persistence/reviewArtifactStore';
 import { createMemoryRouter } from './api/memoryApi';
 import { createProviderRouter } from './gateway/providerRouterApi';
 import { createAuthRouter } from './api/authApi';
@@ -29,6 +31,7 @@ import { computeAppVerdict } from './review/reviewAdapters';
 import { sanitizeFindings, sha256 } from './review/reviewCore';
 import { assertSnapshotCurrent, createPRSnapshot, PRSnapshot } from './review/prSnapshot';
 import { buildReviewRunIdentity } from './review/reviewAdmission';
+import { resolveSubmoduleDecision, SubmodulePolicy } from './review/submodulePolicy';
 import { GraphLearningEngine } from './memory/graphLearningEngine';
 import { PRCloseDispatcher } from './github/prCloseDispatcher';
 import { logger } from './utils/logger';
@@ -48,6 +51,9 @@ export { type RequestWithRawBody, providerPool };
 const store = new ReviewRunStore(process.env.CT_REVIEW_RUN_STORE || '/tmp/ct-review-bot/review-runs.json');
 const durableReviewRuns: ReviewRunRepository | null = postgresStore.isConfigured()
   ? new PostgresReviewRunRepository(postgresStore.getPool())
+  : null;
+const durableReviewArtifacts: ReviewArtifactStore | null = postgresStore.isConfigured()
+  ? new PostgresReviewArtifactStore(postgresStore.getPool())
   : null;
 
 function admissionIdentity(payload: ParsedPRPayload) {
@@ -84,7 +90,7 @@ export function assertSupportedReviewExecution(env: NodeJS.ProcessEnv = process.
 function openRouterClient(): OpenRouterClient {
   return new OpenRouterClient({
     baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: process.env.OPENROUTER_API_KEY || (process.env.VITEST ? 'vitest-test-key' : requiredEnv('OPENROUTER_API_KEY')),
+    apiKey: requiredEnv('OPENROUTER_API_KEY'),
   });
 }
 
@@ -174,7 +180,10 @@ async function withinOverallTimeout<T>(operation: Promise<T>, timeoutSeconds: nu
   }
 }
 
-async function installationClient(payload: ParsedPRPayload): Promise<GitHubInstallationClient> {
+async function installationClient(
+  payload: ParsedPRPayload,
+  options: { currentHeadSha?: () => Promise<string> } = {},
+): Promise<GitHubInstallationClient> {
   if (!payload.installationId) throw new Error('webhook payload has no GitHub App installation id');
   const baseUrl = process.env.GITHUB_API_BASE_URL || 'https://api.github.com';
   const token = await getGitHubAppInstallationToken({
@@ -197,7 +206,7 @@ async function installationClient(payload: ParsedPRPayload): Promise<GitHubInsta
       throw new Error(`GitHub App installation permission ${name} must be ${required}; got ${actual || 'missing'}`);
     }
   }
-  return new GitHubInstallationClient({ token: token.token, baseUrl });
+  return new GitHubInstallationClient({ token: token.token, baseUrl, currentHeadSha: options.currentHeadSha });
 }
 
 export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> {
@@ -205,7 +214,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
   const repoFull = `${owner}/${repo}`;
   const startTime = Date.now();
   const jobId = `job_${owner}_${repo}_pr${prNumber}_${headSha.slice(0, 7)}`;
-  const durableWorkerId = `app-${process.pid}`;
+  const durableWorkerId = `app-${process.pid}-${randomUUID()}`;
   const durableIdentity = admissionIdentity(payload);
   const durableRun = durableReviewRuns
     ? await durableReviewRuns.createOrGet({ identity: durableIdentity, now: startTime })
@@ -213,13 +222,32 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
   if (durableRun && !(await durableReviewRuns!.claim(durableRun.runId, durableWorkerId, startTime, 15 * 60 * 1000))) {
     throw new Error(`review run ${durableRun.runId} is already leased by another worker`);
   }
+  const durableHeartbeatTimer = durableRun
+    ? setInterval(() => {
+      void durableReviewRuns!.heartbeat(durableRun.runId, durableWorkerId, Date.now(), 15 * 60 * 1000).catch((error) => {
+        logger.warn('Failed to renew durable review lease', { error: error?.message || error, runId: durableRun.runId });
+      });
+    }, 60_000)
+    : undefined;
+  durableHeartbeatTimer?.unref?.();
 
   const durableTransition = async (stage: import('./review/piWorkflow').PiStage, now = Date.now()) => {
     if (durableRun) await durableReviewRuns!.transition(durableRun.runId, stage, durableWorkerId, now);
   };
+  const durablePersist = async (stage: import('./review/piWorkflow').ExecutablePiStage, payload: import('./review/reviewRun').JsonValue, now = Date.now()): Promise<string | undefined> => {
+    if (!durableRun || !durableReviewArtifacts) return undefined;
+    const digest = await durableReviewArtifacts.put(durableRun.runId, stage, payload);
+    await durableReviewRuns!.recordArtifact(durableRun.runId, stage, digest, durableWorkerId, now);
+    return digest;
+  };
   const durableFail = async (message: string, now = Date.now()) => {
     if (durableRun) await durableReviewRuns!.fail(durableRun.runId, durableWorkerId, now, message).catch((error) => {
       logger.error('Failed to persist durable review failure', { error: error?.message || error, runId: durableRun.runId });
+    });
+  };
+  const durableCancel = async (reason: string, now = Date.now()) => {
+    if (durableRun) await durableReviewRuns!.cancel(durableRun.runId, now, reason).catch((error) => {
+      logger.error('Failed to release cancelled durable review run', { error: error?.message || error, runId: durableRun.runId });
     });
   };
 
@@ -252,6 +280,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
     try {
       if (!dashboardStore.isAutomationEnabled(owner, repo)) {
         logger.info(`Review automation disabled for repository ${repoFull}`);
+        await durableCancel('automation disabled per repo setting');
         span.setAttribute('ct.status', 'skipped');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
@@ -262,11 +291,19 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         } catch (_) {}
         return { status: 'skipped', reason: 'automation disabled per repo setting' };
       }
-      const github = await installationClient(payload);
+      const githubRef: { client?: GitHubInstallationClient } = {};
+      const github = await installationClient(payload, {
+        currentHeadSha: async () => {
+          if (!githubRef.client) throw new Error('GitHub client is not initialized for exact-head verification');
+          return (await githubRef.client.getPullRequest(owner, repo, prNumber)).headSha;
+        },
+      });
+      githubRef.client = github;
       let checkId: number | undefined;
       try {
         const snapshot = await github.getPullRequest(owner, repo, prNumber);
         if (snapshot.headSha !== headSha) {
+          await durableCancel('stale webhook head');
           span.setAttribute('ct.status', 'cancelled');
           try {
             getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
@@ -278,6 +315,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           return { status: 'cancelled', reason: 'stale webhook head', expected: snapshot.headSha, received: headSha };
         }
         store.markHead(owner, repo, prNumber, headSha);
+        await durablePersist('admission', { identity: durableIdentity } as unknown as import('./review/reviewRun').JsonValue);
         await durableTransition('snapshot');
         try {
           checkId = await github.createCheck(owner, repo, headSha);
@@ -287,10 +325,35 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           });
         }
 
-        const [rawPolicy, changedFiles] = await Promise.all([
-          github.getBasePolicy(owner, repo, snapshot.baseSha).catch(() => null),
+        const [rawPolicy, changedFilesFromGitHub] = await Promise.all([
+          github.getBasePolicy(owner, repo, snapshot.baseSha).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/^GitHub API 404\b/u.test(message)) return null;
+            throw error;
+          }),
           github.getChangedFiles(owner, repo, prNumber),
         ]);
+        let changedFiles = changedFilesFromGitHub;
+        const getSubmoduleUrls = (github as unknown as { getSubmoduleUrls?: (owner: string, repo: string, ref: string) => Promise<Record<string, string>> }).getSubmoduleUrls?.bind(github);
+        if (typeof getSubmoduleUrls === 'function' && changedFiles.some((file) => file.isSubmodule || file.submoduleCandidate || file.mode === '160000')) {
+          const [baseUrls, headUrls] = await Promise.all([
+            getSubmoduleUrls(owner, repo, snapshot.baseSha),
+            getSubmoduleUrls(owner, repo, headSha),
+          ]);
+          changedFiles = changedFiles.map((file) => {
+            const oldSubmoduleUrl = baseUrls[file.path];
+            const newSubmoduleUrl = headUrls[file.path];
+            if (!oldSubmoduleUrl && !newSubmoduleUrl) return file;
+            const { submoduleCandidate: _candidate, ...withoutCandidate } = file;
+            return {
+              ...withoutCandidate,
+              isSubmodule: true,
+              ...(oldSubmoduleUrl ? { oldSubmoduleUrl } : {}),
+              ...(newSubmoduleUrl ? { newSubmoduleUrl } : {}),
+              ...(oldSubmoduleUrl && newSubmoduleUrl && oldSubmoduleUrl !== newSubmoduleUrl ? { submoduleUrlChanged: true } : {}),
+            };
+          });
+        }
         let config: CtReviewConfigV3;
         if (rawPolicy === null) {
           logger.info(`No .ct-review.yaml configuration found in ${repoFull}, falling back to default balanced configuration`);
@@ -301,9 +364,6 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             ? parsed as CtReviewConfigV3
             : normalizeConfigToV4(parsed as any) as unknown as CtReviewConfigV3;
         }
-        await durableTransition('config');
-        await durableTransition('submodules');
-
         const reviewSnapshot: PRSnapshot = createPRSnapshot({
           owner,
           repo,
@@ -316,17 +376,33 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           engineVersion: 'review-core-v1',
           changedFiles,
         });
+        await durablePersist('snapshot', reviewSnapshot as unknown as import('./review/reviewRun').JsonValue);
+        await durableTransition('config');
+        await durablePersist('config', config as unknown as import('./review/reviewRun').JsonValue);
+        const submodulePolicy = ((config as any).submodules || createDefaultV4Config().submodules) as SubmodulePolicy;
+        const submoduleDecisions = changedFiles.map((file) => resolveSubmoduleDecision(file, submodulePolicy));
+        const submoduleCoverageComplete = !submoduleDecisions.some((decision) =>
+          decision.decision === 'BLOCK' || decision.decision === 'INCOMPLETE_REVIEW',
+        );
+        const reviewChangedFiles = changedFiles.filter((_file, index) => submoduleDecisions[index].decision !== 'IGNORE');
+        await durableTransition('submodules');
+        await durablePersist('submodules', {
+          coverageComplete: submoduleCoverageComplete,
+          decisions: submoduleDecisions,
+          reviewFiles: reviewChangedFiles,
+        } as unknown as import('./review/reviewRun').JsonValue);
 
         assertSupportedReviewExecution();
         await durableTransition('review');
         const panel: PanelResult = await withinOverallTimeout(executePersonaPanel({
           config,
-          changedFiles,
+          changedFiles: reviewChangedFiles,
           repository: repoFull,
           headSha,
           client: openRouterClient(),
           isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
         }), config.reviewers.overall_timeout_s);
+        await durablePersist('review', panel as unknown as import('./review/reviewRun').JsonValue);
 
         const fresh = await github.getPullRequest(owner, repo, prNumber);
         try {
@@ -363,7 +439,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         }
 
         for (const lane of panel.personas) {
-          lane.findings = sanitizeFindings(lane.findings, changedFiles) as typeof lane.findings;
+          lane.findings = sanitizeFindings(lane.findings, reviewChangedFiles) as typeof lane.findings;
         }
         const canonical = computeAppVerdict({
           lanes: panel.personas.map((lane) => ({
@@ -373,8 +449,8 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             findings: lane.findings,
           })),
           expectedLanes: panel.personas.length,
-          changedFiles,
-          coverageComplete: panel.optionalFailures.length === 0,
+          changedFiles: reviewChangedFiles,
+          coverageComplete: submoduleCoverageComplete && panel.optionalFailures.length === 0,
           candidateVerdict: panel.arbiter.verdict,
           rationale: panel.arbiter.rationale,
         });
@@ -384,6 +460,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           rationale: canonical.rationale,
         };
         await durableTransition('arbiter');
+        await durablePersist('arbiter', panel.arbiter as unknown as import('./review/reviewRun').JsonValue);
 
         const assertCurrentHead = async () => {
           const current = await github.getPullRequest(owner, repo, prNumber);
@@ -394,6 +471,10 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
 
         const learningEngine = new GraphLearningEngine();
         await durableTransition('publish');
+        if (durableRun) {
+          const publicationClaim = await durableReviewRuns!.claimPublication(durableRun.runId, durableWorkerId, Date.now());
+          if (!publicationClaim) throw new Error(`review run ${durableRun.runId} could not claim publication`);
+        }
         for (const lane of panel.personas) {
           await assertCurrentHead();
           const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
@@ -463,7 +544,8 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             summary,
           }).catch((err) => logger.warn('Failed to complete check run for successful review', { error: err?.message || err }));
         }
-        if (durableRun) await durableReviewRuns!.succeed(durableRun.runId, durableWorkerId, Date.now(), sha256({ reviewSnapshot, panel }));
+        const publicationDigest = await durablePersist('publish', { reviewSnapshot, panel, final } as unknown as import('./review/reviewRun').JsonValue);
+        if (durableRun) await durableReviewRuns!.succeed(durableRun.runId, durableWorkerId, Date.now(), publicationDigest || sha256({ reviewSnapshot, panel, final }));
         // Aggregate total tokens and cost across all personas + moderator + arbiter
         const totalPromptTokens = [
           ...panel.personas.map((p) => p.usage?.prompt ?? 0),
@@ -604,6 +686,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         throw error;
       }
     } finally {
+      if (durableHeartbeatTimer) clearInterval(durableHeartbeatTimer);
       try {
         getMetrics().activeJobs.add(-1, { repository: repoFull });
       } catch (_) {}

@@ -21,7 +21,6 @@ export interface ModelCLIOptions {
   maxCost?: number;
   query?: string;
 }
-
 export interface ParsedCLIArgs {
   command: 'list' | 'stats' | 'inspect' | 'search' | 'models' | 'help';
   targetId?: string;
@@ -237,4 +236,3 @@ export async function runCLI(
 
   return { output, exitCode: 0 };
 }
-

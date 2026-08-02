@@ -103,19 +103,43 @@ describe('Follow-Up PR Action Personas Suite', () => {
   });
 
   it('5. handles provider pool timeout during persona execution', async () => {
-    const mockOmniRouteTimeout: any = {
-      complete: vi.fn().mockRejectedValue(new Error('OmniRoute model completion timed out after 15000ms')),
+    const mockModelClientTimeout: any = {
+      complete: vi.fn().mockRejectedValue(new Error('OpenRouter model completion timed out after 15000ms')),
     };
 
     const res = await executeDocsPersona({
       payload: dummyPayload,
       config: dummyConfig,
       github: mockGithub,
-      omniRoute: mockOmniRouteTimeout,
+      modelClient: mockModelClientTimeout,
     });
 
     expect(res.created).toBe(true);
     expect(res.prNumber).toBe(301);
+  });
+
+  it('does not execute the deprecated OmniRoute alias for docs or marketing personas', async () => {
+    const deprecatedClient = {
+      complete: vi.fn().mockResolvedValue({ content: 'deprecated persona output' }),
+    };
+    const capture = vi.fn().mockResolvedValue({ sha: 'file-sha-123' });
+    const github = { ...mockGithub, createOrUpdateFile: capture };
+
+    await executeDocsPersona({
+      payload: dummyPayload,
+      config: dummyConfig,
+      github,
+      omniRoute: deprecatedClient,
+    });
+    await executeMarketingPersona({
+      payload: dummyPayload,
+      config: dummyConfig,
+      github,
+      omniRoute: deprecatedClient,
+    });
+
+    expect(deprecatedClient.complete).not.toHaveBeenCalled();
+    expect(capture.mock.calls.every(([options]) => !options.content.includes('deprecated persona output'))).toBe(true);
   });
 
   it('6. validates persona output format conformance', async () => {

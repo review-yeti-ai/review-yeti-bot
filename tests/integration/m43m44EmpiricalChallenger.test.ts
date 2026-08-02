@@ -117,12 +117,12 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
   });
 
   describe('M44: Release Configuration & Metadata Verification', () => {
-    it('verifies package.json version string is exactly "1.5.0"', () => {
+    it('verifies package.json version string matches the current release', () => {
       const packageJsonPath = path.resolve(__dirname, '../../package.json');
       const rawData = fs.readFileSync(packageJsonPath, 'utf-8');
       const packageData = JSON.parse(rawData);
 
-      expect(packageData.version).toBe('1.5.0');
+      expect(packageData.version).toBe('1.8.3');
       expect(packageData.name).toBe('ct-review-bot');
     });
   });

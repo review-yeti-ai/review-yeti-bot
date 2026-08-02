@@ -153,7 +153,7 @@ describe('Empirical Verification: Persona Store Defaults & Onboarding Diagnostic
       expect(res.body.error).toContain('API key credentials missing, unconfigured, or invalid');
     });
 
-    it('returns quorumPassed=false when less than 3 distinct active providers are available', async () => {
+    it('fails closed when the arbiter response is missing its rationale', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init?: any) => {
         const urlStr = String(url);
         if (urlStr.includes('/v1/chat/completions')) {
@@ -181,10 +181,9 @@ describe('Empirical Verification: Persona Store Defaults & Onboarding Diagnostic
             providerIds: ['openai'],
           });
 
-        expect(res.status).toBe(200);
-        expect(res.body.success).toBe(true);
-        expect(res.body.probe3_arbitration.quorumPassed).toBe(false);
-        expect(res.body.probe3_arbitration.verdict).toBe('REQUEST_CHANGES');
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error).toContain('arbiter');
       } finally {
         fetchSpy.mockRestore();
       }

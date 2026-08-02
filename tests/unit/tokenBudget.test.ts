@@ -40,4 +40,12 @@ describe('Milestone 30: Token Budget Optimization', () => {
     expect(normalBudget.effortTier).toBe('low');
     expect(sensitiveBudget.effortTier).toBe('high');
   });
+
+  it('ignores non-finite releases without poisoning the reservation', () => {
+    const budgetManager = new TokenBudgetManager();
+    expect(budgetManager.reserve('run-1', 10, 10)).toBe(true);
+    budgetManager.release('run-1', Number.NaN);
+    expect(budgetManager.reserved('run-1')).toBe(10);
+    expect(budgetManager.reserve('run-1', 1, 10)).toBe(false);
+  });
 });

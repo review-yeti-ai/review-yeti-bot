@@ -44,6 +44,7 @@ jobs:
         env:
           GITHUB_APP_ID_VALUE: ${{ secrets.CT_REVIEW_GITHUB_APP_ID }}
           GITHUB_APP_PRIVATE_KEY_VALUE: ${{ secrets.CT_REVIEW_GITHUB_APP_PRIVATE_KEY }}
+          GITHUB_INSTALLATION_ID_VALUE: ${{ secrets.CT_REVIEW_GITHUB_INSTALLATION_ID }}
           WEBHOOK_SECRET_VALUE: ${{ secrets.CT_REVIEW_WEBHOOK_SECRET }}
           OPENROUTER_API_KEY_VALUE: ${{ secrets.OPENROUTER_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
         run: |
@@ -53,6 +54,7 @@ jobs:
           kubectl -n "$NAMESPACE" create secret generic ct-review-bot-runtime \
             --from-literal=GITHUB_APP_ID="$GITHUB_APP_ID_VALUE" \
             --from-literal=GITHUB_APP_PRIVATE_KEY="$GITHUB_APP_PRIVATE_KEY_VALUE" \
+            --from-literal=GITHUB_INSTALLATION_ID="$GITHUB_INSTALLATION_ID_VALUE" \
             --from-literal=WEBHOOK_SECRET="$WEBHOOK_SECRET_VALUE" \
             --from-literal=OPENROUTER_API_KEY="$OPENROUTER_API_KEY_VALUE" \
             --dry-run=client -o yaml | kubectl apply --server-side -f -

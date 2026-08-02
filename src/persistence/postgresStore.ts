@@ -112,18 +112,46 @@ export class PostgresStore {
           base_sha VARCHAR(255) NOT NULL,
           snapshot_digest VARCHAR(64) NOT NULL,
           config_digest VARCHAR(64) NOT NULL,
+          effective_policy_digest VARCHAR(64) NOT NULL,
+          effective_config_digest VARCHAR(64) NOT NULL,
+          index_epoch BIGINT NOT NULL DEFAULT 0,
           identity JSONB NOT NULL,
           status VARCHAR(32) NOT NULL,
           stage VARCHAR(32) NOT NULL,
           attempt INT NOT NULL DEFAULT 0,
           lease_owner VARCHAR(255),
           lease_expires_at TIMESTAMP WITH TIME ZONE,
+          publication_fence VARCHAR(64),
           result_digest VARCHAR(64),
+          artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           error_text TEXT,
           created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS review_runs_claim_idx ON review_runs (status, lease_expires_at);
+        CREATE INDEX IF NOT EXISTS review_runs_pull_status_idx ON review_runs (owner, repo, pr_number, status);
+
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS effective_policy_digest VARCHAR(64);
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS effective_config_digest VARCHAR(64);
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS index_epoch BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS artifacts JSONB NOT NULL DEFAULT '{}'::jsonb;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS publication_fence VARCHAR(64);
+        UPDATE review_runs
+           SET effective_policy_digest = COALESCE(config_digest, repeat('0', 64)),
+               effective_config_digest = COALESCE(config_digest, repeat('0', 64))
+         WHERE effective_policy_digest IS NULL OR effective_config_digest IS NULL;
+        ALTER TABLE review_runs ALTER COLUMN effective_policy_digest SET NOT NULL;
+        ALTER TABLE review_runs ALTER COLUMN effective_config_digest SET NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS review_run_artifacts (
+          run_id VARCHAR(255) NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
+          stage VARCHAR(32) NOT NULL,
+          content_digest VARCHAR(64) NOT NULL,
+          payload JSONB NOT NULL,
+          byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= 2000000),
+          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (run_id, stage)
+        );
 
         CREATE TABLE IF NOT EXISTS memory_graph (
           id VARCHAR(255) PRIMARY KEY,

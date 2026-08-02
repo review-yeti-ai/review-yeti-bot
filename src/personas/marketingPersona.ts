@@ -1,14 +1,16 @@
 import { ParsedPRPayload } from '../github/eventHandler';
 import { CtReviewConfigV3 } from '../config/schema';
 import { GitHubInstallationClient } from '../github/installationClient';
-import { OmniRouteClient } from '../gateway/omniRouteClient';
+import { ReviewModelClient } from '../gateway/openRouterClient';
 import { logger } from '../utils/logger';
 
 export interface PersonaContext {
   payload: ParsedPRPayload;
   config: CtReviewConfigV3;
   github: GitHubInstallationClient;
-  omniRoute?: OmniRouteClient;
+  /** @deprecated Unsupported legacy field; ignored. Pass the OpenRouter client via modelClient. */
+  omniRoute?: ReviewModelClient;
+  modelClient?: ReviewModelClient;
 }
 
 export interface FollowupPRResult {
@@ -19,7 +21,8 @@ export interface FollowupPRResult {
 }
 
 export async function executeMarketingPersona(ctx: PersonaContext): Promise<FollowupPRResult> {
-  const { payload, github, omniRoute } = ctx;
+  const { payload, github } = ctx;
+  const modelClient = ctx.modelClient;
   const { owner, repo, prNumber, title, targetBranch = 'main' } = payload;
 
   logger.info(`Executing Marketing Persona for ${owner}/${repo} #${prNumber}`);
@@ -28,10 +31,10 @@ export async function executeMarketingPersona(ctx: PersonaContext): Promise<Foll
   releaseNotes += `**Feature / Update**: ${title}\n\n`;
   releaseNotes += `## Customer Highlights\n`;
 
-  if (omniRoute) {
+  if (modelClient) {
     try {
-      const response = await omniRoute.complete({
-        model: 'codex/gpt-5.6-sol-high',
+      const response = await modelClient.complete({
+        model: 'openrouter/auto',
         messages: [
           { role: 'system', content: 'You are a product marketing manager. Synthesize clear, engaging release notes for customer-facing feature updates.' },
           { role: 'user', content: `Create release notes for merged PR #${prNumber}: ${title}\nPR Body:\n${payload.body}` },
@@ -40,7 +43,7 @@ export async function executeMarketingPersona(ctx: PersonaContext): Promise<Foll
       });
       releaseNotes += `${response.content}\n`;
     } catch (err: any) {
-      logger.warn(`OmniRoute completion unavailable for marketing-persona: ${err.message}`);
+      logger.warn(`OpenRouter completion unavailable for marketing-persona: ${err.message}`);
       releaseNotes += `- We are excited to announce new updates and enhancements included in PR #${prNumber} (${title}).\n`;
     }
   } else {

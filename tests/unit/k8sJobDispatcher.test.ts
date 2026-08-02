@@ -41,6 +41,9 @@ describe('K8sJobDispatcher Unit Tests', () => {
     expect(container?.resources?.limits?.memory).toBe('1Gi');
     expect(container?.resources?.limits?.cpu).toBe('500m');
     expect(container?.volumeMounts?.[0]?.mountPath).toBe('/app/data/pr-workspace');
+    expect(container?.env?.find((entry) => entry.name === 'OPENROUTER_API_KEY')).toMatchObject({
+      valueFrom: { secretKeyRef: { name: 'ct-review-bot-runtime', key: 'OPENROUTER_API_KEY' } },
+    });
 
     const volume = job.spec?.template?.spec?.volumes?.[0];
     expect(volume?.persistentVolumeClaim?.claimName).toBe('pvc-test-pr101');

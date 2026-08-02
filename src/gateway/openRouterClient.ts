@@ -8,6 +8,20 @@ export class OpenRouterConnectionError extends Error {
   }
 }
 
+export class OpenRouterResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OpenRouterResponseError';
+  }
+}
+
+export class OpenRouterTimeoutError extends OpenRouterConnectionError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OpenRouterTimeoutError';
+  }
+}
+
 export type FetchImplementation = (
   input: string | URL | Request,
   init?: RequestInit,
@@ -117,25 +131,32 @@ async function readStreamingResponse(response: Response, requestedModel: string)
   const consume = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed === 'data: [DONE]') return;
+    // SSE comment lines are keep-alives and are not JSON events.
+    if (trimmed.startsWith(':')) return;
     const json = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
     if (!json || json === '[DONE]') return;
     try {
       collectChunk(JSON.parse(json), state);
     } catch {
-      throw new Error('OpenRouter returned malformed streaming JSON');
+      throw new OpenRouterResponseError('OpenRouter returned malformed streaming JSON');
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    lines.forEach(consume);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      lines.forEach(consume);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) consume(buffer);
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
   }
-  buffer += decoder.decode();
-  if (buffer.trim()) consume(buffer);
 
   return {
     model: state.model,
@@ -163,6 +184,9 @@ export class OpenRouterClient implements ReviewModelClient {
     if (!this.apiKey.trim()) {
       throw new OpenRouterConnectionError('OPENROUTER_API_KEY is required; review execution has no offline model fallback');
     }
+    if (!Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0) {
+      throw new TypeError(`OpenRouter request requires a positive timeoutMs; received ${String(request.timeoutMs)}`);
+    }
 
     const effectiveModel = normalizeOpenRouterModel(request.model);
     const started = this.now();
@@ -189,13 +213,13 @@ export class OpenRouterClient implements ReviewModelClient {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(`OpenRouter HTTP ${response.status}: ${text.slice(0, 2_000)}`);
+        throw new OpenRouterResponseError(`OpenRouter HTTP ${response.status}: ${text.slice(0, 2_000)}`);
       }
 
       const data = await readStreamingResponse(response, effectiveModel);
       const content = data?.choices?.[0]?.message?.content;
       if (typeof content !== 'string' || content.trim() === '') {
-        throw new Error('OpenRouter returned empty completion content');
+        throw new OpenRouterResponseError('OpenRouter returned empty completion content');
       }
 
       const rawUsage = data.usage;
@@ -233,7 +257,10 @@ export class OpenRouterClient implements ReviewModelClient {
 
       return { model, content, usage, costUSD, raw: data };
     } catch (error: any) {
-      if (error?.message?.startsWith('OpenRouter HTTP') || error instanceof OpenRouterConnectionError) throw error;
+      if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError) throw error;
+      if (error?.name === 'AbortError' || controller.signal.aborted) {
+        throw new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`);
+      }
       logger.error('OpenRouter network failure or timeout', { error: error?.message || String(error), model: request.model });
       throw new OpenRouterConnectionError(`OpenRouter connection failure for model ${request.model}: ${error?.message || String(error)}`);
     } finally {
