@@ -28,4 +28,23 @@ describe('review bot readiness', () => {
       openRouterReady: true,
     });
   });
+
+  it('returns 503 instead of advertising readiness when OpenRouter is unavailable', async () => {
+    const privateKey = generateKeyPairSync('rsa', { modulusLength: 2048 })
+      .privateKey.export({ type: 'pkcs8', format: 'pem' })
+      .toString();
+    vi.stubEnv('GITHUB_APP_ID', '4385771');
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', privateKey);
+    vi.stubEnv('WEBHOOK_SECRET', 'test-webhook-secret');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+
+    const response = await request(createApp()).get('/ready');
+
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({
+      status: 'not_ready',
+      configurationReady: false,
+      openRouterReady: false,
+    });
+  });
 });
