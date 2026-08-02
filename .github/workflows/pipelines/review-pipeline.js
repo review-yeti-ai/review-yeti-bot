@@ -1494,9 +1494,37 @@ function postOrOutputComment(commentBody, prContext, options = {}) {
   const cwd = options.cwd || process.cwd();
 
   if (prNumber) {
+    const marker = prContext.repo && prContext.headSha
+      ? `<!-- ct-review-bot:v1:${prContext.repo}#${prNumber}:${prContext.headSha}:action -->`
+      : '';
+    const bodyToPublish = marker && !commentBody.includes(marker)
+      ? `${commentBody}\n\n${marker}`
+      : commentBody;
     try {
+      if (marker) {
+        const existing = commandRunner('gh', [
+          'api',
+          `repos/${prContext.repo}/issues/${prNumber}/comments?per_page=100`,
+          '--paginate',
+          '--jq',
+          '.[].body',
+        ], {
+          encoding: 'utf-8',
+          env: process.env,
+        });
+        if (!existing || existing.status !== 0) {
+          const error = `gh api could not verify the existing review marker: ${existing?.stderr || existing?.stdout || 'unknown error'}`;
+          console.warn(`[Publish] ${error}`);
+          return { success: false, postedViaGh: false, error };
+        }
+        if (String(existing.stdout || '').includes(marker)) {
+          console.log(`[Publish] Exact-head review marker already exists for PR #${prNumber}; skipping duplicate.`);
+          return { success: true, postedViaGh: true, deduplicated: true };
+        }
+      }
+
       const tempPath = path.join(options.tempDirectory || '/tmp', `review-comment-${now()}.md`);
-      fileSystem.writeFileSync(tempPath, commentBody, 'utf-8');
+      fileSystem.writeFileSync(tempPath, bodyToPublish, 'utf-8');
 
       // --repo is required: the review runner checks out the central review repository, so the
       // target PR is almost never the repository `gh` would infer from the working directory.
@@ -1516,10 +1544,14 @@ function postOrOutputComment(commentBody, prContext, options = {}) {
         console.log(`[Publish] Successfully posted PR comment to PR #${prNumber} via gh CLI.`);
         return { success: true, postedViaGh: true };
       } else {
-        console.warn(`[Publish] gh CLI comment returned non-zero status (${result.status}): ${result.stderr || result.stdout}`);
+        const error = `gh pr comment failed with status ${result.status}: ${result.stderr || result.stdout || 'unknown error'}`;
+        console.warn(`[Publish] ${error}`);
+        return { success: false, postedViaGh: false, error };
       }
     } catch (err) {
-      console.warn(`[Publish] Error executing gh pr comment CLI: ${err.message}`);
+      const error = `gh pr comment failed: ${err.message}`;
+      console.warn(`[Publish] ${error}`);
+      return { success: false, postedViaGh: false, error };
     }
   } else {
     console.log('[Publish] No PR_NUMBER found in event context; skipping `gh pr comment` invocation.');
@@ -1714,7 +1746,12 @@ async function main() {
   const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage);
 
   console.log('[Publishing] Executing PR comment publishing...');
-  postOrOutputComment(commentMarkdown, prContext);
+  const publication = postOrOutputComment(commentMarkdown, prContext);
+  if (!publication.success) {
+    console.error(`[Publishing] ${publication.error || 'GitHub publication failed'}`);
+    process.exitCode = 1;
+    return;
+  }
 
   writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage);
 
