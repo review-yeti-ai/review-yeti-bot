@@ -8,17 +8,18 @@ This reference guide provides a complete, 1:1 schema specification for `.ct-revi
 
 1. [Configuration File Resolution](#configuration-file-resolution)
 2. [Top-Level Schema Overview](#top-level-schema-overview)
-3. [The 6 Standard Sections](#the-6-standard-sections)
+3. [V4 Execution Policy](#v4-execution-policy)
+4. [The 6 Standard Sections](#the-6-standard-sections)
    - [1. `reviews`](#1-reviews)
    - [2. `chat`](#2-chat)
    - [3. `knowledge_base`](#3-knowledge_base)
    - [4. `path_filters`](#4-path_filters)
    - [5. `auto_review`](#5-auto_review)
    - [6. `dials`](#6-dials)
-4. [Clean Key Toggles](#clean-key-toggles)
-5. [Multi-LLM Personas & Provider Schema](#multi-llm-personas--provider-schema)
-6. [CodeRabbit 1:1 Translation Mapping (`translateCodeRabbitToV3`)](#coderabbit-11-translation-mapping-translatecoderabbittov3)
-7. [Full Configuration Examples](#full-configuration-examples)
+5. [Clean Key Toggles](#clean-key-toggles)
+6. [Multi-LLM Personas & Provider Schema](#multi-llm-personas--provider-schema)
+7. [CodeRabbit 1:1 Translation Mapping (`translateCodeRabbitToV3`)](#coderabbit-11-translation-mapping-translatecoderabbittov3)
+8. [Full Configuration Examples](#full-configuration-examples)
    - [Native `.ct-review.yaml` (V3)](#native-ct-reviewyaml-v3)
    - [CodeRabbit-Compatible `.coderabbit.yaml`](#coderabbit-compatible-coderabbityaml)
 
@@ -28,12 +29,12 @@ This reference guide provides a complete, 1:1 schema specification for `.ct-revi
 
 When a GitHub Pull Request webhook is received, `ct-review-bot` checks the target repository for a configuration file in the following order of precedence:
 
-1. `.ct-review.yaml` in PR target branch
+1. `.ct-review.yaml` in PR target branch at the immutable PR base SHA
 2. `.ct-review.yml` in PR target branch
 3. `ct-review.yaml` in PR target branch
 4. `.coderabbit.yaml` in PR target branch
 5. Organization-level `.github` repository (`.ct-review.yaml`, `.coderabbit.yaml`)
-6. Built-in system default configuration (`createDefaultV3Config()`)
+6. Built-in system default configuration (`createDefaultV4Config()`)
 
 ---
 
@@ -61,6 +62,39 @@ reviewers: { ... }
 path_instructions: [ ... ]
 rules: [ ... ]
 ```
+
+## V4 Execution Policy
+
+Version 4 is the additive execution-policy layer. Version 3 remains accepted and is normalized to
+these defaults. The App and Action read policy from the trusted base reference; pull-request
+payloads and model output cannot change these limits.
+
+```yaml
+version: 4
+submodules:
+  mode: metadata_only       # ignore | metadata_only | recursive
+  max_depth: 1
+  max_files: 500
+  require_pinned_commit: true
+  missing_access: block      # block | metadata_only
+  allowed_repositories: []
+  allowed_hosts: [github.com]
+  url_change: block          # block | review
+limits:
+  max_files: 1000
+  max_diff_bytes: 1000000
+  max_prompt_tokens: 60000
+  max_completion_tokens: 8000
+  max_cost_usd: 5
+  max_turns: 20
+  max_concurrency: 12
+```
+
+Gitlink changes are never treated as ordinary text files. `metadata_only` requires pinned old/new
+commit IDs, while `recursive` records an incomplete review until a nested snapshot resolver is
+available. An incomplete submodule review cannot produce `SHIP`. Trusted Action inputs may narrow
+these settings, but immutable safety caps always win; the effective policy digest is part of the
+run identity.
 
 ---
 
