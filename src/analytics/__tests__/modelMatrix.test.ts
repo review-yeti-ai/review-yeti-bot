@@ -677,4 +677,3 @@ describe('src/analytics/modelMatrix.ts', () => {
     });
   });
 });
-

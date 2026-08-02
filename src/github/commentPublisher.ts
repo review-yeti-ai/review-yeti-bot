@@ -44,6 +44,8 @@ export interface CommentPublisherOptions {
   maxDelayMs?: number;
   userAgent?: string;
   allowUserToken?: boolean;
+  /** Optional authoritative head lookup used immediately before every write. */
+  currentHeadSha?: () => Promise<string>;
 }
 
 export type FetchImplementation = (
@@ -184,6 +186,7 @@ export class CommentPublisher {
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly random: () => number;
+  private readonly currentHeadSha?: () => Promise<string>;
 
   constructor(options: CommentPublisherOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com').replace(/\/$/, '');
@@ -204,6 +207,7 @@ export class CommentPublisher {
     this.now = options.now || Date.now;
     this.sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.random = options.random || Math.random;
+    this.currentHeadSha = options.currentHeadSha;
   }
 
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
@@ -244,6 +248,7 @@ export class CommentPublisher {
 
         return response;
       } catch (err) {
+        if (String(init.method || 'GET').toUpperCase() === 'POST') throw err;
         if (attempt === this.maxRetries) throw err;
         await this.sleep(delay);
         delay *= 2;
@@ -253,28 +258,38 @@ export class CommentPublisher {
   }
 
   private async findExistingReview(marker: string, owner: string, repo: string, prNumber: number): Promise<number | undefined> {
-    const endpoints = [
-      `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100`,
-      `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
+    const endpointBases = [
+      `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
+      `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments`,
     ];
-    for (const endpoint of endpoints) {
-      try {
-        const response = await this.fetchWithRetry(endpoint, { method: 'GET' });
-        if (!response.ok) continue;
+    for (const endpointBase of endpointBases) {
+      for (let page = 1; page <= 20; page++) {
+        const response = await this.fetchWithRetry(`${endpointBase}?per_page=100&page=${page}`, { method: 'GET' });
+        if (!response.ok) {
+          // GitHub can return 404 for an endpoint that has no visible review/comment
+          // collection in restricted test/app installations. Treat that as an empty
+          // collection; authentication and transport failures remain fail-closed.
+          if (response.status === 404) {
+            break;
+          }
+          throw new Error(`GitHub marker lookup returned HTTP ${response.status}`);
+        }
         const data = await response.json();
-        if (!Array.isArray(data)) continue;
+        if (!Array.isArray(data)) {
+          throw new Error('GitHub marker lookup response was not an array');
+        }
         const existing = data.find((entry: any) => typeof entry?.body === 'string' && entry.body.includes(marker));
         if (existing && Number.isFinite(Number(existing.id))) return Number(existing.id);
-      } catch (error: any) {
-        logger.warn('Unable to inspect existing review marker; continuing with publication', {
-          owner,
-          repo,
-          prNumber,
-          error: error?.message || String(error),
-        });
+        if (data.length < 100) break;
       }
     }
     return undefined;
+  }
+
+  private async assertCurrentHead(expected: string): Promise<void> {
+    if (!this.currentHeadSha) return;
+    const actual = await this.currentHeadSha();
+    if (actual !== expected) throw new Error(`pull request head changed before publication: expected ${expected}, found ${actual}`);
   }
 
   public async publishReview(req: PublishReviewRequest): Promise<PublishResult> {
@@ -318,6 +333,7 @@ export class CommentPublisher {
         })),
       };
 
+      await this.assertCurrentHead(commitSha);
       let res = await this.fetchWithRetry(url, {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -337,6 +353,7 @@ export class CommentPublisher {
             return `#### 📄 File: \`${ic.path}\` (Line ${ic.line})\n${formatInlineCommentBody(ic.finding, { mascot: false })}`
           }).join('\n\n---\n\n');
 
+          await this.assertCurrentHead(commitSha);
           res = await this.fetchWithRetry(url, {
             method: 'POST',
             body: JSON.stringify({
@@ -360,6 +377,7 @@ export class CommentPublisher {
               return `#### 📄 File: \`${ic.path}\` (Line ${ic.line})\n${formatInlineCommentBody(ic.finding, { mascot: false })}`
             }).join('\n\n---\n\n') : finalBody;
 
+          await this.assertCurrentHead(commitSha);
           const issueRes = await this.fetchWithRetry(issueUrl, {
             method: 'POST',
             body: JSON.stringify({ body: fallbackBody }),

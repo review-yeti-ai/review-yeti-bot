@@ -40,6 +40,8 @@ Review-bot external boundaries follow the deterministic operator patterns used b
 
 The generational engine adds one review contract for both execution surfaces:
 
+Governance and operational tests also assert that effective policy carries source provenance and a digest, platform caps cannot be widened by repository/workflow overrides, tenant boundaries cover runs/indexes/artifacts/logs, and SLO receipts expose queue latency, first-comment latency, completion latency, provider availability, index freshness, cost, and false-positive feedback.
+
 - `src/review/reviewCore.js` is the canonical verdict, finding, coverage, and digest boundary; the
   plain Node Action and typed App adapters must produce the same result for the same snapshot.
 - `PRSnapshot` binds owner, repository, PR number, exact head SHA, exact base SHA, changed-file

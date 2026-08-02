@@ -87,7 +87,6 @@ export interface CustomApiBases {
 
 export interface ProviderConfigRecord {
   id: string;
-  type?: string;
   name?: string;
   displayName: string;
   active?: boolean;
@@ -383,19 +382,14 @@ export class DashboardStore {
   } = { tokenTimeSeries: {} };
 
   private sanitizePath(targetPath: string): string {
-    if (targetPath.includes('non_existent') || targetPath.includes('invalid_root')) {
-      return '/tmp/ct-review-bot/dashboard.json';
-    }
-    const dir = path.dirname(targetPath);
-    try {
+    if (targetPath.startsWith('/tmp/')) {
+      const dir = path.dirname(targetPath);
       if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+        try { fs.mkdirSync(dir, { recursive: true }); } catch {}
       }
-      fs.accessSync(dir, fs.constants.W_OK);
       return targetPath;
-    } catch {
-      return '/tmp/ct-review-bot/dashboard.json';
     }
+    return targetPath;
   }
 
   public get filePath(): string {
@@ -428,62 +422,30 @@ export class DashboardStore {
   constructor(filePath?: string) {
     this.specifiedFilePath = filePath;
     this.data = this.load();
-    if (!filePath) {
-      this.initPostgres();
-    }
+    this.initPostgres();
   }
 
-  public isPostgresConfigured(): boolean {
-    return postgresStore.isConfigured() || !!process.env.DATABASE_URL || !!process.env.POSTGRES_URL;
+  /** Reload the backing file and clear transient analytics caches. */
+  public reset(): void {
+    this.overrideFilePath = undefined;
+    this.invalidateCache();
+    this.data = this.load();
   }
 
   public async initPostgres(): Promise<void> {
-    if (this.isPostgresConfigured()) {
+    if (postgresStore.isConfigured()) {
       try {
         await postgresStore.initialize(this.data);
         const pgData = await postgresStore.loadAllData();
         if (pgData) {
-          if (pgData.repositories && Array.isArray(pgData.repositories)) {
-            const existingMap = new Map((this.data.repositories || []).map((r) => [r.id || r.full_name || `${r.owner}/${r.repo}`, r]));
-            for (const repo of pgData.repositories) {
-              const key = repo.id || repo.full_name || `${repo.owner}/${repo.repo}`;
-              for (const [k, v] of existingMap.entries()) {
-                if (v.owner === repo.owner && v.repo === repo.repo) {
-                  existingMap.delete(k);
-                }
-              }
-              existingMap.set(key, repo);
-            }
-            this.data.repositories = Array.from(existingMap.values());
+          if (pgData.repositories && pgData.repositories.length > 0) {
+            this.data.repositories = pgData.repositories;
           }
           if (pgData.settings) {
-            this.data.settings = {
-              ...this.data.settings,
-              ...pgData.settings,
-              personaSettings: {
-                ...(this.data.settings?.personaSettings || {}),
-                ...(pgData.settings?.personaSettings || {}),
-              },
-              providerConfigs: {
-                ...(this.data.settings?.providerConfigs || {}),
-                ...(pgData.settings?.providerConfigs || {}),
-              },
-              defaultModelOverrides: {
-                ...(this.data.settings?.defaultModelOverrides || {}),
-                ...(pgData.settings?.defaultModelOverrides || {}),
-              },
-              customApiBases: {
-                ...(this.data.settings?.customApiBases || {}),
-                ...(pgData.settings?.customApiBases || {}),
-              },
-            };
+            this.data.settings = { ...this.data.settings, ...pgData.settings };
           }
-          if (pgData.reviewLogs && Array.isArray(pgData.reviewLogs)) {
-            const existingLogsMap = new Map((this.data.reviewLogs || []).map((l) => [l.id, l]));
-            for (const log of pgData.reviewLogs) {
-              existingLogsMap.set(log.id, log);
-            }
-            this.data.reviewLogs = Array.from(existingLogsMap.values());
+          if (pgData.reviewLogs && pgData.reviewLogs.length > 0) {
+            this.data.reviewLogs = pgData.reviewLogs;
           }
           this.invalidateCache();
         }
@@ -1053,7 +1015,7 @@ export class DashboardStore {
             subscriptionTier: 'Team',
             status: process.env.ANTHROPIC_API_KEY ? 'connected' : 'untested',
             latencyMs: 38,
-            activeModels: ['openrouter/auto', 'openrouter/anthropic/claude-3.7-sonnet', 'claude-haiku-4.5', 'claude-5-sonnet', 'claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-opus-4-8'],
+            activeModels: ['claude-haiku-4.5', 'claude-5-sonnet', 'claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-opus-4-8'],
             customModels: [],
             updatedAt: now,
           },
@@ -1310,7 +1272,7 @@ export class DashboardStore {
               decision: 'SHIP',
               confidence: 0.98,
               latencyMs: 420,
-              model: 'openrouter/anthropic/claude-3.7-sonnet',
+              model: 'claude-5-sonnet',
               findingsCount: 0,
               summary: 'Verified multi-tenant isolation bounds, zero SQL parameter leakage in 54k diff.',
             },
@@ -1330,7 +1292,7 @@ export class DashboardStore {
               decision: 'SHIP',
               confidence: 0.94,
               latencyMs: 380,
-              model: 'openrouter/auto',
+              model: 'claude-5-sonnet',
               findingsCount: 0,
               summary: 'Clean TypeScript types with 100% test coverage.',
             },
@@ -1371,7 +1333,7 @@ export class DashboardStore {
               decision: 'SHIP',
               confidence: 0.98,
               latencyMs: 420,
-              model: 'openrouter/anthropic/claude-3.7-sonnet',
+              model: 'claude-5-sonnet',
               findingsCount: 0,
               summary: 'Verified CI caching permissions & container isolation.',
             },
@@ -1412,7 +1374,7 @@ export class DashboardStore {
               decision: 'SHIP',
               confidence: 0.97,
               latencyMs: 750,
-              model: 'openrouter/auto',
+              model: 'claude-haiku-4.5',
               findingsCount: 0,
               summary: 'Validated tenant policy synchronization and OpenAPI RBAC rules.',
             },
@@ -1432,7 +1394,7 @@ export class DashboardStore {
               decision: 'SHIP',
               confidence: 0.94,
               latencyMs: 810,
-              model: 'openrouter/auto',
+              model: 'claude-haiku-4.5',
               findingsCount: 0,
               summary: 'No breaking changes detected in v3 endpoint payload schemas.',
             },
@@ -1661,35 +1623,34 @@ export class DashboardStore {
 
   private saveData(data: DashboardData): void {
     this.invalidateCache();
-    let targetFile = this.filePath;
-    let dir = path.dirname(targetFile);
+    let dir = path.dirname(this.filePath);
     try {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
     } catch {
-      targetFile = '/tmp/ct-review-bot/dashboard.json';
-      dir = path.dirname(targetFile);
+      this.filePath = '/tmp/ct-review-bot/dashboard.json';
+      dir = path.dirname(this.filePath);
       if (!fs.existsSync(dir)) {
-        try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+        fs.mkdirSync(dir, { recursive: true });
       }
     }
-    const tmp = `${targetFile}.tmp.${Date.now()}_${Math.random().toString(36).substring(2)}`;
+    const tmp = `${this.filePath}.tmp.${Date.now()}_${Math.random().toString(36).substring(2)}`;
     try {
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-      fs.renameSync(tmp, targetFile);
+      fs.renameSync(tmp, this.filePath);
     } catch {
       try {
-        fs.writeFileSync(targetFile, JSON.stringify(data, null, 2), 'utf8');
+        fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf8');
       } catch {
         try {
           const fallback = '/tmp/ct-review-bot/dashboard.json';
-          this.overrideFilePath = fallback;
           const fallbackDir = path.dirname(fallback);
           if (!fs.existsSync(fallbackDir)) {
             fs.mkdirSync(fallbackDir, { recursive: true });
           }
           fs.writeFileSync(fallback, JSON.stringify(data, null, 2), 'utf8');
+          this.filePath = fallback;
         } catch {
           // fallback ignored
         }
@@ -1720,8 +1681,7 @@ export class DashboardStore {
   }
 
   public getRepositories(): RepoDashboardSetting[] {
-    const repos = (this.data && Array.isArray(this.data.repositories)) ? this.data.repositories : [];
-    return repos.map((r) => {
+    return this.data.repositories.map((r) => {
       const owner = r.owner || (r.full_name && r.full_name.includes('/') ? r.full_name.split('/')[0] : '');
       const repo = r.repo || (r.full_name && r.full_name.includes('/') ? r.full_name.split('/')[1] : r.name || '');
       const full_name = r.full_name || `${owner}/${repo}`;
@@ -1803,7 +1763,6 @@ export class DashboardStore {
   }
 
   public getSettings(): PlatformSettings {
-    const defaults = this.defaultData().settings;
     const settings = JSON.parse(JSON.stringify(this.data.settings));
     if (settings.defaultMaxTurns === undefined) {
       settings.defaultMaxTurns = 20;
@@ -1811,10 +1770,6 @@ export class DashboardStore {
     if (settings.defaultEffort === undefined) {
       settings.defaultEffort = 'low';
     }
-    settings.customApiBases = {
-      ...(defaults.customApiBases || {}),
-      ...(settings.customApiBases || {}),
-    };
     if (settings.providerConfigs) {
       for (const prov of Object.values(settings.providerConfigs as Record<string, any>)) {
         if (prov) {
@@ -2003,10 +1958,18 @@ export class DashboardStore {
     }
     this.data.settings.providerConfigs[providerId] = updated;
 
-    const activePersonas = Object.values(this.getPersonaSettings()).filter((p) => p.enabled !== false);
-    const activeModels = this.getDynamicActiveModels();
+    const currentModels = new Set(current.activeModels || []);
+    const activePersonas = Object.values(this.getPersonaSettings())
+      .filter((p) => p.enabled !== false && (
+        p.providerId === providerId
+        || p.model?.startsWith(`${providerId}/`)
+        || currentModels.has(p.model)
+        || (updated.activeModels || []).includes(p.model)
+      ));
+    const activeModels = new Set(updated.activeModels || []);
+    const providerDisabled = patch.enabled === false || patch.active === false;
     for (const p of activePersonas) {
-      if (!activeModels.includes(p.model)) {
+      if (providerDisabled || !activeModels.has(p.model)) {
         this.data.settings.providerConfigs[providerId] = current;
         throw new Error(
           `Cannot disable provider or model '${providerId}': Active persona '${p.displayName || p.id}' relies on model '${p.model}'`
@@ -2017,19 +1980,12 @@ export class DashboardStore {
     this.saveData(this.data);
 
     try {
-      const existingPoolProv = providerPool.getProvider(providerId);
-      const apiKeyToUse = updated.apiKeyRaw || patch.apiKeyRaw || patch.apiKey || current?.apiKeyRaw || current?.apiKeyMasked || existingPoolProv?.apiKey || 'sk-placeholder';
-      const typeToUse = updated.type || patch.type || current?.type || existingPoolProv?.type || 'openai';
-      const baseUrlToUse = updated.baseUrl !== undefined ? updated.baseUrl : existingPoolProv?.baseUrl;
-      const modelsToUse = updated.activeModels && updated.activeModels.length > 0 ? updated.activeModels : (updated.customModels && updated.customModels.length > 0 ? updated.customModels : (existingPoolProv?.models || ['default']));
-
-      providerPool.removeProvider(providerId);
-      providerPool.registerProvider({
+      providerPool.upsertProvider({
         id: providerId,
-        type: typeToUse,
-        apiKey: apiKeyToUse,
-        baseUrl: baseUrlToUse,
-        models: modelsToUse,
+        type: providerId,
+        apiKey: updated.apiKeyRaw || current.apiKeyRaw || '',
+        baseUrl: updated.baseUrl,
+        models: updated.activeModels && updated.activeModels.length > 0 ? updated.activeModels : ['default'],
       });
     } catch (_) {}
 
@@ -2131,7 +2087,9 @@ export class DashboardStore {
         providerId,
         effort: effortLevel as any,
         effortLevel: effortLevel as any,
-        customPrompt: item.customPrompt,
+        // Preserve an explicit empty override so panelEngine can fall through
+        // to a repository/YAML prompt instead of restoring the built-in text.
+        customPrompt: item.customPrompt !== undefined ? item.customPrompt : (defPersona?.customPrompt || ''),
         charter: (item.charter !== undefined && item.charter !== '') ? item.charter : (defPersona?.charter || ''),
         maxTurns: item.maxTurns !== undefined ? item.maxTurns : (defPersona?.maxTurns || 20),
         confidenceThreshold: item.confidenceThreshold !== undefined ? item.confidenceThreshold : 75,
@@ -2192,11 +2150,6 @@ export class DashboardStore {
       return { ...personas[targetId], id: personaId, personaId };
     }
     return undefined;
-  }
-
-  public getDefaultPersonaSetting(personaId: string): PersonaSetting | undefined {
-    const defaults = this.defaultData().settings.personaSettings || {};
-    return defaults[personaId];
   }
 
   public updatePersonaSetting(personaId: string, patch: Partial<PersonaSetting>): PersonaSetting {
@@ -2382,15 +2335,9 @@ export class DashboardStore {
         updatedPersonas[key] = merged;
       }
     }
-    const defaultCustomBases = this.defaultData().settings.customApiBases || {};
-    const currentCustomBases = { ...defaultCustomBases, ...(this.data.settings.customApiBases || {}) };
     this.data.settings = {
       ...this.data.settings,
       ...newSettings,
-      customApiBases: {
-        ...currentCustomBases,
-        ...(newSettings.customApiBases || {}),
-      },
       // providerConfigs was already deep-merged above (line 2270); use the merged result
       providerConfigs: this.data.settings.providerConfigs,
       defaultModelOverrides: {
@@ -2417,6 +2364,10 @@ export class DashboardStore {
       enforcementPolicy: {
         ...(this.data.settings.enforcementPolicy || {} as any),
         ...(newSettings.enforcementPolicy || {}),
+      },
+      customApiBases: {
+        ...(this.data.settings.customApiBases || {} as any),
+        ...(newSettings.customApiBases || {}),
       },
     };
     this.saveData(this.data);
@@ -2518,11 +2469,7 @@ export class DashboardStore {
     return resetConfig;
   }
 
-  public reset(): void {
-    this.overrideFilePath = undefined;
-    this.invalidateCache();
-    this.data = this.load();
-  }
+
 
   public getApiKeys(): ApiKeyRecord[] {
     if (!this.data.apiKeys) this.data.apiKeys = [];
@@ -2749,10 +2696,6 @@ export class DashboardStore {
     const budgetPercentUsed = monthlyBudgetUsd > 0 ? Math.min(100, (totalSpendUsd / monthlyBudgetUsd) * 100) : 0;
 
     const knownModels = [
-      { model: 'openrouter/auto', displayName: 'OpenRouter Auto Router', providerId: 'openrouter' },
-      { model: 'openrouter/anthropic/claude-3.7-sonnet', displayName: 'Claude 3.7 Sonnet (OpenRouter)', providerId: 'openrouter' },
-      { model: 'openrouter/deepseek/deepseek-r1', displayName: 'DeepSeek R1 (OpenRouter)', providerId: 'openrouter' },
-      { model: 'openrouter/google/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro (OpenRouter)', providerId: 'openrouter' },
       { model: 'claude-5-sonnet', displayName: 'Claude 5 Sonnet', providerId: 'claude' },
       { model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', providerId: 'codex' },
       { model: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', providerId: 'deepseek' },
@@ -3118,7 +3061,7 @@ export class DashboardStore {
     const overview = {
       totalRepositories: repos.length,
       activeAutomations: activeAutomations,
-      totalReviewsExecuted: Math.max(this.data.reviewCounter || 0, this.data.reviewLogs ? this.data.reviewLogs.length : 0),
+      totalReviewsExecuted: this.data.reviewCounter || (this.data.reviewLogs ? this.data.reviewLogs.length : 0),
       todaysReviewsExecuted: todaysReviewsCount,
       todaysReviewsCount: todaysReviewsCount,
       todayDateBadge: todayUtcStr,

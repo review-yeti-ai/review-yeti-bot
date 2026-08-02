@@ -31,6 +31,13 @@ export class ProviderPool {
     return validated;
   }
 
+  /** Registers a provider or replaces the current config for its stable id. */
+  public upsertProvider(config: ProviderConfig): ProviderConfig {
+    const validated = providerConfigSchema.parse(config);
+    this.providers.set(validated.id, validated);
+    return validated;
+  }
+
   /**
    * Retrieves a registered provider by ID.
    */

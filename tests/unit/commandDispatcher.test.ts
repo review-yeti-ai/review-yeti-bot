@@ -5,12 +5,12 @@ import { GitHubInstallationClient } from '../../src/github/installationClient';
 describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', () => {
   let dispatcher: CommandDispatcher;
   let mockGithub: any;
-  let mockOmniRoute: any;
+  let mockModelClient: any;
   let mockOnRunReviewPipeline: any;
   let context: ChatContext;
 
   beforeEach(() => {
-    dispatcher = new CommandDispatcher('openai/gpt-4o');
+    dispatcher = new CommandDispatcher('openrouter/auto');
 
     mockGithub = {
       getPullRequest: vi.fn().mockResolvedValue({
@@ -42,9 +42,9 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       postIssueComment: vi.fn().mockResolvedValue({ id: 201 }),
     };
 
-    mockOmniRoute = {
+    mockModelClient = {
       complete: vi.fn().mockResolvedValue({
-        model: 'openai/gpt-4o',
+        model: 'openrouter/auto',
         content: 'LLM generated response content',
         usage: { prompt: 100, completion: 50, total: 150 },
         costUSD: 0.002,
@@ -60,7 +60,7 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       headSha: 'head-sha-123',
       baseSha: 'base-sha-123',
       github: mockGithub as unknown as GitHubInstallationClient,
-      omniRoute: mockOmniRoute,
+      modelClient: mockModelClient,
       onRunReviewPipeline: mockOnRunReviewPipeline,
       payload: { prNumber: 42, owner: 'calltelemetry', repo: 'ct-review-bot' },
     };
@@ -185,6 +185,24 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       expect(res.command).toBe('ask');
       expect(res.success).toBe(true);
       expect(mockGithub.replyToReviewComment).toHaveBeenCalled();
+    });
+
+    it('does not execute the deprecated OmniRoute alias when modelClient is absent', async () => {
+      const deprecatedClient = {
+        complete: vi.fn().mockResolvedValue({ content: 'deprecated model output' }),
+      };
+      const legacyOnlyContext = {
+        ...context,
+        modelClient: undefined,
+        omniRoute: deprecatedClient,
+      };
+
+      const res = await dispatcher.dispatchCommand('@ct-review ask Is this safe?', legacyOnlyContext);
+
+      expect(res.success).toBe(true);
+      expect(res.output).toContain('Answer to question "Is this safe?"');
+      expect(res.output).not.toContain('deprecated model output');
+      expect(deprecatedClient.complete).not.toHaveBeenCalled();
     });
 
     it('returns usage message when "@ct-review ask" has no question provided', async () => {

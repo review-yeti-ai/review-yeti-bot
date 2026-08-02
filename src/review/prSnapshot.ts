@@ -5,9 +5,18 @@ export interface PRSnapshotFile {
   patch?: string;
   status?: string;
   mode?: string;
+  oldMode?: string;
+  newMode?: string;
+  old_mode?: string;
+  new_mode?: string;
   oldSha?: string;
   newSha?: string;
   isSubmodule?: boolean;
+  submoduleCandidate?: boolean;
+  parentRepository?: string;
+  oldSubmoduleUrl?: string;
+  newSubmoduleUrl?: string;
+  submoduleUrlChanged?: boolean;
 }
 
 export interface PRSnapshotInput {

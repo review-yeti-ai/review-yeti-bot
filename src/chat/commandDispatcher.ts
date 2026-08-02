@@ -1,5 +1,5 @@
 import { GitHubInstallationClient, ReviewComment } from '../github/installationClient';
-import { OmniRouteClient } from '../gateway/omniRouteClient';
+import { ReviewModelClient } from '../gateway/openRouterClient';
 import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { ReflectionCommandParser, LearningStore } from '../reflection';
@@ -26,7 +26,9 @@ export interface ChatContext {
   lineNumber?: number;
   sender?: string;
   github: GitHubInstallationClient;
-  omniRoute?: OmniRouteClient;
+  /** @deprecated Unsupported legacy field; ignored. Pass the OpenRouter client via modelClient. */
+  omniRoute?: ReviewModelClient;
+  modelClient?: ReviewModelClient;
   onRunReviewPipeline?: (payload: any) => Promise<any>;
   payload?: any;
 }
@@ -50,7 +52,7 @@ export function parseCommand(commandStr: string): ParsedCommand | null {
 }
 
 export class CommandDispatcher {
-  constructor(private readonly defaultModel: string = 'openai/gpt-4o') {}
+  constructor(private readonly defaultModel: string = 'openrouter/auto') {}
 
   async dispatchCommand(commandStr: string, context: ChatContext): Promise<DispatchResult> {
     const parsed = parseCommand(commandStr);
@@ -111,13 +113,14 @@ export class CommandDispatcher {
     }
 
     let explanationText = '';
-    if (context.omniRoute) {
+    const modelClient = context.modelClient;
+    if (modelClient) {
       const prompt = `Please concisely explain the following PR code changes / diff hunk for ${context.owner}/${context.repo} PR #${context.prNumber}.\n` +
         (parsed.args ? `Specific request: ${parsed.args}\n` : '') +
         (threadHistory ? `Thread History:\n${threadHistory}\n` : '') +
         `Context:\n${diffContext}`;
       try {
-        const res = await context.omniRoute.complete({
+        const res = await modelClient.complete({
           model: this.defaultModel,
           messages: [
             { role: 'system', content: 'You are an expert PR reviewer explaining code changes concisely.' },
@@ -163,13 +166,14 @@ export class CommandDispatcher {
     }
 
     let refactorText = '';
-    if (context.omniRoute) {
+    const modelClient = context.modelClient;
+    if (modelClient) {
       const prompt = `Generate clean code refactoring suggestions with 1-click apply blocks (\`\`\`suggestion) for ${context.owner}/${context.repo} PR #${context.prNumber}.\n` +
         (parsed.args ? `Specific refactoring instructions: ${parsed.args}\n` : '') +
         (threadHistory ? `Thread History:\n${threadHistory}\n` : '') +
         `Context:\n${diffContext}`;
       try {
-        const res = await context.omniRoute.complete({
+        const res = await modelClient.complete({
           model: this.defaultModel,
           messages: [
             { role: 'system', content: 'You are an expert PR reviewer providing clean code refactorings with ```suggestion blocks.' },
@@ -253,13 +257,14 @@ export class CommandDispatcher {
     }
 
     let answerText = '';
-    if (context.omniRoute) {
+    const modelClient = context.modelClient;
+    if (modelClient) {
       const prompt = `Answer user question about ${context.owner}/${context.repo} PR #${context.prNumber}.\n` +
         `Question: ${question}\n` +
         (threadHistory ? `Thread History:\n${threadHistory}\n` : '') +
         `Code Context:\n${diffContext}`;
       try {
-        const res = await context.omniRoute.complete({
+        const res = await modelClient.complete({
           model: this.defaultModel,
           messages: [
             { role: 'system', content: 'You are an intelligent PR assistant answering developer questions about code changes.' },

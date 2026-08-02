@@ -257,4 +257,24 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     await expect(publisher.publishReview(input)).resolves.toMatchObject({ success: true, reviewId: 919, commentsCreated: 0 });
     expect(fetchImplementation.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1);
   });
+
+  it('fails closed when one idempotency lookup endpoint is unavailable', async () => {
+    const fetchImplementation = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'GET' && input.includes('/pulls/10/reviews')) return new Response('upstream unavailable', { status: 503 });
+      if (init?.method === 'GET') return new Response('[]', { status: 200 });
+      return new Response(JSON.stringify({ id: 920 }), { status: 201 });
+    });
+    const publisher = new CommentPublisher({ githubToken: 'ghs_marker_lookup_token', fetchImplementation });
+
+    await expect(publisher.publishReview({
+      owner: 'calltelemetry',
+      repo: 'bot',
+      prNumber: 10,
+      commitSha: 'head-10',
+      event: 'COMMENT',
+      body: 'review',
+      idempotencyKey: 'persona:security',
+    })).resolves.toMatchObject({ success: false });
+    expect(fetchImplementation.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+  });
 });

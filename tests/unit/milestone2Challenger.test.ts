@@ -6,12 +6,12 @@ import { GitHubInstallationClient } from '../../src/github/installationClient';
 describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Command Dispatcher', () => {
   let dispatcher: CommandDispatcher;
   let mockGithub: any;
-  let mockOmniRoute: any;
+  let mockModelClient: any;
   let mockOnRunReviewPipeline: any;
   let context: ChatContext;
 
   beforeEach(() => {
-    dispatcher = new CommandDispatcher('openai/gpt-4o');
+    dispatcher = new CommandDispatcher('openrouter/auto');
 
     mockGithub = {
       getPullRequest: vi.fn().mockResolvedValue({
@@ -37,9 +37,9 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       postIssueComment: vi.fn().mockResolvedValue({ id: 201 }),
     };
 
-    mockOmniRoute = {
+    mockModelClient = {
       complete: vi.fn().mockResolvedValue({
-        model: 'openai/gpt-4o',
+        model: 'openrouter/auto',
         content: 'LLM generated response content',
         usage: { prompt: 100, completion: 50, total: 150 },
         costUSD: 0.002,
@@ -55,7 +55,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       headSha: 'head-sha-123',
       baseSha: 'base-sha-123',
       github: mockGithub as unknown as GitHubInstallationClient,
-      omniRoute: mockOmniRoute,
+      modelClient: mockModelClient,
       onRunReviewPipeline: mockOnRunReviewPipeline,
       payload: { prNumber: 42, owner: 'calltelemetry', repo: 'ct-review-bot' },
     };
@@ -92,13 +92,13 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         const res = await dispatcher.dispatchCommand(commandStr, context);
         expect(res.command).toBe('ask');
         expect(res.success).toBe(true);
-        expect(mockOmniRoute.complete).toHaveBeenCalled();
-        const callArgs = mockOmniRoute.complete.mock.calls[0][0];
+        expect(mockModelClient.complete).toHaveBeenCalled();
+        const callArgs = mockModelClient.complete.mock.calls[0][0];
         expect(callArgs.messages[1].content).toContain(massiveQuestion);
       });
 
-      it('handles omniRoute client failure during ask gracefully with fallback answer', async () => {
-        mockOmniRoute.complete.mockRejectedValue(new Error('Gateway HTTP 503 Timeout'));
+      it('handles OpenRouter client failure during ask gracefully with fallback answer', async () => {
+        mockModelClient.complete.mockRejectedValue(new Error('Gateway HTTP 503 Timeout'));
         
         const res = await dispatcher.dispatchCommand('@ct-review ask Is this safe?', context);
         expect(res.command).toBe('ask');
@@ -142,11 +142,11 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         expect(res.command).toBe('refactor');
         expect(res.success).toBe(true);
         expect(res.output).toContain('```suggestion');
-        expect(mockOmniRoute.complete).toHaveBeenCalled();
+        expect(mockModelClient.complete).toHaveBeenCalled();
       });
 
       it('appends ```suggestion block automatically if LLM response lacks it', async () => {
-        mockOmniRoute.complete.mockResolvedValue({
+        mockModelClient.complete.mockResolvedValue({
           content: '### Refactoring Suggestion\nConsider using const instead of let.',
         });
 
@@ -157,7 +157,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       });
 
       it('does not duplicate ```suggestion block if LLM response already contains it', async () => {
-        mockOmniRoute.complete.mockResolvedValue({
+        mockModelClient.complete.mockResolvedValue({
           content: '### Refactoring Suggestion\n```suggestion\nconst x = 42;\n```',
         });
 
@@ -167,8 +167,8 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         expect(suggestionCount).toBe(1);
       });
 
-      it('handles omniRoute failure gracefully with default refactoring fallback', async () => {
-        mockOmniRoute.complete.mockRejectedValue(new Error('OmniRoute Connection Refused'));
+      it('handles OpenRouter failure gracefully with default refactoring fallback', async () => {
+        mockModelClient.complete.mockRejectedValue(new Error('OpenRouter Connection Refused'));
         const res = await dispatcher.dispatchCommand('@ct-review refactor', context);
         expect(res.command).toBe('refactor');
         expect(res.success).toBe(true);
@@ -195,7 +195,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         expect(duration).toBeLessThan(500); // Should execute within 500ms
         
         // Verify diff context was sliced to 4,000 chars for LLM prompt safety
-        const promptSent = mockOmniRoute.complete.mock.calls[0][0].messages[1].content;
+        const promptSent = mockModelClient.complete.mock.calls[0][0].messages[1].content;
         expect(promptSent.length).toBeLessThan(10_000);
       });
 
@@ -215,8 +215,8 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         expect(mockGithub.postIssueComment).toHaveBeenCalled();
       });
 
-      it('handles omniRoute failure gracefully with fallback overview', async () => {
-        mockOmniRoute.complete.mockRejectedValue(new Error('API key expired'));
+      it('handles OpenRouter failure gracefully with fallback overview', async () => {
+        mockModelClient.complete.mockRejectedValue(new Error('API key expired'));
         const res = await dispatcher.dispatchCommand('@ct-review explain', context);
         expect(res.command).toBe('explain');
         expect(res.success).toBe(true);
@@ -299,6 +299,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       const payloadA = {
         action: 'created',
         comment: { id: 1, body: '@ct-review-bot-extra ask how this works' },
+        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
         sender: { login: 'user1' },
       };
       const triggerA = eventHandler.evaluateTrigger('issue_comment', payloadA);
@@ -313,6 +314,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       const payloadB = {
         action: 'created',
         comment: { id: 2, body: 'user@ct-review.com explain' },
+        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
         sender: { login: 'user2' },
       };
       const triggerB = eventHandler.evaluateTrigger('issue_comment', payloadB);
@@ -325,6 +327,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       const payloadC = {
         action: 'created',
         comment: { id: 3, body: '@ct-review invalidCommand' },
+        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
         sender: { login: 'user3' },
       };
       const triggerC = eventHandler.evaluateTrigger('issue_comment', payloadC);

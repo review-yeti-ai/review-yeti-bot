@@ -25,6 +25,61 @@ export interface ChangedFile {
   oldSha?: string;
   newSha?: string;
   isSubmodule?: boolean;
+  submoduleCandidate?: boolean;
+  parentRepository?: string;
+  oldSubmoduleUrl?: string;
+  newSubmoduleUrl?: string;
+  submoduleUrlChanged?: boolean;
+}
+
+function parseGitlinkPatch(patch: unknown): { oldSha?: string; newSha?: string; candidate: boolean } {
+  if (typeof patch !== 'string') return { candidate: false };
+  const result: { oldSha?: string; newSha?: string; candidate: boolean } = { candidate: false };
+  const meaningfulLines = patch.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith('diff --git') && !line.startsWith('index ') && !line.startsWith('old mode ') && !line.startsWith('new mode ') && !line.startsWith('new file mode ') && !line.startsWith('deleted file mode ') && !line.startsWith('--- ') && !line.startsWith('+++ ') && !line.startsWith(' ') && !/^@@ /u.test(line) && !/^\\ No newline/u.test(line));
+  for (const line of patch.split(/\r?\n/)) {
+    const match = line.match(/^([+-])Subproject commit ([0-9a-f]{40})$/i);
+    if (!match) continue;
+    result.candidate = true;
+    if (match[1] === '-') result.oldSha = match[2];
+    if (match[1] === '+') result.newSha = match[2];
+  }
+  if (result.candidate && meaningfulLines.some((line) => !/^([+-])Subproject commit [0-9a-f]{40}$/i.test(line))) return { candidate: false };
+  return result;
+}
+
+function parseGitmodules(content: string, owner: string, repo: string): Record<string, string> {
+  const result: Record<string, string> = Object.create(null) as Record<string, string>;
+  let current: { path?: string; url?: string } | undefined;
+  const flush = () => {
+    if (!current?.path || !current.url) return;
+    const rawUrl = current.url;
+    try {
+      result[current.path] = rawUrl.startsWith('./') || rawUrl.startsWith('../')
+        ? new URL(rawUrl, `https://github.com/${owner}/${repo}/`).toString()
+        : rawUrl;
+    } catch {
+      result[current.path] = rawUrl;
+    }
+  };
+  for (const line of content.split(/\r?\n/)) {
+    const withoutComment = line.replace(/\s+[#;].*$/u, '');
+    const section = withoutComment.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (section) {
+      flush();
+      current = /^submodule\s+(?:"[^"]+"|'[^']+'|[^\s]+)$/u.test(section[1].trim()) ? {} : undefined;
+      continue;
+    }
+    if (!current) continue;
+    const pathMatch = withoutComment.match(/^\s*path\s*=\s*(.+?)\s*$/);
+    if (pathMatch) {
+      current.path = pathMatch[1].trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, (_, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted);
+      continue;
+    }
+    const urlMatch = withoutComment.match(/^\s*url\s*=\s*(.+?)\s*$/);
+    if (urlMatch) current.url = urlMatch[1].trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, (_, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted);
+  }
+  flush();
+  return result;
 }
 
 export class GitHubInstallationClient {
@@ -43,6 +98,7 @@ export class GitHubInstallationClient {
     now?: () => number;
     sleep?: (milliseconds: number) => Promise<void>;
     random?: () => number;
+    currentHeadSha?: () => Promise<string>;
   }) {
     if (!options.token.startsWith('ghs_')) {
       throw new Error('GitHubInstallationClient requires a ghs_ installation token');
@@ -58,6 +114,7 @@ export class GitHubInstallationClient {
       now: this.now,
       sleep: options.sleep,
       random: options.random,
+      currentHeadSha: options.currentHeadSha,
     });
   }
 
@@ -95,26 +152,39 @@ export class GitHubInstallationClient {
 
   async getChangedFiles(owner: string, repo: string, prNumber: number): Promise<ChangedFile[]> {
     const files: ChangedFile[] = [];
-    for (let page = 1; ; page++) {
+    for (let page = 1; page <= 30; page++) {
       const data = await this.request(`/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100&page=${page}`);
       if (!Array.isArray(data)) throw new Error('pull files response is not an array');
       files.push(...data.map((file: any) => {
         const mode = typeof file.mode === 'string' ? file.mode : undefined;
         const isSubmodule = mode === '160000';
+        const gitlink = parseGitlinkPatch(file.patch);
         return {
           path: String(file.filename || ''),
           ...(typeof file.patch === 'string' ? { patch: file.patch } : {}),
           ...(typeof file.status === 'string' ? { status: file.status } : {}),
           ...(mode ? { mode } : {}),
           ...(typeof file.previous_filename === 'string' ? { previousPath: file.previous_filename } : {}),
-          ...(isSubmodule && typeof file.previous_sha === 'string' ? { oldSha: file.previous_sha } : {}),
-          ...(isSubmodule && typeof file.sha === 'string' ? { newSha: file.sha } : {}),
+          ...(isSubmodule && (typeof file.previous_sha === 'string' || gitlink.oldSha) ? { oldSha: typeof file.previous_sha === 'string' ? file.previous_sha : gitlink.oldSha } : {}),
+          ...(isSubmodule && (typeof file.sha === 'string' || gitlink.newSha) ? { newSha: typeof file.sha === 'string' ? file.sha : gitlink.newSha } : {}),
+          ...(isSubmodule && typeof file.previous_submodule_url === 'string' ? { oldSubmoduleUrl: file.previous_submodule_url } : {}),
+          ...(isSubmodule && typeof file.submodule_url === 'string' ? { newSubmoduleUrl: file.submodule_url } : {}),
+          ...(isSubmodule && file.submodule_url_changed === true ? { submoduleUrlChanged: true } : {}),
+          ...(gitlink.oldSha && !isSubmodule ? { oldSha: gitlink.oldSha } : {}),
+          ...(gitlink.newSha && !isSubmodule ? { newSha: gitlink.newSha } : {}),
           ...(isSubmodule ? { isSubmodule: true } : {}),
+          ...(gitlink.candidate && !isSubmodule ? { submoduleCandidate: true } : {}),
+          ...((isSubmodule || gitlink.candidate) ? { parentRepository: `${owner}/${repo}` } : {}),
         };
       }));
       if (data.length < 100) break;
     }
     return files;
+  }
+
+  async getSubmoduleUrls(owner: string, repo: string, ref: string): Promise<Record<string, string>> {
+    const content = await this.getFileContent(owner, repo, '.gitmodules', ref, { notFoundIsEmpty: true });
+    return content ? parseGitmodules(content, owner, repo) : {};
   }
 
   publishReview(request: PublishReviewRequest): Promise<PublishResult> {
@@ -225,7 +295,7 @@ export class GitHubInstallationClient {
     return files;
   }
 
-  async getFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null> {
+  async getFileContent(owner: string, repo: string, path: string, ref?: string, options: { notFoundIsEmpty?: boolean } = {}): Promise<string | null> {
     try {
       const url = `/repos/${owner}/${repo}/contents/${path}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
       const data = await this.request(url);
@@ -236,7 +306,10 @@ export class GitHubInstallationClient {
         return data.content;
       }
       return null;
-    } catch {
+    } catch (error) {
+      if (options.notFoundIsEmpty && !/^GitHub API 404\b/u.test(error instanceof Error ? error.message : String(error))) {
+        throw error;
+      }
       return null;
     }
   }

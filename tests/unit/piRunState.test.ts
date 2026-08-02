@@ -32,6 +32,7 @@ describe('durable Pi review run state', () => {
 
     expect(PI_STAGES).toEqual(['admission', 'snapshot', 'config', 'submodules', 'review', 'arbiter', 'publish', 'complete']);
     expect(() => assertStageTransition('admission', 'review')).toThrow(/invalid/i);
+    await repository.recordArtifact(run.runId, 'admission', 'e'.repeat(64), 'worker-a', 2_000);
     await repository.transition(run.runId, 'snapshot', 'worker-a', 2_000);
     await repository.fail(run.runId, 'worker-a', 4_000, 'provider response malformed');
     const stored = await repository.get(run.runId);
@@ -40,5 +41,26 @@ describe('durable Pi review run state', () => {
     expect(stored?.error).toContain('malformed');
     expect(stored?.stage).toBe('snapshot');
     expect(() => assertStageTransition('snapshot', 'complete')).toThrow(/invalid/i);
+  });
+
+  it('clears a transient requeue error when a worker reclaims the run', async () => {
+    const repository = new InMemoryReviewRunRepository();
+    const run = await repository.createOrGet({ identity, now: 1_000 });
+    await repository.claim(run.runId, 'worker-a', 1_500, 10_000);
+    await repository.requeue(run.runId, 'worker-a', 2_000, 'transient provider failure');
+    expect((await repository.get(run.runId))?.error).toBe('transient provider failure');
+    const reclaimed = await repository.claim(run.runId, 'worker-b', 3_000, 10_000);
+    expect(reclaimed?.status).toBe('running');
+    expect(reclaimed?.error).toBeUndefined();
+  });
+
+  it('permits a bounded retry after a failed run for the same exact head', async () => {
+    const repository = new InMemoryReviewRunRepository();
+    const run = await repository.createOrGet({ identity, now: 1_000 });
+    await repository.claim(run.runId, 'worker-a', 1_500, 10_000);
+    await repository.fail(run.runId, 'worker-a', 2_000, 'transient failure');
+    const retry = await repository.claim(run.runId, 'worker-b', 3_000, 10_000);
+    expect(retry?.status).toBe('running');
+    expect(retry?.attempt).toBe(2);
   });
 });

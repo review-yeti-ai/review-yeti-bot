@@ -261,7 +261,7 @@ export function createDashboardRouter(): Router {
       });
       return res.status(200).json({
         success: true,
-        status: 'connected',
+        status: 'configured',
         statusCode: 200,
         latencyMs,
         message: `Connection to ${displayName} endpoint (${baseUrl}) verified successfully. HTTP 200 OK`,

@@ -150,6 +150,59 @@ describe('installationClient.ts — Comprehensive Unit Expansion Tests', () => {
     vi.unstubAllGlobals();
   });
 
+  it('marks patch-only gitlink markers as an untrusted submodule candidate', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([{
+        filename: 'vendor/lib',
+        patch: '-Subproject commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+Subproject commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      }]),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const files = await client.getChangedFiles('calltelemetry', 'repo-1', 42);
+
+    expect(files[0]).toMatchObject({ oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), submoduleCandidate: true });
+    expect(files[0].isSubmodule).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it('parses standard gitlink patches that include a unified hunk header', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([{
+        filename: 'vendor/lib',
+        mode: '160000',
+        patch: 'diff --git a/vendor/lib b/vendor/lib\nold mode 160000\nnew mode 160000\n@@ -1 +1 @@\n-Subproject commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+Subproject commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      }]),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const files = await client.getChangedFiles('calltelemetry', 'repo-1', 42);
+
+    expect(files[0]).toMatchObject({ oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), isSubmodule: true });
+    vi.unstubAllGlobals();
+  });
+
+  it('normalizes quoted .gitmodules paths and URLs', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        encoding: 'utf-8',
+        content: '[submodule "vendor/lib"]\n\tpath = "vendor/lib"\n\turl = "../ct-pr-operator.git"',
+      }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await expect(client.getSubmoduleUrls('calltelemetry', 'repo-1', 'base-sha')).resolves.toEqual({
+      'vendor/lib': 'https://github.com/calltelemetry/ct-pr-operator.git',
+    });
+    vi.unstubAllGlobals();
+  });
+
   it('getIncrementalDiff fetches comparison diff files', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,

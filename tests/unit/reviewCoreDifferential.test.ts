@@ -73,4 +73,14 @@ describe('canonical review contract differential', () => {
     expect(action.verdict).toBe('BLOCK');
     expect(action.status).toBe('INCOMPLETE_REVIEW');
   });
+
+  it('blocks identically when no reviewer personas are enabled', () => {
+    const action = actionVerdict([], 0);
+    const app = computeAppVerdict({ lanes: [], expectedLanes: 0, changedFiles });
+
+    expect(action).toEqual(app);
+    expect(action.verdict).toBe('BLOCK');
+    expect(action.status).toBe('INCOMPLETE_REVIEW');
+    expect(action.quorumSatisfied).toBe(false);
+  });
 });
