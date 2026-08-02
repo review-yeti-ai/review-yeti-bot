@@ -3,8 +3,11 @@ import { PRMemoryStore } from '../memory/prMemoryStore';
 import { PlatformMemoryStore } from '../memory/platformMemoryStore';
 import { logger } from '../utils/logger';
 
+export type LLMCommentCategory = 'FALSE_POSITIVE_CORRECTION' | 'NEW_CONVENTION' | 'CLARIFICATION_DEFENSE' | 'REJECTED_SUGGESTION' | 'REFUTATION' | 'GENERAL_COMMENT';
+export type CommentFeedbackType = LLMCommentCategory;
+
 export interface CommentJudgmentResult {
-  intent: 'FALSE_POSITIVE_CORRECTION' | 'NEW_CONVENTION' | 'CLARIFICATION_DEFENSE' | 'REJECTED_SUGGESTION' | 'GENERAL_COMMENT';
+  intent: LLMCommentCategory;
   learnedRule?: {
     category: 'security' | 'architecture' | 'performance' | 'convention' | 'quality';
     pattern: string;
@@ -54,11 +57,12 @@ Your job is to analyze user feedback on PR code reviews and determine if the use
 2. NEW_CONVENTION: Establishing or explaining a team code convention / architectural rule.
 3. CLARIFICATION_DEFENSE: Explaining why code was written a specific way.
 4. REJECTED_SUGGESTION: Rejecting a bot suggestion.
-5. GENERAL_COMMENT: General PR conversation.
+5. REFUTATION: Refuting a bot review finding.
+6. GENERAL_COMMENT: General PR conversation.
 
 Respond ONLY with valid JSON matching:
 {
-  "intent": "FALSE_POSITIVE_CORRECTION | NEW_CONVENTION | CLARIFICATION_DEFENSE | REJECTED_SUGGESTION | GENERAL_COMMENT",
+  "intent": "FALSE_POSITIVE_CORRECTION | NEW_CONVENTION | CLARIFICATION_DEFENSE | REJECTED_SUGGESTION | REFUTATION | GENERAL_COMMENT",
   "learnedRule": {
     "category": "security | architecture | performance | convention | quality",
     "pattern": "short pattern or keywords to match in future findings",
@@ -95,9 +99,28 @@ ${context.codeSemantics ? `Code Semantics & AST Context:\n"${context.codeSemanti
       const jsonMatch = response.content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsedJson = JSON.parse(jsonMatch[0]);
+        const rawIntent = String(parsedJson.intent || 'GENERAL_COMMENT').toUpperCase();
+        let intent: LLMCommentCategory = 'GENERAL_COMMENT';
+        if (rawIntent.includes('REJECT')) {
+          intent = 'REJECTED_SUGGESTION';
+        } else if (rawIntent.includes('REFUT')) {
+          intent = 'REFUTATION';
+        } else if (rawIntent.includes('FALSE')) {
+          intent = 'FALSE_POSITIVE_CORRECTION';
+        } else if (rawIntent.includes('CONVENTION')) {
+          intent = 'NEW_CONVENTION';
+        } else if (rawIntent.includes('DEFENSE') || rawIntent.includes('CLARIF')) {
+          intent = 'CLARIFICATION_DEFENSE';
+        }
+        const isRefusal = intent === 'FALSE_POSITIVE_CORRECTION' || intent === 'REJECTED_SUGGESTION' || intent === 'REFUTATION';
         judgment = {
-          intent: parsedJson.intent || 'GENERAL_COMMENT',
-          learnedRule: parsedJson.learnedRule,
+          intent,
+          learnedRule: parsedJson.learnedRule || (isRefusal ? {
+            category: 'convention',
+            pattern: context.commentBody.slice(0, 40),
+            rule: context.commentBody,
+            suppressMatchingNits: true,
+          } : undefined),
           githubReaction: parsedJson.githubReaction || '+1',
           suggestedReply: parsedJson.suggestedReply || undefined,
         };
@@ -105,7 +128,7 @@ ${context.codeSemantics ? `Code Semantics & AST Context:\n"${context.codeSemanti
     } catch (err: any) {
       logger.warn('LLM judgment parsing fallback to rule-based fallback', { error: err?.message });
       const bodyLower = context.commentBody.toLowerCase();
-      if (bodyLower.includes('false positive') || bodyLower.includes('ignore') || bodyLower.includes('nit')) {
+      if (bodyLower.includes('false positive') || bodyLower.includes('ignore') || bodyLower.includes('nit') || bodyLower.includes('refus') || bodyLower.includes('refutat') || bodyLower.includes('wrong') || bodyLower.includes('incorrect') || bodyLower.includes('not a bug') || bodyLower.includes('unnecessary')) {
         judgment = {
           intent: 'FALSE_POSITIVE_CORRECTION',
           learnedRule: {
@@ -120,9 +143,14 @@ ${context.codeSemantics ? `Code Semantics & AST Context:\n"${context.codeSemanti
       }
     }
 
-    if (judgment.learnedRule) {
-      const { category, pattern, rule, suppressMatchingNits } = judgment.learnedRule;
-      if (suppressMatchingNits) {
+    if (judgment.learnedRule || judgment.intent === 'FALSE_POSITIVE_CORRECTION' || judgment.intent === 'REJECTED_SUGGESTION' || judgment.intent === 'REFUTATION') {
+      const { category, pattern, rule, suppressMatchingNits } = judgment.learnedRule || {
+        category: 'convention',
+        pattern: context.commentBody.slice(0, 40),
+        rule: context.commentBody,
+        suppressMatchingNits: true,
+      };
+      if (suppressMatchingNits !== false) {
         await this.prMemoryStore.recordResolvedNit(fullRepo, context.prNumber, {
           pattern: pattern || context.commentBody.slice(0, 30),
           filePath: '**',

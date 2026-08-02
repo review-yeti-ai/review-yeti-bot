@@ -2,9 +2,9 @@
 
 import { runCLI } from '../analytics/cliParser';
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
-  const result = runCLI(args);
+  const result = await runCLI(args);
 
   if (result.exitCode !== 0) {
     console.error(result.output);

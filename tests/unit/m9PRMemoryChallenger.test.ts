@@ -12,7 +12,9 @@ const DISK_DB_PATH = path.join(TEST_DIR, 'nested', 'deep', 'pr_memory_stress.db'
 describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verification', () => {
   beforeAll(() => {
     if (fs.existsSync(TEST_DIR)) {
-      fs.rmSync(TEST_DIR, { recursive: true, force: true });
+      try {
+        fs.rmSync(TEST_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      } catch (_) {}
     }
   });
 

@@ -5,21 +5,14 @@ import { PlatformMemoryStore } from '../../src/memory/platformMemoryStore';
 import { GraphLearningEngine } from '../../src/memory/graphLearningEngine';
 
 describe('PlatformMemoryStore & Cross-Repo Collective Intelligence', () => {
-  const testDbPath = path.join(__dirname, '../fixtures/tmp_platform_memory.db');
   let platformStore: PlatformMemoryStore;
 
   beforeEach(() => {
-    if (fs.existsSync(testDbPath)) {
-      fs.unlinkSync(testDbPath);
-    }
-    platformStore = new PlatformMemoryStore(testDbPath);
+    platformStore = new PlatformMemoryStore(':memory:');
   });
 
   afterEach(() => {
     platformStore.close();
-    if (fs.existsSync(testDbPath)) {
-      fs.unlinkSync(testDbPath);
-    }
   });
 
   it('records new platform patterns and sanitizes sensitive tokens', async () => {

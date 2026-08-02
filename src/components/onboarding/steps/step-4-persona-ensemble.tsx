@@ -32,22 +32,23 @@ export const PERSONA_ENSEMBLE_DEFINITIONS = [
 ];
 
 export const AVAILABLE_MODEL_OPTIONS = [
+  { label: 'OpenRouter Auto Router', value: 'openrouter/auto' },
+  { label: 'Claude 3.7 Sonnet (OpenRouter)', value: 'openrouter/anthropic/claude-3.7-sonnet' },
+  { label: 'DeepSeek R1 (OpenRouter)', value: 'openrouter/deepseek/deepseek-r1' },
+  { label: 'Gemini 2.5 Pro (OpenRouter)', value: 'openrouter/google/gemini-2.5-pro' },
+  { label: 'Qwen 2.5 72B Instruct (OpenRouter)', value: 'openrouter/qwen/qwen-2.5-72b-instruct' },
+  { label: 'GPT-4o (OpenRouter)', value: 'openrouter/openai/gpt-4o' },
+  { label: 'GPT-4o Mini (OpenRouter)', value: 'openrouter/openai/gpt-4o-mini' },
+  { label: 'Claude 3.5 Sonnet (OpenRouter)', value: 'openrouter/anthropic/claude-3.5-sonnet' },
+  { label: 'DeepSeek V3 (OpenRouter)', value: 'openrouter/deepseek/deepseek-v3' },
   { label: 'Synthetic Kimi K3 (Top-Tier 2.8T MoE)', value: 'synthetic/hf:moonshotai/Kimi-K3' },
   { label: 'Synthetic GLM 5.2 (Zai Org)', value: 'synthetic/hf:zai-org/GLM-5.2' },
   { label: 'Synthetic GLM 4.7 Flash (Cheap)', value: 'synthetic/hf:zai-org/GLM-4.7-Flash' },
   { label: 'Synthetic Qwen 3.6 27B (Qwen)', value: 'synthetic/hf:Qwen/Qwen3.6-27B' },
-  { label: 'Claude Haiku 4.5 (Anthropic)', value: 'claude-haiku-4.5' },
-  { label: 'Claude 5 Sonnet (Anthropic)', value: 'claude-5-sonnet' },
-  { label: 'Claude 3.5 Sonnet (Anthropic)', value: 'claude-3-5-sonnet' },
-  { label: 'Claude 3.7 Sonnet (Anthropic)', value: 'claude-3-7-sonnet' },
-  { label: 'GPT-4o (OpenAI)', value: 'gpt-4o' },
-  { label: 'GPT-4o Mini (OpenAI)', value: 'gpt-4o-mini' },
   { label: 'Grok 4.5 (xAI)', value: 'grok-cli/grok-4.5' },
   { label: 'GLM 5.2 (Synthetic Arbiter)', value: 'glm-5.2' },
-  { label: 'Gemini 1.5 Pro (Google)', value: 'gemini-1.5-pro' },
   { label: 'AGY Opus Thinking (AGY)', value: 'agy/claude-opus-4-6-thinking' },
   { label: 'Codex GPT-5.6 Sol High (Codex)', value: 'codex/gpt-5.6-sol-high' },
-  { label: 'DeepSeek V3 (DeepSeek)', value: 'deepseek-v3' },
 ];
 
 interface Step4PersonaEnsembleProps {

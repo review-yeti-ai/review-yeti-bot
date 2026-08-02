@@ -14,7 +14,11 @@ describe('Empirical Verification: dashboardStore.reset() Behavior', () => {
     if (fs.existsSync(tmpDir)) try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   };
 
+  let envBackup: string | undefined;
+
   beforeEach(() => {
+    envBackup = process.env.CT_DASHBOARD_STORE;
+    delete process.env.CT_DASHBOARD_STORE;
     if (!fs.existsSync(tmpDir)) {
       fs.mkdirSync(tmpDir, { recursive: true });
     }
@@ -23,6 +27,11 @@ describe('Empirical Verification: dashboardStore.reset() Behavior', () => {
   });
 
   afterEach(() => {
+    if (envBackup !== undefined) {
+      process.env.CT_DASHBOARD_STORE = envBackup;
+    } else {
+      delete process.env.CT_DASHBOARD_STORE;
+    }
     cleanup();
   });
 

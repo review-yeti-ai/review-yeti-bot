@@ -43,17 +43,17 @@ describe('Dispatch path: persona resolution defaults', () => {
     const payload = {
       personaSettings: {
         security: { enabled: true },
-        style: { enabled: false },
-        testing: {},
+        quality: { enabled: false },
+        reliability: {},
       },
     };
-    expect(ids(payload, null, {})).toEqual(['security', 'testing']);
+    expect(ids(payload, null, {})).toEqual(['security', 'reliability']);
   });
 
   it('honors a personas: array from local .ct-review.yaml', () => {
     const localConfig = {
       file: '.ct-review.yaml',
-      parsed: { personas: [{ id: 'security' }, { id: 'style', enabled: false }, { id: 'database' }] },
+      parsed: { personas: [{ id: 'security' }, { id: 'quality', enabled: false }, { id: 'database' }] },
     };
     expect(ids({}, localConfig, {})).toEqual(['security', 'database']);
   });

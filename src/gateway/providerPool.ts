@@ -17,10 +17,13 @@ export class ProviderPool {
    * Registers a new provider into the pool.
    * Validates config schema and prevents duplicate provider IDs.
    */
-  public registerProvider(config: ProviderConfig): ProviderConfig {
-    const validated = providerConfigSchema.parse(config);
-
-    if (this.providers.has(validated.id)) {
+  public registerProvider(config: ProviderConfig, allowUpdate = false): ProviderConfig {
+    const raw = { ...config };
+    if (raw.baseUrl === '') {
+      delete raw.baseUrl;
+    }
+    const validated = providerConfigSchema.parse(raw);
+    if (this.providers.has(validated.id) && !allowUpdate) {
       throw new Error(`Provider with id '${validated.id}' is already registered`);
     }
 

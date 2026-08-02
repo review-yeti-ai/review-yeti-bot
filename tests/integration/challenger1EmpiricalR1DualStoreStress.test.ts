@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import { PostgresStore, ADVISORY_LOCK_ID, postgresStore } from '../../src/persistence/postgresStore';
-import { DashboardStore, DashboardData } from '../../src/persistence/dashboardStore';
+import { DashboardStore, DashboardData, dashboardStore } from '../../src/persistence/dashboardStore';
 
 describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Architecture', () => {
   const tempTestDir = path.join(process.cwd(), 'data', 'test-challenger-r1-dualstore');
@@ -11,6 +11,8 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
   beforeEach(() => {
     delete process.env.DATABASE_URL;
     delete process.env.POSTGRES_URL;
+    dashboardStore.reset();
+    vi.restoreAllMocks();
 
     if (!fs.existsSync(tempTestDir)) {
       fs.mkdirSync(tempTestDir, { recursive: true });
@@ -22,6 +24,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
     delete process.env.POSTGRES_URL;
     vi.restoreAllMocks();
     await postgresStore.close();
+    dashboardStore.reset();
 
     if (fs.existsSync(tempTestDir)) {
       try {

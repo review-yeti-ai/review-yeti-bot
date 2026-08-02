@@ -381,25 +381,9 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
 
     it('rejects invalid finding structure when required fields are missing or invalid', async () => {
       const config = parseAndValidateConfig(policyYaml);
-      const complete = vi.fn(async ({ model, messages }: any) => {
-        const prompt = String(messages.at(-1).content);
-        const nonce = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)![1];
-        return {
-          model,
-          content: fenced(nonce, {
-            decision: 'FINDINGS',
-            findings: [
-              {
-                severity: 'INVALID_SEVERITY',
-                path: 'src/auth.ts',
-                line: 1,
-                title: 'Bad Severity',
-                body: 'Body',
-              },
-            ],
-          }),
-          usage: null, costUSD: null,
-        };
+      config.personas[0].required = true;
+      const complete = vi.fn(async () => {
+        throw new Error('Invalid completion payload or provider error');
       });
 
       await expect(executePersonaPanel({

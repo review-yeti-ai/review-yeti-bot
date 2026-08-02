@@ -7,7 +7,8 @@ export function createProviderRouter(): Router {
   router.post('/providers', (req: Request, res: Response) => {
     try {
       const validated = providerConfigSchema.parse(req.body);
-      const registered = providerPool.registerProvider(validated);
+      const allowUpdate = req.body?.allowUpdate === true || req.body?.update === true || req.body?.overwrite === true;
+      const registered = providerPool.registerProvider(validated, allowUpdate);
       res.status(201).json({
         success: true,
         provider: {

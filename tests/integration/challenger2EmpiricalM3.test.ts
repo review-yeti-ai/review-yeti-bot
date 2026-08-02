@@ -69,6 +69,8 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
   beforeEach(() => {
     envBackup = process.env.CT_DASHBOARD_STORE;
     process.env.CT_DASHBOARD_STORE = TEST_STORE_PATH;
+    dashboardStore.filePath = TEST_STORE_PATH;
+    dashboardStore.reset();
     if (fs.existsSync(TEST_STORE_PATH)) {
       fs.unlinkSync(TEST_STORE_PATH);
     }
@@ -80,6 +82,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     } else {
       delete process.env.CT_DASHBOARD_STORE;
     }
+    dashboardStore.reset();
     if (fs.existsSync(TEST_STORE_PATH)) {
       fs.unlinkSync(TEST_STORE_PATH);
     }

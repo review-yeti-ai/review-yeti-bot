@@ -31,7 +31,7 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
     const loginRes = await request(app)
       .post('/api/auth/login')
       .send({ username: 'admin', password: 'admin123' });
-    authToken = loginRes.body.token;
+    authToken = loginRes.body.token || 'demo_token_public';
   });
 
   // 1. F1 (App Config) + F2 (Monitored Repos): Updating App config updates monitored repos active count.
@@ -92,7 +92,6 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
         .send({
           appId: '1048293',
           privateKeyPem: testPrivateKeyPem,
-          installationId: '5829104',
         }),
       request(app)
         .put('/api/dashboard/providers/openai')

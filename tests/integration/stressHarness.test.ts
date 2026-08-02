@@ -65,90 +65,90 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
   });
 
   describe('Dimension 1: Invalid & Unrecognized Flags', () => {
-    it('silently ignores unrecognized flags without error or warning', () => {
-      const res = runCLI(['--invalid-flag', '--unknown-option', 'foo', '--dir', sessionsDir]);
+    it('silently ignores unrecognized flags without error or warning', async () => {
+      const res = await runCLI(['--invalid-flag', '--unknown-option', 'foo', '--dir', sessionsDir]);
       // Expectation: res.exitCode is 0, no error message displayed
       expect(res.exitCode).toBe(0);
       expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
     });
 
-    it('handles flag without value at the end of arguments', () => {
-      const res = runCLI(['list', '--dir', sessionsDir, '--owner']);
+    it('handles flag without value at the end of arguments', async () => {
+      const res = await runCLI(['list', '--dir', sessionsDir, '--owner']);
       expect(res.exitCode).toBe(0);
       // --owner was undefined because ++i went out of bounds
     });
 
-    it('silently ignores invalid format option and falls back to table', () => {
-      const res = runCLI(['list', '--dir', sessionsDir, '--format', 'invalid_fmt_xyz']);
+    it('silently ignores invalid format option and falls back to table', async () => {
+      const res = await runCLI(['list', '--dir', sessionsDir, '--format', 'invalid_fmt_xyz']);
       expect(res.exitCode).toBe(0);
       expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
     });
   });
 
   describe('Dimension 2: Non-Existent Directories', () => {
-    it('returns empty session list (or fallback) when baseDir does not exist', () => {
+    it('returns empty session list (or fallback) when baseDir does not exist', async () => {
       const nonExistent = path.join(tempDir, 'does_not_exist_123');
-      const res = runCLI(['list', '--dir', nonExistent]);
+      const res = await runCLI(['list', '--dir', nonExistent]);
       expect(res.exitCode).toBe(0);
       expect(res.output).toBe('No sessions found.');
     });
 
-    it('returns error exitCode 1 when inspecting non-existent dir/session', () => {
+    it('returns error exitCode 1 when inspecting non-existent dir/session', async () => {
       const nonExistent = path.join(tempDir, 'does_not_exist_123');
-      const res = runCLI(['inspect', 'cisco-cdr/ct-review-bot#42', '--dir', nonExistent]);
+      const res = await runCLI(['inspect', 'cisco-cdr/ct-review-bot#42', '--dir', nonExistent]);
       expect(res.exitCode).toBe(1);
       expect(res.output).toContain('Error: Session not found for ID: cisco-cdr/ct-review-bot#42');
     });
   });
 
   describe('Dimension 3: Empty Search Queries', () => {
-    it('handles bare search command (no query string)', () => {
-      const res = runCLI(['search', '--dir', sessionsDir]);
+    it('handles bare search command (no query string)', async () => {
+      const res = await runCLI(['search', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(0);
       // Returns all sessions when query is missing
       expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
     });
 
-    it('handles empty query string search ""', () => {
-      const res = runCLI(['search', '', '--dir', sessionsDir]);
+    it('handles empty query string search ""', async () => {
+      const res = await runCLI(['search', '', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(0);
       expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
     });
 
-    it('handles -q "" flag', () => {
-      const res = runCLI(['search', '-q', '', '--dir', sessionsDir]);
+    it('handles -q "" flag', async () => {
+      const res = await runCLI(['search', '-q', '', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(0);
       expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
     });
 
-    it('returns No sessions found for non-matching search query', () => {
-      const res = runCLI(['search', 'nonexistent_xyz_query', '--dir', sessionsDir]);
+    it('returns No sessions found for non-matching search query', async () => {
+      const res = await runCLI(['search', 'nonexistent_xyz_query', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(0);
       expect(res.output).toBe('No sessions found.');
     });
   });
 
   describe('Dimension 4: Extreme & Invalid Turn Filters', () => {
-    it('filters out sessions when min-turns is extremely high', () => {
-      const res = runCLI(['list', '--dir', sessionsDir, '--min-turns', '999999']);
+    it('filters out sessions when min-turns is extremely high', async () => {
+      const res = await runCLI(['list', '--dir', sessionsDir, '--min-turns', '999999']);
       expect(res.exitCode).toBe(0);
       expect(res.output).toBe('No sessions found.');
     });
 
-    it('filters out sessions when max-turns is negative', () => {
-      const res = runCLI(['list', '--dir', sessionsDir, '--max-turns', '-5']);
+    it('filters out sessions when max-turns is negative', async () => {
+      const res = await runCLI(['list', '--dir', sessionsDir, '--max-turns', '-5']);
       expect(res.exitCode).toBe(0);
       expect(res.output).toBe('No sessions found.');
     });
 
-    it('returns empty list for contradictory min > max turns', () => {
-      const res = runCLI(['list', '--dir', sessionsDir, '--min-turns', '10', '--max-turns', '2']);
+    it('returns empty list for contradictory min > max turns', async () => {
+      const res = await runCLI(['list', '--dir', sessionsDir, '--min-turns', '10', '--max-turns', '2']);
       expect(res.exitCode).toBe(0);
       expect(res.output).toBe('No sessions found.');
     });
 
-    it('silently ignores non-numeric min-turns (--min-turns abc)', () => {
-      const res = runCLI(['list', '--dir', sessionsDir, '--min-turns', 'abc']);
+    it('silently ignores non-numeric min-turns (--min-turns abc)', async () => {
+      const res = await runCLI(['list', '--dir', sessionsDir, '--min-turns', 'abc']);
       // parseInt('abc', 10) is NaN; session.totalTurns < NaN evaluates to false
       expect(res.exitCode).toBe(0);
       expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
@@ -156,22 +156,22 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
   });
 
   describe('Dimension 5: Missing Arguments & Invalid Session IDs', () => {
-    it('returns error exitCode 1 when inspect command has no targetId', () => {
-      const res = runCLI(['inspect']);
+    it('returns error exitCode 1 when inspect command has no targetId', async () => {
+      const res = await runCLI(['inspect']);
       expect(res.exitCode).toBe(1);
       expect(res.output).toBe('Error: Session ID required for inspect command.');
     });
 
-    it('returns error exitCode 1 when inspect command targetId is not found', () => {
-      const res = runCLI(['inspect', 'nonexistent/session#999', '--dir', sessionsDir]);
+    it('returns error exitCode 1 when inspect command targetId is not found', async () => {
+      const res = await runCLI(['inspect', 'nonexistent/session#999', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(1);
       expect(res.output).toBe('Error: Session not found for ID: nonexistent/session#999');
     });
 
-    it('throws file system error when --out path is unwritable', () => {
-      expect(() => {
-        runCLI(['list', '--dir', sessionsDir, '--out', '/sys/read_only_test/output.json']);
-      }).toThrow();
+    it('throws file system error when --out path is unwritable', async () => {
+      await expect(
+        runCLI(['list', '--dir', sessionsDir, '--out', '/sys/read_only_test/output.json'])
+      ).rejects.toThrow();
     });
   });
 

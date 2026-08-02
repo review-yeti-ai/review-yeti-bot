@@ -11,10 +11,11 @@ describe('Challenger 2: Settings REST API & Control Panel Web UI Stress Test Har
 
   beforeAll(() => {
     process.env.WEBHOOK_SECRET = 'test-webhook-secret';
+    app = createApp();
   });
 
   beforeEach(() => {
-    app = createApp();
+    dashboardStore.reset();
     const createdKey = dashboardStore.createApiKey('challenger2-settings-key');
     validApiKey = createdKey.rawKey;
   });

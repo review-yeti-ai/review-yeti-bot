@@ -83,8 +83,9 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
     it('ingests high-throughput burst of 100 events with sub-50ms flush delay', async () => {
       const { result } = renderHook(() => useSSE({ jobId: 'burst-job-1' }));
 
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      expect(result.current.connectionStatus).toBe('connected');
+      await vi.waitFor(() => {
+        expect(result.current.connectionStatus).toBe('connected');
+      }, { timeout: 2000 });
 
       const mockEs = MockEventSource.instances[MockEventSource.instances.length - 1];
       expect(mockEs).toBeDefined();

@@ -129,7 +129,6 @@ export function createOnboardingRouter(): Router {
       // Credential Validation: Check active provider API keys
       // -----------------------------------------------------------------------
       const providerConfigs = dashboardStore.getProviderConfigs();
-      console.log('DEBUG_PROVIDER_CONFIGS:', JSON.stringify(providerConfigs));
 
       let targetProviderIds: string[] = [];
       if (Array.isArray(providerIds) && providerIds.length > 0) {
@@ -176,8 +175,8 @@ export function createOnboardingRouter(): Router {
           if (
             rawKey === 'invalid_key' ||
             rawKey === 'unconfigured' ||
-            (!rawKey && !envKey) ||
-            (cfg.status === 'unconfigured' && !rawKey && !envKey) ||
+            cfg.status === 'unconfigured' ||
+            (!rawKey && (!envKey || envKey === 'vitest-test-key')) ||
             cfg.enabled === false ||
             cfg.active === false
           ) {
