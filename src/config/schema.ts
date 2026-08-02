@@ -185,7 +185,7 @@ export const onPRCloseSchema = z.object({
 
 export type OnPRCloseConfig = z.infer<typeof onPRCloseSchema>;
 
-export const ctReviewConfigV3Schema = z.object({
+const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
   quorum: z.number().int().positive(),
@@ -226,27 +226,29 @@ export const ctReviewConfigV3Schema = z.object({
     scope: z.array(z.string()).default(['**']),
     severity: z.enum(['P0', 'P1', 'P2']).default('P1'),
   })).default([]),
-}).passthrough().superRefine((config, ctx) => {
-  const ids = config.personas.map((persona) => persona.id);
+}).passthrough();
+
+function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {
+  const ids = config.personas.map((persona: any) => persona.id);
   if (new Set(ids).size !== ids.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas'], message: 'persona ids must be unique' });
   }
-  if (!config.personas.some((persona) => persona.enabled && persona.required)) {
+  if (!config.personas.some((persona: any) => persona.enabled && persona.required)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas'], message: 'at least one enabled required persona is required' });
   }
-  const enabled = new Set(config.reviewers.providers.filter((provider) => provider.enabled).map((provider) => provider.id));
-  const providerIds = config.reviewers.providers.map((provider) => provider.id);
+  const enabled = new Set(config.reviewers.providers.filter((provider: any) => provider.enabled).map((provider: any) => provider.id));
+  const providerIds = config.reviewers.providers.map((provider: any) => provider.id);
   if (new Set(providerIds).size !== providerIds.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'providers'], message: 'provider ids must be unique' });
   }
-  config.personas.forEach((persona, index) => {
-    persona.providers.forEach((provider) => {
+  config.personas.forEach((persona: any, index: number) => {
+    persona.providers.forEach((provider: string) => {
       if (!enabled.has(provider)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas', index, 'providers'], message: `persona references disabled provider ${provider}` });
       }
     });
   });
-  config.reviewers.arbiter.order.forEach((provider) => {
+  config.reviewers.arbiter.order.forEach((provider: string) => {
     if (!enabled.has(provider)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'arbiter', 'order'], message: `arbiter references disabled provider ${provider}` });
     }
@@ -254,8 +256,38 @@ export const ctReviewConfigV3Schema = z.object({
   if (config.quorum > enabled.size) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quorum'], message: 'quorum exceeds enabled distinct providers' });
   }
+}
+
+export const ctReviewConfigV3Schema = ctReviewConfigV3ObjectSchema.superRefine(validateReviewConfig);
+
+export const submodulePolicySchema = z.object({
+  mode: z.enum(['ignore', 'metadata_only', 'recursive']).default('metadata_only'),
+  max_depth: z.number().int().min(0).max(5).default(1),
+  max_files: z.number().int().positive().max(5000).default(500),
+  require_pinned_commit: z.boolean().default(true),
+  missing_access: z.enum(['block', 'metadata_only']).default('block'),
+  allowed_repositories: z.array(z.string().min(1)).default([]),
+  allowed_hosts: z.array(z.string().min(1)).default(['github.com']),
+  url_change: z.enum(['block', 'review']).default('block'),
 });
 
-export const ctReviewConfigSchema = z.union([ctReviewConfigV3Schema, legacyConfigSchema]);
+export const reviewLimitsSchema = z.object({
+  max_files: z.number().int().positive().max(5000).default(1000),
+  max_diff_bytes: z.number().int().positive().max(2_000_000).default(1_000_000),
+  max_prompt_tokens: z.number().int().positive().max(200_000).default(60_000),
+  max_completion_tokens: z.number().int().positive().max(32_000).default(8_000),
+  max_cost_usd: z.number().positive().max(100).default(5),
+  max_turns: z.number().int().positive().max(20).default(20),
+  max_concurrency: z.number().int().positive().max(32).default(12),
+});
+
+export const ctReviewConfigV4Schema = ctReviewConfigV3ObjectSchema.extend({
+  version: z.union([z.literal(4), z.literal('4')]).transform(() => 4 as const),
+  submodules: submodulePolicySchema.default({}),
+  limits: reviewLimitsSchema.default({}),
+}).superRefine(validateReviewConfig);
+
+export const ctReviewConfigSchema = z.union([ctReviewConfigV4Schema, ctReviewConfigV3Schema, legacyConfigSchema]);
 export type CtReviewConfigV3 = z.infer<typeof ctReviewConfigV3Schema>;
+export type CtReviewConfigV4 = z.infer<typeof ctReviewConfigV4Schema>;
 export type CtReviewConfig = z.infer<typeof ctReviewConfigSchema>;

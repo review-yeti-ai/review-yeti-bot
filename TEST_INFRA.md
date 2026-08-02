@@ -38,6 +38,21 @@ Review-bot external boundaries follow the deterministic operator patterns used b
 - `/ready` returns HTTP 503 until GitHub App, webhook, and OpenRouter configuration is present.
 - `KUBERNETES_WORKER_DISPATCH=true` fails closed until the worker has a durable, exact-head result handoff; the service never runs a worker review and then repeats it locally.
 
+The generational engine adds one review contract for both execution surfaces:
+
+- `src/review/reviewCore.js` is the canonical verdict, finding, coverage, and digest boundary; the
+  plain Node Action and typed App adapters must produce the same result for the same snapshot.
+- `PRSnapshot` binds owner, repository, PR number, exact head SHA, exact base SHA, changed-file
+  metadata, base-policy reference/digest, and engine version. A changed head or base fails closed.
+- V4 execution policy is additive to V3 and carries bounded budgets plus explicit submodule policy.
+  Gitlink metadata is preserved; recursive inspection is `INCOMPLETE_REVIEW` until nested content
+  is actually resolved.
+- Pi-style runs use the durable `review_runs` identity, lease, heartbeat, stage, result digest, and
+  failure fields. The PostgreSQL repository is used when configured; the in-memory repository is
+  test-only and never evidence of multi-pod durability.
+- A provider or publication failure is persisted as failure, never as a successful verdict. No
+  `SHIP` is valid with missing lanes, incomplete coverage, an unbound snapshot, or missing evidence.
+
 Run the replay suite without credentials or network access:
 
 ```bash

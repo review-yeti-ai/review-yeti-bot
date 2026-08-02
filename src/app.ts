@@ -1,7 +1,7 @@
 import express, { Express, NextFunction, Request, Response } from 'express';
 import path from 'path';
 import * as fs from 'fs';
-import { parseAndValidateConfig, createDefaultV3Config } from './config/configLoader';
+import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient } from './gateway/openRouterClient';
 import { getGitHubAppInstallationToken } from './github/appAuth';
@@ -10,6 +10,7 @@ import { GitHubInstallationClient } from './github/installationClient';
 import { createWebhookRouter, RequestWithRawBody } from './github/webhookServer';
 import { executePersonaPanel, PanelResult } from './panel/panelEngine';
 import { ReviewRunStore } from './persistence/reviewRunStore';
+import { PostgresReviewRunRepository, ReviewRunRepository } from './persistence/reviewRunRepository';
 import { createMemoryRouter } from './api/memoryApi';
 import { createProviderRouter } from './gateway/providerRouterApi';
 import { createAuthRouter } from './api/authApi';
@@ -22,7 +23,12 @@ import { createOnboardingRouter } from './api/onboarding';
 import { getSystemVersionInfo } from './utils/versionInfo';
 import { requireAuth } from './api/authMiddleware';
 import { dashboardStore } from './persistence/dashboardStore';
+import { postgresStore } from './persistence/postgresStore';
 import { providerPool } from './gateway/providerPool';
+import { computeAppVerdict } from './review/reviewAdapters';
+import { sanitizeFindings, sha256 } from './review/reviewCore';
+import { assertSnapshotCurrent, createPRSnapshot, PRSnapshot } from './review/prSnapshot';
+import { buildReviewRunIdentity } from './review/reviewAdmission';
 import { GraphLearningEngine } from './memory/graphLearningEngine';
 import { PRCloseDispatcher } from './github/prCloseDispatcher';
 import { logger } from './utils/logger';
@@ -40,6 +46,20 @@ import {
 export { type RequestWithRawBody, providerPool };
 
 const store = new ReviewRunStore(process.env.CT_REVIEW_RUN_STORE || '/tmp/ct-review-bot/review-runs.json');
+const durableReviewRuns: ReviewRunRepository | null = postgresStore.isConfigured()
+  ? new PostgresReviewRunRepository(postgresStore.getPool())
+  : null;
+
+function admissionIdentity(payload: ParsedPRPayload) {
+  return buildReviewRunIdentity({
+    owner: payload.owner,
+    repo: payload.repo,
+    prNumber: payload.prNumber,
+    headSha: payload.headSha,
+    baseSha: payload.baseSha,
+    changedFiles: payload.changedFiles,
+  });
+}
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -185,6 +205,23 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
   const repoFull = `${owner}/${repo}`;
   const startTime = Date.now();
   const jobId = `job_${owner}_${repo}_pr${prNumber}_${headSha.slice(0, 7)}`;
+  const durableWorkerId = `app-${process.pid}`;
+  const durableIdentity = admissionIdentity(payload);
+  const durableRun = durableReviewRuns
+    ? await durableReviewRuns.createOrGet({ identity: durableIdentity, now: startTime })
+    : null;
+  if (durableRun && !(await durableReviewRuns!.claim(durableRun.runId, durableWorkerId, startTime, 15 * 60 * 1000))) {
+    throw new Error(`review run ${durableRun.runId} is already leased by another worker`);
+  }
+
+  const durableTransition = async (stage: import('./review/piWorkflow').PiStage, now = Date.now()) => {
+    if (durableRun) await durableReviewRuns!.transition(durableRun.runId, stage, durableWorkerId, now);
+  };
+  const durableFail = async (message: string, now = Date.now()) => {
+    if (durableRun) await durableReviewRuns!.fail(durableRun.runId, durableWorkerId, now, message).catch((error) => {
+      logger.error('Failed to persist durable review failure', { error: error?.message || error, runId: durableRun.runId });
+    });
+  };
 
   LiveStreamBus.getInstance().publishEvent({
     jobId,
@@ -241,6 +278,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           return { status: 'cancelled', reason: 'stale webhook head', expected: snapshot.headSha, received: headSha };
         }
         store.markHead(owner, repo, prNumber, headSha);
+        await durableTransition('snapshot');
         try {
           checkId = await github.createCheck(owner, repo, headSha);
         } catch (err: any) {
@@ -256,18 +294,31 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         let config: CtReviewConfigV3;
         if (rawPolicy === null) {
           logger.info(`No .ct-review.yaml configuration found in ${repoFull}, falling back to default balanced configuration`);
-          config = createDefaultV3Config();
+          config = createDefaultV4Config() as unknown as CtReviewConfigV3;
         } else {
           const parsed = parseAndValidateConfig(rawPolicy);
-          if (parsed.version !== 3) {
-            logger.warn(`base policy version ${parsed.version} is compatible for parsing but protected App execution requires version 3. Falling back to default balanced configuration.`);
-            config = createDefaultV3Config();
-          } else {
-            config = parsed as CtReviewConfigV3;
-          }
+          config = parsed.version === 3
+            ? parsed as CtReviewConfigV3
+            : normalizeConfigToV4(parsed as any) as unknown as CtReviewConfigV3;
         }
+        await durableTransition('config');
+        await durableTransition('submodules');
+
+        const reviewSnapshot: PRSnapshot = createPRSnapshot({
+          owner,
+          repo,
+          prNumber,
+          headSha,
+          baseSha: snapshot.baseSha,
+          title: snapshot.title,
+          configRef: snapshot.baseSha,
+          configDigest: sha256(rawPolicy || config),
+          engineVersion: 'review-core-v1',
+          changedFiles,
+        });
 
         assertSupportedReviewExecution();
+        await durableTransition('review');
         const panel: PanelResult = await withinOverallTimeout(executePersonaPanel({
           config,
           changedFiles,
@@ -278,7 +329,13 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         }), config.reviewers.overall_timeout_s);
 
         const fresh = await github.getPullRequest(owner, repo, prNumber);
-        if (fresh.headSha !== headSha || !store.isCurrentHead(owner, repo, prNumber, headSha)) {
+        try {
+          assertSnapshotCurrent(reviewSnapshot, { headSha: fresh.headSha, baseSha: fresh.baseSha });
+        } catch (snapshotError: any) {
+          if (fresh.headSha === headSha && fresh.baseSha === reviewSnapshot.baseSha) throw snapshotError;
+          logger.warn('Review snapshot changed during execution; cancelling publication', { error: snapshotError?.message || snapshotError });
+        }
+        if (fresh.headSha !== headSha || fresh.baseSha !== reviewSnapshot.baseSha || !store.isCurrentHead(owner, repo, prNumber, headSha)) {
           if (checkId !== undefined) {
             await github.completeCheck({
               owner,
@@ -287,8 +344,9 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
               conclusion: 'cancelled',
               title: 'Persona panel cancelled for stale head',
               summary: `Review started at \`${headSha}\` but current head is \`${fresh.headSha}\`.`,
-            }).catch((err) => logger.warn('Failed to complete check run for stale head', { error: err?.message || err }));
+          }).catch((err) => logger.warn('Failed to complete check run for stale head', { error: err?.message || err }));
           }
+          await durableFail(`review snapshot changed before publication: expected head ${headSha}, found head ${fresh.headSha}`);
           span.setAttribute('ct.status', 'cancelled');
           try {
             getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
@@ -304,6 +362,29 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           throw new Error(`optional persona failure; refusing to publish a green verdict: ${panel.optionalFailures.map((failure) => `${failure.id}: ${failure.error}`).join(' | ')}`);
         }
 
+        for (const lane of panel.personas) {
+          lane.findings = sanitizeFindings(lane.findings, changedFiles) as typeof lane.findings;
+        }
+        const canonical = computeAppVerdict({
+          lanes: panel.personas.map((lane) => ({
+            id: lane.id,
+            required: lane.required,
+            decision: lane.decision,
+            findings: lane.findings,
+          })),
+          expectedLanes: panel.personas.length,
+          changedFiles,
+          coverageComplete: panel.optionalFailures.length === 0,
+          candidateVerdict: panel.arbiter.verdict,
+          rationale: panel.arbiter.rationale,
+        });
+        panel.arbiter = {
+          ...panel.arbiter,
+          verdict: canonical.verdict,
+          rationale: canonical.rationale,
+        };
+        await durableTransition('arbiter');
+
         const assertCurrentHead = async () => {
           const current = await github.getPullRequest(owner, repo, prNumber);
           if (current.headSha !== headSha || !store.isCurrentHead(owner, repo, prNumber, headSha)) {
@@ -312,6 +393,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         };
 
         const learningEngine = new GraphLearningEngine();
+        await durableTransition('publish');
         for (const lane of panel.personas) {
           await assertCurrentHead();
           const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
@@ -381,6 +463,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             summary,
           }).catch((err) => logger.warn('Failed to complete check run for successful review', { error: err?.message || err }));
         }
+        if (durableRun) await durableReviewRuns!.succeed(durableRun.runId, durableWorkerId, Date.now(), sha256({ reviewSnapshot, panel }));
         // Aggregate total tokens and cost across all personas + moderator + arbiter
         const totalPromptTokens = [
           ...panel.personas.map((p) => p.usage?.prompt ?? 0),
@@ -500,6 +583,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           });
         } catch (_) {}
         const message = error?.message || String(error);
+        await durableFail(message);
         logger.error('Persona panel failed closed', { owner, repo, prNumber, headSha, error: message });
         if (checkId) {
           await github.completeCheck({
@@ -663,6 +747,10 @@ export function createApp(): Express {
       }
 
       const payload = trigger.parsedPayload;
+
+      if (durableReviewRuns && payload.triggerSource !== 'pr_close_event') {
+        await durableReviewRuns.createOrGet({ identity: admissionIdentity(payload), now: Date.now() });
+      }
 
       if (payload.triggerSource === 'pr_close_event') {
         setImmediate(async () => {
