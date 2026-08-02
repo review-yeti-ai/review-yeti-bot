@@ -1,6 +1,7 @@
 import yaml from 'js-yaml';
-import { CtReviewConfigV3, ctReviewConfigV3Schema } from './schema';
-import { parseAndValidateConfig, createDefaultV3Config, ConfigValidationError, translateLegacyConfigToV3, sanitizeV3Config } from './configLoader';
+import { CtReviewConfigV3, CtReviewConfigV4, ctReviewConfigV3Schema } from './schema';
+import { parseAndValidateConfig, createDefaultV3Config, ConfigValidationError, translateLegacyConfigToV3, sanitizeV3Config, normalizeConfigToV4 } from './configLoader';
+import { sha256 } from '../review/reviewCore';
 
 export interface RepositoryContentClient {
   getFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null>;
@@ -12,6 +13,13 @@ export interface ConfigResolutionOptions {
   ref?: string;
   client: RepositoryContentClient;
   systemSettingsOverride?: Record<string, any>;
+}
+
+export interface ResolvedConfigProvenance {
+  config: CtReviewConfigV4;
+  source: 'repository' | 'organization' | 'default';
+  configRef: string;
+  configDigest: string;
 }
 
 export class ConfigResolver {
@@ -50,6 +58,33 @@ export class ConfigResolver {
     return this.validateResolvedConfig(merged);
   }
 
+  /**
+   * Resolves the policy used by a run and records the source/ref/digest needed to reproduce it.
+   * The older resolveConfig method remains v3-shaped for existing callers.
+   */
+  public async resolveConfigWithProvenance(options: ConfigResolutionOptions): Promise<ResolvedConfigProvenance> {
+    const repoRaw = await this.fetchRawConfig(options.owner, options.repo, options.ref, options.client);
+    const orgRaw = repoRaw === null && options.repo !== '.github'
+      ? await this.fetchRawConfig(options.owner, '.github', undefined, options.client)
+      : null;
+    const source = repoRaw !== null ? 'repository' : orgRaw !== null ? 'organization' : 'default';
+    const resolvedV3 = await this.resolveConfig(options);
+    const selectedV4 = (repoRaw?.version === 4 ? repoRaw : orgRaw?.version === 4 ? orgRaw : null) as CtReviewConfigV4 | null;
+    const config = normalizeConfigToV4({
+      ...resolvedV3,
+      ...(selectedV4 ? {
+        submodules: selectedV4.submodules,
+        limits: selectedV4.limits,
+      } : {}),
+    } as unknown as CtReviewConfigV4);
+    return {
+      config,
+      source,
+      configRef: options.ref || 'default',
+      configDigest: sha256(config),
+    };
+  }
+
   public async fetchRawConfig(
     owner: string,
     repo: string,
@@ -64,9 +99,10 @@ export class ConfigResolver {
         const isCodeRabbit = fileName === '.coderabbit.yaml';
         try {
           const parsed = parseAndValidateConfig(content, isCodeRabbit);
-          if ((parsed as any).version !== 3) {
+          if ((parsed as any).version !== 3 && (parsed as any).version !== 4) {
             return translateLegacyConfigToV3(parsed);
           }
+          if ((parsed as any).version === 4) return parsed;
           return parsed;
         } catch (err: any) {
           if (err instanceof ConfigValidationError && (err.message.includes('YAML syntax error') || err.message.includes('must be a mapping'))) {

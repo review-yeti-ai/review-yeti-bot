@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, CtReviewConfig, CtReviewConfigV3, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS } from './schema';
 import { logger } from '../utils/logger';
 import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
 
@@ -111,6 +111,48 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
       sync_productlane: false,
     },
   } as any;
+}
+
+export function createDefaultV4Config(): CtReviewConfigV4 {
+  return ctReviewConfigV4Schema.parse({
+    ...createDefaultV3Config(),
+    version: 4,
+    submodules: {},
+    limits: {},
+  });
+}
+
+export function normalizeConfigToV4(config: CtReviewConfigV3 | CtReviewConfigV4): CtReviewConfigV4 {
+  return ctReviewConfigV4Schema.parse({
+    ...config,
+    version: 4,
+    submodules: (config as any).submodules || {},
+    limits: (config as any).limits || {},
+  });
+}
+
+const V4_SAFETY_CAPS = {
+  max_files: 5000,
+  max_diff_bytes: 2_000_000,
+  max_prompt_tokens: 200_000,
+  max_completion_tokens: 32_000,
+  max_cost_usd: 100,
+  max_turns: 20,
+  max_concurrency: 32,
+  max_depth: 5,
+};
+
+export function applyTrustedOverrides(
+  config: CtReviewConfigV4,
+  overrides: { limits?: Partial<CtReviewConfigV4['limits']>; submodules?: Partial<CtReviewConfigV4['submodules']> },
+): CtReviewConfigV4 {
+  const limits = { ...config.limits, ...(overrides.limits || {}) } as Record<string, number>;
+  for (const [key, cap] of Object.entries(V4_SAFETY_CAPS)) {
+    if (key in limits && typeof limits[key] === 'number') limits[key] = Math.min(limits[key], cap);
+  }
+  const submodules = { ...config.submodules, ...(overrides.submodules || {}) };
+  if (typeof submodules.max_depth === 'number') submodules.max_depth = Math.min(submodules.max_depth, V4_SAFETY_CAPS.max_depth);
+  return normalizeConfigToV4({ ...config, limits, submodules } as CtReviewConfigV4);
 }
 
 export function translateCodeRabbitToV3(raw: any): any {
@@ -254,9 +296,10 @@ export async function loadConfig(
     if (content !== null && content !== undefined) {
       const isCodeRabbit = fileName === '.coderabbit.yaml';
       const parsed = parseAndValidateConfig(content, isCodeRabbit);
-      if ((parsed as any).version !== 3) {
+      if ((parsed as any).version !== 3 && (parsed as any).version !== 4) {
         return translateLegacyConfigToV3(parsed);
       }
+      if ((parsed as any).version === 4) return parsed;
       return resolver.deepMergeConfigs(createDefaultV3Config(), null, parsed);
     }
   }
@@ -267,9 +310,10 @@ export async function loadConfig(
       if (content !== null && content !== undefined) {
         const isCodeRabbit = fileName === '.coderabbit.yaml';
         const parsed = parseAndValidateConfig(content, isCodeRabbit);
-        if ((parsed as any).version !== 3) {
+        if ((parsed as any).version !== 3 && (parsed as any).version !== 4) {
           return translateLegacyConfigToV3(parsed);
         }
+        if ((parsed as any).version === 4) return parsed;
         return resolver.deepMergeConfigs(createDefaultV3Config(), parsed, null);
       }
     }
@@ -300,6 +344,18 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
   }
 
   const raw = parsed as Record<string, unknown>;
+  if (String(raw.version ?? 1) === '4') {
+    if ('lenses' in raw) throw new ConfigValidationError('version 4 personas cannot be mixed with legacy lenses');
+    const sanitized = sanitizeV3Config(raw);
+    const result = ctReviewConfigV4Schema.safeParse(sanitized);
+    if (!result.success) {
+      throw new ConfigValidationError(
+        `Config validation failed: ${result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`,
+        result.error.format(),
+      );
+    }
+    return result.data;
+  }
   if (String(raw.version ?? 1) === '3') {
     if ('lenses' in raw) throw new ConfigValidationError('version 3 personas cannot be mixed with legacy lenses');
     const sanitized = sanitizeV3Config(raw);

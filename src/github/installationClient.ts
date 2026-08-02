@@ -19,6 +19,12 @@ export interface ReviewComment {
 export interface ChangedFile {
   path: string;
   patch?: string;
+  status?: string;
+  mode?: string;
+  previousPath?: string;
+  oldSha?: string;
+  newSha?: string;
+  isSubmodule?: boolean;
 }
 
 export class GitHubInstallationClient {
@@ -92,10 +98,20 @@ export class GitHubInstallationClient {
     for (let page = 1; ; page++) {
       const data = await this.request(`/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100&page=${page}`);
       if (!Array.isArray(data)) throw new Error('pull files response is not an array');
-      files.push(...data.map((file: any) => ({
-        path: String(file.filename || ''),
-        ...(typeof file.patch === 'string' ? { patch: file.patch } : {}),
-      })));
+      files.push(...data.map((file: any) => {
+        const mode = typeof file.mode === 'string' ? file.mode : undefined;
+        const isSubmodule = mode === '160000';
+        return {
+          path: String(file.filename || ''),
+          ...(typeof file.patch === 'string' ? { patch: file.patch } : {}),
+          ...(typeof file.status === 'string' ? { status: file.status } : {}),
+          ...(mode ? { mode } : {}),
+          ...(typeof file.previous_filename === 'string' ? { previousPath: file.previous_filename } : {}),
+          ...(isSubmodule && typeof file.previous_sha === 'string' ? { oldSha: file.previous_sha } : {}),
+          ...(isSubmodule && typeof file.sha === 'string' ? { newSha: file.sha } : {}),
+          ...(isSubmodule ? { isSubmodule: true } : {}),
+        };
+      }));
       if (data.length < 100) break;
     }
     return files;

@@ -102,6 +102,29 @@ export class PostgresStore {
           data JSONB NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS review_runs (
+          run_id VARCHAR(255) PRIMARY KEY,
+          identity_digest VARCHAR(64) UNIQUE NOT NULL,
+          owner VARCHAR(255) NOT NULL,
+          repo VARCHAR(255) NOT NULL,
+          pr_number INT NOT NULL,
+          head_sha VARCHAR(255) NOT NULL,
+          base_sha VARCHAR(255) NOT NULL,
+          snapshot_digest VARCHAR(64) NOT NULL,
+          config_digest VARCHAR(64) NOT NULL,
+          identity JSONB NOT NULL,
+          status VARCHAR(32) NOT NULL,
+          stage VARCHAR(32) NOT NULL,
+          attempt INT NOT NULL DEFAULT 0,
+          lease_owner VARCHAR(255),
+          lease_expires_at TIMESTAMP WITH TIME ZONE,
+          result_digest VARCHAR(64),
+          error_text TEXT,
+          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS review_runs_claim_idx ON review_runs (status, lease_expires_at);
+
         CREATE TABLE IF NOT EXISTS memory_graph (
           id VARCHAR(255) PRIMARY KEY,
           repo VARCHAR(255),
