@@ -130,8 +130,8 @@ describe('sessionAnalyticsCLI Integration Tests', () => {
     }
   });
 
-  it('runs stats command with OKF format and verifies aggregate calculation', () => {
-    const res = runCLI(['stats', '--dir', sessionsDir, '--format', 'okf']);
+  it('runs stats command with OKF format and verifies aggregate calculation', async () => {
+    const res = await runCLI(['stats', '--dir', sessionsDir, '--format', 'okf']);
     expect(res.exitCode).toBe(0);
     expect(res.output).toContain('=== OKF: SESSION KEY PERFORMANCE INDICATORS ===');
     expect(res.output).toContain('kpi.total_sessions: 2');
@@ -140,9 +140,9 @@ describe('sessionAnalyticsCLI Integration Tests', () => {
     expect(res.output).toContain('kpi.total_cost_usd: $0.1700');
   });
 
-  it('runs list command with filters and output file writing', () => {
+  it('runs list command with filters and output file writing', async () => {
     const outFile = path.join(tempDir, 'list_output.json');
-    const res = runCLI([
+    const res = await runCLI([
       'list',
       '--dir',
       sessionsDir,
@@ -163,8 +163,8 @@ describe('sessionAnalyticsCLI Integration Tests', () => {
     expect(writtenContent.sessions[0].id).toBe('owner-a/repo-a#10');
   });
 
-  it('runs inspect command for specific session ID with Markdown output', () => {
-    const res = runCLI(['inspect', 'owner-a/repo-a#10', '--dir', sessionsDir, '--format', 'markdown']);
+  it('runs inspect command for specific session ID with Markdown output', async () => {
+    const res = await runCLI(['inspect', 'owner-a/repo-a#10', '--dir', sessionsDir, '--format', 'markdown']);
     expect(res.exitCode).toBe(0);
     expect(res.output).toContain('# 🔍 Session Detail: `owner-a/repo-a#10`');
     expect(res.output).toContain('Add JWT Middleware');
@@ -172,8 +172,8 @@ describe('sessionAnalyticsCLI Integration Tests', () => {
     expect(res.output).toContain('Resolved Findings');
   });
 
-  it('runs search command to filter sessions by title query', () => {
-    const res = runCLI(['search', 'Database', '--dir', sessionsDir, '--format', 'table']);
+  it('runs search command to filter sessions by title query', async () => {
+    const res = await runCLI(['search', 'Database', '--dir', sessionsDir, '--format', 'table']);
     expect(res.exitCode).toBe(0);
     expect(res.output).toContain('owner-b/repo-b#20');
     expect(res.output).not.toContain('owner-a/repo-a#10');

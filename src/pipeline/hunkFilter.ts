@@ -56,7 +56,33 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-export function filterDiffHunks(changedFiles: ChangedFile[]): HunkFilterResult {
+function matchGlob(pattern: string, targetPath: string): boolean {
+  if (pattern === '**') return true;
+  const lowerPattern = pattern.toLowerCase();
+  const lowerPath = targetPath.toLowerCase();
+
+  if (!pattern.includes('/')) {
+    const filename = lowerPath.split('/').pop() || lowerPath;
+    const escaped = lowerPattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+      .replace(/\?/g, '.');
+    return new RegExp(`^${escaped}$`).test(filename) || new RegExp(`^${escaped}$`).test(lowerPath);
+  }
+
+  const escaped = lowerPattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\0')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/\0/g, '.*');
+  return new RegExp(`^${escaped}$`).test(lowerPath);
+}
+
+export function filterDiffHunks(
+  changedFiles: ChangedFile[],
+  options?: { path_filters?: string[] }
+): HunkFilterResult {
   let originalTokenEstimate = 0;
   let filteredTokenEstimate = 0;
   let ignoredFilesCount = 0;
@@ -68,6 +94,20 @@ export function filterDiffHunks(changedFiles: ChangedFile[]): HunkFilterResult {
 
     const lowerPath = file.path.toLowerCase();
     const filename = lowerPath.split('/').pop() || lowerPath;
+
+    // 0. Path Filters
+    if (options?.path_filters && options.path_filters.length > 0) {
+      if (options.path_filters.some((pattern) => matchGlob(pattern, file.path))) {
+        ignoredFilesCount++;
+        return {
+          path: file.path,
+          status: 'ignored',
+          ignoreReason: 'Excluded by path_filters pattern',
+          originalPatchLength: rawText.length,
+          filteredPatchLength: 0,
+        };
+      }
+    }
 
     // 1. Lockfile Filter
     if (IGNORED_LOCKFILES.includes(filename)) {

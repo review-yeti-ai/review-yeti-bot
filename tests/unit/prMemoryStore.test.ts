@@ -143,7 +143,9 @@ describe('PRMemoryStore Unit Tests', () => {
     expect(fs.existsSync(tmpDbPath)).toBe(true);
 
     diskStore.close();
-    fs.unlinkSync(tmpDbPath);
+    if (fs.existsSync(tmpDbPath)) {
+      fs.unlinkSync(tmpDbPath);
+    }
   });
 
   it('dual-writes memory concepts to both PostgreSQL and SQLite when DATABASE_URL is configured', async () => {

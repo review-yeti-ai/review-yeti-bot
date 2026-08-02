@@ -123,7 +123,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         };
       } else {
         // Persona lane
-        if (opts.model === 'claude-5-sonnet') {
+        if (opts.model.includes('claude')) {
           // Primary provider fails!
           throw new Error('Claude API Timeout');
         } else {
