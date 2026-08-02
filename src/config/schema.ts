@@ -24,6 +24,12 @@ export const R4_ALLOWED_MODELS = [
   'openrouter/deepseek/deepseek-r1',
   'openrouter/google/gemini-2.5-pro',
   'openrouter/qwen/qwen-2.5-72b-instruct',
+  'openrouter/openai/gpt-4o',
+  'openrouter/openai/gpt-4o-mini',
+  'openrouter/anthropic/claude-3.5-sonnet',
+  'openrouter/deepseek/deepseek-v3',
+  'openrouter/google/gemini-1.5-pro',
+  'openrouter/anthropic/claude-haiku-4.5',
   'gpt-4o',
   'gpt-4o-mini',
   'gemini-1.5-pro',
@@ -95,6 +101,7 @@ export const personaSchema = z.object({
   maxTurns: z.number().int().min(1).max(20).optional(),
   dual_model: z.boolean().optional(),
   adversarial_model: z.string().optional(),
+  customPrompt: z.string().optional(),
 }).superRefine((persona, ctx) => {
   if (persona.charter.startsWith('builtin:') && !BuiltinCharterEnum.safeParse(persona.charter).success) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['charter'], message: `unknown built-in charter ${persona.charter}` });

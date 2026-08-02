@@ -62,6 +62,7 @@ describe('Milestone 41: GitHub App & OAuth Onboarding API Suite', () => {
 
     const verifyRes = await request(app)
       .post('/api/github/app-config/verify')
+      .set('Authorization', 'Bearer demo_token_public')
       .send({
         appId: '1092381',
         installationId: '58923019',

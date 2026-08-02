@@ -52,20 +52,28 @@ describe('cliParser Unit Tests', () => {
     expect(searchParsed.options.query).toBe('refactor');
   });
 
-  it('runCLI returns help text when --help flag is provided', () => {
-    const res = runCLI(['--help']);
+  it('runCLI returns help text when --help flag is provided', async () => {
+    const res = await runCLI(['--help']);
     expect(res.exitCode).toBe(0);
     expect(res.output).toContain('Session Analytics CLI Tool');
   });
 
-  it('runCLI executes stats command and formats output', () => {
-    const res = runCLI(['stats', '--format', 'json']);
+  it('runCLI executes stats command and formats output', async () => {
+    const res = await runCLI(['stats', '--format', 'json']);
     expect(res.exitCode).toBe(0);
     expect(JSON.parse(res.output)).toHaveProperty('kpis');
   });
 
-  it('runCLI returns exit code 1 for inspect without session ID', () => {
-    const res = runCLI(['inspect']);
+  it('runCLI executes models command and formats output', async () => {
+    const res = await runCLI(['models', '--sort', 'swe-score', '--format', 'json']);
+    expect(res.exitCode).toBe(0);
+    const parsed = JSON.parse(res.output);
+    expect(parsed).toHaveProperty('entries');
+    expect(parsed).toHaveProperty('summary');
+  });
+
+  it('runCLI returns exit code 1 for inspect without session ID', async () => {
+    const res = await runCLI(['inspect']);
     expect(res.exitCode).toBe(1);
     expect(res.output).toContain('Error');
   });

@@ -1,5 +1,6 @@
 export interface ProviderConfigRecord {
   id: string;
+  type?: string;
   displayName: string;
   enabled: boolean;
   active?: boolean;
@@ -91,6 +92,33 @@ export interface CodeNit {
   suggestion?: string;
 }
 
+export interface FindingsDeltaSummary {
+  previousRunId?: string;
+  initialFindings?: number;
+  latestFindings?: number;
+  resolvedFindings: number;
+  newFindings: number;
+  persistentFindings?: number;
+  unresolvedFindings?: number;
+  netChange: number;
+}
+
+export interface PersonaTurnStep {
+  turnIndex?: number;
+  turn?: number;
+  personaId?: string;
+  action?: string;
+  input?: any;
+  output?: any;
+  tokensBurned?: number;
+  latencyMs?: number;
+  thought?: string;
+  toolCall?: { name: string; args?: any };
+  toolResult?: { success: boolean; output?: string };
+  findingsAddedCount?: number;
+  timestamp?: string;
+}
+
 export interface PersonaLogEntry {
   persona: string;
   displayName?: string;
@@ -104,6 +132,7 @@ export interface PersonaLogEntry {
   outputLog?: string;
   nits?: CodeNit[];
   turnsCount?: number;
+  turns?: PersonaTurnStep[];
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
@@ -137,6 +166,7 @@ export interface ReviewJob {
   quorum?: string;
   personaLogs?: PersonaLogEntry[];
   mermaidDiagram?: string;
+  findingsDelta?: FindingsDeltaSummary;
   /** Personas that failed with API errors (non-required, didn't block verdict) */
   optionalFailures?: Array<{ id: string; error: string }>;
   isSynthetic?: boolean;

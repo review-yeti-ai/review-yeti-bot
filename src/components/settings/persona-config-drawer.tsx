@@ -61,7 +61,7 @@ export function PersonaConfigDrawer({
     color: 'text-indigo-400',
   };
   const Icon = meta.icon;
-  const currentModel = persona.model || 'claude-haiku-4.5';
+  const currentModel = persona.model || 'openrouter/auto';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

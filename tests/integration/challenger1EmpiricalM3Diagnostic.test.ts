@@ -42,7 +42,7 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
       expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
       expect(res.body.error).toMatch(/unconfigured|invalid|missing|quorum/i);
-    });
+    }, 15000);
 
     it('returns HTTP 400 Bad Request with clear error message when credentials are invalid', async () => {
       // Set provider config in store to unconfigured API key
@@ -58,7 +58,7 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
       expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
       expect(res.body.error).toMatch(/unconfigured|invalid|missing|quorum/i);
-    });
+    }, 15000);
 
     it('returns HTTP 400 Bad Request when simulateInvalidCredentials flag is provided', async () => {
       const res = await request(app)

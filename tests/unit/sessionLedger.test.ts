@@ -9,7 +9,7 @@ describe('SessionLedger Unit Tests', () => {
 
   beforeEach(() => {
     if (fs.existsSync(tmpDir)) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
     fs.mkdirSync(tmpDir, { recursive: true });
     ledger = new SessionLedger(tmpDir);
@@ -17,7 +17,7 @@ describe('SessionLedger Unit Tests', () => {
 
   afterEach(() => {
     if (fs.existsSync(tmpDir)) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
