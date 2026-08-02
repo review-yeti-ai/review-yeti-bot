@@ -77,6 +77,29 @@ export function evaluateEffortAndBudget(
 }
 
 export class TokenBudgetManager {
+  private readonly reservations = new Map<string, number>();
+
+  /** Atomically reserve a bounded token amount for one review run. */
+  public reserve(runId: string, requestedTokens: number, capTokens: number): boolean {
+    if (!Number.isFinite(requestedTokens) || requestedTokens < 0 || !Number.isFinite(capTokens) || capTokens < 0) return false;
+    const current = this.reservations.get(runId) || 0;
+    if (current + requestedTokens > capTokens) return false;
+    this.reservations.set(runId, current + requestedTokens);
+    return true;
+  }
+
+  public release(runId: string, requestedTokens: number): void {
+    if (!Number.isFinite(requestedTokens)) return;
+    const current = this.reservations.get(runId) || 0;
+    const remaining = Math.max(0, current - Math.max(0, requestedTokens));
+    if (remaining === 0) this.reservations.delete(runId);
+    else this.reservations.set(runId, remaining);
+  }
+
+  public reserved(runId: string): number {
+    return this.reservations.get(runId) || 0;
+  }
+
   public calculateBudget(options: CalculateBudgetOptions): TokenBudgetAllocation {
     if (options.effortLevel) {
       switch (options.effortLevel) {

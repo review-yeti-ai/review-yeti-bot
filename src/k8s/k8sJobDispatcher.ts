@@ -95,6 +95,7 @@ export class K8sJobDispatcher {
       process.env.WORKER_IMAGE ||
       process.env.CONTAINER_IMAGE ||
       'registry.digitalocean.com/calltelemetry/ct-review-bot:v46-wall-time-responsive-fix';
+    const runtimeSecretName = process.env.OPENROUTER_SECRET_NAME || 'ct-review-bot-runtime';
 
     return {
       apiVersion: 'batch/v1',
@@ -140,7 +141,24 @@ export class K8sJobDispatcher {
                   { name: 'BASE_SHA', value: options.baseSha || '' },
                   { name: 'JOB_ID', value: options.jobId },
                   { name: 'OPENROUTER_BASE_URL', value: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' },
-                  { name: 'OPENROUTER_API_KEY', value: process.env.OPENROUTER_API_KEY || '' },
+                  {
+                    name: 'OPENROUTER_API_KEY',
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: runtimeSecretName,
+                        key: 'OPENROUTER_API_KEY',
+                      },
+                    },
+                  },
+                  ...['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'].map((name) => ({
+                    name,
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: runtimeSecretName,
+                        key: name,
+                      },
+                    },
+                  })),
                   { name: 'WORKSPACE_DIR', value: '/app/data/pr-workspace' },
                 ],
                 resources: {

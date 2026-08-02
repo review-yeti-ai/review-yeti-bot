@@ -25,7 +25,7 @@ function sha256(value) {
 
 function normalizePath(value) {
   if (typeof value !== 'string') return null;
-  const normalized = value.replace(/^\.\//, '');
+  const normalized = value.replace(/\\/g, '/').replace(/^\.\//, '');
   if (!normalized || normalized.startsWith('/') || normalized.split('/').includes('..')) return null;
   return normalized;
 }
@@ -34,23 +34,33 @@ function changedLineNumbers(patch) {
   if (typeof patch !== 'string') return null;
   const lines = new Set();
   let current = 0;
-  for (const line of patch.split('\n')) {
-    const hunk = line.match(/^@@ .* \+(\d+)(?:,(\d+))? @@/);
+  let inHunk = false;
+  const patchLines = patch.split('\n');
+  for (const [index, line] of patchLines.entries()) {
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
     if (hunk) {
       current = Number(hunk[1]);
+      inHunk = true;
       continue;
     }
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (!inHunk && (line.startsWith('+++') || line.startsWith('---'))) continue;
+    if (line.startsWith('\\ No newline at end of file')) continue;
     if (line.startsWith('+')) {
       lines.add(current);
       current += 1;
     } else if (line.startsWith('-')) {
       continue;
-    } else if (line.length > 0) {
+    } else if (inHunk && !(line.length === 0 && index === patchLines.length - 1 && patch.endsWith('\n'))) {
+      // A blank context line is still a line in the new file. The final empty split item from
+      // a trailing newline is only a string delimiter and must not advance the hunk.
       current += 1;
     }
   }
   return lines;
+}
+
+function isGitlinkFile(file) {
+  return Boolean(file && (file.isSubmodule === true || String(file.mode || '') === '160000'));
 }
 
 function sanitizeFinding(raw, changedFiles) {
@@ -60,15 +70,19 @@ function sanitizeFinding(raw, changedFiles) {
     return { ...raw, severity: raw.severity };
   }
   const path = normalizePath(raw.path);
-  const changed = Array.isArray(changedFiles) ? changedFiles.find((file) => normalizePath(file.path) === path) : null;
-  if (!path || (Array.isArray(changedFiles) && !changed)) return null;
+  const changed = changedFiles.find((file) => normalizePath(file.path) === path);
+  if (!path || !changed) return null;
   const severity = ['P0', 'P1', 'P2'].includes(raw.severity) ? raw.severity : null;
   const line = Number(raw.line);
   if (!severity || !Number.isInteger(line) || line < 1) return null;
 
   const changedLines = changedLineNumbers(changed && changed.patch);
-  if (changedLines && changedLines.size > 0 && !changedLines.has(line)) return null;
-  if (changedLines && changedLines.size === 0 && changed && typeof changed.patch === 'string') return null;
+  // A gitlink patch has no line-numbered hunk. Keep a valid finding anchored to the gitlink path
+  // instead of silently turning a real submodule finding into an approval.
+  if (!isGitlinkFile(changed)) {
+    if (changedLines && changedLines.size > 0 && !changedLines.has(line)) return null;
+    if (changedLines && changedLines.size === 0 && typeof changed.patch === 'string' && !/^@@ /m.test(changed.patch)) return null;
+  }
 
   const title = typeof raw.title === 'string' ? raw.title.trim() : '';
   const body = typeof raw.body === 'string' ? raw.body.trim() : '';
@@ -109,7 +123,10 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   let candidateVerdict = 'SHIP';
   let rationale = `All ${completedResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
 
-  if (failedLanes.length > 0) {
+  if (expected <= 0) {
+    candidateVerdict = 'BLOCK';
+    rationale = 'Blocked because no reviewer personas are enabled; no review evidence exists.';
+  } else if (failedLanes.length > 0) {
     candidateVerdict = 'BLOCK';
     rationale = `Blocked because ${failedLanes.length} persona lane(s) failed; provider failures cannot produce a successful verdict.`;
   } else if (p0Count > 0) {
@@ -127,16 +144,18 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   }
 
   if (!failedLanes.length && VALID_VERDICTS.has(options.candidateVerdict)) {
-    if (options.candidateVerdict === 'BLOCK' || (options.candidateVerdict === 'FIX_FIRST' && candidateVerdict === 'SHIP')) {
+    if (
+      options.candidateVerdict === 'BLOCK'
+      || options.candidateVerdict === candidateVerdict
+      || (options.candidateVerdict === 'FIX_FIRST' && candidateVerdict === 'SHIP')
+    ) {
       candidateVerdict = options.candidateVerdict;
-      rationale = typeof options.rationale === 'string' ? options.rationale : rationale;
-    } else if (options.candidateVerdict === 'SHIP' && candidateVerdict === 'SHIP') {
       rationale = typeof options.rationale === 'string' ? options.rationale : rationale;
     }
   }
 
   const coverageComplete = options.coverageComplete !== false;
-  const quorumSatisfied = failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
+  const quorumSatisfied = expected > 0 && failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
   const incomplete = !quorumSatisfied;
   const verdict = incomplete ? 'BLOCK' : candidateVerdict;
   const status = incomplete ? 'INCOMPLETE_REVIEW' : verdict;

@@ -33,7 +33,7 @@ export class ConfigResolver {
   /**
    * Loads and resolves 3-tier configuration hierarchy (Repo -> Org -> System).
    */
-  public async resolveConfig(options: ConfigResolutionOptions): Promise<CtReviewConfigV3> {
+  public async resolveConfig(options: ConfigResolutionOptions, prefetched?: { repoConfigRaw: any | null; orgConfigRaw: any | null }): Promise<CtReviewConfigV3> {
     const { owner, repo, ref, client, systemSettingsOverride } = options;
 
     // Tier 3: Base System Defaults
@@ -43,11 +43,13 @@ export class ConfigResolver {
     }
 
     // Tier 1: Target Repository Config
-    const repoConfigRaw = await this.fetchRawConfig(owner, repo, ref, client);
+    const repoConfigRaw = prefetched ? prefetched.repoConfigRaw : await this.fetchRawConfig(owner, repo, ref, client);
 
     // Tier 2: Org Defaults (.github repository)
     let orgConfigRaw: Partial<CtReviewConfigV3> | null = null;
-    if (repo !== '.github') {
+    if (prefetched) {
+      orgConfigRaw = prefetched.orgConfigRaw;
+    } else if (repo !== '.github') {
       orgConfigRaw = await this.fetchRawConfig(owner, '.github', undefined, client);
     }
 
@@ -64,12 +66,13 @@ export class ConfigResolver {
    */
   public async resolveConfigWithProvenance(options: ConfigResolutionOptions): Promise<ResolvedConfigProvenance> {
     const repoRaw = await this.fetchRawConfig(options.owner, options.repo, options.ref, options.client);
-    const orgRaw = repoRaw === null && options.repo !== '.github'
+    const orgRaw = options.repo !== '.github'
       ? await this.fetchRawConfig(options.owner, '.github', undefined, options.client)
       : null;
     const source = repoRaw !== null ? 'repository' : orgRaw !== null ? 'organization' : 'default';
-    const resolvedV3 = await this.resolveConfig(options);
-    const selectedV4 = (repoRaw?.version === 4 ? repoRaw : orgRaw?.version === 4 ? orgRaw : null) as CtReviewConfigV4 | null;
+    const resolvedV3 = await this.resolveConfig(options, { repoConfigRaw: repoRaw, orgConfigRaw: orgRaw });
+    const selectedRaw = source === 'repository' ? repoRaw : source === 'organization' ? orgRaw : null;
+    const selectedV4 = (selectedRaw?.version === 4 ? selectedRaw : null) as CtReviewConfigV4 | null;
     const config = normalizeConfigToV4({
       ...resolvedV3,
       ...(selectedV4 ? {
@@ -80,7 +83,7 @@ export class ConfigResolver {
     return {
       config,
       source,
-      configRef: options.ref || 'default',
+      configRef: source === 'organization' ? `${options.owner}/.github@default` : (options.ref || 'default'),
       configDigest: sha256(config),
     };
   }

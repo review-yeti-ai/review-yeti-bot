@@ -78,4 +78,115 @@ describe('generational review identity and policy contracts', () => {
     expect(resolveSubmoduleDecision(file, { mode: 'recursive', require_pinned_commit: true })).toMatchObject({ decision: 'INCOMPLETE_REVIEW' });
     expect(resolveSubmoduleDecision(file, { mode: 'ignore', require_pinned_commit: true })).toMatchObject({ decision: 'IGNORE' });
   });
+
+  it('accepts a pinned gitlink addition or deletion without inventing a missing-side SHA', () => {
+    const policy = { mode: 'metadata_only' as const, require_pinned_commit: true };
+
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/added',
+      mode: '160000',
+      newSha: 'a'.repeat(40),
+      isSubmodule: true,
+    }, policy)).toMatchObject({ decision: 'REVIEW_METADATA' });
+
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/deleted',
+      mode: '160000',
+      oldSha: 'b'.repeat(40),
+      isSubmodule: true,
+    }, policy)).toMatchObject({ decision: 'REVIEW_METADATA' });
+  });
+
+  it.each([
+    ['mode', { mode: '160000' }],
+    ['oldMode', { oldMode: '160000' }],
+    ['newMode', { newMode: '160000' }],
+    ['old_mode', { old_mode: '160000' }],
+    ['new_mode', { new_mode: '160000' }],
+  ])('recognizes the %s gitlink mode alias', (_alias, mode) => {
+    const decision = resolveSubmoduleDecision({
+      path: 'vendor/aliased-lib',
+      ...mode,
+      newSha: 'a'.repeat(40),
+    }, { mode: 'metadata_only', require_pinned_commit: true });
+
+    expect(decision).toMatchObject({ decision: 'REVIEW_METADATA', reviewable: true });
+  });
+
+  it('fails closed when an aliased gitlink mode has no pinned commit', () => {
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/unpinned-lib',
+      old_mode: '160000',
+    }, { mode: 'metadata_only', require_pinned_commit: true })).toMatchObject({ decision: 'BLOCK', reviewable: false });
+  });
+
+  it('blocks a patch-only submodule candidate until native gitlink metadata is available', () => {
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/candidate',
+      submoduleCandidate: true,
+      oldSha: 'a'.repeat(40),
+      newSha: 'b'.repeat(40),
+    }, { mode: 'metadata_only', require_pinned_commit: true })).toMatchObject({ decision: 'BLOCK', reviewable: false });
+  });
+
+  it('requires both pinned SHAs for a modified submodule', () => {
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/modified',
+      status: 'modified',
+      mode: '160000',
+      newSha: 'a'.repeat(40),
+      isSubmodule: true,
+    }, { mode: 'metadata_only', require_pinned_commit: true })).toMatchObject({ decision: 'BLOCK' });
+  });
+
+  it('blocks an explicitly reported submodule URL change under the block policy', () => {
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/url-change',
+      mode: '160000',
+      oldSha: 'a'.repeat(40),
+      newSha: 'b'.repeat(40),
+      oldSubmoduleUrl: 'https://github.com/example/old.git',
+      newSubmoduleUrl: 'https://example.invalid/new.git',
+      isSubmodule: true,
+    }, { mode: 'metadata_only', require_pinned_commit: true, url_change: 'block' })).toMatchObject({ decision: 'BLOCK' });
+  });
+
+  it('requires metadata review for an explicitly reported submodule URL change', () => {
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/url-review',
+      mode: '160000',
+      oldSha: 'a'.repeat(40),
+      newSha: 'b'.repeat(40),
+      submoduleUrlChanged: true,
+      isSubmodule: true,
+    }, { mode: 'recursive', require_pinned_commit: true, url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA', reviewable: true });
+  });
+
+  it('enforces submodule host and repository allowlists when origin metadata is available', () => {
+    const file = {
+      path: 'vendor/allowed',
+      mode: '160000',
+      oldSha: 'a'.repeat(40),
+      newSha: 'b'.repeat(40),
+      newSubmoduleUrl: 'https://github.com/calltelemetry/ct-pr-operator.git',
+      isSubmodule: true,
+    };
+    expect(resolveSubmoduleDecision(file, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['calltelemetry/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
+    expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://example.invalid/attacker.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: [] })).toMatchObject({ decision: 'BLOCK' });
+    expect(resolveSubmoduleDecision({ ...file, oldSubmoduleUrl: undefined }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], url_change: 'block' })).toMatchObject({ decision: 'BLOCK' });
+    expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://token@github.com:443/calltelemetry/ct-pr-operator.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['calltelemetry/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
+    expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://github.com@attacker.invalid/calltelemetry/ct-pr-operator.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['calltelemetry/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'BLOCK' });
+  });
+
+  it('resolves relative submodule URLs against the parent repository', () => {
+    expect(resolveSubmoduleDecision({
+      path: 'vendor/relative',
+      mode: '160000',
+      oldSha: 'a'.repeat(40),
+      newSha: 'b'.repeat(40),
+      newSubmoduleUrl: '../dependency.git',
+      parentRepository: 'calltelemetry/parent',
+      isSubmodule: true,
+    }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
+  });
 });

@@ -37,8 +37,8 @@ That is the whole setup — note there is no `actions/checkout` step, and none i
 action reads the pull request diff, runs the reviewers in parallel, and comments on the PR using
 your workflow's built-in `GITHUB_TOKEN`; no personal access token required.
 
-You supply an OpenRouter API key (and may override its compatible base URL). **You own the key
-and the prompts**; nothing is sent to a third-party review service beyond OpenRouter.
+You supply a model-provider API key and may override the compatible base URL. **You own the key
+and the prompts**; prompts are sent to the endpoint you configure. The default endpoint is OpenRouter.
 
 > **No key yet?** The action fails closed without posting a successful verdict. It never presents
 > static pattern checks as a model review.
@@ -136,22 +136,6 @@ does not turn into a large bill. Lower the budget, or narrow the roster, to spen
         with:
           personas: security,testing
           max-diff-chars: '8000'
-```
-
-### When a pull request is too large for the budget
-
-The budget is shared across the changed files: each gets an equal share, down to the point where
-a fragment is too small to review meaningfully. Beyond that, the remaining files are **reported
-as not reviewed rather than dropped** — the comment names them and marks the verdict as covering
-only part of the change.
-
-A clean verdict on a partially reviewed diff is the most dangerous output this tool can produce,
-so it is stated where the verdict is, not buried. `files-omitted` is also a step output, so a
-workflow can fail when coverage is incomplete:
-
-```yaml
-      - if: steps.review.outputs.files-omitted != '0'
-        run: exit 1
 ```
 
 ## Configuration

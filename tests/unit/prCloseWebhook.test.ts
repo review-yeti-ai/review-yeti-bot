@@ -122,6 +122,7 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
         head: { sha: 'sha-opened-1' },
         base: { sha: 'sha-opened-0' },
       },
+      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
       sender: { login: 'dev1' },
     };
 
@@ -134,6 +135,7 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
         head: { sha: 'sha-opened-1' },
         base: { sha: 'sha-opened-0' },
       },
+      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
       sender: { login: 'dev1' },
     };
 
@@ -157,12 +159,8 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
 
     const result = handler.evaluateTrigger('pull_request', minimalPayload, 'deliv-minimal');
 
-    expect(result.shouldTrigger).toBe(true);
-    expect(result.parsedPayload?.owner).toBe('calltelemetry');
-    expect(result.parsedPayload?.repo).toBe('ai-workspace');
-    expect(result.parsedPayload?.prNumber).toBe(0);
-    expect(result.parsedPayload?.headSha).toBe('head-sha-latest');
-    expect(result.parsedPayload?.baseSha).toBe('base-sha-latest');
-    expect(result.parsedPayload?.sender).toBe('');
+    expect(result.shouldTrigger).toBe(false);
+    expect(result.reason).toContain('Missing owner or repo');
+    expect(result.parsedPayload).toBeUndefined();
   });
 });

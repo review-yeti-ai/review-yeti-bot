@@ -1,4 +1,4 @@
-import { OmniRouteClient } from '../gateway/omniRouteClient';
+import { OpenRouterClient, ReviewModelClient } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { PlatformMemoryStore } from '../memory/platformMemoryStore';
 import { logger } from '../utils/logger';
@@ -33,12 +33,12 @@ export interface CommentInputContext {
 }
 
 export class LLMCommentLearner {
-  private client: OmniRouteClient;
+  private client: ReviewModelClient;
   private prMemoryStore: PRMemoryStore;
   private platformMemoryStore: PlatformMemoryStore;
 
-  constructor(client?: OmniRouteClient, prStore?: PRMemoryStore, platformStore?: PlatformMemoryStore) {
-    this.client = client || new OmniRouteClient();
+  constructor(client?: ReviewModelClient, prStore?: PRMemoryStore, platformStore?: PlatformMemoryStore) {
+    this.client = client || new OpenRouterClient();
     this.prMemoryStore = prStore || new PRMemoryStore();
     this.platformMemoryStore = platformStore || new PlatformMemoryStore();
   }
@@ -88,7 +88,7 @@ ${context.codeSemantics ? `Code Semantics & AST Context:\n"${context.codeSemanti
 
     try {
       const response = await this.client.complete({
-        model: 'synthetic/hf:zai-org/GLM-5.2',
+        model: 'openrouter/auto',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

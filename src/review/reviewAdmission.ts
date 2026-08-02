@@ -13,13 +13,19 @@ export interface ReviewAdmissionInput {
 
 /** Creates the stable identity used before asynchronous work begins. */
 export function buildReviewRunIdentity(input: ReviewAdmissionInput): ReviewRunIdentity {
+  const changedFiles = [...(input.changedFiles || [])].sort((left, right) => {
+    if (left.path !== right.path) return left.path < right.path ? -1 : 1;
+    const leftKey = JSON.stringify(left);
+    const rightKey = JSON.stringify(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
   const snapshotIdentity = {
     owner: input.owner,
     repo: input.repo,
     prNumber: input.prNumber,
     headSha: input.headSha,
     baseSha: input.baseSha,
-    changedFiles: input.changedFiles || [],
+    changedFiles,
   };
   return {
     owner: input.owner,

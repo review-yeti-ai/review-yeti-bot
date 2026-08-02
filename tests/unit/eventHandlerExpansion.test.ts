@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { GitHubEventHandler } from '../../src/github/eventHandler';
 
 describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
+  const repository = { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' };
+
   it('initializes with default trigger labels when options omitted', () => {
     const handler = new GitHubEventHandler();
     const payload = {
       action: 'labeled',
       pull_request: { number: 1, labels: [{ name: 'ct-review' }] },
+      repository,
       sender: { login: 'user' },
     };
 
@@ -20,6 +23,7 @@ describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
     const payloadMatch = {
       action: 'labeled',
       pull_request: { number: 1, labels: ['custom-trigger'] },
+      repository,
       sender: { login: 'user' },
     };
     expect(handler.evaluateTrigger('pull_request', payloadMatch).shouldTrigger).toBe(true);
@@ -27,6 +31,7 @@ describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
     const payloadNoMatch = {
       action: 'labeled',
       pull_request: { number: 1, labels: ['ct-review'] },
+      repository,
       sender: { login: 'user' },
     };
     expect(handler.evaluateTrigger('pull_request', payloadNoMatch).shouldTrigger).toBe(false);
@@ -76,6 +81,7 @@ describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
       action: 'synchronize',
       number: 11,
       pull_request: { number: 11, head: { sha: 'h2' }, base: { sha: 'b' } },
+      repository,
       sender: { login: 'dev' },
     };
     const res = handler.evaluateTrigger('pull_request', payload);
@@ -90,6 +96,7 @@ describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
       action: 'opened',
       number: 12,
       pull_request: { number: 12, draft: true },
+      repository,
       sender: { login: 'dev' },
     };
     const res = handler.evaluateTrigger('pull_request', payload);
@@ -105,6 +112,7 @@ describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
       action: 'created',
       issue: { number: 50, head: { sha: 'h' }, base: { sha: 'b' } },
       comment: { id: 700, body: '@ct-review review' },
+      repository,
       sender: { login: 'reviewer' },
     };
     const res = handler.evaluateTrigger('issue_comment', payload);
@@ -120,6 +128,7 @@ describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
       action: 'created',
       pull_request: { number: 55 },
       comment: { id: 701, in_reply_to_id: 600, body: 'Updated code per review' },
+      repository,
       sender: { login: 'author' },
     };
     const res = handler.evaluateTrigger('pull_request_review_comment', payload);

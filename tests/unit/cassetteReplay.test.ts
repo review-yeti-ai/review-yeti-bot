@@ -60,37 +60,44 @@ describe('strict cassette replay', () => {
 
   it('requires explicit record mode, the environment switch, and an origin allowlist', async () => {
     const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-cassette-')), 'record.json');
+    const originalCi = process.env.CI;
     const fetchImplementation = async () => new Response(JSON.stringify({ recorded: true }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
 
-    await expect(createCassetteFetch({
-      cassettePath,
-      mode: 'record',
-      fetchImplementation,
-      allowedRecordOrigins: ['https://llm.test'],
-    }).fetchImplementation('https://llm.test/record')).rejects.toThrow('CT_REVIEW_VCR=record');
+    try {
+      delete process.env.CI;
+      await expect(createCassetteFetch({
+        cassettePath,
+        mode: 'record',
+        fetchImplementation,
+        allowedRecordOrigins: ['https://llm.test'],
+      }).fetchImplementation('https://llm.test/record')).rejects.toThrow('CT_REVIEW_VCR=record');
 
-    process.env.CT_REVIEW_VCR = 'record';
-    await expect(createCassetteFetch({
-      cassettePath,
-      mode: 'record',
-      fetchImplementation,
-      allowedRecordOrigins: ['https://other.test'],
-    }).fetchImplementation('https://llm.test/record')).rejects.toThrow('not allowlisted');
+      process.env.CT_REVIEW_VCR = 'record';
+      await expect(createCassetteFetch({
+        cassettePath,
+        mode: 'record',
+        fetchImplementation,
+        allowedRecordOrigins: ['https://other.test'],
+      }).fetchImplementation('https://llm.test/record')).rejects.toThrow('not allowlisted');
 
-    const recorded = createCassetteFetch({
-      cassettePath,
-      mode: 'record',
-      fetchImplementation,
-      allowedRecordOrigins: ['https://llm.test'],
-    });
-    const response = await recorded.fetchImplementation('https://llm.test/record', {
-      headers: { Authorization: 'Bearer live-secret' },
-    });
-    expect(await response.json()).toEqual({ recorded: true });
-    recorded.assertComplete();
-    expect(fs.readFileSync(cassettePath, 'utf8')).not.toContain('live-secret');
+      const recorded = createCassetteFetch({
+        cassettePath,
+        mode: 'record',
+        fetchImplementation,
+        allowedRecordOrigins: ['https://llm.test'],
+      });
+      const response = await recorded.fetchImplementation('https://llm.test/record', {
+        headers: { Authorization: 'Bearer live-secret' },
+      });
+      expect(await response.json()).toEqual({ recorded: true });
+      recorded.assertComplete();
+      expect(fs.readFileSync(cassettePath, 'utf8')).not.toContain('live-secret');
+    } finally {
+      if (originalCi === undefined) delete process.env.CI;
+      else process.env.CI = originalCi;
+    }
   });
 });

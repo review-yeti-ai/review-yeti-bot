@@ -72,8 +72,8 @@ function extractOwnerRepo(payload: any): { owner: string; repo: string } {
   if (!owner && payload.owner) owner = String(payload.owner);
   if (!repo && (payload.repo || payload.repository_name)) repo = String(payload.repo || payload.repository_name);
 
-  if (!owner) owner = process.env.GITHUB_REPOSITORY_OWNER || (process.env.GITHUB_REPOSITORY?.split('/')[0]) || 'calltelemetry';
-  if (!repo) repo = (process.env.GITHUB_REPOSITORY?.split('/')[1]) || 'ai-workspace';
+  if (!owner) owner = process.env.GITHUB_REPOSITORY_OWNER || (process.env.GITHUB_REPOSITORY?.split('/')[0]) || '';
+  if (!repo) repo = (process.env.GITHUB_REPOSITORY?.split('/')[1]) || '';
 
   return { owner, repo };
 }

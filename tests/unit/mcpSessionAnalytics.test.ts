@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { handleSearchSessions } from '../../../tools/mcp-session-analytics/src/tools/searchSessions.js';
-import { handleGetSessionDetails } from '../../../tools/mcp-session-analytics/src/tools/getSessionDetails.js';
-import { handleGetSessionKpis } from '../../../tools/mcp-session-analytics/src/tools/getSessionKpis.js';
-import { buildToolRegistry } from '../../../tools/mcp-session-analytics/src/server.js';
+import { handleSearchSessions } from '../../tools/mcp-session-analytics/src/tools/searchSessions.js';
+import { handleGetSessionDetails } from '../../tools/mcp-session-analytics/src/tools/getSessionDetails.js';
+import { handleGetSessionKpis } from '../../tools/mcp-session-analytics/src/tools/getSessionKpis.js';
+import { buildToolRegistry } from '../../tools/mcp-session-analytics/src/server.js';
 
 describe('mcp-session-analytics unit integration test in ct-review-bot', () => {
   const mockSessions = [

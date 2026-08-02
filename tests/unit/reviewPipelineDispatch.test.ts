@@ -43,17 +43,17 @@ describe('Dispatch path: persona resolution defaults', () => {
     const payload = {
       personaSettings: {
         security: { enabled: true },
-        quality: { enabled: false },
-        reliability: {},
+        style: { enabled: false },
+        testing: {},
       },
     };
-    expect(ids(payload, null, {})).toEqual(['security', 'reliability']);
+    expect(ids(payload, null, {})).toEqual(['security', 'testing']);
   });
 
   it('honors a personas: array from local .ct-review.yaml', () => {
     const localConfig = {
       file: '.ct-review.yaml',
-      parsed: { personas: [{ id: 'security' }, { id: 'quality', enabled: false }, { id: 'database' }] },
+      parsed: { personas: [{ id: 'security' }, { id: 'style', enabled: false }, { id: 'database' }] },
     };
     expect(ids({}, localConfig, {})).toEqual(['security', 'database']);
   });
@@ -75,6 +75,7 @@ describe('Dispatch path: diff resolution never fabricates a diff', () => {
   afterEach(() => {
     process.chdir(originalCwd);
     delete process.env.PR_DIFF;
+    delete process.env.PR_DIFF_FILE;
   });
 
   it('returns an empty diff when no diff source is available instead of a hardcoded sample', () => {
@@ -83,6 +84,16 @@ describe('Dispatch path: diff resolution never fabricates a diff', () => {
     delete process.env.PR_DIFF;
     const ctx = pipeline.getPRDiffAndContext();
     expect(ctx.diffText).toBe('');
+  });
+
+  it('reads large action diffs from a file boundary instead of an environment variable', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-diff-file-'));
+    const diffPath = path.join(tmp, 'review.diff');
+    fs.writeFileSync(diffPath, 'diff --git a/src/large.ts b/src/large.ts\n+const value = 1;\n');
+    process.env.PR_DIFF_FILE = diffPath;
+    delete process.env.PR_DIFF;
+    const ctx = pipeline.getPRDiffAndContext();
+    expect(ctx.diffText).toContain('src/large.ts');
   });
 
   it('does not carry a hardcoded express sample diff in the source', () => {
@@ -164,6 +175,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       prNumber: '42',
       repo: 'calltelemetry/ct-review-bot',
       headSha: 'exact-head',
+      baseSha: 'exact-base',
     }, {
       now: () => 1_700_000_000_000,
       tempDirectory: '/tmp',
@@ -180,7 +192,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       executable: 'gh',
       args: ['pr', 'comment', '42', '--body-file', '/tmp/review-comment-1700000000000.md', '--repo', 'calltelemetry/ct-review-bot'],
     });
-    expect(writes).toHaveLength(0);
+    expect(writes.size).toBe(0);
   });
 
   it('does not publish a duplicate exact-head action comment', () => {
@@ -230,7 +242,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
 
     expect(result).toMatchObject({ success: false, postedViaGh: false });
     expect(result.error).toContain('permission denied');
-    expect(writes).toHaveLength(0);
+    expect(writes.size).toBe(0);
   });
 
   it('binds the action review to the authoritative GitHub head SHA', () => {
@@ -243,12 +255,14 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       prNumber: '42',
       repo: 'calltelemetry/ct-review-bot',
       headSha: 'exact-head',
+      baseSha: 'exact-base',
     }, { commandRunner })).toEqual({ headRefOid: 'exact-head', baseRefOid: 'exact-base' });
 
     expect(() => pipeline.assertCurrentPullRequest({
       prNumber: '42',
       repo: 'calltelemetry/ct-review-bot',
       headSha: 'stale-head',
+      baseSha: 'exact-base',
     }, { commandRunner })).toThrow('PR head changed during review');
   });
 });

@@ -48,6 +48,7 @@ describe('OpenRouterClient', () => {
 
   it('replays a streaming OpenRouter response deterministically', async () => {
     const stream = [
+      ': OPENROUTER PROCESSING\n',
       'data: {"model":"openai/gpt-4o-mini","choices":[{"delta":{"content":"FIX"}}]}\n',
       'data: {"choices":[{"delta":{"content":"_FIRST"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n',
       'data: [DONE]\n',

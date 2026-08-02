@@ -1,14 +1,16 @@
 import { ParsedPRPayload } from '../github/eventHandler';
 import { CtReviewConfigV3 } from '../config/schema';
 import { GitHubInstallationClient } from '../github/installationClient';
-import { OmniRouteClient } from '../gateway/omniRouteClient';
+import { ReviewModelClient } from '../gateway/openRouterClient';
 import { logger } from '../utils/logger';
 
 export interface PersonaContext {
   payload: ParsedPRPayload;
   config: CtReviewConfigV3;
   github: GitHubInstallationClient;
-  omniRoute?: OmniRouteClient;
+  /** @deprecated Unsupported legacy field; ignored. Pass the OpenRouter client via modelClient. */
+  omniRoute?: ReviewModelClient;
+  modelClient?: ReviewModelClient;
 }
 
 export interface FollowupPRResult {
@@ -19,7 +21,8 @@ export interface FollowupPRResult {
 }
 
 export async function executeDocsPersona(ctx: PersonaContext): Promise<FollowupPRResult> {
-  const { payload, github, omniRoute } = ctx;
+  const { payload, github } = ctx;
+  const modelClient = ctx.modelClient;
   const { owner, repo, prNumber, title, targetBranch = 'main' } = payload;
 
   logger.info(`Executing Docs Persona for ${owner}/${repo} #${prNumber}`);
@@ -47,10 +50,10 @@ export async function executeDocsPersona(ctx: PersonaContext): Promise<FollowupP
     docContent += `- Repository files modified in PR #${prNumber}\n`;
   }
 
-  if (omniRoute) {
+  if (modelClient) {
     try {
-      const response = await omniRoute.complete({
-        model: 'codex/gpt-5.6-sol-high',
+      const response = await modelClient.complete({
+        model: 'openrouter/auto',
         messages: [
           { role: 'system', content: 'You are a technical documentation specialist. Generate clear markdown documentation for the merged pull request.' },
           { role: 'user', content: `Generate documentation updates for PR #${prNumber}: ${title}.\nFiles changed:\n${changedFiles.map((f) => f.path).join('\n')}` },
@@ -59,7 +62,7 @@ export async function executeDocsPersona(ctx: PersonaContext): Promise<FollowupP
       });
       docContent += `\n## Detailed API & Architecture Changes\n${response.content}\n`;
     } catch (err: any) {
-      logger.warn(`OmniRoute completion unavailable for docs-persona: ${err.message}`);
+      logger.warn(`OpenRouter completion unavailable for docs-persona: ${err.message}`);
       docContent += `\n## Overview\nAutomated documentation entry generated for code changes merged in #${prNumber}.\n`;
     }
   } else {

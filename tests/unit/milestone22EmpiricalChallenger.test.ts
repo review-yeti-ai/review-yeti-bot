@@ -245,8 +245,8 @@ describe('Milestone 22 Empirical Challenger Stress Suite', () => {
       expect(res.prNumber).toBe(301);
     });
 
-    it('handles marketing-persona OmniRoute failure gracefully', async () => {
-      const mockOmniRouteFail: any = {
+    it('handles marketing-persona OpenRouter failure gracefully', async () => {
+      const mockModelClientFail: any = {
         complete: vi.fn().mockRejectedValue(new Error('503 Service Unavailable')),
       };
 
@@ -262,7 +262,7 @@ describe('Milestone 22 Empirical Challenger Stress Suite', () => {
         payload: defaultPayload,
         config: createDefaultV3Config(),
         github: mockGithub,
-        omniRoute: mockOmniRouteFail,
+        modelClient: mockModelClientFail,
       });
 
       expect(res.created).toBe(true);

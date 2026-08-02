@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { executePersonaPanel } from '../panel/panelEngine';
 import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
@@ -14,10 +14,28 @@ export interface WorkerAuthConfig {
   installationId: string;
 }
 
+const GH_EXEC_OPTIONS = {
+  encoding: 'utf-8' as const,
+  maxBuffer: 64 * 1024 * 1024,
+  timeout: 120_000,
+};
+
 function requiredWorkerEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`${name} is required for GitHub App worker authentication`);
   return value;
+}
+
+function parseRepoArgument(value: string): { owner: string; repo: string } {
+  const match = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/u.exec(value);
+  if (!match) throw new Error(`invalid repository argument: ${value}`);
+  return { owner: match[1], repo: match[2] };
+}
+
+function ghPrView(prNumber: number, repo: string, jsonFields: string, jq?: string): string {
+  const args = ['pr', 'view', String(prNumber), '--repo', repo, '--json', jsonFields];
+  if (jq) args.push('--jq', jq);
+  return execFileSync('gh', args, GH_EXEC_OPTIONS).trim();
 }
 
 export function resolveWorkerAuthConfig(env: NodeJS.ProcessEnv = process.env): WorkerAuthConfig {
@@ -29,22 +47,33 @@ export function resolveWorkerAuthConfig(env: NodeJS.ProcessEnv = process.env): W
 }
 
 async function main() {
-  const prNumber = parseInt(process.argv[2] || '1', 10);
-  const repo = process.argv[3] || 'JBJMLLC/ct-review-bot';
+  const cliArgs = process.argv.slice(2);
+  const positionalArgs = cliArgs.filter((value) => !value.startsWith('--'));
+  const prValue = cliArgs.find((value) => value.startsWith('--pr='))?.slice('--pr='.length)
+    || positionalArgs[0]
+    || process.env.PR_NUMBER
+    || '1';
+  const repo = cliArgs.find((value) => value.startsWith('--repo='))?.slice('--repo='.length)
+    || positionalArgs[1]
+    || process.env.REPO
+    || 'JBJMLLC/ct-review-bot';
+  const prNumber = parseInt(prValue, 10);
+  if (!Number.isInteger(prNumber) || prNumber < 1) throw new Error(`invalid pull request number: ${prValue}`);
+  const { owner: repoOwner, repo: repoName } = parseRepoArgument(repo);
 
   logger.info('Starting live ct-review-bot review dispatch', { repo, prNumber });
 
   // Fetch target PR head commit SHA from GitHub API
-  const headSha = execSync(`gh pr view ${prNumber} --repo ${repo} --json headRefOid --jq .headRefOid`, { encoding: 'utf-8' }).trim();
+  const headSha = ghPrView(prNumber, repo, 'headRefOid', '.headRefOid');
 
   // Fetch PR diff via gh CLI
-  const diff = execSync(`gh pr diff ${prNumber} --repo ${repo}`, { encoding: 'utf-8' });
+  const diff = execFileSync('gh', ['pr', 'diff', String(prNumber), '--repo', repo], GH_EXEC_OPTIONS);
 
   // Initialize 10-persona Panel Engine
   const config = createDefaultV3Config();
   const client = new OpenRouterClient({
     baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: process.env.OPENROUTER_API_KEY,
+    apiKey: requiredWorkerEnv(process.env, 'OPENROUTER_API_KEY'),
   });
 
   // Parse files from diff
@@ -127,16 +156,23 @@ async function main() {
   // Post top-level review comment via GitHub REST API
   logger.info('Posting ct-review-bot summary comment to GitHub via REST API', { repo, prNumber });
 
-  const publisher = new CommentPublisher({ githubToken: token });
+  const publisher = new CommentPublisher({
+    githubToken: token,
+    currentHeadSha: async () => ghPrView(prNumber, repo, 'headRefOid', '.headRefOid'),
+  });
 
   const publishRes = await publisher.publishReview({
-    owner: repo.split('/')[0],
-    repo: repo.split('/')[1],
+    owner: repoOwner,
+    repo: repoName,
     prNumber,
     commitSha: headSha,
-    event: panelResult.arbiter?.verdict === 'SHIP' ? 'APPROVE' : 'REQUEST_CHANGES',
+    event: panelResult.arbiter?.verdict === 'SHIP'
+      ? 'APPROVE'
+      : String(panelResult.arbiter?.verdict) === 'COMMENT'
+        ? 'COMMENT'
+        : 'REQUEST_CHANGES',
     body: fullSummaryMarkdown,
-    idempotencyKey: 'worker-arbiter',
+    idempotencyKey: `worker-arbiter:${repoOwner}/${repoName}#${prNumber}:${headSha}`,
   });
 
   logger.info('Successfully posted ct-review-bot review comment', { publishRes });

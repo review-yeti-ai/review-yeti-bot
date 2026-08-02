@@ -114,6 +114,10 @@ runs:
         set -euo pipefail
         gh pr diff "${{ steps.target.outputs.pr }}" \
           --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/ct-review.diff"
+        PR_HEAD_SHA="$(gh pr view "${{ steps.target.outputs.pr }}" --repo "${{ steps.target.outputs.repo }}" --json headRefOid --jq .headRefOid)"
+        PR_BASE_SHA="$(gh pr view "${{ steps.target.outputs.pr }}" --repo "${{ steps.target.outputs.repo }}" --json baseRefOid --jq .baseRefOid)"
+        echo "PR_HEAD_SHA=$PR_HEAD_SHA" >> "$GITHUB_ENV"
+        echo "PR_BASE_SHA=$PR_BASE_SHA" >> "$GITHUB_ENV"
         echo "Fetched $(wc -l < "${RUNNER_TEMP}/ct-review.diff") diff lines."
 
     # Installed under the action path, not the consumer's workspace, so reviewing a repository
@@ -153,6 +157,12 @@ runs:
           rm -f "$DEST/$f"
         done
 
+        # The base .gitmodules is part of the trusted policy surface used to classify
+        # submodule URL changes; do not read it from the pull-request checkout.
+        if ! gh api "repos/$REPO/contents/.gitmodules?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/.gitmodules" 2>/dev/null; then
+          rm -f "$DEST/.gitmodules"
+        fi
+
         # Persona files are one markdown file per reviewer; enumerate the directory then fetch each.
         if gh api "repos/$REPO/contents/.ct-review/personas?ref=$REF" --jq '.[].name' > "${RUNNER_TEMP}/persona-names" 2>/dev/null; then
           while read -r name; do
@@ -182,5 +192,7 @@ runs:
         PR_REPO: ${{ steps.target.outputs.repo }}
         CT_REVIEW_CONFIG_DIR: ${{ runner.temp }}/ct-review-config
       run: |
-        PR_DIFF="$(cat "${RUNNER_TEMP}/ct-review.diff")" \
+        # Keep the diff on disk. Exporting an entire PR as PR_DIFF can exceed the runner's
+        # execve argument limit before Node starts.
+        PR_DIFF_FILE="${RUNNER_TEMP}/ct-review.diff" \
           node "$GITHUB_ACTION_PATH/.github/workflows/pipelines/review-pipeline.js"

@@ -62,7 +62,7 @@ function sortJson(value: unknown, parentKey?: string): JsonValue {
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
     return value as JsonValue;
   }
-  if (Array.isArray(value)) return value.map((item) => sortJson(item));
+  if (Array.isArray(value)) return value.map((item) => sortJson(item, parentKey));
   if (typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
@@ -85,6 +85,13 @@ function parseBody(text: string): JsonValue {
 function normalizeUrl(input: string | URL): string {
   const url = new URL(String(input));
   url.hash = '';
+  url.username = '';
+  url.password = '';
+  const normalizedParams = new URLSearchParams();
+  for (const [key, value] of url.searchParams) {
+    normalizedParams.append(key, SENSITIVE_KEY.test(key) ? '<redacted>' : value);
+  }
+  url.search = normalizedParams.toString();
   url.searchParams.sort();
   if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
   return url.toString().replace(/\/$/, '');
@@ -122,7 +129,7 @@ async function normalizeRequest(input: RequestInfo | URL, init?: RequestInit): P
 }
 
 function loadCassette(cassettePath: string): CassetteInteraction[] {
-  if (!fs.existsSync(cassettePath)) return [];
+  if (!fs.existsSync(cassettePath)) throw new Error(`Cassette file not found in replay mode: ${cassettePath}`);
   const parsed = JSON.parse(fs.readFileSync(cassettePath, 'utf8')) as { version?: number; interactions?: CassetteInteraction[] };
   if (parsed.version !== 1 || !Array.isArray(parsed.interactions)) {
     throw new Error(`Invalid cassette format in ${cassettePath}`);
@@ -133,7 +140,7 @@ function loadCassette(cassettePath: string): CassetteInteraction[] {
       ...interaction.request,
       method: interaction.request.method.toUpperCase(),
       url: normalizeUrl(interaction.request.url),
-      headers: sortJson(interaction.request.headers) as Record<string, string>,
+      headers: allowlistedHeaders(new Headers(interaction.request.headers), REQUEST_HEADER_ALLOWLIST),
       body: sortJson(interaction.request.body),
     },
   }));
@@ -192,7 +199,7 @@ export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetc
     consumed.add(interactionIndex);
     const interaction = loaded[interactionIndex];
     const body = interaction.response.body === null || typeof interaction.response.body === 'string'
-      ? interaction.response.body ?? ''
+      ? interaction.response.body
       : JSON.stringify(interaction.response.body);
     return new Response(body, {
       status: interaction.response.status,

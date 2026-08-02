@@ -222,7 +222,7 @@ describe('Milestone 1 Stress & Edge Case Challenge Suite', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.status).toBe('connected');
+      expect(res.body.status).toBe('configured');
 
       // Check if store recorded this provider
       const provider = dashboardStore.getProviderConfig('non-existent-provider-999');
