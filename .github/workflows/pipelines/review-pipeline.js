@@ -656,6 +656,89 @@ function sanitizeFindings(rawFindings, diffFiles) {
     }));
 }
 
+function normalizeResponseProvider(provider) {
+  if (typeof provider === 'string' && provider.trim()) return provider.trim();
+  if (provider && typeof provider === 'object') {
+    const name = provider.name || provider.id || provider.slug;
+    if (typeof name === 'string' && name.trim()) return name.trim();
+  }
+  return null;
+}
+
+function resolveResponseModel(payload, fallbackModel) {
+  return typeof payload?.model === 'string' && payload.model.trim()
+    ? payload.model.trim()
+    : typeof payload?.model_id === 'string' && payload.model_id.trim()
+      ? payload.model_id.trim()
+      : fallbackModel;
+}
+
+function resolveResponseProvider(payload) {
+  return normalizeResponseProvider(payload?.provider)
+    || normalizeResponseProvider(payload?.usage?.provider)
+    || 'openrouter';
+}
+
+function extractResponseCost(payload) {
+  const candidates = [
+    payload?.usage?.cost,
+    payload?.usage?.total_cost,
+    payload?.usage?.cost_details?.upstream_inference_cost,
+    payload?.cost,
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== null && candidate !== undefined && String(candidate).trim() !== '') {
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric)) return numeric;
+    }
+  }
+  return null;
+}
+
+function normalizeTokenCount(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : null;
+}
+
+function extractResponseTokenUsage(payload) {
+  const usage = payload?.usage || {};
+  return {
+    inputTokens: normalizeTokenCount(usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokens ?? usage.inputTokens),
+    outputTokens: normalizeTokenCount(usage.completion_tokens ?? usage.output_tokens ?? usage.completionTokens ?? usage.outputTokens),
+  };
+}
+
+function normalizeCost(cost) {
+  if (cost === null || cost === undefined || String(cost).trim() === '') return null;
+  const numeric = Number(cost);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function formatCost(cost) {
+  const numeric = normalizeCost(cost);
+  return numeric === null ? '—' : `$${numeric.toFixed(3)}`;
+}
+
+function formatTokenCount(tokens) {
+  const numeric = tokens === null || tokens === undefined || String(tokens).trim() === ''
+    ? null
+    : Number(tokens);
+  return Number.isFinite(numeric) ? Math.trunc(numeric).toLocaleString('en-US') : '—';
+}
+
+function escapeMarkdownTableCell(value) {
+  return String(value ?? '').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+}
+
+function countFindingsBySeverity(findings = []) {
+  const counts = { P0: 0, P1: 0, P2: 0 };
+  findings.forEach((finding) => {
+    if (SEVERITIES.includes(finding?.severity)) counts[finding.severity] += 1;
+  });
+  return counts;
+}
+
 // A fragment smaller than this is too small to review meaningfully. Report it as omitted rather
 // than implying that a reviewer saw the entire file.
 const MIN_USEFUL_FILE_CHARS = 800;
@@ -719,6 +802,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
   let requestOptions = null;
+  let resultBase = {
+    personaId: persona.id,
+    displayName: persona.name,
+    model: cfg.model,
+    provider: 'openrouter',
+    cost: null,
+    inputTokens: null,
+    outputTokens: null,
+  };
 
   const priorContext = sessionContext?.augmentedHeader
     ? `\n\nPrior review context for this PR — do not repeat findings the author has already rejected:\n${sessionContext.augmentedHeader}`
@@ -756,13 +848,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     coverage.text,
   ].filter(Boolean).join('\n');
 
-  const base = { personaId: persona.id, displayName: persona.name, model: cfg.model };
-
   try {
     if (options.openRouterPolicy) {
       requestOptions = buildOpenRouterRequestOptions(options.openRouterPolicy);
     }
     const requestModel = requestOptions?.model || cfg.model;
+    resultBase = { ...resultBase, model: requestModel };
     const requestBody = {
       model: requestModel,
       messages: [
@@ -790,13 +881,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      return { ...base, decision: 'ERROR', findings: [], error: `HTTP ${response.status}: ${String(detail).slice(0, 200)}` };
+      return { ...resultBase, decision: 'ERROR', findings: [], error: `HTTP ${response.status}: ${String(detail).slice(0, 200)}` };
     }
 
     const payload = await response.json();
+    const responseBase = {
+      ...resultBase,
+      model: resolveResponseModel(payload, requestModel),
+      provider: resolveResponseProvider(payload),
+      cost: extractResponseCost(payload),
+      ...extractResponseTokenUsage(payload),
+    };
     if (payload?.error) {
       const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
-      return { ...base, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+      return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
     }
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content === 'string') {
@@ -804,20 +902,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const providerLane = JSON.parse(content);
         if (providerLane?.error) {
           const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
-          return { ...base, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+          return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
         }
       } catch (_) {}
     }
     const rawFindings = parseFindingsPayload(content);
 
     if (rawFindings === null) {
-      return { ...base, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
+      return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
     }
 
     const findings = sanitizeFindings(rawFindings, diffFiles);
-    return { ...base, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
+    return { ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
   } catch (err) {
-    return { ...base, decision: 'ERROR', findings: [], error: err.message };
+    return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
   }
 }
 
@@ -1665,11 +1763,44 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   mermaidLines.push('```');
 
   // Build Persona Breakdown Table
+  const rosterTotals = { P0: 0, P1: 0, P2: 0 };
+  let knownCostTotal = 0;
+  let knownCostCount = 0;
+  let inputTokenTotal = 0;
+  let inputTokenCount = 0;
+  let outputTokenTotal = 0;
+  let outputTokenCount = 0;
   let breakdownRows = '';
   personaResults.forEach((res) => {
+    const counts = countFindingsBySeverity(res.findings);
+    rosterTotals.P0 += counts.P0;
+    rosterTotals.P1 += counts.P1;
+    rosterTotals.P2 += counts.P2;
+    const cost = normalizeCost(res.cost);
+    if (cost !== null) {
+      knownCostTotal += cost;
+      knownCostCount += 1;
+    }
     const icon = res.decision === 'APPROVE' ? '✅' : '⚠️';
-    breakdownRows += `| ${res.displayName} | \`${res.model}\` | ${icon} ${res.decision} | ${res.findings.length} |\n`;
+    const provider = escapeMarkdownTableCell(res.provider || 'openrouter');
+    const model = escapeMarkdownTableCell(res.model || modelConfig.model || DEFAULT_MODEL);
+    const inputTokens = normalizeTokenCount(res.inputTokens);
+    if (inputTokens !== null) {
+      inputTokenTotal += inputTokens;
+      inputTokenCount += 1;
+    }
+    const outputTokens = normalizeTokenCount(res.outputTokens);
+    if (outputTokens !== null) {
+      outputTokenTotal += outputTokens;
+      outputTokenCount += 1;
+    }
+    breakdownRows += `| ${escapeMarkdownTableCell(res.displayName)} | \`${provider}\` | \`${model}\` | ${icon} ${res.decision} | 🔴 ${counts.P0} | 🟠 ${counts.P1} | 🟡 ${counts.P2} | ${formatTokenCount(inputTokens)} | ${formatTokenCount(outputTokens)} | ${formatCost(cost)} |\n`;
   });
+  const totalCost = knownCostCount > 0 ? formatCost(knownCostTotal) : '—';
+  const totalInputTokens = inputTokenCount > 0 ? `**${formatTokenCount(inputTokenTotal)}**` : '—';
+  const totalOutputTokens = outputTokenCount > 0 ? `**${formatTokenCount(outputTokenTotal)}**` : '—';
+  const totalCostCell = totalCost === '—' ? totalCost : `**${totalCost}**`;
+  breakdownRows += `| **Total** | — | — | — | 🔴 ${rosterTotals.P0} | 🟠 ${rosterTotals.P1} | 🟡 ${rosterTotals.P2} | ${totalInputTokens} | ${totalOutputTokens} | ${totalCostCell} |\n`;
 
   // Build Findings Details
   //
@@ -1739,15 +1870,15 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
 - **Parallel Personas Evaluated**: \`${arbitration.completedPersonas}/${arbitration.totalPersonas}\`
 - **Quorum Status**: \`${arbitration.quorumSatisfied ? 'SATISFIED' : 'DEGRADED'}\`
 - **MCP Server Telemetry**: ${mcpStatusLine}
-- **Total Findings**: P0: \`${arbitration.metrics.p0Count}\` | P1: \`${arbitration.metrics.p1Count}\` | P2: \`${arbitration.metrics.p2Count}\`
+- **Total Findings**: P0: \`${arbitration.metrics.p0Count}\` | P1: \`${arbitration.metrics.p1Count}\` | P2 / Nits: \`${arbitration.metrics.p2Count}\`
 - **Rationale**: ${arbitration.rationale}${failureNote}${coverageNote}
 
 ### 🧬 Architectural Pipeline Flow
 ${mermaidLines.join('\n')}
 
 ### 📋 Persona Evaluation Roster
-| Reviewer Persona | Model | Decision | Findings |
-|---|---|---|---|
+| Reviewer Persona | Provider | Model | Decision | P0 | P1 | P2 / Nits | Input Tokens | Output Tokens | Cost |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|
 ${breakdownRows}
 ${findingsDetails}`;
 
