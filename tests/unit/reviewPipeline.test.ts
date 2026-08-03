@@ -124,7 +124,7 @@ index 123456..789abc 100644
     expect(formattedComment).toContain('## 🟢 **Verdict: SHIP**');
     expect(formattedComment).toContain('```mermaid');
     expect(formattedComment).toContain('flowchart TD');
-    expect(formattedComment).toContain('openrouter/anthropic/claude-3.5-sonnet');
+    expect(formattedComment).toContain('openrouter/auto');
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
   });
 
