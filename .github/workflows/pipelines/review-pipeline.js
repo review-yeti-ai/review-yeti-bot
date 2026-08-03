@@ -712,12 +712,14 @@ function extractResponseTokenUsage(payload) {
 function normalizeCost(cost) {
   if (cost === null || cost === undefined || String(cost).trim() === '') return null;
   const numeric = Number(cost);
-  return Number.isFinite(numeric) ? numeric : null;
+  return Number.isFinite(numeric) && numeric >= 0 && numeric < 1e21 ? numeric : null;
 }
 
 function formatCost(cost) {
   const numeric = normalizeCost(cost);
-  return numeric === null ? '—' : `$${numeric.toFixed(3)}`;
+  if (numeric === null) return '—';
+  const formatted = numeric.toFixed(3);
+  return /e/i.test(formatted) ? '—' : `$${formatted}`;
 }
 
 function formatTokenCount(tokens) {
@@ -728,7 +730,10 @@ function formatTokenCount(tokens) {
 }
 
 function escapeMarkdownTableCell(value) {
-  return String(value ?? '').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+  return String(value ?? '')
+    .replace(/`/g, "'")
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ');
 }
 
 function countFindingsBySeverity(findings = []) {
@@ -1796,7 +1801,9 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     }
     breakdownRows += `| ${escapeMarkdownTableCell(res.displayName)} | \`${provider}\` | \`${model}\` | ${icon} ${res.decision} | 🔴 ${counts.P0} | 🟠 ${counts.P1} | 🟡 ${counts.P2} | ${formatTokenCount(inputTokens)} | ${formatTokenCount(outputTokens)} | ${formatCost(cost)} |\n`;
   });
-  const totalCost = knownCostCount > 0 ? formatCost(knownCostTotal) : '—';
+  const totalCost = knownCostCount === personaResults.length && personaResults.length > 0
+    ? formatCost(knownCostTotal)
+    : '—';
   const totalInputTokens = inputTokenCount > 0 ? `**${formatTokenCount(inputTokenTotal)}**` : '—';
   const totalOutputTokens = outputTokenCount > 0 ? `**${formatTokenCount(outputTokenTotal)}**` : '—';
   const totalCostCell = totalCost === '—' ? totalCost : `**${totalCost}**`;
