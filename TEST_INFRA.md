@@ -25,6 +25,9 @@ Review-bot external boundaries follow the deterministic operator patterns used b
 
 - HTTP clients and model calls accept injectable fetch implementations. Retry clocks, sleeps, and jitter are injectable as well.
 - The live review engine uses OpenRouter as its sole model transport. Legacy OmniRoute variables are not a provider fallback.
+- Application AI defaults, the local CLI/provider roster in `.ct-review.yaml`, and the GitHub Action fleet policy are separate contracts.
+- `reviewers.providers` in repository config describes the local CLI/app fleet. The GitHub Action does not derive its reviewer roster from those provider ids.
+- The GitHub Action keeps its explicit persona roster and OpenRouter request policy even when a repository carries local CLI provider names with no `personas` block.
 - Fixtures are synthetic, deterministic, credential-free, and bind review assertions to the exact PR head and base references.
 - Every action/app run re-checks the authoritative PR head before model execution and before each publication side effect.
 - Replay is the default and is fail-closed: an unmatched request throws immediately and `assertComplete()` rejects unconsumed interactions.
@@ -58,10 +61,18 @@ Governance and operational tests also assert that effective policy carries sourc
 Run the replay suite without credentials or network access:
 
 ```bash
-npm run test:replay
+env -u OPENROUTER_API_KEY -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_APP_PRIVATE_KEY -u GITHUB_APP_ID npm run test:replay
 ```
 
-Recording is an explicit maintenance operation. It requires both `CT_REVIEW_VCR=record` and an endpoint origin in the harness allowlist; it is never enabled implicitly by a missing cassette or an environment credential. Review generated cassettes for secrets and customer data before committing them.
+OpenRouter policy fixtures live under `tests/fixtures/cassettes/openrouter/` and are synthetic only: no customer diffs, no real provider output, no GitHub tokens, and no copied live response payloads. The checked-in OpenRouter replay cassettes assert the exact `openrouter/auto` request body, five-model auto-router fleet, `cost_quality_tradeoff: 7`, `provider.data_collection: "deny"`, response headers, response body, fingerprint matching, and complete cassette consumption.
+
+Recording is an explicit maintenance operation. It requires both `CT_REVIEW_VCR=record` and an endpoint origin in the harness allowlist; it is never enabled implicitly by a missing cassette or an environment credential. A recording command must name the allowlisted origin in the test harness, for example:
+
+```bash
+CT_REVIEW_VCR=record npm run test:replay
+```
+
+Do not run recording in CI, and review generated cassettes for secrets, authorization headers, API keys, customer data, and non-synthetic provider content before committing them.
 
 ## Real-World Application Scenarios (Tier 4)
 | # | Scenario | Features Exercised | Complexity |
