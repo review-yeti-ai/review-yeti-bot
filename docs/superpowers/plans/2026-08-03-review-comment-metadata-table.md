@@ -110,3 +110,32 @@ Confirm P3 is absent, P2/Nits is one bucket, unknown costs remain `—`, and no 
 git add .github/workflows/pipelines/review-pipeline.js tests/unit/reviewPipelineModel.test.ts tests/unit/reviewPipeline.test.ts docs/superpowers/plans/2026-08-03-review-comment-metadata-table.md
 git commit -m "feat: improve review comment persona table"
 ```
+
+### Task 4: Harden cost totals and Markdown metadata cells
+
+**Files:**
+- Modify: `.github/workflows/pipelines/review-pipeline.js`
+- Modify: `tests/unit/reviewPipeline.test.ts`
+
+- [x] **Step 1: Add failing regression tests**
+
+Cover mixed known/unknown totals, negative or exponent-form costs, and provider/model values containing Markdown delimiters.
+
+- [x] **Step 2: Implement safe cost and Markdown handling**
+
+Treat a total as known only when every persona has a valid non-negative cost, reject values that cannot render as fixed three-decimal text, and replace backticks while escaping table pipes.
+
+- [x] **Step 3: Run focused verification**
+
+```bash
+npx vitest run tests/unit/reviewPipeline.test.ts
+```
+
+Expected: 28 tests pass.
+
+- [x] **Step 4: Commit the corrective PR**
+
+```bash
+git add .github/workflows/pipelines/review-pipeline.js tests/unit/reviewPipeline.test.ts docs/superpowers/plans/2026-08-03-review-comment-metadata-table.md
+git commit -m "fix: harden review comment cost formatting"
+```
