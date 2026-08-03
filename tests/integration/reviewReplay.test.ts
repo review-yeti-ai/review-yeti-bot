@@ -4,6 +4,15 @@ import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
 import { CommentPublisher } from '../../src/github/commentPublisher';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
+import {
+  openRouterCassettePath,
+  openRouterReplayDiffFiles,
+  openRouterReplayPersonas,
+  openRouterReplayPolicy,
+  openRouterReplaySystemPrompts,
+  openRouterReplayUserPrompt,
+  runOpenRouterReplay,
+} from '../support/openRouterReplayScenario';
 
 const rootRepoDir = path.resolve(__dirname, '../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
@@ -40,6 +49,139 @@ async function runModelReplay() {
 }
 
 describe('review pipeline cassette replay', () => {
+  it('replays the exact OpenRouter auto-router policy request and zero-findings response', async () => {
+    const result = await runOpenRouterReplay('zero-findings.json', [openRouterReplayPersonas.testing]);
+    const interaction = result.cassette.interactions[0];
+
+    expect(interaction.request).toEqual({
+      method: 'POST',
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      headers: {
+        authorization: '<redacted>',
+        'content-type': 'application/json',
+      },
+      body: {
+        messages: [
+          { role: 'system', content: openRouterReplaySystemPrompts.testing },
+          { role: 'user', content: openRouterReplayUserPrompt },
+        ],
+        model: 'openrouter/auto',
+        plugins: [{
+          id: 'auto-router',
+          allowed_models: [
+            'openai/gpt-5.6-luna',
+            'moonshotai/kimi-k2.6',
+            'tencent/hy3',
+            'z-ai/glm-5.1',
+            'google/gemini-3.5-flash-lite',
+          ],
+          cost_quality_tradeoff: 7,
+        }],
+        provider: {
+          data_collection: 'deny',
+        },
+        response_format: {
+          type: 'json_object',
+        },
+        temperature: 0.1,
+      },
+    });
+    expect(interaction.response).toEqual({
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'x-ratelimit-remaining': '777',
+      },
+      body: {
+        choices: [{
+          message: {
+            content: '{"findings":[]}',
+          },
+        }],
+      },
+    });
+    expect(result.results[0]).toMatchObject({ decision: 'APPROVE', findings: [] });
+    expect(result.arbitration).toMatchObject({
+      verdict: 'SHIP',
+      quorumSatisfied: true,
+      metrics: { totalFindings: 0 },
+    });
+    expect(result.policyFingerprint).toBe(openRouterReplayPolicy.policy_fingerprint);
+  });
+
+  it('replays OpenRouter out-of-diff sanitization and malformed provider JSON as ERROR', async () => {
+    const sanitized = await runOpenRouterReplay('out-of-diff-sanitized.json', [openRouterReplayPersonas.documentation]);
+    expect(sanitized.results[0]).toMatchObject({
+      decision: 'FINDINGS',
+      findings: [{
+        severity: 'P2',
+        path: 'src/api/user.ts',
+        line: 2,
+        title: 'Document lookup behavior',
+      }],
+    });
+    expect(sanitized.results[0].findings).toHaveLength(1);
+
+    const cassette = createCassetteFetch({ cassettePath: openRouterCassettePath('malformed-provider-json.json') });
+    const [malformed] = await Promise.all([pipeline.reviewWithModel(
+      openRouterReplayPersonas.security,
+      openRouterReplayDiffFiles,
+      { repo: 'calltelemetry/ct-review-bot', prNumber: '42', title: 'OpenRouter fleet replay' },
+      null,
+      {
+        apiKey: 'synthetic-key',
+        openRouterPolicy: openRouterReplayPolicy,
+        fetchImplementation: cassette.fetchImplementation,
+        timeoutMs: 1_000,
+      },
+    )]);
+    expect(malformed.decision).toBe('ERROR');
+    expect(malformed.findings).toEqual([]);
+    cassette.assertComplete();
+  });
+
+  it('consumes repeated identical OpenRouter fingerprints and renders the same final comment', async () => {
+    const cassette = createCassetteFetch({ cassettePath: openRouterCassettePath('repeated-deterministic.json') });
+    const runOnce = async () => {
+      const result = await pipeline.reviewWithModel(
+        openRouterReplayPersonas.testing,
+        openRouterReplayDiffFiles,
+        { repo: 'calltelemetry/ct-review-bot', prNumber: '42', title: 'OpenRouter fleet replay' },
+        null,
+        {
+          apiKey: 'synthetic-key',
+          openRouterPolicy: openRouterReplayPolicy,
+          fetchImplementation: cassette.fetchImplementation,
+          timeoutMs: 1_000,
+        },
+      );
+      const arbitration = pipeline.computeArbitrationQuorum([result], 1, {
+        changedFiles: openRouterReplayDiffFiles,
+      });
+      const comment = pipeline.formatPRComment(arbitration, [result], {
+        repo: 'calltelemetry/ct-review-bot',
+        prNumber: '42',
+        title: 'OpenRouter fleet replay',
+        headSha: '0123456789abcdef0123456789abcdef01234567',
+      }, {}, {
+        enabled: true,
+        model: openRouterReplayPolicy.model,
+        maxDiffChars: 24_000,
+      });
+      return { result, arbitration, comment };
+    };
+
+    const first = await runOnce();
+    const second = await runOnce();
+
+    expect(first.result).toEqual(second.result);
+    expect(first.arbitration).toEqual(second.arbitration);
+    expect(first.comment).toBe(second.comment);
+    expect(cassette.observedFingerprints).toHaveLength(2);
+    expect(cassette.observedFingerprints[0]).toBe(cassette.observedFingerprints[1]);
+    cassette.assertComplete();
+  });
+
   it('replays a multi-persona panel, sanitizes out-of-diff findings, and blocks provider errors', async () => {
     const first = await runModelReplay();
     const second = await runModelReplay();

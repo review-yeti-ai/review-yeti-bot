@@ -17,8 +17,62 @@ describe('Dispatch path: persona resolution defaults', () => {
   const ids = (payload: any, cfg: any, env: any) =>
     resolvePersonaRoster(payload, cfg, env).personas.map((p: any) => p.id);
 
+  it('maps trusted Action OpenRouter inputs into the runtime policy without PR-head config', () => {
+    const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+      OPENROUTER_API_KEY: 'test-openrouter-key',
+      OPENROUTER_MODEL: 'openrouter/auto',
+      OPENROUTER_ALLOWED_MODELS: 'openai/gpt-5.6-luna,z-ai/glm-5.1',
+      OPENROUTER_COST_QUALITY_TRADEOFF: '4',
+      OPENROUTER_DATA_COLLECTION: 'deny',
+    });
+
+    expect(runtime.modelConfig).toMatchObject({
+      enabled: true,
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/auto',
+      openRouterPolicy: {
+        model: 'openrouter/auto',
+        allowed_models: ['openai/gpt-5.6-luna', 'z-ai/glm-5.1'],
+        data_collection: 'deny',
+        cost_quality_tradeoff: 4,
+      },
+    });
+  });
+
+  it('consumes trusted base-config github_action.openrouter policy before Action input overlays', () => {
+    const runtime = pipeline.resolveActionReviewRuntime({
+      file: '.ct-review.yaml',
+      parsed: {
+        github_action: {
+          openrouter: {
+            allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+            cost_quality_tradeoff: 3,
+            data_collection: 'deny',
+          },
+        },
+      },
+    }, {
+      OPENROUTER_API_KEY: 'test-openrouter-key',
+    });
+
+    expect(runtime.modelConfig.openRouterPolicy).toMatchObject({
+      model: 'openrouter/auto',
+      allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+      data_collection: 'deny',
+      cost_quality_tradeoff: 3,
+    });
+  });
+
+  it('rejects malformed trusted Action OpenRouter inputs before dispatch', () => {
+    expect(() => pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+      OPENROUTER_API_KEY: 'test-openrouter-key',
+      OPENROUTER_ALLOWED_MODELS: 'openai/not-approved',
+      OPENROUTER_DATA_COLLECTION: 'deny',
+    })).toThrow('canonical five-model fleet');
+  });
+
   it('defaults to the default reviewer set when nothing is configured', () => {
-    expect(ids({}, null, {})).toEqual(defaultIds);
+    expect(ids({}, null, {})).toEqual(['security', 'performance', 'architecture', 'testing', 'dependencies']);
   });
 
   it('defaults to the default reviewer set when ACTIVE_PERSONAS is the literal string "null"', () => {
@@ -66,6 +120,41 @@ describe('Dispatch path: persona resolution defaults', () => {
     const r = resolvePersonaRoster({ activePersonas: ['security', 'astrology'] }, null, {});
     expect(r.errors.length).toBeGreaterThan(0);
     expect(r.errors[0]).toContain('astrology');
+  });
+
+  it('treats reviewers.providers without personas as local CLI config and keeps the explicit action OpenRouter policy', () => {
+    const localConfig = {
+      file: '.ct-review.yaml',
+      parsed: {
+        limits: {
+          max_diff_bytes: 12000,
+        },
+        reviewers: {
+          providers: [
+            { id: 'codex', enabled: true, model: 'gpt-5.6-sol-high', effort: 'high' },
+            { id: 'grok', enabled: true, model: 'grok-4.5', effort: 'high' },
+          ],
+        },
+      },
+    };
+
+    expect(ids({}, localConfig, {})).toEqual(defaultIds);
+
+    expect(pipeline.resolveActionReviewRuntime(localConfig, {
+      OPENROUTER_API_KEY: 'test-openrouter-key',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+      OPENROUTER_MODEL: 'openrouter/auto',
+      MAX_DIFF_CHARS: '18000',
+    })).toMatchObject({
+      rosterSource: 'action_personas',
+      localReviewerProviderIds: ['codex', 'grok'],
+      modelConfig: {
+        enabled: true,
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/auto',
+        maxDiffChars: 12000,
+      },
+    });
   });
 });
 
@@ -288,6 +377,19 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
   it('supplies the PR diff and number to the pipeline explicitly via the action', () => {
     expect(action).toContain('PR_DIFF');
     expect(action).toContain('PR_NUMBER');
+  });
+
+  it('exposes trusted OpenRouter policy inputs and forwards them to the pipeline env', () => {
+    expect(action).toContain('openrouter-allowed-models');
+    expect(action).toContain('openrouter-cost-quality-tradeoff');
+    expect(action).toContain('openrouter-data-collection');
+    expect(action).toContain('OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}');
+    expect(action).toContain('OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}');
+    expect(action).toContain('OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}');
+  });
+
+  it('does not configure OmniRoute transport for action reviews', () => {
+    expect(action).not.toMatch(/OMNI[_-]?ROUTE/i);
   });
 
   it('does not push commits back to the checked-out repository', () => {

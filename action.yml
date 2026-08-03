@@ -13,16 +13,34 @@ inputs:
     required: false
     default: ''
   llm-base-url:
-    description: 'Optional OpenRouter-compatible base URL. Defaults to https://openrouter.ai/api/v1.'
+    description: 'Trusted workflow/base-config OpenRouter base URL. Must normalize exactly to https://openrouter.ai/api/v1.'
     required: false
     default: 'https://openrouter.ai/api/v1'
   model:
-    description: 'Model identifier passed to the provider.'
+    description: 'Trusted workflow/base-config OpenRouter model control. Defaults to the production auto-router alias.'
     required: false
     default: 'openrouter/auto'
+  openrouter-allowed-models:
+    description: >-
+      Trusted workflow/base-config OpenRouter auto-router fleet, as comma-separated model IDs.
+      Defaults to the manifest-approved five-model fleet; this is not read from PR-head config.
+    required: false
+    default: ''
+  openrouter-cost-quality-tradeoff:
+    description: >-
+      Trusted workflow/base-config OpenRouter auto-router cost_quality_tradeoff integer (0-10).
+      Defaults to the policy manifest value; this is not read from PR-head config.
+    required: false
+    default: ''
+  openrouter-data-collection:
+    description: >-
+      Trusted workflow/base-config OpenRouter provider data_collection policy. Must remain deny;
+      this is not read from PR-head config.
+    required: false
+    default: 'deny'
   personas:
     description: >-
-      Comma-separated reviewer persona ids, or a JSON array. Defaults to all twelve.
+      Comma-separated reviewer persona ids, or a JSON array. Defaults to the five default-enabled reviewers.
       Available: security, performance, architecture, style, testing, documentation,
       accessibility, database, devops, i18n, dependencies, licensing.
     required: false
@@ -185,6 +203,9 @@ runs:
         OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
+        OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
+        OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
+        OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         MAX_PERSONAS: ${{ inputs.max-personas }}

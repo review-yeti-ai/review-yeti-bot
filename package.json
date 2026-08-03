@@ -20,7 +20,7 @@
     "test:integration": "vitest run tests/integration",
     "test:generational": "vitest run tests/unit/reviewCoreDifferential.test.ts tests/unit/reviewGenerationContracts.test.ts tests/unit/reviewAdmission.test.ts tests/unit/piRunState.test.ts tests/unit/actionPolicyContract.test.ts",
     "test:e2e": "vitest run tests/e2e",
-    "test:replay": "vitest run tests/unit/cassetteReplay.test.ts tests/unit/openRouterClient.test.ts tests/integration/reviewReplay.test.ts",
+    "test:replay": "vitest run tests/unit/cassetteReplay.test.ts tests/unit/openRouterClient.test.ts tests/integration/reviewReplay.test.ts tests/integration/openRouterFleetReplay.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "tsc --noEmit",

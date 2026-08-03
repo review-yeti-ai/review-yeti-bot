@@ -118,6 +118,13 @@ function requestFingerprint(request: CassetteInteraction['request']): string {
   });
 }
 
+function redactDiagnostic(value: string): string {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer <redacted>')
+    .replace(/gh[psuor]_[A-Za-z0-9_]+/g, '<redacted>')
+    .replace(/(api[_-]?key=)[^&"'\s]+/gi, '$1<redacted>');
+}
+
 async function normalizeRequest(input: RequestInfo | URL, init?: RequestInit): Promise<CassetteInteraction['request']> {
   const request = new Request(input, init);
   return {
@@ -194,7 +201,9 @@ export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetc
       !consumed.has(index) && requestFingerprint(interaction.request) === fingerprint
     ));
     if (interactionIndex === -1) {
-      throw new Error(`No cassette interaction matches ${fingerprint}`);
+      throw new Error(redactDiagnostic(
+        `No cassette interaction matches request fingerprint ${fingerprint}; consumed ${consumed.size}/${loaded.length} interaction(s)`,
+      ));
     }
     consumed.add(interactionIndex);
     const interaction = loaded[interactionIndex];

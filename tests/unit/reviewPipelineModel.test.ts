@@ -104,6 +104,99 @@ describe('reviewWithModel', () => {
     expect(res.error).toBeTruthy();
   });
 
+  it('validates the OpenRouter policy before the first provider request', async () => {
+    let fetched = false;
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      model: 'openrouter/auto',
+      openRouterPolicy: {
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/auto',
+        allowed_models: ['openai/not-approved'],
+        data_collection: 'deny',
+        cost_quality_tradeoff: 7,
+      },
+      fetchImpl: async () => {
+        fetched = true;
+        throw new Error('provider must not be reached');
+      },
+    });
+
+    expect(fetched).toBe(false);
+    expect(res.decision).toBe('ERROR');
+    expect(res.error).toContain('canonical five-model fleet');
+  });
+
+  it('sends the resolved OpenRouter auto-router policy as exact request JSON', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    const manifest = require(path.join(rootRepoDir, 'src/config/openrouter-review-policy.json'));
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      fetchImpl: impl,
+      openRouterPolicy: manifest,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0].body).toMatchObject({
+      model: 'openrouter/auto',
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+      provider: { data_collection: 'deny' },
+      plugins: [
+        {
+          id: 'auto-router',
+          allowed_models: manifest.allowed_models,
+          cost_quality_tradeoff: manifest.cost_quality_tradeoff,
+        },
+      ],
+    });
+    expect(calls[0].body.provider).not.toHaveProperty('allow_fallbacks');
+    expect(calls[0].body.plugins[0].allowed_models).toHaveLength(5);
+  });
+
+  it('keeps the auto-router plugin payload when policy uses a canonical model override', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      fetchImpl: impl,
+      openRouterPolicy: {
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'z-ai/glm-5.1',
+        allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+        data_collection: 'deny',
+        cost_quality_tradeoff: 5,
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toMatchObject({
+      model: 'z-ai/glm-5.1',
+      provider: { data_collection: 'deny' },
+      plugins: [
+        {
+          id: 'auto-router',
+          allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+          cost_quality_tradeoff: 5,
+        },
+      ],
+    });
+  });
+
+  it('marks a provider lane failure as ERROR so it cannot become a successful verdict', async () => {
+    const { impl } = stubFetch('{"error":{"message":"provider lane failed"}}');
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      fetchImpl: impl,
+    });
+
+    expect(res.decision).toBe('ERROR');
+    expect(res.findings).toEqual([]);
+    expect(res.error).toContain('Provider returned an error payload');
+  });
+
   it('returns structured findings parsed from the model response', async () => {
     const { impl } = stubFetch(validFindings);
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
