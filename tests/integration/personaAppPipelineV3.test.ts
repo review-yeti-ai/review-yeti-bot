@@ -174,7 +174,7 @@ describe('GitHub App configurable persona pipeline', () => {
     vi.restoreAllMocks();
   });
 
-  it('uses a ghs token, base-SHA policy, persona COMMENT reviews, and arbiter-only approval', async () => {
+  it('uses a ghs token, base-SHA policy, persona issue comments, and arbiter-only approval with final review', async () => {
     const mock = route();
     vi.stubGlobal('fetch', mock.fetchMock);
 
@@ -192,10 +192,23 @@ describe('GitHub App configurable persona pipeline', () => {
     });
     const policyRequest = mock.requests.find((request) => request.url.includes('/contents/.ct-review.yaml'));
     expect(policyRequest?.url).toContain('ref=base-9101');
+
+    // Personas publish as issue comments only — no per-persona review threads.
+    const issueComments = mock.requests.filter((request) => /\/issues\/\d+\/comments$/.test(request.url) && request.method === 'POST');
+    expect(issueComments).toHaveLength(2);
+    expect(issueComments[0].body.body).toContain('ct-review-persona');
+    expect(issueComments[0].body.body).toContain('security-tenancy');
+    expect(issueComments[0].body.body).toContain('advisory');
+    expect(issueComments[1].body.body).toContain('constitutional-goals');
+
+    // Single arbiter review (no persona COMMENT reviews, no per-persona inline comments).
     const reviews = mock.requests.filter((request) => request.url.endsWith('/reviews'));
-    expect(reviews.map((review) => review.body.event)).toEqual(['COMMENT', 'COMMENT', 'APPROVE']);
-    expect(reviews[0].body.body).toContain('Persona: security-tenancy');
-    expect(reviews[2].body.body).toContain('Binding arbiter verdict: SHIP');
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0].body.event).toBe('APPROVE');
+    expect(reviews[0].body.body).toContain('Binding arbiter verdict: SHIP');
+    expect(reviews[0].body.body).toContain('issue comments only');
+    expect(reviews[0].body.comments || []).toEqual([]);
+
     const githubRequests = mock.fetchMock.mock.calls.filter(([url]) => String(url).startsWith('https://api.github.test/repos/'));
     expect(githubRequests.every(([, init]) =>
       new Headers(init?.headers).get('authorization') === 'Bearer ghs_pipeline_test',
