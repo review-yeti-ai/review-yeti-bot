@@ -30,7 +30,9 @@ jobs:
     steps:
       - uses: JBJMLLC/ct-review-bot@v1
         with:
-          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          llm-base-url: https://openrouter.ai/api/v1
+          model: openrouter/auto-beta
+          llm-api-key: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
 ```
 
 That is the whole setup — note there is no `actions/checkout` step, and none is needed. The
@@ -267,6 +269,13 @@ Longer charters belong in their own files under `.ct-review/personas/`, describe
 > the action ignores them.
 
 ---
+
+## Managed OpenRouter deployment
+
+For the Terraform/OpenTofu workspace, guardrail, and bounded completion-key
+template, see [Managed OpenRouter deployment](docs/OPENROUTER_TERRAFORM.md).
+The canonical fleet policy lives in the ct-meta OpenRouter skill; this repo
+does not apply infrastructure or store provider credentials.
 
 ## Optional: self-hosted dashboard service
 
