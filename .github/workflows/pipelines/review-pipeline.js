@@ -15,6 +15,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync, execSync } = require('child_process');
 const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanitizeCanonicalFindings } = require('../../../src/review/reviewCore');
+const {
+  resolveOpenRouterReviewPolicy,
+  buildOpenRouterRequestOptions,
+} = require('./openrouter-policy');
 
 let mcpFleetManager = null;
 try {
@@ -56,7 +60,7 @@ const PERSONA_CHARTERS = [
   {
     id: 'security',
     name: '🛡️ Security & Tenancy Guardian',
-    model: 'openrouter/anthropic/claude-3.5-sonnet',
+    model: DEFAULT_MODEL,
     defaultEnabled: true,
     charter: `You review changes for security defects that are demonstrable in the diff.
 
@@ -78,7 +82,7 @@ Severity: P0 for something an attacker could exploit or that leaks real data. P1
   {
     id: 'performance',
     name: '⚡ Performance & Scalability Specialist',
-    model: 'openrouter/meta-llama/llama-3.3-70b-instruct',
+    model: DEFAULT_MODEL,
     defaultEnabled: true,
     charter: `You review changes for performance defects that will matter at realistic scale.
 
@@ -100,7 +104,7 @@ Severity: P0 only for something that will exhaust memory or hang in production. 
   {
     id: 'architecture',
     name: '🏛️ System Architecture & Design',
-    model: 'openrouter/deepseek/deepseek-chat',
+    model: DEFAULT_MODEL,
     defaultEnabled: true,
     charter: `You review changes for structural problems that will make the codebase harder to change.
 
@@ -122,7 +126,7 @@ Severity: P0 is almost never appropriate here. P1 for a boundary violation or a 
   {
     id: 'style',
     name: '✨ Code Style & Idioms Specialist',
-    model: 'openrouter/google/gemini-2.0-flash-lite-001',
+    model: DEFAULT_MODEL,
     defaultEnabled: false,
     charter: `You review changes for readability problems that a formatter or linter would not catch.
 
@@ -143,7 +147,7 @@ Severity: P1 only where the code is genuinely misleading and likely to cause a f
   {
     id: 'testing',
     name: '🧪 Testing & Quality Assurance',
-    model: 'openrouter/meta-llama/llama-3.3-70b-instruct',
+    model: DEFAULT_MODEL,
     defaultEnabled: true,
     charter: `You review whether the change is adequately covered by tests, and whether those tests would fail if the code broke.
 
@@ -164,7 +168,7 @@ Severity: P1 for untested logic that can silently break, or an active exclusive 
   {
     id: 'documentation',
     name: '📝 Documentation & API Specs',
-    model: 'openrouter/google/gemini-2.0-flash-lite-001',
+    model: DEFAULT_MODEL,
     defaultEnabled: false,
     charter: `You review whether the change leaves the project's documentation accurate.
 
@@ -185,7 +189,7 @@ Severity: P1 for documentation that is now actively wrong or a public interface 
   {
     id: 'accessibility',
     name: '♿ Accessibility (a11y) & Usability',
-    model: 'openrouter/google/gemini-2.0-flash-lite-001',
+    model: DEFAULT_MODEL,
     defaultEnabled: false,
     charter: `You review user interface changes for barriers to people using assistive technology.
 
@@ -207,7 +211,7 @@ Severity: P1 where the interface becomes unusable with a keyboard or screen read
   {
     id: 'database',
     name: '🗄️ Database & Persistence Specialist',
-    model: 'openrouter/deepseek/deepseek-chat',
+    model: DEFAULT_MODEL,
     defaultEnabled: false,
     charter: `You review schema changes and data access for risks to production data.
 
@@ -229,7 +233,7 @@ Severity: P0 for possible data loss or a production-wide lock. P1 for a migratio
   {
     id: 'devops',
     name: '🐳 DevOps & CI/CD',
-    model: 'openrouter/google/gemini-2.0-flash-lite-001',
+    model: DEFAULT_MODEL,
     defaultEnabled: false,
     charter: `You review build, container and pipeline configuration for correctness and safety.
 
@@ -251,7 +255,7 @@ Severity: P0 for an exposed secret or a pipeline that cannot fail. P1 for a real
   {
     id: 'i18n',
     name: '🌐 Internationalization & Localizability',
-    model: 'openrouter/google/gemini-2.0-flash-lite-001',
+    model: DEFAULT_MODEL,
     defaultEnabled: false,
     charter: `You review changes in projects that localise their interface, for text and formatting that will not translate.
 
@@ -271,7 +275,7 @@ Severity: P1 for user-visible text that cannot be translated in a project that t
   {
     id: 'dependencies',
     name: '📦 Dependency Safety & Supply Chain',
-    model: 'openrouter/google/gemini-2.0-flash-lite-001',
+    model: DEFAULT_MODEL,
     defaultEnabled: true,
     charter: `You review changes to a project's dependencies.
 
@@ -293,7 +297,7 @@ Severity: P0 for a plausible supply chain compromise. P1 for unreproducible buil
   {
     id: 'licensing',
     name: '📄 License & IP Compliance',
-    model: 'openrouter/google/gemini-2.0-flash-lite-001',
+    model: DEFAULT_MODEL,
     defaultEnabled: false,
     charter: `You review changes for licence obligations the project may be taking on.
 
@@ -346,6 +350,59 @@ function resolveModelConfig(env = process.env) {
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || DEFAULT_MAX_DIFF_CHARS;
 
   return { enabled: Boolean(apiKey), apiKey, baseUrl, model, maxDiffChars };
+}
+
+function trustedOpenRouterInputsFromEnv(env = process.env) {
+  return {
+    'llm-base-url': env.OPENROUTER_BASE_URL,
+    model: env.OPENROUTER_MODEL,
+    'allowed-models': env.OPENROUTER_ALLOWED_MODELS,
+    'data-collection': env.OPENROUTER_DATA_COLLECTION,
+    'cost-quality-tradeoff': env.OPENROUTER_COST_QUALITY_TRADEOFF,
+  };
+}
+
+function resolveActionReviewRuntime(localConfig = null, env = process.env) {
+  const trustedConfig = localConfig?.parsed && typeof localConfig.parsed === 'object'
+    ? localConfig.parsed
+    : (localConfig && typeof localConfig === 'object' ? localConfig : undefined);
+  const localProviders = Array.isArray(localConfig?.parsed?.reviewers?.providers)
+    ? localConfig.parsed.reviewers.providers
+    : [];
+  const actionPolicy = resolveActionReviewPolicy(localConfig, env);
+  const openRouterPolicy = resolveOpenRouterReviewPolicy({
+    actionInputs: trustedOpenRouterInputsFromEnv(env),
+    trustedConfig,
+  });
+  const localReviewerProviderIds = localProviders
+    .map((provider) => {
+      if (typeof provider === 'string') return provider.trim();
+      if (provider && typeof provider === 'object') return String(provider.id || '').trim();
+      return '';
+    })
+    .filter(Boolean);
+  const modelConfig = {
+    ...resolveModelConfig(env),
+    baseUrl: openRouterPolicy.base_url,
+    model: openRouterPolicy.model,
+    openRouterPolicy,
+    maxDiffChars: actionPolicy.maxDiffChars,
+  };
+  const notes = [];
+
+  if (localReviewerProviderIds.length > 0) {
+    notes.push(
+      `Local reviewers.providers (${localReviewerProviderIds.join(', ')}) configure the CLI/app roster only; ` +
+      `the GitHub Action keeps its explicit persona roster and OpenRouter request policy.`
+    );
+  }
+
+  return {
+    rosterSource: 'action_personas',
+    localReviewerProviderIds,
+    modelConfig,
+    notes,
+  };
 }
 
 /**
@@ -661,6 +718,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const cfg = { ...resolveModelConfig(), ...options };
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
+  let requestOptions = null;
 
   const priorContext = sessionContext?.augmentedHeader
     ? `\n\nPrior review context for this PR — do not repeat findings the author has already rejected:\n${sessionContext.augmentedHeader}`
@@ -701,21 +759,30 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const base = { personaId: persona.id, displayName: persona.name, model: cfg.model };
 
   try {
-    const response = await fetchImpl(`${cfg.baseUrl}/chat/completions`, {
+    if (options.openRouterPolicy) {
+      requestOptions = buildOpenRouterRequestOptions(options.openRouterPolicy);
+    }
+    const requestModel = requestOptions?.model || cfg.model;
+    const requestBody = {
+      model: requestModel,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    };
+
+    if (requestOptions?.plugins) requestBody.plugins = requestOptions.plugins;
+    if (requestOptions?.provider) requestBody.provider = requestOptions.provider;
+
+    const response = await fetchImpl(`${requestOptions?.baseUrl || cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${cfg.apiKey}`,
       },
-      body: JSON.stringify({
-        model: cfg.model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.1,
-        response_format: { type: 'json_object' },
-      }),
+      body: JSON.stringify(requestBody),
       // fetch has no default timeout; without this a stalled provider hangs the job until
       // GitHub's 6 hour ceiling.
       signal: AbortSignal.timeout(options.timeoutMs || 120_000),
@@ -727,7 +794,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     }
 
     const payload = await response.json();
+    if (payload?.error) {
+      const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
+      return { ...base, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+    }
     const content = payload?.choices?.[0]?.message?.content;
+    if (typeof content === 'string') {
+      try {
+        const providerLane = JSON.parse(content);
+        if (providerLane?.error) {
+          const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
+          return { ...base, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+        }
+      } catch (_) {}
+    }
     const rawFindings = parseFindingsPayload(content);
 
     if (rawFindings === null) {
@@ -1844,6 +1924,10 @@ async function main() {
   }
   const localConfig = loadLocalRepoConfig(configRoot);
   const actionPolicy = resolveActionReviewPolicy(localConfig, process.env);
+  const actionRuntime = resolveActionReviewRuntime(localConfig, process.env);
+  for (const note of actionRuntime.notes) {
+    console.log(`[Config] ${note}`);
+  }
 
   const mcpFleetInfo = await initMcpFleet(prContext.eventData?.client_payload);
   console.log(`[MCP] ${mcpFleetInfo.mcpStatusSummary}`);
@@ -1865,7 +1949,7 @@ async function main() {
     return;
   }
 
-  const modelConfig = { ...resolveModelConfig(), maxDiffChars: actionPolicy.maxDiffChars };
+  const modelConfig = actionRuntime.modelConfig;
   const coverage = planDiffBudget(reviewDiffFiles, modelConfig.maxDiffChars);
   if (coverage.omitted.length > 0 || coverage.truncated.length > 0) {
     console.warn(`[Budget] Diff exceeds ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} omitted.`);
@@ -2019,6 +2103,7 @@ module.exports = {
   loadPersonaFiles,
   resolveConfigRoot,
   resolveModelConfig,
+  resolveActionReviewRuntime,
   resolveActionReviewPolicy,
   applyActionSubmodulePolicy,
   planDiffBudget,
