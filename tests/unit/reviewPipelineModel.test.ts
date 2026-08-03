@@ -20,7 +20,7 @@ const diffFiles = [
 ];
 
 /** Builds a fetch stub returning an OpenAI-compatible chat completion. */
-function stubFetch(content: string, opts: { ok?: boolean; status?: number } = {}) {
+function stubFetch(content: string, opts: { ok?: boolean; status?: number; payload?: any } = {}) {
   const calls: any[] = [];
   const impl = async (url: string, init: any) => {
     calls.push({ url, init, body: JSON.parse(init.body) });
@@ -28,7 +28,7 @@ function stubFetch(content: string, opts: { ok?: boolean; status?: number } = {}
       ok: opts.ok !== false,
       status: opts.status || 200,
       text: async () => 'error body',
-      json: async () => ({ choices: [{ message: { content } }] }),
+      json: async () => opts.payload || ({ choices: [{ message: { content } }] }),
     };
   };
   return { impl, calls };
@@ -206,6 +206,29 @@ describe('reviewWithModel', () => {
     expect(res.findings[0].severity).toBe('P1');
     expect(res.findings[0].path).toBe('src/api/user.ts');
     expect(res.decision).toBe('FINDINGS');
+  });
+
+  it('returns response model, provider, and reported usage cost metadata', async () => {
+    const { impl } = stubFetch(JSON.stringify({ findings: [] }), {
+      payload: {
+        model: 'openai/gpt-5.6-luna',
+        provider: 'OpenAI',
+        usage: { cost: 0.0074, prompt_tokens: 100, completion_tokens: 20 },
+        choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+      },
+    });
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      model: 'openrouter/auto',
+      fetchImpl: impl,
+    });
+
+    expect(res.model).toBe('openai/gpt-5.6-luna');
+    expect(res.provider).toBe('OpenAI');
+    expect(res.cost).toBe(0.0074);
+    expect(res.inputTokens).toBe(100);
+    expect(res.outputTokens).toBe(20);
   });
 
   it('parses findings wrapped in a markdown code fence', async () => {

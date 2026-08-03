@@ -128,6 +128,75 @@ index 123456..789abc 100644
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
   });
 
+  it('formats provider, model, supported severity counts, and three-decimal costs', () => {
+    const { formatPRComment } = pipeline;
+    const results = [
+      {
+        personaId: 'security',
+        displayName: 'Security',
+        model: 'openai/gpt-5.6-luna',
+        provider: 'openrouter',
+        decision: 'FINDINGS',
+        inputTokens: 100,
+        outputTokens: 20,
+        cost: 0.0074,
+        findings: [
+          { severity: 'P0', path: 'src/a.ts', line: 1, title: 'Outage', body: 'outage' },
+          { severity: 'P1', path: 'src/a.ts', line: 2, title: 'Defect', body: 'defect' },
+          { severity: 'P2', path: 'src/a.ts', line: 3, title: 'Nit', body: 'nit' },
+        ],
+      },
+      {
+        personaId: 'style',
+        displayName: 'Style',
+        model: 'z-ai/glm-5.1',
+        provider: 'openrouter',
+        decision: 'APPROVE',
+        inputTokens: 200,
+        outputTokens: 30,
+        cost: 0.006307,
+        findings: [],
+      },
+    ];
+
+    const formattedComment = formatPRComment({
+      totalPersonas: 2,
+      completedPersonas: 2,
+      quorumSatisfied: true,
+      verdict: 'BLOCK',
+      rationale: 'P0 finding requires a fix.',
+      metrics: { p0Count: 1, p1Count: 1, p2Count: 1, totalFindings: 3 },
+    }, results, { prNumber: '102', repo: 'calltelemetry/ct-review-bot', headSha: 'abc1234' });
+
+    expect(formattedComment).toContain('| Reviewer Persona | Provider | Model | Decision | P0 | P1 | P2 / Nits | Input Tokens | Output Tokens | Cost |');
+    expect(formattedComment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ⚠️ FINDINGS | 🔴 1 | 🟠 1 | 🟡 1 | 100 | 20 | $0.007 |');
+    expect(formattedComment).toContain('| Style | `openrouter` | `z-ai/glm-5.1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 200 | 30 | $0.006 |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 1 | 🟠 1 | 🟡 1 | **300** | **50** | **$0.014** |');
+    expect(formattedComment).not.toContain('| P3 |');
+  });
+
+  it('uses safe fallbacks when persona metadata omits provider and cost', () => {
+    const { formatPRComment } = pipeline;
+    const formattedComment = formatPRComment({
+      totalPersonas: 1,
+      completedPersonas: 1,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'Clean review.',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    }, [{
+      personaId: 'security',
+      displayName: 'Security',
+      model: 'openrouter/auto',
+      decision: 'APPROVE',
+      findings: [],
+    }], { prNumber: '103', repo: 'calltelemetry/ct-review-bot', headSha: 'def4567' });
+
+    expect(formattedComment).toContain('| Security | `openrouter` | `openrouter/auto` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).not.toContain('NaN');
+  });
+
   it('6. Executes main pipeline cleanly without unhandled exceptions', async () => {
     // Set environment variables for test execution
     process.env.PR_NUMBER = '777';
