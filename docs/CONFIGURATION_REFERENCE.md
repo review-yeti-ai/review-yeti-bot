@@ -22,6 +22,7 @@ This reference guide provides a complete, 1:1 schema specification for `.ct-revi
 8. [Full Configuration Examples](#full-configuration-examples)
    - [Native `.ct-review.yaml` (V3)](#native-ct-reviewyaml-v3)
    - [CodeRabbit-Compatible `.coderabbit.yaml`](#coderabbit-compatible-coderabbityaml)
+9. [Managed OpenRouter deployment](#managed-openrouter-deployment)
 
 ---
 
@@ -95,6 +96,18 @@ commit IDs, while `recursive` records an incomplete review until a nested snapsh
 available. An incomplete submodule review cannot produce `SHIP`. Trusted Action inputs may narrow
 these settings, but immutable safety caps always win; the effective policy digest is part of the
 run identity.
+
+---
+
+## Managed OpenRouter deployment
+
+For the Terraform/OpenTofu workspace, guardrail, model allowlist, budget, and
+secret handoff, use [Managed OpenRouter deployment](OPENROUTER_TERRAFORM.md).
+The review Action talks directly to `https://openrouter.ai/api/v1`; the
+management key is not a runtime review credential. Keep the generated fleet
+completion key in Doppler and expose it to the workflow as the dedicated
+`OPENROUTER_PR_REVIEW_API_KEY` repository secret. Terraform state and variable
+files stay outside Git.
 
 ---
 
@@ -238,12 +251,10 @@ dials:
 
 - **`memory_engine`** (`boolean`): Enables/disables `.ct-memory/` SQLite learning graph and duplicate nit suppression.
 - **`mascot`** (`boolean`): Controls whether ASCII art mascot headers are rendered in comments.
-- **`persona_model`** (`string`): Supported flagship persona models:
-  - `claude-5-sonnet` (Anthropic / OmniRoute)
-  - `gpt-5.6-sol` (OpenAI / OmniRoute)
-  - `deepseek-v4-pro` (DeepSeek / OmniRoute)
-  - `glm-5.2` (Z-AI / OmniRoute)
-  - V3 Provider models: `codex/gpt-5.6-sol-high`, `grok-cli/grok-4.5`, `agy/claude-opus-4-6-thinking`, `claude/claude-opus-4-8`.
+- **`persona_model`** (`string`): OpenRouter model identifier used by the
+  persona. Managed fleets should use `openrouter/auto-beta` or a model from
+  the Terraform guardrail allowlist; the endpoint and key are configured by
+  the Action workflow rather than through a legacy provider proxy.
 - **`confidence_threshold`** (`number`): Integer threshold from `0` to `100`.
 - **`ticket_enforcement`** (`boolean`): Enforces ticket links across Linear (`PROJ-123`), Jira (`KEY-456`), or GitHub (`#789`).
 - **`reviewer_effort`** (`enum`): Controls latency and reasoning depth (`low`, `medium`, `high`, `xhigh`, `max`).
