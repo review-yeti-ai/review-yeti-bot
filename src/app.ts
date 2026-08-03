@@ -34,6 +34,13 @@ import { buildReviewRunIdentity } from './review/reviewAdmission';
 import { resolveSubmoduleDecision, SubmodulePolicy } from './review/submodulePolicy';
 import { GraphLearningEngine } from './memory/graphLearningEngine';
 import { PRCloseDispatcher } from './github/prCloseDispatcher';
+import {
+  MAX_FINAL_INLINE_COMMENTS,
+  buildFinalInlineComments,
+  formatFinalReviewBody,
+  formatPersonaIssueComment,
+  type FindingWithPersona,
+} from './github/panelPublication';
 import { logger } from './utils/logger';
 import { LiveStreamBus } from './live/liveStreamBus';
 import {
@@ -105,20 +112,11 @@ function cost(value: number | null): string {
 }
 
 function personaBody(lane: PanelResult['personas'][number], headSha: string): string {
-  return [
-    `## Persona: ${lane.id}`,
-    '',
-    `- Required: ${lane.required ? 'yes' : 'no'}`,
-    `- Provider: \`${lane.providerId}\``,
-    `- Model: \`${lane.model}\``,
-    `- Decision: \`${lane.decision}\``,
-    `- Duration: ${lane.durationMs} ms`,
-    `- Tokens: ${usage(lane.usage)}`,
-    `- Cost: ${cost(lane.costUSD)}`,
-    `- Exact head: \`${headSha}\``,
-    '',
-    lane.findings.length === 0 ? 'No findings.' : `${lane.findings.length} finding(s); see inline review comments.`,
-  ].join('\n');
+  // Issue-comment body only — personas must not open PR review threads.
+  return formatPersonaIssueComment(lane, headSha, {
+    usageLine: usage(lane.usage),
+    costLine: cost(lane.costUSD),
+  });
 }
 
 function checkSummary(result: PanelResult): string {
@@ -475,7 +473,15 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           const publicationClaim = await durableReviewRuns!.claimPublication(durableRun.runId, durableWorkerId, Date.now());
           if (!publicationClaim) throw new Error(`review run ${durableRun.runId} could not claim publication`);
         }
+
+        // Phase 1 — persona reports as issue comments only (no review threads).
+        // Opening per-persona COMMENT reviews with inline findings creates dozens of
+        // resolve-required threads under required_conversation_resolution and
+        // thrashes statusCheckRollup. Personas are advisory inputs to the arbiter.
+        const retainedFindings: FindingWithPersona[] = [];
+        let laneIndex = 0;
         for (const lane of panel.personas) {
+          laneIndex += 1;
           await assertCurrentHead();
           const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
             repoFull,
@@ -484,38 +490,40 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           if (suppressedNits.length > 0) {
             logger.info(`Suppressed ${suppressedNits.length} nit pattern(s) for persona ${lane.id}`);
           }
+          lane.findings = filteredFindings as typeof lane.findings;
+          for (const finding of filteredFindings) {
+            retainedFindings.push({ ...finding, persona: lane.id });
+          }
 
-          const published = await github.publishReview({
+          const body = formatPersonaIssueComment(lane, headSha, {
+            usageLine: usage(lane.usage),
+            costLine: cost(lane.costUSD),
+            runId: durableRun?.runId || undefined,
+            laneIndex,
+            laneTotal: panel.personas.length,
+          });
+          await github.postIssueComment(owner, repo, prNumber, body);
+          logger.info(`✅ Persona issue comment published`, {
+            persona: lane.id,
             owner,
             repo,
             prNumber,
-            commitSha: headSha,
-            event: 'COMMENT',
-            body: personaBody(lane, headSha),
-            idempotencyKey: `persona:${lane.id}`,
-            inlineComments: filteredFindings.map((finding) => ({
-              owner,
-              repo,
-              prNumber,
-              commitSha: headSha,
-              path: finding.path,
-              line: finding.line,
-              finding: {
-                persona: lane.id as any,
-                severity: finding.severity === 'P0' ? 'critical' : finding.severity === 'P1' ? 'major' : 'minor',
-                filePath: finding.path,
-                lineNumber: finding.line,
-                comment: `${finding.title}\n\n${finding.body}`,
-                suggestion: finding.suggestion,
-              },
-            })),
+            findings: filteredFindings.length,
+            surface: 'issue_comment',
           });
-          if (!published.success) throw new Error(`failed to publish persona ${lane.id}: ${published.errors?.join('; ')}`);
-          logger.info(`✅ Persona review published`, { persona: lane.id, owner, repo, prNumber, findings: lane.findings.length });
         }
 
+        // Phase 2 — single arbiter review; only deduped P0/P1 become review threads.
         const summary = checkSummary(panel);
         const ship = panel.arbiter.verdict === 'SHIP';
+        const finalInline = buildFinalInlineComments({
+          owner,
+          repo,
+          prNumber,
+          commitSha: headSha,
+          findings: retainedFindings,
+          max: MAX_FINAL_INLINE_COMMENTS,
+        });
         await assertCurrentHead();
         const final = await github.publishReview({
           owner,
@@ -523,8 +531,17 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           prNumber,
           commitSha: headSha,
           event: ship ? 'APPROVE' : 'REQUEST_CHANGES',
-          body: `## Binding arbiter verdict: ${panel.arbiter.verdict}\n\n${panel.arbiter.rationale}\n\n${summary}`,
+          body: formatFinalReviewBody({
+            verdict: panel.arbiter.verdict,
+            rationale: panel.arbiter.rationale,
+            summary,
+            headSha,
+            inlineCount: finalInline.length,
+            totalActionableCandidates: retainedFindings.filter((f) => f.severity === 'P0' || f.severity === 'P1').length,
+            maxInline: MAX_FINAL_INLINE_COMMENTS,
+          }),
           idempotencyKey: 'arbiter',
+          inlineComments: finalInline,
         });
         if (!final.success) throw new Error(`failed to publish arbiter review: ${final.errors?.join('; ')}`);
         logger.info(`✅ Review pipeline completed successfully`, {
@@ -532,6 +549,8 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           verdict: panel.arbiter.verdict,
           decision: ship ? 'APPROVE' : 'REQUEST_CHANGES',
           personaCount: panel.personas.length,
+          personaSurface: 'issue_comment',
+          finalInlineThreads: finalInline.length,
           durationMs: Date.now() - startTime,
         });
         if (checkId !== undefined) {
