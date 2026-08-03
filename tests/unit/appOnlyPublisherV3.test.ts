@@ -13,7 +13,7 @@ describe('GitHub App installation-token-only publisher', () => {
     expect(() => new CommentPublisher()).toThrow(/explicit GitHub App installation token/i);
   });
 
-  it('publishes persona inline findings in one COMMENT review request', async () => {
+  it('publishes final-phase inline findings in one review request (publisher primitive)', async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => new Response(
       JSON.stringify({ id: 123 }),
       { status: 201, headers: { 'content-type': 'application/json' } },
