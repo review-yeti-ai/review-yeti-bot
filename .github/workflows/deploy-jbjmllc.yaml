@@ -46,7 +46,7 @@ jobs:
           GITHUB_APP_PRIVATE_KEY_VALUE: ${{ secrets.CT_REVIEW_GITHUB_APP_PRIVATE_KEY }}
           GITHUB_INSTALLATION_ID_VALUE: ${{ secrets.CT_REVIEW_GITHUB_INSTALLATION_ID }}
           WEBHOOK_SECRET_VALUE: ${{ secrets.CT_REVIEW_WEBHOOK_SECRET }}
-          OPENROUTER_API_KEY_VALUE: ${{ secrets.OPENROUTER_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY_VALUE: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
         run: |
           set -euo pipefail
           doctl kubernetes cluster kubeconfig save "$CLUSTER_NAME"

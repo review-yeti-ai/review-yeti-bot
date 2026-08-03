@@ -197,6 +197,44 @@ index 123456..789abc 100644
     expect(formattedComment).not.toContain('NaN');
   });
 
+  it('does not present a known-cost subtotal as complete when another lane is unknown', () => {
+    const { formatPRComment } = pipeline;
+    const formattedComment = formatPRComment({
+      totalPersonas: 2,
+      completedPersonas: 2,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'Clean review.',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    }, [
+      { personaId: 'security', displayName: 'Security', model: 'm1', provider: 'openrouter', decision: 'APPROVE', cost: 0.001, findings: [] },
+      { personaId: 'style', displayName: 'Style', model: 'm2', provider: 'openrouter', decision: 'APPROVE', findings: [] },
+    ], { prNumber: '104', repo: 'calltelemetry/ct-review-bot', headSha: 'fed7654' });
+
+    expect(formattedComment).toContain('| Security | `openrouter` | `m1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | $0.001 |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+  });
+
+  it('renders invalid costs and hostile provider metadata as safe unknown cells', () => {
+    const { formatPRComment } = pipeline;
+    const formattedComment = formatPRComment({
+      totalPersonas: 2,
+      completedPersonas: 2,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'Clean review.',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    }, [
+      { personaId: 'security', displayName: 'Security', model: 'model`one|x', provider: 'provider`one|x', decision: 'APPROVE', cost: -1, findings: [] },
+      { personaId: 'style', displayName: 'Style', model: 'model-two', provider: 'openrouter', decision: 'APPROVE', cost: 1e21, findings: [] },
+    ], { prNumber: '105', repo: 'calltelemetry/ct-review-bot', headSha: 'fed7655' });
+
+    expect(formattedComment).toContain('| Security | `provider\'one\\|x` | `model\'one\\|x` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).toContain('| Style | `openrouter` | `model-two` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).not.toContain('e+21');
+  });
+
   it('6. Executes main pipeline cleanly without unhandled exceptions', async () => {
     // Set environment variables for test execution
     process.env.PR_NUMBER = '777';
