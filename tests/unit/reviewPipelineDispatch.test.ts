@@ -395,4 +395,17 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
   it('does not push commits back to the checked-out repository', () => {
     expect(workflow).not.toContain('git push');
   });
+
+  it('uses only the role-scoped review fleet secret for hosted OpenRouter calls', () => {
+    const deploymentWorkflows = [
+      workflow,
+      fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8'),
+      fs.readFileSync(path.join(rootRepoDir, '.github/workflows/deploy-jbjmllc.yaml'), 'utf-8'),
+    ];
+
+    deploymentWorkflows.forEach((source) => {
+      expect(source).toContain('CT_REVIEW_OPENROUTER_API_KEY');
+      expect(source).not.toContain('secrets.OPENROUTER_API_KEY');
+    });
+  });
 });
