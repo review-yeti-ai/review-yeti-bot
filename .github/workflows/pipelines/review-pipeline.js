@@ -3702,6 +3702,12 @@ function planCarriedForwardVerdict(commandRunner, prContext, excludes) {
   const prior = readPriorSummaryReview(commandRunner, prContext);
   if (!prior?.verdict || !prior.headSha || !prior.metrics) return null;
   if (prior.headSha === prContext.headSha) return null;
+  if (
+    !Number.isInteger(prior.completedPersonas)
+    || !Number.isInteger(prior.totalPersonas)
+    || prior.totalPersonas <= 0
+    || prior.completedPersonas !== prior.totalPersonas
+  ) return null;
 
   const since = reviewablePathsChangedSince(commandRunner, prContext, prior.headSha, excludes);
   if (!since.available || since.changed.length === 0) return null;
@@ -3712,12 +3718,22 @@ function planCarriedForwardVerdict(commandRunner, prContext, excludes) {
 
   const from = prior.headSha.slice(0, 7);
   const to = prContext.headSha.slice(0, 7);
+  const gateDecision = prior.verdict === 'SHIP'
+    && prior.metrics.p0Count === 0
+    && prior.metrics.p1Count === 0
+    ? 'PASS'
+    : 'BLOCKED';
   console.log(`[Incremental] Nothing reviewable changed between ${from} and ${to} (${since.changed.length} excluded path(s) only). Carrying the previous verdict forward.`);
   return {
     verdict: prior.verdict,
     status: 'UNCHANGED_SINCE_LAST_REVIEW',
     rationale: `No reviewable file changed between \`${from}\` and \`${to}\` — only ${since.changed.length} excluded path(s). The verdict from the last reviewed commit is carried forward; the panel was not re-run.`,
     quorumSatisfied: true,
+    coverageComplete: true,
+    coverageQuorumSatisfied: true,
+    coverageStatus: 'complete',
+    gateDecision,
+    mergeEligible: gateDecision === 'PASS',
     completedPersonas: prior.completedPersonas,
     totalPersonas: prior.totalPersonas,
     metrics: prior.metrics,
