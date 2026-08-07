@@ -787,12 +787,31 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
     })).toBeNull();
   });
 
-  it('reruns when the current token publisher cannot be authenticated', () => {
+  it('reruns outside GitHub Actions when the current token publisher cannot be authenticated', () => {
     expect(carryPlan(skipRunner(
       summaryFor(PREVIOUS_HEAD, 'SHIP'),
       [GENERATED_CLIENT],
       null,
     ))).toBeNull();
+  });
+
+  it('recognizes the default Actions installation token publisher without trusting foreign reviews', () => {
+    const priorGitHubActions = process.env.GITHUB_ACTIONS;
+    process.env.GITHUB_ACTIONS = 'true';
+    try {
+      expect(carryPlan(skipRunner(
+        summaryFor(PREVIOUS_HEAD),
+        [GENERATED_CLIENT],
+        null,
+      ))).toMatchObject({ coverageStatus: 'complete', gateDecision: 'BLOCKED' });
+
+      const foreignSummary = summaryFor(PREVIOUS_HEAD, 'SHIP');
+      foreignSummary.user.login = 'untrusted-reviewer';
+      expect(carryPlan(skipRunner(foreignSummary, [GENERATED_CLIENT], null))).toBeNull();
+    } finally {
+      if (priorGitHubActions === undefined) delete process.env.GITHUB_ACTIONS;
+      else process.env.GITHUB_ACTIONS = priorGitHubActions;
+    }
   });
 
   it('runs the panel whenever anything reviewable moved', () => {
