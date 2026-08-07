@@ -145,6 +145,110 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     expect(arbitration.quorumSatisfied).toBe(false);
     expect(arbitration.rationale).toContain('provider failures');
   });
+
+  it('publishes a non-mergeable partial status from a fixed configured roster', () => {
+    const arbitration = computeArbitrationQuorum([
+      { personaId: 'security', provider: 'provider-a', model: 'model-a', decision: 'APPROVE', findings: [] },
+      { personaId: 'testing', provider: 'provider-b', model: 'model-b', decision: 'APPROVE', findings: [] },
+    ], 3, {
+      expectedPersonaIds: ['security', 'testing', 'contract'],
+      coveragePolicy: { mandatory_personas: [], provider_diversity_min: 2 },
+    });
+
+    expect(arbitration.status).toBe('PARTIAL_REVIEW');
+    expect(arbitration.verdict).toBe('BLOCK');
+    expect(arbitration.gateDecision).toBe('BLOCKED');
+    expect(arbitration.coverageStatus).toBe('partial');
+    expect(arbitration.mergeEligible).toBe(false);
+    expect(arbitration.coverage.required).toBe(2);
+    expect(arbitration.coverage.missingPersonaIds).toEqual(['contract']);
+    expect(arbitration.rationale).toMatch(/partial|merge approval remains blocked/i);
+  });
+
+  it('keeps findings from a partial lane while excluding it from trustworthy coverage', () => {
+    const arbitration = computeArbitrationQuorum([
+      {
+        personaId: 'security',
+        provider: 'provider-a',
+        model: 'model-a',
+        decision: 'FINDINGS',
+        partial: 1,
+        findings: [{ severity: 'P0', path: 'src/app.ts', line: 1, title: 'Critical', body: 'Critical issue' }],
+      },
+      { personaId: 'testing', provider: 'provider-b', model: 'model-b', decision: 'APPROVE', findings: [] },
+    ], 3, {
+      expectedPersonaIds: ['security', 'testing', 'contract'],
+      coveragePolicy: { mandatory_personas: [], provider_diversity_min: 1 },
+    });
+
+    expect(arbitration.status).toBe('INCOMPLETE_REVIEW');
+    expect(arbitration.coverage.trustworthyCount).toBe(1);
+    expect(arbitration.metrics.p0Count).toBe(1);
+    expect(arbitration.gateDecision).toBe('BLOCKED');
+    expect(arbitration.mergeEligible).toBe(false);
+  });
+
+  it('requires mandatory personas and provider diversity before partial status', () => {
+    const missingSecurity = computeArbitrationQuorum([
+      { personaId: 'testing', provider: 'provider-a', model: 'model-a', decision: 'APPROVE', findings: [] },
+      { personaId: 'contract', provider: 'provider-b', model: 'model-b', decision: 'APPROVE', findings: [] },
+    ], 3, {
+      expectedPersonaIds: ['security', 'testing', 'contract'],
+      coveragePolicy: { mandatory_personas: ['security'], provider_diversity_min: 2 },
+    });
+    expect(missingSecurity.status).toBe('INCOMPLETE_REVIEW');
+    expect(missingSecurity.coverage.missingMandatoryPersonaIds).toEqual(['security']);
+
+    const oneProvider = computeArbitrationQuorum([
+      { personaId: 'security', provider: 'provider-a', model: 'model-a', decision: 'APPROVE', findings: [] },
+      { personaId: 'testing', provider: 'provider-a', model: 'model-b', decision: 'APPROVE', findings: [] },
+    ], 3, {
+      expectedPersonaIds: ['security', 'testing', 'contract'],
+      coveragePolicy: { mandatory_personas: [], provider_diversity_min: 2 },
+    });
+    expect(oneProvider.status).toBe('INCOMPLETE_REVIEW');
+    expect(oneProvider.coverage.providerDiversitySatisfied).toBe(false);
+  });
+
+  it('derives merge eligibility only for complete clean coverage', () => {
+    const complete = computeArbitrationQuorum([
+      { personaId: 'security', provider: 'provider-a', model: 'model-a', decision: 'APPROVE', findings: [] },
+      { personaId: 'testing', provider: 'provider-b', model: 'model-b', decision: 'APPROVE', findings: [] },
+    ], 2, {
+      expectedPersonaIds: ['security', 'testing'],
+      coveragePolicy: { mandatory_personas: [], provider_diversity_min: 2 },
+    });
+    expect(complete.coverageStatus).toBe('complete');
+    expect(complete.gateDecision).toBe('PASS');
+    expect(complete.mergeEligible).toBe(true);
+
+    const completeWithFinding = computeArbitrationQuorum([
+      {
+        personaId: 'security',
+        provider: 'provider-a',
+        model: 'model-a',
+        decision: 'FINDINGS',
+        findings: [{ severity: 'P1', path: 'src/app.ts', line: 1, title: 'Issue', body: 'Fix this' }],
+      },
+      { personaId: 'testing', provider: 'provider-b', model: 'model-b', decision: 'APPROVE', findings: [] },
+    ], 2, {
+      expectedPersonaIds: ['security', 'testing'],
+      coveragePolicy: { mandatory_personas: [], provider_diversity_min: 2 },
+    });
+    expect(completeWithFinding).toMatchObject({
+      status: 'FIX_FIRST',
+      gateDecision: 'BLOCKED',
+      mergeEligible: false,
+    });
+  });
+
+  it('wires the trusted-base coverage policy and all-disabled blocked fields in main', () => {
+    const source = fs.readFileSync(pipelinePath, 'utf8');
+    expect(source).toContain('expectedPersonaIds: enabledPersonas.map((persona) => persona.id)');
+    expect(source).toContain('coveragePolicy: localConfig?.parsed?.coverage_policy || {}');
+    expect(source).toMatch(/All reviewer personas are disabled[\s\S]*coverageStatus:\s*'incomplete'/);
+    expect(source).toMatch(/All reviewer personas are disabled[\s\S]*mergeEligible:\s*false/);
+  });
 });
 
 describe('Dispatch path: OpenRouter is the only model boundary', () => {
