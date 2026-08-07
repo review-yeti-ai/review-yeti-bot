@@ -667,11 +667,45 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
     expect(plan).toMatchObject({
       verdict: 'FIX_FIRST',
       status: 'UNCHANGED_SINCE_LAST_REVIEW',
+      coverageStatus: 'complete',
+      gateDecision: 'BLOCKED',
+      mergeEligible: false,
       metrics: { p0Count: 0, p1Count: 7, p2Count: 3 },
       completedPersonas: 12,
     });
     expect(plan.rationale).toContain(PREVIOUS_HEAD.slice(0, 7));
     expect(plan.rationale).toContain(HEAD.slice(0, 7));
+  });
+
+  it('preserves a verified clean gate when carrying an unchanged SHIP verdict forward', () => {
+    const cleanSummary = summaryFor(PREVIOUS_HEAD, 'SHIP');
+    cleanSummary.body = cleanSummary.body.replace('P1: `7`', 'P1: `0`');
+
+    const plan = pipeline.planCarriedForwardVerdict(
+      skipRunner(cleanSummary, [GENERATED_CLIENT]),
+      context,
+      excludes,
+    );
+
+    expect(plan).toMatchObject({
+      verdict: 'SHIP',
+      status: 'UNCHANGED_SINCE_LAST_REVIEW',
+      coverageStatus: 'complete',
+      coverageQuorumSatisfied: true,
+      gateDecision: 'PASS',
+      mergeEligible: true,
+    });
+  });
+
+  it('reruns instead of carrying a verdict whose prior panel was not complete', () => {
+    const incompleteSummary = summaryFor(PREVIOUS_HEAD);
+    incompleteSummary.body = incompleteSummary.body.replace('`12/12`', '`11/12`');
+
+    expect(pipeline.planCarriedForwardVerdict(
+      skipRunner(incompleteSummary, [GENERATED_CLIENT]),
+      context,
+      excludes,
+    )).toBeNull();
   });
 
   it('runs the panel whenever anything reviewable moved', () => {
