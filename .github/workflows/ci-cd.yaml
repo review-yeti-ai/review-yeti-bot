@@ -1,0 +1,60 @@
+name: Test
+
+# Action-only CI (no image push, no deploy, no release automation).
+# GitHub-hosted runners only.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: review-yeti-bot-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_PREFER_OFFLINE: "true"
+
+jobs:
+  test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (shallow)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Cache Vitest
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules/.vitest
+            node_modules/.vite
+          key: vitest-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('tests/**/*.ts', 'tests/**/*.tsx', 'vitest*.ts', 'vitest*.mts') }}
+          restore-keys: |
+            vitest-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+            vitest-${{ runner.os }}-
+
+      - name: Test suite
+        run: npm test
+
+      - name: Typecheck
+        run: npm run lint

@@ -1,0 +1,10 @@
+self-hosted-runner:
+  labels:
+    - ARM64
+    - macOS
+    - metal
+    - ct-runner
+    - gh-runner-intel-x
+    - gh-runner-m3-x
+
+config-variables: null

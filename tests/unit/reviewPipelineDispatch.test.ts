@@ -1,0 +1,478 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+
+const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
+  ? path.resolve(__dirname, '../..')
+  : path.resolve(__dirname, '../../..');
+const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
+const pipeline = require(pipelinePath);
+
+const workflowPath = path.join(rootRepoDir, '.github/workflows/review-bot.yaml');
+
+describe('Dispatch path: persona resolution defaults', () => {
+  const { resolvePersonaRoster, DEFAULT_PERSONA_IDS } = pipeline;
+  const defaultIds = DEFAULT_PERSONA_IDS;
+  const ids = (payload: any, cfg: any, env: any) =>
+    resolvePersonaRoster(payload, cfg, env).personas.map((p: any) => p.id);
+
+  it('defaults to the default reviewer set when nothing is configured', () => {
+    expect(ids({}, null, {})).toEqual(defaultIds);
+  });
+
+  it('defaults to the default reviewer set when ACTIVE_PERSONAS is the literal string "null"', () => {
+    // GitHub Actions renders toJson(<missing>) as the string "null" on pull_request events.
+    expect(ids({}, null, { ACTIVE_PERSONAS: 'null' })).toEqual(defaultIds);
+  });
+
+  it('defaults to the default reviewer set when ACTIVE_PERSONAS is empty or whitespace', () => {
+    expect(ids({}, null, { ACTIVE_PERSONAS: '' })).toEqual(defaultIds);
+    expect(ids({}, null, { ACTIVE_PERSONAS: '   ' })).toEqual(defaultIds);
+  });
+
+  it('honors an explicit activePersonas array from the dispatch client_payload', () => {
+    expect(ids({ activePersonas: ['security', 'devops'] }, null, {})).toEqual(['security', 'devops']);
+  });
+
+  it('honors an explicit empty activePersonas array as a real opt-out', () => {
+    expect(ids({ activePersonas: [] }, null, {})).toEqual([]);
+  });
+
+  it('honors personaSettings toggles from the dispatch client_payload', () => {
+    // Ids must be real built-ins: an unrecognised id is a configuration error, not a reviewer.
+    const payload = {
+      personaSettings: {
+        security: { enabled: true },
+        style: { enabled: false },
+        testing: {},
+      },
+    };
+    expect(ids(payload, null, {})).toEqual(['security', 'testing']);
+  });
+
+  it('honors a personas: array from local .review-yeti.yaml', () => {
+    const localConfig = {
+      file: '.review-yeti.yaml',
+      parsed: { personas: [{ id: 'security' }, { id: 'quality', enabled: false }, { id: 'database' }] },
+    };
+    expect(ids({}, localConfig, {})).toEqual(['security', 'database']);
+  });
+
+  it('accepts a comma-separated ACTIVE_PERSONAS string', () => {
+    expect(ids({}, null, { ACTIVE_PERSONAS: 'security, devops' })).toEqual(['security', 'devops']);
+  });
+
+  it('rejects unknown persona ids rather than silently reviewing nothing', () => {
+    const r = resolvePersonaRoster({ activePersonas: ['security', 'astrology'] }, null, {});
+    expect(r.errors.length).toBeGreaterThan(0);
+    expect(r.errors[0]).toContain('astrology');
+  });
+});
+
+describe('Dispatch path: diff resolution never fabricates a diff', () => {
+  const originalCwd = process.cwd();
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    delete process.env.PR_DIFF;
+    delete process.env.PR_DIFF_FILE;
+  });
+
+  it('returns an empty diff when no diff source is available instead of a hardcoded sample', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-nodiff-'));
+    process.chdir(tmp);
+    delete process.env.PR_DIFF;
+    const ctx = pipeline.getPRDiffAndContext();
+    expect(ctx.diffText).toBe('');
+  });
+
+  it('does not carry a hardcoded express sample diff in the source', () => {
+    const source = fs.readFileSync(pipelinePath, 'utf-8');
+    expect(source).not.toContain("app.get('/api/v1/user'");
+  });
+
+  it('reads large workflow diffs from a file instead of the environment', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-diff-file-'));
+    const diffPath = path.join(tmp, 'review.diff');
+    fs.writeFileSync(diffPath, 'diff --git a/large.ts b/large.ts\n+const large = true;\n');
+    process.env.PR_DIFF_FILE = diffPath;
+
+    const ctx = pipeline.getPRDiffAndContext();
+
+    expect(ctx.diffText).toContain('large.ts');
+    expect(ctx.diffText).toContain('const large = true;');
+  });
+});
+
+describe('Dispatch path: arbitration reports the real persona count', () => {
+  const { computeArbitrationQuorum } = pipeline;
+
+  it('reports quorum satisfied against the number of personas that actually ran', () => {
+    const results = [
+      { personaId: 'security', findings: [] },
+      { personaId: 'devops', findings: [] },
+    ];
+    const arbitration = computeArbitrationQuorum(results, 2);
+    expect(arbitration.quorumSatisfied).toBe(true);
+    expect(arbitration.completedPersonas).toBe(2);
+    expect(arbitration.totalPersonas).toBe(2);
+  });
+
+  it('reports degraded quorum when fewer personas completed than expected', () => {
+    const results = [{ personaId: 'security', findings: [] }];
+    const arbitration = computeArbitrationQuorum(results, 12);
+    expect(arbitration.quorumSatisfied).toBe(false);
+  });
+
+  it('does not hardcode "12" in the rationale when fewer personas ran', () => {
+    const results = [
+      { personaId: 'security', findings: [] },
+      { personaId: 'devops', findings: [] },
+    ];
+    const arbitration = computeArbitrationQuorum(results, 2);
+    expect(arbitration.rationale).not.toContain('12');
+    expect(arbitration.rationale).toContain('2');
+  });
+
+  it('fails closed when a provider lane returns ERROR instead of producing SHIP', () => {
+    const arbitration = computeArbitrationQuorum([
+      { personaId: 'security', decision: 'ERROR', findings: [], error: 'provider unavailable' },
+      { personaId: 'testing', decision: 'APPROVE', findings: [] },
+    ], 2);
+
+    expect(arbitration.verdict).toBe('BLOCK');
+    expect(arbitration.quorumSatisfied).toBe(false);
+    expect(arbitration.rationale).toContain('provider failures');
+  });
+});
+
+describe('Dispatch path: OpenRouter is the only model boundary', () => {
+  it('does not treat a legacy provider key or base URL as a review provider', () => {
+    expect(pipeline.resolveModelConfig({ LLM_API_KEY: 'legacy-key', LLM_BASE_URL: 'https://legacy.example' })).toMatchObject({
+      enabled: false,
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+  });
+});
+
+describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () => {
+  const context = {
+    prNumber: '42',
+    repo: 'review-yeti-ai/review-yeti-bot',
+    headSha: 'exact-head',
+  };
+
+  const lineComment = (line: number, side: 'RIGHT' | 'LEFT' = 'RIGHT') => ({
+    path: 'src/app.ts',
+    line,
+    side,
+    body: `**P1 · Finding ${line}**`,
+    markerKey: `finding-${line}-${side}`,
+    personas: ['Security'],
+    finding: { severity: 'P1', path: 'src/app.ts', line, side, title: `Finding ${line}`, body: 'Issue', personas: ['Security'] },
+  });
+
+  const fileComment = () => ({
+    path: 'assets/logo.png',
+    body: '**P1 · Binary finding**',
+    markerKey: 'binary-finding',
+    personas: ['Security'],
+    finding: { severity: 'P1', path: 'assets/logo.png', line: 1, side: 'RIGHT', title: 'Binary finding', body: 'Issue', personas: ['Security'] },
+  });
+
+  function githubRunner(options: {
+    headSha?: string;
+    failReviewPost?: boolean;
+    suppressPublishedThreads?: boolean;
+    responsePublisherLogin?: string;
+    threadPublisherLogin?: string;
+    threadHeadSha?: string;
+    threadPath?: string;
+    threadLine?: number;
+    replaceFindingMarker?: boolean;
+  } = {}) {
+    const responsePublisherLogin = options.responsePublisherLogin ?? 'github-actions[bot]';
+    const state = {
+      commands: [] as Array<{ executable: string; args: string[]; options: any }>,
+      reviews: [] as Array<{ body: string; user: { login: string } }>,
+      threads: [] as any[],
+      postedPayloads: [] as Array<{ endpoint: string; payload: any }>,
+      nextId: 100,
+    };
+    const addThread = (payload: any) => {
+      state.nextId += 1;
+      if (options.suppressPublishedThreads) return;
+      state.threads.push({
+        id: `THREAD_${state.nextId}`,
+        isResolved: false,
+        path: options.threadPath || payload.path,
+        line: options.threadLine ?? (payload.subject_type === 'file' ? null : payload.line),
+        diffSide: payload.side || null,
+        comments: {
+          nodes: [{
+            databaseId: state.nextId,
+            body: options.replaceFindingMarker ? payload.body.replace('review-yeti-bot:finding:v1:', 'other-action:finding:v1:') : payload.body,
+            author: { login: options.threadPublisherLogin || 'github-actions' },
+            commit: { oid: options.threadHeadSha || context.headSha },
+          }],
+        },
+      });
+    };
+    const commandRunner = (executable: string, args: string[], commandOptions: any) => {
+      state.commands.push({ executable, args, options: commandOptions });
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { status: 0, stdout: JSON.stringify({ headRefOid: options.headSha || context.headSha, baseRefOid: 'base' }), stderr: '' };
+      }
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        return {
+          status: 0,
+          stdout: JSON.stringify([{ data: {
+            // Viewer identity is not publication identity; production GraphQL can differ.
+            viewer: { login: 'workflow-viewer' },
+            repository: { pullRequest: { reviewThreads: { nodes: state.threads } } },
+          } }]),
+          stderr: '',
+        };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const endpoint = args[3];
+        const payload = JSON.parse(commandOptions.input);
+        state.postedPayloads.push({ endpoint, payload });
+        if (options.failReviewPost && endpoint.endsWith('/reviews')) {
+          return { status: 1, stdout: '', stderr: 'permission denied' };
+        }
+        if (endpoint.endsWith('/reviews')) {
+          state.reviews.push({ body: payload.body, user: { login: responsePublisherLogin } });
+          payload.comments.forEach(addThread);
+        } else {
+          addThread(payload);
+        }
+        state.nextId += 1;
+        return { status: 0, stdout: JSON.stringify({ id: state.nextId, user: { login: responsePublisherLogin } }), stderr: '' };
+      }
+      if (args[0] === 'api' && args[1]?.includes('/pulls/42/reviews')) {
+        return { status: 0, stdout: JSON.stringify([state.reviews]), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected command: ${args.join(' ')}` };
+    };
+    return { state, commandRunner };
+  }
+
+  it('publishes every P0/P1 line in one uncapped COMMENT review and file findings separately', () => {
+    const { state, commandRunner } = githubRunner();
+    const lineComments = Array.from({ length: 12 }, (_, index) => lineComment(index + 1));
+    const result = pipeline.postOrOutputComment('compact body', context, {
+      lineComments,
+      fileComments: [fileComment()],
+      advisories: [{ path: 'src/app.ts', line: 20, side: 'RIGHT', title: 'P2 only' }],
+      rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: true, reviewId: 113 });
+    const reviewPost = state.postedPayloads.find((post) => post.endpoint.endsWith('/reviews'))!;
+    expect(reviewPost.payload).toMatchObject({ commit_id: 'exact-head', event: 'COMMENT' });
+    expect(reviewPost.payload.comments).toHaveLength(12);
+    expect(reviewPost.payload.comments[0]).toMatchObject({ path: 'src/app.ts', line: 1, side: 'RIGHT' });
+    expect(reviewPost.payload.body).toContain('review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:exact-head:action');
+    const filePost = state.postedPayloads.find((post) => post.payload.subject_type === 'file')!;
+    expect(filePost.payload).toMatchObject({ commit_id: 'exact-head', path: 'assets/logo.png', subject_type: 'file' });
+    expect(state.postedPayloads).toHaveLength(2);
+    expect(state.commands.some((command) => command.args[0] === 'pr' && command.args[1] === 'comment')).toBe(false);
+    expect(state.commands.find((command) => command.args[1] === 'graphql')?.args).toContain('--paginate');
+  });
+
+  it('does not publish a duplicate exact-head review or finding conversations', () => {
+    const { state, commandRunner } = githubRunner();
+    const plan = { lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [] };
+    expect(pipeline.postOrOutputComment('compact body', context, plan, { commandRunner }).success).toBe(true);
+    const postsAfterFirstRun = state.postedPayloads.length;
+
+    const replay = pipeline.postOrOutputComment('compact body', context, plan, { commandRunner });
+
+    expect(replay).toMatchObject({ success: true, postedViaGh: true, deduplicated: true });
+    expect(state.postedPayloads).toHaveLength(postsAfterFirstRun);
+  });
+
+  it('accepts REST-style github-actions[bot] thread authors in Action mode', () => {
+    const { commandRunner } = githubRunner({ threadPublisherLogin: 'github-actions[bot]' });
+    const result = pipeline.postOrOutputComment('compact body', context, {
+      lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: true });
+  });
+
+  it('binds PAT-backed Action verification to the publisher returned by REST', () => {
+    const { commandRunner } = githubRunner({
+      responsePublisherLogin: 'example-user',
+      threadPublisherLogin: 'example-user',
+    });
+    const result = pipeline.postOrOutputComment('compact body', context, {
+      lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: true });
+  });
+
+  it('rejects a publication response that does not identify its publisher', () => {
+    const { commandRunner } = githubRunner({ responsePublisherLogin: '' });
+    const result = pipeline.postOrOutputComment('compact body', context, {
+      lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('did not identify its publisher');
+  });
+
+  it.each([
+    ['author', { threadPublisherLogin: 'unrelated-bot[bot]' }],
+    ['head SHA', { threadHeadSha: 'stale-head' }],
+    ['path', { threadPath: 'src/other.ts' }],
+    ['line', { threadLine: 99 }],
+    ['marker', { replaceFindingMarker: true }],
+  ])('rejects a thread with the wrong %s', (_label, runnerOptions) => {
+    const { commandRunner } = githubRunner(runnerOptions);
+    const result = pipeline.postOrOutputComment('compact body', context, {
+      lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('expected unresolved review thread');
+  });
+
+  it('resumes a partial exact-head publication by creating only its missing conversation', () => {
+    const { state, commandRunner } = githubRunner();
+    const firstPlan = { lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [] };
+    expect(pipeline.postOrOutputComment('compact body', context, firstPlan, { commandRunner }).success).toBe(true);
+    const postsAfterFirstRun = state.postedPayloads.length;
+
+    const resumed = pipeline.postOrOutputComment('compact body', context, {
+      ...firstPlan,
+      lineComments: [lineComment(4), lineComment(8, 'LEFT')],
+    }, { commandRunner });
+
+    expect(resumed).toMatchObject({ success: true, postedViaGh: true });
+    expect(state.postedPayloads).toHaveLength(postsAfterFirstRun + 1);
+    expect(state.postedPayloads.at(-1)?.payload).toMatchObject({ path: 'src/app.ts', line: 8, side: 'LEFT' });
+  });
+
+  it('publishes valid conversations while omitting rejected actionable anchors', () => {
+    const { state, commandRunner } = githubRunner();
+    const result = pipeline.postOrOutputComment('compact body', context, {
+      lineComments: [lineComment(4)],
+      fileComments: [],
+      advisories: [],
+      rejected: [{ severity: 'P1', path: 'src/app.ts', line: 99, title: 'Invalid anchor', reason: 'line_not_changed' }],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: true });
+    const reviewPost = state.postedPayloads.find((post) => post.endpoint.endsWith('/reviews'))!;
+    expect(reviewPost.payload.comments).toHaveLength(1);
+    expect(reviewPost.payload.comments[0]).toMatchObject({ path: 'src/app.ts', line: 4, side: 'RIGHT' });
+    expect(reviewPost.payload.body).toContain('src/app.ts:99');
+    expect(reviewPost.payload.body).toContain('Invalid anchor');
+    expect(reviewPost.payload.body).toContain('line_not_changed');
+    expect(reviewPost.payload.body).toContain('not moved to a nearby line');
+  });
+
+  it('fails closed when post-write reviewThreads verification cannot find the published conversation', () => {
+    const { state, commandRunner } = githubRunner({ suppressPublishedThreads: true });
+    const result = pipeline.postOrOutputComment('compact body', context, {
+      lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('expected unresolved review thread');
+    expect(state.postedPayloads.filter((post) => post.endpoint.endsWith('/reviews'))).toHaveLength(1);
+    expect(state.commands.some((command) => command.args[0] === 'pr' && command.args[1] === 'comment')).toBe(false);
+  });
+
+  it('fails closed on GitHub API errors without downgrading to an issue comment', () => {
+    const { state, commandRunner } = githubRunner({ failReviewPost: true });
+    const result = pipeline.postOrOutputComment('unpublished body', context, {
+      lineComments: [], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('permission denied');
+    expect(state.commands.some((command) => command.args[0] === 'pr' && command.args[1] === 'comment')).toBe(false);
+  });
+
+  it('writes compact Markdown and a JSON publication plan for local execution', () => {
+    const writes = new Map<string, string>();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-local-'));
+    const result = pipeline.postOrOutputComment('local compact body', { repo: 'o/r', headSha: 'head' }, {
+      lineComments: [lineComment(1)], fileComments: [], advisories: [], rejected: [],
+    }, {
+      cwd,
+      fileSystem: { writeFileSync: (filePath: string, body: string) => writes.set(filePath, body) },
+    });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: false });
+    expect(writes.get(path.join(cwd, 'review-comment.md'))).toBe('local compact body');
+    expect(JSON.parse(writes.get(path.join(cwd, 'review-publication.json'))!).lineComments).toHaveLength(1);
+  });
+
+  it('binds the action review to the authoritative GitHub head SHA', () => {
+    const commandRunner = () => ({
+      status: 0,
+      stdout: JSON.stringify({ headRefOid: 'exact-head', baseRefOid: 'exact-base' }),
+      stderr: '',
+    });
+    expect(pipeline.assertCurrentPullRequest({
+      prNumber: '42',
+      repo: 'review-yeti-ai/review-yeti-bot',
+      headSha: 'exact-head',
+    }, { commandRunner })).toEqual({ headRefOid: 'exact-head', baseRefOid: 'exact-base' });
+
+    expect(() => pipeline.assertCurrentPullRequest({
+      prNumber: '42',
+      repo: 'review-yeti-ai/review-yeti-bot',
+      headSha: 'stale-head',
+    }, { commandRunner })).toThrow('PR head changed during review');
+  });
+});
+
+describe('Dispatch path: workflow is runnable on GitHub-hosted runners (Action-only)', () => {
+  const workflow = fs.readFileSync(workflowPath, 'utf-8');
+  const action = fs.readFileSync(path.join(rootRepoDir, 'action.yml'), 'utf-8');
+  const ciWorkflow = fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8');
+
+  it('uses ubuntu-latest', () => {
+    expect(workflow).toContain('ubuntu-latest');
+    expect(workflow).not.toMatch(/blacksmith|useblacksmith/i);
+    expect(ciWorkflow).toContain('ubuntu-latest');
+    expect(ciWorkflow).not.toMatch(/blacksmith|useblacksmith/i);
+    expect(workflow).not.toMatch(/doctl|kubectl|DIGITALOCEAN|deploy-doks/i);
+    expect(ciWorkflow).not.toMatch(/doctl|kubectl|DIGITALOCEAN|deploy-doks|build-and-deploy/i);
+  });
+
+  it('does not ship a deploy workflow', () => {
+    expect(fs.existsSync(path.join(rootRepoDir, '.github/workflows/deploy-review-yeti.yaml'))).toBe(false);
+    expect(fs.existsSync(path.join(rootRepoDir, '.github/workflows/release-semver.yaml'))).toBe(false);
+  });
+
+  it('delegates the review to this repository\'s own action, so runs exercise the published path', () => {
+    expect(workflow).toContain('uses: ./');
+  });
+
+  it('forwards the resolved target repo and PR number to the action', () => {
+    expect(workflow).toContain('client_payload.target_repo');
+    expect(workflow).toContain('client_payload.pr_number');
+  });
+
+  it('supplies the PR diff and number to the pipeline explicitly via the action', () => {
+    expect(action).toContain('PR_DIFF');
+    expect(action).toContain('PR_NUMBER');
+  });
+
+  it('does not push commits back to the checked-out repository', () => {
+    expect(workflow).not.toContain('git push');
+  });
+
+  it('uses only the generic OPENROUTER_API_KEY secret contract across hosted consumers', () => {
+    expect(workflow).toContain('secrets.OPENROUTER_API_KEY');
+    expect(workflow).not.toContain('REVIEW_YETI_OPENROUTER_API_KEY');
+  });
+});

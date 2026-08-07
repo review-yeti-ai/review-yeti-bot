@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.env
+*.log
+.review-yeti-memory/
+fixtures/tmp/
+.tmp/
+test-results/

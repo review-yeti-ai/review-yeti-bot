@@ -1,0 +1,172 @@
+name: Review Yeti
+
+# Central review repository runner.
+#
+# Two entry points:
+#   1. pull_request       — reviews PRs raised against this repository itself.
+#   2. repository_dispatch — another repository dispatches here with a target_repo/pr_number
+#                            client_payload; this repo holds the personas, prompts and keys and
+#                            comments back on the originating PR.
+#
+# The review itself is delegated to this repository's own action.yml, so every run exercises the
+# same code path third-party consumers get via `uses: review-yeti-ai/review-yeti-bot@v1`.
+on:
+  pull_request:
+    # Self-review is opt-in per PR lifecycle, not per source-branch/base update.
+    # Keep `synchronize` out of the default so a moved PR head or target branch
+    # does not start another model review.
+    types: [opened, reopened]
+  repository_dispatch:
+    types: [review-requested, re-review-requested, dispatch-review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: review-${{ github.event.client_payload.target_repo || github.repository }}-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# GitHub-hosted runners only.
+env:
+  NODE_VERSION: "24"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_PREFER_OFFLINE: "true"
+
+jobs:
+  review:
+    name: Execute AI Review Pipeline
+    runs-on: ubuntu-latest
+    # Soft timeout so a stuck provider fan-out cannot burn the full runner budget.
+    timeout-minutes: 45
+    env:
+      # Surface for the composite action + logs. Auto Router fails over to fixed DeepSeek below.
+      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto-beta' }}
+    steps:
+      - name: Checkout Review Runner (this repository)
+        uses: actions/checkout@v4
+        with:
+          # Shallow checkout is enough; the action fetches PR diffs via the API.
+          fetch-depth: 1
+          persist-credentials: false
+
+      # "Central repo controls all personas and settings and each repo can override with a local
+      # file." On the dispatch path the workspace holds this repository, so the target's override
+      # is fetched in. On the pull_request path the workspace is already the repo under review.
+      - name: Fetch Target Repository Override Config
+        if: github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.event.client_payload.target_repo }}
+        run: |
+          for f in .review-yeti.yaml .review-yeti.yml .coderabbit.yaml .coderabbit.yml; do
+            if gh api "repos/$TARGET_REPO/contents/$f" -H "Accept: application/vnd.github.raw" > "$f" 2>/dev/null; then
+              echo "Applied override config $f from $TARGET_REPO."
+              break
+            fi
+            rm -f "$f"
+          done
+
+      - name: Check self-review provider configuration
+        id: self-review-gate
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+            echo "OPENROUTER_API_KEY is not configured for this repository; skipping the self-review job while preserving fail-closed provider behavior for dispatched reviews."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Action-path reviews must publish as the GitHub App bot (review-yeti-bot[bot]), not as the
+      # human who minted REVIEW_BOT_TOKEN. A PAT always authors as that user — which is why
+      # comments would otherwise show up as that user. Fall back to REVIEW_BOT_TOKEN only if mint fails
+      # (missing App secrets on a fork / local composite use).
+      - name: Mint review-yeti-bot App installation token
+        id: bot-token
+        if: steps.self-review-gate.outputs.skip != 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REVIEW_YETI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.REVIEW_YETI_GITHUB_APP_PRIVATE_KEY }}
+          # Org install covers this repo and dispatch targets under the same owner.
+          owner: ${{ github.repository_owner }}
+
+      - name: Log review publisher identity
+        if: steps.self-review-gate.outputs.skip != 'true'
+        env:
+          BOT_TOKEN: ${{ steps.bot-token.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          token="${BOT_TOKEN:-$FALLBACK_TOKEN}"
+          if [[ -z "${token}" ]]; then
+            echo "::error::No github token available for review publication"
+            exit 1
+          fi
+          # Installation tokens don't always answer /user; prefer /installation when ghs_.
+          if [[ "$token" == ghs_* ]]; then
+            echo "Publisher: GitHub App installation token (expects review-yeti-bot[bot])"
+          else
+            login=$(GH_TOKEN="$token" gh api user --jq .login 2>/dev/null || echo 'unknown')
+            echo "Publisher: personal/actions token as @$login (not the App bot)"
+            if [[ -z "${BOT_TOKEN:-}" ]]; then
+              echo "::warning::App token mint skipped/failed; comments will appear as @$login instead of review-yeti-bot[bot]"
+            fi
+          fi
+
+      - name: Execute AI Review Panel
+        id: review
+        if: steps.self-review-gate.outputs.skip != 'true'
+        uses: ./
+        with:
+          repo: ${{ github.event.client_payload.target_repo || github.repository }}
+          pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+          # Default "all" turns on every built-in persona (security, performance, architecture,
+          # testing, dependencies + style, documentation, accessibility, database, devops, i18n,
+          # licensing). Override with vars.ACTIVE_PERSONAS for a narrower roster.
+          personas: ${{ vars.ACTIVE_PERSONAS || 'all' }}
+          model: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto-beta' }}
+          # Transient primary failures retry, then fall back to this model. Override with the repo var.
+          openrouter-fallback-models: ${{ vars.OPENROUTER_FALLBACK_MODELS || 'deepseek/deepseek-v4-flash-0731' }}
+          # Full safety ceiling by default — no artificial 24k throttle. Override via vars.MAX_DIFF_CHARS.
+          max-diff-chars: ${{ vars.MAX_DIFF_CHARS || '2000000' }}
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          # Context7: org/repo secret. Enabled for personas when key is set and
+          # target .review-yeti.yaml has mcp.context7.enabled (this repo defaults true).
+          context7-api-key: ${{ secrets.CONTEXT7_API_KEY }}
+          # vars is valid in the workflow; action.yml must receive this as an input (no vars in composites).
+          openrouter-stream: ${{ vars.OPENROUTER_STREAM || 'false' }}
+          # Per-request model timeout (default 30s). Override with vars.OPENROUTER_TIMEOUT_MS or .review-yeti.yaml.
+          openrouter-timeout-ms: ${{ vars.OPENROUTER_TIMEOUT_MS || '30000' }}
+          llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          # Optional: when present, enables Linear issue sync / Linear MCP tools for this run.
+          # LINEAR_API_KEY only — OAuth Linear MCPs are rejected. Missing key skips Linear only.
+          linear-api-key: ${{ secrets.LINEAR_API_KEY }}
+          # Prefer App installation token so PR comments/reviews author as review-yeti-bot[bot].
+          # REVIEW_BOT_TOKEN (human PAT) is fallback only — PAT always posts as that user.
+          github-token: ${{ steps.bot-token.outputs.token || secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Report Verdict
+        if: always()
+        run: |
+          echo "Verdict: ${{ steps.review.outputs.verdict }}"
+          echo "Findings: ${{ steps.review.outputs.findings-count }} (P0: ${{ steps.review.outputs.p0-count }}, P1: ${{ steps.review.outputs.p1-count }}, P2: ${{ steps.review.outputs.p2-count }})"
+
+      # Session logs are uploaded rather than committed. Pushing back into the checked-out
+      # repository fails on detached PR checkouts and cannot work for a cross-repo target.
+      - name: Upload Session Ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-ledger-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+          path: |
+            sessions/
+            review-comment.md
+          if-no-files-found: ignore
+          retention-days: 14
