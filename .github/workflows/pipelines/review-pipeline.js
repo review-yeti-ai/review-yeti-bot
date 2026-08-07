@@ -3665,9 +3665,14 @@ function coveragePolicyIdentity(expectedPersonaIds, coveragePolicy = {}, persona
 
 function readAuthenticatedPublisherLogin(commandRunner) {
   const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
-  if (!result || result.status !== 0) return null;
-  const login = String(result.stdout || '').trim().replace(/^"|"$/g, '');
-  return login || null;
+  if (result && result.status === 0) {
+    const login = String(result.stdout || '').trim().replace(/^"|"$/g, '');
+    if (login) return login;
+  }
+  // The default GITHUB_TOKEN is a GitHub App installation token, so GET /user cannot identify it.
+  // Reviews it publishes use the fixed GitHub Actions bot identity. Other installation tokens may
+  // use different bots; declining their optimization is safe, while guessing their identity is not.
+  return process.env.GITHUB_ACTIONS === 'true' ? 'github-actions[bot]' : null;
 }
 
 /** The most recent summary this bot published on the pull request, whatever push produced it. */
