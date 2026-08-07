@@ -596,6 +596,34 @@ describe('work item 2 — one pull request gets one summary, not one per push', 
 /* -------------------------------------------------------------------------------------------- */
 
 describe('work item 4 — a push that changed nothing reviewable', () => {
+  it('derives a stable identity from the trusted roster and normalized coverage policy', () => {
+    const implicit = pipeline.coveragePolicyIdentity(
+      ['security', 'testing', 'architecture'],
+      {},
+    );
+    const explicit = pipeline.coveragePolicyIdentity(
+      ['security', 'testing', 'architecture'],
+      {
+        quorum: 'two_thirds',
+        min_personas: 3,
+        mandatory_personas: ['security'],
+        provider_diversity_min: 2,
+      },
+    );
+
+    expect(implicit).toMatch(/^[0-9a-f]{64}$/);
+    expect(explicit).toBe(implicit);
+    expect(pipeline.coveragePolicyIdentity(
+      ['security', 'testing', 'contract'],
+      {},
+    )).not.toBe(implicit);
+    expect(pipeline.coveragePolicyIdentity(
+      ['security', 'testing', 'architecture'],
+      {},
+      [{ id: 'security', charter: 'changed trusted charter', model: 'review-model' }],
+    )).not.toBe(implicit);
+  });
+
   it('recovers the verdict, head, and counts from a summary it published earlier', () => {
     const body = [
       '## 🟡 **Verdict: FIX_FIRST**',
@@ -620,6 +648,14 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
   const HEAD = 'ecf3964c865d91ed08ff4ac6266e8f8b090b567e';
   const PREVIOUS_HEAD = 'c84d44db1b714695267a4c2a6967c5307845201d';
   const context = { repo: 'example-org/example-app', prNumber: 4821, headSha: HEAD };
+  const currentCoverage = {
+    expectedPersonaIds: ['security', 'testing', 'architecture'],
+    coveragePolicy: {},
+  };
+  const currentCoverageIdentity = pipeline.coveragePolicyIdentity(
+    currentCoverage.expectedPersonaIds,
+    currentCoverage.coveragePolicy,
+  );
   const compareRunner = (files: string[]) => () => ({ status: 0, stdout: JSON.stringify([{ files: files.map((filename) => ({ filename })) }]), stderr: '' });
 
   it('separates excluded churn from a real source change', () => {
@@ -633,7 +669,7 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
     expect(withSource.reviewable).toEqual([SERVICE]);
   });
 
-  const summaryFor = (sha: string, verdict = 'FIX_FIRST') => ({
+  const summaryFor = (sha: string, verdict = 'FIX_FIRST', coverageIdentity: string | null = currentCoverageIdentity) => ({
     id: 900,
     user: { login: 'github-actions[bot]' },
     body: [
@@ -642,11 +678,21 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
       '- **Total Findings**: P0: `0` | P1: `7` | P2 / Nits: `3`',
       actionSummaryAnchor(context),
       `<!-- review-yeti-bot:v2:example-org/example-app#4821:${sha}:action -->`,
+      coverageIdentity ? `<!-- review-yeti-bot:coverage:v1:${coverageIdentity} -->` : '',
     ].join('\n'),
   });
 
   /** A runner answering both the reviews read and the compare call. */
-  const skipRunner = (summary: any, changedFiles: string[] | null) => (_exe: string, args: string[]) => {
+  const skipRunner = (
+    summary: any,
+    changedFiles: string[] | null,
+    authenticatedLogin: string | null = 'github-actions[bot]',
+  ) => (_exe: string, args: string[]) => {
+    if (args[0] === 'api' && args[1] === 'user') {
+      return authenticatedLogin
+        ? { status: 0, stdout: `${authenticatedLogin}\n`, stderr: '' }
+        : { status: 1, stdout: '', stderr: 'publisher unavailable' };
+    }
     if (args[0] === 'api' && String(args[1]).startsWith('repos/example-org/example-app/compare/')) {
       if (changedFiles === null) return { status: 1, stdout: '', stderr: 'no comparison' };
       return { status: 0, stdout: JSON.stringify([{ files: changedFiles.map((filename) => ({ filename })) }]), stderr: '' };
@@ -658,11 +704,33 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
   };
 
   const excludes = ['apps/*/src/api/generated/**'];
+  const carryPlan = (runner: any, coverage = currentCoverage) => pipeline.planCarriedForwardVerdict(
+    runner,
+    context,
+    excludes,
+    coverage,
+  );
+
+  it('renders and parses the roster/policy identity in the durable summary', () => {
+    const lanes = currentCoverage.expectedPersonaIds.map((personaId, index) => ({
+      personaId,
+      displayName: personaId,
+      provider: `provider-${index}`,
+      model: 'review-model',
+      decision: 'APPROVE',
+      findings: [],
+    }));
+    const arbitration = pipeline.computeArbitrationQuorum(lanes, lanes.length, currentCoverage);
+    const body = pipeline.formatPRComment(arbitration, lanes, context, {}, { enabled: true, model: 'review-model' });
+
+    expect(body).toContain(`<!-- review-yeti-bot:coverage:v1:${currentCoverageIdentity} -->`);
+    expect(parsePriorSummaryReview(body).coverageIdentity).toBe(currentCoverageIdentity);
+  });
 
   it('carries the previous verdict forward when only excluded paths moved', () => {
     const runner = skipRunner(summaryFor(PREVIOUS_HEAD), [GENERATED_CLIENT]);
 
-    const plan = pipeline.planCarriedForwardVerdict(runner, context, excludes);
+    const plan = carryPlan(runner);
 
     expect(plan).toMatchObject({
       verdict: 'FIX_FIRST',
@@ -681,11 +749,7 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
     const cleanSummary = summaryFor(PREVIOUS_HEAD, 'SHIP');
     cleanSummary.body = cleanSummary.body.replace('P1: `7`', 'P1: `0`');
 
-    const plan = pipeline.planCarriedForwardVerdict(
-      skipRunner(cleanSummary, [GENERATED_CLIENT]),
-      context,
-      excludes,
-    );
+    const plan = carryPlan(skipRunner(cleanSummary, [GENERATED_CLIENT]));
 
     expect(plan).toMatchObject({
       verdict: 'SHIP',
@@ -701,24 +765,47 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
     const incompleteSummary = summaryFor(PREVIOUS_HEAD);
     incompleteSummary.body = incompleteSummary.body.replace('`12/12`', '`11/12`');
 
-    expect(pipeline.planCarriedForwardVerdict(
-      skipRunner(incompleteSummary, [GENERATED_CLIENT]),
-      context,
-      excludes,
-    )).toBeNull();
+    expect(carryPlan(skipRunner(incompleteSummary, [GENERATED_CLIENT]))).toBeNull();
+  });
+
+  it('rejects a matching marker published by a different GitHub identity', () => {
+    const foreignSummary = summaryFor(PREVIOUS_HEAD, 'SHIP');
+    foreignSummary.user.login = 'untrusted-reviewer';
+
+    expect(carryPlan(skipRunner(foreignSummary, [GENERATED_CLIENT]))).toBeNull();
+  });
+
+  it('reruns when the prior roster/policy identity is missing or differs from current policy', () => {
+    expect(carryPlan(skipRunner(
+      summaryFor(PREVIOUS_HEAD, 'SHIP', null),
+      [GENERATED_CLIENT],
+    ))).toBeNull();
+
+    expect(carryPlan(skipRunner(summaryFor(PREVIOUS_HEAD, 'SHIP'), [GENERATED_CLIENT]), {
+      expectedPersonaIds: ['security', 'testing', 'contract'],
+      coveragePolicy: {},
+    })).toBeNull();
+  });
+
+  it('reruns when the current token publisher cannot be authenticated', () => {
+    expect(carryPlan(skipRunner(
+      summaryFor(PREVIOUS_HEAD, 'SHIP'),
+      [GENERATED_CLIENT],
+      null,
+    ))).toBeNull();
   });
 
   it('runs the panel whenever anything reviewable moved', () => {
     const runner = skipRunner(summaryFor(PREVIOUS_HEAD), [GENERATED_CLIENT, SERVICE]);
-    expect(pipeline.planCarriedForwardVerdict(runner, context, excludes)).toBeNull();
+    expect(carryPlan(runner)).toBeNull();
   });
 
   it('runs the panel when there is no prior summary, no comparison, or an empty comparison', () => {
-    expect(pipeline.planCarriedForwardVerdict(skipRunner(null, [GENERATED_CLIENT]), context, excludes)).toBeNull();
-    expect(pipeline.planCarriedForwardVerdict(skipRunner(summaryFor(PREVIOUS_HEAD), null), context, excludes)).toBeNull();
-    expect(pipeline.planCarriedForwardVerdict(skipRunner(summaryFor(PREVIOUS_HEAD), []), context, excludes)).toBeNull();
+    expect(carryPlan(skipRunner(null, [GENERATED_CLIENT]))).toBeNull();
+    expect(carryPlan(skipRunner(summaryFor(PREVIOUS_HEAD), null))).toBeNull();
+    expect(carryPlan(skipRunner(summaryFor(PREVIOUS_HEAD), []))).toBeNull();
     // Already reviewed at this exact head: the normal exact-head dedupe path owns that case.
-    expect(pipeline.planCarriedForwardVerdict(skipRunner(summaryFor(HEAD), [GENERATED_CLIENT]), context, excludes)).toBeNull();
+    expect(carryPlan(skipRunner(summaryFor(HEAD), [GENERATED_CLIENT]))).toBeNull();
   });
 
   it('refuses to answer when the comparison is missing, unreadable, or degenerate', () => {
