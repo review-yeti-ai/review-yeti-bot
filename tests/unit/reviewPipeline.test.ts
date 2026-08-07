@@ -33,7 +33,8 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
       if (options.config) fs.writeFileSync(path.join(tempDir, '.review-yeti.yaml'), options.config);
       process.exitCode = undefined;
       for (const key of [
-        'PR_NUMBER', 'PR_REPO', 'GITHUB_EVENT_PATH', 'REVIEW_YETI_CONFIG_DIR', 'EXCLUDE_PATHS',
+        'PR_NUMBER', 'PR_REPO', 'GITHUB_ACTIONS', 'GITHUB_EVENT_PATH', 'GITHUB_SHA',
+        'REVIEW_YETI_CONFIG_DIR', 'EXCLUDE_PATHS',
         'CONTEXT7_API_KEY', 'CONTEXT7_ENABLED', 'MCP_CONFIG_JSON',
       ]) delete process.env[key];
       Object.assign(process.env, {
@@ -982,7 +983,9 @@ deleted file mode 100644
 
     it('8. Handles JSON payload in PR_DIFF environment variable correctly', () => {
       const originalEnv = process.env.PR_DIFF;
+      const originalSha = process.env.GITHUB_SHA;
       try {
+        delete process.env.GITHUB_SHA;
         process.env.PR_DIFF = JSON.stringify({
           diff: 'diff --git a/src/api/user.ts b/src/api/user.ts\n+ const x = 1;\n',
           prNumber: 42,
@@ -998,6 +1001,8 @@ deleted file mode 100644
         expect(ctx.diffText).toContain('src/api/user.ts');
       } finally {
         process.env.PR_DIFF = originalEnv;
+        if (originalSha === undefined) delete process.env.GITHUB_SHA;
+        else process.env.GITHUB_SHA = originalSha;
       }
     });
 

@@ -788,11 +788,18 @@ describe('work item 4 — a push that changed nothing reviewable', () => {
   });
 
   it('reruns outside GitHub Actions when the current token publisher cannot be authenticated', () => {
-    expect(carryPlan(skipRunner(
-      summaryFor(PREVIOUS_HEAD, 'SHIP'),
-      [GENERATED_CLIENT],
-      null,
-    ))).toBeNull();
+    const priorGitHubActions = process.env.GITHUB_ACTIONS;
+    delete process.env.GITHUB_ACTIONS;
+    try {
+      expect(carryPlan(skipRunner(
+        summaryFor(PREVIOUS_HEAD, 'SHIP'),
+        [GENERATED_CLIENT],
+        null,
+      ))).toBeNull();
+    } finally {
+      if (priorGitHubActions === undefined) delete process.env.GITHUB_ACTIONS;
+      else process.env.GITHUB_ACTIONS = priorGitHubActions;
+    }
   });
 
   it('recognizes the default Actions installation token publisher without trusting foreign reviews', () => {
