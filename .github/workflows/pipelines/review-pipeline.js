@@ -2612,6 +2612,10 @@ function buildCoverageTerminalArbitration(coverage = {}, options = {}) {
     terminalStatus: 'SHIP',
     coverageComplete: true,
     quorumSatisfied: true,
+    coverageQuorumSatisfied: true,
+    coverageStatus: 'complete',
+    gateDecision: 'PASS',
+    mergeEligible: true,
     rationale: `No reviewable files remained after ${policyExcludedCount} expected policy exclusion(s); `
       + 'no model review was run. Excluded files are present but intentionally unreviewed and do not block SHIP.',
   };
@@ -3568,6 +3572,9 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     `files-skipped-generated=${coverage?.skipped?.length || 0}`,
     `review-passes=${coverage?.passes ?? 1}`,
     `review-status=${arbitration.status || arbitration.verdict || 'NO_VERDICT'}`,
+    'coverage-status=' + (arbitration.coverageStatus || 'unknown'),
+    'gate-decision=' + (arbitration.gateDecision || 'BLOCKED'),
+    'merge-eligible=' + (arbitration.mergeEligible === true ? 'true' : 'false'),
     `prompt-tokens=${usage?.promptTokens || 0}`,
     `completion-tokens=${usage?.completionTokens || 0}`,
     `total-tokens=${usage?.totalTokens || 0}`,
@@ -3967,6 +3974,10 @@ async function main() {
       status: 'INCOMPLETE_REVIEW',
       rationale: 'All reviewer personas are disabled; no review evidence exists, so the run cannot produce a successful verdict.',
       quorumSatisfied: false,
+      coverageQuorumSatisfied: false,
+      coverageStatus: 'incomplete',
+      gateDecision: 'BLOCKED',
+      mergeEligible: false,
       completedPersonas: 0,
       totalPersonas: 0,
       metrics: { p0Count: 0, p1Count: 0, p2Count: 0 },
@@ -4066,6 +4077,8 @@ async function main() {
     console.log('[Arbitration] Computing binding arbitration quorum...');
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
       changedFiles: shownReviewFiles,
+      expectedPersonaIds: enabledPersonas.map((persona) => persona.id),
+      coveragePolicy: localConfig?.parsed?.coverage_policy || {},
       coverageComplete: reviewCoverageCompleteForArbitration(
         submoduleReview.coverageComplete,
         coverage,

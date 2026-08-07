@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { evaluateCoverage } = require('./coveragePolicy');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
 function canonicalize(value) {
@@ -182,21 +183,47 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   }
 
   const coverageComplete = options.coverageComplete !== false;
-  const quorumSatisfied = expected > 0 && failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
-  const incomplete = !quorumSatisfied;
-  const verdict = incomplete ? 'BLOCK' : candidateVerdict;
-  const status = incomplete ? 'INCOMPLETE_REVIEW' : verdict;
+  const coverage = Array.isArray(options.expectedPersonaIds)
+    ? evaluateCoverage({
+      expectedPersonaIds: options.expectedPersonaIds,
+      lanes: results,
+      policy: options.coveragePolicy,
+    })
+    : null;
+  const fullCoverage = coverage
+    ? coverage.status === 'complete' && coverageComplete
+    : expected > 0 && failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
+  const partialCoverage = Boolean(coverage && coverage.status === 'partial' && coverageComplete);
+  const quorumSatisfied = fullCoverage;
+  const coverageQuorumSatisfied = coverage ? coverage.numericQuorumSatisfied : quorumSatisfied;
+  const incomplete = !fullCoverage && !partialCoverage;
+  const verdict = incomplete || partialCoverage ? 'BLOCK' : candidateVerdict;
+  const status = incomplete ? 'INCOMPLETE_REVIEW' : partialCoverage ? 'PARTIAL_REVIEW' : verdict;
+  const gateDecision = status === 'SHIP' && verdict === 'SHIP' && p0Count === 0 && p1Count === 0
+    ? 'PASS'
+    : 'BLOCKED';
+  const mergeEligible = status === 'SHIP' && gateDecision === 'PASS';
+  const coverageStatus = coverage
+    ? (coverageComplete ? coverage.status : 'incomplete')
+    : (fullCoverage ? 'complete' : 'incomplete');
 
   return {
     totalPersonas: expected,
     completedPersonas: completedResults.length,
     coverageComplete,
     quorumSatisfied,
+    coverageQuorumSatisfied,
+    coverageStatus,
     verdict,
     status,
+    gateDecision,
+    mergeEligible,
+    ...(coverage ? { coverage } : {}),
     rationale: incomplete
       ? `${rationale} Review is incomplete; publication and merge approval must remain blocked until every expected lane and coverage check completes.`
-      : rationale,
+      : partialCoverage
+        ? `${rationale} Numeric coverage quorum met for ${coverage.trustworthyCount}/${coverage.expectedCount} trustworthy lane(s), but the review is partial; publication may retain evidence while merge approval remains blocked.`
+        : rationale,
     thresholds: { blockP1, fixP2 },
     metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length },
     findings,

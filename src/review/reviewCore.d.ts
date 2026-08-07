@@ -1,5 +1,5 @@
 export type CanonicalVerdict = 'SHIP' | 'FIX_FIRST' | 'BLOCK';
-export type ReviewStatus = CanonicalVerdict | 'INCOMPLETE_REVIEW';
+export type ReviewStatus = CanonicalVerdict | 'PARTIAL_REVIEW' | 'INCOMPLETE_REVIEW';
 
 export interface ReviewFinding {
   severity: 'P0' | 'P1' | 'P2';
@@ -27,10 +27,15 @@ export interface ReviewChangedFile {
 
 export interface ReviewLane {
   id?: string;
+  personaId?: string;
   required?: boolean;
+  provider?: string;
+  model?: string;
+  effort?: string;
   decision?: string;
   status?: string;
   error?: string;
+  partial?: number | boolean;
   findings?: ReviewFinding[];
 }
 
@@ -38,17 +43,24 @@ export interface CanonicalArbitration {
   totalPersonas: number;
   completedPersonas: number;
   quorumSatisfied: boolean;
+  coverageQuorumSatisfied?: boolean;
+  coverageStatus?: 'complete' | 'partial' | 'incomplete';
   verdict: CanonicalVerdict;
   status: ReviewStatus;
+  gateDecision?: 'PASS' | 'BLOCKED';
+  mergeEligible?: boolean;
   rationale: string;
   thresholds: { blockP1: number; fixP2: number };
   metrics: { p0Count: number; p1Count: number; p2Count: number; totalFindings: number };
   findings: ReviewFinding[];
+  coverage?: import('./coveragePolicy').CoverageEvaluation;
 }
 
 export interface ArbitrationOptions {
   changedFiles?: ReviewChangedFile[];
   coverageComplete?: boolean;
+  expectedPersonaIds?: string[];
+  coveragePolicy?: Partial<import('./coveragePolicy').CoveragePolicy>;
   candidateVerdict?: CanonicalVerdict;
   rationale?: string;
 }
