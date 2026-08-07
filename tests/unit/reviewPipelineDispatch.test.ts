@@ -246,6 +246,8 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     const source = fs.readFileSync(pipelinePath, 'utf8');
     expect(source).toContain('expectedPersonaIds: enabledPersonas.map((persona) => persona.id)');
     expect(source).toContain('coveragePolicy: localConfig?.parsed?.coverage_policy || {}');
+    expect(source).toContain('const currentCoverageIdentity = coveragePolicyIdentity(');
+    expect(source).toContain('coverageIdentity: currentCoverageIdentity');
     expect(source).toMatch(/All reviewer personas are disabled[\s\S]*coverageStatus:\s*'incomplete'/);
     expect(source).toMatch(/All reviewer personas are disabled[\s\S]*mergeEligible:\s*false/);
   });

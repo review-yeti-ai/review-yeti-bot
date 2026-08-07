@@ -14,7 +14,12 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync, execSync } = require('child_process');
-const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanitizeCanonicalFindings } = require('../../../src/review/reviewCore');
+const {
+  computeArbitration: computeCanonicalArbitration,
+  sanitizeFindings: sanitizeCanonicalFindings,
+  sha256,
+} = require('../../../src/review/reviewCore');
+const { normalizeCoveragePolicy } = require('../../../src/review/coveragePolicy');
 const { planFindingPublication } = require('../../../src/review/findingPublication');
 const { assertsAbsence, claimType, compareClaims } = require('../../../src/review/claimSimilarity');
 
@@ -3096,7 +3101,13 @@ ${breakdownRows}
 ${telemetryDetails}
 ${findingsDetails}`;
 
-  return commentMarkdown;
+  const coverageIdentity = arbitration.coverageIdentity || (arbitration.coverage
+    ? coveragePolicyIdentity(arbitration.coverage.expectedPersonaIds, arbitration.coverage.policy)
+    : null);
+  const coverageMarker = coverageIdentity
+    ? `\n\n<!-- review-yeti-bot:coverage:v1:${coverageIdentity} -->`
+    : '';
+  return `${commentMarkdown}${coverageMarker}`;
 }
 
 const REVIEW_THREADS_QUERY = `
@@ -3630,13 +3641,41 @@ function parsePriorSummaryReview(body) {
       : null,
     completedPersonas: personas ? Number(personas[1]) : 0,
     totalPersonas: personas ? Number(personas[2]) : 0,
+    coverageIdentity: (text.match(/review-yeti-bot:coverage:v1:([0-9a-f]{64})/) || [])[1] || null,
   };
+}
+
+function coveragePolicyIdentity(expectedPersonaIds, coveragePolicy = {}, personaRoster) {
+  if (!Array.isArray(expectedPersonaIds) || expectedPersonaIds.length === 0) return null;
+  const rosterPolicy = Array.isArray(personaRoster)
+    ? personaRoster.map((persona) => ({
+      id: String(persona?.id || ''),
+      name: String(persona?.name || ''),
+      charter: String(persona?.charter || ''),
+      model: String(persona?.model || ''),
+      effort: String(persona?.effort || ''),
+    }))
+    : expectedPersonaIds.map((id) => ({ id: String(id) }));
+  return sha256({
+    expectedPersonaIds: expectedPersonaIds.map((id) => String(id)),
+    coveragePolicy: normalizeCoveragePolicy(coveragePolicy),
+    rosterPolicy,
+  });
+}
+
+function readAuthenticatedPublisherLogin(commandRunner) {
+  const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
+  if (!result || result.status !== 0) return null;
+  const login = String(result.stdout || '').trim().replace(/^"|"$/g, '');
+  return login || null;
 }
 
 /** The most recent summary this bot published on the pull request, whatever push produced it. */
 function readPriorSummaryReview(commandRunner, prContext) {
   const anchor = actionSummaryAnchor(prContext);
   if (!anchor) return null;
+  const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+  if (!expectedPublisherLogin) return null;
   let reviews;
   try {
     reviews = readActionReviews(commandRunner, prContext);
@@ -3644,7 +3683,11 @@ function readPriorSummaryReview(commandRunner, prContext) {
     console.warn(`[Incremental] Could not read prior reviews: ${err.message || err}`);
     return null;
   }
-  const match = [...reviews].reverse().find((review) => typeof review?.body === 'string' && review.body.includes(anchor));
+  const match = [...reviews].reverse().find((review) => (
+    typeof review?.body === 'string'
+    && review.body.includes(anchor)
+    && isExpectedPublisherLogin(review.user?.login, expectedPublisherLogin)
+  ));
   return match ? { id: match.id, ...parsePriorSummaryReview(match.body) } : null;
 }
 
@@ -3698,10 +3741,14 @@ function reviewablePathsChangedSince(commandRunner, prContext, baseSha, extraExc
  *
  * @returns {object|null} An arbitration to reuse, or null to run the panel.
  */
-function planCarriedForwardVerdict(commandRunner, prContext, excludes) {
+function planCarriedForwardVerdict(commandRunner, prContext, excludes, options = {}) {
+  const currentCoverageIdentity = options.coverageIdentity
+    || coveragePolicyIdentity(options.expectedPersonaIds, options.coveragePolicy);
+  if (!currentCoverageIdentity) return null;
   const prior = readPriorSummaryReview(commandRunner, prContext);
   if (!prior?.verdict || !prior.headSha || !prior.metrics) return null;
   if (prior.headSha === prContext.headSha) return null;
+  if (prior.coverageIdentity !== currentCoverageIdentity) return null;
   if (
     !Number.isInteger(prior.completedPersonas)
     || !Number.isInteger(prior.totalPersonas)
@@ -3732,6 +3779,7 @@ function planCarriedForwardVerdict(commandRunner, prContext, excludes) {
     coverageComplete: true,
     coverageQuorumSatisfied: true,
     coverageStatus: 'complete',
+    coverageIdentity: currentCoverageIdentity,
     gateDecision,
     mergeEligible: gateDecision === 'PASS',
     completedPersonas: prior.completedPersonas,
@@ -3977,10 +4025,19 @@ async function main() {
     }
 
     const enabledPersonas = roster.personas;
+    const currentCoverageIdentity = coveragePolicyIdentity(
+      enabledPersonas.map((persona) => persona.id),
+      localConfig?.parsed?.coverage_policy || {},
+      enabledPersonas,
+    );
     const customCount = enabledPersonas.filter(p => !PERSONA_CHARTERS.some(b => b.id === p.id)).length;
     console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) with model ${DEFAULT_MODEL}${customCount ? ` (${customCount} repository-defined)` : ''}...`);
     const carriedForwardVerdict = skipUnchanged && enabledPersonas.length > 0
-      ? planCarriedForwardVerdict(spawnSyncRunner, prContext, [...configuredExcludes, ...envExcludes])
+      ? planCarriedForwardVerdict(spawnSyncRunner, prContext, [...configuredExcludes, ...envExcludes], {
+        expectedPersonaIds: enabledPersonas.map((persona) => persona.id),
+        coveragePolicy: localConfig?.parsed?.coverage_policy || {},
+        coverageIdentity: currentCoverageIdentity,
+      })
       : null;
 
     if (enabledPersonas.length === 0) {
@@ -4102,6 +4159,7 @@ async function main() {
       ),
     });
     }
+    if (currentCoverageIdentity) arbitration.coverageIdentity = currentCoverageIdentity;
   }
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
@@ -4197,6 +4255,7 @@ module.exports = {
   suppressPriorFindings,
   actionSummaryAnchor,
   parsePriorSummaryReview,
+  coveragePolicyIdentity,
   readPriorSummaryReview,
   reviewablePathsChangedSince,
   planCarriedForwardVerdict,
