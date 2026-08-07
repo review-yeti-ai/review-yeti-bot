@@ -1,0 +1,33 @@
+# review-yeti-ai/review-yeti-bot — Action review policy (read from PR base ref).
+# Context7 is on by default for this repo when CONTEXT7_API_KEY is set.
+version: 4
+
+mcp:
+  context7:
+    enabled: true
+    # Optional: force libraries to look up (otherwise inferred from the diff).
+    # libraries: []
+    # max_snippets: 5
+
+# No artificial cheap throttle — full safety ceiling (matches action default).
+limits:
+  max_diff_bytes: 2000000
+
+# OpenRouter client policy for the Action path (base-ref only).
+# Action inputs / repo vars override these when set.
+github_action:
+  openrouter:
+    # Use Auto Router as the primary; the fixed DeepSeek model below is the failover.
+    # deepseek/deepseek-v4-flash-latest is NOT a valid OpenRouter id.
+    model: openrouter/auto-beta
+    # Retry the primary once, then use this ordered fallback for transient provider failures.
+    fallback_models:
+      - deepseek/deepseek-v4-flash-0731
+    # Hard per-request timeout (30s default). Lanes that do not return in time fail as timeout.
+    timeout_ms: 30000
+    # SSE streaming (default false). Enable only if you need mid-flight provider attribution.
+    stream: false
+    # Optional Auto Router policy:
+    # allowed_models: []
+    # cost_quality_tradeoff: 5
+    # data_collection: deny

@@ -1,0 +1,394 @@
+name: 'Review Yeti'
+description: 'Reviews a pull request with AI personas and publishes resolvable inline P0/P1 conversations in one compact review.'
+author: 'review-yeti-ai'
+
+branding:
+  icon: 'check-circle'
+  color: 'purple'
+
+inputs:
+  llm-api-key:
+    description: >-
+      The sole OpenRouter inference API key. It must be passed explicitly by the caller's
+      workflow action invocation; the action does not read alternate provider-key environment
+      variables or management keys.
+    required: false
+    default: ''
+  context7-api-key:
+    description: >-
+      Optional Context7 API key. When non-empty and the target repo's .review-yeti.yaml has
+      mcp.context7.enabled true (default when key is present), Context7 docs are fetched and
+      injected into every persona prompt. Leave empty to keep Context7 off.
+    required: false
+    default: ''
+  llm-base-url:
+    description: >-
+      OpenRouter-compatible base URL for chat completions.
+      Default: https://openrouter.ai/api/v1.
+    required: false
+    default: 'https://openrouter.ai/api/v1'
+  openrouter-stream:
+    description: >-
+      Use OpenRouter SSE streaming (default false). Also configurable via
+      github_action.openrouter.stream in .review-yeti.yaml. Action input wins over YAML.
+    required: false
+    default: 'false'
+  openrouter-timeout-ms:
+    description: >-
+      Per-request OpenRouter hard timeout in milliseconds (default 30000 = 30s).
+      Models that do not return in time fail the persona lane. Also set via
+      github_action.openrouter.timeout_ms in .review-yeti.yaml; action input wins.
+    required: false
+    default: '30000'
+  model:
+    description: 'Model identifier passed to the provider.'
+    required: false
+    default: 'openrouter/auto-beta'
+  openrouter-fallback-models:
+    description: >-
+      Comma-separated ordered fallback model ids. Transient primary-model failures (timeouts,
+      network errors, rate limits, and 5xx responses) retry before moving to the next model.
+      Empty default uses github_action.openrouter.fallback_models from the trusted base config.
+    required: false
+    default: ''
+  personas:
+    description: >-
+      Comma-separated reviewer persona ids, a JSON array, or "all". Defaults to the five that
+      apply to any codebase: security, performance, architecture, testing, dependencies.
+      Also available: style, documentation, accessibility, database, devops, i18n, licensing.
+    required: false
+    default: ''
+  max-diff-chars:
+    description: >-
+      Per-persona per-pass diff character budget. Default is the full safety ceiling (2_000_000)
+      so large PRs are not artificially truncated at 24k. Files beyond the budget (and beyond
+      max-passes packing) are reported as unreviewed, never silently dropped.
+    required: false
+    default: '2000000'
+  max-file-diff-chars:
+    description: >-
+      Per-file complete diff character limit. This is independent from max-diff-chars, which is
+      the whole-request budget. Leave empty to use limits.max_file_diff_chars from .review-yeti.yaml,
+      or the built-in 5,000-character default.
+    required: false
+    default: ''
+  max-passes:
+    description: >-
+      Maximum number of review passes per persona when packing a large diff into per-pass budgets
+      (a ceiling, not a target — most PRs use 1 pass). After this many passes, remaining files are
+      reported as unreviewed rather than dropped. More passes cost more tokens.
+    required: false
+    default: '3'
+  exclude:
+    description: >-
+      Extra comma-separated path globs to skip, on top of the built-in generated-content list
+      (lockfiles, build output, EF snapshots, minified assets). Prefix a glob with `!` to restore
+      matching files instead, including files a built-in pattern caught.
+    required: false
+    default: ''
+  max-personas:
+    description: 'Maximum reviewers a resolved roster may contain. Each is one model request per push, so this bounds what a configuration change can spend.'
+    required: false
+    default: '25'
+  skip-unchanged:
+    description: >-
+      When true, a push that changed only excluded paths since the last reviewed commit carries the
+      previous verdict forward instead of re-running the panel. The summary is still updated in
+      place with the new head SHA, so a check that verifies publication for the head still passes.
+      Off by default: if the comparison is wrong, an unreviewed change ships with a stale verdict,
+      which is a worse outcome than reviewing the same code twice.
+    required: false
+    default: 'false'
+  config-ref:
+    description: >-
+      Git ref to read .review-yeti.yaml and .review-yeti/personas from. Defaults to the pull
+      request's base branch. Reviewer charters are prompts run with your API key, so they are
+      deliberately not read from the pull request's own head.
+    required: false
+    default: ''
+  pr-number:
+    description: 'Pull request to review. Defaults to the PR that triggered the workflow.'
+    required: false
+    default: ''
+  repo:
+    description: 'Repository owning the pull request, as owner/name. Defaults to the current repository.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token used to read the diff and publish the pull request review. The default workflow token is sufficient when the caller grants pull-requests: write.'
+    required: false
+    default: ${{ github.token }}
+  linear-api-key:
+    description: >-
+      Optional Linear API key (LINEAR_API_KEY only — OAuth Linear MCPs are rejected).
+      When set (typically secrets.LINEAR_API_KEY), Linear issue sync and the builtin Linear
+      adapter (cline/linear-mcp API-key model) are enabled. When unset, Linear is skipped.
+    required: false
+    default: ''
+  openrouter-allowed-models:
+    description: >-
+      Comma-separated allowlist of OpenRouter model ids for Auto Router routing. When set, the
+      action sends an auto-router plugin with these allowed_models on every review request,
+      overriding any github_action.openrouter.allowed_models in .review-yeti.yaml. Empty default
+      means no allowlist is enforced.
+    required: false
+    default: ''
+  openrouter-cost-quality-tradeoff:
+    description: >-
+      Integer 0-10 Auto Router cost/quality tradeoff. 0 favors lowest cost, 10 favors highest
+      quality. When set, overrides github_action.openrouter.cost_quality_tradeoff in
+      .review-yeti.yaml and is sent as the auto-router plugin cost_quality_tradeoff field.
+    required: false
+    default: ''
+  openrouter-data-collection:
+    description: >-
+      OpenRouter data-collection policy, 'allow' or 'deny'. 'deny' opts out of model-provider
+      training on prompt/completion data (default OpenRouter policy). Sent as an HTTP header on
+      every review request; overrides github_action.openrouter.data_collection in .review-yeti.yaml.
+    required: false
+    default: ''
+  openrouter-ignore-providers:
+    description: >-
+      Comma-separated OpenRouter provider slugs to exclude from routing. The action always
+      excludes deepinfra; this input can add further provider bans without enabling fallbacks
+      outside the remaining OpenRouter providers.
+    required: false
+    default: 'deepinfra'
+  openrouter-provider-routing:
+    description: >-
+      Optional JSON object forwarded as OpenRouter's provider routing policy. Supports the raw
+      API fields order, allow_fallbacks, require_parameters, data_collection, zdr,
+      enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,
+      preferred_max_latency, and max_price. DeepInfra remains hard-banned and cannot appear in
+      order or only. Action input wins over github_action.openrouter.provider_routing in YAML.
+    required: false
+    default: ''
+
+outputs:
+  verdict:
+    description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely. Legacy NO_REVIEWABLE_FILES is no longer emitted for policy exclusions; migrate consumers to SHIP plus coverage outputs.'
+    value: ${{ steps.review.outputs.verdict }}
+  review-status:
+    description: 'Terminal review status. Expected policy exclusions, including oversized files, do not create a coverage gap; SHIP applies when no other gap exists, while INCOMPLETE_REVIEW remains for real coverage gaps.'
+    value: ${{ steps.review.outputs.review-status }}
+  findings-count:
+    description: 'Total findings across all personas.'
+    value: ${{ steps.review.outputs.findings-count }}
+  p0-count:
+    description: 'Count of P0 (exploitable or data-losing) findings.'
+    value: ${{ steps.review.outputs.p0-count }}
+  p1-count:
+    description: 'Count of P1 (must fix before merge) findings.'
+    value: ${{ steps.review.outputs.p1-count }}
+  p2-count:
+    description: 'Count of P2 (nit) findings.'
+    value: ${{ steps.review.outputs.p2-count }}
+  personas-completed:
+    description: 'Persona lanes that completed successfully.'
+    value: ${{ steps.review.outputs.personas-completed }}
+  files-reviewed:
+    description: 'Changed files the reviewers were shown.'
+    value: ${{ steps.review.outputs.files-reviewed }}
+  files-omitted:
+    description: 'Changed files the diff budget excluded. Non-zero means the verdict covers only part of the change.'
+    value: ${{ steps.review.outputs.files-omitted }}
+  files-oversized:
+    description: 'Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW.'
+    value: ${{ steps.review.outputs.files-oversized }}
+  files-skipped-generated:
+    description: 'Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap.'
+    value: ${{ steps.review.outputs.files-skipped-generated }}
+  review-passes:
+    description: 'Budgeted passes each reviewer made over the diff.'
+    value: ${{ steps.review.outputs.review-passes }}
+  total-tokens:
+    description: 'Tokens consumed across every reviewer and pass.'
+    value: ${{ steps.review.outputs.total-tokens }}
+  cost-usd:
+    description: 'Cost reported by the provider, or 0 when the provider does not report one.'
+    value: ${{ steps.review.outputs.cost-usd }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve target pull request
+      id: target
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_PR: ${{ inputs.pr-number }}
+        EVENT_PR: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        REPO="${INPUT_REPO:-${{ github.repository }}}"
+        PR="${INPUT_PR:-$EVENT_PR}"
+
+        if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+          echo "::error::No pull request number available. Run this action on a pull_request event, or set the pr-number input."
+          exit 1
+        fi
+
+        echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+        echo "pr=$PR" >> "$GITHUB_OUTPUT"
+        echo "Reviewing $REPO#$PR"
+
+    - name: Fetch pull request diff
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        gh pr diff "${{ steps.target.outputs.pr }}" \
+          --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/review-yeti.diff"
+        echo "Fetched $(wc -l < "${RUNNER_TEMP}/review-yeti.diff") diff lines."
+
+    # ── Node pipeline deps (js-yaml) ──────────────────────────────────────────
+    # Do NOT use actions/setup-node or actions/cache here. Consumer repos with
+    # sha_pinning_required reject nested marketplace actions inside a composite
+    # action checked out to a local path (error reports @v4 even when SHA-pinned).
+    # Blacksmith Ubuntu runners already ship Node 20; install js-yaml with npm only.
+    - name: Install pipeline dependencies
+      shell: bash
+      env:
+        NPM_PREFIX: ${{ runner.temp }}/review-yeti-npm
+      run: |
+        set -euo pipefail
+        if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
+          echo "::error::node/npm missing on runner; install via image, not setup-node action"
+          exit 1
+        fi
+        echo "node $(node -v) npm $(npm -v)"
+        mkdir -p "$NPM_PREFIX"
+        if [[ ! -d "$NPM_PREFIX/node_modules/js-yaml" ]]; then
+          echo "installing js-yaml@4.1.0 into $NPM_PREFIX"
+          npm install --prefix "$NPM_PREFIX" js-yaml@4.1.0 --no-save --no-audit --no-fund --prefer-offline
+        else
+          echo "reusing $NPM_PREFIX/node_modules/js-yaml"
+        fi
+        test -d "$NPM_PREFIX/node_modules/js-yaml" || {
+          echo "::error::js-yaml missing under $NPM_PREFIX/node_modules after npm install"
+          ls -la "$NPM_PREFIX" "$NPM_PREFIX/node_modules" 2>/dev/null || true
+          exit 1
+        }
+        # Pipeline scripts resolve modules from GITHUB_ACTION_PATH/node_modules
+        # (walk-up from .github/workflows/pipelines/*.js).
+        rm -rf "$GITHUB_ACTION_PATH/node_modules"
+        mkdir -p "$GITHUB_ACTION_PATH/node_modules"
+        # Copy is more portable than symlinks across runners / action_path mounts.
+        cp -a "$NPM_PREFIX/node_modules/." "$GITHUB_ACTION_PATH/node_modules/"
+        # node -e resolves from cwd (consumer workspace), NOT the action path —
+        # so require('js-yaml') fails without NODE_PATH. Verify via absolute path.
+        node -e "
+          const path = require('path');
+          const root = process.env.GITHUB_ACTION_PATH;
+          const mod = path.join(root, 'node_modules', 'js-yaml');
+          const y = require(mod);
+          const ver = require(path.join(mod, 'package.json')).version;
+          if (!y || !ver) throw new Error('js-yaml load failed from ' + mod);
+          console.log('js-yaml ok', ver, 'at', mod);
+        "
+
+    # Reviewer charters are prompts executed with the caller's API key. Reading them from the
+    # pull request's own checkout would let a pull request rewrite the instructions reviewing it,
+    # and declare as many reviewers as it likes. They are fetched from the base ref instead, over
+    # the API, into a directory the pull request cannot write to. This also means the caller does
+    # not need to check the repository out at all.
+    - name: Fetch reviewer configuration from the trusted base ref
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CONFIG_REF: ${{ inputs.config-ref }}
+        BASE_REF: ${{ github.event.pull_request.base.sha }}
+      run: |
+        set -euo pipefail
+        REPO="${{ steps.target.outputs.repo }}"
+        REF="${CONFIG_REF:-${BASE_REF:-}}"
+        DEST="${RUNNER_TEMP}/review-yeti-config"
+        mkdir -p "$DEST/.review-yeti/personas"
+
+        if [ -z "$REF" ]; then
+          REF=$(gh api "repos/$REPO" --jq .default_branch)
+        fi
+        echo "Reading reviewer configuration from $REPO@$REF"
+
+        for f in .review-yeti.yaml .review-yeti.yml .coderabbit.yaml .coderabbit.yml; do
+          if gh api "repos/$REPO/contents/$f?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/$f" 2>/dev/null; then
+            echo "  found $f"
+            break
+          fi
+          rm -f "$DEST/$f"
+        done
+
+        # The base .gitmodules is part of the trusted policy surface used to classify
+        # submodule URL changes; do not read it from the pull-request checkout.
+        if ! gh api "repos/$REPO/contents/.gitmodules?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/.gitmodules" 2>/dev/null; then
+          rm -f "$DEST/.gitmodules"
+        fi
+
+        # Persona files are one markdown file per reviewer; enumerate the directory then fetch each.
+        if gh api "repos/$REPO/contents/.review-yeti/personas?ref=$REF" --jq '.[].name' > "${RUNNER_TEMP}/persona-names" 2>/dev/null; then
+          while read -r name; do
+            case "$name" in
+              *.md|*.mdx)
+                gh api "repos/$REPO/contents/.review-yeti/personas/$name?ref=$REF" \
+                  -H "Accept: application/vnd.github.raw" > "$DEST/.review-yeti/personas/$name" 2>/dev/null \
+                  && echo "  found persona $name"
+                ;;
+            esac
+          done < "${RUNNER_TEMP}/persona-names"
+        fi
+
+    - name: Run review panel
+      id: review
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
+        OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
+        OPENROUTER_MODEL: ${{ inputs.model }}
+        OPENROUTER_FALLBACK_MODELS: ${{ inputs.openrouter-fallback-models }}
+        LINEAR_API_KEY: ${{ inputs.linear-api-key }}
+        # Context7: only effective when non-empty AND repo .review-yeti.yaml allows it.
+        CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
+        ACTIVE_PERSONAS: ${{ inputs.personas }}
+        MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+        MAX_FILE_DIFF_CHARS: ${{ inputs.max-file-diff-chars }}
+        MAX_PERSONAS: ${{ inputs.max-personas }}
+        MAX_PASSES: ${{ inputs.max-passes }}
+        EXCLUDE_PATHS: ${{ inputs.exclude }}
+        SKIP_UNCHANGED_REVIEW: ${{ inputs.skip-unchanged }}
+        OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
+        OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
+        OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
+        OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
+        OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
+        PR_NUMBER: ${{ steps.target.outputs.pr }}
+        PR_REPO: ${{ steps.target.outputs.repo }}
+        REVIEW_YETI_CONFIG_DIR: ${{ runner.temp }}/review-yeti-config
+        # Pre-review "started" comment metadata (GITHUB_EVENT_NAME / ACTOR / RUN_ID are built-in).
+        GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        # Streaming is OFF by default (fan-out reliability). Composite actions cannot use
+        # `vars.*` — override via the openrouter-stream input from the workflow.
+        OPENROUTER_STREAM: ${{ inputs.openrouter-stream }}
+        OPENROUTER_TIMEOUT_MS: ${{ inputs.openrouter-timeout-ms }}
+        # Ensure bare requires (js-yaml) resolve from the action install even if
+        # Node's walk-up from pipelines/ is disrupted on some runners.
+        NODE_PATH: ${{ github.action_path }}/node_modules
+      run: |
+        echo "OpenRouter base URL: $OPENROUTER_BASE_URL (direct)"
+        echo "OpenRouter timeout_ms=${OPENROUTER_TIMEOUT_MS:-30000} stream=${OPENROUTER_STREAM:-false}"
+        if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+          echo "::error::llm-api-key / OPENROUTER_API_KEY is empty. Pass a single OpenRouter API key."
+          exit 1
+        fi
+        echo "OpenRouter API key present (value not logged)"
+        if [[ -n "${CONTEXT7_API_KEY:-}" ]]; then
+          echo "Context7 API key present (repo YAML may still disable mcp.context7)"
+        else
+          echo "Context7 API key absent — Context7 MCP stays off"
+        fi
+        export NODE_PATH="${GITHUB_ACTION_PATH}/node_modules${NODE_PATH:+:$NODE_PATH}"
+        PR_DIFF_FILE="${RUNNER_TEMP}/review-yeti.diff" \
+          node "$GITHUB_ACTION_PATH/.github/workflows/pipelines/review-pipeline.js"
