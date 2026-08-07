@@ -143,4 +143,23 @@ describe('Action v4 policy boundary', () => {
     expect(arbitration.coverageComplete).toBe(false);
     expect(arbitration.rationale).toMatch(/submodule|coverage/i);
   });
+
+  it('marks policy-only terminal coverage as a clean, merge-eligible result', () => {
+    const arbitration = pipeline.buildCoverageTerminalArbitration({
+      reviewed: [],
+      skipped: [{ path: 'package-lock.json', category: 'generated', reason: 'lockfile policy' }],
+      oversized: [],
+      truncated: [],
+      omitted: [],
+      passes: 0,
+    });
+
+    expect(arbitration).toMatchObject({
+      verdict: 'SHIP',
+      status: 'SHIP',
+      coverageStatus: 'complete',
+      gateDecision: 'PASS',
+      mergeEligible: true,
+    });
+  });
 });

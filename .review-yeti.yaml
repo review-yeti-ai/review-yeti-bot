@@ -13,6 +13,14 @@ mcp:
 limits:
   max_diff_bytes: 2000000
 
+# Durable persona coverage is evaluated against the trusted-base enabled roster.
+# complete => normal verdict; partial => PARTIAL_REVIEW/BLOCKED; incomplete => INCOMPLETE_REVIEW/BLOCKED.
+coverage_policy:
+  quorum: two_thirds
+  min_personas: 3
+  mandatory_personas: [security]
+  provider_diversity_min: 2
+
 # OpenRouter client policy for the Action path (base-ref only).
 # Action inputs / repo vars override these when set.
 github_action:
