@@ -169,8 +169,17 @@ outputs:
     description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely. Legacy NO_REVIEWABLE_FILES is no longer emitted for policy exclusions; migrate consumers to SHIP plus coverage outputs.'
     value: ${{ steps.review.outputs.verdict }}
   review-status:
-    description: 'Terminal review status. Expected policy exclusions, including oversized files, do not create a coverage gap; SHIP applies when no other gap exists, while INCOMPLETE_REVIEW remains for real coverage gaps.'
+    description: 'Terminal review status: SHIP, FIX_FIRST, BLOCK, PARTIAL_REVIEW, or INCOMPLETE_REVIEW. Expected policy exclusions do not create a coverage gap; partial and incomplete review statuses are never merge-eligible.'
     value: ${{ steps.review.outputs.review-status }}
+  coverage-status:
+    description: 'Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible.'
+    value: ${{ steps.review.outputs.coverage-status }}
+  gate-decision:
+    description: 'Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED.'
+    value: ${{ steps.review.outputs.gate-decision }}
+  merge-eligible:
+    description: 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'
+    value: ${{ steps.review.outputs.merge-eligible }}
   findings-count:
     description: 'Total findings across all personas.'
     value: ${{ steps.review.outputs.findings-count }}

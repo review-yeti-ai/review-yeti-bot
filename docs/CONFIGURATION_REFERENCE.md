@@ -155,6 +155,28 @@ themselves. `SHIP` applies when no other coverage gap exists; `INCOMPLETE_REVIEW
 for real gaps such as omitted or truncated eligible files, provider failures, or incomplete
 trusted-submodule coverage.
 
+Persona coverage is evaluated separately from the existing top-level numeric `quorum`, which
+continues to describe distinct provider/model quorum. The versioned trusted-base policy is:
+
+```yaml
+coverage_policy:
+  quorum: two_thirds             # two_thirds | simple_majority | unanimous
+  min_personas: 3
+  mandatory_personas: [security]
+  provider_diversity_min: 2
+```
+
+The denominator is the enabled persona roster resolved from the trusted PR base ref. Only a lane
+with `APPROVE` or `FINDINGS`, a findings array, provider/model provenance, and no error, timeout,
+empty, or partial marker counts as trustworthy. `two_thirds` is
+`ceil(2 * expected / 3)`; `simple_majority` is `floor(expected / 2) + 1`. Mandatory personas,
+the minimum roster floor, and actual provider diversity must also be satisfied.
+
+A complete clean review is `SHIP` with `gate-decision=PASS`. A quorum-met but incomplete panel is
+`PARTIAL_REVIEW`; a panel below quorum or missing a safety floor is `INCOMPLETE_REVIEW`. Both
+partial and incomplete outcomes retain findings as durable evidence, force `BLOCKED`, and are
+never merge-eligible. Publication success does not imply a successful review outcome.
+
 This is an explicit policy tradeoff: `SHIP` means no blocking finding was established in the
 reviewable evidence; it does not claim that an oversized file was reviewed. A repository that
 requires every changed file to be reviewed can raise the cap or add a merge gate for
@@ -169,7 +191,10 @@ from a model-backed review.
 | Output | Description |
 | :--- | :--- |
 | `verdict` | SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely. Legacy NO_REVIEWABLE_FILES is no longer emitted for policy exclusions; migrate consumers to SHIP plus coverage outputs. |
-| `review-status` | Terminal review status. Expected policy exclusions, including oversized files, do not create a coverage gap; SHIP applies when no other gap exists, while INCOMPLETE_REVIEW remains for real coverage gaps. |
+| `review-status` | Terminal review status: SHIP, FIX_FIRST, BLOCK, PARTIAL_REVIEW, or INCOMPLETE_REVIEW. Expected policy exclusions do not create a coverage gap; partial and incomplete review statuses are never merge-eligible. |
+| `coverage-status` | Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible. |
+| `gate-decision` | Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED. |
+| `merge-eligible` | Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings. |
 | `files-skipped-generated` | Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap. |
 | `files-oversized` | Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW. |
 

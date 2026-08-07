@@ -166,6 +166,9 @@ github_action:
 
 The `openrouter-fallback-models` Action input can override that list. If every configured model
 fails, the review remains `INCOMPLETE_REVIEW` rather than shipping with missing model coverage.
+When the configured persona roster is large enough and a trustworthy two-thirds quorum survives,
+the Action may publish `PARTIAL_REVIEW` evidence. That status retains findings, but it is always
+`BLOCK`, `BLOCKED`, and non-mergeable.
 
 `llm-base-url` points at any endpoint that speaks the OpenAI chat-completions shape — OpenAI
 itself, or a gateway such as LiteLLM or vLLM in your own network. It is **not** a way to call a
@@ -287,6 +290,32 @@ workflow can fail when coverage is incomplete:
         run: exit 1
 ```
 
+### Durable persona coverage and partial reviews
+
+The Action measures persona coverage against the enabled roster resolved from the trusted PR base
+configuration, never against the number of lanes that happened to launch. A lane counts as
+trustworthy only when it returns a structured `APPROVE` or `FINDINGS` result with a findings array
+and provider/model provenance. Errors, timeouts, empty or partial results do not count, although
+findings they emitted remain durable evidence and can still be published.
+
+The default fail-closed policy can be overridden in `.review-yeti.yaml`:
+
+```yaml
+coverage_policy:
+  quorum: two_thirds             # two_thirds | simple_majority | unanimous
+  min_personas: 3
+  mandatory_personas: [security]
+  provider_diversity_min: 2
+```
+
+`two_thirds` means `ceil(2 * expected_personas / 3)`; `simple_majority` means
+`floor(expected_personas / 2) + 1`. Mandatory personas and the provider-diversity floor still
+apply. A complete clean panel is `SHIP` with `gate-decision=PASS`. A quorum-met but incomplete
+panel is `PARTIAL_REVIEW`; a below-quorum panel or one missing a safety floor is
+`INCOMPLETE_REVIEW`. Both partial and incomplete outcomes force `BLOCKED` and
+`merge-eligible=false`. Publication success therefore records evidence; it does not imply a
+successful or mergeable review.
+
 ### What a reviewer is allowed to conclude from a partial view
 
 A reviewer that sees one pass of a multi-pass diff cannot tell a file it was not shown from a file
@@ -365,7 +394,10 @@ for the complete field semantics.
 | Output | Description |
 | :--- | :--- |
 | `verdict` | SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely. Legacy NO_REVIEWABLE_FILES is no longer emitted for policy exclusions; migrate consumers to SHIP plus coverage outputs. |
-| `review-status` | Terminal review status. Expected policy exclusions, including oversized files, do not create a coverage gap; SHIP applies when no other gap exists, while INCOMPLETE_REVIEW remains for real coverage gaps. |
+| `review-status` | Terminal review status: SHIP, FIX_FIRST, BLOCK, PARTIAL_REVIEW, or INCOMPLETE_REVIEW. Expected policy exclusions do not create a coverage gap; partial and incomplete review statuses are never merge-eligible. |
+| `coverage-status` | Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible. |
+| `gate-decision` | Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED. |
+| `merge-eligible` | Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings. |
 | `findings-count` | Total findings across all personas. |
 | `p0-count` | Count of P0 (exploitable or data-losing) findings. |
 | `p1-count` | Count of P1 (must fix before merge) findings. |

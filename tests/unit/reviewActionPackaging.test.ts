@@ -11,6 +11,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const actionPath = path.join(rootRepoDir, 'action.yml');
 const configurationReference = fs.readFileSync(path.join(rootRepoDir, 'docs/CONFIGURATION_REFERENCE.md'), 'utf-8');
+const publicationPolicy = fs.readFileSync(path.join(rootRepoDir, 'docs/PUBLICATION_POLICY.md'), 'utf-8');
 const readme = fs.readFileSync(path.join(rootRepoDir, 'README.md'), 'utf-8');
 const centralReviewWorkflow: any = yaml.load(fs.readFileSync(path.join(rootRepoDir, '.github/workflows/review-bot.yaml'), 'utf-8'));
 const reviewConfig: any = yaml.load(fs.readFileSync(path.join(rootRepoDir, '.review-yeti.yaml'), 'utf-8'));
@@ -22,7 +23,10 @@ const documentationContracts = [
 
 const outputContractRows = [
   ['verdict', 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely. Legacy NO_REVIEWABLE_FILES is no longer emitted for policy exclusions; migrate consumers to SHIP plus coverage outputs.'],
-  ['review-status', 'Terminal review status. Expected policy exclusions, including oversized files, do not create a coverage gap; SHIP applies when no other gap exists, while INCOMPLETE_REVIEW remains for real coverage gaps.'],
+  ['review-status', 'Terminal review status: SHIP, FIX_FIRST, BLOCK, PARTIAL_REVIEW, or INCOMPLETE_REVIEW. Expected policy exclusions do not create a coverage gap; partial and incomplete review statuses are never merge-eligible.'],
+  ['coverage-status', 'Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible.'],
+  ['gate-decision', 'Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED.'],
+  ['merge-eligible', 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'],
   ['files-skipped-generated', 'Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap.'],
   ['files-oversized', 'Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW.'],
 ] as const;
@@ -226,6 +230,37 @@ describe('review ignore policy documentation contract', () => {
       expect(document).toContain(`| \`${name}\` | ${description} |`);
     }
   });
+
+  it('publishes the default durable coverage policy in trusted-base configuration', () => {
+    expect(reviewConfig.coverage_policy).toEqual({
+      quorum: 'two_thirds',
+      min_personas: 3,
+      mandatory_personas: ['security'],
+      provider_diversity_min: 2,
+    });
+  });
+
+  it.each([
+    ['.review-yeti.yaml', fs.readFileSync(path.join(rootRepoDir, '.review-yeti.yaml'), 'utf-8')],
+    ['README.md', readme],
+    ['CONFIGURATION_REFERENCE.md', configurationReference],
+    ['PUBLICATION_POLICY.md', publicationPolicy],
+  ] as const)('%s documents the complete, partial, and incomplete gate mapping', (_name, document) => {
+    expect(document).toContain('coverage_policy');
+    expect(document).toContain('two_thirds');
+    expect(document).toContain('mandatory_personas');
+    expect(document).toContain('provider_diversity_min');
+    expect(document).toContain('PARTIAL_REVIEW');
+    expect(document).toContain('BLOCKED');
+    expect(document).toMatch(/complete[\s\S]*partial[\s\S]*incomplete/i);
+  });
+
+  it('documents that durable publication and review success are separate outcomes', () => {
+    expect(publicationPolicy).toMatch(/publication success.*review outcome success|review outcome success.*publication success/i);
+    expect(publicationPolicy).toMatch(/failed|partial/i);
+    expect(publicationPolicy).toMatch(/findings[\s\S]*evidence|evidence[\s\S]*findings/i);
+    expect(publicationPolicy).toMatch(/never.*merge|non-mergeable/i);
+  });
 });
 
 describe('writeStepOutputs', () => {
@@ -247,6 +282,23 @@ describe('writeStepOutputs', () => {
     expect(content).toContain('findings-count=7');
     expect(content).toContain('p0-count=1');
     expect(content).toContain('personas-completed=3');
+  });
+
+  it('writes derived coverage and gate outputs without treating partial review as mergeable', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-out-')), 'out.txt');
+    writeStepOutputs({
+      ...arbitration,
+      status: 'PARTIAL_REVIEW',
+      coverageStatus: 'partial',
+      gateDecision: 'BLOCKED',
+      mergeEligible: false,
+    }, file);
+    const content = fs.readFileSync(file, 'utf-8');
+
+    expect(content).toContain('review-status=PARTIAL_REVIEW');
+    expect(content).toContain('coverage-status=partial');
+    expect(content).toContain('gate-decision=BLOCKED');
+    expect(content).toContain('merge-eligible=false');
   });
 
   it('appends rather than truncating, since GITHUB_OUTPUT is shared across steps', () => {
