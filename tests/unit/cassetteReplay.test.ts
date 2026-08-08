@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
+import { buildDecisionLedger, reconcileDecisionFindings, renderDecisionLedger } from '../../src/review/decisionLedger';
 
 const harnessCassette = path.resolve(__dirname, '../fixtures/cassettes/harness.json');
+const decisionCassette = path.resolve(__dirname, '../fixtures/cassettes/decision-ledger.json');
 
 describe('strict cassette replay', () => {
   const originalCi = process.env.CI;
@@ -112,5 +114,31 @@ describe('strict cassette replay', () => {
     expect(await response.json()).toEqual({ recorded: true });
     recorded.assertComplete();
     expect(fs.readFileSync(cassettePath, 'utf8')).not.toContain('live-secret');
+  });
+
+  it('replays same-PR decision state byte-identically without exposing human reasons', async () => {
+    const replay = async () => {
+      const cassette = createCassetteFetch({ cassettePath: decisionCassette });
+      const response = await cassette.fetchImplementation('https://github.test/graphql', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer fake-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operationName: 'DecisionLedgerSnapshot', pullRequest: 7 }),
+      });
+      const snapshot = await response.json();
+      cassette.assertComplete();
+      const ledger = buildDecisionLedger(snapshot);
+      const rendered = renderDecisionLedger(ledger);
+      const reconciliation = reconcileDecisionFindings([], ledger);
+      return { ledger, rendered, reconciliation };
+    };
+
+    const first = await replay();
+    const second = await replay();
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    expect(first.ledger.entries.map((entry: any) => entry.state)).toEqual([
+      'open', 'resolved', 'ignored', 'open', 'obsolete',
+    ]);
+    expect(first.rendered.text).not.toContain('accepted until API-1234');
+    expect(JSON.stringify(first)).not.toContain('API-1234 has landed');
   });
 });
