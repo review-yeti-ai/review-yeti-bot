@@ -22,7 +22,11 @@ const {
 const { normalizeCoveragePolicy } = require('../../../src/review/coveragePolicy');
 const { planFindingPublication } = require('../../../src/review/findingPublication');
 const { assertsAbsence, claimType, compareClaims } = require('../../../src/review/claimSimilarity');
-const { parseBotFindingComment } = require('../../../src/review/decisionLedger');
+const {
+  buildDecisionLedger,
+  parseBotFindingComment,
+  parseDecisionCommand,
+} = require('../../../src/review/decisionLedger');
 
 let mcpFleetManager = null;
 try {
@@ -3123,7 +3127,8 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: 
           line
           diffSide
           comments(first: 100) {
-            nodes { databaseId body author { login } commit { oid } }
+            nodes { databaseId body createdAt author { login } commit { oid } }
+            pageInfo { hasNextPage endCursor }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -3131,6 +3136,20 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: 
     }
   }
 }`;
+
+const REVIEW_THREAD_COMMENTS_QUERY = `
+query ReviewThreadComments($threadId: ID!, $endCursor: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $endCursor) {
+        nodes { databaseId body createdAt author { login } commit { oid } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+const MAX_DECISION_SNAPSHOT_COMMENTS = 500;
 
 function actionReviewMarker(prContext) {
   return prContext.repo && prContext.prNumber && prContext.headSha
@@ -3202,7 +3221,55 @@ function readActionReviewThreads(commandRunner, prContext) {
   }
   const pages = Array.isArray(decoded) ? decoded : [decoded];
   const threads = pages.flatMap((page) => page?.data?.repository?.pullRequest?.reviewThreads?.nodes || []);
-  return { threads };
+  let retainedComments = 0;
+  let complete = true;
+
+  const normalizedThreads = threads.map((thread) => {
+    const comments = [...(thread?.comments?.nodes || [])];
+    let commentsComplete = true;
+    if (thread?.comments?.pageInfo?.hasNextPage) {
+      const continuation = ghApi(commandRunner, [
+        'api', 'graphql', '--paginate', '--slurp',
+        '-F', `threadId=${thread.id}`,
+        '-f', `query=${REVIEW_THREAD_COMMENTS_QUERY}`,
+      ]);
+      if (!continuation || continuation.status !== 0) {
+        commentsComplete = false;
+      } else {
+        try {
+          const continuationDecoded = JSON.parse(continuation.stdout || '[]');
+          const continuationPages = Array.isArray(continuationDecoded) ? continuationDecoded : [continuationDecoded];
+          for (const page of continuationPages) {
+            comments.push(...(page?.data?.node?.comments?.nodes || []));
+            if (page?.data?.node?.comments?.pageInfo?.hasNextPage) commentsComplete = false;
+          }
+        } catch (_) {
+          commentsComplete = false;
+        }
+      }
+    }
+
+    const unique = [...new Map(comments.map((comment) => [
+      Number.isInteger(comment?.databaseId) ? comment.databaseId : JSON.stringify(comment),
+      comment,
+    ])).values()].sort((a, b) => (
+      String(a?.createdAt || '').localeCompare(String(b?.createdAt || ''))
+      || Number(a?.databaseId || 0) - Number(b?.databaseId || 0)
+    ));
+    const remaining = Math.max(0, MAX_DECISION_SNAPSHOT_COMMENTS - retainedComments);
+    const bounded = unique.slice(0, remaining);
+    retainedComments += bounded.length;
+    if (bounded.length !== unique.length) commentsComplete = false;
+    if (!commentsComplete) complete = false;
+
+    return {
+      ...thread,
+      commentsComplete,
+      comments: { ...thread.comments, nodes: bounded },
+    };
+  });
+
+  return { threads: normalizedThreads, complete };
 }
 
 /**
@@ -3643,16 +3710,92 @@ function coveragePolicyIdentity(expectedPersonaIds, coveragePolicy = {}, persona
   });
 }
 
+function cleanGhScalar(stdout) {
+  return String(stdout || '').trim().replace(/^"|"$/g, '');
+}
+
 function readAuthenticatedPublisherLogin(commandRunner) {
   const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
   if (result && result.status === 0) {
-    const login = String(result.stdout || '').trim().replace(/^"|"$/g, '');
+    const login = cleanGhScalar(result.stdout);
     if (login) return login;
   }
-  // The default GITHUB_TOKEN is a GitHub App installation token, so GET /user cannot identify it.
-  // Reviews it publishes use the fixed GitHub Actions bot identity. Other installation tokens may
-  // use different bots; declining their optimization is safe, while guessing their identity is not.
+
+  // Installation tokens cannot call GET /user. Their installation metadata identifies the App
+  // whose reviews must be trusted; GitHub exposes that App's comments as `<app_slug>[bot]`.
+  const installation = ghApi(commandRunner, ['api', 'installation', '--jq', '.app_slug']);
+  if (installation && installation.status === 0) {
+    const slug = cleanGhScalar(installation.stdout);
+    if (slug) return slug.endsWith('[bot]') ? slug : `${slug}[bot]`;
+  }
+
   return process.env.GITHUB_ACTIONS === 'true' ? 'github-actions[bot]' : null;
+}
+
+function readCollaboratorPermission(commandRunner, repo, login) {
+  if (!repo || !login) return null;
+  const result = ghApi(commandRunner, [
+    'api',
+    `repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`,
+    '--jq', '.permission',
+  ]);
+  if (!result || result.status !== 0) return null;
+  return cleanGhScalar(result.stdout) || null;
+}
+
+function readDecisionLedgerSnapshot(commandRunner, prContext, changedPaths, options = {}) {
+  const paths = changedPaths instanceof Set ? [...changedPaths] : (Array.isArray(changedPaths) ? changedPaths : []);
+  const expectedPublisherLogin = options.expectedPublisherLogin
+    || readAuthenticatedPublisherLogin(commandRunner);
+  const unavailable = () => buildDecisionLedger({
+    repo: prContext?.repo,
+    prNumber: prContext?.prNumber,
+    headSha: prContext?.headSha,
+    expectedPublisherLogin,
+    changedPaths: paths,
+    threads: [],
+    available: false,
+    complete: false,
+  });
+  if (!prContext?.repo || !prContext?.prNumber || !expectedPublisherLogin) return unavailable();
+
+  let snapshot;
+  try {
+    snapshot = options.snapshot || readActionReviewThreads(commandRunner, prContext);
+  } catch (error) {
+    console.warn(`[Decision ledger] Could not read review threads: ${error.message || error}`);
+    return unavailable();
+  }
+
+  const maintainerCommands = options.memoryPolicy?.maintainerCommands !== false;
+  const commandAuthors = new Set();
+  if (maintainerCommands) {
+    for (const thread of snapshot.threads || []) {
+      if (thread.commentsComplete === false) continue;
+      for (const comment of thread.comments?.nodes || []) {
+        if (comment.author?.login && parseDecisionCommand(comment.body)) {
+          commandAuthors.add(comment.author.login);
+        }
+      }
+    }
+  }
+
+  const permissionsByLogin = {};
+  for (const login of commandAuthors) {
+    permissionsByLogin[login] = readCollaboratorPermission(commandRunner, prContext.repo, login);
+  }
+
+  return buildDecisionLedger({
+    repo: prContext.repo,
+    prNumber: prContext.prNumber,
+    headSha: prContext.headSha,
+    expectedPublisherLogin,
+    changedPaths: paths,
+    threads: snapshot.threads || [],
+    permissionsByLogin,
+    available: true,
+    complete: snapshot.complete !== false,
+  }, { maintainerCommands });
 }
 
 /** The most recent summary this bot published on the pull request, whatever push produced it. */
@@ -4236,6 +4379,10 @@ module.exports = {
   reviewCoverageCompleteForArbitration,
   withholdUnsoundAbsenceClaims,
   parseBotFindingComment,
+  readAuthenticatedPublisherLogin,
+  readActionReviewThreads,
+  readCollaboratorPermission,
+  readDecisionLedgerSnapshot,
   readPriorBotFindings,
   suppressPriorFindings,
   actionSummaryAnchor,

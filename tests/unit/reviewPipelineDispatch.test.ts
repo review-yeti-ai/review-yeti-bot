@@ -540,6 +540,93 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
   });
 });
 
+describe('same-PR decision snapshot', () => {
+  const decisionContext = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'exact-head' };
+  const finding = '**P1 · Tenant predicate is missing**\n\nThe query is not tenant scoped.\n\n<!-- review-yeti-bot:finding:v1:abc123:tenant -->';
+
+  it('derives a custom GitHub App publisher from the installation slug', () => {
+    const commandRunner = (_executable: string, args: string[]) => {
+      if (args[1] === 'user') return { status: 1, stdout: '', stderr: 'installation token' };
+      if (args[1] === 'installation') return { status: 0, stdout: 'review-yeti-bot\n', stderr: '' };
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+
+    expect(pipeline.readAuthenticatedPublisherLogin(commandRunner)).toBe('review-yeti-bot[bot]');
+  });
+
+  it('paginates nested comments before declaring a thread complete', () => {
+    let graphCalls = 0;
+    const commandRunner = (_executable: string, args: string[]) => {
+      if (args[0] !== 'api' || args[1] !== 'graphql') return { status: 1, stdout: '', stderr: 'unexpected' };
+      graphCalls += 1;
+      if (graphCalls === 1) {
+        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: [{
+          id: 'THREAD_1', isResolved: false, path: 'src/accounts.ts', line: 42, diffSide: 'RIGHT',
+          comments: {
+            nodes: [{ databaseId: 100, body: finding, createdAt: '2026-08-07T01:00:00Z', author: { login: 'review-yeti-bot[bot]' }, commit: { oid: 'abc123' } }],
+            pageInfo: { hasNextPage: true, endCursor: 'COMMENT_CURSOR' },
+          },
+        }] } } } } }]), stderr: '' };
+      }
+      return { status: 0, stdout: JSON.stringify([{ data: { node: { comments: {
+        nodes: [{ databaseId: 101, body: '/review-yeti ignore accepted for compatibility', createdAt: '2026-08-07T02:00:00Z', author: { login: 'maintainer' }, commit: { oid: 'abc123' } }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      } } } }]), stderr: '' };
+    };
+
+    const result = pipeline.readActionReviewThreads(commandRunner, decisionContext);
+
+    expect(graphCalls).toBe(2);
+    expect(result).toMatchObject({ complete: true });
+    expect(result.threads[0]).toMatchObject({ commentsComplete: true });
+    expect(result.threads[0].comments.nodes.map((item: any) => item.databaseId)).toEqual([100, 101]);
+  });
+
+  it('honors ignore only after collaborator permission succeeds', () => {
+    const commandRunner = (_executable: string, args: string[]) => {
+      if (args[1] === 'user') return { status: 1, stdout: '', stderr: 'installation token' };
+      if (args[1] === 'installation') return { status: 0, stdout: 'review-yeti-bot\n', stderr: '' };
+      if (args[1] === 'graphql') return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: [{
+        id: 'THREAD_1', isResolved: false, path: 'src/accounts.ts', line: 42, diffSide: 'RIGHT',
+        comments: { nodes: [
+          { databaseId: 100, body: finding, createdAt: '2026-08-07T01:00:00Z', author: { login: 'review-yeti-bot[bot]' }, commit: { oid: 'abc123' } },
+          { databaseId: 101, body: '/review-yeti ignore accepted for compatibility', createdAt: '2026-08-07T02:00:00Z', author: { login: 'maintainer' }, commit: { oid: 'abc123' } },
+        ], pageInfo: { hasNextPage: false, endCursor: null } },
+      }] } } } } }]), stderr: '' };
+      if (String(args[1]).endsWith('/collaborators/maintainer/permission')) return { status: 0, stdout: 'maintain\n', stderr: '' };
+      return { status: 1, stdout: '', stderr: 'permission unavailable' };
+    };
+
+    const ledger = pipeline.readDecisionLedgerSnapshot(commandRunner, decisionContext, new Set(['src/accounts.ts']), {
+      memoryPolicy: { maintainerCommands: true },
+    });
+
+    expect(ledger).toMatchObject({ available: true, complete: true });
+    expect(ledger.entries[0]).toMatchObject({ state: 'ignored', decision: { author: 'maintainer', permission: 'maintain' } });
+  });
+
+  it('leaves ignore inert when collaborator permission cannot be verified', () => {
+    const commandRunner = (_executable: string, args: string[]) => {
+      if (args[1] === 'user') return { status: 0, stdout: 'review-yeti-bot[bot]\n', stderr: '' };
+      if (args[1] === 'graphql') return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: [{
+        id: 'THREAD_1', isResolved: false, path: 'src/accounts.ts', line: 42, diffSide: 'RIGHT',
+        comments: { nodes: [
+          { databaseId: 100, body: finding, createdAt: '2026-08-07T01:00:00Z', author: { login: 'review-yeti-bot[bot]' }, commit: { oid: 'abc123' } },
+          { databaseId: 101, body: '/review-yeti ignore accepted for compatibility', createdAt: '2026-08-07T02:00:00Z', author: { login: 'maintainer' }, commit: { oid: 'abc123' } },
+        ], pageInfo: { hasNextPage: false, endCursor: null } },
+      }] } } } } }]), stderr: '' };
+      return { status: 1, stdout: '', stderr: 'permission unavailable' };
+    };
+
+    const ledger = pipeline.readDecisionLedgerSnapshot(commandRunner, decisionContext, new Set(['src/accounts.ts']), {
+      memoryPolicy: { maintainerCommands: true },
+    });
+
+    expect(ledger.entries[0]).toMatchObject({ state: 'open' });
+    expect(ledger.entries[0].decision).toBeUndefined();
+  });
+});
+
 describe('Dispatch path: workflow is runnable on GitHub-hosted runners (Action-only)', () => {
   const workflow = fs.readFileSync(workflowPath, 'utf-8');
   const action = fs.readFileSync(path.join(rootRepoDir, 'action.yml'), 'utf-8');
