@@ -392,8 +392,10 @@ memory:
 The Action inputs `honcho-enabled`, `honcho-context`, `honcho-write`,
 `honcho-timeout-ms`, and `honcho-max-context-chars` override these trusted base-ref values when
 non-empty. The adapter resolves `HONCHO_URL`, `HONCHO_API_KEY`, and `HONCHO_WORKSPACE_ID` through
-the existing Doppler secret manager (environment, cache, CLI, then REST API). Do not place these
-values in repository configuration.
+the existing Doppler secret manager (environment, cache, CLI, then REST API). In the composite
+Action, pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve these
+values through the Doppler REST API. `HONCHO_BASE_URL` and `HONCHO_WORKSPACE` are accepted aliases
+for self-hosted Honcho configurations. Do not place credentials in repository configuration.
 
 ---
 

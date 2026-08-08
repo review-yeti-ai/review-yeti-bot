@@ -47,6 +47,20 @@ inputs:
     description: 'Maximum Honcho advisory context characters, clamped to 1000-8000 (default 4000).'
     required: false
     default: ''
+  doppler-token:
+    description: >-
+      Optional Doppler service token used to resolve Honcho connection secrets at runtime. The
+      token is sent only to the Doppler REST API and is never included in review prompts or logs.
+    required: false
+    default: ''
+  doppler-project:
+    description: 'Doppler project containing Honcho secrets (default review-yeti-bot).'
+    required: false
+    default: ''
+  doppler-config:
+    description: 'Doppler config containing Honcho secrets (default dev).'
+    required: false
+    default: ''
   llm-base-url:
     description: >-
       OpenRouter-compatible base URL for chat completions.
@@ -392,6 +406,9 @@ runs:
         HONCHO_WRITE: ${{ inputs.honcho-write }}
         HONCHO_TIMEOUT_MS: ${{ inputs.honcho-timeout-ms }}
         HONCHO_MAX_CONTEXT_CHARS: ${{ inputs.honcho-max-context-chars }}
+        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
+        DOPPLER_PROJECT: ${{ inputs.doppler-project }}
+        DOPPLER_CONFIG: ${{ inputs.doppler-config }}
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         MAX_FILE_DIFF_CHARS: ${{ inputs.max-file-diff-chars }}

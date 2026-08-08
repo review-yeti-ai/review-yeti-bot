@@ -63,6 +63,15 @@ try {
   } catch (_) {}
 }
 
+let DopplerSecretManager = null;
+try {
+  DopplerSecretManager = require('../../../src/mcp/dopplerSecretManager.js').DopplerSecretManager;
+} catch (_) {
+  try {
+    DopplerSecretManager = require('../../src/mcp/dopplerSecretManager.js').DopplerSecretManager;
+  } catch (_) {}
+}
+
 const { resolveOpenRouterPolicy } = require('./openRouterPolicy.js');
 const { classifyReviewFile, resolveMaxFileDiffChars } = require('../../../src/review/reviewIgnorePolicy');
 
@@ -4244,6 +4253,7 @@ async function main() {
         timeoutMs: honchoPolicy.timeoutMs,
         maxContextChars: honchoPolicy.maxContextChars,
       },
+      secretManager: DopplerSecretManager ? new DopplerSecretManager() : undefined,
     });
     if (honchoPolicy.context) {
       const context = await honchoProvider.resolveContext({
