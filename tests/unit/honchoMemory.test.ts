@@ -61,6 +61,16 @@ describe('Honcho advisory memory adapter', () => {
     expect(JSON.stringify(health)).not.toContain('secret');
   });
 
+  it('accepts the self-hosted HONCHO_BASE_URL and HONCHO_WORKSPACE aliases', async () => {
+    const fetchImplementation = honchoFetch();
+    const provider = createHonchoMemoryProvider({
+      env: { HONCHO_BASE_URL: 'https://honcho.example', HONCHO_API_KEY: 'secret', HONCHO_WORKSPACE: 'review-yeti' },
+      fetchImplementation,
+    });
+    expect((await provider.healthCheck()).configured).toBe(true);
+    expect(fetchImplementation.mock.calls[0]?.[0]).toBe('https://honcho.example/health');
+  });
+
   it('returns bounded context after creating the deterministic workspace, peer, and session', async () => {
     const fetchImplementation = honchoFetch();
     const provider = createHonchoMemoryProvider({

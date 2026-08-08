@@ -70,9 +70,12 @@ async function resolveHonchoConfig({ config = {}, env = process.env, secretManag
     return secretManager?.getSecret ? secretManager.getSecret(name) : null;
   };
 
-  const baseUrl = String(await getSecret('HONCHO_URL', config.baseUrl, env.HONCHO_URL) || DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const configuredBaseUrl = await getSecret('HONCHO_URL', config.baseUrl, env.HONCHO_URL)
+    || await getSecret('HONCHO_BASE_URL', undefined, env.HONCHO_BASE_URL);
+  const baseUrl = String(configuredBaseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
   const apiKey = String(await getSecret('HONCHO_API_KEY', config.apiKey, env.HONCHO_API_KEY) || '').trim();
-  const workspaceValue = await getSecret('HONCHO_WORKSPACE_ID', config.workspaceId, env.HONCHO_WORKSPACE_ID);
+  const workspaceValue = await getSecret('HONCHO_WORKSPACE_ID', config.workspaceId, env.HONCHO_WORKSPACE_ID)
+    || await getSecret('HONCHO_WORKSPACE', undefined, env.HONCHO_WORKSPACE);
   const workspaceId = stableWorkspaceId(workspaceValue || 'review-yeti');
   const enabled = Boolean(apiKey && baseUrl && workspaceValue);
   return {
