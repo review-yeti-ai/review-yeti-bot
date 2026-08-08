@@ -26,6 +26,7 @@ const {
   buildDecisionLedger,
   parseBotFindingComment,
   parseDecisionCommand,
+  reconcileDecisionFindings,
   renderDecisionLedger,
 } = require('../../../src/review/decisionLedger');
 
@@ -2828,7 +2829,9 @@ function postPlainIssueComment(commentBody, prContext, options = {}) {
  * and why, so a reader can tell "the panel found nothing" from "the panel found nothing new".
  */
 function renderReviewStateNotes(reviewState, prContext) {
-  const { withheldAbsenceClaims = [], stillOpen = [], alreadyResolved = [] } = reviewState || {};
+  const {
+    withheldAbsenceClaims = [], carriedOpen = [], ignored = [], recurrentResolved = [], obsolete = [],
+  } = reviewState || {};
   const sections = [];
 
   const link = (item) => {
@@ -2838,22 +2841,36 @@ function renderReviewStateNotes(reviewState, prContext) {
       : `\`${label}\``;
   };
 
-  if (stillOpen.length > 0) {
-    const rows = stillOpen
+  if (carriedOpen.length > 0) {
+    const rows = carriedOpen
       .map((item) => `- ${link(item)} — **${item.title}**${item.severity ? ` (${item.severity})` : ''}`)
       .join('\n');
     sections.push(
-      `\n<details open>\n<summary><b>🔁 Still open from an earlier push (${stillOpen.length})</b></summary>\n\n`
+      `\n<details open>\n<summary><b>🔁 Still open from an earlier push (${carriedOpen.length})</b></summary>\n\n`
       + 'These were reported before and their conversations are still unresolved. They are not '
       + 'reposted here — open the existing thread to reply or resolve it.\n\n'
       + `${rows}\n\n</details>\n`,
     );
   }
 
-  if (alreadyResolved.length > 0) {
+  if (ignored.length > 0) {
+    const rows = ignored
+      .map((item) => `- ${link(item)} — **${item.title}**${item.severity ? ` (${item.severity})` : ''}`)
+      .join('\n');
     sections.push(
-      `\n> ✅ **${alreadyResolved.length} finding(s) repeated a conversation you already resolved and were not reposted.**\n`,
+      `\n<details>\n<summary><b>🫥 Explicitly ignored by a maintainer (${ignored.length})</b></summary>\n\n`
+      + 'These thread-scoped decisions suppress only the matching claim. Reply with '
+      + '`/review-yeti unignore <reason>` to restore normal handling.\n\n'
+      + `${rows}\n\n</details>\n`,
     );
+  }
+
+  if (recurrentResolved.length > 0) {
+    sections.push(`\n> 🔄 **${recurrentResolved.length} finding(s) recurred after a neutrally resolved thread and were published as fresh conversations.**\n`);
+  }
+
+  if (obsolete.length > 0) {
+    sections.push(`\n> 🗂️ **${obsolete.length} prior finding thread(s) are obsolete because their file or line is no longer in the current change.**\n`);
   }
 
   if (withheldAbsenceClaims.length > 0) {
@@ -2957,7 +2974,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
 
   const finalPlan = publicationPlan || fallbackPublicationSummary(personaResults);
   const actionableCount = finalPlan.lineComments.length + finalPlan.fileComments.length;
-  const carriedForwardCount = reviewState?.stillOpen?.length || 0;
+  const carriedForwardCount = reviewState?.carriedOpen?.length || 0;
 
   // Lane failures first — never claim a clean review when providers timed out or returned garbage.
   const failedLanes = personaResults.filter((r) => r.decision === 'ERROR' || Number(r.partial) > 0);
@@ -4101,8 +4118,10 @@ async function main() {
   let personaResults = [];
   let arbitration = null;
   let withheldAbsenceClaims = [];
-  let stillOpen = [];
-  let alreadyResolved = [];
+  let carriedOpen = [];
+  let ignored = [];
+  let recurrentResolved = [];
+  const obsolete = decisionLedger.entries.filter((entry) => entry.state === 'obsolete');
   const skipUnchanged = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKIP_UNCHANGED_REVIEW || '').toLowerCase());
 
   if (reviewableFiles.length === 0) {
@@ -4278,14 +4297,12 @@ async function main() {
         console.log(`[Soundness] Withheld ${withheldAbsenceClaims.length} finding(s) asserting absence: no reviewer saw the whole change (${coverage.passes} pass(es), ${coverage.skipped.length + coverage.oversized.length} policy-excluded, ${coverage.omitted.length} unreviewed).`);
       }
 
-      const prior = readPriorBotFindings(spawnSyncRunner, prContext);
-      if (prior.findings.length > 0) {
-        const dedupe = suppressPriorFindings(personaResults, prior.findings);
-        personaResults = dedupe.personaResults;
-        stillOpen = dedupe.stillOpen;
-        alreadyResolved = dedupe.alreadyResolved;
-        console.log(`[Dedupe] ${prior.findings.length} prior conversation(s) on this pull request; ${stillOpen.length} carried forward as still open, ${alreadyResolved.length} already resolved and not reposted.`);
-      }
+      const reconciliation = reconcileDecisionFindings(personaResults, decisionLedger);
+      personaResults = reconciliation.personaResults;
+      carriedOpen = reconciliation.carriedOpen;
+      ignored = reconciliation.ignored;
+      recurrentResolved = reconciliation.recurrentResolved;
+      console.log(`[Decision ledger] ${carriedOpen.length} open blocker(s) carried, ${reconciliation.matchedOpenRepeats.length} duplicate repeat(s) reused, ${ignored.length} explicit ignore(s), ${recurrentResolved.length} neutral-resolution recurrence(s).`);
     } else {
       console.error('[Review] No OPENROUTER_API_KEY configured. Refusing to post a heuristic or successful verdict.');
       process.exitCode = 1;
@@ -4302,6 +4319,7 @@ async function main() {
         coverage,
         personaResults,
       ),
+      carriedFindings: carriedOpen,
     });
     }
     if (currentCoverageIdentity) arbitration.coverageIdentity = currentCoverageIdentity;
@@ -4329,7 +4347,7 @@ async function main() {
     }
   }
   console.log(`[Formatting] Planned ${publicationPlan.lineComments.length} line conversation(s), ${publicationPlan.fileComments.length} file conversation(s), ${publicationPlan.advisories.length} P2 advisory item(s), and ${publicationPlan.rejected.length} rejected finding(s).`);
-  const reviewState = { withheldAbsenceClaims, stillOpen, alreadyResolved };
+  const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, recurrentResolved, obsolete };
   const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage, usageTotal, publicationPlan, reviewState);
 
   console.log('[Publishing] Executing pull request review publishing...');
@@ -4400,6 +4418,7 @@ module.exports = {
   readActionReviewThreads,
   readCollaboratorPermission,
   readDecisionLedgerSnapshot,
+  reconcileDecisionFindings,
   readPriorBotFindings,
   suppressPriorFindings,
   actionSummaryAnchor,

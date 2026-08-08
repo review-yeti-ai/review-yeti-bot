@@ -1,6 +1,6 @@
 'use strict';
 
-const { claimKey } = require('./claimSimilarity');
+const { claimKey, compareClaims } = require('./claimSimilarity');
 const { sha256 } = require('./reviewCore');
 
 const FINDING_MARKER_PREFIX = '<!-- review-yeti-bot:finding:v1:';
@@ -224,6 +224,86 @@ function renderDecisionLedger(ledger, limits = {}) {
   return { text, renderedEntries: renderedCount, omittedEntries: omitted };
 }
 
+function ledgerEntryAsFinding(entry, alternateTitle) {
+  return {
+    severity: entry.severity,
+    path: entry.path,
+    line: entry.line,
+    side: entry.side,
+    title: alternateTitle || entry.title,
+    body: entry.claimBody,
+    threadId: entry.threadId,
+    commentId: entry.findingCommentId,
+  };
+}
+
+function entryMatchesFinding(entry, finding) {
+  if (entry.claimKey && entry.claimKey === claimKey(finding)) return true;
+  if (compareClaims(ledgerEntryAsFinding(entry), finding).duplicate) return true;
+  // Titles are volatile across personas and reruns. A near-identical claim body at the same
+  // location is still the same defect even when both reviewers choose unrelated headlines.
+  const priorBodyKey = claimKey({ title: '', body: entry.claimBody });
+  const currentBodyKey = claimKey({ title: '', body: finding.body });
+  if (priorBodyKey && priorBodyKey === currentBodyKey && entry.path === finding.path) return true;
+  if (compareClaims(
+    { ...ledgerEntryAsFinding(entry), title: '' },
+    { ...finding, title: '' },
+    { threshold: 0.35, strongThreshold: 0.4 },
+  ).duplicate) return true;
+  return (entry.alternateTitles || []).some((title) => (
+    compareClaims(ledgerEntryAsFinding(entry, title), finding).duplicate
+  ));
+}
+
+function reconcileDecisionFindings(personaResults, ledger) {
+  const results = Array.isArray(personaResults) ? personaResults : [];
+  const entries = ledger?.available === false ? [] : (ledger?.entries || []);
+  const actionableEntries = entries
+    .filter((entry) => entry.state !== 'obsolete')
+    .sort(compareEntries);
+  const carriedOpen = actionableEntries
+    .filter((entry) => entry.state === 'open' && (entry.severity === 'P0' || entry.severity === 'P1'))
+    .map((entry) => ledgerEntryAsFinding(entry));
+  const ignored = ledger?.complete === false
+    ? []
+    : actionableEntries.filter((entry) => entry.state === 'ignored').map((entry) => ledgerEntryAsFinding(entry));
+  const matchedOpenRepeats = new Map();
+  const recurrentResolved = new Map();
+
+  const reconciled = results.map((lane) => {
+    const findings = [];
+    for (const finding of lane.findings || []) {
+      const entry = actionableEntries.find((candidate) => entryMatchesFinding(candidate, finding));
+      if (!entry) {
+        findings.push(finding);
+        continue;
+      }
+      if (entry.state === 'open') {
+        matchedOpenRepeats.set(entry.threadId, ledgerEntryAsFinding(entry));
+        continue;
+      }
+      if (entry.state === 'ignored' && ledger?.complete !== false) continue;
+      if (entry.state === 'resolved') {
+        recurrentResolved.set(entry.threadId, ledgerEntryAsFinding(entry));
+      }
+      findings.push(finding);
+    }
+    return {
+      ...lane,
+      findings,
+      ...(lane.decision === 'ERROR' ? {} : { decision: findings.length > 0 ? 'FINDINGS' : 'APPROVE' }),
+    };
+  });
+
+  return {
+    personaResults: reconciled,
+    carriedOpen,
+    ignored,
+    recurrentResolved: [...recurrentResolved.values()],
+    matchedOpenRepeats: [...matchedOpenRepeats.values()],
+  };
+}
+
 module.exports = {
   DEFAULT_MAX_ENTRIES,
   DEFAULT_MAX_PROMPT_CHARS,
@@ -236,5 +316,6 @@ module.exports = {
   buildDecisionLedger,
   parseBotFindingComment,
   parseDecisionCommand,
+  reconcileDecisionFindings,
   renderDecisionLedger,
 };

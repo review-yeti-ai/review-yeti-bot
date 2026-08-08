@@ -69,6 +69,14 @@ export interface RenderedDecisionLedger {
   omittedEntries: number;
 }
 
+export interface ReconciliationResult {
+  personaResults: Array<Record<string, unknown>>;
+  carriedOpen: Array<Record<string, unknown>>;
+  ignored: Array<Record<string, unknown>>;
+  recurrentResolved: Array<Record<string, unknown>>;
+  matchedOpenRepeats: Array<Record<string, unknown>>;
+}
+
 export function parseBotFindingComment(body?: string | null): ParsedBotFinding | null;
 export function parseDecisionCommand(body?: string | null): ParsedDecisionCommand | null;
 export function buildDecisionLedger(
@@ -79,6 +87,10 @@ export function renderDecisionLedger(
   ledger: DecisionLedger,
   limits?: { maxEntries?: number; maxPromptChars?: number },
 ): RenderedDecisionLedger;
+export function reconcileDecisionFindings(
+  personaResults: Array<Record<string, unknown>>,
+  ledger: DecisionLedger,
+): ReconciliationResult;
 
 export const DEFAULT_MAX_ENTRIES: number;
 export const DEFAULT_MAX_PROMPT_CHARS: number;

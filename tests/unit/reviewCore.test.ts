@@ -2,6 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { changedLineNumbers, computeArbitration, sanitizeFinding } from '../../src/review/reviewCore';
 
 describe('review core diff parsing', () => {
+  it('counts carried open findings without changing persona coverage', () => {
+    const lanes = Array.from({ length: 5 }, (_, index) => ({
+      personaId: `persona-${index}`,
+      decision: 'APPROVE',
+      findings: [],
+    }));
+    const result = computeArbitration(lanes, 5, {
+      carriedFindings: [{
+        severity: 'P1', path: 'src/a.ts', line: 4, title: 'Still open', body: 'The defect is still open.',
+      }],
+    });
+
+    expect(result.completedPersonas).toBe(5);
+    expect(result.metrics.p1Count).toBe(1);
+    expect(result.verdict).toBe('FIX_FIRST');
+  });
+
   it('blocks a clean panel when coverage is incomplete', () => {
     const arbitration = computeArbitration(
       [{ decision: 'APPROVE', findings: [] }],

@@ -4,6 +4,7 @@ import {
   buildDecisionLedger,
   parseBotFindingComment,
   parseDecisionCommand,
+  reconcileDecisionFindings,
   renderDecisionLedger,
 } from '../../src/review/decisionLedger';
 
@@ -255,5 +256,70 @@ describe('renderDecisionLedger', () => {
     expect(rendered.text).not.toContain('Tenant predicate is missing');
     expect(rendered.text).toContain('1 older decision entry omitted');
     expect(rendered).toMatchObject({ renderedEntries: 1, omittedEntries: 1 });
+  });
+});
+
+describe('reconcileDecisionFindings', () => {
+  const currentFinding = {
+    severity: 'P1',
+    path,
+    line: 42,
+    side: 'RIGHT',
+    title: 'Account lookup lacks tenant scope',
+    body: 'The account lookup uses only the record id, so another tenant can read it.',
+  };
+
+  function ledgerWithState(state: string, extra: Record<string, any> = {}) {
+    const ledger = buildDecisionLedger(snapshot());
+    ledger.entries[0].state = state as any;
+    return { ...ledger, ...extra };
+  }
+
+  it('carries an open blocker once and removes only its current duplicate', () => {
+    const result = reconcileDecisionFindings([
+      { personaId: 'security', decision: 'FINDINGS', findings: [currentFinding] },
+      { personaId: 'correctness', decision: 'APPROVE', findings: [] },
+    ], ledgerWithState('open'));
+
+    expect(result.personaResults[0].findings).toEqual([]);
+    expect(result.carriedOpen).toHaveLength(1);
+    expect(result.matchedOpenRepeats).toHaveLength(1);
+  });
+
+  it('keeps a neutral-resolved recurrence as a fresh current finding', () => {
+    const result = reconcileDecisionFindings([
+      { personaId: 'security', decision: 'FINDINGS', findings: [currentFinding] },
+    ], ledgerWithState('resolved'));
+
+    expect(result.personaResults[0].findings).toHaveLength(1);
+    expect(result.recurrentResolved).toHaveLength(1);
+  });
+
+  it('suppresses an explicitly ignored claim but not a distinct nearby claim', () => {
+    const distinct = { ...currentFinding, title: 'Audit log is missing', body: 'This update never records an audit event.' };
+    const result = reconcileDecisionFindings([
+      { personaId: 'security', decision: 'FINDINGS', findings: [currentFinding, distinct] },
+    ], ledgerWithState('ignored'));
+
+    expect(result.personaResults[0].findings).toEqual([distinct]);
+    expect(result.ignored).toHaveLength(1);
+  });
+
+  it('does not grant ignore suppression when the snapshot is incomplete', () => {
+    const result = reconcileDecisionFindings([
+      { personaId: 'security', decision: 'FINDINGS', findings: [currentFinding] },
+    ], ledgerWithState('ignored', { complete: false }));
+
+    expect(result.personaResults[0].findings).toHaveLength(1);
+  });
+
+  it('does nothing for obsolete entries', () => {
+    const result = reconcileDecisionFindings([
+      { personaId: 'security', decision: 'FINDINGS', findings: [currentFinding] },
+    ], ledgerWithState('obsolete'));
+
+    expect(result.personaResults[0].findings).toHaveLength(1);
+    expect(result.carriedOpen).toEqual([]);
+    expect(result.ignored).toEqual([]);
   });
 });
