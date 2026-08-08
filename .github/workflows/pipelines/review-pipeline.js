@@ -397,11 +397,35 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
     return number;
   };
   const rawMemory = parsed.memory && typeof parsed.memory === 'object' ? parsed.memory : {};
+  const rawHoncho = rawMemory.honcho && typeof rawMemory.honcho === 'object' ? rawMemory.honcho : {};
+  const optionalBoolean = (envValue, configValue, fallback) => {
+    if (envValue !== undefined && String(envValue).trim() !== '') {
+      return ['1', 'true', 'yes', 'on'].includes(String(envValue).trim().toLowerCase());
+    }
+    if (configValue !== undefined) return configValue === true || String(configValue).toLowerCase() === 'true';
+    return fallback;
+  };
+  const clampedInteger = (value, fallback, min, max) => {
+    if (value === undefined || value === null || value === '') return fallback;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.max(min, Math.min(max, Math.trunc(number)));
+  };
+  const firstConfigured = (envValue, configValue) => (
+    envValue !== undefined && String(envValue).trim() !== '' ? envValue : configValue
+  );
   const memory = {
     samePrDecisions: rawMemory.same_pr_decisions !== false,
     maxEntries: boundedInteger(rawMemory.max_entries, 40, 1, 100, 'memory.max_entries'),
     maxPromptChars: boundedInteger(rawMemory.max_prompt_chars, 8000, 1000, 20000, 'memory.max_prompt_chars'),
     maintainerCommands: rawMemory.maintainer_commands !== false,
+    honcho: {
+      enabled: optionalBoolean(env.HONCHO_ENABLED, rawHoncho.enabled, false),
+      context: optionalBoolean(env.HONCHO_CONTEXT, rawHoncho.context, false),
+      write: optionalBoolean(env.HONCHO_WRITE, rawHoncho.write, false),
+      timeoutMs: clampedInteger(firstConfigured(env.HONCHO_TIMEOUT_MS, rawHoncho.timeout_ms), 1500, 250, 5000),
+      maxContextChars: clampedInteger(firstConfigured(env.HONCHO_MAX_CONTEXT_CHARS, rawHoncho.max_context_chars), 4000, 1000, 8000),
+    },
   };
   return { maxDiffChars, maxFileDiffChars, submodules, memory };
 }
