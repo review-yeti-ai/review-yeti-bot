@@ -8,6 +8,24 @@ const root = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
 
 describe('Action v4 policy boundary', () => {
+  it('defaults same-PR decision memory to a bounded, maintainer-controlled ledger', () => {
+    expect(pipeline.resolveActionReviewPolicy({ parsed: {} }, {}).memory).toEqual({
+      samePrDecisions: true,
+      maxEntries: 40,
+      maxPromptChars: 8000,
+      maintainerCommands: true,
+    });
+  });
+
+  it('validates explicit same-PR decision memory bounds', () => {
+    expect(() => pipeline.resolveActionReviewPolicy({
+      parsed: { memory: { max_entries: 0 } },
+    }, {})).toThrow('memory.max_entries must be between 1 and 100');
+    expect(() => pipeline.resolveActionReviewPolicy({
+      parsed: { memory: { max_prompt_chars: 999 } },
+    }, {})).toThrow('memory.max_prompt_chars must be between 1000 and 20000');
+  });
+
   it('reads bounded limits and submodule policy from trusted base configuration', () => {
     const policy = pipeline.resolveActionReviewPolicy({
       parsed: {
@@ -161,5 +179,19 @@ describe('Action v4 policy boundary', () => {
       gateDecision: 'PASS',
       mergeEligible: true,
     });
+  });
+
+  it('keeps a prior open blocker binding when every changed file is policy-excluded', () => {
+    const arbitration = pipeline.buildCoverageTerminalArbitration({
+      reviewed: [], skipped: [{ path: 'generated.json', reason: 'policy' }], oversized: [],
+    }, {
+      carriedFindings: [{
+        severity: 'P1', path: 'generated.json', line: 1, title: 'Still open', body: 'The prior defect remains open.',
+      }],
+      carriedChangedFiles: [{ path: 'generated.json', patch: '' }],
+    });
+
+    expect(arbitration).toMatchObject({ verdict: 'FIX_FIRST', gateDecision: 'BLOCKED', mergeEligible: false });
+    expect(arbitration.metrics.p1Count).toBe(1);
   });
 });

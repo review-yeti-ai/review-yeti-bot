@@ -37,6 +37,30 @@ Publication is bound to the exact reviewed head SHA:
 Rerunning a review on an unchanged head does not repeat findings the previous
 run already posted.
 
+## Same-PR decision memory
+
+Before parallel review begins, the Action reads one authenticated, paginated snapshot of the pull
+request's review threads. Only finding markers authored by the authenticated Review Yeti publisher
+become memory. Every persona receives the same bounded ledger as user data; raw human replies,
+author names, reactions, and command reasons are never sent to a model. Memory is same-PR only.
+
+An unresolved P0/P1 finding remains part of deterministic arbitration and therefore remains
+blocking, even when no reviewer repeats it. A repeated open claim reuses the existing conversation.
+GitHub resolution has unknown intent: it does not mean fixed, rejected, or accepted risk. When a
+resolved claim is still demonstrated by the current diff, it is published as a fresh conversation.
+
+Maintainers can explicitly suppress or restore one thread's claim by replying:
+
+```text
+/review-yeti ignore accepted until API-1234 is delivered
+/review-yeti unignore API-1234 has landed; evaluate this normally again
+```
+
+Commands are honored only from collaborators whose current repository permission is `write`,
+`maintain`, or `admin`. The command must be the first nonblank line and include a reason. Ignore
+decisions are visible in the summary and fail closed when thread history or permission lookup is
+incomplete.
+
 ## Durable partial review semantics
 
 Publication success and review outcome success are separate. The Action may successfully publish
@@ -76,4 +100,5 @@ publication success alone.
 
 - Shared planner: `src/review/findingPublication.js`
 - Duplicate detection: `src/review/claimSimilarity.js`
+- Same-PR decision ledger: `src/review/decisionLedger.js`
 - Action adapter: `.github/workflows/pipelines/review-pipeline.js`
