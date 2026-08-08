@@ -34,6 +34,16 @@ OpenRouter is the only model transport. A lane that cannot reach its configured
 model fails closed rather than silently substituting another model — the model
 actually served is recorded and reported in the review.
 
+## Optional Honcho advisory memory
+
+When `memory.honcho.context` is enabled, the pipeline resolves a bounded representation for the
+repository and pull request before persona fan-out and places it in the user message as untrusted
+advisory data. When `memory.honcho.write` is enabled, publication is followed by a fail-open write
+of normalized event metadata (claim ids, severities, paths, states, and verdicts) to the configured
+Honcho workspace/session. Raw GitHub comment prose, author names, commands, and credentials never
+enter Honcho. The same-PR GitHub decision ledger remains the source of truth for carried, ignored,
+resolved, and obsolete findings.
+
 ## Publication
 
 Writes are bound to the exact reviewed head SHA. Every comment carries a stable
@@ -53,3 +63,4 @@ marker so a rerun updates in place instead of duplicating. See
 | `src/review/reviewIgnorePolicy.js` | File classification (generated, vendored, binary, oversized) |
 | `src/mcp/` | Optional MCP adapters (Context7 docs, Linear) |
 | `src/memory/sessionLedger.ts` | Per-PR turn history so reruns do not repeat prior findings |
+| `src/memory/honchoMemory.js` | Optional native-fetch Honcho adapter with bounded context and normalized write-behind events |

@@ -21,6 +21,46 @@ inputs:
       injected into every persona prompt. Leave empty to keep Context7 off.
     required: false
     default: ''
+  honcho-enabled:
+    description: >-
+      Optional Honcho advisory memory master switch. Empty defers to trusted base configuration;
+      true enables it and false disables it. Honcho never controls deterministic review decisions.
+    required: false
+    default: ''
+  honcho-context:
+    description: >-
+      Optional Honcho context read before reviewer fan-out. Empty defers to trusted base
+      configuration. Returned context is bounded and treated as untrusted review data.
+    required: false
+    default: ''
+  honcho-write:
+    description: >-
+      Optional write-behind persistence of normalized review events to Honcho. Empty defers to
+      trusted base configuration; failures never block GitHub publication.
+    required: false
+    default: ''
+  honcho-timeout-ms:
+    description: 'Honcho request timeout in milliseconds, clamped to 250-5000 (default 1500).'
+    required: false
+    default: ''
+  honcho-max-context-chars:
+    description: 'Maximum Honcho advisory context characters, clamped to 1000-8000 (default 4000).'
+    required: false
+    default: ''
+  doppler-token:
+    description: >-
+      Optional Doppler service token used to resolve Honcho connection secrets at runtime. The
+      token is sent only to the Doppler REST API and is never included in review prompts or logs.
+    required: false
+    default: ''
+  doppler-project:
+    description: 'Doppler project containing Honcho secrets (default review-yeti-bot).'
+    required: false
+    default: ''
+  doppler-config:
+    description: 'Doppler config containing Honcho secrets (default dev).'
+    required: false
+    default: ''
   llm-base-url:
     description: >-
       OpenRouter-compatible base URL for chat completions.
@@ -361,6 +401,14 @@ runs:
         LINEAR_API_KEY: ${{ inputs.linear-api-key }}
         # Context7: only effective when non-empty AND repo .review-yeti.yaml allows it.
         CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
+        HONCHO_ENABLED: ${{ inputs.honcho-enabled }}
+        HONCHO_CONTEXT: ${{ inputs.honcho-context }}
+        HONCHO_WRITE: ${{ inputs.honcho-write }}
+        HONCHO_TIMEOUT_MS: ${{ inputs.honcho-timeout-ms }}
+        HONCHO_MAX_CONTEXT_CHARS: ${{ inputs.honcho-max-context-chars }}
+        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
+        DOPPLER_PROJECT: ${{ inputs.doppler-project }}
+        DOPPLER_CONFIG: ${{ inputs.doppler-config }}
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         MAX_FILE_DIFF_CHARS: ${{ inputs.max-file-diff-chars }}
