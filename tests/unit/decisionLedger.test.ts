@@ -297,8 +297,12 @@ describe('reconcileDecisionFindings', () => {
   });
 
   it('carries duplicate historical threads for one claim exactly once', () => {
+    const titles = ['Missing tenant boundary', 'Cross-account read is possible', 'Lookup authorization bypass'];
     const ledger = buildDecisionLedger(snapshot({
-      threads: [thread({ id: 'OPEN_1' }), thread({ id: 'OPEN_2' }), thread({ id: 'OPEN_3' })],
+      threads: titles.map((title, index) => thread({
+        id: `OPEN_${index + 1}`,
+        comments: { nodes: [comment(200 + index, findingBody({ title }), botLogin, `2026-08-07T0${index + 1}:00:00Z`)] },
+      })),
     }));
 
     expect(reconcileDecisionFindings([], ledger).carriedOpen).toHaveLength(1);

@@ -3906,6 +3906,15 @@ function readDecisionLedgerSnapshot(commandRunner, prContext, changedPaths, opti
   }, { maintainerCommands });
 }
 
+function decisionLedgerAllowsCarryForward(ledger) {
+  return Boolean(
+    ledger?.available
+    && ledger?.complete
+    && Array.isArray(ledger.entries)
+    && ledger.entries.length === 0,
+  );
+}
+
 /** The most recent summary this bot published on the pull request, whatever push produced it. */
 function readPriorSummaryReview(commandRunner, prContext) {
   const anchor = actionSummaryAnchor(prContext);
@@ -4270,13 +4279,18 @@ async function main() {
     );
     const customCount = enabledPersonas.filter(p => !PERSONA_CHARTERS.some(b => b.id === p.id)).length;
     console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) with model ${DEFAULT_MODEL}${customCount ? ` (${customCount} repository-defined)` : ''}...`);
-    const carriedForwardVerdict = skipUnchanged && enabledPersonas.length > 0
+    const carriedForwardVerdict = skipUnchanged
+      && enabledPersonas.length > 0
+      && decisionLedgerAllowsCarryForward(decisionLedger)
       ? planCarriedForwardVerdict(spawnSyncRunner, prContext, [...configuredExcludes, ...envExcludes], {
         expectedPersonaIds: enabledPersonas.map((persona) => persona.id),
         coveragePolicy: localConfig?.parsed?.coverage_policy || {},
         coverageIdentity: currentCoverageIdentity,
       })
       : null;
+    if (skipUnchanged && decisionLedger.entries.length > 0) {
+      console.log('[Incremental] Same-PR finding decisions exist; running the panel instead of reusing a potentially stale verdict.');
+    }
 
     if (enabledPersonas.length === 0) {
     console.log('[Personas] All reviewer personas are disabled in repository/org settings. Skipping LLM persona evaluations.');
@@ -4493,6 +4507,7 @@ module.exports = {
   readActionReviewThreads,
   readCollaboratorPermission,
   readDecisionLedgerSnapshot,
+  decisionLedgerAllowsCarryForward,
   reconcileDecisionFindings,
   readPriorBotFindings,
   suppressPriorFindings,

@@ -269,7 +269,7 @@ function reconcileDecisionFindings(personaResults, ledger) {
     candidate.state === 'open' && (candidate.severity === 'P0' || candidate.severity === 'P1')
   ))) {
     const finding = ledgerEntryAsFinding(entry);
-    if (!carriedOpen.some((prior) => compareClaims(prior, finding).duplicate)) carriedOpen.push(finding);
+    if (!carriedOpen.some((prior) => entryMatchesFinding(entry, prior))) carriedOpen.push(finding);
   }
   const ignored = actionableEntries.filter((entry) => entry.state === 'ignored').map((entry) => ({
     ...ledgerEntryAsFinding(entry),

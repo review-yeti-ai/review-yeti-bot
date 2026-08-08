@@ -618,6 +618,14 @@ describe('work item 2 — one pull request gets one summary, not one per push', 
 /* -------------------------------------------------------------------------------------------- */
 
 describe('work item 4 — a push that changed nothing reviewable', () => {
+  it('does not reuse a verdict when same-PR decisions could have changed it', () => {
+    expect(pipeline.decisionLedgerAllowsCarryForward({ available: true, complete: true, entries: [] })).toBe(true);
+    expect(pipeline.decisionLedgerAllowsCarryForward({
+      available: true, complete: true, entries: [{ state: 'open', severity: 'P1' }],
+    })).toBe(false);
+    expect(pipeline.decisionLedgerAllowsCarryForward({ available: false, complete: false, entries: [] })).toBe(false);
+  });
+
   it('derives a stable identity from the trusted roster and normalized coverage policy', () => {
     const implicit = pipeline.coveragePolicyIdentity(
       ['security', 'testing', 'architecture'],
