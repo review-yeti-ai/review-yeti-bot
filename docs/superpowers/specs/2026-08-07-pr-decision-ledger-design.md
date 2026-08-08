@@ -136,6 +136,7 @@ GitHub tokens and never performs I/O.
       "line": 42,
       "side": "RIGHT | LEFT",
       "title": "Bounded bot-authored title",
+      "claimBody": "Bounded bot-authored claim used only for deterministic matching",
       "alternateTitles": [],
       "claimKey": "stable claim identity",
       "firstReportedSha": "marker-sha",
@@ -202,6 +203,10 @@ approximations, or top-level pull-request comments in the MVP.
 The renderer emits a block only when there are prompt-relevant entries. It uses structured,
 escaped, bounded bot-authored fields and fixed trusted labels. It does not render human author
 names, reasons, replies, comment bodies, or reactions.
+
+`claimBody` remains internal reconciliation data and is not rendered. It is bounded to the same
+400-character claim prefix already used by claim comparison so a previous finding can be matched
+without retaining or prompting with the complete old review comment.
 
 The block appears in the user message after the full file manifest and before Context7 material:
 
