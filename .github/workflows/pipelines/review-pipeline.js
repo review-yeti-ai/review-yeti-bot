@@ -3276,7 +3276,10 @@ function readActionReviewThreads(commandRunner, prContext) {
     }
     try {
       const decoded = JSON.parse(result.stdout || '{}');
-      return Array.isArray(decoded) ? decoded : [decoded];
+      const pages = Array.isArray(decoded) ? decoded : [decoded];
+      const graphError = pages.flatMap((page) => page?.errors || [])[0];
+      if (graphError) throw new Error(graphError.message || 'GraphQL returned an error');
+      return pages;
     } catch (error) {
       throw new Error(`GitHub returned malformed ${label} JSON: ${error.message}`);
     }
@@ -3365,7 +3368,9 @@ function readActionReviewThreads(commandRunner, prContext) {
       break;
     }
   }
-  if (hasNextPage) complete = false;
+  if (hasNextPage
+    || retainedComments >= MAX_DECISION_SNAPSHOT_COMMENTS
+    || threads.length >= MAX_DECISION_SNAPSHOT_THREADS) complete = false;
 
   return { threads, complete };
 }

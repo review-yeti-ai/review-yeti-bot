@@ -604,6 +604,16 @@ describe('same-PR decision snapshot', () => {
     expect(result.threads[0].comments.nodes.map((item: any) => item.databaseId)).toEqual([100, 101]);
   });
 
+  it('does not treat a partial GraphQL error response as complete history', () => {
+    const commandRunner = () => ({
+      status: 0,
+      stdout: JSON.stringify({ errors: [{ message: 'resource unavailable' }], data: null }),
+      stderr: '',
+    });
+
+    expect(() => pipeline.readActionReviewThreads(commandRunner, decisionContext)).toThrow('resource unavailable');
+  });
+
   it('stops nested pagination at the bounded total-comment ceiling', () => {
     let graphCalls = 0;
     const initial = Array.from({ length: 499 }, (_, index) => ({
