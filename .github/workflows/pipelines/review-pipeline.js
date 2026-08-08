@@ -22,6 +22,7 @@ const {
 const { normalizeCoveragePolicy } = require('../../../src/review/coveragePolicy');
 const { planFindingPublication } = require('../../../src/review/findingPublication');
 const { assertsAbsence, claimType, compareClaims } = require('../../../src/review/claimSimilarity');
+const { parseBotFindingComment } = require('../../../src/review/decisionLedger');
 
 let mcpFleetManager = null;
 try {
@@ -3204,8 +3205,6 @@ function readActionReviewThreads(commandRunner, prContext) {
   return { threads };
 }
 
-const FINDING_MARKER_PREFIX = '<!-- review-yeti-bot:finding:v1:';
-
 /**
  * Stable per-pull-request anchor for the compact summary review.
  *
@@ -3217,37 +3216,6 @@ function actionSummaryAnchor(prContext) {
   return prContext.repo && prContext.prNumber
     ? `<!-- review-yeti-bot:summary:v1:${prContext.repo}#${prContext.prNumber} -->`
     : '';
-}
-
-/**
- * Recovers the claim a previously published inline conversation was making.
- *
- * Only the rendered comment is available — the bot keeps no state between runs — so this reads
- * back what {@link formatFindingCommentBody} wrote.
- */
-function parseBotFindingComment(body) {
-  const text = String(body || '');
-  if (!text.includes(FINDING_MARKER_PREFIX)) return null;
-  const header = text.match(/\*\*(P0|P1|P2)\s*·\s*([^\n]*?)\*\*/);
-  if (!header) return null;
-
-  const after = text.slice(text.indexOf(header[0]) + header[0].length);
-  const claim = after
-    .split(/\n\*\*(?:Suggested fix|Suggested replacement|Also reported as|Reported by)/)[0]
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .trim();
-  const alsoLine = text.match(/\*\*Also reported as:\*\*\s*(.+)/);
-  const alternateTitles = alsoLine
-    ? alsoLine[1].split('·').map((value) => value.trim().replace(/^_|_$/g, '')).filter(Boolean)
-    : [];
-
-  return {
-    severity: header[1],
-    title: header[2].trim(),
-    body: claim,
-    alternateTitles,
-    sha: (text.match(/review-yeti-bot:finding:v1:([0-9a-f]+):/) || [])[1] || null,
-  };
 }
 
 /**
