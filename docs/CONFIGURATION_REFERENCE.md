@@ -365,6 +365,38 @@ knowledge_base:
     - "ADR-012: Prefer explicit return types on public TypeScript functions."
 ```
 
+### 3a. `memory.honcho`
+
+Honcho is an optional advisory memory provider for repository-scoped pull-request review context.
+The GitHub decision ledger remains authoritative for finding state, maintainer commands, and
+arbitration. Honcho failures are fail-open and never block publication.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables the Honcho adapter. |
+| `context` | `boolean` | `false` | Reads bounded Honcho context before reviewer fan-out. |
+| `write` | `boolean` | `false` | Writes normalized review events after GitHub publication. |
+| `timeout_ms` | `number` | `1500` | Request timeout, clamped to `250..5000`. |
+| `max_context_chars` | `number` | `4000` | Prompt context cap, clamped to `1000..8000`. |
+
+```yaml
+memory:
+  honcho:
+    enabled: true
+    context: true
+    write: true
+    timeout_ms: 1500
+    max_context_chars: 4000
+```
+
+The Action inputs `honcho-enabled`, `honcho-context`, `honcho-write`,
+`honcho-timeout-ms`, and `honcho-max-context-chars` override these trusted base-ref values when
+non-empty. The adapter resolves `HONCHO_URL`, `HONCHO_API_KEY`, and `HONCHO_WORKSPACE_ID` through
+the existing Doppler secret manager (environment, cache, CLI, then REST API). In the composite
+Action, pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve these
+values through the Doppler REST API. `HONCHO_BASE_URL` and `HONCHO_WORKSPACE` are accepted aliases
+for self-hosted Honcho configurations. Do not place credentials in repository configuration.
+
 ---
 
 ### 4. `path_filters`

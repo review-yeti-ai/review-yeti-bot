@@ -251,6 +251,34 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     expect(source).toMatch(/All reviewer personas are disabled[\s\S]*coverageStatus:\s*'incomplete'/);
     expect(source).toMatch(/All reviewer personas are disabled[\s\S]*mergeEligible:\s*false/);
   });
+
+  it('keeps Honcho advisory context outside deterministic decision reconciliation', () => {
+    const source = fs.readFileSync(pipelinePath, 'utf8');
+    expect(source).toContain("require('../../../src/memory/honchoMemory.js')");
+    expect(source).toContain('honchoContextBlock');
+    expect(source).toContain('appendEvents');
+    expect(source).toContain('resolveContext');
+    expect(source).toMatch(/resolveContext[\s\S]*before reviewer fan-out|honchoContextBlock[\s\S]*reviewWithModel/);
+  });
+
+  it('normalizes write-behind events without copying finding prose', () => {
+    const events = pipeline.buildHonchoReviewEvents({
+      repo: 'review-yeti-ai/review-yeti-bot',
+      prNumber: 2,
+      headSha: 'abc123',
+      arbitration: { verdict: 'FIX_FIRST' },
+      personaResults: [{ personaId: 'security', findings: [{ claimId: 'claim-1', severity: 'P1', path: 'src/a.js', line: 4, body: 'secret raw prose' }] }],
+      publicationPlan: { lineComments: [{ claimId: 'claim-1' }], fileComments: [], advisories: [], rejected: [] },
+      carriedOpen: [],
+      ignored: [],
+      recurrentResolved: [],
+      obsolete: [],
+    });
+    expect(events.length).toBeGreaterThan(1);
+    expect(events.every((event: any) => !Object.prototype.hasOwnProperty.call(event, 'body'))).toBe(true);
+    expect(events.some((event: any) => event.eventType === 'review_completed' && event.verdict === 'FIX_FIRST')).toBe(true);
+    expect(events.every((event: any) => event.eventId)).toBe(true);
+  });
 });
 
 describe('Dispatch path: OpenRouter is the only model boundary', () => {

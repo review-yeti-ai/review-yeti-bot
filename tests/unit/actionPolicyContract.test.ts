@@ -14,6 +14,13 @@ describe('Action v4 policy boundary', () => {
       maxEntries: 40,
       maxPromptChars: 8000,
       maintainerCommands: true,
+      honcho: {
+        enabled: false,
+        context: false,
+        write: false,
+        timeoutMs: 1500,
+        maxContextChars: 4000,
+      },
     });
   });
 
@@ -24,6 +31,50 @@ describe('Action v4 policy boundary', () => {
     expect(() => pipeline.resolveActionReviewPolicy({
       parsed: { memory: { max_prompt_chars: 999 } },
     }, {})).toThrow('memory.max_prompt_chars must be between 1000 and 20000');
+  });
+
+  it('resolves bounded optional Honcho policy from trusted memory config', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: {
+        memory: {
+          honcho: {
+            enabled: true,
+            context: true,
+            write: true,
+            timeout_ms: 20_000,
+            max_context_chars: 99_999,
+          },
+        },
+      },
+    }, {});
+
+    expect(policy.memory.honcho).toEqual({
+      enabled: true,
+      context: true,
+      write: true,
+      timeoutMs: 5_000,
+      maxContextChars: 8_000,
+    });
+  });
+
+  it('lets explicit Action inputs disable or enable Honcho without trusting PR-head config', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: { memory: { honcho: { enabled: true, context: true, write: true } } },
+    }, {
+      HONCHO_ENABLED: 'false',
+      HONCHO_CONTEXT: 'true',
+      HONCHO_WRITE: 'false',
+      HONCHO_TIMEOUT_MS: '100',
+      HONCHO_MAX_CONTEXT_CHARS: '9000',
+    });
+
+    expect(policy.memory.honcho).toEqual({
+      enabled: false,
+      context: true,
+      write: false,
+      timeoutMs: 250,
+      maxContextChars: 8_000,
+    });
   });
 
   it('reads bounded limits and submodule policy from trusted base configuration', () => {
