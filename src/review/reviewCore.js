@@ -136,7 +136,10 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const failedLanes = results.filter(isFailedLane);
   const completedResults = results.filter((result) => !isFailedLane(result));
   const currentFindings = completedResults.flatMap((result) => sanitizeFindings(result.findings, options.changedFiles));
-  const carriedFindings = sanitizeFindings(options.carriedFindings, options.changedFiles);
+  const carriedFindings = sanitizeFindings(
+    options.carriedFindings,
+    options.carriedChangedFiles || options.changedFiles,
+  );
   const findings = [...currentFindings, ...carriedFindings];
   let p0Count = 0;
   let p1Count = 0;

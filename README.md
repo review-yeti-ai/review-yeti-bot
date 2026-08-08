@@ -367,6 +367,9 @@ The command must be the first nonblank line and include a reason. Its author and
 of reviewer prompts; the summary shows the ignored finding so accepted risk stays auditable. This is
 same-PR memory only—nothing is learned across pull requests or repositories.
 
+`memory.same_pr_decisions: false` disables the reviewer prompt block, not the deterministic safety
+state: authenticated open blockers and maintainer decisions still affect arbitration and publication.
+
 Merging is deliberately conservative. It is calibrated so that leaving a duplicate in is preferred
 over collapsing two distinct defects, since the second hides one.
 

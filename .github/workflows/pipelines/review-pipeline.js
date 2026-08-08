@@ -2630,6 +2630,32 @@ function buildCoverageTerminalArbitration(coverage = {}, options = {}) {
     };
   }
 
+  const carriedFindings = sanitizeCanonicalFindings(
+    options.carriedFindings,
+    options.carriedChangedFiles,
+  );
+  const p0Count = carriedFindings.filter((finding) => finding.severity === 'P0').length;
+  const p1Count = carriedFindings.filter((finding) => finding.severity === 'P1').length;
+  const p2Count = carriedFindings.filter((finding) => finding.severity === 'P2').length;
+  if (p0Count > 0 || p1Count > 0) {
+    const verdict = p0Count > 0 ? 'BLOCK' : 'FIX_FIRST';
+    return {
+      ...canonical,
+      verdict,
+      status: verdict,
+      terminalStatus: verdict,
+      coverageComplete: true,
+      quorumSatisfied: true,
+      coverageQuorumSatisfied: true,
+      coverageStatus: 'complete',
+      gateDecision: 'BLOCKED',
+      mergeEligible: false,
+      metrics: { p0Count, p1Count, p2Count, totalFindings: carriedFindings.length },
+      findings: carriedFindings,
+      rationale: `No model review was run after ${policyExcludedCount} expected policy exclusion(s), but ${p0Count + p1Count} authenticated prior blocking finding(s) remain open.`,
+    };
+  }
+
   return {
     ...canonical,
     verdict: 'SHIP',
@@ -3154,7 +3180,7 @@ const REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $endCursor) {
+      reviewThreads(first: 50, after: $endCursor) {
         nodes {
           id
           isResolved
@@ -3162,7 +3188,7 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: 
           path
           line
           diffSide
-          comments(first: 100) {
+          comments(first: 10) {
             nodes { databaseId body createdAt author { login } commit { oid } }
             pageInfo { hasNextPage endCursor }
           }
@@ -3186,6 +3212,8 @@ query ReviewThreadComments($threadId: ID!, $endCursor: String) {
 }`;
 
 const MAX_DECISION_SNAPSHOT_COMMENTS = 500;
+const MAX_DECISION_SNAPSHOT_THREADS = 500;
+const MAX_DECISION_SNAPSHOT_API_PAGES = 10;
 
 function actionReviewMarker(prContext) {
   return prContext.repo && prContext.prNumber && prContext.headSha
@@ -3239,51 +3267,52 @@ function readActionReviews(commandRunner, prContext) {
 
 function readActionReviewThreads(commandRunner, prContext) {
   const [owner, name] = String(prContext.repo || '').split('/');
-  const result = ghApi(commandRunner, [
-    'api', 'graphql', '--paginate', '--slurp',
-    '-F', `owner=${owner}`,
-    '-F', `name=${name}`,
-    '-F', `number=${Number(prContext.prNumber)}`,
-    '-f', `query=${REVIEW_THREADS_QUERY}`,
-  ]);
-  if (!result || result.status !== 0) {
-    throw new Error(`gh api could not verify reviewThreads: ${result?.stderr || result?.stdout || 'unknown error'}`);
-  }
-  let decoded;
-  try {
-    decoded = JSON.parse(result.stdout || '[]');
-  } catch (error) {
-    throw new Error(`GitHub returned malformed reviewThreads JSON: ${error.message}`);
-  }
-  const pages = Array.isArray(decoded) ? decoded : [decoded];
-  const threads = pages.flatMap((page) => page?.data?.repository?.pullRequest?.reviewThreads?.nodes || []);
+  const threads = [];
   let retainedComments = 0;
   let complete = true;
+  const decodePages = (result, label) => {
+    if (!result || result.status !== 0) {
+      throw new Error(`gh api could not verify ${label}: ${result?.stderr || result?.stdout || 'unknown error'}`);
+    }
+    try {
+      const decoded = JSON.parse(result.stdout || '{}');
+      return Array.isArray(decoded) ? decoded : [decoded];
+    } catch (error) {
+      throw new Error(`GitHub returned malformed ${label} JSON: ${error.message}`);
+    }
+  };
 
-  const normalizedThreads = threads.map((thread) => {
-    const comments = [...(thread?.comments?.nodes || [])];
+  const normalizeThread = (thread) => {
+    let comments = [...(thread?.comments?.nodes || [])];
+    let pageInfo = thread?.comments?.pageInfo || { hasNextPage: false, endCursor: null };
     let commentsComplete = true;
-    if (thread?.comments?.pageInfo?.hasNextPage) {
-      const continuation = ghApi(commandRunner, [
-        'api', 'graphql', '--paginate', '--slurp',
-        '-F', `threadId=${thread.id}`,
-        '-f', `query=${REVIEW_THREAD_COMMENTS_QUERY}`,
-      ]);
-      if (!continuation || continuation.status !== 0) {
+
+    let commentPageCount = 0;
+    while (pageInfo.hasNextPage
+      && retainedComments + comments.length < MAX_DECISION_SNAPSHOT_COMMENTS
+      && commentPageCount < MAX_DECISION_SNAPSHOT_API_PAGES) {
+      const requestedCursor = pageInfo.endCursor;
+      let pages;
+      try {
+        pages = decodePages(ghApi(commandRunner, [
+          'api', 'graphql',
+          '-F', `threadId=${thread.id}`,
+          '-F', `endCursor=${pageInfo.endCursor}`,
+          '-f', `query=${REVIEW_THREAD_COMMENTS_QUERY}`,
+        ]), 'reviewThread comments');
+      } catch (_) {
         commentsComplete = false;
-      } else {
-        try {
-          const continuationDecoded = JSON.parse(continuation.stdout || '[]');
-          const continuationPages = Array.isArray(continuationDecoded) ? continuationDecoded : [continuationDecoded];
-          for (const page of continuationPages) {
-            comments.push(...(page?.data?.node?.comments?.nodes || []));
-            if (page?.data?.node?.comments?.pageInfo?.hasNextPage) commentsComplete = false;
-          }
-        } catch (_) {
-          commentsComplete = false;
-        }
+        break;
+      }
+      commentPageCount += 1;
+      for (const page of pages) comments.push(...(page?.data?.node?.comments?.nodes || []));
+      pageInfo = pages.at(-1)?.data?.node?.comments?.pageInfo || { hasNextPage: false, endCursor: null };
+      if (pageInfo.hasNextPage && (!pageInfo.endCursor || pageInfo.endCursor === requestedCursor)) {
+        commentsComplete = false;
+        break;
       }
     }
+    if (pageInfo.hasNextPage) commentsComplete = false;
 
     const unique = [...new Map(comments.map((comment) => [
       Number.isInteger(comment?.databaseId) ? comment.databaseId : JSON.stringify(comment),
@@ -3297,15 +3326,48 @@ function readActionReviewThreads(commandRunner, prContext) {
     retainedComments += bounded.length;
     if (bounded.length !== unique.length) commentsComplete = false;
     if (!commentsComplete) complete = false;
-
     return {
       ...thread,
       commentsComplete,
       comments: { ...thread.comments, nodes: bounded },
     };
-  });
+  };
 
-  return { threads: normalizedThreads, complete };
+  let endCursor = null;
+  let hasNextPage = true;
+  let threadPageCount = 0;
+  while (hasNextPage
+    && retainedComments < MAX_DECISION_SNAPSHOT_COMMENTS
+    && threads.length < MAX_DECISION_SNAPSHOT_THREADS
+    && threadPageCount < MAX_DECISION_SNAPSHOT_API_PAGES) {
+    const args = [
+      'api', 'graphql',
+      '-F', `owner=${owner}`,
+      '-F', `name=${name}`,
+      '-F', `number=${Number(prContext.prNumber)}`,
+      ...(endCursor ? ['-F', `endCursor=${endCursor}`] : []),
+      '-f', `query=${REVIEW_THREADS_QUERY}`,
+    ];
+    const pages = decodePages(ghApi(commandRunner, args), 'reviewThreads');
+    threadPageCount += 1;
+    for (const page of pages) {
+      for (const thread of page?.data?.repository?.pullRequest?.reviewThreads?.nodes || []) {
+        threads.push(normalizeThread(thread));
+        if (retainedComments >= MAX_DECISION_SNAPSHOT_COMMENTS || threads.length >= MAX_DECISION_SNAPSHOT_THREADS) break;
+      }
+      if (retainedComments >= MAX_DECISION_SNAPSHOT_COMMENTS || threads.length >= MAX_DECISION_SNAPSHOT_THREADS) break;
+    }
+    const pageInfo = pages.at(-1)?.data?.repository?.pullRequest?.reviewThreads?.pageInfo;
+    hasNextPage = Boolean(pageInfo?.hasNextPage);
+    endCursor = pageInfo?.endCursor || null;
+    if (hasNextPage && (!endCursor || args.includes(`endCursor=${endCursor}`))) {
+      complete = false;
+      break;
+    }
+  }
+  if (hasNextPage) complete = false;
+
+  return { threads, complete };
 }
 
 /**
@@ -3511,10 +3573,11 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       : bodyWithAnchor;
     try {
       const existingReviews = readActionReviews(commandRunner, prContext);
+      const authenticatedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
       const publishedByUs = (review) => (
         typeof review?.body === 'string'
         && typeof review.user?.login === 'string'
-        && review.user.login.length > 0
+        && isExpectedPublisherLogin(review.user.login, authenticatedPublisherLogin)
       );
       const existingReview = existingReviews.find((review) => publishedByUs(review) && review.body.includes(marker));
       // A summary from an earlier push on this same pull request. Editing it is what keeps one
@@ -3523,7 +3586,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         ? existingReviews.find((review) => publishedByUs(review) && review.body.includes(summaryAnchor))
         : undefined;
       const reviewExists = Boolean(existingReview) || Boolean(priorSummaryReview);
-      let expectedPublisherLogin = (existingReview || priorSummaryReview)?.user?.login;
+      let expectedPublisherLogin = authenticatedPublisherLogin;
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0 && expectedPublisherLogin
         ? readActionReviewThreads(commandRunner, prContext)
@@ -3546,7 +3609,11 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
           })),
         });
         reviewId = created.id;
-        expectedPublisherLogin = requirePublisherLogin(created.user?.login);
+        const createdPublisherLogin = requirePublisherLogin(created.user?.login);
+        if (expectedPublisherLogin && !isExpectedPublisherLogin(createdPublisherLogin, expectedPublisherLogin)) {
+          throw new Error('Action review publisher did not match the authenticated GitHub identity');
+        }
+        expectedPublisherLogin = createdPublisherLogin;
       } else {
         if (priorSummaryReview) {
           assertCurrentPullRequest(prContext, { commandRunner });
@@ -4040,22 +4107,15 @@ async function main() {
   }
   const manifest = buildFileManifest(diffFiles, exclusions);
   console.log(`[Manifest] Describing all ${manifest.entries.length} changed file(s) to every reviewer (${exclusions.size} marked excluded from review).`);
-  const decisionLedger = actionPolicy.memory.samePrDecisions
-    ? readDecisionLedgerSnapshot(
-      spawnSyncRunner,
-      prContext,
-      new Set(diffFiles.map((file) => file.path)),
-      { memoryPolicy: actionPolicy.memory },
-    )
-    : buildDecisionLedger({
-      repo: prContext.repo,
-      prNumber: prContext.prNumber,
-      headSha: prContext.headSha,
-      available: false,
-      complete: false,
-      threads: [],
-    });
-  const renderedDecisionLedger = renderDecisionLedger(decisionLedger, actionPolicy.memory);
+  const decisionLedger = readDecisionLedgerSnapshot(
+    spawnSyncRunner,
+    prContext,
+    new Set(diffFiles.map((file) => file.path)),
+    { memoryPolicy: actionPolicy.memory },
+  );
+  const renderedDecisionLedger = actionPolicy.memory.samePrDecisions
+    ? renderDecisionLedger(decisionLedger, actionPolicy.memory)
+    : { text: '', renderedEntries: 0, omittedEntries: decisionLedger.entries.length };
   console.log(`[Decision ledger] ${decisionLedger.available ? `${decisionLedger.entries.length} authenticated finding thread(s)` : 'unavailable'}; ${renderedDecisionLedger.renderedEntries} supplied to each reviewer.`);
 
   if (reviewableFiles.length === 0) {
@@ -4123,8 +4183,9 @@ async function main() {
   let personaResults = [];
   let arbitration = null;
   let withheldAbsenceClaims = [];
-  let carriedOpen = [];
-  let ignored = [];
+  const initialReconciliation = reconcileDecisionFindings([], decisionLedger);
+  let carriedOpen = initialReconciliation.carriedOpen;
+  let ignored = initialReconciliation.ignored;
   let recurrentResolved = [];
   const neutralResolved = decisionLedger.entries.filter((entry) => entry.state === 'resolved');
   const obsolete = decisionLedger.entries.filter((entry) => entry.state === 'obsolete');
@@ -4133,6 +4194,8 @@ async function main() {
   if (reviewableFiles.length === 0) {
     arbitration = buildCoverageTerminalArbitration(coverage, {
       submoduleCoverageComplete: submoduleReview.coverageComplete,
+      carriedFindings: carriedOpen,
+      carriedChangedFiles: diffFiles,
     });
   } else {
     // Optional single-key chat preflight (not /models): the one configured OPENROUTER_API_KEY
@@ -4326,6 +4389,7 @@ async function main() {
         personaResults,
       ),
       carriedFindings: carriedOpen,
+      carriedChangedFiles: diffFiles,
     });
     }
     if (currentCoverageIdentity) arbitration.coverageIdentity = currentCoverageIdentity;

@@ -130,7 +130,7 @@ not grant suppression authority.
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `same_pr_decisions` | `boolean` | `true` | Load authenticated finding state from the current pull request. |
+| `same_pr_decisions` | `boolean` | `true` | Render authenticated same-PR state to reviewers. Setting false removes prompt context only; deterministic open-finding and decision enforcement remains active. |
 | `max_entries` | `integer` | `40` | Maximum ledger entries rendered for each reviewer; valid range 1-100. |
 | `max_prompt_chars` | `integer` | `8000` | Maximum rendered ledger characters; valid range 1000-20000. |
 | `maintainer_commands` | `boolean` | `true` | Honor authenticated thread-scoped ignore and unignore commands. |

@@ -264,9 +264,13 @@ function reconcileDecisionFindings(personaResults, ledger) {
   const actionableEntries = entries
     .filter((entry) => entry.state !== 'obsolete')
     .sort(compareEntries);
-  const carriedOpen = actionableEntries
-    .filter((entry) => entry.state === 'open' && (entry.severity === 'P0' || entry.severity === 'P1'))
-    .map((entry) => ledgerEntryAsFinding(entry));
+  const carriedOpen = [];
+  for (const entry of actionableEntries.filter((candidate) => (
+    candidate.state === 'open' && (candidate.severity === 'P0' || candidate.severity === 'P1')
+  ))) {
+    const finding = ledgerEntryAsFinding(entry);
+    if (!carriedOpen.some((prior) => compareClaims(prior, finding).duplicate)) carriedOpen.push(finding);
+  }
   const ignored = actionableEntries.filter((entry) => entry.state === 'ignored').map((entry) => ({
     ...ledgerEntryAsFinding(entry),
     commentId: entry.decision?.commentId || entry.findingCommentId,

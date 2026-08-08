@@ -535,6 +535,9 @@ describe('work item 2 — one pull request gets one summary, not one per push', 
       if (args[0] === 'api' && args[1] === 'graphql') {
         return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads } } } } }]), stderr: '' };
       }
+      if (args[0] === 'api' && args[1] === 'user') {
+        return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      }
       if (args[0] === 'api' && args.includes('--method')) {
         const method = args[args.indexOf('--method') + 1];
         const endpoint = args[3];

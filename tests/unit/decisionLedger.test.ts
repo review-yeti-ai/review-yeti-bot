@@ -296,6 +296,14 @@ describe('reconcileDecisionFindings', () => {
     expect(result.matchedOpenRepeats).toHaveLength(1);
   });
 
+  it('carries duplicate historical threads for one claim exactly once', () => {
+    const ledger = buildDecisionLedger(snapshot({
+      threads: [thread({ id: 'OPEN_1' }), thread({ id: 'OPEN_2' }), thread({ id: 'OPEN_3' })],
+    }));
+
+    expect(reconcileDecisionFindings([], ledger).carriedOpen).toHaveLength(1);
+  });
+
   it('keeps a neutral-resolved recurrence as a fresh current finding', () => {
     const result = reconcileDecisionFindings([
       { personaId: 'security', decision: 'FINDINGS', findings: [currentFinding] },

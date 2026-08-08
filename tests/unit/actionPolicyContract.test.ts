@@ -180,4 +180,18 @@ describe('Action v4 policy boundary', () => {
       mergeEligible: true,
     });
   });
+
+  it('keeps a prior open blocker binding when every changed file is policy-excluded', () => {
+    const arbitration = pipeline.buildCoverageTerminalArbitration({
+      reviewed: [], skipped: [{ path: 'generated.json', reason: 'policy' }], oversized: [],
+    }, {
+      carriedFindings: [{
+        severity: 'P1', path: 'generated.json', line: 1, title: 'Still open', body: 'The prior defect remains open.',
+      }],
+      carriedChangedFiles: [{ path: 'generated.json', patch: '' }],
+    });
+
+    expect(arbitration).toMatchObject({ verdict: 'FIX_FIRST', gateDecision: 'BLOCKED', mergeEligible: false });
+    expect(arbitration.metrics.p1Count).toBe(1);
+  });
 });

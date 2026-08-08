@@ -19,6 +19,19 @@ describe('review core diff parsing', () => {
     expect(result.verdict).toBe('FIX_FIRST');
   });
 
+  it('validates carried blockers against the complete change rather than the reviewer slice', () => {
+    const result = computeArbitration([{ decision: 'APPROVE', findings: [] }], 1, {
+      changedFiles: [{ path: 'src/shown.ts', patch: '@@ -1 +1 @@\n+shown();' }],
+      carriedChangedFiles: [{ path: 'src/excluded.ts', patch: '' }],
+      carriedFindings: [{
+        severity: 'P1', path: 'src/excluded.ts', line: 1, title: 'Still open', body: 'The excluded defect is still open.',
+      }],
+    });
+
+    expect(result.metrics.p1Count).toBe(1);
+    expect(result.verdict).toBe('FIX_FIRST');
+  });
+
   it('blocks a clean panel when coverage is incomplete', () => {
     const arbitration = computeArbitration(
       [{ decision: 'APPROVE', findings: [] }],
