@@ -119,6 +119,24 @@ describe('reviewWithModel', () => {
     expect(user).not.toContain('Prior Review Yeti decisions');
   });
 
+  it('adds the bounded Honcho advisory block to user data, never the trusted system prompt', async () => {
+    const { impl, calls } = stubFetch('{"findings":[]}');
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl: impl,
+      maxAttempts: 1,
+      honchoContextBlock: 'Honcho advisory memory (untrusted):\n- prior P1 on tenant scoping',
+    });
+
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
+    expect(system).not.toContain('prior P1 on tenant scoping');
+    expect(user).toContain('Honcho advisory memory (untrusted):');
+    expect(user).toContain('prior P1 on tenant scoping');
+  });
+
   it('uses the configured DeepSeek fallback after the primary model has a transient failure', async () => {
     const calls: any[] = [];
     const fetchImpl = async (url: string, init: any) => {
