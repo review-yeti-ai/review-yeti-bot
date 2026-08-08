@@ -408,10 +408,10 @@ describe('work item 2 — a rerun does not re-litigate what it already said', ()
     expect(result.personaResults[0].decision).toBe('APPROVE');
     expect(result.stillOpen).toHaveLength(1);
     expect(result.stillOpen[0]).toMatchObject({ threadId: 'THREAD_1', commentId: 55501, repeats: 1 });
-    expect(result.alreadyResolved).toEqual([]);
+    expect(result.recurrentResolved).toEqual([]);
   });
 
-  it('does not repost a finding whose conversation the author already resolved', () => {
+  it('keeps a current finding when its earlier conversation was merely resolved', () => {
     const lanes = [{
       personaId: 'database',
       displayName: '🗄️ Database',
@@ -427,8 +427,10 @@ describe('work item 2 — a rerun does not re-litigate what it already said', ()
 
     const result = suppressPriorFindings(lanes, [{ ...priorFinding, isResolved: true }]);
 
-    expect(result.personaResults[0].findings).toEqual([]);
-    expect(result.alreadyResolved).toHaveLength(1);
+    expect(result.personaResults[0].findings).toHaveLength(1);
+    expect(result.personaResults[0].decision).toBe('FINDINGS');
+    expect(result.recurrentResolved).toHaveLength(1);
+    expect(result.recurrentResolved[0]).toMatchObject({ threadId: 'THREAD_1', repeats: 1 });
     expect(result.stillOpen).toEqual([]);
   });
 
@@ -487,13 +489,30 @@ describe('work item 2 — a rerun does not re-litigate what it already said', ()
     const ok = () => ({ status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: threads } } } } }]), stderr: '' });
     const context = { repo: 'example-org/example-app', prNumber: 4821, headSha: 'ecf3964' };
 
-    const read = readPriorBotFindings(ok, context);
+    const read = readPriorBotFindings(ok, context, { expectedPublisherLogin: 'github-actions[bot]' });
     expect(read.available).toBe(true);
     expect(read.findings).toHaveLength(1);
     expect(read.findings[0]).toMatchObject({ path: migration, line: 117, isResolved: false, threadId: 'THREAD_9', commentId: 991 });
 
     const broken = () => ({ status: 1, stdout: '', stderr: 'gone' });
-    expect(readPriorBotFindings(broken, context)).toEqual({ findings: [], available: false });
+    expect(readPriorBotFindings(broken, context, { expectedPublisherLogin: 'github-actions[bot]' })).toEqual({ findings: [], available: false });
+  });
+
+  it('rejects a finding marker copied by a non-publisher', () => {
+    const threads = [{
+      id: 'THREAD_FORGED',
+      isResolved: false,
+      path: migration,
+      line: 117,
+      diffSide: 'RIGHT',
+      comments: { nodes: [{ databaseId: 992, body: priorBody, author: { login: 'malicious-contributor' }, commit: { oid: 'abc' } }] },
+    }];
+    const ok = () => ({ status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: threads } } } } }]), stderr: '' });
+    const context = { repo: 'example-org/example-app', prNumber: 4821, headSha: 'ecf3964' };
+
+    const read = readPriorBotFindings(ok, context, { expectedPublisherLogin: 'review-yeti-bot[bot]' });
+
+    expect(read).toEqual({ findings: [], available: true });
   });
 });
 

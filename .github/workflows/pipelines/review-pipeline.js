@@ -3259,11 +3259,14 @@ function parseBotFindingComment(body) {
  *
  * @returns {{findings: object[], available: boolean}}
  */
-function readPriorBotFindings(commandRunner, prContext) {
+function readPriorBotFindings(commandRunner, prContext, options = {}) {
   if (!prContext?.repo || !prContext?.prNumber) return { findings: [], available: false };
+  const expectedPublisherLogin = options.expectedPublisherLogin
+    || readAuthenticatedPublisherLogin(commandRunner);
+  if (!expectedPublisherLogin) return { findings: [], available: false };
   let snapshot;
   try {
-    snapshot = readActionReviewThreads(commandRunner, prContext);
+    snapshot = options.snapshot || readActionReviewThreads(commandRunner, prContext);
   } catch (err) {
     console.warn(`[Dedupe] Could not read prior review threads; findings may repeat: ${err.message || err}`);
     return { findings: [], available: false };
@@ -3272,6 +3275,7 @@ function readPriorBotFindings(commandRunner, prContext) {
   const findings = [];
   for (const thread of snapshot.threads || []) {
     for (const comment of thread.comments?.nodes || []) {
+      if (!isExpectedPublisherLogin(comment.author?.login, expectedPublisherLogin)) continue;
       const parsed = parseBotFindingComment(comment.body);
       if (!parsed) continue;
       findings.push({
@@ -3301,16 +3305,16 @@ function readPriorBotFindings(commandRunner, prContext) {
  * Nothing is dropped quietly. Repeats of an unresolved conversation are carried into the summary
  * as still open, and repeats of one the author already resolved are counted there.
  *
- * @returns {{personaResults: object[], stillOpen: object[], alreadyResolved: object[]}}
+ * @returns {{personaResults: object[], stillOpen: object[], recurrentResolved: object[], alreadyResolved: object[]}}
  */
 function suppressPriorFindings(personaResults, priorFindings) {
   const priors = Array.isArray(priorFindings) ? priorFindings : [];
   if (priors.length === 0) {
-    return { personaResults: personaResults || [], stillOpen: [], alreadyResolved: [] };
+    return { personaResults: personaResults || [], stillOpen: [], recurrentResolved: [], alreadyResolved: [] };
   }
 
   const stillOpen = new Map();
-  const alreadyResolved = new Map();
+  const recurrentResolved = new Map();
 
   const matchPrior = (finding) => priors.find((prior) => {
     if (compareClaims(prior, finding).duplicate) return true;
@@ -3326,9 +3330,12 @@ function suppressPriorFindings(personaResults, priorFindings) {
         findings.push(finding);
         continue;
       }
-      const bucket = prior.isResolved ? alreadyResolved : stillOpen;
+      const bucket = prior.isResolved ? recurrentResolved : stillOpen;
       if (!bucket.has(prior.threadId)) bucket.set(prior.threadId, { ...prior, repeats: 0 });
       bucket.get(prior.threadId).repeats += 1;
+      // Resolution is only a GitHub UI bit. It does not establish that the defect was fixed or
+      // accepted, so a current reviewer independently finding it must still affect arbitration.
+      if (prior.isResolved) findings.push(finding);
     }
     if (findings.length === (lane.findings || []).length) return lane;
     return {
@@ -3338,7 +3345,12 @@ function suppressPriorFindings(personaResults, priorFindings) {
     };
   });
 
-  return { personaResults: kept, stillOpen: [...stillOpen.values()], alreadyResolved: [...alreadyResolved.values()] };
+  return {
+    personaResults: kept,
+    stillOpen: [...stillOpen.values()],
+    recurrentResolved: [...recurrentResolved.values()],
+    alreadyResolved: [],
+  };
 }
 
 function findVerifiedThread(item, prContext, snapshot, expectedPublisherLogin) {
