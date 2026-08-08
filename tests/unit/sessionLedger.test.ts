@@ -50,7 +50,7 @@ describe('SessionLedger Unit Tests', () => {
     expect(fs.existsSync(path.join(tmpDir, 'index.json'))).toBe(true);
   });
 
-  it('retrieves previous turn context and generates augmented reviewer header', () => {
+  it('can inspect locally archived history without implying GitHub Action restoration', () => {
     ledger.recordTurn({
       owner: 'review-yeti-ai',
       repo: 'cisco-cdr',
