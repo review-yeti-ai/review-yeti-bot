@@ -2835,7 +2835,7 @@ function renderReviewStateNotes(reviewState, prContext) {
   const sections = [];
 
   const link = (item) => {
-    const label = `${abbreviatePath(item.path)}${Number.isInteger(item.line) ? `:${item.line}` : ''}`.replace(/`/g, "'");
+    const label = `${abbreviatePath(item.path)}${!item.fileLevel && Number.isInteger(item.line) ? `:${item.line}` : ''}`.replace(/`/g, "'");
     return prContext.repo && prContext.prNumber && item.commentId
       ? `[\`${label}\`](https://github.com/${prContext.repo}/pull/${prContext.prNumber}#discussion_r${item.commentId})`
       : `\`${label}\``;
@@ -3158,6 +3158,7 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: 
         nodes {
           id
           isResolved
+          isOutdated
           path
           line
           diffSide

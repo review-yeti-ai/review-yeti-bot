@@ -126,7 +126,7 @@ function buildDecisionLedger(snapshot, options = {}) {
     commands.sort(compareCommandOrder);
     const latestCommand = commands.at(-1);
     const line = Number.isInteger(thread.line) ? thread.line : null;
-    const obsolete = line === null
+    const obsolete = thread.isOutdated === true
       || (hasChangedPathAuthority && !changedPaths.has(thread.path));
     const state = obsolete
       ? 'obsolete'
@@ -228,7 +228,10 @@ function ledgerEntryAsFinding(entry, alternateTitle) {
   return {
     severity: entry.severity,
     path: entry.path,
-    line: entry.line,
+    // Canonical arbitration requires an integer anchor. File-level GitHub threads legitimately
+    // have no line; patchless/binary/gitlink findings accept a synthetic line for counting only.
+    line: Number.isInteger(entry.line) ? entry.line : 1,
+    fileLevel: !Number.isInteger(entry.line),
     side: entry.side,
     title: alternateTitle || entry.title,
     body: entry.claimBody,

@@ -196,17 +196,27 @@ describe('buildDecisionLedger', () => {
     expect(ledger.complete).toBe(false);
   });
 
-  it('gives obsolete state precedence over an ignore command', () => {
+  it('gives GitHub outdated state precedence over an ignore command', () => {
     const nodes = [
       comment(100, findingBody(), botLogin, '2026-08-07T01:00:00Z'),
       comment(101, '/review-yeti ignore accepted for compatibility', 'maintainer', '2026-08-07T02:00:00Z'),
     ];
     const ledger = buildDecisionLedger(snapshot({
       permissionsByLogin: { maintainer: 'write' },
-      threads: [thread({ line: null, comments: { nodes } })],
+      threads: [thread({ isOutdated: true, comments: { nodes } })],
     }));
 
     expect(ledger.entries[0]).toMatchObject({ state: 'obsolete' });
+  });
+
+  it('keeps a current file-level thread open even though GitHub supplies no line', () => {
+    const ledger = buildDecisionLedger(snapshot({
+      threads: [thread({ line: null, isOutdated: false })],
+    }));
+
+    expect(ledger.entries[0]).toMatchObject({ state: 'open', line: null });
+    const reconciled = reconcileDecisionFindings([], ledger);
+    expect(reconciled.carriedOpen[0]).toMatchObject({ line: 1, fileLevel: true });
   });
 });
 
