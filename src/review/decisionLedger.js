@@ -264,9 +264,10 @@ function reconcileDecisionFindings(personaResults, ledger) {
   const carriedOpen = actionableEntries
     .filter((entry) => entry.state === 'open' && (entry.severity === 'P0' || entry.severity === 'P1'))
     .map((entry) => ledgerEntryAsFinding(entry));
-  const ignored = ledger?.complete === false
-    ? []
-    : actionableEntries.filter((entry) => entry.state === 'ignored').map((entry) => ledgerEntryAsFinding(entry));
+  const ignored = actionableEntries.filter((entry) => entry.state === 'ignored').map((entry) => ({
+    ...ledgerEntryAsFinding(entry),
+    commentId: entry.decision?.commentId || entry.findingCommentId,
+  }));
   const matchedOpenRepeats = new Map();
   const recurrentResolved = new Map();
 
@@ -282,7 +283,7 @@ function reconcileDecisionFindings(personaResults, ledger) {
         matchedOpenRepeats.set(entry.threadId, ledgerEntryAsFinding(entry));
         continue;
       }
-      if (entry.state === 'ignored' && ledger?.complete !== false) continue;
+      if (entry.state === 'ignored') continue;
       if (entry.state === 'resolved') {
         recurrentResolved.set(entry.threadId, ledgerEntryAsFinding(entry));
       }

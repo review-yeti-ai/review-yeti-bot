@@ -305,12 +305,23 @@ describe('reconcileDecisionFindings', () => {
     expect(result.ignored).toHaveLength(1);
   });
 
-  it('does not grant ignore suppression when the snapshot is incomplete', () => {
+  it('turns an incomplete command history into a carried open blocker', () => {
+    const nodes = [
+      comment(100, findingBody(), botLogin, '2026-08-07T01:00:00Z'),
+      comment(101, '/review-yeti ignore accepted for compatibility', 'maintainer', '2026-08-07T02:00:00Z'),
+    ];
+    const incompleteLedger = buildDecisionLedger(snapshot({
+      complete: false,
+      permissionsByLogin: { maintainer: 'admin' },
+      threads: [thread({ commentsComplete: false, comments: { nodes } })],
+    }));
     const result = reconcileDecisionFindings([
       { personaId: 'security', decision: 'FINDINGS', findings: [currentFinding] },
-    ], ledgerWithState('ignored', { complete: false }));
+    ], incompleteLedger);
 
-    expect(result.personaResults[0].findings).toHaveLength(1);
+    expect(result.personaResults[0].findings).toEqual([]);
+    expect(result.carriedOpen).toHaveLength(1);
+    expect(result.ignored).toEqual([]);
   });
 
   it('does nothing for obsolete entries', () => {
