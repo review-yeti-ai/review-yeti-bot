@@ -90,6 +90,12 @@ limits:
   max_turns: 20
   max_concurrency: 12
 
+memory:
+  same_pr_decisions: true   # authenticated decisions from this pull request only
+  max_entries: 40           # 1-100 entries supplied to each reviewer
+  max_prompt_chars: 8000    # 1000-20000 characters
+  maintainer_commands: true # allow authenticated ignore/unignore commands
+
 # Optional MCP integrations (Action path)
 mcp:
   context7:
@@ -97,6 +103,37 @@ mcp:
     # libraries: [typescript, github-actions]  # optional force list; else inferred from diff
     # max_snippets: 5
 ```
+
+### Same-PR decision memory
+
+The Action snapshots authenticated Review Yeti finding threads once before the parallel reviewer
+fan-out. Every reviewer receives byte-identical, bounded state for open, ignored, and neutrally
+resolved findings. Human reply text, names, reactions, and command reasons never enter model
+prompts. This is same-PR memory only; it does not carry decisions across pull requests or
+repositories.
+
+GitHub resolution has unknown intent and never implies fixed, rejected, or accepted risk. Open
+P0/P1 findings remain in arbitration without duplicate publication. A resolved finding that the
+current diff still demonstrates is eligible for a fresh conversation.
+
+Only collaborators with current `write`, `maintain`, or `admin` permission may reply on a finding
+thread with these commands:
+
+```text
+/review-yeti ignore accepted until API-1234 is delivered
+/review-yeti unignore API-1234 has landed; evaluate this normally again
+```
+
+The command must be the first nonblank line and its reason must contain 3-500 characters. An ignore
+is thread-scoped and reversible. If pagination or permission lookup is incomplete, the Action does
+not grant suppression authority.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `same_pr_decisions` | `boolean` | `true` | Load authenticated finding state from the current pull request. |
+| `max_entries` | `integer` | `40` | Maximum ledger entries rendered for each reviewer; valid range 1-100. |
+| `max_prompt_chars` | `integer` | `8000` | Maximum rendered ledger characters; valid range 1000-20000. |
+| `maintainer_commands` | `boolean` | `true` | Honor authenticated thread-scoped ignore and unignore commands. |
 
 ### Per-file diff limit and ignore catalog (Action path)
 

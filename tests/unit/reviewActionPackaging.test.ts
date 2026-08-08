@@ -149,6 +149,19 @@ describe('action.yml — installable GitHub Action contract', () => {
 });
 
 describe('review ignore policy documentation contract', () => {
+  it('ships and documents authenticated same-PR decision memory', () => {
+    expect(fs.existsSync(path.join(rootRepoDir, 'src/review/decisionLedger.js'))).toBe(true);
+    for (const document of [readme, configurationReference, publicationPolicy]) {
+      expect(document).toContain('/review-yeti ignore');
+      expect(document).toContain('/review-yeti unignore');
+      expect(document).toMatch(/same-PR|same pull request/i);
+      expect(document).toMatch(/`write`/i);
+      expect(document).toMatch(/`maintain`/i);
+      expect(document).toMatch(/`admin`/i);
+      expect(document).toMatch(/resolution (?:has|with) unknown intent|unknown intent.*resolution/i);
+    }
+  });
+
   it.each([
     ['README.md', readme],
   ] as const)('%s uses an explicit no-synchronize default workflow example', (_name, document) => {

@@ -187,7 +187,8 @@ through OpenRouter, as above, or by putting a translating gateway in front.
   budget you set.
 
 It is deliberately simpler than a full review platform: no cross-PR memory, no codebase-wide
-semantic index, no chat. If you need those, a hosted service will serve you better.
+semantic index, and no general chat. It does retain authenticated decisions from the same pull
+request, described below.
 
 ---
 
@@ -335,19 +336,36 @@ Two things prevent it:
   author has to disprove. This runs before arbitration, so a verdict is never derived from a claim
   the panel could not establish.
 
-### Rerunning does not repeat the review
+### Rerunning remembers this pull request
 
 If `synchronize` is explicitly enabled, the panel runs again, but the pull request does not
 accumulate a fresh copy of everything it already said:
 
 - the review summary and the "Review started" notice are **edited in place**, one of each per pull
   request rather than one per push;
-- before publishing, the bot reads the conversations it already opened and matches new findings
-  against them **by claim rather than by title**, so a reworded repeat is recognised. A repeat of
-  an unresolved conversation is carried into the summary as *still open*; a repeat of one you
-  already resolved is counted, not reopened;
+- before the parallel reviewers run, the bot takes one authenticated snapshot of the conversations
+  it already opened. Every reviewer receives the same bounded same-PR decision ledger; raw human
+  replies, names, and command reasons are never sent to the model;
+- prior findings are matched **by claim rather than by title**. An unresolved P0/P1 remains in the
+  current verdict and reuses its existing conversation instead of being posted again;
+- GitHub thread resolution has unknown intent. It does not mean fixed, false positive, or accepted
+  risk; if the current diff still demonstrates a resolved finding, the bot publishes a fresh
+  conversation;
 - near-duplicate findings from different personas are merged into one conversation credited to all
   of them, with the other titles kept under "Also reported as".
+
+An authorized maintainer can make a thread-scoped, reversible decision by replying to the finding
+conversation. Only collaborators whose current repository permission is `write`, `maintain`, or
+`admin` can change decision state:
+
+```text
+/review-yeti ignore accepted until API-1234 is delivered
+/review-yeti unignore API-1234 has landed; evaluate this normally again
+```
+
+The command must be the first nonblank line and include a reason. Its author and reason are kept out
+of reviewer prompts; the summary shows the ignored finding so accepted risk stays auditable. This is
+same-PR memory only—nothing is learned across pull requests or repositories.
 
 Merging is deliberately conservative. It is calibrated so that leaving a duplicate in is preferred
 over collapsing two distinct defects, since the second hides one.
@@ -558,6 +576,11 @@ input `max-file-diff-chars` takes precedence over it, and the built-in default i
 version: 4
 limits:
   max_file_diff_chars: 10000 # raise the per-file cap for this repository
+memory:
+  same_pr_decisions: true
+  max_entries: 40
+  max_prompt_chars: 8000
+  maintainer_commands: true
 
 personas:
   - id: security
