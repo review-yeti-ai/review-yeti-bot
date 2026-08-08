@@ -3,7 +3,7 @@
  * The TypeScript manager remains the server-side implementation; this file keeps the composite
  * Action dependency-free while providing the same env/cache/REST resolution contract.
  */
-class DopplerSecretManager {
+class DopplerSecretManagerRuntime {
   constructor(config = {}) {
     this.project = config.project || process.env.DOPPLER_PROJECT || 'review-yeti-bot';
     this.configName = config.config || process.env.DOPPLER_CONFIG || 'dev';
@@ -43,4 +43,4 @@ class DopplerSecretManager {
   }
 }
 
-module.exports = { DopplerSecretManager };
+module.exports = { DopplerSecretManagerRuntime };

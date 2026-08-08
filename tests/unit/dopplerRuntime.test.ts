@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const { DopplerSecretManager } = require('../../src/mcp/dopplerSecretManager.js');
+const { DopplerSecretManagerRuntime } = require('../../src/mcp/dopplerSecretManagerRuntime.js');
 
 describe('runtime Doppler secret manager', () => {
   it('resolves secrets through the Doppler REST API without exposing the token', async () => {
@@ -8,7 +8,7 @@ describe('runtime Doppler secret manager', () => {
       ok: true,
       json: async () => ({ value: { raw: 'honcho-secret' } }),
     }));
-    const manager = new DopplerSecretManager({
+    const manager = new DopplerSecretManagerRuntime({
       project: 'review-yeti-bot',
       config: 'dev',
       dopplerToken: 'doppler-secret',

@@ -65,10 +65,10 @@ try {
 
 let DopplerSecretManager = null;
 try {
-  DopplerSecretManager = require('../../../src/mcp/dopplerSecretManager.js').DopplerSecretManager;
+  DopplerSecretManager = require('../../../src/mcp/dopplerSecretManagerRuntime.js').DopplerSecretManagerRuntime;
 } catch (_) {
   try {
-    DopplerSecretManager = require('../../src/mcp/dopplerSecretManager.js').DopplerSecretManager;
+    DopplerSecretManager = require('../../src/mcp/dopplerSecretManagerRuntime.js').DopplerSecretManagerRuntime;
   } catch (_) {}
 }
 
