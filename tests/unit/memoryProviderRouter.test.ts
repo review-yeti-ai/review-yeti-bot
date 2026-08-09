@@ -6,6 +6,7 @@ function provider(overrides: Record<string, unknown> = {}) {
   return {
     id: 'test',
     contractVersion: 'memory-provider-v1',
+    adapterVersion: 'test-adapter-1',
     capabilities: {
       queryContext: true,
       appendEvents: true,
@@ -23,7 +24,7 @@ describe('MemoryProviderRouter', () => {
     const p = provider();
     const router = new MemoryProviderRouter({ providers: [p], defaultProviderId: 'test' });
     const result = await router.queryContext({ identity: { repository: 'acme/app', prNumber: '7', headSha: 'abc' } });
-    expect(result).toMatchObject({ status: 'available', provider: 'test', source: 'mcp', text: 'bounded' });
+    expect(result).toMatchObject({ status: 'available', provider: 'test', source: 'mcp', text: 'bounded', contractVersion: 'memory-provider-v1', adapterVersion: 'test-adapter-1' });
     expect(p.queryContext).toHaveBeenCalledOnce();
   });
 
@@ -50,6 +51,24 @@ describe('MemoryProviderRouter', () => {
   it('reports unavailable providers and never dispatches unknown ids', async () => {
     const router = new MemoryProviderRouter({ providers: [provider()] });
     await expect(router.queryContext({ providerId: 'missing' })).resolves.toMatchObject({ status: 'unavailable', provider: 'missing' });
+  });
+
+  it('rejects fan-out mode so production has one selected provider', () => {
+    expect(() => new MemoryProviderRouter({ mode: 'fanout' as any })).toThrow('memory mode must be single');
+  });
+
+  it('reports capability metadata and delivery semantics in receipts', async () => {
+    const p = provider({ capabilities: {
+      queryContext: true,
+      appendEvents: true,
+      supportsIdempotency: false,
+      deliverySemantics: 'at_least_once',
+      transports: ['rest'],
+      domains: { recall: ['session_recap'], persist: ['processing'] },
+    } });
+    const router = new MemoryProviderRouter({ providers: [p], defaultProviderId: 'test', transport: 'rest' });
+    await expect(router.appendEvents({ transport: 'rest', identity: { repository: 'acme/app', prNumber: 7, headSha: 'abc' }, persistDomains: ['processing'], events: [{ eventId: 'e1' }] }))
+      .resolves.toMatchObject({ contractVersion: 'memory-provider-v1', adapterVersion: 'test-adapter-1', deliverySemantics: 'at_least_once', supportsIdempotency: false });
   });
 
   it('preserves omitted persist domains in the provider receipt', async () => {

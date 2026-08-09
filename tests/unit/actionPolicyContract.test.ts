@@ -9,12 +9,19 @@ const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pip
 
 describe('Action v4 policy boundary', () => {
   it('defaults same-PR decision memory to a bounded, maintainer-controlled ledger', () => {
-    expect(pipeline.resolveActionReviewPolicy({ parsed: {} }, {}).memory).toEqual({
+    expect(pipeline.resolveActionReviewPolicy({ parsed: {} }, {}).memory).toMatchObject({
       samePrDecisions: true,
       maxEntries: 40,
       maxPromptChars: 8000,
       maintainerCommands: true,
       sessionRecap: true,
+      provider: 'honcho',
+      mode: 'single',
+      transport: 'rest',
+      fallback: 'github_ledger_only',
+      contract: 'memory-provider-v1',
+      enabled: false,
+      query: { timeoutMs: 1500, maxContextChars: 4000, maxEntries: 40 },
       honcho: {
         enabled: false,
         context: false,
@@ -40,6 +47,119 @@ describe('Action v4 policy boundary', () => {
         },
       },
     });
+  });
+
+  it('selects one generic provider from trusted YAML and exposes sanitized profile refs', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: {
+        memory: {
+          enabled: true,
+          provider: 'mem0',
+          mode: 'single',
+          transport: 'rest',
+          fallback: 'github_ledger_only',
+          query: { timeout_ms: 2200, max_context_chars: 5000, max_entries: 12 },
+          providers: {
+            mem0: {
+              enabled: true,
+              transport: 'rest',
+              endpoint_env: 'MEM0_URL',
+              credential_env: 'MEM0_API_KEY',
+              namespace_env: 'MEM0_NAMESPACE',
+            },
+          },
+          recall: { decision_feedback: true, session_recap: true },
+          persist: { decision_feedback: true, session_recap: true },
+        },
+      },
+    }, {});
+
+    expect(policy.memory).toMatchObject({
+      enabled: true,
+      provider: 'mem0',
+      mode: 'single',
+      transport: 'rest',
+      fallback: 'github_ledger_only',
+      contract: 'memory-provider-v1',
+      query: { timeoutMs: 2200, maxContextChars: 5000, maxEntries: 12 },
+      recall: { decision_feedback: true, session_recap: true },
+      persist: { decision_feedback: true, session_recap: true },
+      selectedProfile: {
+        enabled: true,
+        endpointEnv: 'MEM0_URL',
+        credentialEnv: 'MEM0_API_KEY',
+        namespaceEnv: 'MEM0_NAMESPACE',
+      },
+    });
+    expect(policy.memory.selectedProfile).not.toHaveProperty('credential');
+  });
+
+  it('rejects invalid provider selection, non-single mode, disabled profiles, and fallback changes', () => {
+    expect(() => pipeline.resolveActionReviewPolicy({ parsed: { memory: { provider: 'unknown' } } }, {}))
+      .toThrow('memory.provider must be one of');
+    expect(() => pipeline.resolveActionReviewPolicy({ parsed: { memory: { mode: 'fanout' } } }, {}))
+      .toThrow('memory.mode must be single');
+    expect(() => pipeline.resolveActionReviewPolicy({ parsed: { memory: { fallback: 'rest' } } }, {}))
+      .toThrow('memory.fallback must be github_ledger_only');
+    expect(() => pipeline.resolveActionReviewPolicy({ parsed: { memory: { enabled: true, provider: 'mem0', providers: { mem0: { enabled: false } } } } }, {}))
+      .toThrow('memory provider mem0 is disabled');
+    expect(() => pipeline.resolveActionReviewPolicy({ parsed: { memory: { recall: { arbitrary_domain: true } } } }, {}))
+      .toThrow('memory.recall.arbitrary_domain is not a supported memory domain');
+  });
+
+  it('maps legacy Honcho-only configuration to the generic single-provider contract', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: { memory: { honcho: { enabled: true, context: true, write: true, transport: 'mcp' } } },
+    }, {});
+    expect(policy.memory).toMatchObject({
+      enabled: true,
+      provider: 'honcho',
+      mode: 'single',
+      transport: 'mcp',
+      fallback: 'github_ledger_only',
+    });
+    expect(policy.memory.selectedProfile.id).toBe('honcho');
+  });
+
+  it('emits a sanitized effective memory configuration receipt', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: {
+        memory: {
+          enabled: true,
+          provider: 'hindsight',
+          providers: { hindsight: { enabled: true, endpoint_env: 'HINDSIGHT_URL', credential_env: 'HINDSIGHT_API_KEY' } },
+          recall: { session_recap: true },
+          persist: { session_recap: true },
+        },
+      },
+    }, {});
+    const receipt = pipeline.memoryPolicyReceipt(policy.memory);
+    expect(receipt).toMatchObject({
+      enabled: true,
+      provider: 'hindsight',
+      mode: 'single',
+      fallback: 'github_ledger_only',
+      recallDomains: ['session_recap'],
+      persistDomains: ['session_recap'],
+    });
+    expect(JSON.stringify(receipt)).not.toContain('HINDSIGHT_API_KEY');
+  });
+
+  it('builds the selected native provider without adding pipeline fallback branches', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: {
+        memory: {
+          enabled: true,
+          provider: 'mem0',
+          context: true,
+          providers: { mem0: { enabled: true } },
+          recall: { session_recap: true },
+        },
+      },
+    }, {});
+    const runtime = pipeline.createReviewMemoryRouter(policy);
+    expect(runtime.provider).toMatchObject({ id: 'mem0', contractVersion: 'memory-provider-v1' });
+    expect(runtime.router.get('mem0')).toBe(runtime.provider);
   });
 
   it('validates explicit same-PR decision memory bounds', () => {
