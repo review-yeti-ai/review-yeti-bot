@@ -183,14 +183,16 @@ through OpenRouter, as above, or by putting a translating gateway in front.
 - **You own the key.** Bring any OpenAI-compatible provider. Your code and diffs go to the
   provider you chose, not to an intermediary.
 - **It is a GitHub Action.** No Review Yeti app installation, webhook endpoint, or Review Yeti
-  server is required. Optional Honcho memory connects to infrastructure you operate separately.
+  managed server or database is required. When enabled, review continuity calls the API of one
+  provider you select; Honcho is the default and the other adapters share the same contract.
 - **Cost is bounded and visible.** One request per reviewer per push, with a per-reviewer diff
   budget you set.
 
 It is deliberately simpler than a full review platform: no Review Yeti-managed codebase index or
-general chat. By default it retains only authenticated decisions from the same pull request. The
-optional Honcho integration adds repository-scoped advisory memory when explicitly enabled; it
-never replaces the authenticated GitHub decision ledger.
+general chat. By default it retains only authenticated decisions from the same pull request. An
+optional API-backed memory provider can add bounded repository-scoped code signals, trusted-base
+rules, feedback transitions, and PR session recaps when explicitly enabled; it never replaces the
+authenticated GitHub decision ledger.
 
 ---
 
@@ -367,9 +369,10 @@ conversation. Only collaborators whose current repository permission is `write`,
 
 The command must be the first nonblank line and include a reason. Its author and reason are kept out
 of reviewer prompts; the summary shows the ignored finding so accepted risk stays auditable. This is
-the GitHub decision ledger's same-PR authority boundary. Optional Honcho memory is separately
+the GitHub decision ledger's same-PR authority boundary. Optional remote memory is separately
 controlled by the trusted recall/persist matrix and stores only normalized, exact-head-scoped
-metadata; it never learns raw comments, authors, transcripts, or executable instructions.
+metadata through the selected provider API; it never learns raw comments, authors, transcripts, or
+executable instructions.
 
 ### Configurable advisory memory providers
 
@@ -399,6 +402,12 @@ The five providers are not runtime fan-out targets. To compare or migrate provid
 sanitized exact-head outbox in isolation. Unsupported memory domains, provider readiness, delivery
 semantics, and omitted classes are recorded in receipts. Raw comments, authors, command reasons,
 transcripts, credentials, and executable instructions are never stored.
+
+These are API adapters, not direct database drivers. The Action resolves an endpoint and credential
+from trusted configuration, performs one bounded provider query before reviewer fan-out, and sends
+normalized events to that provider API after publication. The local `sessions/` outbox is only a
+durable delivery artifact for retries and replay; it is not the memory store. VCR cassettes exercise
+these API contracts offline and do not imply live provider access.
 
 ### Honcho compatibility configuration
 
@@ -716,6 +725,10 @@ glob behavior, `!` restoration, and every key.
   the base ref.
 - **[Publication Policy](docs/PUBLICATION_POLICY.md)** — what gets posted where, and how reruns
   stay idempotent.
+- **[Memory Provider Operations](docs/MEMORY_PROVIDER_OPERATIONS.md)** — API-backed provider
+  selection, readiness, canaries, outbox replay, and promotion gates.
+- **[Test Infrastructure](TEST_INFRA.md)** — offline API-boundary replay, workflow fixtures, and
+  live-canary separation.
 - **[Adversarial Review Patterns](docs/ADVERSARIAL_REVIEW_PATTERNS.md)** — the reasoning behind
   multi-persona cross-examination.
 
