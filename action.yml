@@ -253,6 +253,18 @@ outputs:
   memory-outbox-path:
     description: 'Hashed normalized memory outbox path. Upload it as an artifact for replay after runner cancellation.'
     value: ${{ steps.review.outputs.memory-outbox-path }}
+  memory-provider:
+    description: 'Selected single memory provider for this review run.'
+    value: ${{ steps.review.outputs.memory-provider }}
+  memory-query-status:
+    description: 'Memory recall status: available, empty, or unavailable.'
+    value: ${{ steps.review.outputs.memory-query-status }}
+  memory-query-source:
+    description: 'Memory recall transport/source recorded by the provider receipt.'
+    value: ${{ steps.review.outputs.memory-query-source }}
+  memory-write-status:
+    description: 'Memory persistence status: accepted, pending, skipped, or unavailable.'
+    value: ${{ steps.review.outputs.memory-write-status }}
   files-omitted:
     description: 'Changed files the diff budget excluded. Non-zero means the verdict covers only part of the change.'
     value: ${{ steps.review.outputs.files-omitted }}

@@ -7,6 +7,9 @@ npm test              # full suite (Vitest)
 npm run test:unit     # tests/unit
 npm run test:integration
 npm run test:replay   # cassette replay — no credentials, no network
+npm run test:all      # unit, fixtures, provider VCR, workflow, outbox, security, runtime, lint, build
+npm run test:workflow  # real pipeline boundary with injected GitHub/model/memory seams
+npm run test:outbox    # atomic outbox, leases, retries, dead-letter, and retarget protection
 npm run lint          # tsc --noEmit
 ```
 
@@ -20,7 +23,9 @@ Every external boundary is injectable and deterministic:
 - Every action/app run re-checks the authoritative PR head before model execution and before each publication side effect.
 - Replay is the default and is fail-closed: an unmatched request throws immediately and `assertComplete()` rejects unconsumed interactions.
 - Replay tests do not permit real GitHub, model-provider, or other network traffic. The cassettes under `tests/fixtures/cassettes/` are the complete boundary.
-- Provider failures, malformed provider JSON, and incomplete persona quorum must never become a successful `SHIP` verdict.
+- Malformed provider JSON and incomplete persona quorum must never become a successful `SHIP` verdict. An
+  unavailable advisory memory provider is different: it must produce an explicit unavailable receipt and
+  continue with the GitHub-authoritative ledger-only review path.
 - Optional persona/provider failures are treated as infrastructure failure by the production webhook path; they cannot be recorded as a green lane.
 - Reviewer tool execution is read-only and limited to changed-file context plus approved documentation search. Arbitrary local paths, shell, Linear, Productlane, GitHub, and custom MCP writes are rejected.
 - GitHub publication bodies carry a stable exact-head idempotency marker so reruns do not duplicate inline findings or fallback comments.

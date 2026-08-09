@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "fixtureId": "openrouter-malformed-response",
+  "provider": "openrouter",
+  "allowedOrigins": ["https://openrouter.fixture.test"],
+  "interactions": [{
+    "request": {"method": "POST", "url": "https://openrouter.fixture.test/v1/chat/completions", "headers": {"authorization": "<redacted>", "content-type": "application/json"}, "body": {"model": "fixture-model", "messages": [{"role": "user", "content": "fixture"}]}},
+    "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": "{not-json"}
+  }]
+}

@@ -82,6 +82,22 @@ describe('native memory provider adapters', () => {
     expect(body.metadata).toMatchObject({ head_sha: identity.headSha, event_ids: ['evt-42'] });
   });
 
+  it('chunks oversized Mem0 batches and rejects duplicate event IDs explicitly', async () => {
+    const fetchImplementation = vi.fn(async () => response({ status: 'PENDING' })) as unknown as typeof fetch;
+    const provider = createMem0MemoryProvider(providerOptions(fetchImplementation));
+    const events = Array.from({ length: 101 }, (_, index) => ({ ...normalizedEvent, event_id: `evt-${index}` }));
+    events.push({ ...normalizedEvent, event_id: 'evt-100' });
+
+    const result = await provider.appendEvents({ identity, events });
+
+    expect(result).toMatchObject({ status: 'accepted', accepted: 101, rejected: 1, chunks: 2, pending: 101 });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse((fetchImplementation as any).mock.calls[0][1].body);
+    const secondBody = JSON.parse((fetchImplementation as any).mock.calls[1][1].body);
+    expect(firstBody.metadata.event_ids).toHaveLength(100);
+    expect(secondBody.metadata.event_ids).toEqual(['evt-100']);
+  });
+
   it('uses the configured Hindsight bank and only returns exact-head normalized events', async () => {
     const fetchImplementation = vi.fn(async () => response({ results: [
       { content: JSON.stringify(normalizedEvent) },
@@ -145,5 +161,20 @@ describe('native memory provider adapters', () => {
     const [, writeRequest] = (fetchImplementation as any).mock.calls[1];
     expect(JSON.parse(writeRequest.body)).toMatchObject({ project: 'review-yeti-project', user_id: 'review-yeti:acme-app:pr-42', session_id: identity.headSha, content: JSON.stringify(normalizedEvent), write_mode: 'async' });
     await expect(provider.readiness()).resolves.toMatchObject({ available: false, experimental: true });
+  });
+
+  it('returns an empty bounded result for malformed JSON and exposes transport failures to the router', async () => {
+    const malformedFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: vi.fn(async () => '{not-json'),
+    })) as unknown as typeof fetch;
+    const malformedProvider = createMem0MemoryProvider(providerOptions(malformedFetch));
+    await expect(malformedProvider.queryContext({ identity, purpose: 'malformed' })).resolves.toMatchObject({ status: 'empty', text: '' });
+
+    const timeoutProvider = createMem0MemoryProvider({
+      ...providerOptions(vi.fn(async () => { throw new Error('fixture timeout'); }) as unknown as typeof fetch),
+    });
+    await expect(timeoutProvider.queryContext({ identity, purpose: 'timeout' })).rejects.toThrow('fixture timeout');
   });
 });

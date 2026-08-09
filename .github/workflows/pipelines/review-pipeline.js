@@ -1476,6 +1476,9 @@ function renderDiffForPrompt(diffFiles, maxDiffChars) {
  * cannot take down a whole review.
  */
 async function reviewWithModel(persona, diffFiles, prContext, sessionContext, options = {}) {
+  if (typeof options.modelClient === 'function') {
+    return options.modelClient({ persona, diffFiles, prContext, sessionContext, options });
+  }
   const cfg = { ...resolveModelConfig(), ...options };
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
@@ -1826,6 +1829,7 @@ function buildHonchoReviewEvents({
   coverage = {},
   baseSha = '',
   policyDigest = '',
+  occurredAt = '',
 } = {}) {
   const identity = `${repo || 'unknown'}/${prNumber || 'unknown'}/${headSha || 'unknown'}`;
   const events = [];
@@ -1870,6 +1874,7 @@ function buildHonchoReviewEvents({
       })),
       headSha,
       source: 'review-yeti',
+      occurredAt: occurredAt || new Date().toISOString(),
       ...fields,
     });
   };
@@ -2096,11 +2101,11 @@ function parseDiff(diffText) {
  * Extracts PR diff payload and execution context from environment variables,
  * GITHUB_EVENT_PATH event file, or fallback git diff execution.
  */
-function getPRDiffAndContext() {
+function getPRDiffAndContext(env = process.env) {
   let diffText = '';
-  let prNumber = process.env.PR_NUMBER || null;
-  let repo = process.env.GITHUB_REPOSITORY || 'review-bot/review-bot';
-  let headSha = process.env.GITHUB_SHA || 'main';
+  let prNumber = env.PR_NUMBER || null;
+  let repo = env.GITHUB_REPOSITORY || 'review-bot/review-bot';
+  let headSha = env.GITHUB_SHA || 'main';
   let title = 'Automated PR Review';
   let eventData = null;
 
@@ -2125,21 +2130,21 @@ function getPRDiffAndContext() {
 
   // 1. Prefer a file for real workflow runs. Large diffs exceed Linux's environment-size limit
   // when exported as PR_DIFF; the file path is small and keeps the action reliable on large PRs.
-  if (process.env.PR_DIFF_FILE && fs.existsSync(process.env.PR_DIFF_FILE)) {
+  if (env.PR_DIFF_FILE && fs.existsSync(env.PR_DIFF_FILE)) {
     try {
-      applyDiffInput(fs.readFileSync(process.env.PR_DIFF_FILE, 'utf-8'));
+      applyDiffInput(fs.readFileSync(env.PR_DIFF_FILE, 'utf-8'));
     } catch (_) {}
   }
 
   // 2. Keep the environment form for small synthetic/unit-test inputs and compatibility.
-  if (!diffText && process.env.PR_DIFF) {
-    applyDiffInput(process.env.PR_DIFF);
+  if (!diffText && env.PR_DIFF) {
+    applyDiffInput(env.PR_DIFF);
   }
 
   // 3. Check process.env.GITHUB_EVENT_PATH
-  if (process.env.GITHUB_EVENT_PATH && fs.existsSync(process.env.GITHUB_EVENT_PATH)) {
+  if (env.GITHUB_EVENT_PATH && fs.existsSync(env.GITHUB_EVENT_PATH)) {
     try {
-      const eventContent = fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf-8');
+      const eventContent = fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf-8');
       eventData = JSON.parse(eventContent);
       if (eventData.pull_request) {
         if (!prNumber && eventData.pull_request.number) {
@@ -2173,8 +2178,8 @@ function getPRDiffAndContext() {
   }
 
   // 4. Extract PR number from GITHUB_REF (e.g. refs/pull/42/merge)
-  if (!prNumber && process.env.GITHUB_REF) {
-    const refMatch = process.env.GITHUB_REF.match(/refs\/pull\/(\d+)/);
+  if (!prNumber && env.GITHUB_REF) {
+    const refMatch = env.GITHUB_REF.match(/refs\/pull\/(\d+)/);
     if (refMatch) {
       prNumber = refMatch[1];
     }
@@ -2189,8 +2194,8 @@ function getPRDiffAndContext() {
 
   // 6. PR_REPO wins over everything: the runner checks out the central review repository, so
   // GITHUB_REPOSITORY names the runner, not the repository actually under review.
-  if (process.env.PR_REPO) {
-    repo = process.env.PR_REPO;
+  if (env.PR_REPO) {
+    repo = env.PR_REPO;
   }
 
   return { diffText, prNumber, repo, headSha, title, eventData };
@@ -2416,16 +2421,16 @@ async function initMcpFleet(clientPayload) {
   return { mcpServers, mcpStatusSummary, registeredCount };
 }
 
-function createReviewMemoryRouter(actionPolicy) {
+function createReviewMemoryRouter(actionPolicy, options = {}) {
   const memoryPolicy = actionPolicy?.memory || {};
   if (!memoryPolicy.enabled || !(memoryPolicy.context || memoryPolicy.write) || !createMemoryProviderRouter) {
     return null;
   }
   const secretManager = DopplerSecretManager
     ? new DopplerSecretManager({
-      dopplerToken: process.env.DOPPLER_TOKEN,
-      project: process.env.DOPPLER_PROJECT,
-      config: process.env.DOPPLER_CONFIG,
+      dopplerToken: (options.env || process.env).DOPPLER_TOKEN,
+      project: (options.env || process.env).DOPPLER_PROJECT,
+      config: (options.env || process.env).DOPPLER_CONFIG,
     })
     : undefined;
   let provider;
@@ -2438,6 +2443,7 @@ function createReviewMemoryRouter(actionPolicy) {
         maxContextChars: memoryPolicy.query?.maxContextChars || 4000,
       },
       secretManager,
+      fetchImplementation: options.fetchImplementation,
     });
     provider = createHonchoMemoryMcpAdapter({
       honchoProvider,
@@ -2446,11 +2452,11 @@ function createReviewMemoryRouter(actionPolicy) {
       persistDomains: Object.entries(memoryPolicy.persist || {}).filter(([, enabled]) => enabled === true).map(([name]) => name),
     });
   } else if (createMemoryProvider) {
-    provider = createMemoryProvider({ id: memoryPolicy.provider, profile: memoryPolicy.selectedProfile, env: process.env, secretManager });
+    provider = createMemoryProvider({ id: memoryPolicy.provider, profile: memoryPolicy.selectedProfile, env: options.env || process.env, secretManager, fetchImplementation: options.fetchImplementation });
   }
   if (!provider) return null;
   return {
-    router: createMemoryProviderRouter({ providers: [provider], defaultProviderId: memoryPolicy.provider, transport: memoryPolicy.transport, mode: memoryPolicy.mode || 'single' }),
+    router: createMemoryProviderRouter({ providers: [provider], defaultProviderId: memoryPolicy.provider, transport: memoryPolicy.transport, mode: memoryPolicy.mode || 'single', now: options.now }),
     provider,
   };
 }
@@ -4261,6 +4267,10 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     `total-tokens=${usage?.totalTokens || 0}`,
     `cost-usd=${usage?.costUSD || 0}`,
     ...(extra.memoryOutboxPath ? [`memory-outbox-path=${extra.memoryOutboxPath}`] : []),
+    ...(extra.memoryProvider ? [`memory-provider=${extra.memoryProvider}`] : []),
+    ...(extra.memoryQueryStatus ? [`memory-query-status=${extra.memoryQueryStatus}`] : []),
+    ...(extra.memoryQuerySource ? [`memory-query-source=${extra.memoryQuerySource}`] : []),
+    ...(extra.memoryWriteStatus ? [`memory-write-status=${extra.memoryWriteStatus}`] : []),
   ];
 
   try {
@@ -4552,14 +4562,17 @@ function planCarriedForwardVerdict(commandRunner, prContext, excludes, options =
 /**
  * Main entry point for pipeline execution.
  */
-async function main() {
+async function main(options = {}) {
   console.log('=====================================================');
   console.log(`🚀 ${BOT_LABEL}`);
   console.log('=====================================================');
 
-  const startedAt = Date.now();
-  const prContext = getPRDiffAndContext();
-  const spawnSyncRunner = (command, args, commandOptions) => spawnSync(command, args, commandOptions);
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const startedAt = now();
+  const runtimeEnv = options.env || process.env;
+  const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
+  const fetchImplementation = options.fetchImplementation || globalThis.fetch;
+  const prContext = options.prContext || getPRDiffAndContext(runtimeEnv);
   console.log(`[Context] Repo: ${prContext.repo} | PR #: ${prContext.prNumber || 'N/A'} | SHA: ${prContext.headSha.slice(0, 7)}`);
 
   let sessionContext = null;
@@ -4578,12 +4591,12 @@ async function main() {
     }
   }
 
-  const configRoot = resolveConfigRoot();
-  if (process.env.REVIEW_YETI_CONFIG_DIR) {
+  const configRoot = resolveConfigRoot(runtimeEnv);
+  if (runtimeEnv.REVIEW_YETI_CONFIG_DIR) {
     console.log(`[Config] Reading repository configuration from the trusted base ref, not the pull request head.`);
   }
   const localConfig = loadLocalRepoConfig(configRoot);
-  const actionPolicy = resolveActionReviewPolicy(localConfig, process.env);
+  const actionPolicy = resolveActionReviewPolicy(localConfig, runtimeEnv);
   const memoryPolicy = actionPolicy.memory || {};
   if (!actionPolicy.memory.sessionRecap) {
     sessionContext = null;
@@ -4595,9 +4608,10 @@ async function main() {
     .filter(([, enabled]) => enabled === true)
     .map(([name]) => name);
   const memoryOutbox = createMemoryOutbox && actionPolicy.memory.enabled && actionPolicy.memory.write && persistDomains.length > 0
-    ? createMemoryOutbox({ baseDir: path.join(process.cwd(), 'sessions') })
+    ? createMemoryOutbox({ baseDir: path.join(options.cwd || process.cwd(), 'sessions'), now: () => new Date(now()) })
     : null;
   let memoryOutboxRecord = null;
+  let memoryOutboxState = null;
   if (memoryOutbox && actionPolicy.memory.persist?.processing) {
     try {
       memoryOutboxRecord = memoryOutbox.create({
@@ -4626,6 +4640,7 @@ async function main() {
           source: 'review-yeti',
         }],
       });
+      memoryOutboxState = memoryOutboxRecord.payload.state;
       console.log(`[Memory] Created processing outbox intent at ${memoryOutboxRecord.filePath}`);
     } catch (error) {
       console.warn(`[Memory] Could not create processing outbox intent: ${error.message}`);
@@ -4654,10 +4669,10 @@ async function main() {
     return;
   }
 
-  const openRouterPolicy = resolveOpenRouterPolicy(localConfig, process.env);
-  const modelConfig = { ...resolveModelConfig(), maxDiffChars: actionPolicy.maxDiffChars, openRouterPolicy };
+  const openRouterPolicy = resolveOpenRouterPolicy(localConfig, runtimeEnv);
+  const modelConfig = { ...resolveModelConfig(runtimeEnv), maxDiffChars: actionPolicy.maxDiffChars, openRouterPolicy };
   // Env/action OPENROUTER_MODEL wins; else github_action.openrouter.model from base-ref YAML.
-  if (!(process.env.OPENROUTER_MODEL || '').trim() && openRouterPolicy.model) {
+  if (!(runtimeEnv.OPENROUTER_MODEL || '').trim() && openRouterPolicy.model) {
     modelConfig.model = openRouterPolicy.model;
   }
 
@@ -4667,7 +4682,7 @@ async function main() {
   // routinely larger than every hand-written change combined, and reviewing it pushes real
   // source out of the review.
   const configuredExcludes = Array.isArray(localConfig?.parsed?.exclude) ? localConfig.parsed.exclude : [];
-  const envExcludes = (process.env.EXCLUDE_PATHS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const envExcludes = (runtimeEnv.EXCLUDE_PATHS || '').split(',').map((s) => s.trim()).filter(Boolean);
   const { files: reviewableFiles, skipped, oversized } = filterReviewableFiles(
     reviewDiffFiles,
     [...configuredExcludes, ...envExcludes],
@@ -4701,7 +4716,7 @@ async function main() {
   const manifest = buildFileManifest(diffFiles, exclusions);
   console.log(`[Manifest] Describing all ${manifest.entries.length} changed file(s) to every reviewer (${exclusions.size} marked excluded from review).`);
   const decisionLedger = readDecisionLedgerSnapshot(
-    spawnSyncRunner,
+    commandRunner,
     prContext,
     new Set(diffFiles.map((file) => file.path)),
     { memoryPolicy: actionPolicy.memory },
@@ -4711,7 +4726,7 @@ async function main() {
     : { text: '', renderedEntries: 0, omittedEntries: decisionLedger.entries.length };
   console.log(`[Decision ledger] ${decisionLedger.available ? `${decisionLedger.entries.length} authenticated finding thread(s)` : 'unavailable'}; ${renderedDecisionLedger.renderedEntries} supplied to each reviewer.`);
 
-  const memoryRuntime = createReviewMemoryRouter(actionPolicy);
+  const memoryRuntime = createReviewMemoryRouter(actionPolicy, { env: runtimeEnv, fetchImplementation, now });
   let honchoContextBlock = '';
   let memoryQueryResult = { status: 'unavailable', source: 'none', provider: memoryPolicy.provider || 'honcho', text: '', reason: 'memory disabled' };
   if (memoryRuntime && memoryPolicy.context) {
@@ -4761,7 +4776,7 @@ async function main() {
   } else {
     // Context7 receives only files that survived the shared policy boundary. Excluded paths and
     // patches must not influence inferred libraries or documentation requests.
-    const context7Policy = resolveContext7Policy(localConfig, process.env);
+    const context7Policy = resolveContext7Policy(localConfig, runtimeEnv);
     context7Aug = await buildContext7Augmentation(reviewableFiles, context7Policy);
     console.log(`[Context7] ${context7Aug.status}`);
     mcpFleetInfo = {
@@ -4772,7 +4787,7 @@ async function main() {
 
     // Ceiling (not a target): only used when the diff does not fit one request.
     // If the budget is exhausted, remaining files are omitted (not silently dropped).
-    const maxPasses = parseInt(process.env.MAX_PASSES || '', 10) || 3;
+    const maxPasses = parseInt(runtimeEnv.MAX_PASSES || '', 10) || 3;
     const passPlan = planDiffPasses(reviewableFiles, modelConfig.maxDiffChars, maxPasses);
     passes = passPlan.passes;
 
@@ -4800,11 +4815,11 @@ async function main() {
     : '[Model] OPENROUTER_API_KEY is not configured; refusing to produce a verdict.');
 
   // Never allow a workflow-supplied variable to disable exact-head verification on a real runner.
-  const syntheticVitestRun = process.env.GITHUB_ACTIONS !== 'true'
-    && process.env.VITEST === 'true'
-    && process.env.PR_DIFF
-    && !process.env.GITHUB_EVENT_PATH;
-  if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
+  const syntheticVitestRun = runtimeEnv.GITHUB_ACTIONS !== 'true'
+    && runtimeEnv.VITEST === 'true'
+    && runtimeEnv.PR_DIFF
+    && !runtimeEnv.GITHUB_EVENT_PATH;
+  if (!syntheticVitestRun) assertCurrentPullRequest(prContext, { commandRunner });
 
   let personaResults = [];
   let arbitration = null;
@@ -4815,7 +4830,7 @@ async function main() {
   let recurrentResolved = [];
   const neutralResolved = decisionLedger.entries.filter((entry) => entry.state === 'resolved');
   const obsolete = decisionLedger.entries.filter((entry) => entry.state === 'obsolete');
-  const skipUnchanged = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKIP_UNCHANGED_REVIEW || '').toLowerCase());
+  const skipUnchanged = ['1', 'true', 'yes', 'on'].includes(String(runtimeEnv.SKIP_UNCHANGED_REVIEW || '').toLowerCase());
 
   if (reviewableFiles.length === 0) {
     arbitration = buildCoverageTerminalArbitration(coverage, {
@@ -4826,8 +4841,8 @@ async function main() {
   } else {
     // Optional single-key chat preflight (not /models): the one configured OPENROUTER_API_KEY
     // must authenticate for chat. Callers choose which secret to pass as llm-api-key.
-    if (modelConfig.enabled && process.env.VITEST !== 'true'
-        && !['1', 'true', 'yes', 'on'].includes(String(process.env.OPENROUTER_SKIP_CHAT_PREFLIGHT || '').toLowerCase())) {
+    if (modelConfig.enabled && runtimeEnv.VITEST !== 'true'
+        && !['1', 'true', 'yes', 'on'].includes(String(runtimeEnv.OPENROUTER_SKIP_CHAT_PREFLIGHT || '').toLowerCase())) {
       const timeoutMs = Math.min(Number(openRouterPolicy.timeoutMs) || 30_000, 20_000);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -4870,7 +4885,7 @@ async function main() {
       console.log(`[Personas] Loaded ${fileRoster.personas.length} persona file(s) from ${PERSONA_DIR}/.`);
     }
 
-    const roster = resolvePersonaRoster(payload, localConfig, process.env, fileRoster.personas);
+    const roster = resolvePersonaRoster(payload, localConfig, runtimeEnv, fileRoster.personas);
     roster.errors.unshift(...fileRoster.errors);
 
     // A misconfigured roster must never fall through to a green verdict: an unknown id used to
@@ -4894,7 +4909,7 @@ async function main() {
     const carriedForwardVerdict = skipUnchanged
       && enabledPersonas.length > 0
       && decisionLedgerAllowsCarryForward(decisionLedger)
-      ? planCarriedForwardVerdict(spawnSyncRunner, prContext, [...configuredExcludes, ...envExcludes], {
+      ? planCarriedForwardVerdict(commandRunner, prContext, [...configuredExcludes, ...envExcludes], {
         expectedPersonaIds: enabledPersonas.map((persona) => persona.id),
         coveragePolicy: localConfig?.parsed?.coverage_policy || {},
         coverageIdentity: currentCoverageIdentity,
@@ -4927,14 +4942,14 @@ async function main() {
       // Pre-review "started" comment so humans know the panel is running before ~5m of fan-out.
       try {
         postStartedComment(prContext, {
-          trigger: process.env.GITHUB_EVENT_NAME || 'unknown',
-          eventAction: process.env.GITHUB_EVENT_ACTION || '',
-          actor: process.env.GITHUB_ACTOR || process.env.TRIGGER_ACTOR || '',
-          reason: process.env.TRIGGER_REASON || '',
+          trigger: runtimeEnv.GITHUB_EVENT_NAME || 'unknown',
+          eventAction: runtimeEnv.GITHUB_EVENT_ACTION || '',
+          actor: runtimeEnv.GITHUB_ACTOR || runtimeEnv.TRIGGER_ACTOR || '',
+          reason: runtimeEnv.TRIGGER_REASON || '',
           model: modelConfig.model,
           personaCount: enabledPersonas.length,
-          workflow: process.env.GITHUB_WORKFLOW || '',
-        });
+          workflow: runtimeEnv.GITHUB_WORKFLOW || '',
+        }, { commandRunner, now });
       } catch (err) {
         console.warn(`[Publish] Started comment failed (non-fatal): ${err.message || err}`);
       }
@@ -4949,7 +4964,7 @@ async function main() {
               batch,
               prContext,
               { ...(sessionContext || {}), context7Block: context7Aug.block || '', fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, honchoContextBlock },
-              { ...modelConfig, ...(sessionContext || {}), context7Block: context7Aug.block || '', fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, honchoContextBlock },
+              { ...modelConfig, ...(sessionContext || {}), context7Block: context7Aug.block || '', fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, honchoContextBlock, fetchImplementation, modelClient: options.modelClient },
             ));
           }
           const failedRuns = runs.filter((r) => r.decision === 'ERROR');
@@ -5028,7 +5043,7 @@ async function main() {
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
 
-  if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
+  if (!syntheticVitestRun) assertCurrentPullRequest(prContext, { commandRunner });
 
   console.log('[Formatting] Planning resolvable P0/P1 conversations and compact review output...');
   const usageTotal = sumUsage(personaResults);
@@ -5052,7 +5067,11 @@ async function main() {
   const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage, usageTotal, publicationPlan, reviewState);
 
   console.log('[Publishing] Executing pull request review publishing...');
-  const publication = postOrOutputComment(commentMarkdown, prContext, publicationPlan);
+  const publication = postOrOutputComment(commentMarkdown, prContext, publicationPlan, {
+    commandRunner,
+    cwd: options.cwd || process.cwd(),
+    fileSystem: options.fileSystem || fs,
+  });
   if (!publication.success) {
     console.error(`[Publishing] ${publication.error || 'GitHub publication failed'}`);
     process.exitCode = 1;
@@ -5079,6 +5098,7 @@ async function main() {
       coverage,
       baseSha: memoryIdentity.baseSha,
       policyDigest: memoryIdentity.policyDigest,
+      occurredAt: new Date(now()).toISOString(),
     });
     if (memoryOutbox) {
       try {
@@ -5087,12 +5107,14 @@ async function main() {
         const mergedEvents = [...outboxEvents, ...persistedEvents];
         const uniqueEvents = [...new Map(mergedEvents.map((event) => [event.eventId || event.event_id || JSON.stringify(event), event])).values()];
         memoryOutboxRecord = memoryOutbox.create({ providerId: memoryPolicy.provider, identity: memoryIdentity, state: 'ready', events: uniqueEvents, persistDomains });
-        writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, usageTotal, { memoryOutboxPath: memoryOutboxRecord.filePath });
+        memoryOutboxState = memoryOutboxRecord.payload.state;
+        writeStepOutputs(arbitration, runtimeEnv.GITHUB_OUTPUT, coverage, usageTotal, { memoryOutboxPath: memoryOutboxRecord.filePath });
       } catch (error) {
         console.warn(`[Memory] Could not persist memory outbox before provider delivery: ${error.message}`);
       }
     }
   }
+  let memoryWriteResult = { status: 'skipped', provider: memoryPolicy.provider || 'honcho', accepted: 0, eventIds: [] };
   if (memoryRuntime && memoryPolicy.write && persistDomains.length > 0) {
     const eventsToPersist = filterMemoryEventsForPersistence(honchoEvents, persistDomains);
     const deliveryKey = sha256(JSON.stringify({
@@ -5112,11 +5134,13 @@ async function main() {
       persistDomains,
       deliveryKey,
     });
+    memoryWriteResult = writeResult;
     if (writeResult.status === 'accepted') {
       console.log(`[Memory] Wrote ${writeResult.accepted} normalized event(s) via ${writeResult.provider} (attempts=${writeResult.attempts}, delivery=${deliveryKey.slice(0, 12)}).`);
       if (memoryOutboxRecord && memoryOutbox) {
         try {
-          memoryOutbox.update(memoryOutboxRecord.filePath, { state: 'accepted', delivery: { accepted: writeResult.eventIds || [], pending: [], rejected: [], attempts: writeResult.attempts || 1, deliveryKey, result: writeResult } });
+          const updatedOutbox = memoryOutbox.update(memoryOutboxRecord.filePath, { state: 'accepted', delivery: { accepted: writeResult.eventIds || [], pending: [], rejected: [], attempts: writeResult.attempts || 1, deliveryKey, result: writeResult } });
+          memoryOutboxState = updatedOutbox.state;
         } catch (error) {
           console.warn(`[Memory] Could not update memory outbox receipt: ${error.message}`);
         }
@@ -5125,7 +5149,8 @@ async function main() {
       console.warn(`[Memory] Review event write unavailable after ${writeResult.attempts || 1} attempt(s): ${writeResult.reason || 'unknown error'}`);
       if (memoryOutboxRecord && memoryOutbox) {
         try {
-          memoryOutbox.update(memoryOutboxRecord.filePath, { state: 'pending', delivery: { accepted: writeResult.eventIds || [], pending: eventsToPersist.map((event) => event.eventId || event.event_id).filter(Boolean), rejected: [], attempts: writeResult.attempts || 1, deliveryKey, result: writeResult } });
+          const updatedOutbox = memoryOutbox.update(memoryOutboxRecord.filePath, { state: 'pending', delivery: { accepted: writeResult.eventIds || [], pending: eventsToPersist.map((event) => event.eventId || event.event_id).filter(Boolean), rejected: [], attempts: writeResult.attempts || 1, deliveryKey, result: writeResult } });
+          memoryOutboxState = updatedOutbox.state;
         } catch (error) {
           console.warn(`[Memory] Could not update pending memory outbox receipt: ${error.message}`);
         }
@@ -5133,7 +5158,12 @@ async function main() {
     }
   }
 
-  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, usageTotal);
+  writeStepOutputs(arbitration, runtimeEnv.GITHUB_OUTPUT, coverage, usageTotal, {
+    memoryProvider: memoryPolicy.provider || 'honcho',
+    memoryQueryStatus: memoryQueryResult.status,
+    memoryQuerySource: memoryQueryResult.source,
+    memoryWriteStatus: memoryWriteResult.status,
+  });
 
 
   // Persist session log artifacts under sessions/ directory
@@ -5163,6 +5193,22 @@ async function main() {
   console.log('=====================================================');
   console.log(`✅ Review Pipeline Completed cleanly. Verdict: ${arbitration.verdict}`);
   console.log('=====================================================');
+  return {
+    verdict: arbitration.verdict,
+    coverage: {
+      status: arbitration.coverageStatus || coverage?.status || 'unknown',
+      mergeEligible: Boolean(arbitration.mergeEligible),
+      completedPersonas: arbitration.completedPersonas || 0,
+      totalPersonas: arbitration.totalPersonas || 0,
+    },
+    publication: { success: Boolean(publication.success), postedViaGh: Boolean(publication.postedViaGh) },
+    memory: { query: memoryQueryResult, write: memoryWriteResult, policy: memoryPolicyReceipt(memoryPolicy) },
+    outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
+    provider: memoryPolicy.provider || 'honcho',
+    headSha: prContext.headSha,
+    startedAt,
+    finishedAt: now(),
+  };
 }
 
 if (require.main === module) {
@@ -5241,4 +5287,5 @@ module.exports = {
   postStartedComment,
   postOrOutputComment,
   main,
+  runReviewPipeline: main,
 };

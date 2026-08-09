@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "fixtureId": "github-publication-failure",
+  "provider": "github",
+  "allowedOrigins": ["https://api.github.fixture.test"],
+  "interactions": [{
+    "request": {"method": "POST", "url": "https://api.github.fixture.test/repos/acme/review-yeti/pulls/42/reviews", "headers": {"accept": "application/vnd.github+json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "event": "COMMENT", "body": "fixture"}},
+    "response": {"status": 500, "headers": {"content-type": "application/json"}, "body": {"message": "fixture failure"}}
+  }]
+}
