@@ -4,6 +4,7 @@ import { createMemoryOutbox } from '../src/memory/memoryOutbox.js';
 import { createHonchoMemoryProvider } from '../src/memory/honchoMemory.js';
 import { createHonchoMemoryMcpAdapter } from '../src/mcp/honchoMemoryMcpAdapter.js';
 import { createMemoryProviderRouter } from '../src/mcp/memoryProviderRouter.js';
+import { createMemoryProvider } from '../src/memory/providers/index.js';
 import { DopplerSecretManagerRuntime } from '../src/mcp/dopplerSecretManagerRuntime.js';
 
 function arg(name) {
@@ -17,14 +18,15 @@ const leaseTtlMs = Number(arg('--lease-ttl-ms') || 300000);
 const maxAttempts = Math.max(1, Number(arg('--max-attempts') || 3));
 const providerId = arg('--provider') || 'honcho';
 const authorized = arg('--authorize') === 'yes' || process.env.REVIEW_YETI_REPLAY_AUTH === '1';
-if (!filePath || !lease || !authorized || providerId !== 'honcho') {
-  console.error('Usage: replay-memory-outbox.mjs --path <outbox> --lease <owner> --provider honcho --authorize yes');
+if (!filePath || !lease || !authorized) {
+  console.error('Usage: replay-memory-outbox.mjs --path <outbox> --lease <owner> --provider <selected-provider> --authorize yes');
   process.exit(2);
 }
 
 const outbox = createMemoryOutbox({ baseDir: process.cwd() });
 let payload = outbox.read(filePath);
 if (!payload.identity?.repository || !payload.identity?.headSha) throw new Error('outbox identity is incomplete');
+if (payload.providerId && providerId !== payload.providerId) throw new Error(`replay provider ${providerId} does not match outbox provider ${payload.providerId}`);
 if (payload.state === 'dead_letter') throw new Error('memory outbox is dead-lettered; operator intervention is required');
 payload = outbox.acquireLease(filePath, { owner: lease, ttlMs: leaseTtlMs });
 const secretManager = new DopplerSecretManagerRuntime({
@@ -32,9 +34,23 @@ const secretManager = new DopplerSecretManagerRuntime({
   project: process.env.DOPPLER_PROJECT,
   config: process.env.DOPPLER_CONFIG,
 });
-const honcho = createHonchoMemoryProvider({ secretManager, config: { enabled: true } });
-const adapter = createHonchoMemoryMcpAdapter({ honchoProvider: honcho, transport: 'mcp' });
-const router = createMemoryProviderRouter({ providers: [adapter], defaultProviderId: 'honcho', transport: 'mcp' });
+const selectedProvider = payload.providerId || providerId || 'honcho';
+let adapter;
+if (selectedProvider === 'honcho') {
+  const honcho = createHonchoMemoryProvider({ secretManager, config: { enabled: true } });
+  adapter = createHonchoMemoryMcpAdapter({ honchoProvider: honcho, transport: 'mcp' });
+} else {
+  const profile = {
+    enabled: true,
+    endpointEnv: `${selectedProvider.toUpperCase()}_URL`,
+    credentialEnv: `${selectedProvider.toUpperCase()}_API_KEY`,
+    namespaceEnv: `${selectedProvider.toUpperCase()}_NAMESPACE`,
+    workspaceEnv: `${selectedProvider.toUpperCase()}_WORKSPACE`,
+    secretManager,
+  };
+  adapter = createMemoryProvider({ id: selectedProvider, profile, secretManager });
+}
+const router = createMemoryProviderRouter({ providers: [adapter], defaultProviderId: selectedProvider, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest', mode: 'single' });
 const attemptsBefore = Number(payload.delivery?.attempts || 0);
 const deliveryKey = payload.delivery?.deliveryKey || `${payload.identityDigest}:replay`;
 let result;
@@ -42,7 +58,7 @@ let attempts = attemptsBefore;
 for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   attempts = attemptsBefore + attempt;
   try {
-    result = await router.appendEvents({ identity: payload.identity, events: payload.events, persistDomains: payload.persistDomains, deliveryKey });
+    result = await router.appendEvents({ providerId: selectedProvider, identity: payload.identity, events: payload.events, persistDomains: payload.persistDomains, deliveryKey, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest' });
   } catch (error) {
     result = { status: 'unavailable', reason: error instanceof Error ? error.message : String(error), accepted: 0, eventIds: [] };
   }

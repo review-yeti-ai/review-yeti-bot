@@ -6,10 +6,12 @@
  * provider uses MCP JSON-RPC, a local MCP-compatible adapter, or an explicitly selected REST mode.
  */
 class MemoryProviderRouter {
-  constructor({ providers = [], defaultProviderId = 'honcho', transport = 'mcp' } = {}) {
+  constructor({ providers = [], defaultProviderId = 'honcho', transport = 'mcp', mode = 'single' } = {}) {
+    if (mode !== 'single') throw new Error('memory mode must be single');
     this.providers = new Map();
     this.defaultProviderId = defaultProviderId;
     this.transport = transport;
+    this.mode = mode;
     for (const provider of providers) this.register(provider);
   }
 
@@ -32,8 +34,17 @@ class MemoryProviderRouter {
     return [...this.providers.values()].map((provider) => ({
       id: provider.id,
       contractVersion: provider.contractVersion,
+      adapterVersion: provider.adapterVersion,
       capabilities: provider.capabilities,
     }));
+  }
+
+  providerReceipt(provider) {
+    return {
+      contractVersion: provider?.contractVersion,
+      adapterVersion: provider?.adapterVersion,
+      capabilities: provider?.capabilities,
+    };
   }
 
   normalizeIdentity(identity) {
@@ -141,7 +152,9 @@ class MemoryProviderRouter {
         latencyMs: Number.isFinite(result?.latencyMs) ? result.latencyMs : Date.now() - startedAt,
         omittedDomains: [...new Set([...(result?.omittedDomains || []), ...domains.omitted])],
         protocol: result?.protocol,
+        experimental: result?.experimental ?? provider.experimental,
         reason: result?.reason,
+        ...this.providerReceipt(provider),
       };
     } catch (error) {
       return {
@@ -210,7 +223,9 @@ class MemoryProviderRouter {
         deliverySemantics: provider.capabilities?.deliverySemantics || 'at_least_once',
         supportsIdempotency: Boolean(provider.capabilities?.supportsIdempotency),
         protocol: result?.protocol,
+        experimental: result?.experimental ?? provider.experimental,
         reason: result?.reason,
+        ...this.providerReceipt(provider),
       };
     } catch (error) {
       return {

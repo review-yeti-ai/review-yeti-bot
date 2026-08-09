@@ -10,9 +10,9 @@ describe('memory outbox', () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-outbox-'));
     const outbox = createMemoryOutbox({ baseDir, now: () => new Date('2026-08-09T00:00:00.000Z') });
     const identity = { repository: 'acme/app', prNumber: 7, headSha: 'ABC123', policyDigest: 'policy' };
-    const created = outbox.create({ identity, persistDomains: ['processing', 'session_recap'], events: [{ eventId: 'event-1', domain: 'processing' }] });
+    const created = outbox.create({ providerId: 'honcho', identity, persistDomains: ['processing', 'session_recap'], events: [{ eventId: 'event-1', domain: 'processing' }] });
     expect(path.basename(created.filePath)).toMatch(/^[a-f0-9]{64}\.memory-outbox\.json$/u);
-    expect(outbox.read(created.filePath)).toMatchObject({ schemaVersion: 'memory-outbox-v1', identityDigest: identityDigest(identity), persistDomains: ['processing', 'session_recap'] });
+    expect(outbox.read(created.filePath)).toMatchObject({ schemaVersion: 'memory-outbox-v1', providerId: 'honcho', identityDigest: identityDigest(identity), persistDomains: ['processing', 'session_recap'] });
   });
 
   it('rejects path traversal and invalid repository identities', () => {
