@@ -65,6 +65,7 @@ describe('parseDecisionCommand', () => {
     expect(parseDecisionCommand('/review-yeti ignore accepted until API-1234')).toMatchObject({
       kind: 'ignore',
       reason: 'accepted until API-1234',
+      reasonTaxonomy: ['ticket'],
     });
   });
 

@@ -182,4 +182,66 @@ describe('Honcho advisory memory adapter', () => {
     expect(normalizeReviewEvent({ eventType: 'finding', claimId: 'claim-1', severity: 'P1', path: 'src/app.ts', line: 12 }))
       .toMatchObject({ event_type: 'finding', claim_id: 'claim-1', severity: 'P1', path: 'src/app.ts', line: 12 });
   });
+
+  it('uses domain and location anchors in deterministic event IDs', () => {
+    const base = { schemaVersion: 'memory-event-v1', eventType: 'finding_observed', repository: 'acme/app', prNumber: '007', headSha: 'abc123', claimId: 'claim-1', path: 'src/app.ts', line: 12 };
+    const right = normalizeReviewEvent({ ...base, domain: 'code', side: 'RIGHT' });
+    const left = normalizeReviewEvent({ ...base, domain: 'code', side: 'LEFT' });
+    const rule = normalizeReviewEvent({ ...base, domain: 'rule', policyDigest: 'policy-1', side: 'RIGHT' });
+    expect(right.event_id).not.toBe(left.event_id);
+    expect(right.event_id).not.toBe(rule.event_id);
+    expect(normalizeReviewEvent({ ...base, domain: 'code', side: 'RIGHT' }).event_id).toBe(right.event_id);
+  });
+
+  it('preserves the versioned learning envelope without prose', () => {
+    const normalized = normalizeReviewEvent({
+      schemaVersion: 'memory-event-v1',
+      domain: 'feedback',
+      eventType: 'finding_unignored',
+      repository: 'acme/app',
+      prNumber: 7,
+      headSha: 'abc123',
+      claimId: 'claim-1',
+      side: 'RIGHT',
+      line: 12,
+      permissionClass: 'maintain',
+      commandKind: 'unignore',
+      reasonTaxonomy: ['ticket'],
+      reasonHash: 'digest',
+      threadId: 'thread-1',
+      transitionId: 'transition-1',
+      body: 'do not copy this prose',
+    });
+    expect(normalized).toMatchObject({
+      schema_version: 'memory-event-v1',
+      domain: 'feedback',
+      event_type: 'finding_unignored',
+      repository: 'acme-app',
+      pr_number: '7',
+      permission_class: 'maintain',
+      command_kind: 'unignore',
+      reason_taxonomy: ['ticket'],
+      reason_hash: 'digest',
+      thread_id: 'thread-1',
+      transition_id: 'transition-1',
+    });
+    expect(JSON.stringify(normalized)).not.toContain('do not copy this prose');
+  });
+
+  it('chunks large event batches without dropping event IDs', async () => {
+    const fetchImplementation = honchoFetch();
+    const provider = createHonchoMemoryProvider({
+      config: { baseUrl: 'https://honcho.example', apiKey: 'secret', workspaceId: 'review-yeti' },
+      fetchImplementation,
+    });
+    const result = await provider.appendEvents({
+      repo: 'acme/app',
+      prNumber: 7,
+      headSha: 'abc123',
+      events: Array.from({ length: 205 }, (_, index) => ({ eventType: 'finding_observed', claimId: `claim-${index}`, domain: 'code' })),
+    });
+    expect(result).toMatchObject({ accepted: 205, chunks: 3, available: true });
+    expect(result.eventIds).toHaveLength(205);
+    expect(fetchImplementation.mock.calls.filter(([url]) => String(url).endsWith('/messages'))).toHaveLength(3);
+  });
 });

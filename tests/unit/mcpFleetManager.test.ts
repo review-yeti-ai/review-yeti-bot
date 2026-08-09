@@ -9,6 +9,12 @@ describe('McpFleetManager Unit Tests', () => {
     expect(instance1).toBe(mcpFleetManager);
   });
 
+  it('supports dependency-injected instances for Action/server boundary tests', () => {
+    const injected = McpFleetManager.create({ dopplerManager: { getSecret: async () => null } as any });
+    expect(injected).not.toBe(mcpFleetManager);
+    expect(injected.getServers().some((server) => server.id === 'builtin-context7')).toBe(true);
+  });
+
   it('retrieves default registered MCP servers', () => {
     const servers = mcpFleetManager.getServers();
     expect(Array.isArray(servers)).toBe(true);

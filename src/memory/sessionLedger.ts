@@ -130,6 +130,7 @@ export class SessionLedger {
   public getPreviousTurnContext(owner: string, repo: string, prNumber: string | number): {
     hasHistory: boolean;
     previousTurn?: number;
+    headSha?: string;
     lastVerdict?: string;
     previousFindings?: Array<{ severity: string; title: string; path: string }>;
     remainingTurns: number;
@@ -170,6 +171,7 @@ ${previousFindings.map((f) => `  - [${f.severity}] ${f.title} (\`${f.path}\`)`).
       return {
         hasHistory: true,
         previousTurn: lastTurn,
+        headSha: metadata.currentHeadSha,
         lastVerdict: metadata.lastVerdict,
         previousFindings,
         remainingTurns,
