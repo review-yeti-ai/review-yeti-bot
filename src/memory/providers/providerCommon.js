@@ -2,18 +2,46 @@
 
 const DEFAULT_TIMEOUT_MS = 1500;
 const HARD_MAX_CONTEXT_CHARS = 8000;
-const EVENT_FIELDS = [
-  'schema_version', 'schemaVersion', 'event_id', 'eventId', 'domain', 'event_type', 'eventType',
-  'repository', 'repo', 'pr_number', 'prNumber', 'head_sha', 'headSha', 'base_sha', 'baseSha',
-  'claim_id', 'claimId', 'severity', 'path', 'language', 'line', 'side', 'anchor', 'state', 'verdict',
-  'source', 'policy_digest', 'policyDigest', 'rule_id', 'ruleId', 'rule_category', 'ruleCategory',
-  'rule_effect', 'ruleEffect', 'rule_scope', 'ruleScope', 'rule_origin', 'ruleOrigin',
-  'permission_class', 'permissionClass', 'command_kind', 'commandKind', 'reason_taxonomy',
-  'reasonTaxonomy', 'reason_hash', 'reasonHash', 'thread_id', 'threadId', 'transition_id',
-  'transitionId', 'turn', 'previous_head_sha', 'previousHeadSha', 'current_head_sha', 'currentHeadSha',
-  'coverage_status', 'coverageStatus', 'findings_count', 'findingsCount', 'publication_count',
-  'occurred_at', 'occurredAt',
-];
+const EVENT_FIELD_ALIASES = {
+  schema_version: ['schema_version', 'schemaVersion'],
+  event_id: ['event_id', 'eventId'],
+  domain: ['domain'],
+  event_type: ['event_type', 'eventType'],
+  repository: ['repository', 'repo'],
+  pr_number: ['pr_number', 'prNumber'],
+  head_sha: ['head_sha', 'headSha'],
+  base_sha: ['base_sha', 'baseSha'],
+  claim_id: ['claim_id', 'claimId', 'claimKey', 'claim_key'],
+  severity: ['severity'],
+  path: ['path'],
+  language: ['language'],
+  line: ['line'],
+  side: ['side'],
+  anchor: ['anchor'],
+  state: ['state'],
+  verdict: ['verdict'],
+  source: ['source'],
+  policy_digest: ['policy_digest', 'policyDigest'],
+  rule_id: ['rule_id', 'ruleId'],
+  rule_category: ['rule_category', 'ruleCategory'],
+  rule_effect: ['rule_effect', 'ruleEffect'],
+  rule_scope: ['rule_scope', 'ruleScope'],
+  rule_origin: ['rule_origin', 'ruleOrigin'],
+  permission_class: ['permission_class', 'permissionClass'],
+  command_kind: ['command_kind', 'commandKind'],
+  reason_taxonomy: ['reason_taxonomy', 'reasonTaxonomy'],
+  reason_hash: ['reason_hash', 'reasonHash'],
+  thread_id: ['thread_id', 'threadId'],
+  transition_id: ['transition_id', 'transitionId'],
+  turn: ['turn'],
+  previous_head_sha: ['previous_head_sha', 'previousHeadSha'],
+  current_head_sha: ['current_head_sha', 'currentHeadSha'],
+  coverage_status: ['coverage_status', 'coverageStatus'],
+  findings_count: ['findings_count', 'findingsCount'],
+  publication_count: ['publication_count', 'publicationCount', 'count'],
+  comment_id: ['comment_id', 'commentId'],
+  occurred_at: ['occurred_at', 'occurredAt'],
+};
 
 function boundedInteger(value, fallback, min, max) {
   const number = Number(value);
@@ -33,12 +61,13 @@ function exactHead(identity = {}) {
 
 function sanitizeEvent(event = {}) {
   const result = {};
-  for (const key of EVENT_FIELDS) {
-    if (event[key] !== undefined && event[key] !== null && event[key] !== '') result[key] = event[key];
+  for (const [canonicalKey, aliases] of Object.entries(EVENT_FIELD_ALIASES)) {
+    const sourceKey = aliases.find((key) => event[key] !== undefined && event[key] !== null && event[key] !== '');
+    if (sourceKey) result[canonicalKey] = event[sourceKey];
   }
-  const eventId = result.event_id || result.eventId;
-  const eventType = result.event_type || result.eventType;
-  const headSha = result.head_sha || result.headSha;
+  const eventId = result.event_id;
+  const eventType = result.event_type;
+  const headSha = result.head_sha;
   if (!eventId || !eventType || !result.domain || !headSha) return null;
   return result;
 }
@@ -46,12 +75,27 @@ function sanitizeEvent(event = {}) {
 function sanitizeEvents(events = []) {
   const accepted = [];
   const rejected = [];
+  const seenEventIds = new Set();
   for (const event of Array.isArray(events) ? events : []) {
     const sanitized = sanitizeEvent(event);
-    if (sanitized) accepted.push(sanitized);
-    else rejected.push(event?.eventId || event?.event_id || 'unknown');
+    const eventId = sanitized?.event_id || sanitized?.eventId || event?.eventId || event?.event_id || 'unknown';
+    if (!sanitized) {
+      rejected.push(eventId);
+    } else if (seenEventIds.has(eventId)) {
+      rejected.push(`${eventId}:duplicate`);
+    } else {
+      seenEventIds.add(eventId);
+      accepted.push(sanitized);
+    }
   }
   return { accepted, rejected };
+}
+
+function chunkArray(values, size = 100) {
+  const chunks = [];
+  const boundedSize = Math.max(1, Math.trunc(Number(size) || 100));
+  for (let index = 0; index < values.length; index += boundedSize) chunks.push(values.slice(index, index + boundedSize));
+  return chunks;
 }
 
 function parseJsonText(value) {
@@ -159,6 +203,7 @@ module.exports = {
   exactHead,
   sanitizeEvent,
   sanitizeEvents,
+  chunkArray,
   boundedContext,
   resolveProfile,
   hydrateProfile,

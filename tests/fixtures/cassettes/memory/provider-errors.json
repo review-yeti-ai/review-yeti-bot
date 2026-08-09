@@ -21,6 +21,15 @@
         "body": null
       },
       "response": {"status": 429, "headers": {"content-type": "application/json", "retry-after": "3"}, "body": {"error": "rate limited"}}
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://mem0.fixture.test/v3/memories/search",
+        "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"},
+        "body": {"filters": {"AND": [{"key": "head_sha", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}], "user_id": "review-yeti:acme-app:pr-42"}, "query": "malformed", "top_k": 40}
+      },
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": "{not-json"}
     }
   ]
 }

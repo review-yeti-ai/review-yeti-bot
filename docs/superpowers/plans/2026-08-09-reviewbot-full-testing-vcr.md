@@ -14,10 +14,22 @@ model boundary cassettes, an injectable plain-Node pipeline boundary, workflow/o
 integration suites, and a credential-gated single-provider canary. `npm run test:all` is the local gate.
 Live provider evidence remains intentionally pending because no Mem0, Hindsight, Supermemory, or
 RetainDB credentials are available; the canary reports `not_configured` without making a network
-request. The real pipeline boundary now executes for all twelve fixture IDs; `fresh-clean` and
-`provider-unavailable` additionally assert publication, memory, and outbox semantics. The remaining
-work before final promotion is scenario-specific adversarial assertions for every fixture plus hosted
-Node 20/24 and credentialed-provider evidence.
+request. The real pipeline boundary now executes for all twelve fixture IDs, with frozen-clock
+repeatability and scenario expectation assertions; `fresh-clean` and `provider-unavailable` additionally
+assert publication, memory, and outbox semantics. The local implementation is complete for offline
+testing. Final promotion still requires hosted Node 20/24 receipts and credentialed-provider evidence.
+
+### Execution status
+
+| Task | Status | Evidence or remaining gate |
+| --- | --- | --- |
+| 1–4 | Complete | 12 fixtures; v2 VCR manifests; Honcho, Mem0, Hindsight, Supermemory, RetainDB, GitHub, and model cassettes replayed offline. |
+| 5–6 | Complete | Injectable plain-Node pipeline; all 12 scenarios execute twice with byte-identical outbox payloads under a frozen clock. |
+| 7 | Complete locally | Runtime and packaging checks pass locally; hosted Node 20/24 matrix remains CI evidence. |
+| 8–9 | Complete locally | Outbox replay/dead-letter, artifact wiring, redaction, endpoint/identity, chunking, duplicate-event, and lease-concurrency tests pass. |
+| 10 | Credential-gated | Canary and readiness polling are implemented; no non-Honcho credentials are available for live proof. |
+| 11 | Complete locally | Explicit CI jobs, sanitized receipt verifier, chaos gate, and `npm run test:all` pass; coverage thresholds remain a follow-up hardening gate. |
+| 12 | Pending external evidence | Requires hosted matrix, live canary receipts, and a dedicated deployed workflow run. |
 
 **Tech Stack:** Node 20 and 24, Vitest, TypeScript test support, the existing `tests/support/cassetteFetch.ts` harness, GitHub CLI command-runner seams, Node built-in `fetch`, GitHub Actions, JSON fixtures, and sanitized VCR cassettes.
 

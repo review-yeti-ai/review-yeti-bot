@@ -1829,6 +1829,7 @@ function buildHonchoReviewEvents({
   coverage = {},
   baseSha = '',
   policyDigest = '',
+  occurredAt = '',
 } = {}) {
   const identity = `${repo || 'unknown'}/${prNumber || 'unknown'}/${headSha || 'unknown'}`;
   const events = [];
@@ -1873,6 +1874,7 @@ function buildHonchoReviewEvents({
       })),
       headSha,
       source: 'review-yeti',
+      occurredAt: occurredAt || new Date().toISOString(),
       ...fields,
     });
   };
@@ -2454,7 +2456,7 @@ function createReviewMemoryRouter(actionPolicy, options = {}) {
   }
   if (!provider) return null;
   return {
-    router: createMemoryProviderRouter({ providers: [provider], defaultProviderId: memoryPolicy.provider, transport: memoryPolicy.transport, mode: memoryPolicy.mode || 'single' }),
+    router: createMemoryProviderRouter({ providers: [provider], defaultProviderId: memoryPolicy.provider, transport: memoryPolicy.transport, mode: memoryPolicy.mode || 'single', now: options.now }),
     provider,
   };
 }
@@ -4565,7 +4567,8 @@ async function main(options = {}) {
   console.log(`🚀 ${BOT_LABEL}`);
   console.log('=====================================================');
 
-  const startedAt = Date.now();
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const startedAt = now();
   const runtimeEnv = options.env || process.env;
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const fetchImplementation = options.fetchImplementation || globalThis.fetch;
@@ -4588,7 +4591,7 @@ async function main(options = {}) {
     }
   }
 
-  const configRoot = resolveConfigRoot();
+  const configRoot = resolveConfigRoot(runtimeEnv);
   if (runtimeEnv.REVIEW_YETI_CONFIG_DIR) {
     console.log(`[Config] Reading repository configuration from the trusted base ref, not the pull request head.`);
   }
@@ -4605,7 +4608,7 @@ async function main(options = {}) {
     .filter(([, enabled]) => enabled === true)
     .map(([name]) => name);
   const memoryOutbox = createMemoryOutbox && actionPolicy.memory.enabled && actionPolicy.memory.write && persistDomains.length > 0
-    ? createMemoryOutbox({ baseDir: path.join(process.cwd(), 'sessions') })
+    ? createMemoryOutbox({ baseDir: path.join(options.cwd || process.cwd(), 'sessions'), now: () => new Date(now()) })
     : null;
   let memoryOutboxRecord = null;
   let memoryOutboxState = null;
@@ -4723,7 +4726,7 @@ async function main(options = {}) {
     : { text: '', renderedEntries: 0, omittedEntries: decisionLedger.entries.length };
   console.log(`[Decision ledger] ${decisionLedger.available ? `${decisionLedger.entries.length} authenticated finding thread(s)` : 'unavailable'}; ${renderedDecisionLedger.renderedEntries} supplied to each reviewer.`);
 
-  const memoryRuntime = createReviewMemoryRouter(actionPolicy, { env: runtimeEnv, fetchImplementation });
+  const memoryRuntime = createReviewMemoryRouter(actionPolicy, { env: runtimeEnv, fetchImplementation, now });
   let honchoContextBlock = '';
   let memoryQueryResult = { status: 'unavailable', source: 'none', provider: memoryPolicy.provider || 'honcho', text: '', reason: 'memory disabled' };
   if (memoryRuntime && memoryPolicy.context) {
@@ -4946,7 +4949,7 @@ async function main(options = {}) {
           model: modelConfig.model,
           personaCount: enabledPersonas.length,
           workflow: runtimeEnv.GITHUB_WORKFLOW || '',
-        }, { commandRunner });
+        }, { commandRunner, now });
       } catch (err) {
         console.warn(`[Publish] Started comment failed (non-fatal): ${err.message || err}`);
       }
@@ -5040,7 +5043,7 @@ async function main(options = {}) {
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
 
-  if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
+  if (!syntheticVitestRun) assertCurrentPullRequest(prContext, { commandRunner });
 
   console.log('[Formatting] Planning resolvable P0/P1 conversations and compact review output...');
   const usageTotal = sumUsage(personaResults);
@@ -5095,6 +5098,7 @@ async function main(options = {}) {
       coverage,
       baseSha: memoryIdentity.baseSha,
       policyDigest: memoryIdentity.policyDigest,
+      occurredAt: new Date(now()).toISOString(),
     });
     if (memoryOutbox) {
       try {
@@ -5203,7 +5207,7 @@ async function main(options = {}) {
     provider: memoryPolicy.provider || 'honcho',
     headSha: prContext.headSha,
     startedAt,
-    finishedAt: Date.now(),
+    finishedAt: now(),
   };
 }
 

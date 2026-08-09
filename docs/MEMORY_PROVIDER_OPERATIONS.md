@@ -2,7 +2,7 @@
 
 The PR gate is deterministic and network-free. It uses sanitized VCR cassettes and workflow fixtures; it never needs Mem0, Hindsight, Supermemory, or RetainDB credentials.
 
-Live provider evidence is collected separately with `Memory Provider Canary` (`workflow_dispatch`). The canary selects exactly one provider, generates a synthetic repository/PR/head identity, performs health/query/append/readiness checks, and uploads only a sanitized receipt. Missing credentials produce `not_configured`; they do not claim provider readiness.
+Live provider evidence is collected separately with `Memory Provider Canary` (`workflow_dispatch`). The canary selects exactly one provider, generates a synthetic repository/PR/head identity, performs health/query/append/exact-head reread/readiness checks, and uploads only a sanitized receipt. Missing credentials produce `not_configured`; they do not claim provider readiness. Honcho is the production-default option; its boundary is reported as `mcp-compatible-local` unless a real JSON-RPC MCP server is used.
 
 Provider promotion requires:
 

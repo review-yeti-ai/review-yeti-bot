@@ -26,6 +26,8 @@ export interface CassetteInteraction {
 export interface CassetteFetchOptions {
   cassettePath: string;
   mode?: 'replay' | 'record';
+  /** Require the versioned manifest for newly added provider cassettes. */
+  requireVersion?: 2;
   fetchImplementation?: FetchImplementation;
   allowedRecordOrigins?: string[];
   fixtureId?: string;
@@ -124,9 +126,12 @@ async function normalizeRequest(input: RequestInfo | URL, init?: RequestInit): P
   };
 }
 
-function loadCassette(cassettePath: string): CassetteInteraction[] {
+function loadCassette(cassettePath: string, requireVersion?: 2): CassetteInteraction[] {
   if (!fs.existsSync(cassettePath)) return [];
   const parsed = JSON.parse(fs.readFileSync(cassettePath, 'utf8')) as { version?: number; interactions?: CassetteInteraction[] };
+  if (requireVersion === 2 && parsed.version !== 2) {
+    throw new Error(`Cassette ${cassettePath} must use manifest version 2; migrate the legacy cassette before replay`);
+  }
   if (parsed.version === 2) assertCassetteSafe(parsed);
   if (![1, 2].includes(parsed.version || 0) || !Array.isArray(parsed.interactions)) {
     throw new Error(`Invalid cassette format in ${cassettePath}`);
@@ -163,7 +168,7 @@ function writeVersionedCassette(cassettePath: string, options: CassetteFetchOpti
 
 export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetch {
   const mode = options.mode ?? 'replay';
-  const loaded = mode === 'replay' ? loadCassette(options.cassettePath) : [];
+  const loaded = mode === 'replay' ? loadCassette(options.cassettePath, options.requireVersion) : [];
   const recorded: CassetteInteraction[] = [];
   const consumed = new Set<number>();
   const observedFingerprints: string[] = [];

@@ -32,6 +32,7 @@ describe('native provider cassette replay', () => {
   it.each(cases)('%s consumes query, append, and health interactions', async (providerId, factory, host) => {
     const cassette = createCassetteFetch({
       cassettePath: path.join(root, 'tests/fixtures/cassettes/memory', `${providerId}.json`),
+      requireVersion: 2,
     });
     const provider = factory({
       profile: { enabled: true, baseUrl: `https://${host}`, credentialEnv: 'TEST_MEMORY_API_KEY', workspaceEnv: 'TEST_MEMORY_WORKSPACE' },
@@ -42,12 +43,14 @@ describe('native provider cassette replay', () => {
     const recalled = await provider.queryContext({ identity, purpose: 'prior decisions', maxEntries: 2, maxContextChars: 1000 });
     const written = await provider.appendEvents({ identity, events: [event] });
     const health = await provider.healthCheck();
+    const readiness = await provider.readiness();
     cassette.assertComplete();
 
     expect(recalled).toMatchObject({ status: 'available', source: 'rest' });
     expect(recalled.text).toContain('evt-42');
     expect(written).toMatchObject({ status: 'accepted', accepted: 1, eventIds: ['evt-42'] });
     expect(health).toMatchObject({ configured: true, available: true });
+    expect(readiness).toHaveProperty('available');
     expect(provider.capabilities.domains.recall).toContain('decision_feedback');
     expect(provider.capabilities.domains.persist).toContain('processing');
   });

@@ -120,11 +120,16 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
     const receipt = await runReviewPipeline({
       env,
       cwd: tempRoot,
+      now: () => 1_754_752_800_000,
       commandRunner: commandRunnerFactory(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha),
       fetchImplementation: memoryFetchFactory({ available: options.memoryAvailable !== false }),
       modelClient,
     });
-    return { ...receipt, actionOutputs: fs.readFileSync(outputPath, 'utf8') };
+    return {
+      ...receipt,
+      actionOutputs: fs.readFileSync(outputPath, 'utf8'),
+      outboxPayload: receipt.outbox.path ? JSON.parse(fs.readFileSync(receipt.outbox.path, 'utf8')) : null,
+    };
   } finally {
     process.chdir(previousCwd);
     for (const key of Object.keys(process.env)) if (!(key in previousEnv)) delete process.env[key];

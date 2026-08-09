@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "fixtureId": "memory-honcho",
+  "provider": "honcho",
+  "allowedOrigins": ["https://honcho.fixture.test"],
+  "interactions": [
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"id": "review-yeti", "metadata": {"source": "review-yeti"}}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"id": "review-yeti"}}
+    },
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces/review-yeti/peers", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"id": "review-yeti-acme-app", "metadata": {"repository": "acme/app"}}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"id": "review-yeti-acme-app"}}
+    },
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces/review-yeti/sessions", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"id": "review-yeti-acme-app-pr-42", "metadata": {"pr_number": "42", "repository": "acme/app"}}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"id": "review-yeti-acme-app-pr-42"}}
+    },
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces/review-yeti/peers/review-yeti-acme-app/representation", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"max_conclusions": 20, "search_query": "prior decisions", "search_top_k": 10, "session_id": "review-yeti-acme-app-pr-42"}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"representation": "prior review context for exact head"}}
+    },
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"id": "review-yeti", "metadata": {"source": "review-yeti"}}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"id": "review-yeti"}}
+    },
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces/review-yeti/peers", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"id": "review-yeti-acme-app", "metadata": {"repository": "acme/app"}}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"id": "review-yeti-acme-app"}}
+    },
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces/review-yeti/sessions", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"id": "review-yeti-acme-app-pr-42", "metadata": {"pr_number": "42", "repository": "acme/app"}}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"id": "review-yeti-acme-app-pr-42"}}
+    },
+    {
+      "request": {"method": "POST", "url": "https://honcho.fixture.test/v3/workspaces/review-yeti/sessions/review-yeti-acme-app-pr-42/messages", "headers": {"accept": "application/json", "authorization": "<redacted>", "content-type": "application/json"}, "body": {"messages": [{"content": "Review event finding_resolved; domain=feedback; claim=claim-42; severity=P1; state=resolved; verdict=unknown; path=none; line=none", "created_at": "2026-08-09T12:00:00.000Z", "metadata": {"anchor": "unknown:file:file", "claim_id": "claim-42", "command_kind": "unknown", "coverage_status": "unknown", "delivery_state": "pending", "domain": "feedback", "event_id": "evt-42", "event_type": "finding_resolved", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "language": "unknown", "occurred_at": "2026-08-09T12:00:00.000Z", "permission_class": "unknown", "pr_number": "42", "repository": "acme-app", "rule_category": "unknown", "rule_effect": "unknown", "rule_id": "unknown", "rule_origin": "unknown", "rule_scope": "unknown", "schema_version": "memory-event-v1", "severity": "P1", "source": "review-yeti", "state": "resolved", "verdict": "unknown"}, "peer_id": "review-yeti-acme-app"}]}},
+      "response": {"status": 201, "headers": {"content-type": "application/json"}, "body": [{"id": "message-42"}]}
+    },
+    {
+      "request": {"method": "GET", "url": "https://honcho.fixture.test/health", "headers": {"accept": "application/json", "authorization": "<redacted>"}, "body": null},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"ok": true}}
+    }
+  ]
+}

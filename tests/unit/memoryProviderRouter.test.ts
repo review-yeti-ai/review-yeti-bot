@@ -77,4 +77,12 @@ describe('MemoryProviderRouter', () => {
     await expect(router.appendEvents({ identity: { repository: 'acme/app', prNumber: 7, headSha: 'abc' }, persistDomains: ['processing', 'future_domain'], events: [{ eventId: 'e1' }] }))
       .resolves.toMatchObject({ status: 'accepted', omittedDomains: ['future_domain'] });
   });
+
+  it('health-checks only the selected provider instead of fanning out', async () => {
+    const first = provider({ id: 'first', healthCheck: vi.fn(async () => ({ available: true })) });
+    const second = provider({ id: 'second', healthCheck: vi.fn(async () => ({ available: true })) });
+    const router = new MemoryProviderRouter({ providers: [first, second], defaultProviderId: 'first' });
+    await expect(router.health()).resolves.toEqual({ first: { available: true } });
+    expect(second.healthCheck).not.toHaveBeenCalled();
+  });
 });

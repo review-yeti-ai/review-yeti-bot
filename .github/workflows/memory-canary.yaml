@@ -7,8 +7,8 @@ on:
         description: 'One provider to probe; live access is never fan-out.'
         required: true
         type: choice
-        options: [mem0, hindsight, supermemory, retaindb]
-        default: mem0
+        options: [honcho, mem0, hindsight, supermemory, retaindb]
+        default: honcho
 
 permissions:
   contents: read
@@ -30,6 +30,12 @@ jobs:
         run: npm ci --prefer-offline --no-audit --no-fund
       - name: Run one-provider synthetic canary
         env:
+          HONCHO_URL: ${{ secrets.HONCHO_URL }}
+          HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL }}
+          HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
+          HONCHO_WORKSPACE_JWT: ${{ secrets.HONCHO_WORKSPACE_JWT }}
+          HONCHO_WORKSPACE_ID: ${{ secrets.HONCHO_WORKSPACE_ID }}
+          HONCHO_WORKSPACE: ${{ secrets.HONCHO_WORKSPACE }}
           MEM0_URL: ${{ secrets.MEM0_URL }}
           MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
           HINDSIGHT_URL: ${{ secrets.HINDSIGHT_URL }}

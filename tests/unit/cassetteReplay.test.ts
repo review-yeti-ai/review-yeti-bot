@@ -132,6 +132,12 @@ describe('strict cassette replay', () => {
     expect(() => assertCassetteSafe({ ...base, interactions: [{ request: { method: 'GET', url: 'https://honcho.test', headers: { authorization: 'secret' }, body: null }, response: { status: 200, headers: {}, body: null } }] })).toThrow('not redacted');
   });
 
+  it('rejects legacy v1 cassettes when a provider replay requires a v2 manifest', () => {
+    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'legacy.json');
+    fs.writeFileSync(cassettePath, JSON.stringify({ version: 1, interactions: [] }));
+    expect(() => createCassetteFetch({ cassettePath, requireVersion: 2 })).toThrow(/Cassette .*legacy\.json must use manifest version 2/u);
+  });
+
   it('rejects replay calls outside a v2 cassette origin allowlist', async () => {
     const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'v2.json');
     fs.writeFileSync(cassettePath, JSON.stringify({ version: 2, fixtureId: 'origin-test', provider: 'honcho', allowedOrigins: ['https://allowed.test'], interactions: [] }));

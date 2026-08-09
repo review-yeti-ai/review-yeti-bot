@@ -23,6 +23,20 @@ describe('cassette-backed review workflow harness', () => {
     expect(receipt).toMatchObject({ verdict: 'SHIP', publication: { success: true }, memory: { query: { status: 'unavailable' } }, outbox: { state: 'pending' } });
   });
 
+  it('is byte-repeatable for the same fixture under a frozen clock', async () => {
+    const first = await runReviewWorkflowFixture('fresh-clean');
+    const second = await runReviewWorkflowFixture('fresh-clean');
+    expect(first.outboxPayload).toEqual(second.outboxPayload);
+    const canonical = (receipt: any) => ({
+      ...receipt,
+      startedAt: 0,
+      finishedAt: 0,
+      outbox: { ...receipt.outbox, path: '<outbox>' },
+      actionOutputs: receipt.actionOutputs.replace(/memory-outbox-path=.*\n/u, 'memory-outbox-path=<outbox>\n'),
+    });
+    expect(canonical(first)).toEqual(canonical(second));
+  });
+
   it.each([
     'ignored-authorized',
     'ignored-unauthorized',
@@ -36,6 +50,7 @@ describe('cassette-backed review workflow harness', () => {
     'stale-head',
   ])('executes the real pipeline boundary for the %s fixture with a sanitized receipt', async (fixtureId) => {
     const receipt = await runReviewWorkflowFixture(fixtureId);
+    const repeat = await runReviewWorkflowFixture(fixtureId);
     expect(receipt).toMatchObject({
       provider: 'mem0',
       publication: { success: true },
@@ -43,5 +58,14 @@ describe('cassette-backed review workflow harness', () => {
       outbox: { path: expect.stringMatching(/sessions[\\/].+\.memory-outbox\.json$/u) },
     });
     expect(JSON.stringify(receipt)).not.toMatch(/fixture-(?:memory|openrouter)-key|authorization|api_key/iu);
+    expect(receipt.outboxPayload).toEqual(repeat.outboxPayload);
+    const canonical = (value: any) => ({
+      ...value,
+      startedAt: 0,
+      finishedAt: 0,
+      outbox: { ...value.outbox, path: '<outbox>' },
+      actionOutputs: value.actionOutputs.replace(/memory-outbox-path=.*\n/u, 'memory-outbox-path=<outbox>\n'),
+    });
+    expect(canonical(receipt)).toEqual(canonical(repeat));
   });
 });
