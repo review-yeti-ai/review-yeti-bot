@@ -143,6 +143,23 @@ describe('Action v4 policy boundary', () => {
     expect(JSON.stringify(receipt)).not.toContain('HINDSIGHT_API_KEY');
   });
 
+  it('builds the selected native provider without adding pipeline fallback branches', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: {
+        memory: {
+          enabled: true,
+          provider: 'mem0',
+          context: true,
+          providers: { mem0: { enabled: true } },
+          recall: { session_recap: true },
+        },
+      },
+    }, {});
+    const runtime = pipeline.createReviewMemoryRouter(policy);
+    expect(runtime.provider).toMatchObject({ id: 'mem0', contractVersion: 'memory-provider-v1' });
+    expect(runtime.router.get('mem0')).toBe(runtime.provider);
+  });
+
   it('validates explicit same-PR decision memory bounds', () => {
     expect(() => pipeline.resolveActionReviewPolicy({
       parsed: { memory: { max_entries: 0 } },

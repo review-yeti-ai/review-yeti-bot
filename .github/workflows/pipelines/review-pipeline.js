@@ -53,6 +53,7 @@ try {
 }
 
 let createHonchoMemoryProvider = null;
+let createMemoryProvider = null;
 try {
   const honchoModule = require('../../../src/memory/honchoMemory.js');
   createHonchoMemoryProvider = honchoModule.createHonchoMemoryProvider;
@@ -61,6 +62,11 @@ try {
     const honchoModule = require('../../src/memory/honchoMemory.js');
     createHonchoMemoryProvider = honchoModule.createHonchoMemoryProvider;
   } catch (_) {}
+}
+try {
+  createMemoryProvider = require('../../../src/memory/providers/index.js').createMemoryProvider;
+} catch (_) {
+  try { createMemoryProvider = require('../../src/memory/providers/index.js').createMemoryProvider; } catch (_) {}
 }
 
 let DopplerSecretManager = null;
@@ -2406,8 +2412,8 @@ async function initMcpFleet(clientPayload) {
 }
 
 function createReviewMemoryRouter(actionPolicy) {
-  const policy = actionPolicy?.memory?.honcho;
-  if (!policy?.enabled || !(policy.context || policy.write) || !createMemoryProviderRouter || !createHonchoMemoryMcpAdapter || !createHonchoMemoryProvider) {
+  const memoryPolicy = actionPolicy?.memory || {};
+  if (!memoryPolicy.enabled || !(memoryPolicy.context || memoryPolicy.write) || !createMemoryProviderRouter) {
     return null;
   }
   const secretManager = DopplerSecretManager
@@ -2417,22 +2423,29 @@ function createReviewMemoryRouter(actionPolicy) {
       config: process.env.DOPPLER_CONFIG,
     })
     : undefined;
-  const honchoProvider = createHonchoMemoryProvider({
-    config: {
-      enabled: true,
-      timeoutMs: policy.timeoutMs,
-      maxContextChars: policy.maxContextChars,
-    },
-    secretManager,
-  });
-  const provider = createHonchoMemoryMcpAdapter({
-    honchoProvider,
-    transport: policy.transport,
-    recallDomains: Object.entries(policy.recall || {}).filter(([, enabled]) => enabled === true).map(([name]) => name),
-    persistDomains: Object.entries(policy.persist || {}).filter(([, enabled]) => enabled === true).map(([name]) => name),
-  });
+  let provider;
+  if (memoryPolicy.provider === 'honcho') {
+    if (!createHonchoMemoryMcpAdapter || !createHonchoMemoryProvider) return null;
+    const honchoProvider = createHonchoMemoryProvider({
+      config: {
+        enabled: true,
+        timeoutMs: memoryPolicy.query?.timeoutMs || 1500,
+        maxContextChars: memoryPolicy.query?.maxContextChars || 4000,
+      },
+      secretManager,
+    });
+    provider = createHonchoMemoryMcpAdapter({
+      honchoProvider,
+      transport: memoryPolicy.transport,
+      recallDomains: Object.entries(memoryPolicy.recall || {}).filter(([, enabled]) => enabled === true).map(([name]) => name),
+      persistDomains: Object.entries(memoryPolicy.persist || {}).filter(([, enabled]) => enabled === true).map(([name]) => name),
+    });
+  } else if (createMemoryProvider) {
+    provider = createMemoryProvider({ id: memoryPolicy.provider, profile: memoryPolicy.selectedProfile, env: process.env });
+  }
+  if (!provider) return null;
   return {
-    router: createMemoryProviderRouter({ providers: [provider], defaultProviderId: 'honcho', transport: policy.transport }),
+    router: createMemoryProviderRouter({ providers: [provider], defaultProviderId: memoryPolicy.provider, transport: memoryPolicy.transport, mode: memoryPolicy.mode || 'single' }),
     provider,
   };
 }
