@@ -955,7 +955,7 @@ deleted file mode 100644
     // The synthetic-vitest escape hatch must never engage on GITHUB_ACTIONS=true,
     // otherwise a workflow-supplied PR_DIFF could skip exact-head verification.
     const source = fs.readFileSync(pipelinePath, 'utf-8');
-    expect(source).toContain("process.env.GITHUB_ACTIONS !== 'true'");
+    expect(source).toContain("runtimeEnv.GITHUB_ACTIONS !== 'true'");
 
     const commandRunner = () => ({ status: 1, stdout: '', stderr: 'no such PR' });
     expect(() => pipeline.assertCurrentPullRequest(
