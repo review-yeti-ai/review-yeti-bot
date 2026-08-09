@@ -391,11 +391,29 @@ memory:
 
 The Action inputs `honcho-enabled`, `honcho-context`, `honcho-write`,
 `honcho-timeout-ms`, and `honcho-max-context-chars` override these trusted base-ref values when
-non-empty. The adapter resolves `HONCHO_URL`, `HONCHO_API_KEY`, and `HONCHO_WORKSPACE_ID` through
-the existing Doppler secret manager (environment, cache, CLI, then REST API). In the composite
-Action, pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve these
-values through the Doppler REST API. `HONCHO_BASE_URL` and `HONCHO_WORKSPACE` are accepted aliases
-for self-hosted Honcho configurations. Do not place credentials in repository configuration.
+non-empty. Pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve
+`HONCHO_URL`, `HONCHO_API_KEY`, and `HONCHO_WORKSPACE_ID` through the dependency-free Action runtime
+client. That runtime uses environment, cache, and Doppler REST API tiers; it deliberately does not
+invoke the Doppler CLI on a GitHub runner. `HONCHO_BASE_URL` and `HONCHO_WORKSPACE` are accepted
+aliases for self-hosted configurations. Do not place credentials in repository configuration.
+
+```yaml
+- uses: review-yeti-ai/review-yeti-bot@main
+  with:
+    llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+    honcho-enabled: 'true'
+    honcho-context: 'true'
+    honcho-write: 'true'
+    doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+    doppler-project: review-yeti-bot
+    doppler-config: production
+```
+
+For DigitalOcean self-hosting, require HTTPS at the reverse proxy, JWT authentication with a
+workspace-scoped token, PostgreSQL with pgvector, Redis, a configured LLM provider, and a running
+deriver. Honcho `/health` only proves process reachability; it does not prove representations can
+be derived. Set `honcho-enabled: 'false'` to roll back to GitHub-only behavior without changing the
+decision ledger.
 
 ---
 
