@@ -9,10 +9,12 @@ This reference guide provides a complete, 1:1 schema specification for `.review-
 1. [Configuration File Resolution](#configuration-file-resolution)
 2. [Top-Level Schema Overview](#top-level-schema-overview)
 3. [V4 Execution Policy](#v4-execution-policy)
-4. [The 6 Standard Sections](#the-6-standard-sections)
+4. [The 6 Compatibility Sections](#the-6-compatibility-sections)
    - [1. `reviews`](#1-reviews)
    - [2. `chat`](#2-chat)
    - [3. `knowledge_base`](#3-knowledge_base)
+   - [3a. `memory`](#3a-memory-provider-selection)
+   - [3b. `memory.honcho`](#3b-memoryhoncho)
    - [4. `path_filters`](#4-path_filters)
    - [5. `auto_review`](#5-auto_review)
    - [6. `dials`](#6-dials)
@@ -40,7 +42,10 @@ On each pull request event, `review-yeti-bot` checks the repository for a config
 
 ## 📐 Top-Level Schema Overview
 
-A Version 3 configuration contains core policy settings along with six CodeRabbit-mirrored top-level sections:
+A Version 3 configuration contains core policy settings along with six CodeRabbit-mirrored
+compatibility sections. The Action's native API-backed memory contract is the separate `memory`
+section documented below; it does not activate the legacy `knowledge_base` or `.review-yeti-memory`
+database settings.
 
 ```yaml
 version: 3
@@ -285,7 +290,7 @@ run identity.
 
 ---
 
-## 📦 The 6 Standard Sections
+## 📦 The 6 Compatibility Sections
 
 ### 1. `reviews`
 Controls automated code review behaviors, summaries, status publishing, and inline comment formatting.
@@ -346,13 +351,15 @@ chat:
 ---
 
 ### 3. `knowledge_base`
-Configures persistent codebase learnings, vector indexing, and custom repository rules.
+Compatibility-only configuration for hosted/app consumers and CodeRabbit-style files. The public
+composite Action does not build a local SQLite/vector database from this section. Use the native
+`memory` section below to select one API-backed provider for review-time recall and persistence.
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `learnings` | `boolean` | `true` | Enables Persistent PR Memory (`.review-yeti-memory/`) for past PR learnings and nit suppression. |
-| `issues` | `boolean` | `true` | Indexes repository issues for cross-reference context. |
-| `pull_requests` | `boolean` | `true` | Indexes merged pull request history. |
+| `learnings` | `boolean` | `true` | Hosted/app compatibility flag; ignored by the composite Action. |
+| `issues` | `boolean` | `true` | Hosted/app compatibility flag; the Action does not index issues from this key. |
+| `pull_requests` | `boolean` | `true` | Hosted/app compatibility flag; the Action does not index merged PRs from this key. |
 | `custom_instructions` | `string[]` | `[]` | Global repository guidelines and Architectural Decision Records (ADRs). |
 
 ```yaml
@@ -367,10 +374,14 @@ knowledge_base:
 
 ### 3a. `memory` provider selection
 
-Review-time remote memory is configured in trusted base-ref YAML. Exactly one provider is active
+Review-time API-backed memory is configured in trusted base-ref YAML. Exactly one provider is active
 per run; production does not fan out writes or merge reads. Honcho remains the default, while
 `mem0`, `hindsight`, `supermemory`, and `retaindb` are selectable adapters. Provider failures
 degrade to GitHub-ledger-only review behavior.
+
+Every provider profile names an HTTP endpoint and credential environment reference. The Action calls
+the provider API through its adapter; it does not open a direct database connection. A local hashed
+outbox may be uploaded for replay, but it is delivery infrastructure rather than a memory backend.
 
 ```yaml
 memory:
@@ -549,7 +560,7 @@ High-level control knobs providing clean, top-level overrides across the platfor
 
 | Knob | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `memory_engine` | `boolean` | `true` | Master switch for `.review-yeti-memory/` Graph Learning Engine and nit suppression. |
+| `memory_engine` | `boolean` | `true` | Hosted/app compatibility switch; it does not select or enable the Action's API-backed `memory` provider. |
 | `mascot` | `boolean` | `true` | Master toggle for ASCII mascot output across reviews and chats. |
 | `confidence_threshold` | `number` | `70` | Global finding confidence cutoff rating (0-100). |
 | `ticket_enforcement` | `boolean` | `false` | Master toggle for Linear / Jira / GitHub ticket validation. |
@@ -570,7 +581,8 @@ dials:
 
 `review-yeti-bot` supports direct, clean configuration toggles that map cleanly into the underlying engine:
 
-- **`memory_engine`** (`boolean`): Enables/disables `.review-yeti-memory/` SQLite learning graph and duplicate nit suppression.
+- **`memory_engine`** (`boolean`): Hosted/app compatibility toggle. It does not enable a local
+  database or replace the Action's API-backed `memory` provider configuration.
 - **`mascot`** (`boolean`): Controls whether ASCII art mascot headers are rendered in comments.
 - **`persona_model`** (`string`): Supported flagship persona models:
   - `claude-5-sonnet` (Anthropic / OpenRouter)
