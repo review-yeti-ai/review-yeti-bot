@@ -271,13 +271,31 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
       publicationPlan: { lineComments: [{ claimId: 'claim-1' }], fileComments: [], advisories: [], rejected: [] },
       carriedOpen: [],
       ignored: [],
+      neutralResolved: [{ claimKey: 'neutral-1', severity: 'P1', path: 'src/old.js', line: 8 }],
       recurrentResolved: [],
       obsolete: [],
+      decisionEntries: [{ claimKey: 'claim-2', state: 'ignored', decision: { kind: 'ignore', reasonDigest: 'digest-1' } }],
     });
     expect(events.length).toBeGreaterThan(1);
     expect(events.every((event: any) => !Object.prototype.hasOwnProperty.call(event, 'body'))).toBe(true);
+    expect(events.some((event: any) => event.eventType === 'review_started')).toBe(true);
     expect(events.some((event: any) => event.eventType === 'review_completed' && event.verdict === 'FIX_FIRST')).toBe(true);
+    expect(events.some((event: any) => event.eventType === 'finding_neutral_resolved')).toBe(true);
+    expect(events.some((event: any) => event.eventType === 'maintainer_command')).toBe(true);
     expect(events.every((event: any) => event.eventId)).toBe(true);
+  });
+
+  it('hashes fallback claim ids without leaking model titles', () => {
+    const events = pipeline.buildHonchoReviewEvents({
+      repo: 'review-yeti-ai/review-yeti-bot',
+      prNumber: 2,
+      headSha: 'abc123',
+      arbitration: { verdict: 'SHIP' },
+      personaResults: [{ findings: [{ severity: 'P1', path: 'src/a.js', line: 4, title: 'private model prose', body: 'private body' }] }],
+    });
+    const finding = events.find((event: any) => event.eventType === 'finding_observed');
+    expect(finding.claimId).not.toContain('private');
+    expect(finding.claimId).toMatch(/^[a-f0-9]{64}$/);
   });
 });
 

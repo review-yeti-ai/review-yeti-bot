@@ -1647,11 +1647,18 @@ function buildHonchoReviewEvents({
   publicationPlan = {},
   carriedOpen = [],
   ignored = [],
+  neutralResolved = [],
   recurrentResolved = [],
   obsolete = [],
+  decisionEntries = [],
 } = {}) {
   const identity = `${repo || 'unknown'}/${prNumber || 'unknown'}/${headSha || 'unknown'}`;
   const events = [];
+  const entryClaimId = (eventType, entry) => {
+    const explicit = entry?.claimId || entry?.claim_id || entry?.claimKey || entry?.claim_key;
+    if (explicit) return String(explicit);
+    return sha256(`${identity}/${eventType}/${entry?.path || 'unknown'}:${Number.isInteger(entry?.line) ? entry.line : 'unknown'}`);
+  };
   const add = (eventType, claimId, fields = {}) => {
     const safeClaimId = String(claimId || 'none').slice(0, 200);
     events.push({
@@ -1664,13 +1671,16 @@ function buildHonchoReviewEvents({
     });
   };
 
+  add('review_started', 'review', { state: 'started' });
   add('review_completed', 'review', {
     verdict: arbitration.verdict || 'UNKNOWN',
     state: arbitration.verdict === 'SHIP' ? 'accepted' : 'action_required',
   });
   for (const lane of personaResults) {
     for (const finding of lane?.findings || []) {
-      add('finding_observed', finding.claimId || finding.claim_id || `${finding.path || 'unknown'}:${finding.line || 'unknown'}:${finding.title || 'finding'}`, {
+      const claimId = finding.claimId || finding.claim_id
+        || sha256(`${identity}/finding_observed/${finding.path || 'unknown'}:${Number.isInteger(finding.line) ? finding.line : 'unknown'}`);
+      add('finding_observed', claimId, {
         severity: finding.severity,
         path: finding.path,
         line: finding.line,
@@ -1679,10 +1689,18 @@ function buildHonchoReviewEvents({
       });
     }
   }
-  for (const entry of carriedOpen) add('finding_carried', entry.claimId || entry.claim_id || entry.key, { state: 'open', severity: entry.severity, path: entry.path, line: entry.line });
-  for (const entry of ignored) add('finding_ignored', entry.claimId || entry.claim_id || entry.key, { state: 'ignored', severity: entry.severity, path: entry.path, line: entry.line });
-  for (const entry of recurrentResolved) add('finding_recurred', entry.claimId || entry.claim_id || entry.key, { state: 'recurred', severity: entry.severity, path: entry.path, line: entry.line });
-  for (const entry of obsolete) add('finding_obsolete', entry.claimId || entry.claim_id || entry.key, { state: 'obsolete', severity: entry.severity, path: entry.path, line: entry.line });
+  for (const entry of carriedOpen) add('finding_carried', entryClaimId('finding_carried', entry), { state: 'open', severity: entry.severity, path: entry.path, line: entry.line });
+  for (const entry of ignored) add('finding_ignored', entryClaimId('finding_ignored', entry), { state: 'ignored', severity: entry.severity, path: entry.path, line: entry.line });
+  for (const entry of neutralResolved) add('finding_neutral_resolved', entryClaimId('finding_neutral_resolved', entry), { state: 'resolved', severity: entry.severity, path: entry.path, line: entry.line });
+  for (const entry of recurrentResolved) add('finding_recurred', entryClaimId('finding_recurred', entry), { state: 'recurred', severity: entry.severity, path: entry.path, line: entry.line });
+  for (const entry of obsolete) add('finding_obsolete', entryClaimId('finding_obsolete', entry), { state: 'obsolete', severity: entry.severity, path: entry.path, line: entry.line });
+  for (const entry of decisionEntries) {
+    if (!entry?.decision?.kind) continue;
+    add('maintainer_command', entryClaimId('maintainer_command', entry), {
+      state: entry.state || 'recorded',
+      verdict: entry.decision.kind,
+    });
+  }
 
   const publishedCount = (publicationPlan.lineComments || []).length
     + (publicationPlan.fileComments || []).length
@@ -1690,7 +1708,7 @@ function buildHonchoReviewEvents({
   add('review_published', 'publication', {
     state: 'published',
     verdict: arbitration.verdict,
-    line: publishedCount,
+    count: publishedCount,
   });
   return events;
 }
@@ -4598,8 +4616,10 @@ async function main() {
       publicationPlan,
       carriedOpen,
       ignored,
+      neutralResolved,
       recurrentResolved,
       obsolete,
+      decisionEntries: decisionLedger.entries,
     });
     const writeResult = await honchoProvider.appendEvents({
       repo: prContext.repo,

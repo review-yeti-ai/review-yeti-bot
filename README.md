@@ -182,13 +182,15 @@ through OpenRouter, as above, or by putting a translating gateway in front.
   says something unhelpful, you edit the file that caused it.
 - **You own the key.** Bring any OpenAI-compatible provider. Your code and diffs go to the
   provider you chose, not to an intermediary.
-- **It is a GitHub Action.** No app installation, no webhook endpoint, no server, no database.
+- **It is a GitHub Action.** No Review Yeti app installation, webhook endpoint, or Review Yeti
+  server is required. Optional Honcho memory connects to infrastructure you operate separately.
 - **Cost is bounded and visible.** One request per reviewer per push, with a per-reviewer diff
   budget you set.
 
-It is deliberately simpler than a full review platform: no cross-PR memory, no codebase-wide
-semantic index, and no general chat. It does retain authenticated decisions from the same pull
-request, described below.
+It is deliberately simpler than a full review platform: no Review Yeti-managed codebase index or
+general chat. By default it retains only authenticated decisions from the same pull request. The
+optional Honcho integration adds repository-scoped advisory memory when explicitly enabled; it
+never replaces the authenticated GitHub decision ledger.
 
 ---
 
@@ -366,6 +368,38 @@ conversation. Only collaborators whose current repository permission is `write`,
 The command must be the first nonblank line and include a reason. Its author and reason are kept out
 of reviewer prompts; the summary shows the ignored finding so accepted risk stays auditable. This is
 same-PR memory only—nothing is learned across pull requests or repositories.
+
+### Optional Honcho advisory memory
+
+Honcho is an opt-in, fail-open provider for repository-scoped review context. Enable it only when
+you have a self-hosted or hosted Honcho instance and want prior review patterns available to every
+reviewer lane:
+
+```yaml
+- uses: review-yeti-ai/review-yeti-bot@main
+  with:
+    llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+    honcho-enabled: 'true'
+    honcho-context: 'true'
+    honcho-write: 'true'
+    doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+    doppler-project: review-yeti-bot
+    doppler-config: production
+```
+
+The Doppler config must contain `HONCHO_URL` (or `HONCHO_BASE_URL`), `HONCHO_API_KEY`, and
+`HONCHO_WORKSPACE_ID` (or `HONCHO_WORKSPACE`). The Action resolves them through its dependency-free
+runtime client using environment, cache, and Doppler REST API tiers; it does not invoke the Doppler
+CLI on a GitHub runner. Honcho context is bounded and inserted into reviewer user messages as
+untrusted data. Writes contain only normalized event metadata, never comment bodies, author names,
+command reasons, or secrets. Honcho delivery is at-least-once: deterministic event IDs aid tracing,
+but Honcho message creation is not treated as an idempotency guarantee.
+
+For a DigitalOcean self-host, put Honcho behind HTTPS, enable JWT authentication with a scoped
+workspace token, configure PostgreSQL with pgvector, Redis, an LLM provider, and the deriver. The
+`/health` endpoint only proves that the process is reachable; it does not prove that representations
+are being derived. To roll back immediately, set `honcho-enabled: 'false'` or remove the three
+Honcho inputs; GitHub-only review behavior remains authoritative.
 
 `memory.same_pr_decisions: false` disables the reviewer prompt block, not the deterministic safety
 state: authenticated open blockers and maintainer decisions still affect arbitration and publication.
@@ -624,7 +658,7 @@ glob behavior, `!` restoration, and every key.
 
 ```bash
 npm install
-npm test      # 428 tests, no network access required
+npm test      # full suite, no network access required
 npm run lint  # tsc --noEmit
 ```
 
