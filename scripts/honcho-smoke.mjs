@@ -11,6 +11,8 @@ const {
   stableSessionId,
   stableWorkspaceId,
 } = require('../src/memory/honchoMemory.js');
+const { createMemoryProviderRouter } = require('../src/mcp/memoryProviderRouter.js');
+const { createHonchoMemoryMcpAdapter } = require('../src/mcp/honchoMemoryMcpAdapter.js');
 
 function response(status, payload) {
   return {
@@ -29,11 +31,18 @@ function defaultFixturePath() {
 }
 
 export function parseSmokeArgs(args = []) {
-  if (args[0] === '--live' && args.length === 1) return { mode: 'live' };
-  if (args[0] === '--fixture' && args.length <= 2) {
-    return { mode: 'fixture', fixturePath: args[1] || defaultFixturePath() };
+  let mode;
+  let fixturePath;
+  let transport;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--live') mode = 'live';
+    else if (arg === '--fixture') { mode = 'fixture'; if (args[index + 1] && !args[index + 1].startsWith('--')) fixturePath = args[++index]; }
+    else if (arg === '--transport') transport = args[++index];
+    else throw new Error('Usage: node scripts/honcho-smoke.mjs --fixture [fixture.json] [--transport mcp|rest] | --live [--transport mcp|rest]');
   }
-  throw new Error('Usage: node scripts/honcho-smoke.mjs --fixture [fixture.json] | --live');
+  if (!mode || (transport && !['mcp', 'rest'].includes(transport))) throw new Error('Usage: node scripts/honcho-smoke.mjs --fixture [fixture.json] [--transport mcp|rest] | --live [--transport mcp|rest]');
+  return { mode, fixturePath: fixturePath || (mode === 'fixture' ? defaultFixturePath() : undefined), transport: transport || (mode === 'live' ? 'mcp' : 'rest') };
 }
 
 async function loadFixture(fixture, fixturePath) {
@@ -53,8 +62,9 @@ function endpointReceipt(url, status, latencyMs, error) {
   };
 }
 
-export async function runSmoke({ mode = 'fixture', manager, fetchImplementation, fixture, fixturePath } = {}) {
+export async function runSmoke({ mode = 'fixture', manager, fetchImplementation, fixture, fixturePath, transport = mode === 'live' ? 'mcp' : 'rest' } = {}) {
   if (!['fixture', 'live'].includes(mode)) throw new Error(`Unsupported smoke mode: ${mode}`);
+  if (!['mcp', 'rest'].includes(transport)) throw new Error(`Unsupported smoke transport: ${transport}`);
   let secretManager = manager;
   let baseFetch = fetchImplementation;
   const fixtureData = mode === 'fixture' ? await loadFixture(fixture, fixturePath) : null;
@@ -90,7 +100,7 @@ export async function runSmoke({ mode = 'fixture', manager, fetchImplementation,
   };
   const baseUrl = runtimeConfig.baseUrl;
   const workspaceId = stableWorkspaceId(runtimeConfig.workspaceId);
-  const repo = mode === 'live' ? (process.env.HONCHO_SMOKE_REPO || 'review-yeti-smoke') : 'fixture/review-yeti-smoke';
+  const repo = mode === 'live' ? (process.env.HONCHO_SMOKE_REPO || 'review-yeti/review-yeti-smoke') : 'fixture/review-yeti-smoke';
   const configuredPr = Number(process.env.HONCHO_SMOKE_PR);
   const prNumber = mode === 'live' && Number.isInteger(configuredPr) && configuredPr > 0
     ? configuredPr
@@ -114,13 +124,30 @@ export async function runSmoke({ mode = 'fixture', manager, fetchImplementation,
     fetchImplementation: observedFetch,
   });
   const health = await provider.healthCheck();
-  const write = await provider.appendEvents({
+  const memoryProvider = transport === 'mcp'
+    ? createHonchoMemoryMcpAdapter({ honchoProvider: provider, transport: 'mcp', protocol: 'mcp-compatible-local' })
+    : null;
+  const router = memoryProvider ? createMemoryProviderRouter({ providers: [memoryProvider], defaultProviderId: 'honcho', transport: 'mcp' }) : null;
+  const write = router
+    ? await router.appendEvents({ identity: { repository: identity.repo, prNumber: identity.prNumber, headSha: identity.headSha }, events: [{ eventType: 'review_completed', domain: 'processing', claimId: 'smoke', severity: 'P2', state: 'accepted', verdict: 'SHIP' }] })
+    : await provider.appendEvents({
     ...identity,
     events: [{ eventType: 'review_completed', claimId: 'smoke', severity: 'P2', state: 'accepted', verdict: 'SHIP' }],
   });
-  const context = await provider.resolveContext({ ...identity, query: 'smoke review memory' });
+  let context;
+  let contextAttempts = 0;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    contextAttempts += 1;
+    context = router
+      ? await router.queryContext({ identity: { repository: identity.repo, prNumber: identity.prNumber, headSha: identity.headSha }, purpose: 'smoke review memory' })
+      : await provider.resolveContext({ ...identity, query: 'smoke review memory' });
+    if (context.available ?? context.status === 'available') break;
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 250));
+  }
   const receipt = {
     mode,
+    transport,
+    protocol: router ? 'mcp-compatible-local' : 'rest',
     dopplerApi: mode === 'live',
     host: new URL(baseUrl).host,
     workspaceId,
@@ -129,15 +156,21 @@ export async function runSmoke({ mode = 'fixture', manager, fetchImplementation,
     configured: health.configured,
     healthAvailable: health.available,
     eventsAccepted: write.accepted,
-    contextAvailable: context.available,
+    writeAccepted: Boolean((write.available ?? write.status === 'accepted') && write.accepted >= 1),
+    derivedPending: Boolean((write.available ?? write.status === 'accepted') && write.accepted >= 1 && !(context.available ?? context.status === 'available')),
+    representationReady: Boolean(context.available ?? context.status === 'available'),
+    providerSource: context.source || write.source || (router ? 'mcp' : 'rest'),
+    omittedDomains: [...new Set([...(context.omittedDomains || []), ...(write.omittedDomains || [])])],
+    contextAvailable: context.available ?? context.status === 'available',
     contextChars: context.text.length,
+    contextAttempts,
     identity: { repo: identity.repo, prNumber: identity.prNumber },
     requests,
   };
   const failures = [];
   if (!health.available) failures.push(`health unavailable (${health.status || 'no status'})`);
-  if (!write.available || write.accepted < 1) failures.push('event write unavailable');
-  if (!context.available) failures.push('representation unavailable');
+  if (!(write.available ?? write.status === 'accepted') || write.accepted < 1) failures.push('event write unavailable');
+  if (!(context.available ?? context.status === 'available')) failures.push('representation unavailable');
   if (failures.length > 0) {
     const error = new Error(`Honcho smoke failed: ${failures.join('; ')}`);
     error.receipt = receipt;

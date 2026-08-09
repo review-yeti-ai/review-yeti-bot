@@ -20,6 +20,16 @@ function boundedText(value, maxChars) {
     .join('');
 }
 
+function reasonTaxonomy(reason) {
+  const text = String(reason || '').toLowerCase();
+  const tags = [];
+  if (/\b(?:api|issue|ticket|jira|linear)-?[a-z]?\d+/u.test(text) || /\bticket\b|\bissue\b|\btracking\b/u.test(text)) tags.push('ticket');
+  if (/accepted?\s+risk|wontfix|won't fix|known risk|compatibility/u.test(text)) tags.push('accepted-risk');
+  if (/out[- ]of[- ]scope|not in scope|scope boundary/u.test(text)) tags.push('out-of-scope');
+  if (/false positive|not a bug|noise|duplicate/u.test(text)) tags.push('false-positive');
+  return (tags.length > 0 ? tags : ['other']).slice(0, 3);
+}
+
 function normalizedPublisherLogin(login) {
   return typeof login === 'string' && login.endsWith('[bot]') ? login.slice(0, -5) : login;
 }
@@ -36,7 +46,7 @@ function parseDecisionCommand(body) {
   const reason = match[2].trim();
   const reasonLength = [...reason].length;
   if (reasonLength < 3 || reasonLength > 500) return null;
-  return { kind: match[1], reason, reasonDigest: sha256(reason) };
+  return { kind: match[1], reason, reasonDigest: sha256(reason), reasonTaxonomy: reasonTaxonomy(reason) };
 }
 
 function parseBotFindingComment(body) {
@@ -143,6 +153,7 @@ function buildDecisionLedger(snapshot, options = {}) {
         author: latestCommand.author,
         permission: latestCommand.permission,
         reasonDigest: latestCommand.reasonDigest,
+        reasonTaxonomy: latestCommand.reasonTaxonomy,
         createdAt: latestCommand.createdAt,
       }
       : undefined;
@@ -162,6 +173,14 @@ function buildDecisionLedger(snapshot, options = {}) {
       firstReportedSha: parsed.sha,
       humanReplyCount: Math.max(0, comments.length - 1),
       ...(decision ? { decision } : {}),
+      decisionHistory: commands.map((command) => ({
+        kind: command.kind,
+        commentId: command.commentId,
+        permission: command.permission,
+        reasonDigest: command.reasonDigest,
+        reasonTaxonomy: command.reasonTaxonomy,
+        createdAt: command.createdAt,
+      })),
     });
   }
 

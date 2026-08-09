@@ -79,5 +79,20 @@ describe('SessionLedger Unit Tests', () => {
     expect(ctx.remainingTurns).toBe(19);
     expect(ctx.augmentedHeader).toContain('Multi-Turn Review Context');
     expect(ctx.augmentedHeader).toContain('Remaining Turn Budget');
+    expect(ctx.headSha).toBe('8ea184c');
+  });
+
+  it('recalls the previous head for the next pipeline turn', () => {
+    ledger.recordTurn({
+      owner: 'acme',
+      repo: 'app',
+      prNumber: 7,
+      headSha: 'abc123',
+      currentTurn: 1,
+      maxTurns: 20,
+      arbitration: { verdict: 'SHIP', rationale: '', metrics: { p0Count: 0, p1Count: 0, p2Count: 0 } },
+      personaResults: [],
+    });
+    expect(ledger.getPreviousTurnContext('acme', 'app', 7)).toMatchObject({ hasHistory: true, previousTurn: 1, headSha: 'abc123' });
   });
 });

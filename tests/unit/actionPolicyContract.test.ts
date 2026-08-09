@@ -14,12 +14,30 @@ describe('Action v4 policy boundary', () => {
       maxEntries: 40,
       maxPromptChars: 8000,
       maintainerCommands: true,
+      sessionRecap: true,
       honcho: {
         enabled: false,
         context: false,
         write: false,
+        mcpEnabled: false,
+        transport: 'rest',
         timeoutMs: 1500,
         maxContextChars: 4000,
+        recall: {
+          decision_feedback: false,
+          session_recap: false,
+          code_signals: false,
+          rule_signals: false,
+          maxEntries: 40,
+          maxContextChars: 4000,
+        },
+        persist: {
+          processing: false,
+          session_recap: false,
+          decision_feedback: false,
+          code_signals: false,
+          rule_signals: false,
+        },
       },
     });
   });
@@ -48,13 +66,16 @@ describe('Action v4 policy boundary', () => {
       },
     }, {});
 
-    expect(policy.memory.honcho).toEqual({
+    expect(policy.memory.honcho).toMatchObject({
       enabled: true,
       context: true,
       write: true,
+      mcpEnabled: false,
+      transport: 'rest',
       timeoutMs: 5_000,
       maxContextChars: 8_000,
     });
+    expect(policy.memory.honcho.recall).toMatchObject({ decision_feedback: true, session_recap: true });
   });
 
   it('lets explicit Action inputs disable or enable Honcho without trusting PR-head config', () => {
@@ -68,13 +89,52 @@ describe('Action v4 policy boundary', () => {
       HONCHO_MAX_CONTEXT_CHARS: '9000',
     });
 
-    expect(policy.memory.honcho).toEqual({
+    expect(policy.memory.honcho).toMatchObject({
       enabled: false,
       context: true,
       write: false,
+      mcpEnabled: false,
+      transport: 'rest',
       timeoutMs: 250,
       maxContextChars: 8_000,
     });
+  });
+
+  it('allows trusted YAML to opt into MCP and does not let legacy context widen learning classes', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: { memory: { honcho: { enabled: true, context: true, transport: 'mcp', recall: { code_signals: true } } } },
+    }, {});
+    expect(policy.memory.honcho).toMatchObject({ enabled: true, mcpEnabled: true, transport: 'mcp' });
+    expect(policy.memory.honcho.recall).toMatchObject({ decision_feedback: true, session_recap: true, code_signals: true, rule_signals: false });
+  });
+
+  it('lets an explicit MCP disable win over trusted YAML transport', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: { memory: { honcho: { enabled: true, context: true, transport: 'mcp' } } },
+    }, { HONCHO_MCP_ENABLED: 'false' });
+    expect(policy.memory.honcho).toMatchObject({ mcpEnabled: false, transport: 'rest' });
+  });
+
+  it('intersects top-level recap and decision switches with nested Honcho classes', () => {
+    const policy = pipeline.resolveActionReviewPolicy({
+      parsed: {
+        memory: {
+          same_pr_decisions: false,
+          session_recap: false,
+          honcho: {
+            enabled: true,
+            context: true,
+            write: true,
+            transport: 'mcp',
+            recall: { decision_feedback: true, session_recap: true, code_signals: true },
+            persist: { decision_feedback: true, session_recap: true, code_signals: true },
+          },
+        },
+      },
+    }, {});
+    expect(policy.memory.sessionRecap).toBe(false);
+    expect(policy.memory.honcho.recall).toMatchObject({ decision_feedback: false, session_recap: false, code_signals: true });
+    expect(policy.memory.honcho.persist).toMatchObject({ decision_feedback: false, session_recap: false, code_signals: true });
   });
 
   it('reads bounded limits and submodule policy from trusted base configuration', () => {

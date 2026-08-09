@@ -374,24 +374,42 @@ arbitration. Honcho failures are fail-open and never block publication.
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `enabled` | `boolean` | `false` | Enables the Honcho adapter. |
+| `transport` | `string` | `rest` for legacy configs | `mcp` selects the provider-neutral MCP-compatible memory path; `rest` is explicit compatibility/rollback. There is no pipeline-level fallback. |
 | `context` | `boolean` | `false` | Reads bounded Honcho context before reviewer fan-out. |
 | `write` | `boolean` | `false` | Writes normalized review events after GitHub publication. |
 | `timeout_ms` | `number` | `1500` | Request timeout, clamped to `250..5000`. |
 | `max_context_chars` | `number` | `4000` | Prompt context cap, clamped to `1000..8000`. |
+| `recall` | `object` | legacy decision/session only | Enables bounded `decision_feedback`, `session_recap`, `code_signals`, and `rule_signals`; intersected with provider capabilities. |
+| `persist` | `object` | legacy processing/decision/session only | Enables normalized processing, session, code, rule, and feedback event persistence. |
 
 ```yaml
 memory:
   honcho:
     enabled: true
+    transport: mcp
     context: true
     write: true
     timeout_ms: 1500
     max_context_chars: 4000
+    recall:
+      decision_feedback: true
+      session_recap: true
+      code_signals: true
+      rule_signals: true
+    persist:
+      processing: true
+      session_recap: true
+      decision_feedback: true
+      code_signals: true
+      rule_signals: true
 ```
 
 The Action inputs `honcho-enabled`, `honcho-context`, `honcho-write`,
-`honcho-timeout-ms`, and `honcho-max-context-chars` override these trusted base-ref values when
-non-empty. Pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve
+`honcho-timeout-ms`, and `honcho-max-context-chars` preserve legacy behavior. New
+`honcho-mcp-enabled` and `honcho-mcp-transport` inputs explicitly opt into or roll back the MCP
+provider path. Precedence is explicit MCP input, trusted `memory.honcho.transport`, then legacy
+REST-compatible defaults. Class toggles remain controlled by trusted YAML and cannot be widened by
+Action inputs. Pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve
 `HONCHO_URL`/`HONCHO_BASE_URL`, `HONCHO_API_KEY` or `HONCHO_WORKSPACE_JWT`, and
 `HONCHO_WORKSPACE_ID`/`HONCHO_WORKSPACE` through the dependency-free Action runtime client. When no
 explicit workspace is supplied, the adapter uses the scoped JWT workspace claim. That runtime uses
@@ -410,6 +428,30 @@ aliases for self-hosted configurations. Do not place credentials in repository c
     doppler-project: review-yeti-bot
     doppler-config: production
 ```
+
+The provider recalls only normalized, bounded context. GitHub's same-PR decision ledger remains
+authoritative for comments, resolutions, ignores, corrections, and arbitration. PR session recaps
+contain head SHA, turn, verdict, coverage, claim fingerprints, and state transitions—not raw
+comment bodies, authors, or model transcripts. Code signals contain claim fingerprints and
+locations; rule signals contain trusted base SHA/policy digest and are never executable; feedback
+contains authenticated permission class, command kind, transition ID, reason taxonomy, and reason
+hash. A cancelled runner leaves a versioned outbox artifact for replay. Composite-action
+consumers that need recovery after runner termination must upload the emitted `memory-outbox-path`
+output (the file is under `sessions/`):
+
+```yaml
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: review-yeti-memory-outbox-${{ github.run_id }}
+    path: ${{ steps.review.outputs.memory-outbox-path }}
+    if-no-files-found: ignore
+```
+
+An operator can replay an authorized artifact with
+`node scripts/replay-memory-outbox.mjs --path <hashed-outbox> --lease <operator-id> --provider honcho --authorize yes`.
+Replay validates the stored repository/PR/head/policy identity, uses the current trusted Doppler
+endpoint, takes a lease, retries with bounded backoff, and moves repeated failures to dead-letter.
 
 For DigitalOcean self-hosting, require HTTPS at the reverse proxy, JWT authentication with a
 workspace-scoped token, PostgreSQL with pgvector, Redis, a configured LLM provider, and a running

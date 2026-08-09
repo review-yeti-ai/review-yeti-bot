@@ -25,6 +25,8 @@ export interface HonchoMemoryProvider {
     accepted: number;
     available: boolean;
     reason?: string;
+    eventIds?: string[];
+    chunks?: number;
   }>;
 }
 
@@ -46,3 +48,4 @@ export function normalizeReviewEvent(event?: Record<string, unknown>, now?: () =
 export function stableWorkspaceId(value?: string): string;
 export function stablePeerId(repo: string): string;
 export function stableSessionId(repo: string, prNumber: string | number): string;
+export function canonicalJson(value: unknown): string;

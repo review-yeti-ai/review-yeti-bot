@@ -367,7 +367,9 @@ conversation. Only collaborators whose current repository permission is `write`,
 
 The command must be the first nonblank line and include a reason. Its author and reason are kept out
 of reviewer prompts; the summary shows the ignored finding so accepted risk stays auditable. This is
-same-PR memory only—nothing is learned across pull requests or repositories.
+the GitHub decision ledger's same-PR authority boundary. Optional Honcho memory is separately
+controlled by the trusted recall/persist matrix and stores only normalized, exact-head-scoped
+metadata; it never learns raw comments, authors, transcripts, or executable instructions.
 
 ### Optional Honcho advisory memory
 
@@ -382,6 +384,8 @@ reviewer lane:
     honcho-enabled: 'true'
     honcho-context: 'true'
     honcho-write: 'true'
+    honcho-mcp-enabled: 'true'
+    honcho-mcp-transport: mcp
     doppler-token: ${{ secrets.DOPPLER_TOKEN }}
     doppler-project: review-yeti-bot
     doppler-config: production
@@ -393,14 +397,45 @@ or derived from the trusted JWT workspace claim. The Action resolves them throug
 runtime client using environment, cache, and Doppler REST API tiers; it does not invoke the Doppler
 CLI on a GitHub runner. Honcho context is bounded and inserted into reviewer user messages as
 untrusted data. Writes contain only normalized event metadata, never comment bodies, author names,
-command reasons, or secrets. Honcho delivery is at-least-once: deterministic event IDs aid tracing,
-but Honcho message creation is not treated as an idempotency guarantee.
+command reasons, or secrets. Configure recall and persistence classes in trusted base-ref YAML:
+
+```yaml
+memory:
+  session_recap: true
+  honcho:
+    enabled: true
+    transport: mcp
+    recall:
+      decision_feedback: true
+      session_recap: true
+      code_signals: true
+      rule_signals: true
+    persist:
+      processing: true
+      session_recap: true
+      decision_feedback: true
+      code_signals: true
+      rule_signals: true
+```
+
+The reviewer recalls one bounded provider result per run. GitHub's authenticated decision ledger
+remains authoritative for comments, resolutions, ignores, corrections, and arbitration. PR session
+recaps contain only turn/head/verdict/coverage and claim-state summaries. Code/rule signals are
+metadata-only and advisory; raw comments, authors, transcripts, and executable instructions are
+never stored or recalled. Honcho delivery is at-least-once: deterministic canonical event IDs aid
+tracing, but Honcho message creation is not treated as an idempotency guarantee. A hashed outbox
+artifact and replay command recover events after runner cancellation.
+
+Upload the Action's `memory-outbox-path` output with `actions/upload-artifact@v4` when runner
+recovery matters; replay only from a trusted artifact using
+`node scripts/replay-memory-outbox.mjs --path <hashed-outbox> --lease <operator-id> --provider honcho --authorize yes`.
 
 For a DigitalOcean self-host, put Honcho behind HTTPS, enable JWT authentication with a scoped
 workspace token, configure PostgreSQL with pgvector, Redis, an LLM provider, and the deriver. The
 `/health` endpoint only proves that the process is reachable; it does not prove that representations
-are being derived. To roll back immediately, set `honcho-enabled: 'false'` or remove the three
-Honcho inputs; GitHub-only review behavior remains authoritative.
+are being derived. To roll back immediately, set `honcho-enabled: 'false'` or remove the Honcho
+inputs; alternatively set trusted `memory.honcho.transport: rest` for explicit compatibility mode.
+There is no hidden pipeline-level REST fallback; GitHub-only review behavior remains authoritative.
 
 `memory.same_pr_decisions: false` disables the reviewer prompt block, not the deterministic safety
 state: authenticated open blockers and maintainer decisions still affect arbitration and publication.

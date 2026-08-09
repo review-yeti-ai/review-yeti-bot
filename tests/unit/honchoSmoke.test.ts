@@ -8,10 +8,15 @@ describe('Honcho smoke harness', () => {
     const result = await runSmoke({ mode: 'fixture', fixturePath });
     expect(result).toMatchObject({
       mode: 'fixture',
+      transport: 'rest',
+      protocol: 'rest',
       dopplerApi: false,
       configured: true,
       healthAvailable: true,
       eventsAccepted: 1,
+      writeAccepted: true,
+      derivedPending: false,
+      representationReady: true,
       contextAvailable: true,
     });
     expect(result.host).toBe('honcho.fixture.test');
@@ -21,6 +26,12 @@ describe('Honcho smoke harness', () => {
       expect.objectContaining({ path: '/v3/workspaces', status: 200 }),
     ]));
     expect(result).not.toHaveProperty('apiKey');
+  });
+
+  it('proves the MCP-compatible provider boundary separately from REST', async () => {
+    const { runSmoke } = await import('../../scripts/honcho-smoke.mjs');
+    const result = await runSmoke({ mode: 'fixture', fixturePath, transport: 'mcp' });
+    expect(result).toMatchObject({ mode: 'fixture', transport: 'mcp', protocol: 'mcp-compatible-local', contextAvailable: true, eventsAccepted: 1, writeAccepted: true, representationReady: true });
   });
 
   it('fails a live-style smoke when any required endpoint is unavailable', async () => {

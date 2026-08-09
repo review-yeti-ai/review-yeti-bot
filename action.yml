@@ -39,6 +39,18 @@ inputs:
       trusted base configuration; failures never block GitHub publication.
     required: false
     default: ''
+  honcho-mcp-enabled:
+    description: >-
+      Optional MCP memory transport switch. Empty defers to trusted base configuration; true
+      enables the provider-neutral MCP memory path and false disables it.
+    required: false
+    default: ''
+  honcho-mcp-transport:
+    description: >-
+      Honcho memory transport override: mcp or rest. REST is explicit compatibility/rollback;
+      there is no automatic pipeline fallback.
+    required: false
+    default: ''
   honcho-timeout-ms:
     description: 'Honcho request timeout in milliseconds, clamped to 250-5000 (default 1500).'
     required: false
@@ -238,6 +250,9 @@ outputs:
   files-reviewed:
     description: 'Changed files the reviewers were shown.'
     value: ${{ steps.review.outputs.files-reviewed }}
+  memory-outbox-path:
+    description: 'Hashed normalized memory outbox path. Upload it as an artifact for replay after runner cancellation.'
+    value: ${{ steps.review.outputs.memory-outbox-path }}
   files-omitted:
     description: 'Changed files the diff budget excluded. Non-zero means the verdict covers only part of the change.'
     value: ${{ steps.review.outputs.files-omitted }}
@@ -404,6 +419,8 @@ runs:
         HONCHO_ENABLED: ${{ inputs.honcho-enabled }}
         HONCHO_CONTEXT: ${{ inputs.honcho-context }}
         HONCHO_WRITE: ${{ inputs.honcho-write }}
+        HONCHO_MCP_ENABLED: ${{ inputs.honcho-mcp-enabled }}
+        HONCHO_MCP_TRANSPORT: ${{ inputs.honcho-mcp-transport }}
         HONCHO_TIMEOUT_MS: ${{ inputs.honcho-timeout-ms }}
         HONCHO_MAX_CONTEXT_CHARS: ${{ inputs.honcho-max-context-chars }}
         DOPPLER_TOKEN: ${{ inputs.doppler-token }}
