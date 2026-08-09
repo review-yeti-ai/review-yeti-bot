@@ -12,7 +12,7 @@ function asBoundedInteger(value, fallback, min, max) {
 }
 
 function cleanIdentifier(value, fallback, lower = false) {
-  const cleaned = String(value || fallback)
+  const cleaned = String(value ?? fallback)
     .trim()
     .replace(/[^A-Za-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
