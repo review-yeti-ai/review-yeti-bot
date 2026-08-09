@@ -365,7 +365,56 @@ knowledge_base:
     - "ADR-012: Prefer explicit return types on public TypeScript functions."
 ```
 
-### 3a. `memory.honcho`
+### 3a. `memory` provider selection
+
+Review-time remote memory is configured in trusted base-ref YAML. Exactly one provider is active
+per run; production does not fan out writes or merge reads. Honcho remains the default, while
+`mem0`, `hindsight`, `supermemory`, and `retaindb` are selectable adapters. Provider failures
+degrade to GitHub-ledger-only review behavior.
+
+```yaml
+memory:
+  enabled: true
+  provider: honcho
+  mode: single
+  transport: mcp
+  fallback: github_ledger_only
+  query:
+    timeout_ms: 1500
+    max_context_chars: 4000
+    max_entries: 40
+  recall:
+    decision_feedback: true
+    session_recap: true
+    code_signals: true
+    rule_signals: true
+  persist:
+    processing: true
+    decision_feedback: true
+    session_recap: true
+    code_signals: true
+    rule_signals: true
+  providers:
+    honcho:
+      enabled: true
+      transport: mcp
+      endpoint_env: HONCHO_URL
+      credential_env: HONCHO_API_KEY
+      workspace_env: HONCHO_WORKSPACE_ID
+    mem0: { enabled: false, transport: rest, endpoint_env: MEM0_URL, credential_env: MEM0_API_KEY, namespace_env: MEM0_NAMESPACE }
+    hindsight: { enabled: false, transport: rest, endpoint_env: HINDSIGHT_URL, credential_env: HINDSIGHT_API_KEY }
+    supermemory: { enabled: false, transport: rest, endpoint_env: SUPERMEMORY_URL, credential_env: SUPERMEMORY_API_KEY }
+    retaindb: { enabled: false, transport: rest, endpoint_env: RETAINDB_URL, credential_env: RETAINDB_API_KEY }
+```
+
+`memory.provider` must be one of the five built-in IDs, `mode` must be `single`, and
+`fallback` must be `github_ledger_only`. Endpoints and credentials are environment references
+resolved from trusted runtime configuration/Doppler; pull-request YAML cannot retarget them. The
+router intersects the requested domains with provider capabilities and reports omitted domains in
+the receipt. Supermemory and RetainDB remain experimental until live ingestion/readiness evidence
+passes. Cross-provider comparisons use offline outbox replay, never runtime fan-out.
+
+### 3b. `memory.honcho`
 
 Honcho is an optional advisory memory provider for repository-scoped pull-request review context.
 The GitHub decision ledger remains authoritative for finding state, maintainer commands, and

@@ -34,6 +34,7 @@ class MemoryProviderRouter {
     return [...this.providers.values()].map((provider) => ({
       id: provider.id,
       contractVersion: provider.contractVersion,
+      adapterVersion: provider.adapterVersion,
       capabilities: provider.capabilities,
     }));
   }
@@ -151,6 +152,7 @@ class MemoryProviderRouter {
         latencyMs: Number.isFinite(result?.latencyMs) ? result.latencyMs : Date.now() - startedAt,
         omittedDomains: [...new Set([...(result?.omittedDomains || []), ...domains.omitted])],
         protocol: result?.protocol,
+        experimental: result?.experimental ?? provider.experimental,
         reason: result?.reason,
         ...this.providerReceipt(provider),
       };
@@ -221,6 +223,7 @@ class MemoryProviderRouter {
         deliverySemantics: provider.capabilities?.deliverySemantics || 'at_least_once',
         supportsIdempotency: Boolean(provider.capabilities?.supportsIdempotency),
         protocol: result?.protocol,
+        experimental: result?.experimental ?? provider.experimental,
         reason: result?.reason,
         ...this.providerReceipt(provider),
       };

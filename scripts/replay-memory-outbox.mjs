@@ -4,6 +4,7 @@ import { createMemoryOutbox } from '../src/memory/memoryOutbox.js';
 import { createHonchoMemoryProvider } from '../src/memory/honchoMemory.js';
 import { createHonchoMemoryMcpAdapter } from '../src/mcp/honchoMemoryMcpAdapter.js';
 import { createMemoryProviderRouter } from '../src/mcp/memoryProviderRouter.js';
+import { createMemoryProvider } from '../src/memory/providers/index.js';
 import { DopplerSecretManagerRuntime } from '../src/mcp/dopplerSecretManagerRuntime.js';
 
 function arg(name) {
@@ -33,9 +34,23 @@ const secretManager = new DopplerSecretManagerRuntime({
   project: process.env.DOPPLER_PROJECT,
   config: process.env.DOPPLER_CONFIG,
 });
-const honcho = createHonchoMemoryProvider({ secretManager, config: { enabled: true } });
-const adapter = createHonchoMemoryMcpAdapter({ honchoProvider: honcho, transport: 'mcp' });
-const router = createMemoryProviderRouter({ providers: [adapter], defaultProviderId: payload.providerId || 'honcho', transport: 'mcp', mode: 'single' });
+const selectedProvider = payload.providerId || providerId || 'honcho';
+let adapter;
+if (selectedProvider === 'honcho') {
+  const honcho = createHonchoMemoryProvider({ secretManager, config: { enabled: true } });
+  adapter = createHonchoMemoryMcpAdapter({ honchoProvider: honcho, transport: 'mcp' });
+} else {
+  const profile = {
+    enabled: true,
+    endpointEnv: `${selectedProvider.toUpperCase()}_URL`,
+    credentialEnv: `${selectedProvider.toUpperCase()}_API_KEY`,
+    namespaceEnv: `${selectedProvider.toUpperCase()}_NAMESPACE`,
+    workspaceEnv: `${selectedProvider.toUpperCase()}_WORKSPACE`,
+    secretManager,
+  };
+  adapter = createMemoryProvider({ id: selectedProvider, profile, secretManager });
+}
+const router = createMemoryProviderRouter({ providers: [adapter], defaultProviderId: selectedProvider, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest', mode: 'single' });
 const attemptsBefore = Number(payload.delivery?.attempts || 0);
 const deliveryKey = payload.delivery?.deliveryKey || `${payload.identityDigest}:replay`;
 let result;
@@ -43,7 +58,7 @@ let attempts = attemptsBefore;
 for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   attempts = attemptsBefore + attempt;
   try {
-    result = await router.appendEvents({ providerId: payload.providerId || 'honcho', identity: payload.identity, events: payload.events, persistDomains: payload.persistDomains, deliveryKey });
+    result = await router.appendEvents({ providerId: selectedProvider, identity: payload.identity, events: payload.events, persistDomains: payload.persistDomains, deliveryKey, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest' });
   } catch (error) {
     result = { status: 'unavailable', reason: error instanceof Error ? error.message : String(error), accepted: 0, eventIds: [] };
   }

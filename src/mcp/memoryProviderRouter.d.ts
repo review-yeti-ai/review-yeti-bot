@@ -26,6 +26,7 @@ export interface MemoryProvider {
   id: string;
   contractVersion: string;
   adapterVersion?: string;
+  experimental?: boolean;
   capabilities: MemoryProviderCapabilities;
   queryContext(request: Record<string, unknown>): Promise<Record<string, unknown>>;
   appendEvents(request: Record<string, unknown>): Promise<Record<string, unknown>>;
