@@ -392,8 +392,10 @@ memory:
 The Action inputs `honcho-enabled`, `honcho-context`, `honcho-write`,
 `honcho-timeout-ms`, and `honcho-max-context-chars` override these trusted base-ref values when
 non-empty. Pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve
-`HONCHO_URL`, `HONCHO_API_KEY`, and `HONCHO_WORKSPACE_ID` through the dependency-free Action runtime
-client. That runtime uses environment, cache, and Doppler REST API tiers; it deliberately does not
+`HONCHO_URL`/`HONCHO_BASE_URL`, `HONCHO_API_KEY` or `HONCHO_WORKSPACE_JWT`, and
+`HONCHO_WORKSPACE_ID`/`HONCHO_WORKSPACE` through the dependency-free Action runtime client. When no
+explicit workspace is supplied, the adapter uses the scoped JWT workspace claim. That runtime uses
+environment, cache, and Doppler REST API tiers; it deliberately does not
 invoke the Doppler CLI on a GitHub runner. `HONCHO_BASE_URL` and `HONCHO_WORKSPACE` are accepted
 aliases for self-hosted configurations. Do not place credentials in repository configuration.
 
