@@ -66,6 +66,28 @@ describe('review workflow fixtures', () => {
     expect(() => loadReviewWorkflowFixture(fixturePath)).toThrow('fixture contains unsafe value: api_key');
   });
 
+  it('rejects raw command reasons embedded in arbitrary strings', () => {
+    const fixturePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-fixture-')), 'unsafe-reason.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      id: 'unsafe-reason',
+      event: { repository: 'acme/review-yeti', prNumber: 42, headSha: 'a'.repeat(40) },
+      config: {}, github: { note: 'maintainer command reason: accepted-risk' }, model: {}, memory: {}, expected: {},
+    }));
+
+    expect(() => loadReviewWorkflowFixture(fixturePath)).toThrow('fixture contains raw command reason');
+  });
+
+  it('rejects malformed section types at the fixture boundary', () => {
+    const fixturePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-fixture-')), 'wrong-type.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      id: 'wrong-type',
+      event: { repository: 'acme/review-yeti', prNumber: 42, headSha: 'a'.repeat(40) },
+      config: [], github: {}, model: {}, memory: {}, expected: {},
+    }));
+
+    expect(() => loadReviewWorkflowFixture(fixturePath)).toThrow('fixture config must be an object');
+  });
+
   it('rejects an oversized fixture body', () => {
     const fixturePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-fixture-')), 'oversized.json');
     fs.writeFileSync(fixturePath, JSON.stringify({

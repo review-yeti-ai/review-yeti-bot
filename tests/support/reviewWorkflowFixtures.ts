@@ -37,6 +37,11 @@ const REQUIRED_EXPECTED_KEYS = [
 ] as const;
 const UNSAFE_KEYS = new Set(['api_key', 'authorization', 'private_key']);
 const UNSAFE_VALUE_MARKERS = ['api_key', 'authorization', 'private_key'];
+const RAW_COMMAND_REASON_MARKERS = [
+  /\/review-yeti\s+(ignore|unignore|reopen|resolve)/iu,
+  /command\s+reason/iu,
+  /accepted[-_ ]risk/iu,
+];
 
 function assertSafeJson(value: JsonValue, path = '$'): void {
   if (typeof value === 'string') {
@@ -45,6 +50,9 @@ function assertSafeJson(value: JsonValue, path = '$'): void {
     }
     const marker = UNSAFE_VALUE_MARKERS.find((candidate) => value.toLowerCase().includes(candidate));
     if (marker) throw new Error(`fixture contains unsafe value: ${marker}`);
+    if (RAW_COMMAND_REASON_MARKERS.some((markerPattern) => markerPattern.test(value))) {
+      throw new Error('fixture contains raw command reason');
+    }
     return;
   }
   if (value === null || typeof value !== 'object') return;
@@ -76,12 +84,27 @@ function assertContract(value: Record<string, JsonValue>): asserts value is Revi
   if (typeof event.headSha !== 'string' || !/^[a-f0-9]{40}$/.test(event.headSha)) {
     throw new Error('fixture event.headSha must be a 40-character lowercase SHA');
   }
+  for (const key of ['config', 'github', 'model', 'memory'] as const) {
+    if (!value[key] || typeof value[key] !== 'object' || Array.isArray(value[key])) {
+      throw new Error(`fixture ${key} must be an object`);
+    }
+  }
   if (!value.expected || typeof value.expected !== 'object' || Array.isArray(value.expected)) {
     throw new Error('fixture expected must be an object');
   }
   const expected = value.expected as Record<string, JsonValue>;
   for (const key of REQUIRED_EXPECTED_KEYS) {
     if (!(key in expected)) throw new Error(`fixture expected is missing required field: ${key}`);
+  }
+  if (typeof expected.verdict !== 'string' || typeof expected.coverageStatus !== 'string'
+    || typeof expected.memoryQueryStatus !== 'string' || typeof expected.memoryWriteStatus !== 'string'
+    || typeof expected.outboxState !== 'string') throw new Error('fixture expected status fields must be strings');
+  if (typeof expected.mergeEligible !== 'boolean'
+    || !Number.isInteger(expected.publishedReviewCount)
+    || !Number.isInteger(expected.publishedThreadCount)
+    || !Array.isArray(expected.forbiddenStrings)
+    || expected.forbiddenStrings.some((item) => typeof item !== 'string')) {
+    throw new Error('fixture expected result fields have invalid types');
   }
 }
 
