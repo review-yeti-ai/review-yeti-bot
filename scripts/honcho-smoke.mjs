@@ -6,6 +6,7 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const {
   createHonchoMemoryProvider,
+  resolveHonchoConfig,
   stablePeerId,
   stableSessionId,
   stableWorkspaceId,
@@ -72,12 +73,8 @@ export async function runSmoke({ mode = 'fixture', manager, fetchImplementation,
     });
   }
 
-  const secrets = {};
-  for (const name of ['HONCHO_URL', 'HONCHO_API_KEY', 'HONCHO_WORKSPACE_ID']) {
-    secrets[name] = await secretManager.getSecret(name);
-  }
-  const missing = Object.entries(secrets).filter(([, value]) => !value).map(([name]) => name);
-  if (missing.length > 0) throw new Error(`Missing smoke secret(s): ${missing.join(', ')}`);
+  const runtimeConfig = await resolveHonchoConfig({ config: { enabled: true }, secretManager });
+  if (!runtimeConfig.enabled) throw new Error(`Missing smoke secret(s): ${runtimeConfig.reason || 'Honcho configuration unavailable'}`);
 
   const requests = [];
   const observedFetch = async (url, init) => {
@@ -91,8 +88,8 @@ export async function runSmoke({ mode = 'fixture', manager, fetchImplementation,
       throw error;
     }
   };
-  const baseUrl = String(secrets.HONCHO_URL).replace(/\/+$/, '');
-  const workspaceId = stableWorkspaceId(secrets.HONCHO_WORKSPACE_ID);
+  const baseUrl = runtimeConfig.baseUrl;
+  const workspaceId = stableWorkspaceId(runtimeConfig.workspaceId);
   const repo = mode === 'live' ? (process.env.HONCHO_SMOKE_REPO || 'review-yeti-smoke') : 'fixture/review-yeti-smoke';
   const configuredPr = Number(process.env.HONCHO_SMOKE_PR);
   const prNumber = mode === 'live' && Number.isInteger(configuredPr) && configuredPr > 0
@@ -109,7 +106,7 @@ export async function runSmoke({ mode = 'fixture', manager, fetchImplementation,
     config: {
       enabled: true,
       baseUrl,
-      apiKey: secrets.HONCHO_API_KEY,
+      apiKey: runtimeConfig.apiKey,
       workspaceId,
       timeoutMs: 3_000,
       maxContextChars: 4_000,

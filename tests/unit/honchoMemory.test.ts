@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const {
   createHonchoMemoryProvider,
   normalizeReviewEvent,
+  resolveHonchoConfig,
   stablePeerId,
   stableSessionId,
   stableWorkspaceId,
@@ -69,6 +70,19 @@ describe('Honcho advisory memory adapter', () => {
     });
     expect((await provider.healthCheck()).configured).toBe(true);
     expect(fetchImplementation.mock.calls[0]?.[0]).toBe('https://honcho.example/health');
+  });
+
+  it('accepts HONCHO_WORKSPACE_JWT and derives its scoped workspace claim', async () => {
+    const payload = Buffer.from(JSON.stringify({ t: 'tenant-token', w: 'calltelemetry' })).toString('base64url');
+    const secrets = {
+      getSecret: vi.fn(async (name: string) => ({
+        HONCHO_BASE_URL: 'https://honcho.example',
+        HONCHO_WORKSPACE_JWT: `header.${payload}.signature`,
+      }[name] || null)),
+    };
+    const config = await resolveHonchoConfig({ secretManager: secrets });
+    expect(config).toMatchObject({ enabled: true, baseUrl: 'https://honcho.example', workspaceId: 'calltelemetry' });
+    expect(config.apiKey).toContain('header.');
   });
 
   it('returns bounded context after creating the deterministic workspace, peer, and session', async () => {
