@@ -4579,6 +4579,7 @@ async function main() {
   }
   const localConfig = loadLocalRepoConfig(configRoot);
   const actionPolicy = resolveActionReviewPolicy(localConfig, process.env);
+  const memoryPolicy = actionPolicy.memory || {};
   if (!actionPolicy.memory.sessionRecap) {
     sessionContext = null;
     sessionTurn = 1;
@@ -4705,7 +4706,6 @@ async function main() {
     : { text: '', renderedEntries: 0, omittedEntries: decisionLedger.entries.length };
   console.log(`[Decision ledger] ${decisionLedger.available ? `${decisionLedger.entries.length} authenticated finding thread(s)` : 'unavailable'}; ${renderedDecisionLedger.renderedEntries} supplied to each reviewer.`);
 
-  const memoryPolicy = actionPolicy.memory || {};
   const memoryRuntime = createReviewMemoryRouter(actionPolicy);
   let honchoContextBlock = '';
   let memoryQueryResult = { status: 'unavailable', source: 'none', provider: memoryPolicy.provider || 'honcho', text: '', reason: 'memory disabled' };
