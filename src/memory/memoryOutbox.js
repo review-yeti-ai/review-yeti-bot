@@ -61,13 +61,14 @@ function atomicWrite(filePath, value) {
 
 function createMemoryOutbox({ baseDir = path.join(process.cwd(), 'sessions'), now = () => new Date() } = {}) {
   return {
-    create({ identity, events = [], state = 'intent', persistDomains = [] }) {
+    create({ identity, providerId = 'honcho', events = [], state = 'intent', persistDomains = [] }) {
       const digest = identityDigest(identity);
       const filePath = outboxPath(baseDir, identity);
       const payload = {
         schemaVersion: 'memory-outbox-v1',
         identity: { ...identity, prNumber: String(identity.prNumber) },
         identityDigest: digest,
+        providerId: String(providerId || 'honcho'),
         state,
         persistDomains: Array.isArray(persistDomains) ? [...new Set(persistDomains.map((domain) => String(domain).trim()).filter(Boolean))] : [],
         createdAt: now().toISOString(),

@@ -4582,6 +4582,7 @@ async function main() {
   if (memoryOutbox && actionPolicy.memory.persist?.processing) {
     try {
       memoryOutboxRecord = memoryOutbox.create({
+        providerId: memoryPolicy.provider,
         identity: memoryIdentity,
         state: 'intent',
         events: [{
@@ -5067,7 +5068,7 @@ async function main() {
         const persistedEvents = filterMemoryEventsForPersistence(honchoEvents, persistDomains);
         const mergedEvents = [...outboxEvents, ...persistedEvents];
         const uniqueEvents = [...new Map(mergedEvents.map((event) => [event.eventId || event.event_id || JSON.stringify(event), event])).values()];
-        memoryOutboxRecord = memoryOutbox.create({ identity: memoryIdentity, state: 'ready', events: uniqueEvents, persistDomains });
+        memoryOutboxRecord = memoryOutbox.create({ providerId: memoryPolicy.provider, identity: memoryIdentity, state: 'ready', events: uniqueEvents, persistDomains });
         writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, usageTotal, { memoryOutboxPath: memoryOutboxRecord.filePath });
       } catch (error) {
         console.warn(`[Memory] Could not persist memory outbox before provider delivery: ${error.message}`);
