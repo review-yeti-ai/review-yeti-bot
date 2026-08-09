@@ -25,6 +25,8 @@ export interface MemoryProviderCapabilities {
 export interface MemoryProvider {
   id: string;
   contractVersion: string;
+  adapterVersion?: string;
+  experimental?: boolean;
   capabilities: MemoryProviderCapabilities;
   queryContext(request: Record<string, unknown>): Promise<Record<string, unknown>>;
   appendEvents(request: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -33,7 +35,7 @@ export interface MemoryProvider {
 }
 
 export class MemoryProviderRouter {
-  constructor(options?: { providers?: MemoryProvider[]; defaultProviderId?: string; transport?: MemoryTransport });
+  constructor(options?: { providers?: MemoryProvider[]; defaultProviderId?: string; transport?: MemoryTransport; mode?: 'single' });
   register(provider: MemoryProvider): MemoryProvider;
   get(id?: string): MemoryProvider | undefined;
   list(): Array<Record<string, unknown>>;

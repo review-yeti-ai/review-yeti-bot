@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "id": "resolved-feedback",
+      "headSha": "abc123",
+      "expected": ["resolved"],
+      "recalled": [{"state": "resolved", "head_sha": "abc123"}]
+    },
+    {
+      "id": "ignored-correction",
+      "headSha": "abc123",
+      "expected": ["unignored"],
+      "recalled": [{"state": "unignored", "head_sha": "abc123"}],
+      "forbidden": ["ignored"]
+    },
+    {
+      "id": "stale-head-rejection",
+      "headSha": "abc123",
+      "expected": [],
+      "recalled": [{"state": "ignored", "head_sha": "old-head"}]
+    },
+    {
+      "id": "session-recap",
+      "headSha": "def456",
+      "expected": ["recorded"],
+      "recalled": [{"state": "recorded", "head_sha": "def456"}]
+    },
+    {
+      "id": "rule-signal",
+      "headSha": "def456",
+      "expected": ["applied"],
+      "recalled": [{"state": "applied", "head_sha": "def456"}]
+    }
+  ]
+}

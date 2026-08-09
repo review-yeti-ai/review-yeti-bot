@@ -39,7 +39,16 @@ OpenRouter is the only model transport. A lane that cannot reach its configured
 model fails closed rather than silently substituting another model — the model
 actually served is recorded and reported in the review.
 
-## Optional Honcho advisory memory
+## Provider-neutral advisory memory
+
+Review-time memory uses exactly one selected provider per run. Trusted base-ref YAML chooses the
+provider, transport, bounds, and recall/persist domains; the pipeline calls one bounded
+`MemoryProviderRouter.queryContext` before fan-out and one normalized `appendEvents` after
+publication. Honcho is the default, with mem0, Hindsight, Supermemory, and RetainDB behind the
+same contract. Provider failure is auditable GitHub-ledger-only degradation. Offline outbox replay
+is the migration/comparison mechanism; production never fans out or merges provider reads.
+
+## Honcho advisory memory
 
 When `memory.honcho.context` is enabled, the provider-neutral router resolves one bounded
 representation for the repository and pull request before persona fan-out and places it in every
@@ -86,6 +95,7 @@ marker so a rerun updates in place instead of duplicating. See
 | `src/mcp/memoryProviderRouter.js` | Plain-Node provider-neutral memory router used by the Action |
 | `src/mcp/memoryMcpJsonRpc.js` | MCP JSON-RPC boundary and local MCP-compatible dispatcher |
 | `src/mcp/honchoMemoryMcpAdapter.js` | First Honcho provider with bounded query and normalized writes |
+| `src/memory/providers/` | Built-in mem0, Hindsight, Supermemory, and RetainDB adapters plus allowlisted registry |
 | `src/mcp/dopplerSecretManagerRuntime.js` | Dependency-free Action runtime Doppler REST resolver |
 | `src/memory/sessionLedger.ts` | Exact-head PR session recap and turn history |
 | `src/memory/memoryOutbox.js` | Atomic normalized event outbox and replay envelope |

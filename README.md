@@ -371,7 +371,36 @@ the GitHub decision ledger's same-PR authority boundary. Optional Honcho memory 
 controlled by the trusted recall/persist matrix and stores only normalized, exact-head-scoped
 metadata; it never learns raw comments, authors, transcripts, or executable instructions.
 
-### Optional Honcho advisory memory
+### Configurable advisory memory providers
+
+Review Yeti selects one remote memory provider per review run. Honcho is the default; mem0,
+Hindsight, Supermemory, and RetainDB are opt-in adapters behind the same bounded provider contract.
+Provider context is advisory, while GitHub's authenticated decision ledger remains authoritative.
+Use trusted base-ref YAML to select the provider and domains:
+
+```yaml
+memory:
+  enabled: true
+  provider: honcho       # honcho | mem0 | hindsight | supermemory | retaindb
+  mode: single
+  transport: mcp         # provider-supported; REST is explicit compatibility mode
+  fallback: github_ledger_only
+  recall: { decision_feedback: true, session_recap: true, code_signals: true, rule_signals: true }
+  persist: { processing: true, decision_feedback: true, session_recap: true, code_signals: true, rule_signals: true }
+  providers:
+    honcho: { enabled: true, transport: mcp, endpoint_env: HONCHO_URL, credential_env: HONCHO_API_KEY, workspace_env: HONCHO_WORKSPACE_ID }
+    mem0: { enabled: false, transport: rest, endpoint_env: MEM0_URL, credential_env: MEM0_API_KEY, namespace_env: MEM0_NAMESPACE }
+    hindsight: { enabled: false, transport: rest, endpoint_env: HINDSIGHT_URL, credential_env: HINDSIGHT_API_KEY }
+    supermemory: { enabled: false, transport: rest, endpoint_env: SUPERMEMORY_URL, credential_env: SUPERMEMORY_API_KEY }
+    retaindb: { enabled: false, transport: rest, endpoint_env: RETAINDB_URL, credential_env: RETAINDB_API_KEY }
+```
+
+The five providers are not runtime fan-out targets. To compare or migrate providers, replay the
+sanitized exact-head outbox in isolation. Unsupported memory domains, provider readiness, delivery
+semantics, and omitted classes are recorded in receipts. Raw comments, authors, command reasons,
+transcripts, credentials, and executable instructions are never stored.
+
+### Honcho compatibility configuration
 
 Honcho is an opt-in, fail-open provider for repository-scoped review context. Enable it only when
 you have a self-hosted or hosted Honcho instance and want prior review patterns available to every
