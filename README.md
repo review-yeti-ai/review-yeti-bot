@@ -387,8 +387,9 @@ reviewer lane:
     doppler-config: production
 ```
 
-The Doppler config must contain `HONCHO_URL` (or `HONCHO_BASE_URL`), `HONCHO_API_KEY`, and
-`HONCHO_WORKSPACE_ID` (or `HONCHO_WORKSPACE`). The Action resolves them through its dependency-free
+The Doppler config must contain `HONCHO_URL` (or `HONCHO_BASE_URL`) and either `HONCHO_API_KEY` or
+`HONCHO_WORKSPACE_JWT`. The workspace may be supplied as `HONCHO_WORKSPACE_ID`/`HONCHO_WORKSPACE`,
+or derived from the trusted JWT workspace claim. The Action resolves them through its dependency-free
 runtime client using environment, cache, and Doppler REST API tiers; it does not invoke the Doppler
 CLI on a GitHub runner. Honcho context is bounded and inserted into reviewer user messages as
 untrusted data. Writes contain only normalized event metadata, never comment bodies, author names,
