@@ -20,6 +20,13 @@ export interface McpToolExecutionResult {
   durationMs: number;
 }
 
+export interface McpFleetManagerOptions {
+  dopplerManager?: DopplerSecretManager;
+  context7Adapter?: Context7Adapter;
+  productlaneAdapter?: ProductlaneMCPAdapter;
+  linearAdapter?: LinearMCPAdapter;
+}
+
 export class McpFleetManager {
   private static instance: McpFleetManager;
   private readonly dopplerManager: DopplerSecretManager;
@@ -29,12 +36,16 @@ export class McpFleetManager {
   private servers: Map<string, CustomMcpServerConfig> = new Map();
   private toolRegistry: Map<string, McpToolDefinition> = new Map();
 
-  private constructor() {
-    this.dopplerManager = new DopplerSecretManager();
-    this.context7Adapter = new Context7Adapter({ dopplerManager: this.dopplerManager });
-    this.productlaneAdapter = new ProductlaneMCPAdapter({ dopplerManager: this.dopplerManager });
-    this.linearAdapter = new LinearMCPAdapter({ dopplerManager: this.dopplerManager });
+  private constructor(options: McpFleetManagerOptions = {}) {
+    this.dopplerManager = options.dopplerManager || new DopplerSecretManager();
+    this.context7Adapter = options.context7Adapter || new Context7Adapter({ dopplerManager: this.dopplerManager });
+    this.productlaneAdapter = options.productlaneAdapter || new ProductlaneMCPAdapter({ dopplerManager: this.dopplerManager });
+    this.linearAdapter = options.linearAdapter || new LinearMCPAdapter({ dopplerManager: this.dopplerManager });
     this.initDefaultServers();
+  }
+
+  public static create(options: McpFleetManagerOptions = {}): McpFleetManager {
+    return new McpFleetManager(options);
   }
 
   public static getInstance(): McpFleetManager {
