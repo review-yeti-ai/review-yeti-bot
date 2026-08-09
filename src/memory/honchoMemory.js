@@ -41,6 +41,28 @@ function digest(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+function normalizedPrNumber(value) {
+  const text = String(value ?? '').trim();
+  return /^\d+$/u.test(text) ? String(Number(text)) : text || 'unknown';
+}
+
+function safeField(value, max = 500) {
+  return stripControlCharacters(value).slice(0, max);
+}
+
+function eventDomain(event) {
+  const domain = String(event.domain || '').toLowerCase();
+  return ['processing', 'code', 'rule', 'feedback'].includes(domain) ? domain : 'processing';
+}
+
 function workspaceFromToken(token) {
   const parts = String(token || '').split('.');
   if (parts.length !== 3) return null;
@@ -53,20 +75,67 @@ function workspaceFromToken(token) {
 }
 
 function normalizeReviewEvent(event = {}, now = () => new Date()) {
+  const domain = eventDomain(event);
+  const repository = safeField(event.repository || event.repo, 300);
+  const prNumber = normalizedPrNumber(event.prNumber || event.pr_number);
+  const headSha = safeField(event.headSha || event.head_sha, 128) || 'unknown';
+  const claimId = safeField(event.claimId || event.claim_id, 200) || 'none';
+  const anchor = safeField(event.anchor || `${event.path || 'unknown'}:${event.side || 'file'}:${Number.isInteger(event.line) ? event.line : 'file'}`, 300);
+  const domainPolicyDigest = domain === 'rule' ? safeField(event.policyDigest || event.policy_digest, 128) : (event.policyDigest || event.policy_digest ? safeField(event.policyDigest || event.policy_digest, 128) : undefined);
   const normalized = {
+    schema_version: safeField(event.schemaVersion || event.schema_version, 40) || 'memory-event-v1',
+    domain,
     event_type: cleanIdentifier(event.eventType || event.event_type, 'review-event', true),
-    claim_id: cleanIdentifier(event.claimId || event.claim_id, 'none', true),
+    claim_id: cleanIdentifier(claimId, 'none', true),
+    repository: cleanIdentifier(repository, 'unknown-repo', true),
+    pr_number: prNumber,
     severity: cleanIdentifier(event.severity, 'unknown', true).toUpperCase(),
-    path: stripControlCharacters(event.path).slice(0, 500),
+    path: safeField(event.path, 500),
+    language: cleanIdentifier(event.language, 'unknown', true),
     line: Number.isInteger(event.line) ? event.line : undefined,
+    side: event.side === 'LEFT' || event.side === 'RIGHT' ? event.side : undefined,
+    anchor,
     state: cleanIdentifier(event.state, 'unknown', true),
     verdict: cleanIdentifier(event.verdict, 'unknown', true),
     source: cleanIdentifier(event.source, 'review-yeti', true),
-    head_sha: cleanIdentifier(event.headSha || event.head_sha, 'unknown', true),
+    head_sha: cleanIdentifier(headSha, 'unknown', true),
+    base_sha: safeField(event.baseSha || event.base_sha, 128) || undefined,
+    policy_digest: domainPolicyDigest,
+    rule_id: cleanIdentifier(event.ruleId || event.rule_id, 'unknown', true),
+    rule_category: cleanIdentifier(event.ruleCategory || event.rule_category, 'unknown', true),
+    rule_effect: cleanIdentifier(event.ruleEffect || event.rule_effect, 'unknown', true),
+    rule_scope: cleanIdentifier(event.ruleScope || event.rule_scope, 'unknown', true),
+    rule_origin: cleanIdentifier(event.ruleOrigin || event.rule_origin, 'unknown', true),
+    permission_class: cleanIdentifier(event.permissionClass || event.permission_class, 'unknown', true),
+    command_kind: cleanIdentifier(event.commandKind || event.command_kind, 'unknown', true),
+    reason_taxonomy: Array.isArray(event.reasonTaxonomy || event.reason_taxonomy)
+      ? (event.reasonTaxonomy || event.reason_taxonomy).map((value) => cleanIdentifier(value, 'unknown', true)).slice(0, 8)
+      : undefined,
+    reason_hash: safeField(event.reasonHash || event.reason_hash, 128) || undefined,
+    thread_id: safeField(event.threadId || event.thread_id, 128) || undefined,
+    transition_id: safeField(event.transitionId || event.transition_id, 128) || undefined,
+    delivery_state: cleanIdentifier(event.deliveryState || event.delivery_state, 'pending', true),
+    turn: Number.isInteger(event.turn) ? event.turn : undefined,
+    previous_head_sha: safeField(event.previousHeadSha || event.previous_head_sha, 128) || undefined,
+    current_head_sha: safeField(event.currentHeadSha || event.current_head_sha, 128) || undefined,
+    coverage_status: cleanIdentifier(event.coverageStatus || event.coverage_status, 'unknown', true),
+    findings_count: Number.isInteger(event.findingsCount) ? event.findingsCount : undefined,
+    publication_count: Number.isInteger(event.count) ? event.count : undefined,
+    comment_id: Number.isInteger(event.commentId) ? event.commentId : undefined,
     occurred_at: event.occurredAt || event.occurred_at || now().toISOString(),
   };
   const compact = Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined && value !== ''));
-  compact.event_id = event.eventId || event.event_id || digest(JSON.stringify(compact));
+  compact.event_id = event.eventId || event.event_id || digest(canonicalJson({
+    schemaVersion: compact.schema_version,
+    domain: compact.domain,
+    eventType: compact.event_type,
+    repository: compact.repository,
+    prNumber: compact.pr_number,
+    headSha: compact.head_sha,
+    claimId: compact.claim_id,
+    anchor: compact.anchor,
+    domainPolicyDigest: compact.policy_digest || null,
+  }));
   return compact;
 }
 
@@ -205,22 +274,20 @@ function createHonchoMemoryProvider({
       if (!Array.isArray(events) || events.length === 0) return { accepted: 0, available: true };
       try {
         const { peerId, sessionId } = await ensureResources({ repo, prNumber, headSha }, runtimeConfig);
-        const messages = events.slice(0, 100).map((event) => {
-          const normalized = normalizeReviewEvent({ ...event, headSha }, now);
-          return {
+        const normalizedEvents = events.map((event) => normalizeReviewEvent({ ...event, repo, prNumber, headSha }, now));
+        const messageUrl = `${runtimeConfig.baseUrl}/v3/workspaces/${encodeURIComponent(runtimeConfig.workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`;
+        let accepted = 0;
+        for (let offset = 0; offset < normalizedEvents.length; offset += 100) {
+          const messages = normalizedEvents.slice(offset, offset + 100).map((normalized) => ({
             peer_id: peerId,
-            content: `Review event ${normalized.event_type}; claim=${normalized.claim_id}; severity=${normalized.severity}; state=${normalized.state}; verdict=${normalized.verdict}; path=${normalized.path || 'none'}; line=${normalized.line ?? 'none'}`,
+            content: `Review event ${normalized.event_type}; domain=${normalized.domain}; claim=${normalized.claim_id}; severity=${normalized.severity}; state=${normalized.state}; verdict=${normalized.verdict}; path=${normalized.path || 'none'}; line=${normalized.line ?? 'none'}`,
             metadata: normalized,
             created_at: normalized.occurred_at,
-          };
-        });
-        await request(
-          'POST',
-          `${runtimeConfig.baseUrl}/v3/workspaces/${encodeURIComponent(runtimeConfig.workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
-          { messages },
-          runtimeConfig,
-        );
-        return { accepted: messages.length, available: true };
+          }));
+          await request('POST', messageUrl, { messages }, runtimeConfig);
+          accepted += messages.length;
+        }
+        return { accepted, available: true, eventIds: normalizedEvents.map((event) => event.event_id), chunks: Math.ceil(normalizedEvents.length / 100) };
       } catch (error) {
         return { accepted: 0, available: false, reason: error?.message || 'Honcho event write failed' };
       }
@@ -235,4 +302,5 @@ module.exports = {
   stablePeerId,
   stableSessionId,
   stableWorkspaceId,
+  canonicalJson,
 };
