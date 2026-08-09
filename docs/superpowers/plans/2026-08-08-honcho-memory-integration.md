@@ -25,6 +25,7 @@ runtime-client and self-hosting documentation into alignment.
 - [x] Persist review start, neutral resolution, and maintainer-command event states.
 - [x] Hash fallback claim IDs so model prose cannot enter Honcho metadata.
 - [x] Align README, configuration, architecture, DigitalOcean operations, and runtime-client docs.
+- [x] Accept deployed Doppler names `HONCHO_BASE_URL` and `HONCHO_WORKSPACE_JWT`, deriving the scoped workspace when no explicit workspace key exists.
 
 ## Global Constraints
 
