@@ -58,3 +58,33 @@ jobs:
 
       - name: Typecheck
         run: npm run lint
+
+  action-runtime:
+    name: Action runtime (Node ${{ matrix.node }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Verify plain Action runtime
+        run: npm run test:action-runtime
+      - name: Verify full workflow fixture harness
+        run: npm run test:workflow
