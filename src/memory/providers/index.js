@@ -12,10 +12,10 @@ const FACTORIES = {
   retaindb: createRetainDbMemoryProvider,
 };
 
-function createMemoryProvider({ id, profile = {}, env = process.env, fetchImplementation = globalThis.fetch } = {}) {
+function createMemoryProvider({ id, profile = {}, env = process.env, fetchImplementation = globalThis.fetch, secretManager } = {}) {
   const factory = FACTORIES[id];
   if (!factory) throw new Error(`unknown native memory provider: ${id}`);
-  return factory({ profile, env, fetchImplementation });
+  return factory({ profile: { ...profile, secretManager }, env, fetchImplementation });
 }
 
 function listMemoryProviderIds() {

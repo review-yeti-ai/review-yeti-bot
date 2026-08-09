@@ -2441,7 +2441,7 @@ function createReviewMemoryRouter(actionPolicy) {
       persistDomains: Object.entries(memoryPolicy.persist || {}).filter(([, enabled]) => enabled === true).map(([name]) => name),
     });
   } else if (createMemoryProvider) {
-    provider = createMemoryProvider({ id: memoryPolicy.provider, profile: memoryPolicy.selectedProfile, env: process.env });
+    provider = createMemoryProvider({ id: memoryPolicy.provider, profile: memoryPolicy.selectedProfile, env: process.env, secretManager });
   }
   if (!provider) return null;
   return {

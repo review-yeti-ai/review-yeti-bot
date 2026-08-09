@@ -39,6 +39,14 @@ function providerOptions(fetchImplementation: typeof fetch) {
 }
 
 describe('native memory provider adapters', () => {
+  it('fails open without provider credentials instead of making unauthenticated requests', async () => {
+    const fetchImplementation = vi.fn() as unknown as typeof fetch;
+    const provider = createMem0MemoryProvider({ profile: { enabled: true }, env: {}, fetchImplementation });
+    await expect(provider.queryContext({ identity, purpose: 'prior decisions' })).resolves.toMatchObject({ status: 'unavailable', source: 'rest' });
+    await expect(provider.appendEvents({ identity, events: [normalizedEvent] })).resolves.toMatchObject({ status: 'unavailable' });
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
   it('uses Mem0 REST with a scoped identity, exact-head metadata filter, and Token auth', async () => {
     const fetchImplementation = vi.fn(async () => response({ results: [
       { memory: JSON.stringify(normalizedEvent), metadata: { head_sha: identity.headSha } },

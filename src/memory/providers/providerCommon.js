@@ -100,7 +100,22 @@ function resolveProfile({ profile = {}, env = process.env, defaultBaseUrl }) {
     namespace: read(profile.namespace || (namespaceEnv && env[namespaceEnv]), 'review-yeti'),
     workspace: read(profile.workspace || (workspaceEnv && env[workspaceEnv]), 'review-yeti'),
     timeoutMs: boundedInteger(profile.timeoutMs, DEFAULT_TIMEOUT_MS, 250, 5000),
+    endpointEnv,
+    credentialEnv,
+    namespaceEnv,
+    workspaceEnv,
+    secretManager: profile.secretManager,
   };
+}
+
+async function hydrateProfile(runtime) {
+  if (!runtime?.secretManager?.getSecret) return runtime;
+  const secret = async (ref, current) => current || (ref ? await runtime.secretManager.getSecret(ref) : null);
+  runtime.baseUrl = String(await secret(runtime.endpointEnv, runtime.baseUrl) || runtime.baseUrl).replace(/\/+$/u, '');
+  runtime.apiKey = String(await secret(runtime.credentialEnv, runtime.apiKey) || '').trim();
+  runtime.namespace = String(await secret(runtime.namespaceEnv, runtime.namespace) || runtime.namespace);
+  runtime.workspace = String(await secret(runtime.workspaceEnv, runtime.workspace) || runtime.workspace);
+  return runtime;
 }
 
 async function requestJson(fetchImplementation, runtime, method, url, body, headers = {}) {
@@ -127,6 +142,9 @@ async function requestJson(fetchImplementation, runtime, method, url, body, head
 function healthMethod({ fetchImplementation, runtime, url, headers }) {
   return async () => {
     try {
+      await hydrateProfile(runtime);
+      if (!runtime.enabled || !runtime.apiKey) return { configured: false, available: false, reason: 'missing provider credential' };
+      if (headers?.Authorization) headers.Authorization = headers.Authorization.replace(/ .*/u, ` ${runtime.apiKey}`);
       await requestJson(fetchImplementation, runtime, 'GET', url, undefined, headers);
       return { configured: Boolean(runtime.apiKey || runtime.baseUrl), available: true };
     } catch (error) {
@@ -143,6 +161,7 @@ module.exports = {
   sanitizeEvents,
   boundedContext,
   resolveProfile,
+  hydrateProfile,
   requestJson,
   healthMethod,
 };

@@ -1,6 +1,6 @@
 'use strict';
 
-const { boundedInteger, scopedIdentity, exactHead, sanitizeEvents, boundedContext, resolveProfile, requestJson, healthMethod } = require('./providerCommon.js');
+const { boundedInteger, scopedIdentity, exactHead, sanitizeEvents, boundedContext, resolveProfile, hydrateProfile, requestJson, healthMethod } = require('./providerCommon.js');
 
 function createSupermemoryMemoryProvider({ profile = {}, env = process.env, fetchImplementation = globalThis.fetch } = {}) {
   const runtime = resolveProfile({ profile, env, defaultBaseUrl: 'https://api.supermemory.ai' });
@@ -10,11 +10,17 @@ function createSupermemoryMemoryProvider({ profile = {}, env = process.env, fetc
     id: 'supermemory', contractVersion: 'memory-provider-v1', adapterVersion: 'supermemory-rest-v1', experimental: true,
     capabilities: { queryContext: true, appendEvents: true, health: true, readiness: true, supportsIdempotency: true, deliverySemantics: 'at_least_once', scopes: ['repository', 'pull_request'], transports: ['rest'], domains: { recall: ['decision_feedback', 'session_recap', 'code_signals', 'rule_signals'], persist: ['processing', 'decision_feedback', 'session_recap', 'code_signals', 'rule_signals'] } },
     async queryContext({ identity, purpose = 'review-history-v1', maxEntries = 40, maxContextChars = 4000 } = {}) {
+      await hydrateProfile(runtime);
+      headers.Authorization = `Bearer ${runtime.apiKey}`;
+      if (!runtime.enabled || !runtime.apiKey) return { status: 'unavailable', source: 'rest', protocol: 'supermemory-rest-v4', text: '', experimental: true, reason: 'missing Supermemory credential' };
       const payload = await requestJson(fetchImplementation, runtime, 'POST', `${runtime.baseUrl}/v4/search`, { q: purpose, containerTag: tag(identity), searchMode: 'memories', limit: boundedInteger(maxEntries, 40, 1, 100), filters: { AND: [{ key: 'head_sha', value: exactHead(identity) }] } }, headers);
       const text = boundedContext(payload.results || payload.memories, exactHead(identity), maxEntries, maxContextChars);
       return { status: text ? 'available' : 'empty', source: 'rest', protocol: 'supermemory-rest-v4', text, experimental: true, latencyMs: 0 };
     },
     async appendEvents({ identity, events = [] } = {}) {
+      await hydrateProfile(runtime);
+      headers.Authorization = `Bearer ${runtime.apiKey}`;
+      if (!runtime.enabled || !runtime.apiKey) return { status: 'unavailable', source: 'rest', protocol: 'supermemory-rest-v3', accepted: 0, eventIds: [], experimental: true, reason: 'missing Supermemory credential' };
       const { accepted, rejected } = sanitizeEvents(events);
       if (!accepted.length) return { status: 'accepted', available: true, accepted: 0, rejected: rejected.length, pending: 0, eventIds: [], experimental: true };
       for (const event of accepted) {
