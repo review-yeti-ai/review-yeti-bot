@@ -41,6 +41,17 @@ function digest(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+function workspaceFromToken(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return typeof payload?.w === 'string' && payload.w.trim() ? payload.w.trim() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function normalizeReviewEvent(event = {}, now = () => new Date()) {
   const normalized = {
     event_type: cleanIdentifier(event.eventType || event.event_type, 'review-event', true),
@@ -73,9 +84,14 @@ async function resolveHonchoConfig({ config = {}, env = process.env, secretManag
   const configuredBaseUrl = await getSecret('HONCHO_URL', config.baseUrl, env.HONCHO_URL)
     || await getSecret('HONCHO_BASE_URL', undefined, env.HONCHO_BASE_URL);
   const baseUrl = String(configuredBaseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
-  const apiKey = String(await getSecret('HONCHO_API_KEY', config.apiKey, env.HONCHO_API_KEY) || '').trim();
+  const apiKey = String(
+    await getSecret('HONCHO_API_KEY', config.apiKey, env.HONCHO_API_KEY)
+      || await getSecret('HONCHO_WORKSPACE_JWT', undefined, env.HONCHO_WORKSPACE_JWT)
+      || '',
+  ).trim();
   const workspaceValue = await getSecret('HONCHO_WORKSPACE_ID', config.workspaceId, env.HONCHO_WORKSPACE_ID)
-    || await getSecret('HONCHO_WORKSPACE', undefined, env.HONCHO_WORKSPACE);
+    || await getSecret('HONCHO_WORKSPACE', undefined, env.HONCHO_WORKSPACE)
+    || workspaceFromToken(apiKey);
   const workspaceId = stableWorkspaceId(workspaceValue || 'review-yeti');
   const enabled = Boolean(apiKey && baseUrl && workspaceValue);
   return {
