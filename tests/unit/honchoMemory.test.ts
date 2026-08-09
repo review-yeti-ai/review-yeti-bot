@@ -164,6 +164,7 @@ describe('Honcho advisory memory adapter', () => {
     expect(stableWorkspaceId('Review Yeti / Production')).toBe('Review-Yeti-Production');
     expect(stablePeerId('Acme/My App')).toBe('review-yeti-acme-my-app');
     expect(stableSessionId('Acme/My App', 7)).toBe('review-yeti-acme-my-app-pr-7');
+    expect(stableSessionId('Acme/My App', 0)).toBe('review-yeti-acme-my-app-pr-0');
     expect(normalizeReviewEvent({ eventType: 'finding', claimId: 'claim-1', severity: 'P1', path: 'src/app.ts', line: 12 }))
       .toMatchObject({ event_type: 'finding', claim_id: 'claim-1', severity: 'P1', path: 'src/app.ts', line: 12 });
   });

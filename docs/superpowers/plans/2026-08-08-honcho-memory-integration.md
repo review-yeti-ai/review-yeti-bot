@@ -4,9 +4,27 @@
 
 **Goal:** Add an optional, fail-open Honcho memory adapter to Review Yeti that enriches reviewer prompts with bounded repository-scoped context and writes normalized review events to the deployed Honcho instance using secrets resolved through the existing Doppler manager.
 
-**Architecture:** Keep the authenticated GitHub same-PR decision ledger as the only source of truth for `open`, `resolved`, `ignored`, and `obsolete` decisions and arbitration. Add a dependency-free CommonJS Honcho v3 HTTP adapter under `src/memory/` that resolves `HONCHO_URL`, `HONCHO_API_KEY`, and `HONCHO_WORKSPACE_ID` through `DopplerSecretManager`, creates deterministic workspace/peer/session IDs, reads a bounded session representation before fan-out, and writes events after publication. Honcho failures, malformed responses, and stale context are advisory failures and must not change the deterministic review result.
+**Architecture:** Keep the authenticated GitHub same-PR decision ledger as the only source of truth for `open`, `resolved`, `ignored`, and `obsolete` decisions and arbitration. Add a dependency-free CommonJS Honcho v3 HTTP adapter under `src/memory/` that resolves `HONCHO_URL`, `HONCHO_API_KEY`, and `HONCHO_WORKSPACE_ID` through a Doppler-backed manager, creates deterministic workspace/peer/session IDs, reads a bounded session representation before fan-out, and writes events after publication. Honcho failures, malformed responses, and stale context are advisory failures and must not change the deterministic review result. Writes are at-least-once; deterministic event IDs are tracing keys, not Honcho idempotency guarantees.
 
-**Tech Stack:** Node 20 built-in `fetch`, CommonJS pipeline modules, TypeScript declarations/tests, Vitest, existing `DopplerSecretManager`, Honcho v3 REST API, GitHub composite Action.
+**Tech Stack:** Node 20 built-in `fetch`, CommonJS pipeline modules, TypeScript declarations/tests, Vitest, the server-side TypeScript `DopplerSecretManager` plus the dependency-free Action runtime `dopplerSecretManagerRuntime.js`, Honcho v3 REST API, GitHub composite Action.
+
+## Adopted review status
+
+This document is also the implementation record for the merged PR. Tasks 1–4, Task 5 steps 1–4,
+6–7, and Task 6 steps 1–5 were completed in PR #4. Task 5 step 5 (live Honcho smoke) remains
+environment-blocked until the configured Doppler project contains the Honcho connection secrets;
+it must not be reported as a successful live integration without a sanitized receipt. The follow-up
+hardening work makes the smoke contract strict, documents at-least-once delivery, and brings the
+runtime-client and self-hosting documentation into alignment.
+
+### Adopted Claude Fable follow-up checklist
+
+- [x] Require explicit `--fixture [path]` or `--live` smoke mode and fail live smoke on endpoint failure.
+- [x] Emit a sanitized smoke receipt with host, IDs, endpoint status, and latency.
+- [x] Document at-least-once Honcho delivery instead of implying server-side deduplication.
+- [x] Persist review start, neutral resolution, and maintainer-command event states.
+- [x] Hash fallback claim IDs so model prose cannot enter Honcho metadata.
+- [x] Align README, configuration, architecture, DigitalOcean operations, and runtime-client docs.
 
 ## Global Constraints
 
@@ -16,7 +34,7 @@
 - Honcho is optional and fail-open: absent secrets, timeout, non-2xx response, malformed response, or unavailable deriver falls back to GitHub-only behavior.
 - Memory is scoped to one repository and PR session; no cross-repository maintainer/persona profile is enabled in v1.
 - Existing behavior must be byte-for-byte equivalent when Honcho is disabled or unavailable except for bounded diagnostic log lines.
-- Use the existing `DopplerSecretManager` environment → cache → CLI → REST API resolution order; never log secret values.
+- The server-side manager retains environment → cache → CLI → REST resolution; the GitHub Action runtime uses environment → cache → REST because the runner does not install the Doppler CLI. Never log secret values.
 - Do not modify or bypass the authoritative GitHub decision ledger.
 
 ---
@@ -225,11 +243,11 @@ git commit -m "feat: inject bounded Honcho context into reviewers"
 
 **Interfaces:**
 - Consumes: final arbitration, normalized findings, GitHub decision ledger states, exact head SHA, and Honcho provider.
-- Produces: bounded write-behind events keyed by deterministic `event_id`; publication remains successful if Honcho writes fail.
+- Produces: bounded write-behind events keyed by deterministic `event_id`; publication remains successful if Honcho writes fail. Delivery is at-least-once because Honcho message creation is not an idempotency API.
 
 - [ ] **Step 1: Add failing write-behind tests**
 
-Assert one batch contains only normalized events for the exact head, repeated execution deduplicates event IDs, and a rejected Honcho write is logged as advisory without changing outputs.
+Assert one batch contains only normalized events for the exact head, repeated execution preserves deterministic event IDs without claiming server-side deduplication, and a rejected Honcho write is logged as advisory without changing outputs.
 
 - [ ] **Step 2: Run tests and verify red**
 
@@ -239,7 +257,7 @@ Expected: FAIL because no Honcho events are emitted.
 
 - [ ] **Step 3: Implement post-publication write**
 
-Emit events for review start, each current finding, each carried-open finding, maintainer command state, arbitration verdict, and publication outcome. Use `sha256(repo + pr + head + eventType + claimId)` as `event_id`. Call `appendEvents` only after GitHub publication has completed; never await Honcho before publishing the review.
+Emit events for review start, each current finding, each carried-open finding, neutral resolution, maintainer command state, arbitration verdict, and publication outcome. Use `sha256(repo + pr + head + eventType + claimId)` as `event_id`; hash path/line-only fallback claim IDs so model titles and bodies cannot enter Honcho. Call `appendEvents` only after GitHub publication has completed; never await Honcho before publishing the review.
 
 - [ ] **Step 4: Run focused tests and verify green**
 
@@ -270,7 +288,7 @@ git commit -m "feat: persist normalized review events to Honcho"
 
 - [ ] **Step 1: Add a red smoke-test contract**
 
-The script must resolve secrets using the compiled `DopplerSecretManager` (after `npm run build`), call the Honcho health endpoint, create/get the configured workspace, create/get a deterministic smoke peer/session, append one synthetic non-sensitive event, request bounded context, and exit nonzero on any required live failure. It must never print tokens or message bodies. The fixture mode must inject a fake secret manager and fetch implementation so it never contacts Doppler or Honcho.
+The script must resolve secrets using the compiled `DopplerSecretManager` (after `npm run build`), call the Honcho health endpoint, create/get the configured workspace, create/get a synthetic smoke peer/session, append one synthetic non-sensitive event, request bounded context, and exit nonzero on any required live failure. It must emit a sanitized receipt with host, workspace/peer/session IDs, endpoint statuses, and latency; it must never print tokens or message bodies. The fixture mode must accept an explicit fixture path and inject a fake secret manager and fetch implementation so it never contacts Doppler or Honcho.
 
 - [ ] **Step 2: Run the focused smoke test and verify red**
 
@@ -280,7 +298,7 @@ Expected: FAIL because the smoke script and fixture contract do not exist.
 
 - [ ] **Step 3: Implement Doppler-backed smoke behavior**
 
-Use the existing `DopplerSecretManager` rather than shelling out to `doppler` directly. Permit `--fixture` for deterministic CI tests; require `--live` for a network call. Use a generated smoke PR number and `review-yeti-smoke` peer/session suffix so testing cannot touch a real PR session. The live command must fail closed when the built manager or any required secret is unavailable.
+Use the existing compiled `DopplerSecretManager` rather than shelling out to `doppler` directly. Require either `--fixture [path]` or `--live`; no-argument invocation is an error. Use a generated smoke PR number and `review-yeti-smoke` peer/session suffix so testing cannot touch a real PR session. The live command must fail closed when the built manager, any required secret, or any required Honcho endpoint is unavailable.
 
 - [ ] **Step 4: Run the fixture smoke test and verify green**
 
@@ -315,7 +333,7 @@ git commit -m "test: add Doppler-backed Honcho smoke check"
 ### Task 6: Full verification, exact-head review, and PR
 
 **Files:**
-- No new production files; verify all changed files and committed docs.
+- Verify all changed files and committed docs, including `src/mcp/dopplerSecretManagerRuntime.js` and the updated smoke/documentation contracts.
 
 - [ ] **Step 1: Run the complete local suite**
 

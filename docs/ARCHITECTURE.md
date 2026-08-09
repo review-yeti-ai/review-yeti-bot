@@ -1,8 +1,9 @@
 # Architecture
 
-Review Yeti is a GitHub Action. There is no server, no database, and no webhook
+Review Yeti is a GitHub Action. There is no Review Yeti server, database, or webhook
 endpoint. Everything runs inside the workflow job on the runner, using the
-caller's `GITHUB_TOKEN` and their own model API key.
+caller's `GITHUB_TOKEN` and their own model API key. Optional Honcho memory is an
+external, caller-operated service and is disabled by default.
 
 ## The run
 
@@ -44,6 +45,15 @@ Honcho workspace/session. Raw GitHub comment prose, author names, commands, and 
 enter Honcho. The same-PR GitHub decision ledger remains the source of truth for carried, ignored,
 resolved, and obsolete findings.
 
+Honcho writes are at-least-once. Review Yeti computes deterministic event IDs for tracing and
+reconciliation, but the Honcho message endpoint is not treated as an idempotency API, so a rerun may
+create another normalized message. Disable `honcho-write` without affecting GitHub publication.
+
+For a DigitalOcean self-host, use HTTPS at the public reverse proxy, enable JWT authentication with
+the workspace-scoped token supplied to Doppler, and keep PostgreSQL/pgvector, Redis, the configured
+LLM provider, and the deriver healthy. `/health` is only a process check; a successful
+representation requires the deriver and its dependencies.
+
 ## Publication
 
 Writes are bound to the exact reviewed head SHA. Every comment carries a stable
@@ -62,5 +72,6 @@ marker so a rerun updates in place instead of duplicating. See
 | `src/review/claimSimilarity.js` | Cross-persona duplicate detection |
 | `src/review/reviewIgnorePolicy.js` | File classification (generated, vendored, binary, oversized) |
 | `src/mcp/` | Optional MCP adapters (Context7 docs, Linear) |
+| `src/mcp/dopplerSecretManagerRuntime.js` | Dependency-free Action runtime Doppler REST resolver |
 | `src/memory/sessionLedger.ts` | Per-PR turn history so reruns do not repeat prior findings |
 | `src/memory/honchoMemory.js` | Optional native-fetch Honcho adapter with bounded context and normalized write-behind events |
