@@ -1,5 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
+  "fixtureId": "decision-ledger",
+  "provider": "github",
+  "allowedOrigins": ["https://github.test"],
   "interactions": [
     {
       "request": {

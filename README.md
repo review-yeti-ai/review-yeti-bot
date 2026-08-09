@@ -731,6 +731,13 @@ Tests run fully offline against recorded cassettes in `tests/fixtures/cassettes/
 fail-closed: an unmatched request throws rather than reaching the network. See
 [TEST_INFRA.md](TEST_INFRA.md).
 
+The extended PR gate is available with `npm run test:all`; it covers fixture contracts, provider
+VCRs, the injected end-to-end workflow, outbox replay/dead-letter behavior, security boundaries,
+plain-Node Action loading, lint, and build. Provider credentials are never required for that gate.
+Live Mem0, Hindsight, Supermemory, and RetainDB checks are isolated to the manual **Memory Provider
+Canary** workflow and report `not_configured` when their Doppler-backed secrets are absent. See
+[Memory Provider Operations](docs/MEMORY_PROVIDER_OPERATIONS.md).
+
 ---
 
 ## License

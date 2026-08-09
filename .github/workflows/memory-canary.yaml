@@ -1,0 +1,53 @@
+name: Memory Provider Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'One provider to probe; live access is never fan-out.'
+        required: true
+        type: choice
+        options: [honcho, mem0, hindsight, supermemory, retaindb]
+        default: honcho
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    environment: memory-canary
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install runtime dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Run one-provider synthetic canary
+        env:
+          HONCHO_URL: ${{ secrets.HONCHO_URL }}
+          HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL }}
+          HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
+          HONCHO_WORKSPACE_JWT: ${{ secrets.HONCHO_WORKSPACE_JWT }}
+          HONCHO_WORKSPACE_ID: ${{ secrets.HONCHO_WORKSPACE_ID }}
+          HONCHO_WORKSPACE: ${{ secrets.HONCHO_WORKSPACE }}
+          MEM0_URL: ${{ secrets.MEM0_URL }}
+          MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
+          HINDSIGHT_URL: ${{ secrets.HINDSIGHT_URL }}
+          HINDSIGHT_API_KEY: ${{ secrets.HINDSIGHT_API_KEY }}
+          SUPERMEMORY_URL: ${{ secrets.SUPERMEMORY_URL }}
+          SUPERMEMORY_API_KEY: ${{ secrets.SUPERMEMORY_API_KEY }}
+          RETAINDB_URL: ${{ secrets.RETAINDB_URL }}
+          RETAINDB_API_KEY: ${{ secrets.RETAINDB_API_KEY }}
+        run: node scripts/memory-canary.mjs --provider "${{ inputs.provider }}" --allow-missing | tee memory-canary-receipt.json
+      - name: Upload sanitized canary receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-canary-${{ inputs.provider }}-${{ github.run_id }}
+          path: memory-canary-receipt.json
+          retention-days: 14

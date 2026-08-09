@@ -1,5 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
+  "fixtureId": "legacy-harness",
+  "provider": "openrouter",
+  "allowedOrigins": ["https://llm.test"],
   "interactions": [
     {
       "request": {

@@ -41,7 +41,7 @@ export class MemoryProviderRouter {
   list(): Array<Record<string, unknown>>;
   queryContext(request?: Record<string, unknown>): Promise<Record<string, unknown>>;
   appendEvents(request?: Record<string, unknown>): Promise<Record<string, unknown>>;
-  health(): Promise<Record<string, unknown>>;
+  health(providerId?: string): Promise<Record<string, unknown>>;
 }
 
 export function createMemoryProviderRouter(options?: Record<string, unknown>): MemoryProviderRouter;

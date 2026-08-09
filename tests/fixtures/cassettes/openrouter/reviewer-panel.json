@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "fixtureId": "openrouter-reviewer-panel",
+  "provider": "openrouter",
+  "allowedOrigins": ["https://openrouter.fixture.test"],
+  "interactions": [
+    {
+      "request": {"method": "POST", "url": "https://openrouter.fixture.test/v1/chat/completions", "headers": {"authorization": "<redacted>", "content-type": "application/json"}, "body": {"model": "fixture-model", "messages": [{"content": "fixture system", "role": "system"}, {"content": "fixture user", "role": "user"}], "response_format": {"type": "json_object"}, "temperature": 0.1}},
+      "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": {"id": "fixture-generation", "model": "fixture-model", "choices": [{"message": {"content": "{\"findings\":[]}"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}}
+    }
+  ]
+}

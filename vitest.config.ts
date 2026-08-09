@@ -15,6 +15,7 @@ export default defineConfig({
       'src/**/*.test.ts',
       'tests/unit/**/*.test.ts',
       'tests/integration/**/*.test.ts',
+      'tests/security/**/*.test.ts',
     ],
     cacheDir: 'node_modules/.vitest',
     pool: 'forks',

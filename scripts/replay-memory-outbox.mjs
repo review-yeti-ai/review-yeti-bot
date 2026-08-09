@@ -1,83 +1,46 @@
 #!/usr/bin/env node
 import process from 'node:process';
+import { createRequire } from 'node:module';
 import { createMemoryOutbox } from '../src/memory/memoryOutbox.js';
+import { replayMemoryOutbox } from '../src/memory/replayMemoryOutbox.js';
 import { createHonchoMemoryProvider } from '../src/memory/honchoMemory.js';
 import { createHonchoMemoryMcpAdapter } from '../src/mcp/honchoMemoryMcpAdapter.js';
 import { createMemoryProviderRouter } from '../src/mcp/memoryProviderRouter.js';
 import { createMemoryProvider } from '../src/memory/providers/index.js';
 import { DopplerSecretManagerRuntime } from '../src/mcp/dopplerSecretManagerRuntime.js';
 
-function arg(name) {
-  const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
+const require = createRequire(import.meta.url);
+const arg = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
 
-const filePath = arg('--path');
-const lease = arg('--lease');
-const leaseTtlMs = Number(arg('--lease-ttl-ms') || 300000);
-const maxAttempts = Math.max(1, Number(arg('--max-attempts') || 3));
-const providerId = arg('--provider') || 'honcho';
-const authorized = arg('--authorize') === 'yes' || process.env.REVIEW_YETI_REPLAY_AUTH === '1';
-if (!filePath || !lease || !authorized) {
-  console.error('Usage: replay-memory-outbox.mjs --path <outbox> --lease <owner> --provider <selected-provider> --authorize yes');
-  process.exit(2);
-}
-
-const outbox = createMemoryOutbox({ baseDir: process.cwd() });
-let payload = outbox.read(filePath);
-if (!payload.identity?.repository || !payload.identity?.headSha) throw new Error('outbox identity is incomplete');
-if (payload.providerId && providerId !== payload.providerId) throw new Error(`replay provider ${providerId} does not match outbox provider ${payload.providerId}`);
-if (payload.state === 'dead_letter') throw new Error('memory outbox is dead-lettered; operator intervention is required');
-payload = outbox.acquireLease(filePath, { owner: lease, ttlMs: leaseTtlMs });
-const secretManager = new DopplerSecretManagerRuntime({
-  dopplerToken: process.env.DOPPLER_TOKEN,
-  project: process.env.DOPPLER_PROJECT,
-  config: process.env.DOPPLER_CONFIG,
-});
-const selectedProvider = payload.providerId || providerId || 'honcho';
-let adapter;
-if (selectedProvider === 'honcho') {
-  const honcho = createHonchoMemoryProvider({ secretManager, config: { enabled: true } });
-  adapter = createHonchoMemoryMcpAdapter({ honchoProvider: honcho, transport: 'mcp' });
-} else {
-  const profile = {
-    enabled: true,
-    endpointEnv: `${selectedProvider.toUpperCase()}_URL`,
-    credentialEnv: `${selectedProvider.toUpperCase()}_API_KEY`,
-    namespaceEnv: `${selectedProvider.toUpperCase()}_NAMESPACE`,
-    workspaceEnv: `${selectedProvider.toUpperCase()}_WORKSPACE`,
-    secretManager,
-  };
-  adapter = createMemoryProvider({ id: selectedProvider, profile, secretManager });
-}
-const router = createMemoryProviderRouter({ providers: [adapter], defaultProviderId: selectedProvider, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest', mode: 'single' });
-const attemptsBefore = Number(payload.delivery?.attempts || 0);
-const deliveryKey = payload.delivery?.deliveryKey || `${payload.identityDigest}:replay`;
-let result;
-let attempts = attemptsBefore;
-for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-  attempts = attemptsBefore + attempt;
-  try {
-    result = await router.appendEvents({ providerId: selectedProvider, identity: payload.identity, events: payload.events, persistDomains: payload.persistDomains, deliveryKey, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest' });
-  } catch (error) {
-    result = { status: 'unavailable', reason: error instanceof Error ? error.message : String(error), accepted: 0, eventIds: [] };
+async function main() {
+  const filePath = arg('--path');
+  const lease = arg('--lease');
+  const providerId = arg('--provider') || 'honcho';
+  const authorized = arg('--authorize') === 'yes' || process.env.REVIEW_YETI_REPLAY_AUTH === '1';
+  if (!filePath || !lease || !authorized) {
+    console.error('Usage: replay-memory-outbox.mjs --path <outbox> --lease <owner> --provider <selected-provider> --authorize yes');
+    process.exitCode = 2;
+    return;
   }
-  if (result.status === 'accepted') break;
-  if (attempt < maxAttempts) await new Promise((resolve) => setTimeout(resolve, Math.min(1000, 250 * (2 ** (attempt - 1)))));
+  const outbox = createMemoryOutbox({ baseDir: process.cwd() });
+  const secretManager = new DopplerSecretManagerRuntime({ dopplerToken: process.env.DOPPLER_TOKEN, project: process.env.DOPPLER_PROJECT, config: process.env.DOPPLER_CONFIG });
+  const selectedProvider = providerId;
+  let adapter;
+  if (selectedProvider === 'honcho') {
+    const honcho = createHonchoMemoryProvider({ secretManager, config: { enabled: true } });
+    adapter = createHonchoMemoryMcpAdapter({ honchoProvider: honcho, transport: 'mcp' });
+  } else {
+    adapter = createMemoryProvider({ id: selectedProvider, profile: { enabled: true, endpointEnv: `${selectedProvider.toUpperCase()}_URL`, credentialEnv: `${selectedProvider.toUpperCase()}_API_KEY`, namespaceEnv: `${selectedProvider.toUpperCase()}_NAMESPACE`, workspaceEnv: `${selectedProvider.toUpperCase()}_WORKSPACE`, secretManager }, secretManager });
+  }
+  const router = createMemoryProviderRouter({ providers: [adapter], defaultProviderId: selectedProvider, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest', mode: 'single' });
+  const receipt = await replayMemoryOutbox({
+    outbox, filePath, lease, providerId: selectedProvider, authorize: authorized,
+    appendEvents: (request) => router.appendEvents({ ...request, providerId: selectedProvider, transport: selectedProvider === 'honcho' ? 'mcp' : 'rest' }),
+  });
+  console.log(JSON.stringify(receipt));
+  if (receipt.state === 'dead_letter') process.exitCode = 1;
 }
-const accepted = Array.isArray(result.eventIds) ? result.eventIds : [];
-const next = outbox.update(filePath, {
-  state: result.status === 'accepted' ? 'accepted' : (attempts >= maxAttempts ? 'dead_letter' : 'pending'),
-  lease: null,
-  delivery: {
-    ...payload.delivery,
-    accepted,
-    pending: result.status === 'accepted' ? [] : (payload.delivery?.pending || []),
-    attempts,
-    deliveryKey,
-    lastResult: result,
-    deadLetterReason: result.status === 'accepted' ? undefined : (attempts >= maxAttempts ? result.reason || 'provider unavailable' : undefined),
-  },
-});
-console.log(JSON.stringify({ filePath, state: next.state, provider: result.provider, accepted: result.accepted, pending: next.delivery.pending.length }));
-if (result.status !== 'accepted') process.exitCode = 1;
+
+if (import.meta.url === `file://${process.argv[1]}`) main().catch((error) => { console.error(error.message || error); process.exitCode = 1; });
+
+export { main };

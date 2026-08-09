@@ -6,12 +6,13 @@
  * provider uses MCP JSON-RPC, a local MCP-compatible adapter, or an explicitly selected REST mode.
  */
 class MemoryProviderRouter {
-  constructor({ providers = [], defaultProviderId = 'honcho', transport = 'mcp', mode = 'single' } = {}) {
+  constructor({ providers = [], defaultProviderId = 'honcho', transport = 'mcp', mode = 'single', now = Date.now } = {}) {
     if (mode !== 'single') throw new Error('memory mode must be single');
     this.providers = new Map();
     this.defaultProviderId = defaultProviderId;
     this.transport = transport;
     this.mode = mode;
+    this.now = typeof now === 'function' ? now : Date.now;
     for (const provider of providers) this.register(provider);
   }
 
@@ -75,7 +76,7 @@ class MemoryProviderRouter {
   }
 
   async queryContext(request = {}) {
-    const startedAt = Date.now();
+    const startedAt = this.now();
     const provider = this.get(request.providerId);
     if (!provider) {
       return {
@@ -83,7 +84,7 @@ class MemoryProviderRouter {
         source: 'none',
         provider: request.providerId || this.defaultProviderId,
         text: '',
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         reason: 'memory provider unavailable',
       };
     }
@@ -94,7 +95,7 @@ class MemoryProviderRouter {
         source: 'none',
         provider: provider.id,
         text: '',
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         reason: 'invalid or incomplete memory identity',
       };
     }
@@ -116,7 +117,7 @@ class MemoryProviderRouter {
         source: request.transport,
         provider: provider.id,
         text: '',
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         reason: `provider does not support ${request.transport} transport`,
       };
     }
@@ -126,7 +127,7 @@ class MemoryProviderRouter {
         source: request.transport || 'none',
         provider: provider.id,
         text: '',
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         reason: 'provider does not support queryContext',
       };
     }
@@ -137,7 +138,7 @@ class MemoryProviderRouter {
         source: request.transport || 'none',
         provider: provider.id,
         text: '',
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         omittedDomains: domains.omitted,
         reason: 'requested memory recall domains are unsupported',
       };
@@ -149,7 +150,7 @@ class MemoryProviderRouter {
         source: result?.source || request.transport || 'none',
         provider: provider.id,
         text: typeof result?.text === 'string' ? result.text : '',
-        latencyMs: Number.isFinite(result?.latencyMs) ? result.latencyMs : Date.now() - startedAt,
+        latencyMs: Number.isFinite(result?.latencyMs) ? result.latencyMs : this.now() - startedAt,
         omittedDomains: [...new Set([...(result?.omittedDomains || []), ...domains.omitted])],
         protocol: result?.protocol,
         experimental: result?.experimental ?? provider.experimental,
@@ -162,31 +163,31 @@ class MemoryProviderRouter {
         source: request.transport || 'none',
         provider: provider.id,
         text: '',
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         reason: error?.message || 'memory provider query failed',
       };
     }
   }
 
   async appendEvents(request = {}) {
-    const startedAt = Date.now();
+    const startedAt = this.now();
     const provider = this.get(request.providerId);
     if (!provider) {
-      return { status: 'unavailable', provider: request.providerId || this.defaultProviderId, accepted: 0, latencyMs: Date.now() - startedAt, reason: 'memory provider unavailable' };
+      return { status: 'unavailable', provider: request.providerId || this.defaultProviderId, accepted: 0, latencyMs: this.now() - startedAt, reason: 'memory provider unavailable' };
     }
     const identity = this.normalizeIdentity(request.identity);
     if (!identity) {
-      return { status: 'unavailable', provider: request.providerId || this.defaultProviderId, accepted: 0, latencyMs: Date.now() - startedAt, reason: 'invalid or incomplete memory identity' };
+      return { status: 'unavailable', provider: request.providerId || this.defaultProviderId, accepted: 0, latencyMs: this.now() - startedAt, reason: 'invalid or incomplete memory identity' };
     }
     if (!provider.capabilities?.appendEvents) {
-      return { status: 'unavailable', provider: provider.id, accepted: 0, latencyMs: Date.now() - startedAt, reason: 'provider does not support appendEvents' };
+      return { status: 'unavailable', provider: provider.id, accepted: 0, latencyMs: this.now() - startedAt, reason: 'provider does not support appendEvents' };
     }
     const requestedTransport = request.transport || this.transport;
     const transport = requestedTransport === 'auto'
       ? (provider.capabilities?.transports?.includes('mcp') ? 'mcp' : 'rest')
       : requestedTransport;
     if (Array.isArray(provider.capabilities?.transports) && !provider.capabilities.transports.includes(transport)) {
-      return { status: 'unavailable', provider: provider.id, accepted: 0, latencyMs: Date.now() - startedAt, reason: `provider does not support ${transport} transport` };
+      return { status: 'unavailable', provider: provider.id, accepted: 0, latencyMs: this.now() - startedAt, reason: `provider does not support ${transport} transport` };
     }
     const domains = this.domainSelection(provider, request, 'persist');
     if (domains.requested && domains.selected.length === 0) {
@@ -196,7 +197,7 @@ class MemoryProviderRouter {
         accepted: 0,
         rejected: 0,
         pending: 0,
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         eventIds: [],
         omittedDomains: domains.omitted,
         deliverySemantics: provider.capabilities?.deliverySemantics || 'at_least_once',
@@ -217,7 +218,7 @@ class MemoryProviderRouter {
         accepted: Number(result?.accepted || 0),
         rejected: Number(result?.rejected || 0),
         pending: Number(result?.pending || 0),
-        latencyMs: Number.isFinite(result?.latencyMs) ? result.latencyMs : Date.now() - startedAt,
+        latencyMs: Number.isFinite(result?.latencyMs) ? result.latencyMs : this.now() - startedAt,
         eventIds: Array.isArray(result?.eventIds) ? result.eventIds : [],
         omittedDomains: [...new Set([...(result?.omittedDomains || []), ...domains.omitted])],
         deliverySemantics: provider.capabilities?.deliverySemantics || 'at_least_once',
@@ -232,7 +233,7 @@ class MemoryProviderRouter {
         status: 'unavailable',
         provider: provider.id,
         accepted: 0,
-        latencyMs: Date.now() - startedAt,
+        latencyMs: this.now() - startedAt,
         deliverySemantics: provider.capabilities?.deliverySemantics || 'at_least_once',
         supportsIdempotency: Boolean(provider.capabilities?.supportsIdempotency),
         reason: error?.message || 'memory provider append failed',
@@ -240,18 +241,18 @@ class MemoryProviderRouter {
     }
   }
 
-  async health() {
-    const result = {};
-    for (const provider of this.providers.values()) {
-      try {
-        result[provider.id] = typeof provider.healthCheck === 'function'
+  async health(providerId = this.defaultProviderId) {
+    const provider = this.get(providerId);
+    if (!provider) return { [providerId]: { available: false, reason: 'memory provider unavailable' } };
+    try {
+      return {
+        [provider.id]: typeof provider.healthCheck === 'function'
           ? await provider.healthCheck()
-          : { available: false, reason: 'healthCheck unsupported' };
-      } catch (error) {
-        result[provider.id] = { available: false, reason: error?.message || 'health check failed' };
-      }
+          : { available: false, reason: 'healthCheck unsupported' },
+      };
+    } catch (error) {
+      return { [provider.id]: { available: false, reason: error?.message || 'health check failed' } };
     }
-    return result;
   }
 }
 
