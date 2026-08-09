@@ -37,12 +37,18 @@ Publication is bound to the exact reviewed head SHA:
 Rerunning a review on an unchanged head does not repeat findings the previous
 run already posted.
 
-## Same-PR decision memory
+## Same-PR decision memory and remote advisory recall
 
 Before parallel review begins, the Action reads one authenticated, paginated snapshot of the pull
 request's review threads. Only finding markers authored by the authenticated Review Yeti publisher
-become memory. Every persona receives the same bounded ledger as user data; raw human replies,
-author names, reactions, and command reasons are never sent to a model. Memory is same-PR only.
+become authoritative ledger memory. Every persona receives the same bounded ledger as user data;
+raw human replies, author names, reactions, and command reasons are never sent to a model.
+
+If API-backed advisory memory is enabled, the Action makes one bounded query to the single selected
+provider and gives the resulting exact-head-scoped context to every reviewer lane. This provider
+context may include normalized feedback transitions, PR session recap metadata, code signals, and
+trusted-base rule signals. It is advisory only: it cannot change ledger state, arbitration,
+publication, or maintainer-command handling. Provider outage degrades to the GitHub ledger alone.
 
 An unresolved P0/P1 finding remains part of deterministic arbitration and therefore remains
 blocking, even when no reviewer repeats it. A repeated open claim reuses the existing conversation.

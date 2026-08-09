@@ -1,9 +1,9 @@
 # Architecture
 
-Review Yeti is a GitHub Action. There is no Review Yeti server, database, or webhook
-endpoint. Everything runs inside the workflow job on the runner, using the
-caller's `GITHUB_TOKEN` and their own model API key. Optional Honcho memory is an
-external, caller-operated service and is disabled by default.
+Review Yeti is a GitHub Action. There is no Review Yeti-managed server, database, or webhook
+endpoint. Everything runs inside the workflow job on the runner, using the caller's `GITHUB_TOKEN`
+and their own model API key. Optional memory is API-backed infrastructure selected and operated by
+the caller; it is disabled by default and is never replaced by a local database in the Action.
 
 ## The run
 
@@ -41,12 +41,13 @@ actually served is recorded and reported in the review.
 
 ## Provider-neutral advisory memory
 
-Review-time memory uses exactly one selected provider per run. Trusted base-ref YAML chooses the
+Review-time memory uses exactly one selected API provider per run. Trusted base-ref YAML chooses the
 provider, transport, bounds, and recall/persist domains; the pipeline calls one bounded
 `MemoryProviderRouter.queryContext` before fan-out and one normalized `appendEvents` after
 publication. Honcho is the default, with mem0, Hindsight, Supermemory, and RetainDB behind the
-same contract. Provider failure is auditable GitHub-ledger-only degradation. Offline outbox replay
-is the migration/comparison mechanism; production never fans out or merges provider reads.
+same contract. These adapters call provider APIs; they do not connect the Action directly to a
+database. Provider failure is auditable GitHub-ledger-only degradation. Offline outbox replay is
+the migration/comparison mechanism; production never fans out or merges provider reads.
 
 ## Honcho advisory memory
 
@@ -69,6 +70,10 @@ Honcho writes are at-least-once. Review Yeti computes canonical deterministic ev
 tracing, but the Honcho message endpoint is not treated as an idempotency API. Large batches are
 chunked, and an uploaded outbox plus the replay command recover events after cancellation. Disable
 `honcho-write` without affecting GitHub publication.
+
+The trust boundary is intentionally split: GitHub APIs provide authoritative comments, review
+threads, permissions, and exact-head state; the selected memory API provides advisory recall and
+normalized persistence; the runner filesystem provides only temporary/replayable outbox storage.
 
 For a DigitalOcean self-host, use HTTPS at the public reverse proxy, enable JWT authentication with
 the workspace-scoped token supplied to Doppler, and keep PostgreSQL/pgvector, Redis, the configured
