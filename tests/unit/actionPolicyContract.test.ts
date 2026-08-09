@@ -103,6 +103,8 @@ describe('Action v4 policy boundary', () => {
       .toThrow('memory.fallback must be github_ledger_only');
     expect(() => pipeline.resolveActionReviewPolicy({ parsed: { memory: { enabled: true, provider: 'mem0', providers: { mem0: { enabled: false } } } } }, {}))
       .toThrow('memory provider mem0 is disabled');
+    expect(() => pipeline.resolveActionReviewPolicy({ parsed: { memory: { recall: { arbitrary_domain: true } } } }, {}))
+      .toThrow('memory.recall.arbitrary_domain is not a supported memory domain');
   });
 
   it('maps legacy Honcho-only configuration to the generic single-provider contract', () => {

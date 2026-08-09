@@ -541,6 +541,11 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
     code_signals: boolClass(undefined, rawGenericPersist.code_signals, false),
     rule_signals: boolClass(undefined, rawGenericPersist.rule_signals, false),
   };
+  for (const [kind, rawDomains] of [['recall', rawGenericRecall], ['persist', rawGenericPersist]]) {
+    for (const domain of Object.keys(rawDomains)) {
+      if (!MEMORY_DOMAINS.includes(domain)) throw new Error(`memory.${kind}.${domain} is not a supported memory domain`);
+    }
+  }
   for (const [kind, domains] of [['recall', genericRecall], ['persist', genericPersist]]) {
     for (const domain of Object.keys(domains)) {
       if (!MEMORY_DOMAINS.includes(domain)) throw new Error(`memory.${kind}.${domain} is not a supported memory domain`);
