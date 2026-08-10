@@ -1,3 +1,19 @@
+<p align="center">
+  <img src="assets/review-yeti-panel.png" alt="Review Yeti and five specialist reviewers checking a pull request" width="720">
+</p>
+
+<h1 align="center">Review Yeti</h1>
+
+<p align="center">A focused panel of AI reviewers for every pull request.</p>
+
+<p align="center">
+  <a href="https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/ci-cd.yaml"><img src="https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/ci-cd.yaml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml"><img src="https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml/badge.svg" alt="Review Yeti workflow"></a>
+  <a href="https://github.com/review-yeti-ai/review-yeti-bot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/review-yeti-ai/review-yeti-bot?label=license" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A520-43853d?logo=node.js&logoColor=white" alt="Node.js 20 or newer">
+  <img src="https://img.shields.io/badge/action-v1-2088ff?logo=githubactions&logoColor=white" alt="GitHub Action v1">
+</p>
+
 # 🤖 review-yeti-bot
 
 [![Review Bot](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml/badge.svg)](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml)
