@@ -77,6 +77,23 @@ describe('finding verifier pipeline policy and publication fence', () => {
     expect(result.verification.summary).toMatchObject({ needsReview: 1, incomplete: true });
   });
 
+  it('accepts immutable GitHub submodule metadata for an enforce file-level finding but cannot validate a content hash', async () => {
+    const verifierIdentity = { repo: identity.repo, prNumber: 42, baseSha: identity.baseSha, headSha: identity.headSha };
+    const changed = [{ path: 'modules/core', mode: '160000', isSubmodule: true, patch: '@@ -1 +1 @@\n-aaaaaaaa\n+bbbbbbbb' }];
+    const runner = () => ({ status: 0, stdout: JSON.stringify({ type: 'submodule', sha: 'e'.repeat(40) }) });
+    const accepted = await pipeline.applyFindingVerifier([{
+      personaId: 'security', decision: 'FINDINGS', findings: [],
+      rawFindings: [{ severity: 'P1', path: 'modules/core', line: 1, title: 'Pinned module', body: 'The immutable submodule commit is unsafe.' }],
+    }], changed, { enabled: true, mode: 'enforce', configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64) }, verifierIdentity, { commandRunner: runner });
+    const hashUnavailable = await pipeline.applyFindingVerifier([{
+      personaId: 'security', decision: 'FINDINGS', findings: [],
+      rawFindings: [{ severity: 'P1', path: 'modules/core', line: 1, contentHash: 'f'.repeat(64), title: 'Pinned module', body: 'The immutable submodule commit is unsafe.' }],
+    }], changed, { enabled: true, mode: 'enforce', configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64) }, verifierIdentity, { commandRunner: runner });
+
+    expect(accepted.verification.verifications[0]).toMatchObject({ status: 'accepted', subjectType: 'file' });
+    expect(hashUnavailable.verification.verifications[0]).toMatchObject({ status: 'needs_review', reasonCode: 'content_hash_unavailable' });
+  });
+
   it('uses trusted review.finding_verifier configuration and defaults its configured mode to report_only', () => {
     const configRoot = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'finding-verifier-config-'));
     const verifyHead = () => ({ status: 0, stdout: JSON.stringify({ headRefOid: identity.headSha, baseRefOid: identity.baseSha }) });
@@ -128,6 +145,46 @@ describe('finding verifier pipeline policy and publication fence', () => {
     expect(result).toMatchObject({ success: false, postedViaGh: false });
     expect(calls).toHaveLength(1);
     expect(calls[0].args.slice(0, 2)).toEqual(['pr', 'view']);
+  });
+
+  it('rechecks the head after listing before PATCHing a started marker', () => {
+    const calls: string[][] = [];
+    let headChecks = 0;
+    const result = pipeline.postStartedComment(identity, {}, {
+      commandRunner(_command: string, args: string[]) {
+        calls.push(args);
+        if (args[0] === 'pr' && args[1] === 'view') {
+          headChecks += 1;
+          return { status: 0, stdout: JSON.stringify({ headRefOid: headChecks === 1 ? identity.headSha : 'c'.repeat(40), baseRefOid: identity.baseSha }) };
+        }
+        if (args[0] === 'api' && args[1]?.includes('/issues/42/comments')) {
+          return { status: 0, stdout: JSON.stringify({ id: 7, body: '<!-- review-yeti-bot:v1:owner/repository#42:started -->' }) };
+        }
+        throw new Error(`unexpected command: ${args.join(' ')}`);
+      },
+    });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(calls.some((args) => args.includes('PATCH'))).toBe(false);
+  });
+
+  it('rechecks the head after listing before falling back to gh pr comment', () => {
+    const calls: string[][] = [];
+    let headChecks = 0;
+    const result = pipeline.postStartedComment(identity, {}, {
+      commandRunner(_command: string, args: string[]) {
+        calls.push(args);
+        if (args[0] === 'pr' && args[1] === 'view') {
+          headChecks += 1;
+          return { status: 0, stdout: JSON.stringify({ headRefOid: headChecks === 1 ? identity.headSha : 'c'.repeat(40), baseRefOid: identity.baseSha }) };
+        }
+        if (args[0] === 'api' && args[1]?.includes('/issues/42/comments')) return { status: 0, stdout: '' };
+        throw new Error(`unexpected command: ${args.join(' ')}`);
+      },
+    });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(calls.some((args) => args[0] === 'pr' && args[1] === 'comment')).toBe(false);
   });
 
   it('keeps report-only lanes intact but removes rejected enforce findings before arbitration and blocks verifier uncertainty', async () => {

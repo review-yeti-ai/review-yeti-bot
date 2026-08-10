@@ -881,11 +881,19 @@ function githubContentsPath(repository, filePath, ref) {
 }
 
 function decodeGitHubBlob(payload) {
-  if (!payload || typeof payload !== 'object' || String(payload.encoding || '').toLowerCase() !== 'base64' || typeof payload.content !== 'string') return null;
+  if (!payload || typeof payload !== 'object') return null;
+  const immutableSha = typeof payload.sha === 'string' && /^[a-f0-9]{40,64}$/iu.test(payload.sha)
+    ? payload.sha.toLowerCase()
+    : null;
+  // The Contents API represents submodules as metadata rather than a base64 blob. A gitlink has
+  // no file bytes to hash, but its resolved commit SHA at the exact ref is still immutable,
+  // sufficient evidence for a file-level finding that did not claim a content hash.
+  if (payload.type === 'submodule' && immutableSha) return { kind: 'gitlink', blobSha: immutableSha, commitSha: immutableSha };
+  if (String(payload.encoding || '').toLowerCase() !== 'base64' || typeof payload.content !== 'string') return null;
   try {
     const bytes = Buffer.from(payload.content.replace(/\s+/gu, ''), 'base64');
     if (bytes.length === 0 && payload.content.trim()) return null;
-    return { contentHash: require('node:crypto').createHash('sha256').update(bytes).digest('hex'), blobSha: typeof payload.sha === 'string' ? payload.sha.toLowerCase() : undefined };
+    return { kind: 'blob', contentHash: require('node:crypto').createHash('sha256').update(bytes).digest('hex'), ...(immutableSha ? { blobSha: immutableSha } : {}) };
   } catch (_) {
     return null;
   }
@@ -3976,6 +3984,7 @@ function postPlainIssueComment(commentBody, prContext, options = {}) {
     }
 
     if (existingCommentId !== null) {
+      assertCurrentPullRequest(prContext, { commandRunner });
       const updated = commandRunner('gh', [
         'api', '--method', 'PATCH',
         `repos/${prContext.repo}/issues/comments/${existingCommentId}`,
@@ -3994,8 +4003,13 @@ function postPlainIssueComment(commentBody, prContext, options = {}) {
     if (prContext.repo && prContext.repo.includes('/')) {
       args.push('--repo', prContext.repo);
     }
-    const result = commandRunner('gh', args, { encoding: 'utf-8', env: process.env });
-    try { fileSystem.unlinkSync(tempPath); } catch (_) {}
+    let result;
+    try {
+      assertCurrentPullRequest(prContext, { commandRunner });
+      result = commandRunner('gh', args, { encoding: 'utf-8', env: process.env });
+    } finally {
+      try { fileSystem.unlinkSync(tempPath); } catch (_) {}
+    }
     if (result.status === 0) {
       console.log(`[Publish] Posted ${markerKind} comment to PR #${prNumber}.`);
       return { success: true, postedViaGh: true };
