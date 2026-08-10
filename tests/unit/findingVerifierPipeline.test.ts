@@ -10,6 +10,73 @@ const identity = {
 };
 
 describe('finding verifier pipeline policy and publication fence', () => {
+  it('hashes GitHub API blobs at exact refs instead of the mutable local patch', async () => {
+    const bytes = Buffer.from('immutable head bytes\n', 'utf8');
+    const calls: string[] = [];
+    const commandRunner = (_command: string, args: string[]) => {
+      calls.push(args.join(' '));
+      return { status: 0, stdout: JSON.stringify({ encoding: 'base64', content: bytes.toString('base64') }) };
+    };
+    const files = [{ path: 'src/app.js', patch: '@@ -1 +1 @@\n-old\n+local mutation' }];
+    const findings = [{ path: 'src/app.js', side: 'RIGHT', line: 1 }];
+    const verifierIdentity = { repository: identity.repo, prNumber: 42, baseSha: identity.baseSha, headSha: identity.headSha, configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64) };
+
+    const first = await pipeline.fetchExactFindingBlobSnapshot(verifierIdentity, files, findings, { commandRunner });
+    files[0].patch = '@@ -1 +1 @@\n-old\n+different local mutation';
+    const second = await pipeline.fetchExactFindingBlobSnapshot(verifierIdentity, files, findings, { commandRunner });
+
+    expect(first.files[0].contentHash).toBe(require('node:crypto').createHash('sha256').update(bytes).digest('hex'));
+    expect(second.files[0].contentHash).toBe(first.files[0].contentHash);
+    expect(calls.every((call) => call.includes(`ref=${identity.headSha}`))).toBe(true);
+    expect(calls.every((call) => call.includes('repos/owner/repository/contents/src/app.js'))).toBe(true);
+  });
+
+  it('uses the base SHA and previous path for a deleted or renamed LEFT finding', async () => {
+    const calls: string[] = [];
+    const verifierIdentity = { repository: identity.repo, prNumber: 42, baseSha: identity.baseSha, headSha: identity.headSha, configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64) };
+    await pipeline.fetchExactFindingBlobSnapshot(verifierIdentity, [{
+      path: 'src/new-name.js', previousPath: 'src/old-name.js', status: 'renamed', patch: '@@ -1 +1 @@\n-old\n+new',
+    }], [{ path: 'src/new-name.js', side: 'LEFT', line: 1 }], {
+      commandRunner: (_command: string, args: string[]) => {
+        calls.push(args.join(' '));
+        return { status: 0, stdout: JSON.stringify({ encoding: 'base64', content: Buffer.from('old\n').toString('base64') }) };
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('contents/src/old-name.js');
+    expect(calls[0]).toContain(`ref=${identity.baseSha}`);
+  });
+
+  it('retains a raw model candidate through pass aggregation and produces a bounded enforce receipt before sanitization', async () => {
+    const aggregated = pipeline.aggregatePersonaRuns({ id: 'security', name: 'Security' }, [{
+      personaId: 'security', decision: 'APPROVE', findings: [],
+      rawFindings: [{ severity: 'P1', path: 'missing.js', line: 1, title: 'Raw only', body: 'This must be verified before sanitization.' }],
+    }], 'test-model');
+    const verifierIdentity = { repo: identity.repo, prNumber: 42, baseSha: identity.baseSha, headSha: identity.headSha };
+    const result = await pipeline.applyFindingVerifier([aggregated], [{ path: 'src/app.js', patch: '@@ -1 +1 @@\n-old\n+new' }], {
+      enabled: true, mode: 'enforce', configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64),
+    }, verifierIdentity, {
+      commandRunner: () => ({ status: 0, stdout: JSON.stringify({ encoding: 'base64', content: Buffer.from('new\n').toString('base64') }) }),
+    });
+
+    expect(aggregated.rawFindings).toHaveLength(1);
+    expect(result.personaResults[0].findings).toEqual([]);
+    expect(result.verification.summary).toMatchObject({ rejected: 1 });
+    expect(JSON.stringify(result.verification)).not.toContain('Raw only');
+  });
+
+  it('turns an unavailable exact blob into enforce uncertainty rather than a SHIP-capable result', async () => {
+    const verifierIdentity = { repo: identity.repo, prNumber: 42, baseSha: identity.baseSha, headSha: identity.headSha };
+    const result = await pipeline.applyFindingVerifier([{
+      personaId: 'security', decision: 'FINDINGS', findings: [],
+      rawFindings: [{ severity: 'P1', path: 'src/app.js', side: 'RIGHT', line: 1, title: 'Needs blob', body: 'GitHub must provide the immutable bytes.' }],
+    }], [{ path: 'src/app.js', patch: '@@ -1 +1 @@\n-old\n+new' }], {
+      enabled: true, mode: 'enforce', configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64),
+    }, verifierIdentity, { commandRunner: () => ({ status: 1, stderr: 'unavailable' }) });
+
+    expect(result.verification.summary).toMatchObject({ needsReview: 1, incomplete: true });
+  });
+
   it('uses trusted review.finding_verifier configuration and defaults its configured mode to report_only', () => {
     const configRoot = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'finding-verifier-config-'));
     const verifyHead = () => ({ status: 0, stdout: JSON.stringify({ headRefOid: identity.headSha, baseRefOid: identity.baseSha }) });
@@ -48,7 +115,22 @@ describe('finding verifier pipeline policy and publication fence', () => {
     expect(calls.some(({ args }) => args.includes('--method') || args.includes('reviews') || args.includes('comments'))).toBe(false);
   });
 
-  it('keeps report-only lanes intact but removes rejected enforce findings before arbitration and blocks verifier uncertainty', () => {
+  it('fences the started-marker publication path before its read or write', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const result = pipeline.postStartedComment(identity, {}, {
+      commandRunner(command: string, args: string[]) {
+        calls.push({ command, args });
+        if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'c'.repeat(40), baseRefOid: identity.baseSha }) };
+        throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+      },
+    });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.slice(0, 2)).toEqual(['pr', 'view']);
+  });
+
+  it('keeps report-only lanes intact but removes rejected enforce findings before arbitration and blocks verifier uncertainty', async () => {
     const files = [{ path: 'src/app.js', patch: '@@ -1 +1 @@\n-old\n+new' }];
     const lanes = [{
       personaId: 'security', decision: 'FINDINGS',
@@ -56,8 +138,9 @@ describe('finding verifier pipeline policy and publication fence', () => {
       rawFindings: [{ severity: 'P1', path: 'missing.js', line: 1, title: 'Unanchored', body: 'Not in this PR.' }],
     }];
     const basePolicy = { enabled: true, configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64) };
-    const report = pipeline.applyFindingVerifier(lanes, files, { ...basePolicy, mode: 'report_only' }, identity);
-    const enforce = pipeline.applyFindingVerifier(lanes, files, { ...basePolicy, mode: 'enforce' }, identity);
+    const blobOptions = { commandRunner: () => ({ status: 0, stdout: JSON.stringify({ encoding: 'base64', content: Buffer.from('new\n').toString('base64') }) }) };
+    const report = await pipeline.applyFindingVerifier(lanes, files, { ...basePolicy, mode: 'report_only' }, identity, blobOptions);
+    const enforce = await pipeline.applyFindingVerifier(lanes, files, { ...basePolicy, mode: 'enforce' }, identity, blobOptions);
 
     expect(report.personaResults[0].findings).toHaveLength(1);
     expect(report.verification.summary).toMatchObject({ rejected: 1, incomplete: false });

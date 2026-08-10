@@ -59,7 +59,7 @@ function isPatchless(file) {
   return file?.patch === undefined || file?.patch === null || (typeof file.patch === 'string' && !file.patch.trim());
 }
 
-function exactSnapshotFile(snapshot, path) {
+function exactSnapshotFile(snapshot, path, side) {
   if (!snapshot || typeof snapshot !== 'object') return null;
   const candidates = Array.isArray(snapshot.files)
     ? snapshot.files
@@ -68,7 +68,9 @@ function exactSnapshotFile(snapshot, path) {
       : snapshot.byPath && typeof snapshot.byPath === 'object'
         ? Object.values(snapshot.byPath)
         : [];
-  return candidates.find((file) => canonicalPath(file?.path) === path) || null;
+  return candidates.find((file) => canonicalPath(file?.path) === path && String(file?.side || 'RIGHT').toUpperCase() === side)
+    || candidates.find((file) => canonicalPath(file?.path) === path && file?.side === undefined)
+    || null;
 }
 
 function normalizedHash(value) {
@@ -146,24 +148,12 @@ function verifyFinding({ finding, changedFiles, exactBlobSnapshot, identity, mod
   if (matchingFiles.length === 0) return receipt({ status: 'rejected', reasonCode: 'unknown_path', identityDigest, path });
   if (matchingFiles.length !== 1) return receipt({ status: 'needs_review', reasonCode: 'ambiguous_path', identityDigest, path });
   const changed = matchingFiles[0];
-  const snapshotFile = exactSnapshotFile(exactBlobSnapshot, path);
-  if (!snapshotFile) return receipt({ status: 'needs_review', reasonCode: 'snapshot_missing', identityDigest, path });
-  if (typeof changed.patch === 'string' && typeof snapshotFile.patch === 'string' && changed.patch !== snapshotFile.patch) {
-    return receipt({ status: 'needs_review', reasonCode: 'snapshot_mismatch', identityDigest, path });
-  }
 
   const sideProvided = finding.side !== undefined && finding.side !== null;
   let side = sideProvided ? String(finding.side).toUpperCase() : 'RIGHT';
   if (side !== 'RIGHT' && side !== 'LEFT') return receipt({ status: 'rejected', reasonCode: 'invalid_side', identityDigest, path });
   const line = Number(finding.line);
   if (!Number.isSafeInteger(line) || line < 1) return receipt({ status: 'rejected', reasonCode: 'invalid_line', identityDigest, path, side });
-
-  const suppliedHash = findingContentHash(finding);
-  if (suppliedHash) {
-    const actualHash = snapshotContentHash(snapshotFile);
-    if (!actualHash) return receipt({ status: 'needs_review', reasonCode: 'content_hash_unavailable', identityDigest, path, side, line });
-    if (actualHash !== suppliedHash) return receipt({ status: 'rejected', reasonCode: 'content_hash_mismatch', identityDigest, path, side, line });
-  }
 
   let subjectType;
   if (isBinary(changed) || isGitlink(changed) || isPatchless(changed)) {
@@ -181,6 +171,18 @@ function verifyFinding({ finding, changedFiles, exactBlobSnapshot, identity, mod
       return receipt({ status: 'rejected', reasonCode: 'invalid_anchor', identityDigest, path, side, line });
     }
     subjectType = 'line';
+  }
+  const snapshotFile = exactSnapshotFile(exactBlobSnapshot, path, side);
+  if (!snapshotFile) return receipt({ status: 'needs_review', reasonCode: 'snapshot_missing', identityDigest, path, side, line });
+  if (typeof changed.patch === 'string' && typeof snapshotFile.patch === 'string' && changed.patch !== snapshotFile.patch) {
+    return receipt({ status: 'needs_review', reasonCode: 'snapshot_mismatch', identityDigest, path, side, line });
+  }
+
+  const suppliedHash = findingContentHash(finding);
+  if (suppliedHash) {
+    const actualHash = snapshotContentHash(snapshotFile);
+    if (!actualHash) return receipt({ status: 'needs_review', reasonCode: 'content_hash_unavailable', identityDigest, path, side, line });
+    if (actualHash !== suppliedHash) return receipt({ status: 'rejected', reasonCode: 'content_hash_mismatch', identityDigest, path, side, line });
   }
 
   const claimFingerprint = normalizedClaim(finding);

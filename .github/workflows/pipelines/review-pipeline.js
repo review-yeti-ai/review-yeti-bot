@@ -870,27 +870,98 @@ function findingVerifierIdentity(policy, prContext) {
   };
 }
 
-function exactFindingBlobSnapshot(identity, files) {
-  return {
-    identity,
-    files: (Array.isArray(files) ? files : []).map((file) => {
-      const content = typeof file?.content === 'string' ? file.content : String(file?.patch || '');
-      return { path: file?.path, patch: file?.patch, content, contentHash: sha256(content) };
-    }),
-  };
+function canonicalFindingPath(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\\/g, '/').replace(/^\.\//u, '').trim();
+  return normalized && !normalized.startsWith('/') && !normalized.includes('\0') && !normalized.split('/').includes('..') ? normalized : null;
 }
 
-function applyFindingVerifier(personaResults, changedFiles, policy, prContext) {
+function githubContentsPath(repository, filePath, ref) {
+  return `repos/${repository}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`;
+}
+
+function decodeGitHubBlob(payload) {
+  if (!payload || typeof payload !== 'object' || String(payload.encoding || '').toLowerCase() !== 'base64' || typeof payload.content !== 'string') return null;
+  try {
+    const bytes = Buffer.from(payload.content.replace(/\s+/gu, ''), 'base64');
+    if (bytes.length === 0 && payload.content.trim()) return null;
+    return { contentHash: require('node:crypto').createHash('sha256').update(bytes).digest('hex'), blobSha: typeof payload.sha === 'string' ? payload.sha.toLowerCase() : undefined };
+  } catch (_) {
+    return null;
+  }
+}
+
+function apiJsonFromCommand(commandRunner, endpoint) {
+  const result = ghApi(commandRunner, ['api', endpoint]);
+  if (!result || result.status !== 0) return null;
+  try { return JSON.parse(result.stdout || '{}'); } catch (_) { return null; }
+}
+
+async function apiJsonFromFetch(fetchImplementation, endpoint) {
+  if (typeof fetchImplementation !== 'function') return null;
+  const baseUrl = String(process.env.GITHUB_API_URL || 'https://api.github.com').replace(/\/+$/u, '');
+  const token = String(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim();
+  try {
+    const response = await fetchImplementation(`${baseUrl}/${endpoint}`, {
+      headers: { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    return response?.ok ? response.json() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function resolveExactBlob(repository, sourcePath, ref, blobSha, options = {}) {
+  const contentsEndpoint = githubContentsPath(repository, sourcePath, ref);
+  const load = options.commandRunner
+    ? (endpoint) => apiJsonFromCommand(options.commandRunner, endpoint)
+    : (endpoint) => apiJsonFromFetch(options.fetchImplementation, endpoint);
+  let decoded = decodeGitHubBlob(await load(contentsEndpoint));
+  if (!decoded && /^[a-f0-9]{40,64}$/iu.test(String(blobSha || ''))) {
+    decoded = decodeGitHubBlob(await load(`repos/${repository}/git/blobs/${String(blobSha).toLowerCase()}`));
+  }
+  return decoded;
+}
+
+/**
+ * Resolves the blob bytes from GitHub at the immutable base/head SHA. Local diff text is used
+ * solely for anchor validation; it never participates in the content hash supplied to the
+ * verifier. LEFT/deleted sides bind to base and a rename's previous path.
+ */
+async function fetchExactFindingBlobSnapshot(identity, changedFiles, findings, options = {}) {
+  const files = Array.isArray(changedFiles) ? changedFiles : [];
+  const requested = new Map();
+  for (const finding of Array.isArray(findings) ? findings : []) {
+    const path = canonicalFindingPath(finding?.path);
+    if (!path) continue;
+    const changed = files.filter((file) => canonicalFindingPath(file?.path) === path);
+    if (changed.length !== 1) continue;
+    const sides = finding?.side === 'LEFT' ? ['LEFT'] : finding?.side === 'RIGHT' ? ['RIGHT'] : ['RIGHT', 'LEFT'];
+    for (const side of sides) requested.set(`${path}|${side}`, { path, side, file: changed[0] });
+  }
+  const snapshotFiles = [];
+  for (const { path: currentPath, side, file } of requested.values()) {
+    const sourcePath = side === 'LEFT' ? canonicalFindingPath(file.previousPath || file.previous_path) || currentPath : currentPath;
+    const ref = side === 'LEFT' ? identity.baseSha : identity.headSha;
+    const blobSha = side === 'LEFT' ? file.oldSha || file.old_sha : file.newSha || file.new_sha;
+    const blob = await resolveExactBlob(identity.repository, sourcePath, ref, blobSha, options);
+    if (blob) snapshotFiles.push({ path: currentPath, side, sourcePath, ref, ...blob });
+  }
+  return { identity, files: snapshotFiles };
+}
+
+async function applyFindingVerifier(personaResults, changedFiles, policy, prContext, options = {}) {
   const rows = [];
   for (const [laneIndex, lane] of (personaResults || []).entries()) {
     const source = Array.isArray(lane?.rawFindings) ? lane.rawFindings : (Array.isArray(lane?.findings) ? lane.findings : []);
     for (const finding of source) rows.push({ laneIndex, finding });
   }
   const identity = findingVerifierIdentity(policy, prContext);
+  const exactBlobSnapshot = await fetchExactFindingBlobSnapshot(identity, changedFiles, rows.map((row) => row.finding), options);
   const verification = verifyFindings({
     findings: rows.map((row) => row.finding),
     changedFiles,
-    exactBlobSnapshot: exactFindingBlobSnapshot(identity, changedFiles),
+    exactBlobSnapshot,
     identity,
     mode: policy.mode,
   });
@@ -2278,6 +2349,31 @@ function sumUsage(lanes) {
   return applicableUsageCount > 0 && completeProviderCost ? { ...total, costUSD: providerCostTotal } : total;
 }
 
+// Keep model candidates separate from sanitized/merged presentation findings. The verifier must
+// see malformed paths, anchors, and content hashes before legacy sanitization discards them.
+function aggregatePersonaRuns(persona, runs, fallbackModel) {
+  const completedRuns = Array.isArray(runs) ? runs : [];
+  const failedRuns = completedRuns.filter((run) => run.decision === 'ERROR');
+  if (failedRuns.length === completedRuns.length) {
+    return completedRuns[0] || { personaId: persona.id, displayName: persona.name, model: fallbackModel, decision: 'ERROR', findings: [], error: 'no passes ran' };
+  }
+  const findings = mergeFindings(completedRuns.map((run) => run.findings));
+  const rawFindings = completedRuns.flatMap((run) => Array.isArray(run.rawFindings) ? run.rawFindings : []);
+  return {
+    personaId: persona.id,
+    displayName: persona.name,
+    provider: completedRuns.find((run) => run.provider)?.provider || 'openrouter',
+    model: completedRuns.find((run) => run.model)?.model || fallbackModel,
+    decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS',
+    findings,
+    ...(rawFindings.length > 0 ? { rawFindings } : {}),
+    rejectedFindings: completedRuns.flatMap((run) => run.rejectedFindings || []),
+    // Every pass was billed, including ones whose output was unusable.
+    usage: sumUsage(completedRuns),
+    ...(failedRuns.length > 0 ? { partial: failedRuns.length } : {}),
+  };
+}
+
 /**
  * Projects the review result into bounded, prose-free events for optional remote memory.
  * The GitHub decision ledger remains authoritative; these events are advisory only.
@@ -2562,12 +2658,17 @@ function parseDiff(diffText) {
     } else if (currentFile) {
       currentFile.patch += line + '\n';
       const similarity = line.match(/^similarity index (\d+)%$/u);
+      const blobIndex = line.match(/^index ([0-9a-f]+)\.\.([0-9a-f]+)/iu);
       const renameFrom = line.match(/^rename from (.+)$/u);
       const renameTo = line.match(/^rename to (.+)$/u);
       const oldMode = line.match(/^old mode (\d{6})$/u);
       const newMode = line.match(/^new mode (\d{6})$/u);
       const deletedMode = line.match(/^deleted file mode (\d{6})$/u);
       if (similarity) currentFile.similarityIndex = Number(similarity[1]);
+      if (blobIndex) {
+        currentFile.oldSha = blobIndex[1].toLowerCase();
+        currentFile.newSha = blobIndex[2].toLowerCase();
+      }
       if (renameFrom) {
         currentFile.previousPath = renameFrom[1];
         currentFile.status = 'renamed';
@@ -3847,6 +3948,9 @@ function postPlainIssueComment(commentBody, prContext, options = {}) {
     : bodyWithAnchor;
 
   try {
+    // The started marker is a publication side effect too. Fence it before listing prior
+    // comments, PATCHing the stable marker, or issuing the fallback `gh pr comment` write.
+    assertCurrentPullRequest(prContext, { commandRunner });
     let existingCommentId = null;
     if (anchor && prContext.repo) {
       const existing = commandRunner('gh', [
@@ -5768,22 +5872,7 @@ async function main(options = {}) {
               { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal },
             ));
           }
-          const failedRuns = runs.filter((r) => r.decision === 'ERROR');
-          // One failed pass must not discard the findings of the passes that succeeded.
-          if (failedRuns.length === runs.length) return runs[0] || { personaId: persona.id, displayName: persona.name, model: modelConfig.model, decision: 'ERROR', findings: [], error: 'no passes ran' };
-          const findings = mergeFindings(runs.map((r) => r.findings));
-          return {
-            personaId: persona.id,
-            displayName: persona.name,
-            provider: runs.find((run) => run.provider)?.provider || 'openrouter',
-            model: runs.find((run) => run.model)?.model || modelConfig.model,
-            decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS',
-            findings,
-            rejectedFindings: runs.flatMap((run) => run.rejectedFindings || []),
-            // Every pass was billed, including ones whose output was unusable.
-            usage: sumUsage(runs),
-            ...(failedRuns.length > 0 ? { partial: failedRuns.length } : {}),
-          };
+          return aggregatePersonaRuns(persona, runs, modelConfig.model);
         })
       ));
       if (cancellation.isCancellationResult(evaluatedPersonas)) return;
@@ -5799,7 +5888,7 @@ async function main(options = {}) {
         return;
       }
       if (findingVerifierPolicy.enabled) {
-        const verified = applyFindingVerifier(personaResults, shownReviewFiles, findingVerifierPolicy, prContext);
+        const verified = await applyFindingVerifier(personaResults, shownReviewFiles, findingVerifierPolicy, prContext, { commandRunner, fetchImplementation });
         personaResults = verified.personaResults;
         findingVerification = verified.verification;
       } else {
@@ -6081,6 +6170,7 @@ module.exports = {
   reviewablePathsChangedSince,
   planCarriedForwardVerdict,
   sumUsage,
+  aggregatePersonaRuns,
   buildHonchoReviewEvents,
   memoryEventPersistenceClass,
   filterMemoryEventsForPersistence,
@@ -6099,7 +6189,7 @@ module.exports = {
   resolveTrustedReviewUnitsPolicy,
   resolveTrustedFindingVerifierPolicy,
   findingVerifierIdentity,
-  exactFindingBlobSnapshot,
+  fetchExactFindingBlobSnapshot,
   applyFindingVerifier,
   applyFindingVerifierGate,
   buildReviewUnitManifest,
