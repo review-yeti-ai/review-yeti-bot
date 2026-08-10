@@ -44,7 +44,7 @@ describe('review navigation tools', () => {
     const blobClient = { getBlob: vi.fn() };
     const tools = createReviewNavigationToolRegistry({ identity, snapshot, blobClient });
 
-    await expect(tools.call('file_read', { path: 'src/app.js' })).resolves.toMatchObject({ status: 'unavailable', reason: 'review navigation tools are disabled' });
+    await expect(tools.call('file_read', { path: 'src/app.js' })).resolves.toMatchObject({ status: 'unavailable', reason: 'disabled' });
     expect(blobClient.getBlob).not.toHaveBeenCalled();
   });
 
@@ -64,7 +64,7 @@ describe('review navigation tools', () => {
     const { registry: tools, blobClient } = registry();
 
     await expect(tools.call('file_read', { path: '../.git/config' })).resolves.toMatchObject({ status: 'invalid', reason: 'invalid file path' });
-    await expect(tools.call('file_read', { path: 'src/not-in-pr.js' })).resolves.toMatchObject({ status: 'unavailable', reason: 'file is not in the immutable review snapshot' });
+    await expect(tools.call('file_read', { path: 'src/not-in-pr.js' })).resolves.toMatchObject({ status: 'unavailable', reason: 'file_not_in_snapshot' });
     expect(blobClient.getBlob).not.toHaveBeenCalled();
   });
 
@@ -97,14 +97,15 @@ describe('review navigation tools', () => {
 
     await expect(tools.call('file_read', { path: 'src/app.js' }, { signal: controller.signal })).resolves.toMatchObject({ status: 'cancelled' });
     await expect(tools.call('file_find', { query: 'src' })).resolves.toMatchObject({ status: 'ok' });
-    await expect(tools.call('file_read_diff', { path: 'src/app.js' })).resolves.toMatchObject({ status: 'unavailable', reason: 'review navigation tool call budget exhausted' });
+    await expect(tools.call('file_read_diff', { path: 'src/app.js' })).resolves.toMatchObject({ status: 'unavailable', reason: 'call_budget_exhausted' });
     expect(blobClient.getBlob).not.toHaveBeenCalled();
   });
 
   it('allows the GitHub blob client to use only an authenticated HTTPS GitHub API origin', async () => {
     expect(() => createGitHubBlobClient({ token: 'secret', apiBaseUrl: 'http://api.github.com' })).toThrow('must use HTTPS');
     expect(() => createGitHubBlobClient({ token: 'secret', apiBaseUrl: 'https://127.0.0.1' })).toThrow('not allowlisted');
-    const fetchImplementation = vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ sha: 'c'.repeat(40), content: Buffer.from('safe').toString('base64'), encoding: 'base64' }) }));
+    const raw = JSON.stringify({ sha: 'c'.repeat(40), content: Buffer.from('safe').toString('base64'), encoding: 'base64' });
+    const fetchImplementation = vi.fn(async () => ({ ok: true, status: 200, headers: { get: (name: string) => name.toLowerCase() === 'content-length' ? String(Buffer.byteLength(raw)) : null }, text: async () => raw }));
     const client = createGitHubBlobClient({ token: 'secret', fetchImplementation });
 
     await expect(client.getBlob({ repository: identity.repository, blobSha: 'c'.repeat(40), headSha: identity.headSha })).resolves.toMatchObject({ sha: 'c'.repeat(40), content: 'safe' });
@@ -112,5 +113,31 @@ describe('review navigation tools', () => {
     expect(url).toBe(`https://api.github.com/repos/acme/widgets/git/blobs/${'c'.repeat(40)}`);
     expect(request.headers.Authorization).toBe('Bearer secret');
     expect(request.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('rejects oversized GitHub blob responses before allocating or parsing the body', async () => {
+    const text = vi.fn(async () => { throw new Error('must not read unbounded text'); });
+    const fetchImplementation = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-length' ? '999999' : null },
+      text,
+      body: { async *[Symbol.asyncIterator]() { yield Buffer.from('{"sha":"'); yield Buffer.alloc(10_000, 'x'); } },
+    }));
+    const client = createGitHubBlobClient({ token: 'secret', fetchImplementation });
+
+    await expect(client.getBlob({ repository: identity.repository, blobSha: 'c'.repeat(40), headSha: identity.headSha, maxBytes: 4 })).rejects.toThrow('blob_response_too_large');
+    expect(text).not.toHaveBeenCalled();
+  });
+
+  it('returns allowlisted failure reasons without leaking upstream errors, URLs, or tokens', async () => {
+    const blobClient = { getBlob: vi.fn(async () => { throw new Error('Bearer top-secret failed at https://evil.invalid/leak'); }) };
+    const tools = createReviewNavigationToolRegistry({ identity, snapshot, config: { enabled: true }, blobClient });
+
+    const result = await tools.call('file_read', { path: 'src/app.js' });
+
+    expect(result).toMatchObject({ status: 'unavailable', reason: 'blob_fetch_failed' });
+    expect(JSON.stringify(result)).not.toContain('top-secret');
+    expect(JSON.stringify(result)).not.toContain('evil.invalid');
   });
 });

@@ -40,6 +40,56 @@ function isAbort(error) {
   return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
 }
 
+function navigationError(code, status) {
+  const error = new Error(code);
+  error.reviewNavigationCode = code;
+  if (Number.isInteger(status) && status >= 100 && status <= 599) error.httpStatus = status;
+  return error;
+}
+
+function readResponseBodyBounded(response, maxBytes) {
+  const header = response?.headers?.get?.('content-length');
+  const declaredLength = header === null || header === undefined || header === '' ? null : Number(header);
+  if (declaredLength !== null && (!Number.isFinite(declaredLength) || declaredLength < 0 || declaredLength > maxBytes)) {
+    return Promise.reject(navigationError('blob_response_too_large'));
+  }
+  const chunks = [];
+  let total = 0;
+  const append = (value) => {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    total += chunk.length;
+    if (total > maxBytes) throw navigationError('blob_response_too_large');
+    chunks.push(chunk);
+  };
+  const collect = async () => {
+    if (response?.body?.getReader) {
+      const reader = response.body.getReader();
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          append(next.value);
+        }
+      } finally {
+        try { await reader.cancel(); } catch (_) { /* already closed */ }
+      }
+      return Buffer.concat(chunks).toString('utf8');
+    }
+    if (response?.body && typeof response.body[Symbol.asyncIterator] === 'function') {
+      for await (const chunk of response.body) append(chunk);
+      return Buffer.concat(chunks).toString('utf8');
+    }
+    // A test double or legacy fetch shim can use text(), but only after a verified wire bound.
+    if (declaredLength !== null && typeof response?.text === 'function') {
+      const text = await response.text();
+      if (Buffer.byteLength(text, 'utf8') > maxBytes) throw navigationError('blob_response_too_large');
+      return text;
+    }
+    throw navigationError('blob_fetch_failed');
+  };
+  return collect();
+}
+
 function validRepository(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value) && !value.includes('..');
 }
@@ -154,15 +204,21 @@ function createGitHubBlobClient({ token, fetchImplementation = globalThis.fetch,
           },
           signal: operation.signal,
         });
-        const raw = await response.text();
-        if (!response.ok) throw new Error(`GitHub blob API status ${response.status}`);
+        const maxWireBytes = Math.min(256 * 1024, (boundedInteger(maxBytes, MAX_LIMITS.maxReadBytes, MAX_LIMITS.maxReadBytes) * 4) + 4096);
+        if (!response.ok) throw navigationError('blob_fetch_failed', response.status);
+        const raw = await readResponseBodyBounded(response, maxWireBytes);
         const payload = JSON.parse(raw);
         if (String(payload?.sha || '').toLowerCase() !== String(blobSha).toLowerCase() || payload?.encoding !== 'base64') {
-          throw new Error('GitHub blob response did not match the requested immutable SHA');
+          throw navigationError('blob_sha_mismatch');
         }
         const decoded = Buffer.from(String(payload.content || '').replace(/\s/g, ''), 'base64');
         const bounded = decoded.subarray(0, boundedInteger(maxBytes, MAX_LIMITS.maxReadBytes, MAX_LIMITS.maxReadBytes));
         return { sha: String(payload.sha).toLowerCase(), content: bounded.toString('utf8'), truncated: decoded.length > bounded.length, byteCount: bounded.length };
+      } catch (error) {
+        if (operation.timedOut()) throw navigationError('request_timeout');
+        if (isAbort(error) || signal?.aborted) throw navigationError('cancelled');
+        if (error?.reviewNavigationCode) throw error;
+        throw navigationError('blob_fetch_failed');
       } finally {
         operation.dispose();
       }
@@ -179,9 +235,9 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
   const receipt = (tool, extra = {}) => ({ identity: { ...identity }, tool, ...extra });
   const disabled = (tool, reason) => ({ status: 'unavailable', ...receipt(tool, { reason }) });
   const takeCall = (tool, options) => {
-    if (!effectiveConfig.enabled) return disabled(tool, 'review navigation tools are disabled');
-    if (options?.signal?.aborted) return { status: 'cancelled', ...receipt(tool, { reason: 'review navigation request cancelled' }) };
-    if (calls >= effectiveConfig.maxCalls) return disabled(tool, 'review navigation tool call budget exhausted');
+    if (!effectiveConfig.enabled) return disabled(tool, 'disabled');
+    if (options?.signal?.aborted) return { status: 'cancelled', ...receipt(tool, { reason: 'cancelled' }) };
+    if (calls >= effectiveConfig.maxCalls) return disabled(tool, 'call_budget_exhausted');
     calls += 1;
     return null;
   };
@@ -189,16 +245,16 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
     const path = args?.path;
     if (!validPath(path)) return { result: { status: 'invalid', ...receipt(tool, { reason: 'invalid file path' }) } };
     const file = files.get(path);
-    if (!file) return { result: disabled(tool, 'file is not in the immutable review snapshot') };
+    if (!file) return { result: disabled(tool, 'file_not_in_snapshot') };
     return { file };
   };
   const fetchFile = async (file, options) => {
     const response = await blobClient.getBlob({ repository: identity.repository, blobSha: file.blobSha, headSha: identity.headSha, signal: options?.signal, maxBytes: effectiveConfig.maxReadBytes });
-    if (String(response?.sha || '').toLowerCase() !== file.blobSha) throw new Error('immutable blob SHA mismatch');
+    if (String(response?.sha || '').toLowerCase() !== file.blobSha) throw navigationError('blob_sha_mismatch');
     return boundedText(response.content, effectiveConfig.maxReadBytes);
   };
   const call = async (tool, args = {}, options = {}) => {
-    if (!['file_read', 'file_find', 'code_search', 'file_read_diff'].includes(tool)) return { status: 'unavailable', ...receipt(tool, { reason: 'review navigation tool is not registered' }) };
+    if (!['file_read', 'file_find', 'code_search', 'file_read_diff'].includes(tool)) return { status: 'unavailable', ...receipt(tool, { reason: 'tool_not_registered' }) };
     const guard = takeCall(tool, options);
     if (guard) return guard;
     try {
@@ -242,8 +298,11 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
         return { status: 'ok', ...receipt(tool, { path: resolved.file.path, blobSha: resolved.file.blobSha, content: rendered.text, truncated: loaded.truncated || rendered.truncated, byteCount: rendered.byteCount }) };
       }
     } catch (error) {
-      if (isAbort(error) || options?.signal?.aborted) return { status: 'cancelled', ...receipt(tool, { reason: 'review navigation request cancelled' }) };
-      return { status: 'unavailable', ...receipt(tool, { reason: error?.message || 'review navigation request failed' }) };
+      if (isAbort(error) || error?.reviewNavigationCode === 'cancelled' || options?.signal?.aborted) return { status: 'cancelled', ...receipt(tool, { reason: 'cancelled' }) };
+      const reason = ['blob_fetch_failed', 'blob_sha_mismatch', 'blob_response_too_large', 'request_timeout'].includes(error?.reviewNavigationCode)
+        ? error.reviewNavigationCode
+        : 'blob_fetch_failed';
+      return { status: 'unavailable', ...receipt(tool, { reason, ...(Number.isInteger(error?.httpStatus) ? { httpStatus: error.httpStatus } : {}) }) };
     }
   };
   return Object.freeze({

@@ -43,6 +43,13 @@ Trusted configuration may lower these limits; it cannot raise the hard ceilings:
 - a 250–5000 ms GitHub request deadline; and
 - immediate cancellation when the caller's abort signal is set.
 
+The blob client rejects an oversized `Content-Length` before reading and streams response chunks
+through a hard wire-size cap before JSON parsing or Base64 decoding. It never calls an unbounded
+`response.text()` fallback unless the server supplied a verified, in-limit content length. Failure
+receipts use stable reason codes such as `blob_fetch_failed`, `blob_sha_mismatch`,
+`blob_response_too_large`, `request_timeout`, and `cancelled`; they may include an HTTP status but
+never include an upstream error message, URL, response payload, or token.
+
 Malformed, absolute, backslash, NUL, or traversal paths are rejected. A tool reports `invalid`,
 `unavailable`, or `cancelled` rather than falling back to a broader API. Reaching the call budget
 does not trigger a retry or an alternate transport. Navigation results are advisory review context
