@@ -30,7 +30,7 @@ function replayCassette(cassette) {
         && interaction.request.method === request.method && interaction.request.url === request.url
         && JSON.stringify(interaction.request.headers) === JSON.stringify(request.headers)
         && JSON.stringify(interaction.request.body) === JSON.stringify(request.body));
-      if (index < 0) throw new Error(`missing intelligence cassette interaction for ${id}`);
+      if (index < 0) throw new Error(`missing intelligence cassette interaction for ${id}: ${JSON.stringify(request)}`);
       consumed.add(index);
       return interactions[index].response?.body || {};
     },
@@ -80,17 +80,27 @@ function scenarioRequest(id) {
   return { method: 'GET', url: `https://github.fixture.test/evaluation/${path}`, headers: { authorization: '<redacted>' }, body: null };
 }
 
-async function executeWorkflow(fixture) {
+async function executeWorkflow(fixture, replay) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-intelligence-workflow-'));
   const configRoot = path.join(root, 'config');
   fs.mkdirSync(configRoot, { recursive: true });
   fs.writeFileSync(path.join(configRoot, '.review-yeti.yaml'), 'memory:\n  enabled: true\n  provider: mem0\n  mode: single\n  transport: rest\n  context: true\n  write: true\n  recall:\n    decision_feedback: true\n    session_recap: true\n  persist:\n    processing: true\n    decision_feedback: true\n    session_recap: true\n  providers:\n    mem0:\n      enabled: true\n      endpoint_env: MEM0_URL\n      credential_env: MEM0_API_KEY\npersonas:\n  - id: security\n  - id: testing\n');
   const outputPath = path.join(root, 'github-output');
+  const providerInput = scenarioRequest('provider-failure-fail-open');
+  const providerResponse = replay.fetch('provider-failure-fail-open', providerInput);
   const env = { ...process.env, PR_DIFF: JSON.stringify({ repo: fixture.event.repository, prNumber: fixture.event.prNumber, headSha: fixture.event.headSha, title: 'Fixture review', diff: 'diff --git a/src/app.js b/src/app.js\n+const safe = true;\n' }), PR_REPO: fixture.event.repository, PR_NUMBER: String(fixture.event.prNumber), PR_HEAD_SHA: '', GITHUB_SHA: fixture.event.headSha, GITHUB_BASE_SHA: 'b'.repeat(40), GITHUB_OUTPUT: outputPath, REVIEW_YETI_CONFIG_DIR: configRoot, OPENROUTER_API_KEY: 'fixture-key', OPENROUTER_MODEL: 'fixture-model', OPENROUTER_BASE_URL: 'https://openrouter.fixture.test/v1', OPENROUTER_SKIP_CHAT_PREFLIGHT: 'true', VITEST: 'true', GITHUB_ACTIONS: 'false', MEM0_URL: 'https://mem0.fixture.test', MEM0_API_KEY: 'fixture-memory-key' };
   const original = { log: console.log, warn: console.warn, error: console.error };
   console.log = console.warn = console.error = () => {};
   try {
-    return await runReviewPipeline({ env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async () => new Response(JSON.stringify({ error: 'fixture unavailable' }), { status: 503 }), modelClient: async ({ persona }) => ({ personaId: persona.id, displayName: persona.name, model: 'fixture-model', provider: 'fixture-openrouter', decision: 'APPROVE', findings: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, costUSD: 0 } }) });
+    let providerReplayUsed = false;
+    return await runReviewPipeline({ env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async (input, init = {}) => {
+      if (!providerReplayUsed) {
+        providerReplayUsed = true;
+        const body = init.body ? JSON.parse(String(init.body)) : null;
+        return new Response(JSON.stringify(providerResponse), { status: 503 });
+      }
+      return new Response(JSON.stringify({ error: 'fixture unavailable' }), { status: 503 });
+    }, modelClient: async ({ persona }) => ({ personaId: persona.id, displayName: persona.name, model: 'fixture-model', provider: 'fixture-openrouter', decision: 'APPROVE', findings: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, costUSD: 0 } }) });
   } finally {
     console.log = original.log; console.warn = original.warn; console.error = original.error;
   }
@@ -102,13 +112,13 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
   let workflowPromise;
   const workflow = async () => {
     if (!workflowPromise) {
-      workflowPromise = executeWorkflow(workflowFixture);
+      workflowPromise = executeWorkflow(workflowFixture, replay);
     }
     return workflowPromise;
   };
   return {
     async run(id) {
-      replay.fetch(id, scenarioRequest(id));
+      if (id !== 'provider-failure-fail-open') replay.fetch(id, scenarioRequest(id));
       const pipeline = await workflow();
       if (!identity?.repository || !identity?.headSha) throw new Error('invalid intelligence workflow identity');
       switch (id) {
@@ -118,7 +128,14 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
           return result(identity, { status: pipeline.headSha === identity.headSha ? 'available' : 'rejected', head: workflowFixture.github.responses.head });
         case 'stale-head-rejected':
           try { assertCurrentPullRequest({ repo: identity.repository, prNumber: identity.prNumber, headSha: identity.headSha }, { commandRunner: commandRunner(identity.repository, identity.prNumber, 'c'.repeat(40)) }); }
-          catch (_) { return result(identity, { status: 'empty', reasonCode: 'stale_head' }); }
+          catch (error) {
+            const expected = identity.headSha;
+            const observed = 'c'.repeat(40);
+            if (error?.reasonCode === 'stale_head' || (String(error?.message || '').includes(`expected ${expected}`) && String(error?.message || '').includes(`found ${observed}`))) {
+              return result(identity, { status: 'empty', reasonCode: 'stale_head' });
+            }
+            throw error;
+          }
           return result(identity, { status: 'rejected', reasonCode: 'stale_head' });
         case 'provider-failure-fail-open':
           return result(identity, { status: pipeline.memory.query.status, reasonCode: 'provider_failure' });
@@ -141,11 +158,19 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
         }
         case 'lease-loss-fenced': {
           const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-intelligence-lease-'));
-          const outbox = createMemoryOutbox({ baseDir, now: () => new Date(0) });
+          let now = 0;
+          const outbox = createMemoryOutbox({ baseDir, now: () => new Date(now) });
           const created = outbox.create({ providerId: 'mem0', identity: { ...identity, policyDigest: 'fixture-policy' }, events: [] });
           outbox.acquireLease(created.filePath, { owner: 'worker-a', ttlMs: 60000 });
-          try { outbox.acquireLease(created.filePath, { owner: 'worker-b', ttlMs: 60000 }); }
-          catch (_) { return result(identity, { status: 'pending', leaseLost: true }); }
+          now = 61_000;
+          outbox.acquireLease(created.filePath, { owner: 'worker-b', ttlMs: 60000 });
+          try {
+            if (outbox.read(created.filePath).lease?.owner !== 'worker-a') throw new Error('resume lease lost');
+            outbox.update(created.filePath, { state: 'accepted' });
+          } catch (error) {
+            if (error?.message === 'resume lease lost') return result(identity, { status: 'pending', leaseLost: true });
+            throw error;
+          }
           return result(identity, { status: 'rejected', leaseLost: false });
         }
         case 'replay-dead-letter-authorized': {
