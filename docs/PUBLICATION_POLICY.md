@@ -45,6 +45,17 @@ Publication is bound to the exact reviewed head SHA:
 Rerunning a review on an unchanged head does not repeat findings the previous
 run already posted.
 
+## Durable replay after runner interruption
+
+The optional durable-resume artifact is an immutable, hashed exact-identity manifest and a fenced
+mutable delivery outbox. It does not change normal publication behavior. An explicitly authorized
+replay worker validates the exact base/head/policy identity and manifest digest before it obtains a
+lease, then consults the authenticated GitHub publication ledger before each bounded batch. Ledger
+records win over local progress, preventing a retry from duplicating a chunk that was published just
+before cancellation. Lease fences prevent an expired worker from persisting after a replacement has
+taken over. Retryable failures back off within a bounded attempt budget; rejected or exhausted
+chunks remain visible as dead letters for operator action.
+
 ## Same-PR decision memory and remote advisory recall
 
 Before parallel review begins, the Action reads one authenticated, paginated snapshot of the pull

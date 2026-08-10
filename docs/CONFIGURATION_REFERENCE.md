@@ -147,6 +147,25 @@ non-merge-eligible result; it can never produce `SHIP`. Immediately before any G
 operation, the Action re-reads the PR head and aborts all writes if it no longer equals the head
 that was reviewed.
 
+### Durable publication resume
+
+Durable publication replay is deliberately opt-in; omitting it preserves the existing synchronous
+publication path. A caller may persist a `durable-review-resume-v1` artifact under `sessions/` and
+upload it with the existing Action artifact step. Artifact names are a SHA-256-derived identity and
+attempt token, rather than repository or pull-request text.
+
+The artifact contains an immutable, digested exact identity (`repository`, pull request, base SHA,
+head SHA, and trusted policy digest) plus a publication plan digest and chunk IDs. Mutable delivery
+state is fenced by a short lease. A replay must provide the exact expected identity, explicit
+authorization, and an authenticated GitHub-ledger reader. The ledger is authoritative for already
+published chunk IDs: local state alone is never proof that a prior GitHub write occurred.
+
+Retryable publication failures use bounded exponential backoff. A non-retryable or exhausted chunk
+is dead-lettered without silently retrying it on a later worker. Cancellation leaves pending chunks
+in the artifact; a later explicitly authorized worker can continue only after acquiring a newer
+lease fence. The replay seam is intentionally injected, so callers must perform their normal
+exact-head check before every GitHub read and write.
+
 ### Optional OpenTelemetry receipts
 
 `telemetry.otel` is advisory and disabled by default. It never changes model routing, verdicts,
