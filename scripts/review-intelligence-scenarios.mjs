@@ -37,9 +37,14 @@ function replayCassette(cassette) {
         return expected.method === request.method && expected.url === request.url
           && JSON.stringify(expected.headers) === JSON.stringify(request.headers) && bodyMatches;
       });
-      if (index < 0) throw new Error(`missing intelligence cassette interaction for ${id}: ${JSON.stringify(request)}`);
+      if (index < 0) throw new Error(`missing intelligence cassette interaction for ${id}`);
       consumed.add(index);
-      return interactions[index].response?.body || {};
+      const recorded = interactions[index].response;
+      const headers = Object.fromEntries(Object.entries(recorded.headers || {})
+        .filter(([key, value]) => /^(?:content-type|retry-after|x-ratelimit-[a-z-]+)$/iu.test(key)
+          && typeof value === 'string')
+        .map(([key, value]) => [key.toLowerCase(), value]));
+      return { status: recorded.status, headers, body: recorded.body || {} };
     },
     assertComplete() {
       if (consumed.size !== interactions.length) throw new Error(`unconsumed intelligence cassette interactions: ${interactions.filter((_, index) => !consumed.has(index)).map((interaction) => interaction.scenarioId).join(',')}`);
@@ -96,15 +101,18 @@ async function executeWorkflow(fixture, replay) {
   const env = { ...process.env, PR_DIFF: JSON.stringify({ repo: fixture.event.repository, prNumber: fixture.event.prNumber, headSha: fixture.event.headSha, title: 'Fixture review', diff: 'diff --git a/src/app.js b/src/app.js\n+const safe = true;\n' }), PR_REPO: fixture.event.repository, PR_NUMBER: String(fixture.event.prNumber), PR_HEAD_SHA: '', GITHUB_SHA: fixture.event.headSha, GITHUB_BASE_SHA: 'b'.repeat(40), GITHUB_OUTPUT: outputPath, REVIEW_YETI_CONFIG_DIR: configRoot, OPENROUTER_API_KEY: 'fixture-key', OPENROUTER_MODEL: 'fixture-model', OPENROUTER_BASE_URL: 'https://openrouter.fixture.test/v1', OPENROUTER_SKIP_CHAT_PREFLIGHT: 'true', VITEST: 'true', GITHUB_ACTIONS: 'false', MEM0_URL: 'https://mem0.fixture.test', MEM0_API_KEY: 'fixture-memory-key' };
   const original = { log: console.log, warn: console.warn, error: console.error };
   const previousCwd = process.cwd();
+  let providerResponse = null;
   console.log = console.warn = console.error = () => {};
   try {
     process.chdir(root);
-    return await runReviewPipeline({ env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async (input, init = {}) => {
+    const pipeline = await runReviewPipeline({ env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async (input, init = {}) => {
       const headers = Object.fromEntries(Object.entries(init.headers || {}).map(([key, value]) => [key.toLowerCase(), /authorization|token|key/iu.test(key) ? '<redacted>' : String(value)]));
       const body = init.body ? JSON.parse(String(init.body)) : null;
       const response = replay.fetch('provider-failure-fail-open', { method: String(init.method || 'GET').toUpperCase(), url: String(input), headers, body });
-      return new Response(JSON.stringify(response), { status: 503 });
+      providerResponse = { status: response.status, headers: response.headers };
+      return new Response(JSON.stringify(response.body), { status: response.status, headers: response.headers });
     }, modelClient: async ({ persona }) => ({ personaId: persona.id, displayName: persona.name, model: 'fixture-model', provider: 'fixture-openrouter', decision: 'APPROVE', findings: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, costUSD: 0 } }) });
+    return { pipeline, providerResponse };
   } finally {
     process.chdir(previousCwd);
     console.log = original.log; console.warn = original.warn; console.error = original.error;
@@ -124,7 +132,8 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
   return {
     async run(id) {
       if (id !== 'provider-failure-fail-open') replay.fetch(id, scenarioRequest(id));
-      const pipeline = await workflow();
+      const execution = await workflow();
+      const pipeline = execution.pipeline;
       if (!identity?.repository || !identity?.headSha) throw new Error('invalid intelligence workflow identity');
       switch (id) {
         case 'repeated-pr-feedback-transitions':
@@ -143,7 +152,7 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
           }
           return result(identity, { status: 'rejected', reasonCode: 'stale_head' });
         case 'provider-failure-fail-open':
-          return result(identity, { status: pipeline.memory.query.status, reasonCode: 'provider_failure' });
+          return result(identity, { status: pipeline.memory.query.status, reasonCode: 'provider_failure', providerStatus: execution.providerResponse?.status });
         case 'compaction-bounded': {
           const output = compact([{ id: 'old', role: 'tool', content: 'prior context' }, { id: 'new', role: 'user', content: 'current' }], { enabled: true, maxBytes: 128, summaryBytes: 64 });
           return result(identity, { status: output.receipt.status === 'compacted' ? 'accepted' : 'rejected', compacted: output.receipt.compacted, maxEntries: 40 });
