@@ -156,7 +156,7 @@ attempt token, rather than repository or pull-request text.
 
 The artifact contains an immutable, digested exact identity (`repository`, pull request, base SHA,
 head SHA, and trusted policy digest) plus a publication plan digest and chunk IDs. Mutable delivery
-state is fenced by a short lease. A replay must provide the exact expected identity, explicit
+state is fenced by a short lease plus sidecar-lock/CAS generation. A replay must provide the exact expected identity, explicit
 authorization, and an authenticated GitHub-ledger reader. The ledger is authoritative for already
 published chunk IDs: local state alone is never proof that a prior GitHub write occurred.
 

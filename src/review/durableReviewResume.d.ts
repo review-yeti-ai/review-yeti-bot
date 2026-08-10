@@ -16,8 +16,8 @@ export declare function canonicalJson(value: unknown): string;
 export type DurableReviewResumeStore = {
   create(input: { identity: ReviewResumeIdentity; attempt: number; planDigest: string; chunks: ReviewPublicationChunk[] }): { filePath: string; manifest: Record<string, unknown> };
   read(filePath: string, expectedIdentity?: ReviewResumeIdentity): Record<string, unknown>;
-  acquireLease(filePath: string, input: { owner: string; ttlMs?: number }): { owner: string; fence: number; acquiredAt: string; expiresAt: string };
-  update(filePath: string, lease: { owner: string; fence: number }, updater: (payload: Record<string, unknown>) => Record<string, unknown>): Record<string, unknown>;
+  acquireLease(filePath: string, input: { owner: string; ttlMs?: number }): { owner: string; fence: number; generation: number; acquiredAt: string; expiresAt: string };
+  update(filePath: string, lease: { owner: string; fence: number; generation: number }, updater: (payload: Record<string, unknown>) => Record<string, unknown>): Record<string, unknown>;
 };
 
 export declare function createDurableReviewResumeStore(options?: { baseDir?: string; now?: () => Date }): DurableReviewResumeStore;

@@ -68,6 +68,20 @@ describe('durable review publication resume', () => {
     expect(publishChunk).not.toHaveBeenCalled();
   });
 
+  it('rejects missing, duplicate, or extraneous delivery chunks before replay', () => {
+    const { store, created } = fixture();
+    const payload = JSON.parse(fs.readFileSync(created.filePath, 'utf8'));
+    payload.delivery.chunks.pop();
+    fs.writeFileSync(created.filePath, JSON.stringify(payload));
+    expect(() => store.read(created.filePath, identity)).toThrow('invalid resume delivery chunks');
+
+    const replacement = fixture();
+    const duplicate = JSON.parse(fs.readFileSync(replacement.created.filePath, 'utf8'));
+    duplicate.delivery.chunks.push({ ...duplicate.delivery.chunks[0] });
+    fs.writeFileSync(replacement.created.filePath, JSON.stringify(duplicate));
+    expect(() => replacement.store.read(replacement.created.filePath, identity)).toThrow('invalid resume delivery chunks');
+  });
+
   it('fences an expired lease so an old owner cannot persist after lease loss', () => {
     const { store, created, advance } = fixture();
     const first = store.acquireLease(created.filePath, { owner: 'runner-a', ttlMs: 1000 });
@@ -78,11 +92,28 @@ describe('durable review publication resume', () => {
     expect(() => store.update(created.filePath, first, () => ({ state: 'accepted' }))).toThrow('resume lease lost');
   });
 
+  it('serializes competing lease acquisition so only one worker can claim a generation', () => {
+    const { store, created, advance } = fixture();
+    store.acquireLease(created.filePath, { owner: 'expired-owner', ttlMs: 1000 });
+    advance(2000);
+
+    const attempts = ['runner-a', 'runner-b'].map((owner) => {
+      try { return { owner, lease: store.acquireLease(created.filePath, { owner, ttlMs: 1000 }) }; } catch (error) { return { owner, error }; }
+    });
+    const acquired = attempts.filter((attempt) => 'lease' in attempt);
+    const rejected = attempts.filter((attempt) => 'error' in attempt);
+
+    expect(acquired).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as any).error)).toContain('resume lease is held');
+    expect(store.read(created.filePath, identity).generation).toBe((acquired[0] as any).lease.generation);
+  });
+
   it('tracks bounded batches, retries retryable failures with backoff, and dead-letters exhausted chunks', async () => {
-    const { options, publishChunk, store, created } = fixture();
+    const { options, publishChunk, published, store, created } = fixture();
     publishChunk
       .mockRejectedValueOnce(new Error('temporary provider failure'))
-      .mockResolvedValueOnce({ publicationId: 'first' })
+      .mockImplementationOnce(async ({ chunk }: any) => { published.add(chunk.id); return { publicationId: 'first' }; })
       .mockRejectedValueOnce(new Error('permanent provider failure'));
 
     const result = await replayDurableReviewPublication({ ...options, batchSize: 2, maxAttempts: 2 });
@@ -103,6 +134,32 @@ describe('durable review publication resume', () => {
     expect(result).toMatchObject({ status: 'accepted', published: 1, skipped: 1 });
     expect(publishChunk).toHaveBeenCalledTimes(1);
     expect(store.read(created.filePath, identity).delivery.chunks[0]).toMatchObject({ status: 'published', source: 'github_ledger' });
+  });
+
+  it('reconciles locally published chunks against the ledger before terminal acceptance', async () => {
+    const { options, created, publishChunk, store } = fixture();
+    const payload = JSON.parse(fs.readFileSync(created.filePath, 'utf8'));
+    payload.delivery.chunks[0] = { ...payload.delivery.chunks[0], status: 'published', source: 'publisher' };
+    fs.writeFileSync(created.filePath, JSON.stringify(payload));
+
+    await expect(replayDurableReviewPublication(options)).resolves.toMatchObject({ status: 'accepted', published: 2, skipped: 0 });
+    expect(publishChunk).toHaveBeenCalledTimes(2);
+    expect(options.ledger.getPublishedChunkIds).toHaveBeenCalledTimes(2);
+    expect(store.read(created.filePath, identity).delivery.chunks.every((chunk: any) => chunk.source === 'github_ledger')).toBe(true);
+  });
+
+  it('cancels during retry backoff without attempting another ledger or publication write', async () => {
+    const { options, publishChunk, ledger, store, created } = fixture();
+    const controller = new AbortController();
+    publishChunk.mockRejectedValueOnce(new Error('temporary provider failure'));
+    options.sleep.mockImplementationOnce(async () => { controller.abort(); });
+
+    await expect(replayDurableReviewPublication({ ...options, signal: controller.signal, maxAttempts: 2 })).resolves.toMatchObject({ status: 'cancelled', published: 0 });
+    expect(publishChunk).toHaveBeenCalledTimes(1);
+    expect(ledger.getPublishedChunkIds).toHaveBeenCalledTimes(1);
+    expect(publishChunk.mock.calls[0][0].signal).toBe(controller.signal);
+    expect(ledger.getPublishedChunkIds.mock.calls[0][0].signal).toBe(controller.signal);
+    expect(store.read(created.filePath, identity).delivery.chunks[0]).toMatchObject({ status: 'pending', attempts: 1 });
   });
 
   it('requires explicit replay authorization before acquiring a lease or publishing', async () => {

@@ -59,6 +59,43 @@ function atomicWrite(filePath, value) {
   }
 }
 
+function waitForLock(milliseconds) {
+  // A short synchronous wait is intentional: callers mutate one small JSON artifact and must not
+  // observe the same generation concurrently from separate Action processes.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function withExclusiveArtifactLock(filePath, operation, { timeoutMs = 2000, staleMs = 30000 } = {}) {
+  const lockPath = `${filePath}.lock`;
+  const deadline = Date.now() + timeoutMs;
+  let descriptor;
+  while (descriptor === undefined) {
+    try {
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+      descriptor = fs.openSync(lockPath, 'wx', 0o600);
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > staleMs) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch (statError) {
+        if (statError?.code === 'ENOENT') continue;
+        throw statError;
+      }
+      if (Date.now() >= deadline) throw new Error('resume artifact is locked by another writer');
+      waitForLock(10);
+    }
+  }
+  try {
+    return operation();
+  } finally {
+    fs.closeSync(descriptor);
+    try { fs.unlinkSync(lockPath); } catch (_) { /* stale-lock recovery owns a rare cleanup race */ }
+  }
+}
+
 function createChunks(chunks) {
   if (!Array.isArray(chunks) || !chunks.length) throw new Error('resume publication chunks are required');
   return chunks.map((chunk, index) => {
@@ -92,8 +129,16 @@ function verifyManifest(payload, expectedIdentity) {
   if (payload.manifestDigest !== sha256(digestManifest) || manifest.manifestDigest !== payload.manifestDigest) throw new Error('resume manifest digest mismatch');
   if (!payload.delivery || !Array.isArray(payload.delivery.chunks)) throw new Error('invalid resume delivery state');
   const manifestIds = manifest.chunks.map((chunk) => chunk.id);
-  if (new Set(manifestIds).size !== manifestIds.length || payload.delivery.chunks.some((chunk) => !manifestIds.includes(chunk.id))) {
+  const deliveryIds = payload.delivery.chunks.map((chunk) => chunk?.id);
+  if (new Set(manifestIds).size !== manifestIds.length
+    || new Set(deliveryIds).size !== deliveryIds.length
+    || manifestIds.length !== deliveryIds.length
+    || manifestIds.some((id) => !deliveryIds.includes(id))) {
     throw new Error('invalid resume delivery chunks');
+  }
+  if (!Number.isSafeInteger(Number(payload.generation)) || Number(payload.generation) < 0) throw new Error('invalid resume generation');
+  if (payload.lease && (!Number.isSafeInteger(Number(payload.lease.generation)) || payload.lease.generation !== payload.generation)) {
+    throw new Error('invalid resume lease generation');
   }
   return payload;
 }
@@ -139,14 +184,18 @@ function createDurableReviewResumeStore({ baseDir = path.join(process.cwd(), 'se
           chunks: manifest.chunks.map((chunk) => ({ id: chunk.id, status: 'pending', attempts: 0 })),
         },
         fence: 0,
+        generation: 0,
         lease: null,
         createdAt: now().toISOString(),
         updatedAt: now().toISOString(),
       };
       manifest.manifestDigest = payload.manifestDigest;
       const filePath = path.join(baseDir, `${manifest.artifactName}.json`);
-      write(filePath, payload);
-      return { filePath, manifest: clone(manifest) };
+      return withExclusiveArtifactLock(filePath, () => {
+        if (fs.existsSync(filePath)) throw new Error('resume artifact already exists');
+        write(filePath, payload);
+        return { filePath, manifest: clone(manifest) };
+      });
     },
 
     read,
@@ -154,43 +203,55 @@ function createDurableReviewResumeStore({ baseDir = path.join(process.cwd(), 'se
     acquireLease(filePath, { owner, ttlMs = 300000 } = {}) {
       const normalizedOwner = String(owner || '').trim().slice(0, 128);
       if (!normalizedOwner) throw new Error('resume lease owner is required');
-      const current = read(filePath);
-      const currentTime = now().getTime();
-      const currentLease = current.lease;
-      if (currentLease?.owner && currentLease.owner !== normalizedOwner && new Date(currentLease.expiresAt).getTime() > currentTime) {
-        throw new Error(`resume lease is held by ${currentLease.owner}`);
-      }
-      const fence = Number(current.fence || 0) + 1;
-      const lease = {
-        owner: normalizedOwner,
-        fence,
-        acquiredAt: new Date(currentTime).toISOString(),
-        expiresAt: new Date(currentTime + Math.max(1000, Number(ttlMs) || 300000)).toISOString(),
-      };
-      current.fence = fence;
-      current.lease = lease;
-      current.updatedAt = now().toISOString();
-      write(filePath, current);
-      return clone(lease);
+      return withExclusiveArtifactLock(filePath, () => {
+        const current = read(filePath);
+        const currentTime = now().getTime();
+        const currentLease = current.lease;
+        if (currentLease?.owner && currentLease.owner !== normalizedOwner && new Date(currentLease.expiresAt).getTime() > currentTime) {
+          throw new Error(`resume lease is held by ${currentLease.owner}`);
+        }
+        const fence = Number(current.fence || 0) + 1;
+        const generation = Number(current.generation || 0) + 1;
+        const lease = {
+          owner: normalizedOwner,
+          fence,
+          generation,
+          acquiredAt: new Date(currentTime).toISOString(),
+          expiresAt: new Date(currentTime + Math.max(1000, Number(ttlMs) || 300000)).toISOString(),
+        };
+        current.fence = fence;
+        current.generation = generation;
+        current.lease = lease;
+        current.updatedAt = now().toISOString();
+        write(filePath, current);
+        return clone(lease);
+      });
     },
 
     update(filePath, lease, updater) {
-      if (!lease?.owner || !Number.isSafeInteger(Number(lease.fence))) throw new Error('resume lease token is required');
+      if (!lease?.owner || !Number.isSafeInteger(Number(lease.fence)) || !Number.isSafeInteger(Number(lease.generation))) throw new Error('resume lease token is required');
       if (typeof updater !== 'function') throw new Error('resume updater is required');
-      const current = read(filePath);
-      const currentLease = current.lease;
-      if (!currentLease || currentLease.owner !== lease.owner || currentLease.fence !== lease.fence || new Date(currentLease.expiresAt).getTime() <= now().getTime()) {
-        throw new Error('resume lease lost');
-      }
-      const next = updater(clone(current));
-      if (!next || typeof next !== 'object') throw new Error('resume updater must return an object');
-      // The manifest is immutable. Delivery and lease are the only replay-owned state.
-      if (next.manifestDigest !== current.manifestDigest || canonicalJson(next.manifest) !== canonicalJson(current.manifest)) {
-        throw new Error('resume manifest is immutable');
-      }
-      next.updatedAt = now().toISOString();
-      write(filePath, next);
-      return next;
+      return withExclusiveArtifactLock(filePath, () => {
+        const current = read(filePath);
+        const currentLease = current.lease;
+        if (!currentLease || currentLease.owner !== lease.owner || currentLease.fence !== lease.fence
+          || currentLease.generation !== lease.generation || current.generation !== lease.generation
+          || new Date(currentLease.expiresAt).getTime() <= now().getTime()) {
+          throw new Error('resume lease lost');
+        }
+        const next = updater(clone(current));
+        if (!next || typeof next !== 'object') throw new Error('resume updater must return an object');
+        // The manifest is immutable. Delivery and lease are the only replay-owned state.
+        if (next.manifestDigest !== current.manifestDigest || canonicalJson(next.manifest) !== canonicalJson(current.manifest)) {
+          throw new Error('resume manifest is immutable');
+        }
+        const generation = current.generation + 1;
+        next.generation = generation;
+        if (next.lease) next.lease = { ...currentLease, ...next.lease, generation };
+        next.updatedAt = now().toISOString();
+        write(filePath, next);
+        return next;
+      });
     },
   };
 }
@@ -238,6 +299,7 @@ async function replayDurableReviewPublication({
 
   const persist = (mutate) => {
     payload = store.update(filePath, lease, mutate);
+    if (payload.lease) lease = clone(payload.lease);
     return payload;
   };
   const release = (state) => {
@@ -247,48 +309,75 @@ async function replayDurableReviewPublication({
       delivery: { ...current.delivery, state: state || current.delivery.state },
     }));
   };
+  const cancelled = () => ({ status: 'cancelled', filePath, published, skipped, deadLettered });
+
+  const reconcileLedger = async () => {
+    if (signal?.aborted) return false;
+    const ledgerIds = await ledger.getPublishedChunkIds({
+      identity: payload.manifest.identity,
+      identityDigest: payload.identityDigest,
+      manifestDigest: payload.manifestDigest,
+      signal,
+    });
+    if (signal?.aborted) return false;
+    if (!Array.isArray(ledgerIds) && !(ledgerIds instanceof Set)) throw new Error('GitHub publication ledger returned invalid chunk IDs');
+    const knownPublished = new Set(ledgerIds);
+    let changed = false;
+    const reconciled = payload.delivery.chunks.map((chunk) => {
+      if (knownPublished.has(chunk.id)) {
+        if (chunk.status !== 'published') skipped += 1;
+        const next = { ...chunk, status: 'published', source: 'github_ledger', publicationId: undefined };
+        if (canonicalJson(next) !== canonicalJson(chunk)) changed = true;
+        return next;
+      }
+      // A local "published" record is only a delivery hint. A fresh authenticated ledger read
+      // is required before terminal acceptance, including after a worker was interrupted.
+      if (chunk.status === 'published') {
+        changed = true;
+        return { ...chunk, status: 'pending', source: undefined, publicationId: undefined };
+      }
+      return chunk;
+    });
+    if (changed) {
+      persist((current) => ({
+        ...current,
+        delivery: { ...current.delivery, chunks: reconciled },
+      }));
+    }
+    return true;
+  };
 
   try {
     while (true) {
       if (signal?.aborted) {
         release('pending');
-        return { status: 'cancelled', filePath, published, skipped, deadLettered };
+        return cancelled();
+      }
+      payload = store.read(filePath, expectedIdentity);
+      // Read all manifest chunks, not just local pending work. GitHub remains the source of truth
+      // when a previous process was cancelled between its external write and local persistence.
+      if (!await reconcileLedger()) {
+        release('pending');
+        return cancelled();
       }
       payload = store.read(filePath, expectedIdentity);
       const pending = payload.delivery.chunks.filter((chunk) => chunk.status === 'pending').slice(0, boundedBatchSize);
       if (!pending.length) break;
 
-      const ledgerIds = await ledger.getPublishedChunkIds({
-        identity: payload.manifest.identity,
-        identityDigest: payload.identityDigest,
-        manifestDigest: payload.manifestDigest,
-      });
-      if (!Array.isArray(ledgerIds) && !(ledgerIds instanceof Set)) throw new Error('GitHub publication ledger returned invalid chunk IDs');
-      const knownPublished = new Set(ledgerIds);
-
       for (const deliveryChunk of pending) {
         if (signal?.aborted) {
           release('pending');
-          return { status: 'cancelled', filePath, published, skipped, deadLettered };
+          return cancelled();
         }
         const manifestChunk = payload.manifest.chunks.find((chunk) => chunk.id === deliveryChunk.id);
         if (!manifestChunk) throw new Error('resume manifest/delivery chunk mismatch');
-        if (knownPublished.has(manifestChunk.id)) {
-          persist((current) => ({
-            ...current,
-            delivery: {
-              ...current.delivery,
-              chunks: current.delivery.chunks.map((chunk) => chunk.id === manifestChunk.id
-                ? { ...chunk, status: 'published', source: 'github_ledger', publicationId: undefined }
-                : chunk),
-            },
-          }));
-          skipped += 1;
-          continue;
-        }
 
         let completed = false;
         for (let attempt = 1; attempt <= boundedMaxAttempts; attempt += 1) {
+          if (signal?.aborted) {
+            release('pending');
+            return cancelled();
+          }
           persist((current) => ({
             ...current,
             delivery: {
@@ -304,6 +393,7 @@ async function replayDurableReviewPublication({
               identity: clone(payload.manifest.identity),
               attempt: payload.manifest.attempt,
               fence: lease.fence,
+              signal,
             });
             persist((current) => ({
               ...current,
@@ -318,8 +408,12 @@ async function replayDurableReviewPublication({
             completed = true;
             break;
           } catch (error) {
+            if (signal?.aborted) return cancelled();
             if (attempt < boundedMaxAttempts && isRetryable(error)) {
               await sleep(Math.min(4000, 250 * (2 ** (attempt - 1))));
+              // Do not issue a second GitHub write or mutate the artifact after cancellation
+              // arrives during backoff; the fenced lease expires for a later authorized worker.
+              if (signal?.aborted) return cancelled();
               continue;
             }
             persist((current) => ({
