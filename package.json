@@ -34,10 +34,11 @@
     "test:chaos": "vitest run tests/integration/reviewWorkflowChaos.integration.test.ts",
     "test:receipts": "node scripts/assert-test-receipts.mjs",
     "test:action-runtime": "vitest run tests/integration/actionRuntime.integration.test.ts tests/integration/telemetryCancellation.integration.test.ts",
+    "test:pi-adapter": "node --test tests/unit/piMcpAdapter.test.js",
     "test:intelligence-eval": "node scripts/evaluate-review-intelligence.mjs --fixture tests/fixtures/review-intelligence/offline-promotion-matrix.json",
     "test:intelligence-promotion": "node scripts/run-review-intelligence-promotion.mjs",
     "test:live-intelligence-smoke": "node scripts/review-intelligence-live-smoke.mjs",
-    "test:all": "npm run test:unit && npm run test:cassettes && npm run test:fixtures && npm run test:memory-vcr && npm run test:workflow && npm run test:outbox && npm run test:security && npm run test:chaos && npm run test:receipts && npm run test:action-runtime && npm run test:intelligence-eval && npm run test:intelligence-promotion && npm run lint && npm run build",
+    "test:all": "npm run test:unit && npm run test:cassettes && npm run test:fixtures && npm run test:memory-vcr && npm run test:workflow && npm run test:outbox && npm run test:security && npm run test:chaos && npm run test:receipts && npm run test:action-runtime && npm run test:pi-adapter && npm run test:intelligence-eval && npm run test:intelligence-promotion && npm run lint && npm run build",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "clean": "rm -rf dist"
