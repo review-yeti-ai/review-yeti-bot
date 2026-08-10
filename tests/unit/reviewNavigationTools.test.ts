@@ -130,6 +130,26 @@ describe('review navigation tools', () => {
     expect(text).not.toHaveBeenCalled();
   });
 
+  it('incrementally decodes an in-cap response without allocating a decoded payload over maxBytes', async () => {
+    const encoded = Buffer.alloc(24, 'x').toString('base64');
+    const raw = JSON.stringify({ sha: 'c'.repeat(40), content: encoded, encoding: 'base64' });
+    const fetchImplementation = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-length' ? String(Buffer.byteLength(raw)) : null },
+      text: async () => raw,
+    }));
+    const client = createGitHubBlobClient({ token: 'secret', fetchImplementation });
+    const bufferFrom = vi.spyOn(Buffer, 'from');
+    try {
+      const result = await client.getBlob({ repository: identity.repository, blobSha: 'c'.repeat(40), headSha: identity.headSha, maxBytes: 4 });
+      expect(result).toMatchObject({ content: 'xxxx', byteCount: 4, truncated: true });
+      expect(bufferFrom.mock.calls.filter((call) => call[1] === 'base64').every((call) => String(call[0]).length <= 8)).toBe(true);
+    } finally {
+      bufferFrom.mockRestore();
+    }
+  });
+
   it('returns allowlisted failure reasons without leaking upstream errors, URLs, or tokens', async () => {
     const blobClient = { getBlob: vi.fn(async () => { throw new Error('Bearer top-secret failed at https://evil.invalid/leak'); }) };
     const tools = createReviewNavigationToolRegistry({ identity, snapshot, config: { enabled: true }, blobClient });

@@ -90,6 +90,47 @@ function readResponseBodyBounded(response, maxBytes) {
   return collect();
 }
 
+function base64Value(code) {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return -1;
+}
+
+// Decode only enough Base64 to satisfy the caller's decoded byte ceiling. This deliberately
+// never constructs a full decoded buffer just to return a truncated prefix.
+function decodeBase64Bounded(value, maxBytes) {
+  const encoded = String(value || '');
+  const output = Buffer.allocUnsafe(maxBytes);
+  let written = 0;
+  let accumulator = 0;
+  let bits = 0;
+  let padded = false;
+  for (let index = 0; index < encoded.length; index += 1) {
+    const code = encoded.charCodeAt(index);
+    if (code === 9 || code === 10 || code === 13 || code === 32) continue;
+    if (code === 61) {
+      padded = true;
+      continue;
+    }
+    if (padded) throw navigationError('blob_fetch_failed');
+    const value6 = base64Value(code);
+    if (value6 < 0) throw navigationError('blob_fetch_failed');
+    accumulator = (accumulator << 6) | value6;
+    bits += 6;
+    while (bits >= 8) {
+      bits -= 8;
+      if (written >= maxBytes) return { buffer: output, truncated: true };
+      output[written] = (accumulator >> bits) & 0xff;
+      written += 1;
+    }
+    accumulator = bits === 0 ? 0 : accumulator & ((1 << bits) - 1);
+  }
+  return { buffer: output.subarray(0, written), truncated: false };
+}
+
 function validRepository(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value) && !value.includes('..');
 }
@@ -211,9 +252,8 @@ function createGitHubBlobClient({ token, fetchImplementation = globalThis.fetch,
         if (String(payload?.sha || '').toLowerCase() !== String(blobSha).toLowerCase() || payload?.encoding !== 'base64') {
           throw navigationError('blob_sha_mismatch');
         }
-        const decoded = Buffer.from(String(payload.content || '').replace(/\s/g, ''), 'base64');
-        const bounded = decoded.subarray(0, boundedInteger(maxBytes, MAX_LIMITS.maxReadBytes, MAX_LIMITS.maxReadBytes));
-        return { sha: String(payload.sha).toLowerCase(), content: bounded.toString('utf8'), truncated: decoded.length > bounded.length, byteCount: bounded.length };
+        const decoded = decodeBase64Bounded(payload.content, boundedInteger(maxBytes, MAX_LIMITS.maxReadBytes, MAX_LIMITS.maxReadBytes));
+        return { sha: String(payload.sha).toLowerCase(), content: decoded.buffer.toString('utf8'), truncated: decoded.truncated, byteCount: decoded.buffer.length };
       } catch (error) {
         if (operation.timedOut()) throw navigationError('request_timeout');
         if (isAbort(error) || signal?.aborted) throw navigationError('cancelled');
