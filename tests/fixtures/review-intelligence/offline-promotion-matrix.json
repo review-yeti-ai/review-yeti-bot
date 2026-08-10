@@ -2,7 +2,7 @@
   "schemaVersion": "review-intelligence-eval-v1",
   "liveEvidence": false,
   "vcrFixture": "offline-review-intelligence",
-  "vcrSha256": "936266d34926cb6b3ac518b66d5ab798f3d2f3c0759c27aa345f41cec151029d",
+  "vcrSha256": "003df5485ec9c1e21fa03005f93a2da04923c4540e35f612206a6becfd2caa6c",
   "scenarios": [
     { "id": "repeated-pr-feedback-transitions", "offline": true, "expected": { "status": "pass", "receipt": { "status": "accepted", "githubLedger": "exact-head-deduplicated" } } },
     { "id": "session-recap-exact-head", "offline": true, "expected": { "status": "pass", "receipt": { "status": "available", "head": "exact" } } },

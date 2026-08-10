@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import crypto from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const { compact } = require('../src/review/contextWindow.js');
@@ -6,6 +7,7 @@ const { createReviewTelemetry } = require('../src/telemetry/reviewTelemetry.js')
 const { createReviewNavigationToolRegistry } = require('../src/mcp/reviewNavigationTools.js');
 const { createMemoryOutbox } = require('../src/memory/memoryOutbox.js');
 const { replayMemoryOutbox } = require('../src/memory/replayMemoryOutbox.js');
+const { createDurableReviewResumeStore } = require('../src/review/durableReviewResume.js');
 const { runReviewPipeline } = require('../src/runtime/reviewPipelineRuntime.js');
 const { assertCurrentPullRequest } = require('../.github/workflows/pipelines/review-pipeline.js');
 const fs = require('node:fs');
@@ -26,16 +28,21 @@ function replayCassette(cassette) {
   const consumed = new Set();
   return {
     fetch(id, request) {
-      const index = interactions.findIndex((interaction, candidate) => !consumed.has(candidate) && interaction?.scenarioId === id
-        && interaction.request.method === request.method && interaction.request.url === request.url
-        && JSON.stringify(interaction.request.headers) === JSON.stringify(request.headers)
-        && JSON.stringify(interaction.request.body) === JSON.stringify(request.body));
+      const index = interactions.findIndex((interaction, candidate) => {
+        if (consumed.has(candidate) || interaction?.scenarioId !== id) return false;
+        const expected = interaction.request;
+        const bodyMatches = expected.bodySha256
+          ? crypto.createHash('sha256').update(JSON.stringify(request.body)).digest('hex') === expected.bodySha256
+          : JSON.stringify(expected.body) === JSON.stringify(request.body);
+        return expected.method === request.method && expected.url === request.url
+          && JSON.stringify(expected.headers) === JSON.stringify(request.headers) && bodyMatches;
+      });
       if (index < 0) throw new Error(`missing intelligence cassette interaction for ${id}: ${JSON.stringify(request)}`);
       consumed.add(index);
       return interactions[index].response?.body || {};
     },
     assertComplete() {
-      if (consumed.size !== interactions.length) throw new Error('unconsumed intelligence cassette interactions');
+      if (consumed.size !== interactions.length) throw new Error(`unconsumed intelligence cassette interactions: ${interactions.filter((_, index) => !consumed.has(index)).map((interaction) => interaction.scenarioId).join(',')}`);
     },
   };
 }
@@ -86,9 +93,6 @@ async function executeWorkflow(fixture, replay) {
   fs.mkdirSync(configRoot, { recursive: true });
   fs.writeFileSync(path.join(configRoot, '.review-yeti.yaml'), 'memory:\n  enabled: true\n  provider: mem0\n  mode: single\n  transport: rest\n  context: true\n  write: true\n  recall:\n    decision_feedback: true\n    session_recap: true\n  persist:\n    processing: true\n    decision_feedback: true\n    session_recap: true\n  providers:\n    mem0:\n      enabled: true\n      endpoint_env: MEM0_URL\n      credential_env: MEM0_API_KEY\npersonas:\n  - id: security\n  - id: testing\n');
   const outputPath = path.join(root, 'github-output');
-  // The runner's memory transport is an execution seam: consume the normalized provider
-  // request before the pipeline uses the response-shaped failure receipt.
-  const providerResponse = replay.fetch('provider-failure-fail-open', scenarioRequest('provider-failure-fail-open'));
   const env = { ...process.env, PR_DIFF: JSON.stringify({ repo: fixture.event.repository, prNumber: fixture.event.prNumber, headSha: fixture.event.headSha, title: 'Fixture review', diff: 'diff --git a/src/app.js b/src/app.js\n+const safe = true;\n' }), PR_REPO: fixture.event.repository, PR_NUMBER: String(fixture.event.prNumber), PR_HEAD_SHA: '', GITHUB_SHA: fixture.event.headSha, GITHUB_BASE_SHA: 'b'.repeat(40), GITHUB_OUTPUT: outputPath, REVIEW_YETI_CONFIG_DIR: configRoot, OPENROUTER_API_KEY: 'fixture-key', OPENROUTER_MODEL: 'fixture-model', OPENROUTER_BASE_URL: 'https://openrouter.fixture.test/v1', OPENROUTER_SKIP_CHAT_PREFLIGHT: 'true', VITEST: 'true', GITHUB_ACTIONS: 'false', MEM0_URL: 'https://mem0.fixture.test', MEM0_API_KEY: 'fixture-memory-key' };
   const original = { log: console.log, warn: console.warn, error: console.error };
   const previousCwd = process.cwd();
@@ -96,7 +100,10 @@ async function executeWorkflow(fixture, replay) {
   try {
     process.chdir(root);
     return await runReviewPipeline({ env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async (input, init = {}) => {
-      return new Response(JSON.stringify(providerResponse), { status: 503 });
+      const headers = Object.fromEntries(Object.entries(init.headers || {}).map(([key, value]) => [key.toLowerCase(), /authorization|token|key/iu.test(key) ? '<redacted>' : String(value)]));
+      const body = init.body ? JSON.parse(String(init.body)) : null;
+      const response = replay.fetch('provider-failure-fail-open', { method: String(init.method || 'GET').toUpperCase(), url: String(input), headers, body });
+      return new Response(JSON.stringify(response), { status: 503 });
     }, modelClient: async ({ persona }) => ({ personaId: persona.id, displayName: persona.name, model: 'fixture-model', provider: 'fixture-openrouter', decision: 'APPROVE', findings: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, costUSD: 0 } }) });
   } finally {
     process.chdir(previousCwd);
@@ -157,14 +164,13 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
         case 'lease-loss-fenced': {
           const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-intelligence-lease-'));
           let now = 0;
-          const outbox = createMemoryOutbox({ baseDir, now: () => new Date(now) });
-          const created = outbox.create({ providerId: 'mem0', identity: { ...identity, policyDigest: 'fixture-policy' }, events: [] });
-          outbox.acquireLease(created.filePath, { owner: 'worker-a', ttlMs: 60000 });
-          now = 61_000;
-          outbox.acquireLease(created.filePath, { owner: 'worker-b', ttlMs: 60000 });
+          const store = createDurableReviewResumeStore({ baseDir, now: () => new Date(now) });
+          const created = store.create({ identity: { ...identity, baseSha: 'b'.repeat(40), policyDigest: 'fixture-policy' }, attempt: 1, planDigest: 'fixture-plan', chunks: [{ kind: 'review', body: 'fixture' }] });
+          const leaseA = store.acquireLease(created.filePath, { owner: 'worker-a', ttlMs: 1000 });
+          now = 2000;
+          store.acquireLease(created.filePath, { owner: 'worker-b', ttlMs: 60000 });
           try {
-            if (outbox.read(created.filePath).lease?.owner !== 'worker-a') throw new Error('resume lease lost');
-            outbox.update(created.filePath, { state: 'accepted' });
+            store.update(created.filePath, leaseA, (current) => ({ ...current, delivery: { ...current.delivery, state: 'accepted' } }));
           } catch (error) {
             if (error?.message === 'resume lease lost') return result(identity, { status: 'pending', leaseLost: true });
             throw error;
