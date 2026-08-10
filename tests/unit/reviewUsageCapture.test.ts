@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -41,7 +42,7 @@ describe('reviewWithModel captures token usage', () => {
     const res = await reviewWithModel(persona, diffFiles, { repo: 'o/r' }, null, {
       apiKey: 'k', fetchImpl: stub(undefined),
     });
-    expect(res.usage).toEqual({ promptTokens: 0, completionTokens: 0, costUSD: 0 });
+    expect(res.usage).toEqual({ promptTokens: 0, completionTokens: 0 });
   });
 
   it('still reports usage for a lane whose output could not be parsed', async () => {
@@ -58,7 +59,7 @@ describe('reviewWithModel captures token usage', () => {
       apiKey: 'k', fetchImpl: async () => { throw new Error('connection refused'); },
     });
     expect(res.decision).toBe('ERROR');
-    expect(res.usage).toEqual({ promptTokens: 0, completionTokens: 0, costUSD: 0 });
+    expect(res.usage).toEqual({ promptTokens: 0, completionTokens: 0 });
   });
 });
 
@@ -75,10 +76,33 @@ describe('sumUsage', () => {
   });
 
   it('tolerates lanes with no usage recorded', () => {
-    expect(sumUsage([{}, { usage: { promptTokens: 5, completionTokens: 1, costUSD: 0 } }]).promptTokens).toBe(5);
+    const total = sumUsage([{}, { usage: { promptTokens: 5, completionTokens: 1, costUSD: 0 } }]);
+    expect(total.promptTokens).toBe(5);
+    expect(total.costUSD).toBe(0);
   });
 
   it('returns zeros for an empty set', () => {
-    expect(sumUsage([])).toEqual({ promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 });
+    expect(sumUsage([])).toEqual({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+  });
+
+  it('preserves absent provider cost through totals and Action outputs', () => {
+    const usage = sumUsage([{ usage: { promptTokens: 5, completionTokens: 1 } }]);
+    expect(usage).toEqual({ promptTokens: 5, completionTokens: 1, totalTokens: 6 });
+
+    const output = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-no-cost-')), 'github-output.txt');
+    pipeline.writeStepOutputs({ verdict: 'SHIP', metrics: {}, coverageStatus: 'complete', gateDecision: 'PASS', mergeEligible: true }, output, null, usage);
+
+    expect(fs.readFileSync(output, 'utf-8')).toContain('cost-usd=');
+    expect(fs.readFileSync(output, 'utf-8')).not.toContain('cost-usd=0');
+  });
+
+  it('omits aggregate cost when any provider receipt omitted its cost', () => {
+    const usage = sumUsage([
+      { usage: { promptTokens: 5, completionTokens: 1, costUSD: 0.01 } },
+      { usage: { promptTokens: 7, completionTokens: 2 } },
+    ]);
+
+    expect(usage).toEqual({ promptTokens: 12, completionTokens: 3, totalTokens: 15 });
+    expect(usage).not.toHaveProperty('costUSD');
   });
 });

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadReviewWorkflowFixture } from '../support/reviewWorkflowFixtures';
+import { assertReviewWorkflowFixtureSet, loadReviewWorkflowFixture } from '../support/reviewWorkflowFixtures';
 
 const fixtureDirectory = path.resolve(__dirname, '../fixtures/review-workflows');
 const fixtureFiles = () => fs.readdirSync(fixtureDirectory)
@@ -10,12 +10,19 @@ const fixtureFiles = () => fs.readdirSync(fixtureDirectory)
   .sort()
   .map((file) => path.join(fixtureDirectory, file));
 
+const EXPECTED_FIXTURE_IDS = [
+  'fresh-clean', 'ignored-authorized', 'ignored-unauthorized', 'intelligence-evaluation',
+  'open-finding-carried', 'partial-review', 'provider-malformed', 'provider-unavailable',
+  'publication-race', 'replay-dead-letter', 'resolved-and-reopened', 'runner-cancelled', 'stale-head',
+];
+
 describe('review workflow fixtures', () => {
   it('loads a unique, complete deterministic contract for every scenario', () => {
     const fixtures = fixtureFiles().map(loadReviewWorkflowFixture);
 
-    expect(fixtures).toHaveLength(12);
+    expect(fixtures).toHaveLength(EXPECTED_FIXTURE_IDS.length);
     expect(new Set(fixtures.map((fixture) => fixture.id)).size).toBe(fixtures.length);
+    expect(() => assertReviewWorkflowFixtureSet(fixtures.map((fixture) => fixture.id))).not.toThrow();
 
     for (const fixture of fixtures) {
       expect(fixture.event.repository).toBe('acme/review-yeti');
@@ -36,6 +43,11 @@ describe('review workflow fixtures', () => {
         forbiddenStrings: expect.any(Array),
       });
     }
+  });
+
+  it('fails when a required workflow fixture is dropped from the corpus', () => {
+    expect(() => assertReviewWorkflowFixtureSet(EXPECTED_FIXTURE_IDS.filter((id) => id !== 'stale-head')))
+      .toThrow('review workflow fixture IDs do not match the required corpus');
   });
 
   it.each([

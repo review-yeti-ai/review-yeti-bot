@@ -132,9 +132,10 @@ Reviewer charters are prompts executed with **your** API key, so the action deli
 that is already merged and reviewed.
 
 Without this, a pull request could add its own persona files, rewrite the instructions of the
-reviewer examining it, and declare as many reviewers as it liked against your account. Point
-`config-ref` at a different ref to override, and `max-personas` bounds how large a roster may
-grow regardless.
+reviewer examining it, and declare as many reviewers as it liked against your account.
+`config-ref` is retained only for compatibility and, when set, must equal the immutable pull
+request base SHA; it cannot select another ref. `max-personas` bounds how large a roster may grow
+regardless.
 
 A consequence worth knowing: **changes to reviewer configuration take effect once merged**, not
 on the pull request that proposes them.
@@ -500,7 +501,7 @@ over collapsing two distinct defects, since the second hides one.
 | `exclude` | — | Extra comma-separated path globs to skip, on top of the curated built-in list (lockfiles, snapshots, generated files, build output, dependency caches, minified assets, source maps, binaries). |
 | `max-personas` | `25` | Maximum reviewers a resolved roster may contain. Each is one model request per push, so this bounds what a configuration change can spend. |
 | `skip-unchanged` | `false` | When true, a push that changed only excluded paths since the last reviewed commit carries the previous verdict forward instead of re-running the panel. The summary is still updated in place with the new head SHA. Off by default because wrongly skipping ships an unreviewed change, while wrongly re-reviewing only costs a rerun. |
-| `config-ref` | — | Git ref to read .review-yeti.yaml and .review-yeti/personas from. Defaults to the pull request's base branch. Reviewer charters are prompts run with your API key, so they are deliberately not read from the pull request's own head. |
+| `config-ref` | — | Deprecated compatibility input. When set, it must equal the immutable pull request base SHA. Reviewer charters are prompts run with your API key, so configuration is never read from the pull request head or another mutable ref. |
 | `pr-number` | — | Pull request to review. Defaults to the PR that triggered the workflow. |
 | `repo` | — | Repository owning the pull request, as owner/name. Defaults to the current repository. |
 | `github-token` | workflow token | Token used to read the diff and post the review comment. The default workflow token is sufficient for same-repository reviews. |

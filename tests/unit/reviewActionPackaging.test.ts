@@ -321,6 +321,22 @@ describe('writeStepOutputs', () => {
     expect(fs.readFileSync(file, 'utf-8')).toContain('existing=value');
   });
 
+  it('emits bounded review-unit identity and summaries only when an enabled receipt is provided', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-unit-output-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, null, {
+      reviewUnitReceipt: {
+        identity: { repository: 'owner/repo', prNumber: 9, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64), diffDigest: 'e'.repeat(64) },
+        units: [{ id: 'ru_123', path: 'src/app.js', change: 'deleted', status: 'completed', reason: 'ignored prose must not appear' }],
+        summary: { total: 1, completed: 1, uncovered: 0 },
+      },
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain('review-unit-identity=');
+    expect(content).toContain('review-unit-summary=');
+    expect(content).toContain('"id":"ru_123"');
+    expect(content).not.toContain('ignored prose must not appear');
+  });
+
   it('is a no-op when no output path is provided, so local runs do not throw', () => {
     expect(() => writeStepOutputs(arbitration, undefined)).not.toThrow();
   });
