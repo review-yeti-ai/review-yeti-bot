@@ -280,6 +280,31 @@ use `fallback_models` from their trusted base configuration when the Action inpu
 | `libraries` | `string[]` | inferred from the diff | Optional explicit library names for Context7 search. |
 | `max_snippets` | `number` | `5` | Cap on snippets requested per library (max 10). |
 
+### `review.context.compaction`
+
+This optional Action policy bounds only untrusted Context7 and remote-memory material before
+reviewer fan-out. It does not compact the diff, file manifest, decision ledger, or reviewer
+rules. The block is applied only when the Action has fetched configuration into its temporary
+trusted directory, the supplied base SHA is immutable, and a fresh pull-request snapshot matches
+that SHA; otherwise it remains disabled.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables deterministic metadata-only compaction for optional tool and advisory context. |
+| `max_bytes` | positive integer | `8000` | Maximum UTF-8 bytes for frozen, active, and compacted context combined. Frozen or active content that cannot fit causes the review path to fail rather than sending an oversized prompt. |
+| `summary_bytes` | positive integer | `2000` | Maximum UTF-8 bytes reserved for the compacted metadata block. It must not exceed `max_bytes`; if metadata cannot fit, the compacted block is omitted. |
+| `frozen_overflow` | `fail` | `fail` | Required overflow behavior for frozen context. No truncation mode is supported. |
+
+```yaml
+review:
+  context:
+    compaction:
+      enabled: true
+      max_bytes: 8000
+      summary_bytes: 2000
+      frozen_overflow: fail
+```
+
 The GitHub secret `CONTEXT7_API_KEY` is the hard gate. Without it, Context7 stays off regardless of YAML.
 
 Gitlink changes are never treated as ordinary text files. `metadata_only` requires pinned old/new

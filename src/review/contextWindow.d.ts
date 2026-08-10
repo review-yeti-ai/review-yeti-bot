@@ -22,8 +22,13 @@ export interface ContextCompactionReceipt {
   inputBytes: number;
   outputBytes: number;
   frozenBytes: number;
-  compactedSourceIds: string[];
-  sourceDigests: Record<string, string>;
+  compactedSources: Array<{
+    sourceIndex: number;
+    sourceIdDigest: string;
+    role: 'system' | 'developer' | 'user' | 'assistant' | 'tool' | 'retrieval' | 'unknown';
+    bytes: number;
+    contentDigest: string;
+  }>;
 }
 
 export class ContextWindowFrozenOverflowError extends Error {
