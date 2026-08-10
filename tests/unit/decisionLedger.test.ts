@@ -316,6 +316,56 @@ describe('reconcileDecisionFindings', () => {
 
     expect(result.personaResults[0].findings).toHaveLength(1);
     expect(result.recurrentResolved).toHaveLength(1);
+    expect(result.suppressedRepeats).toEqual([]);
+  });
+
+  it('suppresses a repeat of a claim the author replied to before resolving', () => {
+    // cisco-cdr#4144: the same false "no tests for the new gate script" P1 was raised, replied
+    // to with disproving evidence, and resolved by the author nine times in a row. A resolved
+    // thread with a human reply is a much stronger signal than a bare resolve click.
+    const nodes = [
+      comment(100, findingBody(), botLogin, '2026-08-10T01:00:00Z'),
+      comment(101, 'This is false — see `git diff` output, the test file is right here.', 'author', '2026-08-10T01:05:00Z'),
+    ];
+    const ledger = buildDecisionLedger(snapshot({
+      threads: [thread({ isResolved: true, comments: { nodes } })],
+    }));
+    expect(ledger.entries[0].humanReplyCount).toBe(1);
+
+    const result = reconcileDecisionFindings([
+      { personaId: 'testing', decision: 'FINDINGS', findings: [currentFinding] },
+    ], ledger);
+
+    expect(result.personaResults[0].findings).toEqual([]);
+    expect(result.personaResults[0].decision).toBe('APPROVE');
+    expect(result.recurrentResolved).toEqual([]);
+    expect(result.suppressedRepeats).toHaveLength(1);
+    expect(result.suppressedRepeats[0]).toMatchObject({ path, title: 'Tenant predicate is missing' });
+  });
+
+  it('counts every distinct resolved-and-replied thread that matches one claim, not just the first', () => {
+    const titles = ['No tests for the new gate script', 'No tests for the new verdict gate script', 'Untested final BLOCK/FIX_FIRST exit path'];
+    const threads = titles.map((title, index) => thread({
+      id: `RESOLVED_${index + 1}`,
+      isResolved: true,
+      comments: {
+        nodes: [
+          comment(200 + index * 2, findingBody({ title, claim: 'This new script has no accompanying tests in the diff.' }), botLogin, `2026-08-1${index}T01:00:00Z`),
+          comment(201 + index * 2, 'Not true, the test file is in this diff.', 'author', `2026-08-1${index}T02:00:00Z`),
+        ],
+      },
+    }));
+    const ledger = buildDecisionLedger(snapshot({ threads }));
+    expect(ledger.entries).toHaveLength(3);
+    expect(ledger.entries.every((entry) => entry.humanReplyCount === 1)).toBe(true);
+
+    const ninthOccurrence = { severity: 'P1', path, line: 42, side: 'RIGHT', title: 'Untested critical shell script invocation', body: 'This new script has no accompanying tests in the diff.' };
+    const result = reconcileDecisionFindings([
+      { personaId: 'testing', decision: 'FINDINGS', findings: [ninthOccurrence] },
+    ], ledger);
+
+    expect(result.personaResults[0].findings).toEqual([]);
+    expect(result.suppressedRepeats).toHaveLength(1);
   });
 
   it('suppresses an explicitly ignored claim but not a distinct nearby claim', () => {

@@ -296,22 +296,38 @@ function reconcileDecisionFindings(personaResults, ledger) {
   }));
   const matchedOpenRepeats = new Map();
   const recurrentResolved = new Map();
+  const suppressedRepeats = new Map();
 
   const reconciled = results.map((lane) => {
     const findings = [];
     for (const finding of lane.findings || []) {
-      const entry = actionableEntries.find((candidate) => entryMatchesFinding(candidate, finding));
-      if (!entry) {
-        findings.push(finding);
+      const matches = actionableEntries.filter((candidate) => entryMatchesFinding(candidate, finding));
+      const openMatch = matches.find((candidate) => candidate.state === 'open');
+      if (openMatch) {
+        matchedOpenRepeats.set(openMatch.threadId, ledgerEntryAsFinding(openMatch));
         continue;
       }
-      if (entry.state === 'open') {
-        matchedOpenRepeats.set(entry.threadId, ledgerEntryAsFinding(entry));
-        continue;
-      }
-      if (entry.state === 'ignored') continue;
-      if (entry.state === 'resolved') {
-        recurrentResolved.set(entry.threadId, ledgerEntryAsFinding(entry));
+      const ignoredMatch = matches.find((candidate) => candidate.state === 'ignored');
+      if (ignoredMatch) continue;
+      const resolvedMatches = matches.filter((candidate) => candidate.state === 'resolved');
+      if (resolvedMatches.length > 0) {
+        // A resolved thread with no human reply carries no signal beyond "someone tidied up" —
+        // GitHub's resolve button alone has unknown intent, so the claim is treated as fresh and
+        // reported again if the current diff still demonstrates it. A resolved thread the author
+        // actually replied to is different: the author told the reviewer, in words, that the
+        // claim was wrong (or fixed), and then closed it. A reviewer repeating that exact claim
+        // afterward is not new evidence of a reintroduced defect — every occurrence of this
+        // pattern examined for this fix was the same hallucinated absence claim, unchanged,
+        // republished nine times in a row on one pull request despite being disproved and
+        // resolved on all nine. Suppress the repeat instead of costing the author a tenth
+        // round-trip; it is still surfaced to humans (see suppressedRepeats) so nothing vanishes
+        // silently.
+        const repliedResolution = resolvedMatches.find((entry) => entry.humanReplyCount > 0);
+        if (repliedResolution) {
+          suppressedRepeats.set(repliedResolution.threadId, ledgerEntryAsFinding(repliedResolution));
+          continue;
+        }
+        for (const entry of resolvedMatches) recurrentResolved.set(entry.threadId, ledgerEntryAsFinding(entry));
       }
       findings.push(finding);
     }
@@ -328,6 +344,7 @@ function reconcileDecisionFindings(personaResults, ledger) {
     ignored,
     recurrentResolved: [...recurrentResolved.values()],
     matchedOpenRepeats: [...matchedOpenRepeats.values()],
+    suppressedRepeats: [...suppressedRepeats.values()],
   };
 }
 
