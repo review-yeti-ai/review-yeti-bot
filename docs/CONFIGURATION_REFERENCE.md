@@ -7,12 +7,15 @@ This reference guide provides a complete, 1:1 schema specification for `.review-
 ## 📋 Table of Contents
 
 1. [Configuration File Resolution](#configuration-file-resolution)
-2. [Top-Level Schema Overview](#top-level-schema-overview)
-3. [V4 Execution Policy](#v4-execution-policy)
-4. [The 6 Standard Sections](#the-6-standard-sections)
+2. [Canonical YAML Examples](#canonical-yaml-examples)
+3. [Top-Level Schema Overview](#top-level-schema-overview)
+4. [V4 Execution Policy](#v4-execution-policy)
+4. [The 6 Compatibility Sections](#the-6-compatibility-sections)
    - [1. `reviews`](#1-reviews)
    - [2. `chat`](#2-chat)
    - [3. `knowledge_base`](#3-knowledge_base)
+   - [3a. `memory`](#3a-memory-provider-selection)
+   - [3b. `memory.honcho`](#3b-memoryhoncho)
    - [4. `path_filters`](#4-path_filters)
    - [5. `auto_review`](#5-auto_review)
    - [6. `dials`](#6-dials)
@@ -36,11 +39,34 @@ On each pull request event, `review-yeti-bot` checks the repository for a config
 5. Organization-level `.github` repository (`.review-yeti.yaml`, `.coderabbit.yaml`)
 6. Built-in system default configuration (`createDefaultV4Config()`)
 
+## Canonical YAML Examples
+
+The complete annotated copy-and-edit configuration is in
+[YAML configuration examples](YAML_CONFIGURATION_EXAMPLES.md). It includes the Action-native
+limits, submodule policy, coverage policy, personas, API-backed memory providers, Context7,
+compaction, review units, finding verification, telemetry, and OpenRouter routing settings.
+
+Use that page together with this reference as follows:
+
+| Need | Use |
+| --- | --- |
+| Start a new repository configuration | [Recommended production configuration](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration) |
+| Turn on Honcho feedback persistence | [Honcho example](YAML_CONFIGURATION_EXAMPLES.md#honcho-recall-and-feedback-persistence) |
+| Require exact-snapshot verification | [Strict verification example](YAML_CONFIGURATION_EXAMPLES.md#strict-exact-snapshot-verification) |
+| Understand legacy/hosted keys | [Compatibility-only sections](YAML_CONFIGURATION_EXAMPLES.md#compatibility-only-sections) |
+
+Only settings marked Action-native affect the composite Action. Compatibility sections are parsed
+so existing configuration files remain usable, but they do not create a local database, grant
+memory authority, or enable a feature by themselves.
+
 ---
 
 ## 📐 Top-Level Schema Overview
 
-A Version 3 configuration contains core policy settings along with six CodeRabbit-mirrored top-level sections:
+A Version 3 configuration contains core policy settings along with six CodeRabbit-mirrored
+compatibility sections. The Action's native API-backed memory contract is the separate `memory`
+section documented below; it does not activate the legacy `knowledge_base` or `.review-yeti-memory`
+database settings.
 
 ```yaml
 version: 3
@@ -90,13 +116,142 @@ limits:
   max_turns: 20
   max_concurrency: 12
 
+memory:
+  same_pr_decisions: true   # authenticated decisions from this pull request only
+  max_entries: 40           # 1-100 entries supplied to each reviewer
+  max_prompt_chars: 8000    # 1000-20000 characters
+  maintainer_commands: true # allow authenticated ignore/unignore commands
+
 # Optional MCP integrations (Action path)
 mcp:
   context7:
     enabled: true            # default true when CONTEXT7_API_KEY is set; false disables
     # libraries: [typescript, github-actions]  # optional force list; else inferred from diff
     # max_snippets: 5
+
+# Optional best-effort OpenTelemetry export. It is disabled by default and becomes active only
+# when this file was fetched by the Action into its trusted base-SHA temp directory.
+telemetry:
+  otel:
+    enabled: false
+    endpoint_env: REVIEW_YETI_OTEL_TRACES_ENDPOINT
+    credential_env: REVIEW_YETI_OTEL_BEARER_TOKEN
+
+# Optional exact-snapshot finding verification. This block is read only from the trusted PR base
+# reference after the Action proves the current base/head pair. Omitting it preserves legacy
+# publication behavior. A configured verifier defaults to report_only.
+review:
+  finding_verifier:
+    mode: report_only       # report_only | enforce
 ```
+
+### Exact-snapshot finding verification
+
+`review.finding_verifier` is an opt-in trusted-base boundary for model findings. The verifier
+normalizes a relative path, checks the exact changed `RIGHT` or `LEFT` line from the unified
+patch, permits file-level findings only for binary, gitlink, or patchless files, optionally
+compares a supplied content hash with the immutable snapshot, and assigns a deterministic claim
+fingerprint. Its receipt contains only bounded reason codes, stable keys, digests, and anchors;
+it never contains model title/body text, author, source, prompt, or blob content.
+
+```yaml
+review:
+  finding_verifier:
+    mode: report_only  # default when this block is present
+```
+
+`report_only` leaves the established arbitration and publication inputs unchanged and appends a
+redacted verifier count to the compact review summary. `enforce` removes rejected findings before
+arbitration and publication. A `needs_review` result (including an exact identity/snapshot,
+ambiguous anchor, or content-hash uncertainty) forces `INCOMPLETE_REVIEW`, `BLOCKED`, and a
+non-merge-eligible result; it can never produce `SHIP`. Immediately before any GitHub publication
+operation, the Action re-reads the PR head and aborts all writes if it no longer equals the head
+that was reviewed.
+
+### Deterministic review units
+
+`review.units` creates an exact-head manifest for changed files. It is disabled unless the trusted
+base configuration enables it. Unit IDs include canonical path/range, content/blob identity,
+repository/head identity, and policy digest. A failed or uncovered unit is never merge-eligible.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables trusted manifest generation and coverage receipts. |
+| `generated_patterns` | `string[]` | `[]` | Additional trusted-base generated-file patterns. |
+| `vendor_patterns` | `string[]` | `[]` | Additional trusted-base vendored-file patterns. |
+| `allow_waived` | `boolean` | `false` | Allows only explicitly trusted maintainer waivers. Failed or uncovered evidence still cannot become `SHIP`. |
+
+```yaml
+review:
+  units:
+    enabled: true
+    generated_patterns: ['**/*.generated.ts']
+    vendor_patterns: ['vendor/**']
+    allow_waived: false
+```
+
+### Durable publication resume
+
+Durable publication replay is deliberately opt-in; omitting it preserves the existing synchronous
+publication path. A caller may persist a `durable-review-resume-v1` artifact under `sessions/` and
+upload it with the existing Action artifact step. Artifact names are a SHA-256-derived identity and
+attempt token, rather than repository or pull-request text.
+
+The artifact contains an immutable, digested exact identity (`repository`, pull request, base SHA,
+head SHA, and trusted policy digest) plus a publication plan digest and chunk IDs. Mutable delivery
+state is fenced by a short lease plus sidecar-lock/CAS generation. A replay must provide the exact expected identity, explicit
+authorization, and an authenticated GitHub-ledger reader. The ledger is authoritative for already
+published chunk IDs: local state alone is never proof that a prior GitHub write occurred.
+
+Retryable publication failures use bounded exponential backoff. A non-retryable or exhausted chunk
+is dead-lettered without silently retrying it on a later worker. Cancellation leaves pending chunks
+in the artifact; a later explicitly authorized worker can continue only after acquiring a newer
+lease fence. The replay seam is intentionally injected, so callers must perform their normal
+exact-head check before every GitHub read and write.
+
+### Optional OpenTelemetry receipts
+
+`telemetry.otel` is advisory and disabled by default. It never changes model routing, verdicts,
+or publication. The Action reads only the *names* of `endpoint_env` and `credential_env` from the
+trusted base configuration; endpoint and credential values are resolved from the runner environment
+after the Action proves the immutable base SHA against a fresh PR snapshot. The endpoint must be
+an HTTPS URL without userinfo, query parameters, or fragments. Telemetry receipts contain only
+status and bounded identifiers—not the endpoint, credential, prompts, comments, authors, source,
+transcripts, raw errors, or provider receipt IDs.
+
+`credential_env` is a bearer-token environment variable (not the OpenTelemetry
+`OTEL_EXPORTER_OTLP_HEADERS` key/value-list format); it is sent only as the Authorization header.
+
+### Same-PR decision memory
+
+The Action snapshots authenticated Review Yeti finding threads once before the parallel reviewer
+fan-out. Every reviewer receives byte-identical, bounded state for open, ignored, and neutrally
+resolved findings. Human reply text, names, reactions, and command reasons never enter model
+prompts. This is same-PR memory only; it does not carry decisions across pull requests or
+repositories.
+
+GitHub resolution has unknown intent and never implies fixed, rejected, or accepted risk. Open
+P0/P1 findings remain in arbitration without duplicate publication. A resolved finding that the
+current diff still demonstrates is eligible for a fresh conversation.
+
+Only collaborators with current `write`, `maintain`, or `admin` permission may reply on a finding
+thread with these commands:
+
+```text
+/review-yeti ignore accepted until API-1234 is delivered
+/review-yeti unignore API-1234 has landed; evaluate this normally again
+```
+
+The command must be the first nonblank line and its reason must contain 3-500 characters. An ignore
+is thread-scoped and reversible. If pagination or permission lookup is incomplete, the Action does
+not grant suppression authority.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `same_pr_decisions` | `boolean` | `true` | Render authenticated same-PR state to reviewers. Setting false removes prompt context only; deterministic open-finding and decision enforcement remains active. |
+| `max_entries` | `integer` | `40` | Maximum ledger entries rendered for each reviewer; valid range 1-100. |
+| `max_prompt_chars` | `integer` | `8000` | Maximum rendered ledger characters; valid range 1000-20000. |
+| `maintainer_commands` | `boolean` | `true` | Honor authenticated thread-scoped ignore and unignore commands. |
 
 ### Per-file diff limit and ignore catalog (Action path)
 
@@ -205,23 +360,33 @@ OpenRouter **client** settings for the composite Action (read from the PR base r
 ```yaml
 github_action:
   openrouter:
+    model: openrouter/auto-beta # primary model; Action `model` input can override
+    allowed_models: [openrouter/auto-beta]
     timeout_ms: 30000         # hard per-request timeout (default 30000 = 30s)
     stream: false             # SSE streaming (default false)
+    data_collection: deny     # allow | deny
+    cost_quality_tradeoff: 5  # 0=cheapest … 10=highest quality
+    ignore_providers: [deepinfra]
     fallback_models:
       - deepseek/deepseek-v4-flash-0731  # ordered fallback after transient primary failures
-    # allowed_models: []
-    # cost_quality_tradeoff: 5   # 0=cheapest … 10=highest quality
-    # data_collection: deny
+    provider_routing:
+      allow_fallbacks: false
+      require_parameters: true
+      sort: { by: throughput, partition: none }
+      max_price: { prompt: 1, completion: 1 }
 ```
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `timeout_ms` | `number` | `30000` | Per-request hard timeout in milliseconds. Lanes that do not return in time fail as `timeout`. Action input `openrouter-timeout-ms` / env `OPENROUTER_TIMEOUT_MS` / var `OPENROUTER_TIMEOUT_MS` override YAML. Clamped to 500–600000. |
 | `stream` | `boolean` | `false` | When true, use OpenRouter SSE streaming. Action input `openrouter-stream` / env `OPENROUTER_STREAM` / var `OPENROUTER_STREAM` override YAML. |
+| `model` | `string` | `openrouter/auto-beta` | Primary model id. The explicit Action `model` input/environment has precedence. |
 | `fallback_models` | `string[]` | `[]` | Ordered model ids used after the primary exhausts its transient-failure retries. Timeouts, network failures, 408, 429, and 5xx responses can move to the next model. Action input `openrouter-fallback-models` / env `OPENROUTER_FALLBACK_MODELS` overrides YAML. |
-| `allowed_models` | `string[]` | — | Auto Router allowlist. |
-| `cost_quality_tradeoff` | `number` | — | Auto Router cost/quality 0–10. |
-| `data_collection` | `allow`\|`deny` | — | When `deny`, sends OpenRouter training opt-out header. |
+| `allowed_models` | `string[]` | `[]` | Auto Router model allowlist. |
+| `ignore_providers` | `string[]` | `[deepinfra]` | Provider slugs excluded from routing; DeepInfra is always excluded. |
+| `cost_quality_tradeoff` | `number` | unset | Auto Router cost/quality 0–10. |
+| `data_collection` | `allow`\|`deny` | unset | When `deny`, sends OpenRouter training opt-out header. |
+| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. |
 
 **Precedence:** action input / env → `.review-yeti.yaml` → defaults (`timeout_ms=30000`, `stream=false`, `fallback_models=[]`).
 
@@ -238,6 +403,31 @@ use `fallback_models` from their trusted base configuration when the Action inpu
 | `libraries` | `string[]` | inferred from the diff | Optional explicit library names for Context7 search. |
 | `max_snippets` | `number` | `5` | Cap on snippets requested per library (max 10). |
 
+### `review.context.compaction`
+
+This optional Action policy bounds only untrusted Context7 and remote-memory material before
+reviewer fan-out. It does not compact the diff, file manifest, decision ledger, or reviewer
+rules. The block is applied only when the Action has fetched configuration into its temporary
+trusted directory, the supplied base SHA is immutable, and a fresh pull-request snapshot matches
+that SHA; otherwise it remains disabled.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables deterministic metadata-only compaction for optional tool and advisory context. |
+| `max_bytes` | positive integer | `8000` | Maximum UTF-8 bytes for frozen, active, and compacted context combined. Frozen or active content that cannot fit causes the review path to fail rather than sending an oversized prompt. |
+| `summary_bytes` | positive integer | `2000` | Maximum UTF-8 bytes reserved for the compacted metadata block. It must not exceed `max_bytes`; if metadata cannot fit, the compacted block is omitted. |
+| `frozen_overflow` | `fail` | `fail` | Required overflow behavior for frozen context. No truncation mode is supported. |
+
+```yaml
+review:
+  context:
+    compaction:
+      enabled: true
+      max_bytes: 8000
+      summary_bytes: 2000
+      frozen_overflow: fail
+```
+
 The GitHub secret `CONTEXT7_API_KEY` is the hard gate. Without it, Context7 stays off regardless of YAML.
 
 Gitlink changes are never treated as ordinary text files. `metadata_only` requires pinned old/new
@@ -248,7 +438,7 @@ run identity.
 
 ---
 
-## 📦 The 6 Standard Sections
+## 📦 The 6 Compatibility Sections
 
 ### 1. `reviews`
 Controls automated code review behaviors, summaries, status publishing, and inline comment formatting.
@@ -309,13 +499,15 @@ chat:
 ---
 
 ### 3. `knowledge_base`
-Configures persistent codebase learnings, vector indexing, and custom repository rules.
+Compatibility-only configuration for hosted/app consumers and CodeRabbit-style files. The public
+composite Action does not build a local SQLite/vector database from this section. Use the native
+`memory` section below to select one API-backed provider for review-time recall and persistence.
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `learnings` | `boolean` | `true` | Enables Persistent PR Memory (`.review-yeti-memory/`) for past PR learnings and nit suppression. |
-| `issues` | `boolean` | `true` | Indexes repository issues for cross-reference context. |
-| `pull_requests` | `boolean` | `true` | Indexes merged pull request history. |
+| `learnings` | `boolean` | `true` | Hosted/app compatibility flag; ignored by the composite Action. |
+| `issues` | `boolean` | `true` | Hosted/app compatibility flag; the Action does not index issues from this key. |
+| `pull_requests` | `boolean` | `true` | Hosted/app compatibility flag; the Action does not index merged PRs from this key. |
 | `custom_instructions` | `string[]` | `[]` | Global repository guidelines and Architectural Decision Records (ADRs). |
 
 ```yaml
@@ -327,6 +519,153 @@ knowledge_base:
     - "ADR-004: All database access must use parameterized queries."
     - "ADR-012: Prefer explicit return types on public TypeScript functions."
 ```
+
+### 3a. `memory` provider selection
+
+Review-time API-backed memory is configured in trusted base-ref YAML. Exactly one provider is active
+per run; production does not fan out writes or merge reads. Honcho remains the default, while
+`mem0`, `hindsight`, `supermemory`, and `retaindb` are selectable adapters. Provider failures
+degrade to GitHub-ledger-only review behavior.
+
+Every provider profile names an HTTP endpoint and credential environment reference. The Action calls
+the provider API through its adapter; it does not open a direct database connection. A local hashed
+outbox may be uploaded for replay, but it is delivery infrastructure rather than a memory backend.
+
+```yaml
+memory:
+  enabled: true
+  provider: honcho
+  mode: single
+  transport: mcp
+  fallback: github_ledger_only
+  query:
+    timeout_ms: 1500
+    max_context_chars: 4000
+    max_entries: 40
+  recall:
+    decision_feedback: true
+    session_recap: true
+    code_signals: true
+    rule_signals: true
+  persist:
+    processing: true
+    decision_feedback: true
+    session_recap: true
+    code_signals: true
+    rule_signals: true
+  providers:
+    honcho:
+      enabled: true
+      transport: mcp
+      endpoint_env: HONCHO_URL
+      credential_env: HONCHO_API_KEY
+      workspace_env: HONCHO_WORKSPACE_ID
+    mem0: { enabled: false, transport: rest, endpoint_env: MEM0_URL, credential_env: MEM0_API_KEY, namespace_env: MEM0_NAMESPACE }
+    hindsight: { enabled: false, transport: rest, endpoint_env: HINDSIGHT_URL, credential_env: HINDSIGHT_API_KEY }
+    supermemory: { enabled: false, transport: rest, endpoint_env: SUPERMEMORY_URL, credential_env: SUPERMEMORY_API_KEY }
+    retaindb: { enabled: false, transport: rest, endpoint_env: RETAINDB_URL, credential_env: RETAINDB_API_KEY }
+```
+
+`memory.provider` must be one of the five built-in IDs, `mode` must be `single`, and
+`fallback` must be `github_ledger_only`. Endpoints and credentials are environment references
+resolved from trusted runtime configuration/Doppler; pull-request YAML cannot retarget them. The
+router intersects the requested domains with provider capabilities and reports omitted domains in
+the receipt. Supermemory and RetainDB remain experimental until live ingestion/readiness evidence
+passes. Cross-provider comparisons use offline outbox replay, never runtime fan-out.
+
+### 3b. `memory.honcho`
+
+Honcho is an optional advisory memory provider for repository-scoped pull-request review context.
+The GitHub decision ledger remains authoritative for finding state, maintainer commands, and
+arbitration. Honcho failures are fail-open and never block publication.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables the Honcho adapter. |
+| `transport` | `string` | `rest` for legacy configs | `mcp` selects the provider-neutral MCP-compatible memory path; `rest` is explicit compatibility/rollback. There is no pipeline-level fallback. |
+| `context` | `boolean` | `false` | Reads bounded Honcho context before reviewer fan-out. |
+| `write` | `boolean` | `false` | Writes normalized review events after GitHub publication. |
+| `timeout_ms` | `number` | `1500` | Request timeout, clamped to `250..5000`. |
+| `max_context_chars` | `number` | `4000` | Prompt context cap, clamped to `1000..8000`. |
+| `recall` | `object` | legacy decision/session only | Enables bounded `decision_feedback`, `session_recap`, `code_signals`, and `rule_signals`; intersected with provider capabilities. |
+| `persist` | `object` | legacy processing/decision/session only | Enables normalized processing, session, code, rule, and feedback event persistence. |
+
+```yaml
+memory:
+  honcho:
+    enabled: true
+    transport: mcp
+    context: true
+    write: true
+    timeout_ms: 1500
+    max_context_chars: 4000
+    recall:
+      decision_feedback: true
+      session_recap: true
+      code_signals: true
+      rule_signals: true
+    persist:
+      processing: true
+      session_recap: true
+      decision_feedback: true
+      code_signals: true
+      rule_signals: true
+```
+
+The Action inputs `honcho-enabled`, `honcho-context`, `honcho-write`,
+`honcho-timeout-ms`, and `honcho-max-context-chars` preserve legacy behavior. New
+`honcho-mcp-enabled` and `honcho-mcp-transport` inputs explicitly opt into or roll back the MCP
+provider path. Precedence is explicit MCP input, trusted `memory.honcho.transport`, then legacy
+REST-compatible defaults. Class toggles remain controlled by trusted YAML and cannot be widened by
+Action inputs. Pass `doppler-token` (and optionally `doppler-project` / `doppler-config`) to resolve
+`HONCHO_URL`/`HONCHO_BASE_URL`, `HONCHO_API_KEY` or `HONCHO_WORKSPACE_JWT`, and
+`HONCHO_WORKSPACE_ID`/`HONCHO_WORKSPACE` through the dependency-free Action runtime client. When no
+explicit workspace is supplied, the adapter uses the scoped JWT workspace claim. That runtime uses
+environment, cache, and Doppler REST API tiers; it deliberately does not
+invoke the Doppler CLI on a GitHub runner. `HONCHO_BASE_URL` and `HONCHO_WORKSPACE` are accepted
+aliases for self-hosted configurations. Do not place credentials in repository configuration.
+
+```yaml
+- uses: review-yeti-ai/review-yeti-bot@main
+  with:
+    llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+    honcho-enabled: 'true'
+    honcho-context: 'true'
+    honcho-write: 'true'
+    doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+    doppler-project: review-yeti-bot
+    doppler-config: production
+```
+
+The provider recalls only normalized, bounded context. GitHub's same-PR decision ledger remains
+authoritative for comments, resolutions, ignores, corrections, and arbitration. PR session recaps
+contain head SHA, turn, verdict, coverage, claim fingerprints, and state transitions—not raw
+comment bodies, authors, or model transcripts. Code signals contain claim fingerprints and
+locations; rule signals contain trusted base SHA/policy digest and are never executable; feedback
+contains authenticated permission class, command kind, transition ID, reason taxonomy, and reason
+hash. A cancelled runner leaves a versioned outbox artifact for replay. Composite-action
+consumers that need recovery after runner termination must upload the emitted `memory-outbox-path`
+output (the file is under `sessions/`):
+
+```yaml
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: review-yeti-memory-outbox-${{ github.run_id }}
+    path: ${{ steps.review.outputs.memory-outbox-path }}
+    if-no-files-found: ignore
+```
+
+An operator can replay an authorized artifact with
+`node scripts/replay-memory-outbox.mjs --path <hashed-outbox> --lease <operator-id> --provider honcho --authorize yes`.
+Replay validates the stored repository/PR/head/policy identity, uses the current trusted Doppler
+endpoint, takes a lease, retries with bounded backoff, and moves repeated failures to dead-letter.
+
+For DigitalOcean self-hosting, require HTTPS at the reverse proxy, JWT authentication with a
+workspace-scoped token, PostgreSQL with pgvector, Redis, a configured LLM provider, and a running
+deriver. Honcho `/health` only proves process reachability; it does not prove representations can
+be derived. Set `honcho-enabled: 'false'` to roll back to GitHub-only behavior without changing the
+decision ledger.
 
 ---
 
@@ -369,7 +708,7 @@ High-level control knobs providing clean, top-level overrides across the platfor
 
 | Knob | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `memory_engine` | `boolean` | `true` | Master switch for `.review-yeti-memory/` Graph Learning Engine and nit suppression. |
+| `memory_engine` | `boolean` | `true` | Hosted/app compatibility switch; it does not select or enable the Action's API-backed `memory` provider. |
 | `mascot` | `boolean` | `true` | Master toggle for ASCII mascot output across reviews and chats. |
 | `confidence_threshold` | `number` | `70` | Global finding confidence cutoff rating (0-100). |
 | `ticket_enforcement` | `boolean` | `false` | Master toggle for Linear / Jira / GitHub ticket validation. |
@@ -390,7 +729,8 @@ dials:
 
 `review-yeti-bot` supports direct, clean configuration toggles that map cleanly into the underlying engine:
 
-- **`memory_engine`** (`boolean`): Enables/disables `.review-yeti-memory/` SQLite learning graph and duplicate nit suppression.
+- **`memory_engine`** (`boolean`): Hosted/app compatibility toggle. It does not enable a local
+  database or replace the Action's API-backed `memory` provider configuration.
 - **`mascot`** (`boolean`): Controls whether ASCII art mascot headers are rendered in comments.
 - **`persona_model`** (`string`): Supported flagship persona models:
   - `claude-5-sonnet` (Anthropic / OpenRouter)

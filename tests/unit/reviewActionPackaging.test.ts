@@ -149,6 +149,19 @@ describe('action.yml — installable GitHub Action contract', () => {
 });
 
 describe('review ignore policy documentation contract', () => {
+  it('ships and documents authenticated same-PR decision memory', () => {
+    expect(fs.existsSync(path.join(rootRepoDir, 'src/review/decisionLedger.js'))).toBe(true);
+    for (const document of [readme, configurationReference, publicationPolicy]) {
+      expect(document).toContain('/review-yeti ignore');
+      expect(document).toContain('/review-yeti unignore');
+      expect(document).toMatch(/same-PR|same pull request/i);
+      expect(document).toMatch(/`write`/i);
+      expect(document).toMatch(/`maintain`/i);
+      expect(document).toMatch(/`admin`/i);
+      expect(document).toMatch(/resolution (?:has|with) unknown intent|unknown intent.*resolution/i);
+    }
+  });
+
   it.each([
     ['README.md', readme],
   ] as const)('%s uses an explicit no-synchronize default workflow example', (_name, document) => {
@@ -306,6 +319,22 @@ describe('writeStepOutputs', () => {
     fs.writeFileSync(file, 'existing=value\n');
     writeStepOutputs(arbitration, file);
     expect(fs.readFileSync(file, 'utf-8')).toContain('existing=value');
+  });
+
+  it('emits bounded review-unit identity and summaries only when an enabled receipt is provided', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-unit-output-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, null, {
+      reviewUnitReceipt: {
+        identity: { repository: 'owner/repo', prNumber: 9, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64), diffDigest: 'e'.repeat(64) },
+        units: [{ id: 'ru_123', path: 'src/app.js', change: 'deleted', status: 'completed', reason: 'ignored prose must not appear' }],
+        summary: { total: 1, completed: 1, uncovered: 0 },
+      },
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain('review-unit-identity=');
+    expect(content).toContain('review-unit-summary=');
+    expect(content).toContain('"id":"ru_123"');
+    expect(content).not.toContain('ignored prose must not appear');
   });
 
   it('is a no-op when no output path is provided, so local runs do not throw', () => {

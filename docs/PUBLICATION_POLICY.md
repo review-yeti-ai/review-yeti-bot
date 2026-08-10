@@ -24,6 +24,12 @@ Invalid paths and incorrect lines are rejected and counted in the review rather
 than suppressing independently validated conversations. The bot never invents a
 nearby anchor and never falls back to a generic issue comment.
 
+When trusted-base `review.finding_verifier.mode` is `enforce`, a finding must also verify against
+the exact reviewed identity and snapshot before it reaches arbitration or publication. Rejected
+findings are removed; snapshot, identity, side, or anchor uncertainty produces
+`INCOMPLETE_REVIEW`/`BLOCKED`, never `SHIP`. `report_only` is the configured default and attaches
+only a redacted verifier summary, preserving established verdict and marker behavior.
+
 ## Idempotency
 
 Publication is bound to the exact reviewed head SHA:
@@ -33,9 +39,52 @@ Publication is bound to the exact reviewed head SHA:
   across pushes instead of duplicated.
 - Unresolved conversations are verified through GitHub's paginated GraphQL
   `reviewThreads` connection before the run reports success.
+- The Action rechecks the pull-request head immediately before it reads prior publication state
+  and before every write; a changed head aborts publication without attempting a write.
 
 Rerunning a review on an unchanged head does not repeat findings the previous
 run already posted.
+
+## Durable replay after runner interruption
+
+The optional durable-resume artifact is an immutable, hashed exact-identity manifest and a fenced
+mutable delivery outbox. It does not change normal publication behavior. An explicitly authorized
+replay worker validates the exact base/head/policy identity and manifest digest before it obtains a
+lease, then consults the authenticated GitHub publication ledger before each bounded batch. Ledger
+records win over local progress, preventing a retry from duplicating a chunk that was published just
+before cancellation. Lease fences prevent an expired worker from persisting after a replacement has
+taken over. Retryable failures back off within a bounded attempt budget; rejected or exhausted
+chunks remain visible as dead letters for operator action.
+
+## Same-PR decision memory and remote advisory recall
+
+Before parallel review begins, the Action reads one authenticated, paginated snapshot of the pull
+request's review threads. Only finding markers authored by the authenticated Review Yeti publisher
+become authoritative ledger memory. Every persona receives the same bounded ledger as user data;
+raw human replies, author names, reactions, and command reasons are never sent to a model.
+
+If API-backed advisory memory is enabled, the Action makes one bounded query to the single selected
+provider and gives the resulting exact-head-scoped context to every reviewer lane. This provider
+context may include normalized feedback transitions, PR session recap metadata, code signals, and
+trusted-base rule signals. It is advisory only: it cannot change ledger state, arbitration,
+publication, or maintainer-command handling. Provider outage degrades to the GitHub ledger alone.
+
+An unresolved P0/P1 finding remains part of deterministic arbitration and therefore remains
+blocking, even when no reviewer repeats it. A repeated open claim reuses the existing conversation.
+GitHub resolution has unknown intent: it does not mean fixed, rejected, or accepted risk. When a
+resolved claim is still demonstrated by the current diff, it is published as a fresh conversation.
+
+Maintainers can explicitly suppress or restore one thread's claim by replying:
+
+```text
+/review-yeti ignore accepted until API-1234 is delivered
+/review-yeti unignore API-1234 has landed; evaluate this normally again
+```
+
+Commands are honored only from collaborators whose current repository permission is `write`,
+`maintain`, or `admin`. The command must be the first nonblank line and include a reason. Ignore
+decisions are visible in the summary and fail closed when thread history or permission lookup is
+incomplete.
 
 ## Durable partial review semantics
 
@@ -76,4 +125,5 @@ publication success alone.
 
 - Shared planner: `src/review/findingPublication.js`
 - Duplicate detection: `src/review/claimSimilarity.js`
+- Same-PR decision ledger: `src/review/decisionLedger.js`
 - Action adapter: `.github/workflows/pipelines/review-pipeline.js`

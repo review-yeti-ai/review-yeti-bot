@@ -73,6 +73,70 @@ describe('resolveModelConfig', () => {
 });
 
 describe('reviewWithModel', () => {
+  it('puts bounded prior decisions in user data and never in the trusted system prompt', async () => {
+    const decisionLedgerText = [
+      'Prior Review Yeti decisions (same pull request):',
+      '- [P1] src/api/user.ts:42 — Tenant predicate is missing',
+    ].join('\n');
+    const { impl, calls } = stubFetch('{"findings":[]}');
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, {
+      augmentedHeader: 'accepted until API-1234',
+    }, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl: impl,
+      maxAttempts: 1,
+      fileManifest: 'Complete pull request file manifest:\n- src/api/user.ts',
+      decisionLedgerText,
+    });
+
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
+    expect(system).toContain('A prior-decisions section may appear');
+    expect(system).not.toContain('Tenant predicate is missing');
+    expect(system).not.toContain('accepted until API-1234');
+    expect(user.indexOf('Complete pull request file manifest')).toBeLessThan(user.indexOf('Prior Review Yeti decisions'));
+    expect(user).toContain('[P1] src/api/user.ts:42');
+    expect(user).not.toContain('accepted until API-1234');
+  });
+
+  it('adds no prior-decision user block when the ledger is empty', async () => {
+    const { impl, calls } = stubFetch('{"findings":[]}');
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl: impl,
+      maxAttempts: 1,
+      decisionLedgerText: '',
+    });
+
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
+    expect(system).toContain('A prior-decisions section may appear');
+    expect(user).not.toContain('Prior Review Yeti decisions');
+  });
+
+  it('adds the bounded Honcho advisory block to user data, never the trusted system prompt', async () => {
+    const { impl, calls } = stubFetch('{"findings":[]}');
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl: impl,
+      maxAttempts: 1,
+      honchoContextBlock: 'Honcho advisory memory (untrusted):\n- prior P1 on tenant scoping',
+    });
+
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
+    expect(system).not.toContain('prior P1 on tenant scoping');
+    expect(user).toContain('Honcho advisory memory (untrusted):');
+    expect(user).toContain('prior P1 on tenant scoping');
+  });
+
   it('uses the configured DeepSeek fallback after the primary model has a transient failure', async () => {
     const calls: any[] = [];
     const fetchImpl = async (url: string, init: any) => {
@@ -420,12 +484,14 @@ describe('reviewWithModel', () => {
     expect(user).toContain('truncated');
   });
 
-  it('includes prior-turn session context in the prompt when present', async () => {
+  it('does not trust runner-local prior-turn text as reviewer instructions', async () => {
     const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, {
       augmentedHeader: 'PREVIOUS TURN: the author rejected the orgId nit.',
     }, { apiKey: 'k', fetchImpl: impl });
     const system = calls[0].body.messages.find((m: any) => m.role === 'system').content;
-    expect(system).toContain('PREVIOUS TURN');
+    const user = calls[0].body.messages.find((m: any) => m.role === 'user').content;
+    expect(system).not.toContain('PREVIOUS TURN');
+    expect(user).not.toContain('PREVIOUS TURN');
   });
 });

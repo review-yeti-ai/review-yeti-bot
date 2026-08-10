@@ -21,6 +21,58 @@ inputs:
       injected into every persona prompt. Leave empty to keep Context7 off.
     required: false
     default: ''
+  honcho-enabled:
+    description: >-
+      Optional Honcho advisory memory master switch. Empty defers to trusted base configuration;
+      true enables it and false disables it. Honcho never controls deterministic review decisions.
+    required: false
+    default: ''
+  honcho-context:
+    description: >-
+      Optional Honcho context read before reviewer fan-out. Empty defers to trusted base
+      configuration. Returned context is bounded and treated as untrusted review data.
+    required: false
+    default: ''
+  honcho-write:
+    description: >-
+      Optional write-behind persistence of normalized review events to Honcho. Empty defers to
+      trusted base configuration; failures never block GitHub publication.
+    required: false
+    default: ''
+  honcho-mcp-enabled:
+    description: >-
+      Optional MCP memory transport switch. Empty defers to trusted base configuration; true
+      enables the provider-neutral MCP memory path and false disables it.
+    required: false
+    default: ''
+  honcho-mcp-transport:
+    description: >-
+      Honcho memory transport override: mcp or rest. REST is explicit compatibility/rollback;
+      there is no automatic pipeline fallback.
+    required: false
+    default: ''
+  honcho-timeout-ms:
+    description: 'Honcho request timeout in milliseconds, clamped to 250-5000 (default 1500).'
+    required: false
+    default: ''
+  honcho-max-context-chars:
+    description: 'Maximum Honcho advisory context characters, clamped to 1000-8000 (default 4000).'
+    required: false
+    default: ''
+  doppler-token:
+    description: >-
+      Optional Doppler service token used to resolve Honcho connection secrets at runtime. The
+      token is sent only to the Doppler REST API and is never included in review prompts or logs.
+    required: false
+    default: ''
+  doppler-project:
+    description: 'Doppler project containing Honcho secrets (default review-yeti-bot).'
+    required: false
+    default: ''
+  doppler-config:
+    description: 'Doppler config containing Honcho secrets (default dev).'
+    required: false
+    default: ''
   llm-base-url:
     description: >-
       OpenRouter-compatible base URL for chat completions.
@@ -101,9 +153,27 @@ inputs:
     default: 'false'
   config-ref:
     description: >-
-      Git ref to read .review-yeti.yaml and .review-yeti/personas from. Defaults to the pull
-      request's base branch. Reviewer charters are prompts run with your API key, so they are
-      deliberately not read from the pull request's own head.
+      Deprecated compatibility input. When set, it must equal the immutable pull request base
+      SHA. Reviewer charters are prompts run with your API key, so configuration is never read
+      from the pull request head or any mutable ref.
+    required: false
+    default: ''
+  review-intelligence-enabled:
+    description: >-
+      Optional v1 Review Intelligence kill switch. Empty defers to trusted base configuration;
+      false disables the trusted feature. true is rejected because Action inputs cannot enable it.
+    required: false
+    default: ''
+  review-intelligence-max-diff-chars:
+    description: 'Optional v1 Review Intelligence diff budget reduction. It may only lower the trusted base limit.'
+    required: false
+    default: ''
+  review-intelligence-max-file-diff-chars:
+    description: 'Optional v1 Review Intelligence per-file budget reduction. It may only lower the trusted base limit.'
+    required: false
+    default: ''
+  review-intelligence-max-personas:
+    description: 'Optional v1 Review Intelligence persona-count reduction. It may only lower the trusted base limit.'
     required: false
     default: ''
   pr-number:
@@ -198,6 +268,21 @@ outputs:
   files-reviewed:
     description: 'Changed files the reviewers were shown.'
     value: ${{ steps.review.outputs.files-reviewed }}
+  memory-outbox-path:
+    description: 'Hashed normalized memory outbox path. Upload it as an artifact for replay after runner cancellation.'
+    value: ${{ steps.review.outputs.memory-outbox-path }}
+  memory-provider:
+    description: 'Selected single memory provider for this review run.'
+    value: ${{ steps.review.outputs.memory-provider }}
+  memory-query-status:
+    description: 'Memory recall status: available, empty, or unavailable.'
+    value: ${{ steps.review.outputs.memory-query-status }}
+  memory-query-source:
+    description: 'Memory recall transport/source recorded by the provider receipt.'
+    value: ${{ steps.review.outputs.memory-query-source }}
+  memory-write-status:
+    description: 'Memory persistence status: accepted, pending, skipped, or unavailable.'
+    value: ${{ steps.review.outputs.memory-write-status }}
   files-omitted:
     description: 'Changed files the diff budget excluded. Non-zero means the verdict covers only part of the change.'
     value: ${{ steps.review.outputs.files-omitted }}
@@ -214,8 +299,20 @@ outputs:
     description: 'Tokens consumed across every reviewer and pass.'
     value: ${{ steps.review.outputs.total-tokens }}
   cost-usd:
-    description: 'Cost reported by the provider, or 0 when the provider does not report one.'
+    description: 'Cost reported by the provider; blank when the provider does not report one.'
     value: ${{ steps.review.outputs.cost-usd }}
+  telemetry-status:
+    description: 'Redacted telemetry delivery status: noop, exported, unavailable, or cancelled.'
+    value: ${{ steps.review.outputs.telemetry-status }}
+  telemetry-events:
+    description: 'Count of bounded telemetry events emitted; raw telemetry is never exposed as an Action output.'
+    value: ${{ steps.review.outputs.telemetry-events }}
+  review-unit-identity:
+    description: 'Exact bounded review-unit identity JSON, emitted only when trusted review.units.enabled is active.'
+    value: ${{ steps.review.outputs.review-unit-identity }}
+  review-unit-summary:
+    description: 'Bounded stable-ID/path/change/status/reason review-unit receipt JSON, emitted only when trusted review.units.enabled is active.'
+    value: ${{ steps.review.outputs.review-unit-summary }}
 
 runs:
   using: composite
@@ -238,8 +335,17 @@ runs:
           exit 1
         fi
 
+        PR_METADATA="$(gh api "repos/$REPO/pulls/$PR" --jq '[.head.sha, .base.sha] | @tsv')"
+        IFS=$'\t' read -r HEAD_SHA BASE_SHA <<< "$PR_METADATA"
+        if [[ ! "$HEAD_SHA" =~ ^[0-9a-fA-F]{40,64}$ ]] || [[ ! "$BASE_SHA" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+          echo "::error::Could not resolve immutable head/base SHAs for $REPO#$PR."
+          exit 1
+        fi
+
         echo "repo=$REPO" >> "$GITHUB_OUTPUT"
         echo "pr=$PR" >> "$GITHUB_OUTPUT"
+        echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+        echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
         echo "Reviewing $REPO#$PR"
 
     - name: Fetch pull request diff
@@ -304,21 +410,32 @@ runs:
     # the API, into a directory the pull request cannot write to. This also means the caller does
     # not need to check the repository out at all.
     - name: Fetch reviewer configuration from the trusted base ref
+      id: trusted_config
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         CONFIG_REF: ${{ inputs.config-ref }}
-        BASE_REF: ${{ github.event.pull_request.base.sha }}
+        BASE_REF: ${{ steps.target.outputs.base_sha }}
       run: |
         set -euo pipefail
         REPO="${{ steps.target.outputs.repo }}"
-        REF="${CONFIG_REF:-${BASE_REF:-}}"
+        if [ -z "${BASE_REF:-}" ]; then
+          BASE_REF="$(gh api "repos/$REPO/pulls/${{ steps.target.outputs.pr }}" --jq .base.sha)"
+        fi
+        if [ -z "${BASE_REF:-}" ]; then
+          echo "::error::Could not resolve the immutable pull request base SHA for trusted configuration."
+          exit 1
+        fi
+        echo "base_sha=$BASE_REF" >> "$GITHUB_OUTPUT"
+        if [ -n "${CONFIG_REF:-}" ] && [ "$CONFIG_REF" != "${BASE_REF:-}" ]; then
+          echo "::error::config-ref must equal the immutable pull request base SHA; pull-request head and mutable refs are not trusted."
+          exit 1
+        fi
+        REF="${BASE_REF:-}"
         DEST="${RUNNER_TEMP}/review-yeti-config"
+        rm -rf "$DEST"
         mkdir -p "$DEST/.review-yeti/personas"
 
-        if [ -z "$REF" ]; then
-          REF=$(gh api "repos/$REPO" --jq .default_branch)
-        fi
         echo "Reading reviewer configuration from $REPO@$REF"
 
         for f in .review-yeti.yaml .review-yeti.yml .coderabbit.yaml .coderabbit.yml; do
@@ -361,6 +478,16 @@ runs:
         LINEAR_API_KEY: ${{ inputs.linear-api-key }}
         # Context7: only effective when non-empty AND repo .review-yeti.yaml allows it.
         CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
+        HONCHO_ENABLED: ${{ inputs.honcho-enabled }}
+        HONCHO_CONTEXT: ${{ inputs.honcho-context }}
+        HONCHO_WRITE: ${{ inputs.honcho-write }}
+        HONCHO_MCP_ENABLED: ${{ inputs.honcho-mcp-enabled }}
+        HONCHO_MCP_TRANSPORT: ${{ inputs.honcho-mcp-transport }}
+        HONCHO_TIMEOUT_MS: ${{ inputs.honcho-timeout-ms }}
+        HONCHO_MAX_CONTEXT_CHARS: ${{ inputs.honcho-max-context-chars }}
+        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
+        DOPPLER_PROJECT: ${{ inputs.doppler-project }}
+        DOPPLER_CONFIG: ${{ inputs.doppler-config }}
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         MAX_FILE_DIFF_CHARS: ${{ inputs.max-file-diff-chars }}
@@ -373,9 +500,18 @@ runs:
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
+        REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
+        GITHUB_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
+        PR_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+        REVIEW_INTELLIGENCE_ENABLED: ${{ inputs.review-intelligence-enabled }}
+        REVIEW_INTELLIGENCE_MAX_DIFF_CHARS: ${{ inputs.review-intelligence-max-diff-chars }}
+        REVIEW_INTELLIGENCE_MAX_FILE_DIFF_CHARS: ${{ inputs.review-intelligence-max-file-diff-chars }}
+        REVIEW_INTELLIGENCE_MAX_PERSONAS: ${{ inputs.review-intelligence-max-personas }}
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
         REVIEW_YETI_CONFIG_DIR: ${{ runner.temp }}/review-yeti-config
+        REVIEW_YETI_TRUSTED_CONFIG_DIR: ${{ runner.temp }}/review-yeti-config
+        REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
         # Pre-review "started" comment metadata (GITHUB_EVENT_NAME / ACTOR / RUN_ID are built-in).
         GITHUB_EVENT_ACTION: ${{ github.event.action }}
         # Streaming is OFF by default (fan-out reliability). Composite actions cannot use

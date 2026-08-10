@@ -3,8 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
+import { assertCassetteSafe } from '../support/cassetteManifest';
+import { buildDecisionLedger, reconcileDecisionFindings, renderDecisionLedger } from '../../src/review/decisionLedger';
 
 const harnessCassette = path.resolve(__dirname, '../fixtures/cassettes/harness.json');
+const decisionCassette = path.resolve(__dirname, '../fixtures/cassettes/decision-ledger.json');
 
 describe('strict cassette replay', () => {
   const originalCi = process.env.CI;
@@ -93,6 +96,7 @@ describe('strict cassette replay', () => {
     }).fetchImplementation('https://llm.test/record')).rejects.toThrow('REVIEW_YETI_VCR=record');
 
     process.env.REVIEW_YETI_VCR = 'record';
+    process.env.REVIEW_YETI_RECORD_APPROVED = 'true';
     await expect(createCassetteFetch({
       cassettePath,
       mode: 'record',
@@ -112,5 +116,58 @@ describe('strict cassette replay', () => {
     expect(await response.json()).toEqual({ recorded: true });
     recorded.assertComplete();
     expect(fs.readFileSync(cassettePath, 'utf8')).not.toContain('live-secret');
+  });
+
+  it('validates v2 cassette manifests and rejects unsafe origins or secrets', () => {
+    const base = {
+      version: 2,
+      fixtureId: 'fresh-clean',
+      provider: 'honcho',
+      allowedOrigins: ['https://honcho.test'],
+      interactions: [],
+    } as const;
+    expect(() => assertCassetteSafe(base)).not.toThrow();
+    expect(() => assertCassetteSafe({ ...base, allowedOrigins: ['https://honcho.test/path'] })).toThrow('not an origin');
+    expect(() => assertCassetteSafe({ ...base, fixtureId: '../escape' })).toThrow('path-safe');
+    expect(() => assertCassetteSafe({ ...base, interactions: [{ request: { method: 'GET', url: 'https://honcho.test', headers: { authorization: 'secret' }, body: null }, response: { status: 200, headers: {}, body: null } }] })).toThrow('not redacted');
+  });
+
+  it('rejects legacy v1 cassettes when a provider replay requires a v2 manifest', () => {
+    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'legacy.json');
+    fs.writeFileSync(cassettePath, JSON.stringify({ version: 1, interactions: [] }));
+    expect(() => createCassetteFetch({ cassettePath, requireVersion: 2 })).toThrow(/Cassette .*legacy\.json must use manifest version 2/u);
+  });
+
+  it('rejects replay calls outside a v2 cassette origin allowlist', async () => {
+    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'v2.json');
+    fs.writeFileSync(cassettePath, JSON.stringify({ version: 2, fixtureId: 'origin-test', provider: 'honcho', allowedOrigins: ['https://allowed.test'], interactions: [] }));
+    const replay = createCassetteFetch({ cassettePath });
+    await expect(replay.fetchImplementation('https://blocked.test/replay')).rejects.toThrow('not allowlisted');
+  });
+
+  it('replays same-PR decision state byte-identically without exposing human reasons', async () => {
+    const replay = async () => {
+      const cassette = createCassetteFetch({ cassettePath: decisionCassette });
+      const response = await cassette.fetchImplementation('https://github.test/graphql', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer fake-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operationName: 'DecisionLedgerSnapshot', pullRequest: 7 }),
+      });
+      const snapshot = await response.json();
+      cassette.assertComplete();
+      const ledger = buildDecisionLedger(snapshot);
+      const rendered = renderDecisionLedger(ledger);
+      const reconciliation = reconcileDecisionFindings([], ledger);
+      return { ledger, rendered, reconciliation };
+    };
+
+    const first = await replay();
+    const second = await replay();
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    expect(first.ledger.entries.map((entry: any) => entry.state)).toEqual([
+      'open', 'resolved', 'ignored', 'open', 'obsolete',
+    ]);
+    expect(first.rendered.text).not.toContain('accepted until API-1234');
+    expect(JSON.stringify(first)).not.toContain('API-1234 has landed');
   });
 });
