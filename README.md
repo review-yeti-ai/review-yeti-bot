@@ -719,6 +719,10 @@ Longer charters belong in their own files under `.review-yeti/personas/`, descri
 [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) for the full catalog, filename-only
 glob behavior, `!` restoration, and every key.
 
+For a complete copy-and-edit file covering limits, submodules, coverage, personas, memory recall
+and persistence, Context7, compaction, review units, finding verification, telemetry, and
+OpenRouter routing, use [YAML Configuration Examples](docs/YAML_CONFIGURATION_EXAMPLES.md).
+
 > Earlier versions of this file documented `profile`, `quorum`, `mascot`, `dials`, `reviews`,
 > `chat`, `knowledge_base` and `auto_review` keys. The action ignores them; they are accepted
 > without error so a `.coderabbit.yaml` can be reused as-is.
@@ -730,6 +734,8 @@ glob behavior, `!` restoration, and every key.
 
 - **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — every `.review-yeti.yaml` and
   persona-file key, glob semantics, and `!` restoration.
+- **[YAML Configuration Examples](docs/YAML_CONFIGURATION_EXAMPLES.md)** — annotated production,
+  GitHub-ledger-only, Honcho feedback, strict-verification, and compatibility configurations.
 - **[OpenRouter Settings](docs/OPENROUTER_SETTINGS.md)** — model pinning, session stickiness, and
   provider routing.
 - **[Architecture](docs/ARCHITECTURE.md)** — how a run is put together and why config comes from
