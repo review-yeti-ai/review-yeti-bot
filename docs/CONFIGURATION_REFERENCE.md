@@ -107,7 +107,58 @@ mcp:
     enabled: true            # default true when CONTEXT7_API_KEY is set; false disables
     # libraries: [typescript, github-actions]  # optional force list; else inferred from diff
     # max_snippets: 5
+
+# Optional best-effort OpenTelemetry export. It is disabled by default and becomes active only
+# when this file was fetched by the Action into its trusted base-SHA temp directory.
+telemetry:
+  otel:
+    enabled: false
+    endpoint_env: REVIEW_YETI_OTEL_TRACES_ENDPOINT
+    credential_env: REVIEW_YETI_OTEL_BEARER_TOKEN
+
+# Optional exact-snapshot finding verification. This block is read only from the trusted PR base
+# reference after the Action proves the current base/head pair. Omitting it preserves legacy
+# publication behavior. A configured verifier defaults to report_only.
+review:
+  finding_verifier:
+    mode: report_only       # report_only | enforce
 ```
+
+### Exact-snapshot finding verification
+
+`review.finding_verifier` is an opt-in trusted-base boundary for model findings. The verifier
+normalizes a relative path, checks the exact changed `RIGHT` or `LEFT` line from the unified
+patch, permits file-level findings only for binary, gitlink, or patchless files, optionally
+compares a supplied content hash with the immutable snapshot, and assigns a deterministic claim
+fingerprint. Its receipt contains only bounded reason codes, stable keys, digests, and anchors;
+it never contains model title/body text, author, source, prompt, or blob content.
+
+```yaml
+review:
+  finding_verifier:
+    mode: report_only  # default when this block is present
+```
+
+`report_only` leaves the established arbitration and publication inputs unchanged and appends a
+redacted verifier count to the compact review summary. `enforce` removes rejected findings before
+arbitration and publication. A `needs_review` result (including an exact identity/snapshot,
+ambiguous anchor, or content-hash uncertainty) forces `INCOMPLETE_REVIEW`, `BLOCKED`, and a
+non-merge-eligible result; it can never produce `SHIP`. Immediately before any GitHub publication
+operation, the Action re-reads the PR head and aborts all writes if it no longer equals the head
+that was reviewed.
+
+### Optional OpenTelemetry receipts
+
+`telemetry.otel` is advisory and disabled by default. It never changes model routing, verdicts,
+or publication. The Action reads only the *names* of `endpoint_env` and `credential_env` from the
+trusted base configuration; endpoint and credential values are resolved from the runner environment
+after the Action proves the immutable base SHA against a fresh PR snapshot. The endpoint must be
+an HTTPS URL without userinfo, query parameters, or fragments. Telemetry receipts contain only
+status and bounded identifiers—not the endpoint, credential, prompts, comments, authors, source,
+transcripts, raw errors, or provider receipt IDs.
+
+`credential_env` is a bearer-token environment variable (not the OpenTelemetry
+`OTEL_EXPORTER_OTLP_HEADERS` key/value-list format); it is sent only as the Authorization header.
 
 ### Same-PR decision memory
 

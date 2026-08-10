@@ -22,6 +22,7 @@ const {
 } = require('../../../src/review/reviewCore');
 const { normalizeCoveragePolicy } = require('../../../src/review/coveragePolicy');
 const { planFindingPublication } = require('../../../src/review/findingPublication');
+const { verifyFindings } = require('../../../src/review/findingVerifier');
 const { assertsAbsence, claimType, compareClaims } = require('../../../src/review/claimSimilarity');
 const {
   buildDecisionLedger,
@@ -832,6 +833,95 @@ function buildReviewUnitReceipt(manifest) {
     units,
     coverage: { complete: manifest.coverage.complete, shipEligible: manifest.coverage.shipEligible, uncovered: manifest.summary.uncovered },
   });
+}
+
+// Findings are model output, so the verifier is opt-in and can only read its mode from the same
+// exact-base configuration boundary as review units.  `report_only` is deliberately the default
+// for a configured verifier; an absent block remains inert for complete legacy compatibility.
+function resolveTrustedFindingVerifierPolicy({ localConfig, prContext, env = process.env, commandRunner } = {}) {
+  const configured = localConfig?.parsed?.review?.finding_verifier;
+  const disabled = (status, reason) => Object.freeze({ status, reason, enabled: false, mode: 'report_only' });
+  if (configured === undefined) return disabled('disabled_not_configured', 'not_configured');
+  if (!configured || typeof configured !== 'object' || Array.isArray(configured)) return disabled('disabled_invalid_config', 'invalid_config');
+  const mode = configured.mode === undefined ? 'report_only' : String(configured.mode).trim();
+  if (mode !== 'report_only' && mode !== 'enforce') return disabled('disabled_invalid_config', 'invalid_mode');
+  const configDir = String(env.REVIEW_YETI_CONFIG_DIR || '').trim();
+  const trustedConfigDir = String(env.REVIEW_YETI_TRUSTED_CONFIG_DIR || '').trim();
+  const trustedBase = String(env.REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA || '').trim().toLowerCase();
+  if (!configDir || !trustedConfigDir || path.resolve(configDir) !== path.resolve(trustedConfigDir) || !isImmutableCommitSha(trustedBase)) {
+    return disabled('disabled_untrusted_config', 'untrusted_config');
+  }
+  let verified;
+  try { verified = resolveTrustedPolicyPrContext(prContext, { commandRunner }); } catch (_) { return disabled('disabled_unverified_base', 'unverified_base'); }
+  if (verified.baseSha !== trustedBase) return disabled('disabled_base_mismatch', 'base_mismatch');
+  const configDigest = sha256(String(localConfig?.raw || ''));
+  const policyDigest = sha256(canonicalJson({ schemaVersion: 'finding-verification-policy-v1', mode, trustedBaseRef: verified.baseSha }));
+  return Object.freeze({ status: 'trusted', enabled: true, mode, trustedBaseRef: verified.baseSha, configDigest, policyDigest });
+}
+
+function findingVerifierIdentity(policy, prContext) {
+  return {
+    repository: prContext.repo,
+    prNumber: Number(prContext.prNumber),
+    baseSha: prContext.baseSha,
+    headSha: prContext.headSha,
+    configDigest: policy.configDigest,
+    policyDigest: policy.policyDigest,
+  };
+}
+
+function exactFindingBlobSnapshot(identity, files) {
+  return {
+    identity,
+    files: (Array.isArray(files) ? files : []).map((file) => {
+      const content = typeof file?.content === 'string' ? file.content : String(file?.patch || '');
+      return { path: file?.path, patch: file?.patch, content, contentHash: sha256(content) };
+    }),
+  };
+}
+
+function applyFindingVerifier(personaResults, changedFiles, policy, prContext) {
+  const rows = [];
+  for (const [laneIndex, lane] of (personaResults || []).entries()) {
+    const source = Array.isArray(lane?.rawFindings) ? lane.rawFindings : (Array.isArray(lane?.findings) ? lane.findings : []);
+    for (const finding of source) rows.push({ laneIndex, finding });
+  }
+  const identity = findingVerifierIdentity(policy, prContext);
+  const verification = verifyFindings({
+    findings: rows.map((row) => row.finding),
+    changedFiles,
+    exactBlobSnapshot: exactFindingBlobSnapshot(identity, changedFiles),
+    identity,
+    mode: policy.mode,
+  });
+  const retained = new Map();
+  for (const [index, row] of rows.entries()) {
+    if (policy.mode === 'enforce' && verification.verifications[index]?.status !== 'accepted') continue;
+    if (!retained.has(row.laneIndex)) retained.set(row.laneIndex, []);
+    retained.get(row.laneIndex).push(row.finding);
+  }
+  const sanitized = (personaResults || []).map((lane, laneIndex) => {
+    const { rawFindings, ...safeLane } = lane;
+    if (policy.mode !== 'enforce') return safeLane;
+    const findings = sanitizeCanonicalFindings(retained.get(laneIndex) || [], changedFiles);
+    return { ...safeLane, findings, decision: safeLane.decision === 'ERROR' ? 'ERROR' : (findings.length ? 'FINDINGS' : 'APPROVE') };
+  });
+  return { personaResults: sanitized, verification };
+}
+
+function applyFindingVerifierGate(arbitration, verification, policy) {
+  if (!policy?.enabled || policy.mode !== 'enforce' || verification?.summary?.incomplete !== true) return arbitration;
+  return {
+    ...arbitration,
+    verdict: 'BLOCK',
+    status: 'INCOMPLETE_REVIEW',
+    coverageComplete: false,
+    coverageStatus: 'incomplete',
+    coverageQuorumSatisfied: false,
+    gateDecision: 'BLOCKED',
+    mergeEligible: false,
+    rationale: `${arbitration.rationale} Finding verifier could not establish ${verification.summary.needsReview} finding(s) against the exact immutable snapshot; review coverage is incomplete.`,
+  };
 }
 
 function shouldResolveTrustedReviewPolicy(localConfig) {
@@ -2108,6 +2198,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           ...responseBase,
           decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS',
           findings,
+          rawFindings,
           ...(rejectedFindings.length > 0 ? { rejectedFindings } : {}),
         };
       } catch (err) {
@@ -4047,6 +4138,12 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   if (rejectedActionable.length > 0) {
     findingsDetails += `\n> ⚠️ **${rejectedActionable.length} actionable finding(s) could not be anchored and were not published.** The review fails closed so invalid locations are never moved to a nearby line.\n`;
   }
+  if (reviewState?.findingVerification) {
+    const verification = reviewState.findingVerification;
+    const summary = verification.summary || {};
+    const label = verification.mode === 'enforce' ? 'enforced' : 'report-only';
+    findingsDetails += `\n> 🔎 **Finding verifier (${label}):** ${summary.accepted || 0} accepted, ${summary.rejected || 0} rejected, ${summary.needsReview || 0} need review.\n`;
+  }
   findingsDetails = laneFailureDetails + findingsDetails;
 
   // State the review mode plainly. A heuristic pass dressed up as a model review is worse than
@@ -4540,6 +4637,9 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       ? `${bodyWithAnchor}\n\n${marker}`
       : bodyWithAnchor;
     try {
+      // This is intentionally the first publication operation.  Reading prior reviews before a
+      // fresh exact-head fence leaves a TOCTOU gap in which stale work can reach a write path.
+      assertCurrentPullRequest(prContext, { commandRunner });
       const existingReviews = readActionReviews(commandRunner, prContext);
       const authenticatedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
       const publishedByUs = (review) => (
@@ -5169,6 +5269,13 @@ async function main(options = {}) {
     commandRunner,
   });
   if (reviewUnitsPolicy.enabled) console.log(`[Review units] Trusted manifest coverage enabled (policy=${reviewUnitsPolicy.policyDigest.slice(0, 12)}).`);
+  const findingVerifierPolicy = resolveTrustedFindingVerifierPolicy({
+    localConfig,
+    prContext,
+    env: runtimeEnv,
+    commandRunner,
+  });
+  if (findingVerifierPolicy.enabled) console.log(`[Finding verifier] Trusted ${findingVerifierPolicy.mode} mode active (policy=${findingVerifierPolicy.policyDigest.slice(0, 12)}).`);
   const cancellation = createPipelineCancellation({
     signal: options.signal,
     installProcessHandlers: options.installProcessHandlers === true || runtimeEnv.GITHUB_ACTIONS === 'true',
@@ -5209,6 +5316,7 @@ async function main(options = {}) {
   });
   let coverage;
   let reviewUnitManifest = null;
+  let findingVerification = null;
   let arbitration = null;
   let usageTotal;
   let finalResult = null;
@@ -5690,10 +5798,16 @@ async function main(options = {}) {
         process.exitCode = 1;
         return;
       }
-      personaResults = personaResults.map((lane) => ({
-        ...lane,
-        findings: sanitizeCanonicalFindings(lane.findings, shownReviewFiles),
-      }));
+      if (findingVerifierPolicy.enabled) {
+        const verified = applyFindingVerifier(personaResults, shownReviewFiles, findingVerifierPolicy, prContext);
+        personaResults = verified.personaResults;
+        findingVerification = verified.verification;
+      } else {
+        personaResults = personaResults.map((lane) => {
+          const { rawFindings, ...safeLane } = lane;
+          return { ...safeLane, findings: sanitizeCanonicalFindings(safeLane.findings, shownReviewFiles) };
+        });
+      }
 
       // Both filters run before arbitration: a verdict must be computed from findings that
       // survive, or the panel blocks a merge on a defect it never actually established.
@@ -5733,6 +5847,7 @@ async function main(options = {}) {
       carriedFindings: carriedOpen,
       carriedChangedFiles: diffFiles,
     });
+    arbitration = applyFindingVerifierGate(arbitration, findingVerification, findingVerifierPolicy);
     }
     if (currentCoverageIdentity) arbitration.coverageIdentity = currentCoverageIdentity;
   }
@@ -5757,7 +5872,7 @@ async function main(options = {}) {
   const rejectedFindingKeys = new Set(publicationPlan.rejected.map((item) => JSON.stringify([
     item.path, item.side || '', item.line || '', item.title, item.severity || '', item.reason,
   ])));
-  for (const rejected of personaResults.flatMap((lane) => lane.rejectedFindings || [])) {
+  for (const rejected of findingVerifierPolicy.mode === 'enforce' ? [] : personaResults.flatMap((lane) => lane.rejectedFindings || [])) {
     const key = JSON.stringify([rejected.path, rejected.side || '', rejected.line || '', rejected.title, rejected.severity || '', rejected.reason]);
     if (!rejectedFindingKeys.has(key)) {
       rejectedFindingKeys.add(key);
@@ -5765,7 +5880,7 @@ async function main(options = {}) {
     }
   }
   console.log(`[Formatting] Planned ${publicationPlan.lineComments.length} line conversation(s), ${publicationPlan.fileComments.length} file conversation(s), ${publicationPlan.advisories.length} P2 advisory item(s), and ${publicationPlan.rejected.length} rejected finding(s).`);
-  const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, neutralResolved, recurrentResolved, obsolete };
+  const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, neutralResolved, recurrentResolved, obsolete, findingVerification };
   const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage, usageTotal, publicationPlan, reviewState);
 
   console.log('[Publishing] Executing pull request review publishing...');
@@ -5982,6 +6097,11 @@ module.exports = {
   resolveTrustedContextCompactionPolicy,
   resolveTrustedReviewTelemetryPolicy,
   resolveTrustedReviewUnitsPolicy,
+  resolveTrustedFindingVerifierPolicy,
+  findingVerifierIdentity,
+  exactFindingBlobSnapshot,
+  applyFindingVerifier,
+  applyFindingVerifierGate,
   buildReviewUnitManifest,
   buildReviewUnitReceipt,
   reviewTelemetryReceipt,

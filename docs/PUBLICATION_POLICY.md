@@ -24,6 +24,12 @@ Invalid paths and incorrect lines are rejected and counted in the review rather
 than suppressing independently validated conversations. The bot never invents a
 nearby anchor and never falls back to a generic issue comment.
 
+When trusted-base `review.finding_verifier.mode` is `enforce`, a finding must also verify against
+the exact reviewed identity and snapshot before it reaches arbitration or publication. Rejected
+findings are removed; snapshot, identity, side, or anchor uncertainty produces
+`INCOMPLETE_REVIEW`/`BLOCKED`, never `SHIP`. `report_only` is the configured default and attaches
+only a redacted verifier summary, preserving established verdict and marker behavior.
+
 ## Idempotency
 
 Publication is bound to the exact reviewed head SHA:
@@ -33,6 +39,8 @@ Publication is bound to the exact reviewed head SHA:
   across pushes instead of duplicated.
 - Unresolved conversations are verified through GitHub's paginated GraphQL
   `reviewThreads` connection before the run reports success.
+- The Action rechecks the pull-request head immediately before it reads prior publication state
+  and before every write; a changed head aborts publication without attempting a write.
 
 Rerunning a review on an unchanged head does not repeat findings the previous
 run already posted.
