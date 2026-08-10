@@ -8,6 +8,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
 const pipeline = require(pipelinePath);
+const { createReviewUnitManifest } = require(path.join(rootRepoDir, 'src/review/reviewUnitManifest.js'));
 
 describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/review-pipeline.js)', () => {
   const runMainInTempDir = async (diff: string, options: { expectedFetches: number; config?: string; runChatPreflight?: boolean }) => {
@@ -334,6 +335,50 @@ deleted file mode 100644
     expect(pipeline.parseDiff(rawDiff).map((file: any) => file.path)).toEqual([
       '.github/workflows/old.yml',
       'docs/old name.md',
+    ]);
+  });
+
+  it('retains real rename, mode, and deletion metadata for deterministic review units', () => {
+    const rawDiff = `diff --git a/src/old.ts b/src/new.ts
+similarity index 100%
+rename from src/old.ts
+rename to src/new.ts
+diff --git a/bin/tool b/bin/tool
+old mode 100644
+new mode 100755
+diff --git a/src/deleted.ts b/src/deleted.ts
+deleted file mode 100644
+--- a/src/deleted.ts
++++ /dev/null
+@@ -1 +0,0 @@
+-old`;
+    const [renamed, modeChanged, deleted] = pipeline.parseDiff(rawDiff) as any[];
+
+    expect(renamed).toMatchObject({ path: 'src/new.ts', previousPath: 'src/old.ts', status: 'renamed', similarityIndex: 100 });
+    expect(modeChanged).toMatchObject({ path: 'bin/tool', oldMode: '100644', newMode: '100755', mode: '100755' });
+    expect(deleted).toMatchObject({ path: 'src/deleted.ts', status: 'removed', deleted: true, oldMode: '100644' });
+  });
+
+  it('feeds parsed rename-only and deleted diffs into explicit manifest units', () => {
+    const files = pipeline.parseDiff(`diff --git a/src/old.ts b/src/new.ts
+similarity index 100%
+rename from src/old.ts
+rename to src/new.ts
+diff --git a/src/deleted.ts b/src/deleted.ts
+deleted file mode 100644
+--- a/src/deleted.ts
++++ /dev/null
+@@ -1 +0,0 @@
+-old`);
+    const manifest = createReviewUnitManifest({
+      identity: { repository: 'owner/repo', prNumber: 3, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64), diffDigest: 'e'.repeat(64) },
+      files,
+      trustedRules: {},
+    });
+
+    expect(manifest.units.map((unit: any) => [unit.path, unit.status, unit.change])).toEqual([
+      ['src/new.ts', 'unreviewable', 'renamed'],
+      ['src/deleted.ts', 'selected', 'deleted'],
     ]);
   });
 

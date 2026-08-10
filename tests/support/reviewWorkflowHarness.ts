@@ -7,6 +7,7 @@ const pipeline = require('../../.github/workflows/pipelines/review-pipeline.js')
 const { runReviewPipeline } = require('../../src/runtime/reviewPipelineRuntime.js');
 
 const fixtureRoot = path.resolve(__dirname, '../fixtures/review-workflows');
+const repositoryDispatchEventPath = path.resolve(__dirname, '../fixtures/github/repository-dispatch-conflicting.json');
 
 function fixturePath(id: string): string {
   return path.join(fixtureRoot, `${id}.json`);
@@ -52,7 +53,7 @@ function memoryFetchFactory({ available }: { available: boolean }) {
   };
 }
 
-function fixtureConfig(fixture: ReviewWorkflowFixture): string {
+function fixtureConfig(fixture: ReviewWorkflowFixture, options: { reviewIntelligence?: boolean } = {}): string {
   const config = {
     memory: {
       enabled: true,
@@ -68,15 +69,15 @@ function fixtureConfig(fixture: ReviewWorkflowFixture): string {
     personas: [{ id: 'security' }, { id: 'testing' }],
     ...fixture.config,
   };
-  return `memory:\n  enabled: true\n  provider: ${config.memory.provider}\n  mode: single\n  transport: rest\n  context: true\n  write: true\n  recall:\n    decision_feedback: true\n    session_recap: true\n  persist:\n    processing: true\n    decision_feedback: true\n    session_recap: true\n  providers:\n    mem0:\n      enabled: true\n      endpoint_env: MEM0_URL\n      credential_env: MEM0_API_KEY\npersonas:\n  - id: security\n  - id: testing\n`;
+  return `memory:\n  enabled: true\n  provider: ${config.memory.provider}\n  mode: single\n  transport: rest\n  context: true\n  write: true\n  recall:\n    decision_feedback: true\n    session_recap: true\n  persist:\n    processing: true\n    decision_feedback: true\n    session_recap: true\n  providers:\n    mem0:\n      enabled: true\n      endpoint_env: MEM0_URL\n      credential_env: MEM0_API_KEY\npersonas:\n  - id: security\n  - id: testing\n${options.reviewIntelligence ? 'review_intelligence:\n  version: 1\n  enabled: true\n  limits:\n    max_diff_chars: 5000\n' : ''}`;
 }
 
-export async function runReviewWorkflowFixture(id: string, options: { memoryAvailable?: boolean } = {}) {
+export async function runReviewWorkflowFixture(id: string, options: { memoryAvailable?: boolean; reviewIntelligence?: boolean; repositoryDispatch?: boolean; conflictingDispatchPayload?: boolean } = {}) {
   const fixture = loadReviewWorkflowFixture(fixturePath(id));
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `review-yeti-workflow-${id}-`));
   const configRoot = path.join(tempRoot, 'config');
   fs.mkdirSync(configRoot, { recursive: true });
-  fs.writeFileSync(path.join(configRoot, '.review-yeti.yaml'), fixtureConfig(fixture));
+  fs.writeFileSync(path.join(configRoot, '.review-yeti.yaml'), fixtureConfig(fixture, options));
   const outputPath = path.join(tempRoot, 'github-output');
   fs.writeFileSync(outputPath, '');
   const previousCwd = process.cwd();
@@ -86,13 +87,15 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
     PR_DIFF: JSON.stringify({
       repo: fixture.event.repository,
       prNumber: fixture.event.prNumber,
-      headSha: fixture.event.headSha,
+      ...(options.repositoryDispatch ? {} : { headSha: fixture.event.headSha }),
       title: 'Fixture review',
       diff: 'diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n+const safe = true;\n',
     }),
     PR_REPO: fixture.event.repository,
     PR_NUMBER: String(fixture.event.prNumber),
-    GITHUB_SHA: fixture.event.headSha,
+    PR_HEAD_SHA: options.repositoryDispatch ? fixture.event.headSha : '',
+    GITHUB_SHA: options.repositoryDispatch ? 'c'.repeat(40) : fixture.event.headSha,
+    GITHUB_BASE_SHA: 'b'.repeat(40),
     GITHUB_OUTPUT: outputPath,
     REVIEW_YETI_CONFIG_DIR: configRoot,
     OPENROUTER_API_KEY: 'fixture-key',
@@ -103,7 +106,7 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
     GITHUB_ACTIONS: 'false',
     MEM0_URL: 'https://mem0.fixture.test',
     MEM0_API_KEY: 'fixture-memory-key',
-    GITHUB_EVENT_PATH: '',
+    GITHUB_EVENT_PATH: options.conflictingDispatchPayload ? repositoryDispatchEventPath : '',
   } as NodeJS.ProcessEnv;
   try {
     process.chdir(tempRoot);

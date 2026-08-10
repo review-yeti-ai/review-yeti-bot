@@ -10,7 +10,7 @@ if (loadedTypescript) throw new Error('Action runtime loaded a TypeScript module
 const receipt = {
   node: process.version,
   providers: ['honcho', ...listMemoryProviderIds()],
-  pipelineExports: ['runReviewPipeline', 'resolveActionReviewPolicy', 'createReviewMemoryRouter'].every((key) => typeof pipeline[key] === 'function'),
+  pipelineExports: ['runReviewPipeline', 'resolveActionReviewPolicy', 'resolveTrustedReviewPolicy', 'createReviewMemoryRouter'].every((key) => typeof pipeline[key] === 'function'),
   loadedTypescript,
 };
 if (!receipt.pipelineExports || receipt.providers.length !== 5) throw new Error('Action runtime registry contract failed');

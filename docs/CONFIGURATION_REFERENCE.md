@@ -107,7 +107,77 @@ mcp:
     enabled: true            # default true when CONTEXT7_API_KEY is set; false disables
     # libraries: [typescript, github-actions]  # optional force list; else inferred from diff
     # max_snippets: 5
+
+# Optional best-effort OpenTelemetry export. It is disabled by default and becomes active only
+# when this file was fetched by the Action into its trusted base-SHA temp directory.
+telemetry:
+  otel:
+    enabled: false
+    endpoint_env: REVIEW_YETI_OTEL_TRACES_ENDPOINT
+    credential_env: REVIEW_YETI_OTEL_BEARER_TOKEN
+
+# Optional exact-snapshot finding verification. This block is read only from the trusted PR base
+# reference after the Action proves the current base/head pair. Omitting it preserves legacy
+# publication behavior. A configured verifier defaults to report_only.
+review:
+  finding_verifier:
+    mode: report_only       # report_only | enforce
 ```
+
+### Exact-snapshot finding verification
+
+`review.finding_verifier` is an opt-in trusted-base boundary for model findings. The verifier
+normalizes a relative path, checks the exact changed `RIGHT` or `LEFT` line from the unified
+patch, permits file-level findings only for binary, gitlink, or patchless files, optionally
+compares a supplied content hash with the immutable snapshot, and assigns a deterministic claim
+fingerprint. Its receipt contains only bounded reason codes, stable keys, digests, and anchors;
+it never contains model title/body text, author, source, prompt, or blob content.
+
+```yaml
+review:
+  finding_verifier:
+    mode: report_only  # default when this block is present
+```
+
+`report_only` leaves the established arbitration and publication inputs unchanged and appends a
+redacted verifier count to the compact review summary. `enforce` removes rejected findings before
+arbitration and publication. A `needs_review` result (including an exact identity/snapshot,
+ambiguous anchor, or content-hash uncertainty) forces `INCOMPLETE_REVIEW`, `BLOCKED`, and a
+non-merge-eligible result; it can never produce `SHIP`. Immediately before any GitHub publication
+operation, the Action re-reads the PR head and aborts all writes if it no longer equals the head
+that was reviewed.
+
+### Durable publication resume
+
+Durable publication replay is deliberately opt-in; omitting it preserves the existing synchronous
+publication path. A caller may persist a `durable-review-resume-v1` artifact under `sessions/` and
+upload it with the existing Action artifact step. Artifact names are a SHA-256-derived identity and
+attempt token, rather than repository or pull-request text.
+
+The artifact contains an immutable, digested exact identity (`repository`, pull request, base SHA,
+head SHA, and trusted policy digest) plus a publication plan digest and chunk IDs. Mutable delivery
+state is fenced by a short lease plus sidecar-lock/CAS generation. A replay must provide the exact expected identity, explicit
+authorization, and an authenticated GitHub-ledger reader. The ledger is authoritative for already
+published chunk IDs: local state alone is never proof that a prior GitHub write occurred.
+
+Retryable publication failures use bounded exponential backoff. A non-retryable or exhausted chunk
+is dead-lettered without silently retrying it on a later worker. Cancellation leaves pending chunks
+in the artifact; a later explicitly authorized worker can continue only after acquiring a newer
+lease fence. The replay seam is intentionally injected, so callers must perform their normal
+exact-head check before every GitHub read and write.
+
+### Optional OpenTelemetry receipts
+
+`telemetry.otel` is advisory and disabled by default. It never changes model routing, verdicts,
+or publication. The Action reads only the *names* of `endpoint_env` and `credential_env` from the
+trusted base configuration; endpoint and credential values are resolved from the runner environment
+after the Action proves the immutable base SHA against a fresh PR snapshot. The endpoint must be
+an HTTPS URL without userinfo, query parameters, or fragments. Telemetry receipts contain only
+status and bounded identifiers—not the endpoint, credential, prompts, comments, authors, source,
+transcripts, raw errors, or provider receipt IDs.
+
+`credential_env` is a bearer-token environment variable (not the OpenTelemetry
+`OTEL_EXPORTER_OTLP_HEADERS` key/value-list format); it is sent only as the Authorization header.
 
 ### Same-PR decision memory
 
@@ -279,6 +349,31 @@ use `fallback_models` from their trusted base configuration when the Action inpu
 | `enabled` | `boolean` | `true` when `CONTEXT7_API_KEY` is set | When true **and** the Action has a non-empty `context7-api-key` / `CONTEXT7_API_KEY`, Context7 docs are fetched once and injected into **every** persona prompt. Set `false` to disable for this repo even if the secret exists. |
 | `libraries` | `string[]` | inferred from the diff | Optional explicit library names for Context7 search. |
 | `max_snippets` | `number` | `5` | Cap on snippets requested per library (max 10). |
+
+### `review.context.compaction`
+
+This optional Action policy bounds only untrusted Context7 and remote-memory material before
+reviewer fan-out. It does not compact the diff, file manifest, decision ledger, or reviewer
+rules. The block is applied only when the Action has fetched configuration into its temporary
+trusted directory, the supplied base SHA is immutable, and a fresh pull-request snapshot matches
+that SHA; otherwise it remains disabled.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables deterministic metadata-only compaction for optional tool and advisory context. |
+| `max_bytes` | positive integer | `8000` | Maximum UTF-8 bytes for frozen, active, and compacted context combined. Frozen or active content that cannot fit causes the review path to fail rather than sending an oversized prompt. |
+| `summary_bytes` | positive integer | `2000` | Maximum UTF-8 bytes reserved for the compacted metadata block. It must not exceed `max_bytes`; if metadata cannot fit, the compacted block is omitted. |
+| `frozen_overflow` | `fail` | `fail` | Required overflow behavior for frozen context. No truncation mode is supported. |
+
+```yaml
+review:
+  context:
+    compaction:
+      enabled: true
+      max_bytes: 8000
+      summary_bytes: 2000
+      frozen_overflow: fail
+```
 
 The GitHub secret `CONTEXT7_API_KEY` is the hard gate. Without it, Context7 stays off regardless of YAML.
 

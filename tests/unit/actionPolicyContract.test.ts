@@ -372,6 +372,14 @@ describe('Action v4 policy boundary', () => {
     expect(result.files.every((file: any) => file.isSubmodule)).toBe(true);
   });
 
+  it('preserves ignored gitlinks for an enabled review-unit manifest without changing legacy ignore behavior', () => {
+    const files = [{ path: 'modules/core', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40) }];
+    expect(pipeline.applyActionSubmodulePolicy(files, { mode: 'ignore' }).files).toEqual([]);
+    expect(pipeline.applyActionSubmodulePolicy(files, { mode: 'ignore' }, { preserveIgnoredSubmodules: true }).files).toMatchObject([
+      { path: 'modules/core', isSubmodule: true, submoduleIgnored: true },
+    ]);
+  });
+
   it('exports the canonical arbitration helper used by the Action entrypoint', () => {
     expect(pipeline.computeArbitrationQuorum).toBeTypeOf('function');
     expect(pipeline.computeArbitrationQuorum([{ findings: [] }], 1).verdict).toBe('SHIP');
