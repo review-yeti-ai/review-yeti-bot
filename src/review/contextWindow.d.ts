@@ -17,7 +17,7 @@ export interface ContextCompactionPolicy {
 export interface ContextCompactionReceipt {
   schemaVersion: 'context-window-v1';
   budgetDigest: string;
-  status: 'disabled' | 'compacted' | 'active_overflow';
+  status: 'disabled' | 'compacted';
   compacted: boolean;
   inputBytes: number;
   outputBytes: number;
@@ -29,6 +29,13 @@ export interface ContextCompactionReceipt {
 export class ContextWindowFrozenOverflowError extends Error {
   code: 'CONTEXT_WINDOW_FROZEN_OVERFLOW';
   frozenBytes: number;
+  maxBytes: number;
+}
+
+export class ContextWindowActiveOverflowError extends Error {
+  code: 'CONTEXT_WINDOW_ACTIVE_OVERFLOW';
+  frozenBytes: number;
+  activeBytes: number;
   maxBytes: number;
 }
 

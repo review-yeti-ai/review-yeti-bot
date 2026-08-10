@@ -108,7 +108,11 @@ describe('action.yml sources configuration from the base ref, not the pull reque
     expect(targetStep?.run).toContain('base_sha=$BASE_SHA');
     expect(fetchStep?.env?.BASE_REF).toBe('${{ steps.target.outputs.base_sha }}');
     expect(fetchStep?.run).toContain('base_sha=$BASE_REF');
+    expect(fetchStep?.run).toContain('rm -rf "$DEST"');
+    expect(fetchStep?.run).not.toContain('.default_branch');
     expect(reviewStep?.env?.GITHUB_BASE_SHA).toBe('${{ steps.trusted_config.outputs.base_sha }}');
     expect(reviewStep?.env?.PR_HEAD_SHA).toBe('${{ steps.target.outputs.head_sha }}');
+    expect(reviewStep?.env?.REVIEW_YETI_TRUSTED_CONFIG_DIR).toBe('${{ runner.temp }}/review-yeti-config');
+    expect(reviewStep?.env?.REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA).toBe('${{ steps.trusted_config.outputs.base_sha }}');
   });
 });

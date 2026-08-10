@@ -421,11 +421,9 @@ runs:
         fi
         REF="${BASE_REF:-}"
         DEST="${RUNNER_TEMP}/review-yeti-config"
+        rm -rf "$DEST"
         mkdir -p "$DEST/.review-yeti/personas"
 
-        if [ -z "$REF" ]; then
-          REF=$(gh api "repos/$REPO" --jq .default_branch)
-        fi
         echo "Reading reviewer configuration from $REPO@$REF"
 
         for f in .review-yeti.yaml .review-yeti.yml .coderabbit.yaml .coderabbit.yml; do
@@ -500,6 +498,8 @@ runs:
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
         REVIEW_YETI_CONFIG_DIR: ${{ runner.temp }}/review-yeti-config
+        REVIEW_YETI_TRUSTED_CONFIG_DIR: ${{ runner.temp }}/review-yeti-config
+        REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
         # Pre-review "started" comment metadata (GITHUB_EVENT_NAME / ACTOR / RUN_ID are built-in).
         GITHUB_EVENT_ACTION: ${{ github.event.action }}
         # Streaming is OFF by default (fan-out reliability). Composite actions cannot use

@@ -647,6 +647,45 @@ function compactOptionalReviewContext({ context7Block = '', honchoContextBlock =
   };
 }
 
+function disabledContextCompaction(reason) {
+  return Object.freeze({
+    status: reason,
+    policy: resolveContextCompactionPolicy({}),
+  });
+}
+
+/**
+ * Context compaction changes what optional provider data reaches a model, so even an opt-in YAML
+ * block is inert unless the composite Action supplied a dedicated trusted directory and its exact
+ * base SHA survived a fresh GitHub PR snapshot check.
+ */
+function resolveTrustedContextCompactionPolicy({ localConfig, prContext, env = process.env, commandRunner } = {}) {
+  const configured = localConfig?.parsed?.review?.context?.compaction;
+  if (!configured || typeof configured !== 'object') return disabledContextCompaction('disabled_not_configured');
+  const configDir = String(env.REVIEW_YETI_CONFIG_DIR || '').trim();
+  const trustedConfigDir = String(env.REVIEW_YETI_TRUSTED_CONFIG_DIR || '').trim();
+  const trustedBase = String(env.REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA || '').trim().toLowerCase();
+  if (!configDir || !trustedConfigDir || path.resolve(configDir) !== path.resolve(trustedConfigDir) || !isImmutableCommitSha(trustedBase)) {
+    return disabledContextCompaction('disabled_untrusted_config');
+  }
+  let verified;
+  try {
+    verified = resolveTrustedPolicyPrContext(prContext, { commandRunner });
+  } catch (_) {
+    return disabledContextCompaction('disabled_unverified_base');
+  }
+  if (verified.baseSha !== trustedBase) return disabledContextCompaction('disabled_base_mismatch');
+  try {
+    return Object.freeze({
+      status: 'trusted',
+      trustedBaseRef: verified.baseSha,
+      policy: resolveContextCompactionPolicy(localConfig.parsed),
+    });
+  } catch (_) {
+    return disabledContextCompaction('disabled_invalid_config');
+  }
+}
+
 function shouldResolveTrustedReviewPolicy(localConfig) {
   if (localConfig?.parsed && typeof localConfig.parsed === 'object') {
     return Object.prototype.hasOwnProperty.call(localConfig.parsed, 'review_intelligence');
@@ -4689,7 +4728,16 @@ async function main(options = {}) {
   }
   const actionPolicy = resolveActionReviewPolicy(localConfig, runtimeEnv);
   const memoryPolicy = actionPolicy.memory || {};
-  const contextCompactionPolicy = resolveContextCompactionPolicy(localConfig?.parsed || {});
+  const contextCompaction = resolveTrustedContextCompactionPolicy({
+    localConfig,
+    prContext,
+    env: runtimeEnv,
+    commandRunner,
+  });
+  const contextCompactionPolicy = contextCompaction.policy;
+  if (contextCompaction.status !== 'trusted' && localConfig?.parsed?.review?.context?.compaction) {
+    console.warn(`[Context window] ${contextCompaction.status}; trusted compaction remains disabled.`);
+  }
   if (!actionPolicy.memory.sessionRecap) {
     sessionContext = null;
     sessionTurn = 1;
@@ -5366,6 +5414,7 @@ module.exports = {
   resolveModelConfig,
   resolveActionReviewPolicy,
   compactOptionalReviewContext,
+  resolveTrustedContextCompactionPolicy,
   resolveReviewIntelligenceActionInputs,
   shouldResolveTrustedReviewPolicy,
   resolveTrustedReviewPolicy,
