@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { createReviewIntelligenceScenarioRunner } from './review-intelligence-scenarios.mjs';
 
 const REQUIRED_SCENARIOS = Object.freeze([
   'repeated-pr-feedback-transitions', 'session-recap-exact-head', 'stale-head-rejected',
@@ -13,11 +14,13 @@ const SECRET = /(authorization|api[-_]?key|token|secret|password|private[-_]?key
 const SCRIPT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INTELLIGENCE_FIXTURE = 'intelligence-evaluation';
 
-function unsafe(value, key = '') {
-  if (key !== 'secret-free-receipts' && SECRET.test(key) && value !== '<redacted>') return true;
+function unsafe(value, path = []) {
+  const key = path.at(-1) || '';
+  const scenarioIdContainer = path.length === 3 && path[0] === 'evaluation' && path[1] === 'scenarioResults';
+  if (!(scenarioIdContainer && key === 'secret-free-receipts') && SECRET.test(key) && value !== '<redacted>') return true;
   if (typeof value === 'string') return /(?:bearer\s+|sk-|ghp_|https?:\/\/[^\s]+\?(?:[^\s]*token|[^\s]*key))/iu.test(value);
   if (!value || typeof value !== 'object') return false;
-  return Object.entries(value).some(([nestedKey, nestedValue]) => unsafe(nestedValue, nestedKey));
+  return Object.entries(value).some(([nestedKey, nestedValue]) => unsafe(nestedValue, [...path, nestedKey]));
 }
 
 function sha256(value) {
@@ -55,37 +58,6 @@ function cassetteIsValid(cassette, scenarioIds) {
   }
 }
 
-function scenarioSemantics(id, fixture) {
-  const expected = fixture?.expected || {};
-  const github = fixture?.github?.responses || {};
-  const model = fixture?.model?.responses || {};
-  const memory = fixture?.memory?.providerResponse || {};
-  switch (id) {
-    case 'repeated-pr-feedback-transitions':
-      return github.ledger === 'exact-head-deduplicated' && expected.verdict === 'SHIP' && expected.publishedReviewCount === 1;
-    case 'session-recap-exact-head':
-      return github.head === 'exact' && /^[a-f0-9]{40}$/u.test(fixture?.event?.headSha || '') && expected.coverageStatus === 'complete';
-    case 'stale-head-rejected':
-      return fixture?.evaluation?.scenarioResults?.[id]?.receipt?.reasonCode === 'stale_head';
-    case 'provider-failure-fail-open':
-      return memory.status === 'unavailable' && memory.failOpen === true && expected.outboxState === 'pending';
-    case 'compaction-bounded':
-      return model.compacted === true && fixture?.evaluation?.scenarioResults?.[id]?.receipt?.maxEntries === 40;
-    case 'otel-receipt-redacted':
-      return fixture?.evaluation?.scenarioResults?.[id]?.receipt?.exporter === 'none';
-    case 'mcp-poisoning-rejected':
-      return fixture?.evaluation?.scenarioResults?.[id]?.receipt?.reasonCode === 'tool_not_allowlisted';
-    case 'lease-loss-fenced':
-      return fixture?.evaluation?.scenarioResults?.[id]?.receipt?.fence === 4;
-    case 'replay-dead-letter-authorized':
-      return fixture?.evaluation?.scenarioResults?.[id]?.receipt?.attempts === 3;
-    case 'secret-free-receipts':
-      return unsafe(fixture) === false && fixture?.evaluation?.scenarioResults?.[id]?.receipt?.provider === 'fixture';
-    default:
-      return false;
-  }
-}
-
 export function loadOfflineEvaluationInputs(matrix = {}, { root = SCRIPT_ROOT } = {}) {
   const inputs = { workflowFixture: null, cassette: null, cassetteDigest: null, errors: [] };
   const workflowPath = path.join(root, 'tests/fixtures/review-workflows', `${INTELLIGENCE_FIXTURE}.json`);
@@ -109,7 +81,7 @@ export function loadOfflineEvaluationInputs(matrix = {}, { root = SCRIPT_ROOT } 
   return inputs;
 }
 
-export function evaluateOfflinePromotionMatrix(matrix = {}, suppliedInputs) {
+export async function evaluateOfflinePromotionMatrix(matrix = {}, suppliedInputs) {
   const inputs = suppliedInputs || loadOfflineEvaluationInputs(matrix);
   const scenarios = Array.isArray(matrix.scenarios) ? matrix.scenarios : [];
   const byId = new Map(scenarios.map((scenario) => [scenario?.id, scenario]));
@@ -122,14 +94,24 @@ export function evaluateOfflinePromotionMatrix(matrix = {}, suppliedInputs) {
   if (inputs.errors.includes('workflow_fixture') || workflow?.id !== INTELLIGENCE_FIXTURE
     || !sameIdentity(workflow?.event, { repository: 'acme/review-yeti', prNumber: 42, headSha: 'a'.repeat(40) })
     || workflow?.config?.provider !== 'mem0') failures.push('workflow_fixture');
+  let runner = null;
+  try { runner = createReviewIntelligenceScenarioRunner({ workflowFixture: workflow, cassette: inputs.cassette }); }
+  catch (_) { failures.push('vcr_fixture'); }
   for (const id of REQUIRED_SCENARIOS) {
     const scenario = byId.get(id);
-    const fixtureResult = workflow?.evaluation?.scenarioResults?.[id];
     const expected = scenario?.expected;
-    if (!scenario || scenario.offline !== true || !expected || expected.status !== fixtureResult?.status
-      || !equalJson(expected.receipt, fixtureResult?.receipt) || !sameIdentity(fixtureResult?.identity, workflow?.event)
-      || !scenarioSemantics(id, workflow) || unsafe(fixtureResult?.receipt)) failures.push(id);
+    try {
+      if (!runner) throw new Error('scenario runner unavailable');
+      const actual = await runner.run(id);
+      if (!scenario || scenario.offline !== true || !expected || expected.status !== actual?.status
+        || !equalJson(expected.receipt, actual?.receipt) || !sameIdentity(actual?.identity, workflow?.event)
+        || unsafe(actual?.receipt)) failures.push(id);
+    } catch (error) {
+      if (/cassette/iu.test(String(error?.message || ''))) failures.push('vcr_fixture');
+      failures.push(id);
+    }
   }
+  try { runner?.assertComplete(); } catch (_) { failures.push('vcr_fixture'); }
   if (byId.size !== scenarios.length || scenarios.length !== REQUIRED_SCENARIOS.length) failures.push('duplicate_scenario');
   const passed = REQUIRED_SCENARIOS.filter((id) => !failures.includes(id)).length;
   return {
@@ -154,7 +136,7 @@ if (process.argv[1]?.endsWith('evaluate-review-intelligence.mjs')) {
     process.exit(2);
   }
   const matrix = JSON.parse(fs.readFileSync(fixture, 'utf8'));
-  const result = evaluateOfflinePromotionMatrix(matrix, loadOfflineEvaluationInputs(matrix));
+  const result = await evaluateOfflinePromotionMatrix(matrix, loadOfflineEvaluationInputs(matrix));
   console.log(JSON.stringify(result));
   if (result.status !== 'pass') process.exitCode = 1;
 }

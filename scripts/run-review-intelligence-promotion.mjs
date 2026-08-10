@@ -11,7 +11,7 @@ function argument(name, fallback) {
 }
 
 const fixturePath = path.resolve(process.cwd(), argument('--fixture', 'tests/fixtures/review-intelligence/offline-promotion-matrix.json'));
-const offline = evaluateOfflinePromotionMatrix(JSON.parse(fs.readFileSync(fixturePath, 'utf8')));
+const offline = await evaluateOfflinePromotionMatrix(JSON.parse(fs.readFileSync(fixturePath, 'utf8')));
 const actionRuntime = JSON.parse(execFileSync(process.execPath, ['scripts/check-action-runtime.mjs'], { cwd: process.cwd(), encoding: 'utf8' }));
 const liveSmoke = { status: 'not_run', reason: 'optional live smoke requires explicit separate invocation' };
 const receipt = { status: offline.status === 'pass' && actionRuntime.pipelineExports && !actionRuntime.loadedTypescript ? 'pass' : 'fail', offline, actionRuntime, liveSmoke };

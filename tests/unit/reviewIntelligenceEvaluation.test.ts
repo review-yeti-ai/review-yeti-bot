@@ -10,7 +10,7 @@ describe('offline review-intelligence promotion gates', () => {
   it('covers repeated PR/feedback, recap, stale, provider, compaction, telemetry, MCP, lease, replay, and receipt cases deterministically', async () => {
     const { evaluateOfflinePromotionMatrix } = await import('../../scripts/evaluate-review-intelligence.mjs');
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
-    const result = evaluateOfflinePromotionMatrix(fixture);
+    const result = await evaluateOfflinePromotionMatrix(fixture);
 
     expect(result).toMatchObject({ status: 'pass', deterministic: true, liveEvidence: false, score: 1 });
     expect(result.scenarios).toEqual(expect.arrayContaining([
@@ -24,9 +24,9 @@ describe('offline review-intelligence promotion gates', () => {
     const { evaluateOfflinePromotionMatrix } = await import('../../scripts/evaluate-review-intelligence.mjs');
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 
-    expect(evaluateOfflinePromotionMatrix({ ...fixture, liveEvidence: true }).status).toBe('fail');
+    expect((await evaluateOfflinePromotionMatrix({ ...fixture, liveEvidence: true })).status).toBe('fail');
     fixture.scenarios.find((scenario: any) => scenario.id === 'secret-free-receipts').expected.receipt = { token: 'not-redacted' };
-    expect(evaluateOfflinePromotionMatrix(fixture)).toMatchObject({ status: 'fail', failures: expect.arrayContaining(['secret-free-receipts']) });
+    await expect(evaluateOfflinePromotionMatrix(fixture)).resolves.toMatchObject({ status: 'fail', failures: expect.arrayContaining(['secret-free-receipts']) });
   });
 
   it('executes fixture-backed scenario checks instead of trusting matrix assertions', async () => {
@@ -34,18 +34,18 @@ describe('offline review-intelligence promotion gates', () => {
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
     const inputs = loadOfflineEvaluationInputs(fixture);
 
-    expect(evaluateOfflinePromotionMatrix(fixture, inputs)).toMatchObject({ status: 'pass', score: 1 });
+    await expect(evaluateOfflinePromotionMatrix(fixture, inputs)).resolves.toMatchObject({ status: 'pass', score: 1 });
 
     const changedExpected = structuredClone(inputs.workflowFixture);
-    changedExpected.expected.verdict = 'CHANGES_REQUESTED';
-    expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, workflowFixture: changedExpected })).toMatchObject({
+    changedExpected.github.responses.ledger = 'unexpected-ledger';
+    await expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, workflowFixture: changedExpected })).resolves.toMatchObject({
       status: 'fail',
       failures: expect.arrayContaining(['repeated-pr-feedback-transitions']),
     });
 
     const changedAssertion = structuredClone(fixture);
     changedAssertion.scenarios[0].expected.status = 'fail';
-    expect(evaluateOfflinePromotionMatrix(changedAssertion, inputs)).toMatchObject({
+    await expect(evaluateOfflinePromotionMatrix(changedAssertion, inputs)).resolves.toMatchObject({
       status: 'fail',
       failures: expect.arrayContaining(['repeated-pr-feedback-transitions']),
     });
@@ -56,15 +56,37 @@ describe('offline review-intelligence promotion gates', () => {
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
     const inputs = loadOfflineEvaluationInputs(fixture);
 
-    expect(evaluateOfflinePromotionMatrix(fixture, inputs)).toMatchObject({ status: 'pass' });
-    expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: null })).toMatchObject({
+    await expect(evaluateOfflinePromotionMatrix(fixture, inputs)).resolves.toMatchObject({ status: 'pass' });
+    await expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: null })).resolves.toMatchObject({
       status: 'fail', failures: expect.arrayContaining(['vcr_fixture']),
     });
     const changedCassette = structuredClone(inputs.cassette);
     changedCassette.interactions[0].request.headers.authorization = 'Bearer fixture-secret';
-    expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: changedCassette })).toMatchObject({
+    await expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: changedCassette })).resolves.toMatchObject({
       status: 'fail', failures: expect.arrayContaining(['vcr_fixture']),
     });
+    const missingInteraction = structuredClone(inputs.cassette);
+    missingInteraction.interactions.pop();
+    await expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: missingInteraction })).resolves.toMatchObject({
+      status: 'fail', failures: expect.arrayContaining(['vcr_fixture']),
+    });
+  });
+
+  it('derives every scenario result from executable deterministic runners, not fixture result fields', async () => {
+    const { createReviewIntelligenceScenarioRunner } = await import('../../scripts/review-intelligence-scenarios.mjs');
+    const matrix = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+    const workflowFixture = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/review-workflows/intelligence-evaluation.json'), 'utf8'));
+    const { cassette } = (await import('../../scripts/evaluate-review-intelligence.mjs')).loadOfflineEvaluationInputs(matrix);
+    const runner = createReviewIntelligenceScenarioRunner({ workflowFixture, cassette, root });
+
+    for (const scenario of matrix.scenarios) {
+      await expect(runner.run(scenario.id)).resolves.toMatchObject({
+        status: scenario.expected.status,
+        identity: workflowFixture.event,
+        receipt: scenario.expected.receipt,
+      });
+    }
+    expect(() => runner.assertComplete()).not.toThrow();
   });
 
   it('runs the promotion gate and plain-node Action load without optional live smoke', () => {
