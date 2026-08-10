@@ -13,6 +13,13 @@ The repository boundary is shared, but the security boundary remains explicit:
 
 The adapter's construction path is `loadTrustedBaseArtifactFromTrustedContext()` followed by `createPiMcpAdapter()`. Configuration must come from the immutable trusted-base artifact; pull-request files and arbitrary runtime configuration cannot select an endpoint, credential, scope, or tool.
 
+The Action does not currently read a top-level `pi:` YAML block. A Pi host must first mint the
+bounded trusted artifact from the same base-ref policy resolver; the artifact contains the
+endpoint environment reference, read-only scopes, and stable tool allowlist. Those values cannot
+come from the pull-request head. Pi settings select the execution surface only; they do not enable memory persistence. Memory
+recall and writes remain under the top-level [`memory`](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration)
+contract and use the Action's normalized event/outbox path.
+
 Run its contract suite with:
 
 ```sh

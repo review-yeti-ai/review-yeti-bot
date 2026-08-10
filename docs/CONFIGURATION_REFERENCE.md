@@ -7,8 +7,9 @@ This reference guide provides a complete, 1:1 schema specification for `.review-
 ## 📋 Table of Contents
 
 1. [Configuration File Resolution](#configuration-file-resolution)
-2. [Top-Level Schema Overview](#top-level-schema-overview)
-3. [V4 Execution Policy](#v4-execution-policy)
+2. [Canonical YAML Examples](#canonical-yaml-examples)
+3. [Top-Level Schema Overview](#top-level-schema-overview)
+4. [V4 Execution Policy](#v4-execution-policy)
 4. [The 6 Compatibility Sections](#the-6-compatibility-sections)
    - [1. `reviews`](#1-reviews)
    - [2. `chat`](#2-chat)
@@ -37,6 +38,26 @@ On each pull request event, `review-yeti-bot` checks the repository for a config
 4. `.coderabbit.yaml` in PR target branch
 5. Organization-level `.github` repository (`.review-yeti.yaml`, `.coderabbit.yaml`)
 6. Built-in system default configuration (`createDefaultV4Config()`)
+
+## Canonical YAML Examples
+
+The complete annotated copy-and-edit configuration is in
+[YAML configuration examples](YAML_CONFIGURATION_EXAMPLES.md). It includes the Action-native
+limits, submodule policy, coverage policy, personas, API-backed memory providers, Context7,
+compaction, review units, finding verification, telemetry, and OpenRouter routing settings.
+
+Use that page together with this reference as follows:
+
+| Need | Use |
+| --- | --- |
+| Start a new repository configuration | [Recommended production configuration](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration) |
+| Turn on Honcho feedback persistence | [Honcho example](YAML_CONFIGURATION_EXAMPLES.md#honcho-recall-and-feedback-persistence) |
+| Require exact-snapshot verification | [Strict verification example](YAML_CONFIGURATION_EXAMPLES.md#strict-exact-snapshot-verification) |
+| Understand legacy/hosted keys | [Compatibility-only sections](YAML_CONFIGURATION_EXAMPLES.md#compatibility-only-sections) |
+
+Only settings marked Action-native affect the composite Action. Compatibility sections are parsed
+so existing configuration files remain usable, but they do not create a local database, grant
+memory authority, or enable a feature by themselves.
 
 ---
 
@@ -146,6 +167,28 @@ ambiguous anchor, or content-hash uncertainty) forces `INCOMPLETE_REVIEW`, `BLOC
 non-merge-eligible result; it can never produce `SHIP`. Immediately before any GitHub publication
 operation, the Action re-reads the PR head and aborts all writes if it no longer equals the head
 that was reviewed.
+
+### Deterministic review units
+
+`review.units` creates an exact-head manifest for changed files. It is disabled unless the trusted
+base configuration enables it. Unit IDs include canonical path/range, content/blob identity,
+repository/head identity, and policy digest. A failed or uncovered unit is never merge-eligible.
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables trusted manifest generation and coverage receipts. |
+| `generated_patterns` | `string[]` | `[]` | Additional trusted-base generated-file patterns. |
+| `vendor_patterns` | `string[]` | `[]` | Additional trusted-base vendored-file patterns. |
+| `allow_waived` | `boolean` | `false` | Allows only explicitly trusted maintainer waivers. Failed or uncovered evidence still cannot become `SHIP`. |
+
+```yaml
+review:
+  units:
+    enabled: true
+    generated_patterns: ['**/*.generated.ts']
+    vendor_patterns: ['vendor/**']
+    allow_waived: false
+```
 
 ### Durable publication resume
 
@@ -317,23 +360,33 @@ OpenRouter **client** settings for the composite Action (read from the PR base r
 ```yaml
 github_action:
   openrouter:
+    model: openrouter/auto-beta # primary model; Action `model` input can override
+    allowed_models: [openrouter/auto-beta]
     timeout_ms: 30000         # hard per-request timeout (default 30000 = 30s)
     stream: false             # SSE streaming (default false)
+    data_collection: deny     # allow | deny
+    cost_quality_tradeoff: 5  # 0=cheapest … 10=highest quality
+    ignore_providers: [deepinfra]
     fallback_models:
       - deepseek/deepseek-v4-flash-0731  # ordered fallback after transient primary failures
-    # allowed_models: []
-    # cost_quality_tradeoff: 5   # 0=cheapest … 10=highest quality
-    # data_collection: deny
+    provider_routing:
+      allow_fallbacks: false
+      require_parameters: true
+      sort: { by: throughput, partition: none }
+      max_price: { prompt: 1, completion: 1 }
 ```
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `timeout_ms` | `number` | `30000` | Per-request hard timeout in milliseconds. Lanes that do not return in time fail as `timeout`. Action input `openrouter-timeout-ms` / env `OPENROUTER_TIMEOUT_MS` / var `OPENROUTER_TIMEOUT_MS` override YAML. Clamped to 500–600000. |
 | `stream` | `boolean` | `false` | When true, use OpenRouter SSE streaming. Action input `openrouter-stream` / env `OPENROUTER_STREAM` / var `OPENROUTER_STREAM` override YAML. |
+| `model` | `string` | `openrouter/auto-beta` | Primary model id. The explicit Action `model` input/environment has precedence. |
 | `fallback_models` | `string[]` | `[]` | Ordered model ids used after the primary exhausts its transient-failure retries. Timeouts, network failures, 408, 429, and 5xx responses can move to the next model. Action input `openrouter-fallback-models` / env `OPENROUTER_FALLBACK_MODELS` overrides YAML. |
-| `allowed_models` | `string[]` | — | Auto Router allowlist. |
-| `cost_quality_tradeoff` | `number` | — | Auto Router cost/quality 0–10. |
-| `data_collection` | `allow`\|`deny` | — | When `deny`, sends OpenRouter training opt-out header. |
+| `allowed_models` | `string[]` | `[]` | Auto Router model allowlist. |
+| `ignore_providers` | `string[]` | `[deepinfra]` | Provider slugs excluded from routing; DeepInfra is always excluded. |
+| `cost_quality_tradeoff` | `number` | unset | Auto Router cost/quality 0–10. |
+| `data_collection` | `allow`\|`deny` | unset | When `deny`, sends OpenRouter training opt-out header. |
+| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. |
 
 **Precedence:** action input / env → `.review-yeti.yaml` → defaults (`timeout_ms=30000`, `stream=false`, `fallback_models=[]`).
 

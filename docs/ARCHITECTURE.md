@@ -5,6 +5,11 @@ endpoint. Everything runs inside the workflow job on the runner, using the calle
 and their own model API key. Optional memory is API-backed infrastructure selected and operated by
 the caller; it is disabled by default and is never replaced by a local database in the Action.
 
+The Action, CLI/runtime contracts, and Pi/MCP adapter ship from this same repository. The Pi
+adapter is an execution surface, not a second memory authority: it can read bounded exact-head
+context, while the review pipeline owns normalized memory writes and outbox delivery. See the
+[canonical YAML examples](YAML_CONFIGURATION_EXAMPLES.md) for the settings used by each surface.
+
 ## The run
 
 ```text
@@ -20,8 +25,8 @@ pull_request event
   -> moderator reconciliation pass (dedupes across personas)
   -> separate binding arbiter pass (SHIP / FIX_FIRST / BLOCK)
   -> one compact COMMENT review + resolvable P0/P1 line conversations
-  -> atomically persist normalized memory outbox
-  -> publish to provider after GitHub publication (fail-open)
+  -> atomically persist normalized memory outbox after publication planning
+  -> publish normalized events to the selected provider after GitHub publication (fail-open)
 ```
 
 ## Why config comes from the base ref
@@ -71,6 +76,12 @@ tracing, but the Honcho message endpoint is not treated as an idempotency API. L
 chunked, and an uploaded outbox plus the replay command recover events after cancellation. Disable
 `honcho-write` without affecting GitHub publication.
 
+The write path is intentionally not exposed as an arbitrary Pi/model tool. GitHub comments and
+permissions are first converted into authenticated ledger transitions; only that normalized batch
+can be persisted. This prevents prompt-injected or PR-controlled agents from inventing feedback,
+retargeting a workspace, or changing review authority. A future Pi write command must submit the
+same versioned event envelope through this pipeline/outbox boundary.
+
 The trust boundary is intentionally split: GitHub APIs provide authoritative comments, review
 threads, permissions, and exact-head state; the selected memory API provides advisory recall and
 normalized persistence; the runner filesystem provides only temporary/replayable outbox storage.
@@ -105,3 +116,4 @@ marker so a rerun updates in place instead of duplicating. See
 | `src/memory/sessionLedger.ts` | Exact-head PR session recap and turn history |
 | `src/memory/memoryOutbox.js` | Atomic normalized event outbox and replay envelope |
 | `src/memory/honchoMemory.js` | Optional native-fetch Honcho adapter with bounded context and normalized write-behind events |
+| `src/pi/` | In-repository Pi/MCP execution adapter with trusted config and read-only tool boundary |

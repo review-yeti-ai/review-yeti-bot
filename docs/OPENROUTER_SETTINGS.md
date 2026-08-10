@@ -1,47 +1,66 @@
 # OpenRouter settings (optional)
 
-In `.review-yeti.yaml`, the `openrouter:` block is **optional**. Omit it entirely for defaults.
+OpenRouter settings are optional and must come from the trusted PR-base configuration. The
+canonical location is `github_action.openrouter`; the top-level `openrouter` block remains a
+compatibility alias. Omit both for defaults.
 
 ```yaml
 # Optional — all keys optional
-openrouter:
-  # Pin model+provider for multi-turn persona/moderator/arbiter work
-  # via session_id (OpenRouter Auto Router stickiness). Default: true
-  session_sticky: true
-
-  # Prefix for generated session ids (max 64 chars). Default: review-yeti
-  session_id_prefix: review-yeti
-
-  # Optional Auto Router cost/quality band. Omit for OpenRouter product default.
-  # low | medium | high | xhigh | max
-  # cost_tier: high
-
-  # Optional raw OpenRouter provider routing policy. This is forwarded as the
-  # `provider` request object; use snake_case API field names.
-  provider_routing:
-    order: [novita, akash]
-    allow_fallbacks: false
-    require_parameters: true
-    sort:
-      by: throughput
-      partition: none
-    max_price:
-      prompt: 1
-
-  # DeepInfra is always ignored by the action, even when other providers are configured.
+github_action:
+  openrouter:
+    model: openrouter/auto-beta
+    allowed_models: [openrouter/auto-beta]
+    fallback_models: [deepseek/deepseek-v4-flash-0731]
+    timeout_ms: 30000
+    stream: false
+    data_collection: deny
+    cost_quality_tradeoff: 5
+    ignore_providers: [deepinfra]
+    # Optional raw OpenRouter provider routing policy. This is forwarded as the
+    # `provider` request object; use snake_case API field names.
+    provider_routing:
+      order: [novita, akash]
+      allow_fallbacks: false
+      require_parameters: true
+      sort:
+        by: throughput
+        partition: none
+      max_price:
+        prompt: 1
 ```
 
 Defaults (when section or keys are missing):
 
 | Key | Default |
 |-----|---------|
-| `session_sticky` | `true` |
-| `session_id_prefix` | `review-yeti` |
-| `cost_tier` | unset (OpenRouter default) |
+| `model` | `openrouter/auto-beta` |
+| `fallback_models` | empty |
+| `timeout_ms` | `30000` |
+| `stream` | `false` |
 | `provider_routing` | unset, except for the enforced `ignore: [deepinfra]` action policy |
 
-Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL`).  
+Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL`).
 `openrouter/auto` and `openrouter/auto-beta` are never rewritten into each other.
+
+## Supported YAML keys and precedence
+
+| YAML key | Meaning | Default |
+| --- | --- | --- |
+| `model` | Default model when no action input overrides it | `openrouter/auto-beta` |
+| `allowed_models` | Model allowlist | empty (no additional allowlist) |
+| `fallback_models` | Ordered fallback models for transient failures | empty |
+| `timeout_ms` | Per-request timeout, clamped to `500..600000` | `30000` |
+| `stream` | Use SSE streaming | `false` |
+| `data_collection` | Provider data-collection header policy: `allow` or `deny` | unset |
+| `cost_quality_tradeoff` | Auto Router quality/cost band, `0..10` | unset |
+| `ignore_providers` | Provider slugs to ignore; `deepinfra` is always ignored | `[deepinfra]` |
+| `provider_routing` | Validated OpenRouter provider-selection object | unset |
+
+Precedence is: explicit Action input/environment, trusted `github_action.openrouter` YAML, then
+defaults. Action inputs cannot select an untrusted configuration ref. `provider_routing` accepts
+`order`, `only`, `ignore`, `quantizations`, `allow_fallbacks`, `require_parameters`,
+`data_collection`, `zdr`, `enforce_distillable_text`, `sort`, throughput/latency preferences, and
+`max_price`; unknown fields fail closed. See the [canonical YAML example](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration).
 
 Docs: https://openrouter.ai/docs/guides/routing/routers/auto-router
 
