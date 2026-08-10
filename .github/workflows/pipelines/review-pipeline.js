@@ -95,6 +95,7 @@ try {
 
 const { resolveOpenRouterPolicy } = require('./openRouterPolicy.js');
 const { classifyReviewFile, resolveMaxFileDiffChars } = require('../../../src/review/reviewIgnorePolicy');
+const { resolveTrustedReviewPolicy } = require('../../../src/review/reviewPolicyResolver');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -620,6 +621,22 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
   return { maxDiffChars, maxFileDiffChars, submodules, memory };
 }
 
+function resolveReviewIntelligenceActionInputs(env = process.env) {
+  return {
+    enabled: env.REVIEW_INTELLIGENCE_ENABLED,
+    maxDiffChars: env.REVIEW_INTELLIGENCE_MAX_DIFF_CHARS,
+    maxFileDiffChars: env.REVIEW_INTELLIGENCE_MAX_FILE_DIFF_CHARS,
+    maxPersonas: env.REVIEW_INTELLIGENCE_MAX_PERSONAS,
+  };
+}
+
+function shouldResolveTrustedReviewPolicy(localConfig) {
+  if (localConfig?.parsed && typeof localConfig.parsed === 'object') {
+    return Object.prototype.hasOwnProperty.call(localConfig.parsed, 'review_intelligence');
+  }
+  return typeof localConfig?.raw === 'string' && /^\s*review_intelligence\s*:/mu.test(localConfig.raw);
+}
+
 function isGitlinkMode(file) {
   if (file?.isSubmodule === true) return true;
   return [file?.mode, file?.oldMode, file?.newMode, file?.old_mode, file?.new_mode]
@@ -785,6 +802,22 @@ function assertCurrentPullRequest(prContext, options = {}) {
     throw new Error(`PR head changed during review: expected ${prContext.headSha}, found ${snapshot.headRefOid}`);
   }
   return snapshot;
+}
+
+function isImmutableCommitSha(value) {
+  return /^[a-f0-9]{40,64}$/iu.test(String(value || '').trim());
+}
+
+function resolveTrustedPolicyPrContext(prContext, options = {}) {
+  const snapshot = assertCurrentPullRequest(prContext, options);
+  if (!isImmutableCommitSha(snapshot?.baseRefOid)) {
+    throw new Error(`GitHub did not return an immutable PR base SHA for ${prContext.repo}#${prContext.prNumber}`);
+  }
+  const suppliedBase = String(prContext?.baseSha || '').trim();
+  if (suppliedBase && (!isImmutableCommitSha(suppliedBase) || suppliedBase.toLowerCase() !== snapshot.baseRefOid.toLowerCase())) {
+    throw new Error(`PR base changed during review: expected ${suppliedBase}, found ${snapshot.baseRefOid}`);
+  }
+  return { ...prContext, baseSha: snapshot.baseRefOid.toLowerCase() };
 }
 
 /**
@@ -2105,7 +2138,10 @@ function getPRDiffAndContext(env = process.env) {
   let diffText = '';
   let prNumber = env.PR_NUMBER || null;
   let repo = env.GITHUB_REPOSITORY || 'review-bot/review-bot';
-  let headSha = env.GITHUB_SHA || 'main';
+  let headSha = env.PR_HEAD_SHA || env.GITHUB_SHA || 'main';
+  let baseSha = env.GITHUB_BASE_SHA || '';
+  let hasAuthoritativeHead = Boolean(String(env.PR_HEAD_SHA || '').trim());
+  let hasAuthoritativeBase = Boolean(String(env.GITHUB_BASE_SHA || '').trim());
   let title = 'Automated PR Review';
   let eventData = null;
 
@@ -2118,7 +2154,14 @@ function getPRDiffAndContext(env = process.env) {
         if (parsed.diff) diffText = parsed.diff;
         if (parsed.prNumber) prNumber = String(parsed.prNumber);
         if (parsed.repo) repo = parsed.repo;
-        if (parsed.headSha) headSha = parsed.headSha;
+        if (parsed.headSha) {
+          headSha = parsed.headSha;
+          hasAuthoritativeHead = true;
+        }
+        if (parsed.baseSha) {
+          baseSha = parsed.baseSha;
+          hasAuthoritativeBase = true;
+        }
         if (parsed.title) title = parsed.title;
       } catch (_) {
         diffText = raw;
@@ -2152,6 +2195,11 @@ function getPRDiffAndContext(env = process.env) {
         }
         if (eventData.pull_request.head && eventData.pull_request.head.sha) {
           headSha = eventData.pull_request.head.sha;
+          hasAuthoritativeHead = true;
+        }
+        if (eventData.pull_request.base && eventData.pull_request.base.sha) {
+          baseSha = eventData.pull_request.base.sha;
+          hasAuthoritativeBase = true;
         }
         if (eventData.pull_request.title) {
           title = eventData.pull_request.title;
@@ -2164,8 +2212,11 @@ function getPRDiffAndContext(env = process.env) {
         if (eventData.client_payload.pr_number || eventData.client_payload.prNumber) {
           prNumber = String(eventData.client_payload.pr_number || eventData.client_payload.prNumber);
         }
-        if (eventData.client_payload.head_sha || eventData.client_payload.headSha) {
+        if (!hasAuthoritativeHead && (eventData.client_payload.head_sha || eventData.client_payload.headSha)) {
           headSha = eventData.client_payload.head_sha || eventData.client_payload.headSha;
+        }
+        if (!hasAuthoritativeBase && (eventData.client_payload.base_sha || eventData.client_payload.baseSha)) {
+          baseSha = eventData.client_payload.base_sha || eventData.client_payload.baseSha;
         }
       }
       if (!repo && eventData.repository && eventData.repository.full_name) {
@@ -2198,7 +2249,7 @@ function getPRDiffAndContext(env = process.env) {
     repo = env.PR_REPO;
   }
 
-  return { diffText, prNumber, repo, headSha, title, eventData };
+  return { diffText, prNumber, repo, headSha, baseSha, title, eventData };
 }
 
 /**
@@ -4286,6 +4337,7 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
  */
 function loadLocalRepoConfig(configRoot = resolveConfigRoot()) {
   const candidates = ['.review-yeti.yaml', '.review-yeti.yml', '.coderabbit.yaml', '.coderabbit.yml'];
+  let parseFailure = null;
   for (const file of candidates) {
     const fullPath = path.resolve(configRoot, file);
     if (fs.existsSync(fullPath)) {
@@ -4298,10 +4350,13 @@ function loadLocalRepoConfig(configRoot = resolveConfigRoot()) {
         return { file, parsed, raw: content };
       } catch (err) {
         console.warn(`[Config] Failed to parse local config file ${file}: ${err.message}`);
+        if (!parseFailure) {
+          parseFailure = { file, raw: fs.readFileSync(fullPath, 'utf-8'), parsed: null, parseError: err };
+        }
       }
     }
   }
-  return null;
+  return parseFailure;
 }
 
 /** Recovers the verdict and head SHA a previously published summary recorded. */
@@ -4572,7 +4627,7 @@ async function main(options = {}) {
   const runtimeEnv = options.env || process.env;
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const fetchImplementation = options.fetchImplementation || globalThis.fetch;
-  const prContext = options.prContext || getPRDiffAndContext(runtimeEnv);
+  let prContext = options.prContext || getPRDiffAndContext(runtimeEnv);
   console.log(`[Context] Repo: ${prContext.repo} | PR #: ${prContext.prNumber || 'N/A'} | SHA: ${prContext.headSha.slice(0, 7)}`);
 
   let sessionContext = null;
@@ -4596,6 +4651,21 @@ async function main(options = {}) {
     console.log(`[Config] Reading repository configuration from the trusted base ref, not the pull request head.`);
   }
   const localConfig = loadLocalRepoConfig(configRoot);
+  if (shouldResolveTrustedReviewPolicy(localConfig)) {
+    prContext = resolveTrustedPolicyPrContext(prContext, { commandRunner });
+    const reviewIntelligencePolicy = resolveTrustedReviewPolicy({
+      trustedConfig: localConfig,
+      baseRef: prContext.baseSha,
+      headRef: prContext.headSha,
+      configRef: runtimeEnv.REVIEW_YETI_CONFIG_REF,
+      actionInputs: resolveReviewIntelligenceActionInputs(runtimeEnv),
+    });
+    if (reviewIntelligencePolicy.status === 'invalid_config') {
+      console.warn(`[Review Intelligence] Trusted v1 policy disabled: ${reviewIntelligencePolicy.reason}.`);
+    } else if (reviewIntelligencePolicy.enabled) {
+      console.log(`[Review Intelligence] v1 contract active in report-only mode (policy=${reviewIntelligencePolicy.policyDigest}).`);
+    }
+  }
   const actionPolicy = resolveActionReviewPolicy(localConfig, runtimeEnv);
   const memoryPolicy = actionPolicy.memory || {};
   if (!actionPolicy.memory.sessionRecap) {
@@ -5256,11 +5326,15 @@ module.exports = {
   appendMemoryEventsWithRetry,
   getPRDiffAndContext,
   assertCurrentPullRequest,
+  resolveTrustedPolicyPrContext,
   resolvePersonaRoster,
   loadPersonaFiles,
   resolveConfigRoot,
   resolveModelConfig,
   resolveActionReviewPolicy,
+  resolveReviewIntelligenceActionInputs,
+  shouldResolveTrustedReviewPolicy,
+  resolveTrustedReviewPolicy,
   createReviewMemoryRouter,
   memoryPolicyReceipt,
   reviewMemoryIdentity,

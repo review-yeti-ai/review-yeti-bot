@@ -79,6 +79,8 @@ describe('Persona count is capped so configuration cannot fan out into unbounded
 
 describe('action.yml sources configuration from the base ref, not the pull request head', () => {
   const action = fs.readFileSync(actionPath, 'utf-8');
+  const yaml = require('js-yaml');
+  const manifest: any = yaml.load(action);
 
   it('resolves the base ref of the pull request', () => {
     expect(action).toMatch(/base/);
@@ -94,8 +96,19 @@ describe('action.yml sources configuration from the base ref, not the pull reque
   });
 
   it('exposes a persona cap input', () => {
-    const yaml = require('js-yaml');
-    const parsed: any = yaml.load(action);
-    expect(Object.keys(parsed.inputs)).toContain('max-personas');
+    expect(Object.keys(manifest.inputs)).toContain('max-personas');
+  });
+
+  it('passes the fetched immutable base SHA to the review-panel environment', () => {
+    const targetStep = manifest.runs.steps.find((step: any) => step.id === 'target');
+    const fetchStep = manifest.runs.steps.find((step: any) => step.id === 'trusted_config');
+    const reviewStep = manifest.runs.steps.find((step: any) => step.id === 'review');
+
+    expect(targetStep?.run).toContain('head_sha=$HEAD_SHA');
+    expect(targetStep?.run).toContain('base_sha=$BASE_SHA');
+    expect(fetchStep?.env?.BASE_REF).toBe('${{ steps.target.outputs.base_sha }}');
+    expect(fetchStep?.run).toContain('base_sha=$BASE_REF');
+    expect(reviewStep?.env?.GITHUB_BASE_SHA).toBe('${{ steps.trusted_config.outputs.base_sha }}');
+    expect(reviewStep?.env?.PR_HEAD_SHA).toBe('${{ steps.target.outputs.head_sha }}');
   });
 });

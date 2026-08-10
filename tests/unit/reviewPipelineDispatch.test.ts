@@ -103,6 +103,22 @@ describe('Dispatch path: diff resolution never fabricates a diff', () => {
     expect(ctx.diffText).toContain('large.ts');
     expect(ctx.diffText).toContain('const large = true;');
   });
+
+  it('keeps explicit pull-request event head/base values authoritative over Action defaults', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-pr-event-'));
+    const eventPath = path.join(tmp, 'event.json');
+    fs.writeFileSync(eventPath, JSON.stringify({
+      pull_request: { number: 42, head: { sha: 'd'.repeat(40) }, base: { sha: 'e'.repeat(40) } },
+    }));
+
+    const ctx = pipeline.getPRDiffAndContext({
+      PR_HEAD_SHA: 'a'.repeat(40),
+      GITHUB_BASE_SHA: 'b'.repeat(40),
+      GITHUB_EVENT_PATH: eventPath,
+    });
+
+    expect(ctx).toMatchObject({ headSha: 'd'.repeat(40), baseSha: 'e'.repeat(40) });
+  });
 });
 
 describe('Dispatch path: arbitration reports the real persona count', () => {
@@ -648,6 +664,21 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       repo: 'review-yeti-ai/review-yeti-bot',
       headSha: 'stale-head',
     }, { commandRunner })).toThrow('PR head changed during review');
+  });
+
+  it('rejects a supplied review-policy base SHA that differs from GitHub\'s authoritative PR base', () => {
+    const commandRunner = () => ({
+      status: 0,
+      stdout: JSON.stringify({ headRefOid: 'a'.repeat(40), baseRefOid: 'b'.repeat(40) }),
+      stderr: '',
+    });
+
+    expect(() => pipeline.resolveTrustedPolicyPrContext({
+      prNumber: '42',
+      repo: 'review-yeti-ai/review-yeti-bot',
+      headSha: 'a'.repeat(40),
+      baseSha: 'c'.repeat(40),
+    }, { commandRunner })).toThrow('PR base changed during review');
   });
 });
 

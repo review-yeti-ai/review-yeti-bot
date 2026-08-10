@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { runReviewWorkflowFixture } from '../support/reviewWorkflowHarness';
 
 describe('cassette-backed review workflow harness', () => {
+  it('resolves the immutable base SHA before applying an opted-in trusted review policy', async () => {
+    const receipt = await runReviewWorkflowFixture('fresh-clean', { reviewIntelligence: true });
+    expect(receipt.verdict).toBe('SHIP');
+    expect(receipt.headSha).toBe('a'.repeat(40));
+  });
+
+  it('uses the repository_dispatch target head instead of the central runner SHA for policy verification', async () => {
+    const receipt = await runReviewWorkflowFixture('fresh-clean', { reviewIntelligence: true, repositoryDispatch: true });
+    expect(receipt).toMatchObject({ verdict: 'SHIP', headSha: 'a'.repeat(40) });
+  });
+
+  it('keeps Action-resolved target SHAs when a repository_dispatch payload conflicts', async () => {
+    const receipt = await runReviewWorkflowFixture('fresh-clean', {
+      reviewIntelligence: true,
+      repositoryDispatch: true,
+      conflictingDispatchPayload: true,
+    });
+    expect(receipt).toMatchObject({ verdict: 'SHIP', headSha: 'a'.repeat(40) });
+  });
+
   it('runs the real pipeline boundary from fixture input through publication and memory write', async () => {
     const receipt = await runReviewWorkflowFixture('fresh-clean');
     expect(receipt).toMatchObject({
