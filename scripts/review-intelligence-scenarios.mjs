@@ -86,22 +86,20 @@ async function executeWorkflow(fixture, replay) {
   fs.mkdirSync(configRoot, { recursive: true });
   fs.writeFileSync(path.join(configRoot, '.review-yeti.yaml'), 'memory:\n  enabled: true\n  provider: mem0\n  mode: single\n  transport: rest\n  context: true\n  write: true\n  recall:\n    decision_feedback: true\n    session_recap: true\n  persist:\n    processing: true\n    decision_feedback: true\n    session_recap: true\n  providers:\n    mem0:\n      enabled: true\n      endpoint_env: MEM0_URL\n      credential_env: MEM0_API_KEY\npersonas:\n  - id: security\n  - id: testing\n');
   const outputPath = path.join(root, 'github-output');
-  const providerInput = scenarioRequest('provider-failure-fail-open');
-  const providerResponse = replay.fetch('provider-failure-fail-open', providerInput);
+  // The runner's memory transport is an execution seam: consume the normalized provider
+  // request before the pipeline uses the response-shaped failure receipt.
+  const providerResponse = replay.fetch('provider-failure-fail-open', scenarioRequest('provider-failure-fail-open'));
   const env = { ...process.env, PR_DIFF: JSON.stringify({ repo: fixture.event.repository, prNumber: fixture.event.prNumber, headSha: fixture.event.headSha, title: 'Fixture review', diff: 'diff --git a/src/app.js b/src/app.js\n+const safe = true;\n' }), PR_REPO: fixture.event.repository, PR_NUMBER: String(fixture.event.prNumber), PR_HEAD_SHA: '', GITHUB_SHA: fixture.event.headSha, GITHUB_BASE_SHA: 'b'.repeat(40), GITHUB_OUTPUT: outputPath, REVIEW_YETI_CONFIG_DIR: configRoot, OPENROUTER_API_KEY: 'fixture-key', OPENROUTER_MODEL: 'fixture-model', OPENROUTER_BASE_URL: 'https://openrouter.fixture.test/v1', OPENROUTER_SKIP_CHAT_PREFLIGHT: 'true', VITEST: 'true', GITHUB_ACTIONS: 'false', MEM0_URL: 'https://mem0.fixture.test', MEM0_API_KEY: 'fixture-memory-key' };
   const original = { log: console.log, warn: console.warn, error: console.error };
+  const previousCwd = process.cwd();
   console.log = console.warn = console.error = () => {};
   try {
-    let providerReplayUsed = false;
+    process.chdir(root);
     return await runReviewPipeline({ env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async (input, init = {}) => {
-      if (!providerReplayUsed) {
-        providerReplayUsed = true;
-        const body = init.body ? JSON.parse(String(init.body)) : null;
-        return new Response(JSON.stringify(providerResponse), { status: 503 });
-      }
-      return new Response(JSON.stringify({ error: 'fixture unavailable' }), { status: 503 });
+      return new Response(JSON.stringify(providerResponse), { status: 503 });
     }, modelClient: async ({ persona }) => ({ personaId: persona.id, displayName: persona.name, model: 'fixture-model', provider: 'fixture-openrouter', decision: 'APPROVE', findings: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, costUSD: 0 } }) });
   } finally {
+    process.chdir(previousCwd);
     console.log = original.log; console.warn = original.warn; console.error = original.error;
   }
 }
