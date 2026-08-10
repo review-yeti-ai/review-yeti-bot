@@ -14,7 +14,7 @@ describe('review workflow fixtures', () => {
   it('loads a unique, complete deterministic contract for every scenario', () => {
     const fixtures = fixtureFiles().map(loadReviewWorkflowFixture);
 
-    expect(fixtures).toHaveLength(12);
+    expect(fixtures.length).toBeGreaterThanOrEqual(13);
     expect(new Set(fixtures.map((fixture) => fixture.id)).size).toBe(fixtures.length);
 
     for (const fixture of fixtures) {

@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "fixtureId": "offline-review-intelligence",
+  "provider": "review-intelligence",
+  "allowedOrigins": ["https://github.fixture.test"],
+  "interactions": [
+    { "request": { "method": "GET", "url": "https://github.fixture.test/repos/acme/review-yeti/pulls/42", "headers": { "authorization": "<redacted>" }, "body": null }, "response": { "status": 200, "headers": { "content-type": "application/json" }, "body": { "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } } },
+    { "request": { "method": "POST", "url": "https://github.fixture.test/memory/recall", "headers": { "authorization": "<redacted>" }, "body": { "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }, "response": { "status": 503, "headers": { "retry-after": "1" }, "body": { "status": "unavailable" } } },
+    { "request": { "method": "GET", "url": "https://github.fixture.test/ledger/42", "headers": { "authorization": "<redacted>" }, "body": null }, "response": { "status": 200, "headers": {}, "body": { "publication": "deduplicated", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } } }
+  ]
+}
