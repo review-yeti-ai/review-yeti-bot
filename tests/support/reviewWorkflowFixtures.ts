@@ -35,6 +35,11 @@ const REQUIRED_EXPECTED_KEYS = [
   'verdict', 'coverageStatus', 'mergeEligible', 'publishedReviewCount', 'publishedThreadCount',
   'memoryQueryStatus', 'memoryWriteStatus', 'outboxState', 'forbiddenStrings',
 ] as const;
+export const REQUIRED_REVIEW_WORKFLOW_FIXTURE_IDS = Object.freeze([
+  'fresh-clean', 'ignored-authorized', 'ignored-unauthorized', 'intelligence-evaluation',
+  'open-finding-carried', 'partial-review', 'provider-malformed', 'provider-unavailable',
+  'publication-race', 'replay-dead-letter', 'resolved-and-reopened', 'runner-cancelled', 'stale-head',
+]);
 const UNSAFE_KEYS = new Set(['api_key', 'authorization', 'private_key']);
 const UNSAFE_VALUE_MARKERS = ['api_key', 'authorization', 'private_key'];
 const RAW_COMMAND_REASON_MARKERS = [
@@ -105,6 +110,14 @@ function assertContract(value: Record<string, JsonValue>): asserts value is Revi
     || !Array.isArray(expected.forbiddenStrings)
     || expected.forbiddenStrings.some((item) => typeof item !== 'string')) {
     throw new Error('fixture expected result fields have invalid types');
+  }
+}
+
+export function assertReviewWorkflowFixtureSet(ids: string[]): void {
+  const actual = [...ids].sort();
+  const required = [...REQUIRED_REVIEW_WORKFLOW_FIXTURE_IDS].sort();
+  if (actual.length !== required.length || actual.some((id, index) => id !== required[index])) {
+    throw new Error('review workflow fixture IDs do not match the required corpus');
   }
 }
 

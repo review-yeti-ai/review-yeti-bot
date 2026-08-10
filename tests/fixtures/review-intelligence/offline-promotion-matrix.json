@@ -2,16 +2,17 @@
   "schemaVersion": "review-intelligence-eval-v1",
   "liveEvidence": false,
   "vcrFixture": "offline-review-intelligence",
+  "vcrSha256": "41e39b4baba3f29be6ddcd2d60aa995c5a83b4f8a4e130242173205c028cb9d8",
   "scenarios": [
-    { "id": "repeated-pr-feedback-transitions", "offline": true, "assertions": { "samePrOnly": true, "feedbackTransitions": true, "duplicatePublicationPrevented": true }, "receipt": { "status": "accepted", "attempt": 2 } },
-    { "id": "session-recap-exact-head", "offline": true, "assertions": { "recapBounded": true, "exactHead": true, "modelProseExcluded": true }, "receipt": { "status": "available", "source": "fixture" } },
-    { "id": "stale-head-rejected", "offline": true, "assertions": { "exactHead": true, "staleRecallRejected": true }, "receipt": { "status": "empty", "reasonCode": "stale_head" } },
-    { "id": "provider-failure-fail-open", "offline": true, "assertions": { "providerUnavailable": true, "githubLedgerAuthoritative": true, "publicationContinues": true }, "receipt": { "status": "unavailable", "reasonCode": "provider_failure" } },
-    { "id": "compaction-bounded", "offline": true, "assertions": { "maxEntriesBounded": true, "maxContextBounded": true, "rawTranscriptExcluded": true }, "receipt": { "status": "accepted", "compacted": true } },
-    { "id": "otel-receipt-redacted", "offline": true, "assertions": { "otelOptional": true, "endpointRedacted": true, "credentialRedacted": true }, "receipt": { "status": "disabled_not_configured", "exporter": "none" } },
-    { "id": "mcp-poisoning-rejected", "offline": true, "assertions": { "untrustedToolRejected": true, "capabilityRefreshCannotWiden": true, "readOnlyBoundary": true }, "receipt": { "status": "unavailable", "reasonCode": "tool_not_allowlisted" } },
-    { "id": "lease-loss-fenced", "offline": true, "assertions": { "leaseExclusive": true, "fenceEnforced": true, "staleWriterRejected": true }, "receipt": { "status": "pending", "fence": 4 } },
-    { "id": "replay-dead-letter-authorized", "offline": true, "assertions": { "replayAuthorized": true, "backoffBounded": true, "deadLetterRequiresOperator": true }, "receipt": { "status": "dead_letter", "attempts": 3 } },
-    { "id": "secret-free-receipts", "offline": true, "assertions": { "receiptRedacted": true, "noRawPayload": true, "noCredential": true }, "receipt": { "status": "ok", "provider": "fixture" } }
+    { "id": "repeated-pr-feedback-transitions", "offline": true, "expected": { "status": "pass", "receipt": { "status": "accepted", "githubLedger": "exact-head-deduplicated" } } },
+    { "id": "session-recap-exact-head", "offline": true, "expected": { "status": "pass", "receipt": { "status": "available", "head": "exact" } } },
+    { "id": "stale-head-rejected", "offline": true, "expected": { "status": "pass", "receipt": { "status": "empty", "reasonCode": "stale_head" } } },
+    { "id": "provider-failure-fail-open", "offline": true, "expected": { "status": "pass", "receipt": { "status": "unavailable", "reasonCode": "provider_failure" } } },
+    { "id": "compaction-bounded", "offline": true, "expected": { "status": "pass", "receipt": { "status": "accepted", "compacted": true, "maxEntries": 40 } } },
+    { "id": "otel-receipt-redacted", "offline": true, "expected": { "status": "pass", "receipt": { "status": "disabled_not_configured", "exporter": "none" } } },
+    { "id": "mcp-poisoning-rejected", "offline": true, "expected": { "status": "pass", "receipt": { "status": "unavailable", "reasonCode": "tool_not_allowlisted" } } },
+    { "id": "lease-loss-fenced", "offline": true, "expected": { "status": "pass", "receipt": { "status": "pending", "fence": 4 } } },
+    { "id": "replay-dead-letter-authorized", "offline": true, "expected": { "status": "pass", "receipt": { "status": "dead_letter", "attempts": 3 } } },
+    { "id": "secret-free-receipts", "offline": true, "expected": { "status": "pass", "receipt": { "status": "ok", "provider": "fixture" } } }
   ]
 }

@@ -4,7 +4,12 @@ The promotion matrix at `tests/fixtures/review-intelligence/offline-promotion-ma
 deterministic, offline gate. It covers repeated pull-request feedback transitions, session recap,
 stale heads, provider failure, compaction, OTel receipts, MCP poisoning, leases, replay/dead-letter
 handling, and secret-free receipts. The companion versioned cassette is scoped to fixture origins
-and keeps authentication values redacted.
+and keeps authentication values redacted. The gate opens
+`tests/fixtures/review-workflows/intelligence-evaluation.json` and verifies every scenario's
+identity, declared result, and normalized receipt against deterministic fixture facts; it does not
+treat a boolean assertion as evidence. The cassette must declare the same scenario IDs, pass
+secret scanning, and match the SHA-256 pinned in the matrix, so missing or changed replay input
+fails closed.
 
 Run the offline evidence gates with:
 

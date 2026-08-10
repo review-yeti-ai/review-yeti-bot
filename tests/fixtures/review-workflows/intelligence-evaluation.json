@@ -1,1 +1,23 @@
-{"id":"intelligence-evaluation","event":{"repository":"acme/review-yeti","prNumber":42,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"config":{"provider":"honcho","offlineEvaluation":true},"github":{"responses":{"ledger":"exact-head-deduplicated","head":"exact"}},"model":{"responses":{"lanes":["approve","approve","approve"],"compacted":true}},"memory":{"providerResponse":{"status":"unavailable","records":[],"failOpen":true}},"expected":{"verdict":"SHIP","coverageStatus":"complete","mergeEligible":true,"publishedReviewCount":1,"publishedThreadCount":0,"memoryQueryStatus":"unavailable","memoryWriteStatus":"queued","outboxState":"pending","forbiddenStrings":["live-provider-token","raw-source"]}}
+{
+  "id": "intelligence-evaluation",
+  "event": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "config": { "provider": "mem0", "offlineEvaluation": true },
+  "github": { "responses": { "ledger": "exact-head-deduplicated", "head": "exact" } },
+  "model": { "responses": { "lanes": ["approve", "approve", "approve"], "compacted": true } },
+  "memory": { "providerResponse": { "status": "unavailable", "records": [], "failOpen": true } },
+  "expected": { "verdict": "SHIP", "coverageStatus": "complete", "mergeEligible": true, "publishedReviewCount": 1, "publishedThreadCount": 0, "memoryQueryStatus": "unavailable", "memoryWriteStatus": "unavailable", "outboxState": "pending", "forbiddenStrings": ["live-provider-token", "raw-source"] },
+  "evaluation": {
+    "scenarioResults": {
+      "repeated-pr-feedback-transitions": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "accepted", "githubLedger": "exact-head-deduplicated" } },
+      "session-recap-exact-head": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "available", "head": "exact" } },
+      "stale-head-rejected": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "empty", "reasonCode": "stale_head" } },
+      "provider-failure-fail-open": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "unavailable", "reasonCode": "provider_failure" } },
+      "compaction-bounded": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "accepted", "compacted": true, "maxEntries": 40 } },
+      "otel-receipt-redacted": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "disabled_not_configured", "exporter": "none" } },
+      "mcp-poisoning-rejected": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "unavailable", "reasonCode": "tool_not_allowlisted" } },
+      "lease-loss-fenced": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "pending", "fence": 4 } },
+      "replay-dead-letter-authorized": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "dead_letter", "attempts": 3 } },
+      "secret-free-receipts": { "status": "pass", "identity": { "repository": "acme/review-yeti", "prNumber": 42, "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "receipt": { "status": "ok", "provider": "fixture" } }
+    }
+  }
+}

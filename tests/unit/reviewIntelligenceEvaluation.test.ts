@@ -25,8 +25,46 @@ describe('offline review-intelligence promotion gates', () => {
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 
     expect(evaluateOfflinePromotionMatrix({ ...fixture, liveEvidence: true }).status).toBe('fail');
-    fixture.scenarios.find((scenario: any) => scenario.id === 'secret-free-receipts').receipt = { token: 'not-redacted' };
+    fixture.scenarios.find((scenario: any) => scenario.id === 'secret-free-receipts').expected.receipt = { token: 'not-redacted' };
     expect(evaluateOfflinePromotionMatrix(fixture)).toMatchObject({ status: 'fail', failures: expect.arrayContaining(['secret-free-receipts']) });
+  });
+
+  it('executes fixture-backed scenario checks instead of trusting matrix assertions', async () => {
+    const { evaluateOfflinePromotionMatrix, loadOfflineEvaluationInputs } = await import('../../scripts/evaluate-review-intelligence.mjs');
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+    const inputs = loadOfflineEvaluationInputs(fixture);
+
+    expect(evaluateOfflinePromotionMatrix(fixture, inputs)).toMatchObject({ status: 'pass', score: 1 });
+
+    const changedExpected = structuredClone(inputs.workflowFixture);
+    changedExpected.expected.verdict = 'CHANGES_REQUESTED';
+    expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, workflowFixture: changedExpected })).toMatchObject({
+      status: 'fail',
+      failures: expect.arrayContaining(['repeated-pr-feedback-transitions']),
+    });
+
+    const changedAssertion = structuredClone(fixture);
+    changedAssertion.scenarios[0].expected.status = 'fail';
+    expect(evaluateOfflinePromotionMatrix(changedAssertion, inputs)).toMatchObject({
+      status: 'fail',
+      failures: expect.arrayContaining(['repeated-pr-feedback-transitions']),
+    });
+  });
+
+  it('requires an exact, secret-free intelligence cassette with every scenario ID', async () => {
+    const { evaluateOfflinePromotionMatrix, loadOfflineEvaluationInputs } = await import('../../scripts/evaluate-review-intelligence.mjs');
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+    const inputs = loadOfflineEvaluationInputs(fixture);
+
+    expect(evaluateOfflinePromotionMatrix(fixture, inputs)).toMatchObject({ status: 'pass' });
+    expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: null })).toMatchObject({
+      status: 'fail', failures: expect.arrayContaining(['vcr_fixture']),
+    });
+    const changedCassette = structuredClone(inputs.cassette);
+    changedCassette.interactions[0].request.headers.authorization = 'Bearer fixture-secret';
+    expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: changedCassette })).toMatchObject({
+      status: 'fail', failures: expect.arrayContaining(['vcr_fixture']),
+    });
   });
 
   it('runs the promotion gate and plain-node Action load without optional live smoke', () => {

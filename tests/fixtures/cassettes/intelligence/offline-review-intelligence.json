@@ -2,6 +2,7 @@
   "version": 2,
   "fixtureId": "offline-review-intelligence",
   "provider": "review-intelligence",
+  "scenarioIds": ["repeated-pr-feedback-transitions", "session-recap-exact-head", "stale-head-rejected", "provider-failure-fail-open", "compaction-bounded", "otel-receipt-redacted", "mcp-poisoning-rejected", "lease-loss-fenced", "replay-dead-letter-authorized", "secret-free-receipts"],
   "allowedOrigins": ["https://github.fixture.test"],
   "interactions": [
     { "request": { "method": "GET", "url": "https://github.fixture.test/repos/acme/review-yeti/pulls/42", "headers": { "authorization": "<redacted>" }, "body": null }, "response": { "status": 200, "headers": { "content-type": "application/json" }, "body": { "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } } },
