@@ -310,6 +310,12 @@ async function replayDurableReviewPublication({
     }));
   };
   const cancelled = () => ({ status: 'cancelled', filePath, published, skipped, deadLettered });
+  const releaseAfterCancellation = () => {
+    // Cancellation is the authoritative outcome. Lease cleanup is best effort so a lost lease
+    // cannot turn a requested stop into an unrelated persistence failure.
+    try { release('pending'); } catch (_) { /* a later fenced worker can recover after TTL */ }
+    return cancelled();
+  };
 
   const reconcileLedger = async () => {
     if (signal?.aborted) return false;
@@ -408,12 +414,12 @@ async function replayDurableReviewPublication({
             completed = true;
             break;
           } catch (error) {
-            if (signal?.aborted) return cancelled();
+            if (signal?.aborted) return releaseAfterCancellation();
             if (attempt < boundedMaxAttempts && isRetryable(error)) {
               await sleep(Math.min(4000, 250 * (2 ** (attempt - 1))));
-              // Do not issue a second GitHub write or mutate the artifact after cancellation
-              // arrives during backoff; the fenced lease expires for a later authorized worker.
-              if (signal?.aborted) return cancelled();
+              // Do not issue a second GitHub write after cancellation arrives during backoff.
+              // Clear the fenced lease so a separately authorized worker may resume immediately.
+              if (signal?.aborted) return releaseAfterCancellation();
               continue;
             }
             persist((current) => ({

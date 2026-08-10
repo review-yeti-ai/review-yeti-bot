@@ -160,6 +160,8 @@ describe('durable review publication resume', () => {
     expect(publishChunk.mock.calls[0][0].signal).toBe(controller.signal);
     expect(ledger.getPublishedChunkIds.mock.calls[0][0].signal).toBe(controller.signal);
     expect(store.read(created.filePath, identity).delivery.chunks[0]).toMatchObject({ status: 'pending', attempts: 1 });
+    expect(store.read(created.filePath, identity).lease).toBeNull();
+    expect(store.acquireLease(created.filePath, { owner: 'runner-b', ttlMs: 1000 })).toMatchObject({ owner: 'runner-b' });
   });
 
   it('requires explicit replay authorization before acquiring a lease or publishing', async () => {
