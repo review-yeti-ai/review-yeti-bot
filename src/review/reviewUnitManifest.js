@@ -1,7 +1,7 @@
 'use strict';
 
 const { canonicalJson, sha256 } = require('./reviewCore');
-const { classifyReviewFile } = require('./reviewIgnorePolicy');
+const { classifyReviewFile, matchReviewGlob } = require('./reviewIgnorePolicy');
 
 const SCHEMA_VERSION = 'review-unit-manifest-v1';
 const COMMIT_SHA = /^[a-f0-9]{40,64}$/iu;
@@ -59,14 +59,15 @@ function stableReviewUnitId(input = {}) {
   return `ru_${sha256(canonicalJson(payload))}`;
 }
 
-function matches(path, patterns) {
-  const normalized = String(path || '').toLowerCase();
+function positivePatternMatches(path, patterns) {
   return (Array.isArray(patterns) ? patterns : []).some((pattern) => {
-    const raw = String(pattern || '').trim().replace(/^\.\//u, '').toLowerCase();
-    if (!raw) return false;
-    const expression = raw.split('**').map((part) => part.split('*').map((piece) => piece.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')).join('[^/]*')).join('.*');
-    return new RegExp(`^${expression}$`, 'iu').test(normalized);
+    const normalized = String(pattern || '').trim();
+    return normalized && !normalized.startsWith('!') && matchReviewGlob(normalized, path);
   });
+}
+
+function patternList(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function isGitlink(file) {
@@ -90,23 +91,26 @@ function classifyReviewUnitFile(file = {}, trustedPolicy = {}) {
   if (file.pathAlias === true || file.aliasOf || file.pathAmbiguous === true) return { status: 'unreviewable', reason: 'path_alias', path };
   if (file.unreviewable === true) return { status: 'unreviewable', reason: String(file.unreviewableReason || 'unreviewable'), path };
 
-  const binary = file.binary === true || /(^|\n)Binary files .* differ(?:\n|$)/iu.test(String(file.patch || ''));
-  if (binary) return { status: 'excluded', reason: 'binary', path, change: 'binary' };
-  const generatedPatterns = [...(policy.generatedPatterns || []), ...(policy.generated_patterns || [])];
-  const vendorPatterns = [...(policy.vendorPatterns || []), ...(policy.vendor_patterns || [])];
-  if (matches(path, generatedPatterns) || /(?:^|\/)(?:generated|gen)(?:\/|$)|\.generated\./iu.test(path)) return { status: 'excluded', reason: 'generated', path };
-  if (matches(path, vendorPatterns) || /(?:^|\/)(?:vendor|third_party)(?:\/|$)/iu.test(path)) return { status: 'excluded', reason: 'vendored', path };
-  if (matches(path, policy.exclude || policy.excludes || [])) return { status: 'excluded', reason: 'policy_excluded', path };
-
+  const generatedPatterns = [...patternList(policy.generatedPatterns), ...patternList(policy.generated_patterns)];
+  const vendorPatterns = [...patternList(policy.vendorPatterns), ...patternList(policy.vendor_patterns)];
   const maximum = Number(policy.maxFileDiffChars ?? policy.max_file_diff_chars);
-  const standardIgnore = classifyReviewFile(file, [], Number.isSafeInteger(maximum) && maximum > 0 ? maximum : undefined);
-  if (standardIgnore.kind === 'skipped') return { status: 'excluded', reason: standardIgnore.category === 'generated' ? 'generated' : `policy_${standardIgnore.category}`, path };
+  const configuredPatterns = [...patternList(policy.exclude ?? policy.excludes), ...generatedPatterns, ...vendorPatterns];
+  const standardIgnore = classifyReviewFile(file, configuredPatterns, Number.isSafeInteger(maximum) && maximum > 0 ? maximum : undefined);
+  if (standardIgnore.kind === 'skipped') {
+    const reason = standardIgnore.category === 'configured'
+      ? positivePatternMatches(path, vendorPatterns) ? 'vendored'
+        : positivePatternMatches(path, generatedPatterns) ? 'generated'
+          : 'policy_configured'
+      : standardIgnore.category;
+    return { status: 'excluded', reason, path, ...(reason === 'binary' ? { change: 'binary' } : {}) };
+  }
   if (standardIgnore.kind === 'oversized') return { status: 'oversized', reason: 'per_file_limit', path, diffChars: standardIgnore.diffChars };
   const size = typeof file.patch === 'string' ? file.patch.length : typeof file.content === 'string' ? file.content.length : 0;
   if (Number.isSafeInteger(maximum) && maximum > 0 && size > maximum) return { status: 'oversized', reason: 'per_file_limit', path, diffChars: size };
 
   const gitlink = isGitlink(file);
   if (gitlink) {
+    if (file.submoduleIgnored === true) return { status: 'excluded', reason: 'submodule_ignored', path, change: 'gitlink' };
     if (file.unresolvedSubmodule === true || file.submoduleResolved === false) return { status: 'unreviewable', reason: 'unresolved_submodule', path, change: 'gitlink' };
     if (file.submoduleUrlChanged === true || (file.oldSubmoduleUrl && file.newSubmoduleUrl && file.oldSubmoduleUrl !== file.newSubmoduleUrl)) return { status: 'unreviewable', reason: 'submodule_url_changed', path, change: 'gitlink' };
     const pins = [file.oldSha, file.newSha].filter((value) => value !== undefined && value !== null && value !== '');

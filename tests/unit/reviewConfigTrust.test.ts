@@ -53,13 +53,13 @@ describe('review-unit coverage integration', () => {
     const manifest = buildReviewUnitManifest(policy, prContext, [
       { path: 'src/reviewed.js', patch: '+ok' },
       { path: 'src/omitted.js', patch: '+later' },
-      { path: 'generated/schema.json', patch: '+{}' },
+      { path: 'generated/schema.generated.json', patch: '+{}' },
     ], { reviewed: ['src/reviewed.js'], omitted: ['src/omitted.js'], truncated: [], providerFailures: [] });
 
     expect(manifest.units.map((unit: any) => [unit.path, unit.status])).toEqual([
       ['src/reviewed.js', 'completed'],
       ['src/omitted.js', 'failed'],
-      ['generated/schema.json', 'excluded'],
+      ['generated/schema.generated.json', 'excluded'],
     ]);
     expect(manifest.coverage).toMatchObject({ complete: false, shipEligible: false, uncoveredPaths: ['src/omitted.js'] });
   });

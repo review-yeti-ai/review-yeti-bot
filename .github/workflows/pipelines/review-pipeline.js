@@ -807,6 +807,33 @@ function buildReviewUnitManifest(policy, prContext, files, coverage = {}, now) {
   return createReviewUnitManifest({ identity, files: materialized, trustedRules: policy.rules, policy: policy.rules, now });
 }
 
+const REVIEW_UNIT_RECEIPT_LIMIT = 50;
+const REVIEW_UNIT_REASON_CODES = new Set([
+  'binary', 'generated', 'vendored', 'policy_configured', 'lockfile', 'snapshot', 'build_output',
+  'dependency_cache', 'minified', 'source_map', 'per_file_limit', 'rename_only', 'invalid_path',
+  'path_alias', 'case_collision', 'submodule_ignored', 'unresolved_submodule', 'unpinned_submodule',
+  'submodule_url_changed', 'waiver_not_trusted', 'trusted_waiver',
+]);
+
+function buildReviewUnitReceipt(manifest) {
+  if (!manifest) return null;
+  const units = manifest.units.slice(0, REVIEW_UNIT_RECEIPT_LIMIT).map((unit) => ({
+    id: unit.id,
+    path: String(unit.path || '').slice(0, 160),
+    ...(unit.change ? { change: unit.change } : {}),
+    status: unit.status,
+    ...(unit.reason && REVIEW_UNIT_REASON_CODES.has(unit.reason) ? { reason: unit.reason } : {}),
+  }));
+  return Object.freeze({
+    schemaVersion: manifest.schemaVersion,
+    identity: manifest.identity,
+    policyDigest: manifest.policyDigest,
+    summary: { ...manifest.summary, receiptUnits: units.length, omittedUnits: Math.max(0, manifest.units.length - units.length) },
+    units,
+    coverage: { complete: manifest.coverage.complete, shipEligible: manifest.coverage.shipEligible, uncovered: manifest.summary.uncovered },
+  });
+}
+
 function shouldResolveTrustedReviewPolicy(localConfig) {
   if (localConfig?.parsed && typeof localConfig.parsed === 'object') {
     return Object.prototype.hasOwnProperty.call(localConfig.parsed, 'review_intelligence');
@@ -919,7 +946,10 @@ function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY
         ? { submoduleUrlChanged: true }
         : {}),
     };
-    if (policy.mode === 'ignore') continue;
+    if (policy.mode === 'ignore') {
+      if (options.preserveIgnoredSubmodules === true) files.push({ ...submoduleFile, submoduleIgnored: true });
+      continue;
+    }
     if (policy.require_pinned_commit && !hasPinnedGitlinkTransition(submoduleFile)) coverageComplete = false;
     if (policy.mode === 'recursive') coverageComplete = false;
     const urlChangePolicy = policy.url_change ?? 'block';
@@ -2427,12 +2457,45 @@ function parseDiff(diffText) {
     } else if (line.startsWith('--- a/')) {
       // This is especially important for deleted files, whose +++ marker is /dev/null.
       if (currentFile) currentFile.path = line.slice(6);
+    } else if (line === '--- /dev/null') {
+      if (currentFile) currentFile.status = 'added';
     } else if (line.startsWith('+++ b/')) {
       if (currentFile) {
         currentFile.path = line.slice(6);
       }
+    } else if (line === '+++ /dev/null') {
+      if (currentFile) {
+        currentFile.status = 'removed';
+        currentFile.deleted = true;
+      }
     } else if (currentFile) {
       currentFile.patch += line + '\n';
+      const similarity = line.match(/^similarity index (\d+)%$/u);
+      const renameFrom = line.match(/^rename from (.+)$/u);
+      const renameTo = line.match(/^rename to (.+)$/u);
+      const oldMode = line.match(/^old mode (\d{6})$/u);
+      const newMode = line.match(/^new mode (\d{6})$/u);
+      const deletedMode = line.match(/^deleted file mode (\d{6})$/u);
+      if (similarity) currentFile.similarityIndex = Number(similarity[1]);
+      if (renameFrom) {
+        currentFile.previousPath = renameFrom[1];
+        currentFile.status = 'renamed';
+      }
+      if (renameTo) {
+        currentFile.path = renameTo[1];
+        currentFile.status = 'renamed';
+      }
+      if (oldMode) currentFile.oldMode = oldMode[1];
+      if (newMode) {
+        currentFile.newMode = newMode[1];
+        currentFile.mode = newMode[1];
+      }
+      if (deletedMode) {
+        currentFile.oldMode = deletedMode[1];
+        currentFile.mode = deletedMode[1];
+        currentFile.status = 'removed';
+        currentFile.deleted = true;
+      }
       if (line === 'old mode 160000' || line === 'new mode 160000' || line === 'new file mode 160000' || line === 'deleted file mode 160000' || /^index [0-9a-f]+\.\.[0-9a-f]+ 160000$/iu.test(line)) {
         currentFile.mode = '160000';
         currentFile.isSubmodule = true;
@@ -4624,6 +4687,20 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
   if (!outputPath) return;
 
   const m = arbitration.metrics || {};
+  const reviewUnitReceipt = extra.reviewUnitReceipt && {
+    schemaVersion: extra.reviewUnitReceipt.schemaVersion,
+    identity: extra.reviewUnitReceipt.identity,
+    policyDigest: extra.reviewUnitReceipt.policyDigest,
+    summary: extra.reviewUnitReceipt.summary,
+    coverage: extra.reviewUnitReceipt.coverage,
+    units: (extra.reviewUnitReceipt.units || []).slice(0, REVIEW_UNIT_RECEIPT_LIMIT).map((unit) => ({
+      id: unit.id,
+      path: String(unit.path || '').slice(0, 160),
+      ...(unit.change ? { change: unit.change } : {}),
+      status: unit.status,
+      ...(unit.reason && REVIEW_UNIT_REASON_CODES.has(unit.reason) ? { reason: unit.reason } : {}),
+    })),
+  };
   const lines = [
     `verdict=${arbitration.verdict}`,
     `findings-count=${m.totalFindings || 0}`,
@@ -4652,6 +4729,10 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     ...(extra.memoryWriteStatus ? [`memory-write-status=${extra.memoryWriteStatus}`] : []),
     ...(extra.telemetryStatus ? [`telemetry-status=${extra.telemetryStatus}`] : []),
     ...(Number.isSafeInteger(extra.telemetryEvents) ? [`telemetry-events=${extra.telemetryEvents}`] : []),
+    ...(reviewUnitReceipt ? [
+      `review-unit-identity=${JSON.stringify(reviewUnitReceipt.identity)}`,
+      `review-unit-summary=${JSON.stringify({ schemaVersion: reviewUnitReceipt.schemaVersion, policyDigest: reviewUnitReceipt.policyDigest, summary: reviewUnitReceipt.summary, coverage: reviewUnitReceipt.coverage, units: reviewUnitReceipt.units })}`,
+    ] : []),
   ];
 
   try {
@@ -5233,7 +5314,12 @@ async function main(options = {}) {
     ? diffFiles.map((file) => isGitlinkMode(file) ? { ...file, submoduleUrlChanged: true } : file)
     : diffFiles;
   const submoduleUrls = reviewUnitsPolicy.enabled ? baseSubmoduleUrls : loadActionSubmoduleUrls(process.cwd(), prContext.repo);
-  const submoduleReview = applyActionSubmodulePolicy(submoduleInputs, actionPolicy.submodules, { baseSubmoduleUrls, submoduleUrls, parentRepository: prContext.repo });
+  const submoduleReview = applyActionSubmodulePolicy(submoduleInputs, actionPolicy.submodules, {
+    baseSubmoduleUrls,
+    submoduleUrls,
+    parentRepository: prContext.repo,
+    preserveIgnoredSubmodules: reviewUnitsPolicy.enabled,
+  });
   const reviewDiffFiles = submoduleReview.files;
   if (reviewDiffFiles.length === 0) {
     console.log('[Payload] All changed files were excluded by the trusted submodule policy; no model verdict was posted.');
@@ -5783,6 +5869,7 @@ async function main(options = {}) {
     memoryQueryStatus: memoryQueryResult.status,
     memoryQuerySource: memoryQueryResult.source,
     memoryWriteStatus: memoryWriteResult.status,
+    reviewUnitReceipt: buildReviewUnitReceipt(reviewUnitManifest),
   });
 
 
@@ -5825,12 +5912,7 @@ async function main(options = {}) {
     memory: { query: memoryQueryResult, write: memoryWriteResult, policy: memoryPolicyReceipt(memoryPolicy), contextCompaction: optionalReviewContext.receipt },
     telemetry: { ...reviewTelemetryReceipt(telemetryPolicy) },
     reviewUnits: reviewUnitManifest
-      ? {
-        schemaVersion: reviewUnitManifest.schemaVersion,
-        policyDigest: reviewUnitManifest.policyDigest,
-        summary: reviewUnitManifest.summary,
-        coverage: { complete: reviewUnitManifest.coverage.complete, shipEligible: reviewUnitManifest.coverage.shipEligible, uncovered: reviewUnitManifest.summary.uncovered },
-      }
+      ? buildReviewUnitReceipt(reviewUnitManifest)
       : { status: reviewUnitsPolicy.status, enabled: false },
     outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
     provider: memoryPolicy.provider || 'honcho',
@@ -5901,6 +5983,7 @@ module.exports = {
   resolveTrustedReviewTelemetryPolicy,
   resolveTrustedReviewUnitsPolicy,
   buildReviewUnitManifest,
+  buildReviewUnitReceipt,
   reviewTelemetryReceipt,
   resolveReviewIntelligenceActionInputs,
   shouldResolveTrustedReviewPolicy,

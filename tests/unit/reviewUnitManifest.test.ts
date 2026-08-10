@@ -37,8 +37,8 @@ describe('review-unit manifest', () => {
   });
 
   it('classifies every special diff boundary explicitly', () => {
-    expect(classifyReviewUnitFile({ path: 'generated/schema.json', patch: '+{}' }, policy)).toMatchObject({ status: 'excluded', reason: 'generated' });
-    expect(classifyReviewUnitFile({ path: 'vendor/lib.js', patch: '+x' }, policy)).toMatchObject({ status: 'excluded', reason: 'vendored' });
+    expect(classifyReviewUnitFile({ path: 'generated/schema.generated.json', patch: '+{}' }, policy)).toMatchObject({ status: 'excluded', reason: 'generated' });
+    expect(classifyReviewUnitFile({ path: 'vendor/lib.js', patch: '+x' }, { ...policy, vendorPatterns: ['vendor/**'] })).toMatchObject({ status: 'excluded', reason: 'vendored' });
     expect(classifyReviewUnitFile({ path: 'assets/logo.png', patch: 'Binary files a/assets/logo.png and b/assets/logo.png differ' }, policy)).toMatchObject({ status: 'excluded', reason: 'binary' });
     expect(classifyReviewUnitFile({ path: 'src/large.js', patch: '+'.repeat(121) }, policy)).toMatchObject({ status: 'oversized' });
     expect(classifyReviewUnitFile({ path: 'src/old.js', previousPath: 'src/new.js', status: 'renamed', patch: '' }, policy)).toMatchObject({ status: 'unreviewable', reason: 'rename_only' });
@@ -46,6 +46,23 @@ describe('review-unit manifest', () => {
     expect(classifyReviewUnitFile({ path: 'modules/core', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40) }, policy)).toMatchObject({ status: 'selected', change: 'gitlink' });
     expect(classifyReviewUnitFile({ path: 'modules/core', mode: '160000', newSha: 'main' }, policy)).toMatchObject({ status: 'unreviewable', reason: 'unpinned_submodule' });
     expect(classifyReviewUnitFile({ path: 'modules/core', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), submoduleUrlChanged: true }, policy)).toMatchObject({ status: 'unreviewable', reason: 'submodule_url_changed' });
+  });
+
+  it('uses the shared ignore policy including negated trusted restoration rules', () => {
+    expect(classifyReviewUnitFile({ path: 'src/generated/schema.ts', patch: '+generated' }, {
+      ...policy,
+      exclude: ['src/generated/**', '!src/generated/**'],
+    })).toMatchObject({ status: 'selected' });
+    expect(classifyReviewUnitFile({ path: 'nested/generated/schema.ts', patch: '+generated' }, {
+      ...policy,
+      exclude: ['generated/**'],
+    })).toMatchObject({ status: 'selected' });
+  });
+
+  it('retains ignored trusted submodules as explicit excluded units', () => {
+    expect(classifyReviewUnitFile({ path: 'modules/core', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), submoduleIgnored: true }, policy)).toMatchObject({
+      status: 'excluded', reason: 'submodule_ignored', change: 'gitlink',
+    });
   });
 
   it('fails closed for an untrusted waiver', () => {

@@ -299,8 +299,20 @@ outputs:
     description: 'Tokens consumed across every reviewer and pass.'
     value: ${{ steps.review.outputs.total-tokens }}
   cost-usd:
-    description: 'Cost reported by the provider, or 0 when the provider does not report one.'
+    description: 'Cost reported by the provider; blank when the provider does not report one.'
     value: ${{ steps.review.outputs.cost-usd }}
+  telemetry-status:
+    description: 'Redacted telemetry delivery status: noop, exported, unavailable, or cancelled.'
+    value: ${{ steps.review.outputs.telemetry-status }}
+  telemetry-events:
+    description: 'Count of bounded telemetry events emitted; raw telemetry is never exposed as an Action output.'
+    value: ${{ steps.review.outputs.telemetry-events }}
+  review-unit-identity:
+    description: 'Exact bounded review-unit identity JSON, emitted only when trusted review.units.enabled is active.'
+    value: ${{ steps.review.outputs.review-unit-identity }}
+  review-unit-summary:
+    description: 'Bounded stable-ID/path/change/status/reason review-unit receipt JSON, emitted only when trusted review.units.enabled is active.'
+    value: ${{ steps.review.outputs.review-unit-summary }}
 
 runs:
   using: composite
