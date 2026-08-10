@@ -21,6 +21,7 @@ reviewing it are files in your repository.**
 | [What you get](#what-you-get) | An example of the posted comment |
 | [Where reviewer configuration is read from](#where-reviewer-configuration-is-read-from) | Why config comes from the base ref |
 | [What it costs](#what-it-costs) | Requests per run, diff budgets, large PRs |
+| [Pi/MCP and CLI](#pimcp-and-cli) | In-repository execution and command-line surfaces |
 | [Reference](#reference) | Every input and output |
 | [Configuration](#configuration) | Choosing reviewers and writing your own |
 | [Documentation](#documentation) | Deeper guides |
@@ -79,6 +80,15 @@ from its own `secrets.LINEAR_API_KEY`.
 
 > **No key yet?** The action fails closed without posting a successful verdict. It never presents
 > static pattern checks as a model review.
+
+## Pi/MCP and CLI
+
+Review Yeti is one repository containing the GitHub Action, CLI/runtime contracts, and Pi/MCP
+integration. The Pi adapter lives under `src/pi/` and is tested by `npm run test:pi-adapter`.
+It uses the same exact-head identity and trusted-base policy as the Action, but exposes only
+bounded read-only tools. It cannot run shell commands, mutate GitHub, write memory, or discover
+arbitrary tools. See [the Pi/MCP adapter guide](docs/PI_MCP_ADAPTER.md) for the construction and
+security contract.
 
 ---
 
