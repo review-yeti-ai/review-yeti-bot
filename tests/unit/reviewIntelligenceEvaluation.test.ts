@@ -70,6 +70,16 @@ describe('offline review-intelligence promotion gates', () => {
     await expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: missingInteraction })).resolves.toMatchObject({
       status: 'fail', failures: expect.arrayContaining(['vcr_fixture']),
     });
+    const changedRequest = structuredClone(inputs.cassette);
+    changedRequest.interactions[0].request.url = 'https://github.fixture.test/changed';
+    await expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, cassette: changedRequest })).resolves.toMatchObject({
+      status: 'fail', failures: expect.arrayContaining(['vcr_fixture']),
+    });
+    const poisonedWorkflow = structuredClone(inputs.workflowFixture);
+    poisonedWorkflow.memory.rawToken = 'Bearer fixture-secret';
+    await expect(evaluateOfflinePromotionMatrix(fixture, { ...inputs, workflowFixture: poisonedWorkflow })).resolves.toMatchObject({
+      status: 'fail', failures: expect.arrayContaining(['workflow_fixture']),
+    });
   });
 
   it('derives every scenario result from executable deterministic runners, not fixture result fields', async () => {

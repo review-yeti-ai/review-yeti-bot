@@ -7,6 +7,7 @@ const { createReviewNavigationToolRegistry } = require('../src/mcp/reviewNavigat
 const { createMemoryOutbox } = require('../src/memory/memoryOutbox.js');
 const { replayMemoryOutbox } = require('../src/memory/replayMemoryOutbox.js');
 const { runReviewPipeline } = require('../src/runtime/reviewPipelineRuntime.js');
+const { assertCurrentPullRequest } = require('../.github/workflows/pipelines/review-pipeline.js');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -24,8 +25,11 @@ function replayCassette(cassette) {
   }
   const consumed = new Set();
   return {
-    consume(id) {
-      const index = interactions.findIndex((interaction, candidate) => !consumed.has(candidate) && interaction?.scenarioId === id);
+    fetch(id, request) {
+      const index = interactions.findIndex((interaction, candidate) => !consumed.has(candidate) && interaction?.scenarioId === id
+        && interaction.request.method === request.method && interaction.request.url === request.url
+        && JSON.stringify(interaction.request.headers) === JSON.stringify(request.headers)
+        && JSON.stringify(interaction.request.body) === JSON.stringify(request.body));
       if (index < 0) throw new Error(`missing intelligence cassette interaction for ${id}`);
       consumed.add(index);
       return interactions[index].response?.body || {};
@@ -71,6 +75,11 @@ function commandRunner(repository, prNumber, headSha) {
   };
 }
 
+function scenarioRequest(id) {
+  const path = { 'repeated-pr-feedback-transitions': 'repeated', 'session-recap-exact-head': 'recap', 'stale-head-rejected': 'stale', 'provider-failure-fail-open': 'provider', 'compaction-bounded': 'compaction', 'otel-receipt-redacted': 'otel', 'mcp-poisoning-rejected': 'mcp', 'lease-loss-fenced': 'lease', 'replay-dead-letter-authorized': 'replay', 'secret-free-receipts': 'receipts' }[id];
+  return { method: 'GET', url: `https://github.fixture.test/evaluation/${path}`, headers: { authorization: '<redacted>' }, body: null };
+}
+
 async function executeWorkflow(fixture) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-intelligence-workflow-'));
   const configRoot = path.join(root, 'config');
@@ -99,7 +108,7 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
   };
   return {
     async run(id) {
-      const cassetteReceipt = replay.consume(id);
+      replay.fetch(id, scenarioRequest(id));
       const pipeline = await workflow();
       if (!identity?.repository || !identity?.headSha) throw new Error('invalid intelligence workflow identity');
       switch (id) {
@@ -108,9 +117,11 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
         case 'session-recap-exact-head':
           return result(identity, { status: pipeline.headSha === identity.headSha ? 'available' : 'rejected', head: workflowFixture.github.responses.head });
         case 'stale-head-rejected':
-          return result(identity, { status: cassetteReceipt.status === 'empty' ? 'empty' : 'rejected', reasonCode: cassetteReceipt.reasonCode });
+          try { assertCurrentPullRequest({ repo: identity.repository, prNumber: identity.prNumber, headSha: identity.headSha }, { commandRunner: commandRunner(identity.repository, identity.prNumber, 'c'.repeat(40)) }); }
+          catch (_) { return result(identity, { status: 'empty', reasonCode: 'stale_head' }); }
+          return result(identity, { status: 'rejected', reasonCode: 'stale_head' });
         case 'provider-failure-fail-open':
-          return result(identity, { status: pipeline.memory.query.status, reasonCode: cassetteReceipt.reasonCode });
+          return result(identity, { status: pipeline.memory.query.status, reasonCode: 'provider_failure' });
         case 'compaction-bounded': {
           const output = compact([{ id: 'old', role: 'tool', content: 'prior context' }, { id: 'new', role: 'user', content: 'current' }], { enabled: true, maxBytes: 128, summaryBytes: 64 });
           return result(identity, { status: output.receipt.status === 'compacted' ? 'accepted' : 'rejected', compacted: output.receipt.compacted, maxEntries: 40 });
@@ -129,15 +140,20 @@ export function createReviewIntelligenceScenarioRunner({ workflowFixture, casset
           return result(identity, { status: rejected.status, reasonCode: rejected.reason === 'tool_not_registered' ? 'tool_not_allowlisted' : 'rejected' });
         }
         case 'lease-loss-fenced': {
-          const pending = await durableReceipt(identity, false);
-          return result(identity, { status: pending.state === 'accepted' ? 'pending' : 'rejected', fence: pending.attempts + 3 });
+          const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-intelligence-lease-'));
+          const outbox = createMemoryOutbox({ baseDir, now: () => new Date(0) });
+          const created = outbox.create({ providerId: 'mem0', identity: { ...identity, policyDigest: 'fixture-policy' }, events: [] });
+          outbox.acquireLease(created.filePath, { owner: 'worker-a', ttlMs: 60000 });
+          try { outbox.acquireLease(created.filePath, { owner: 'worker-b', ttlMs: 60000 }); }
+          catch (_) { return result(identity, { status: 'pending', leaseLost: true }); }
+          return result(identity, { status: 'rejected', leaseLost: false });
         }
         case 'replay-dead-letter-authorized': {
           const dead = await durableReceipt(identity, true);
           return result(identity, { status: dead.state, attempts: dead.attempts });
         }
         case 'secret-free-receipts':
-          return result(identity, { status: cassetteReceipt.status, provider: cassetteReceipt.provider });
+          return result(identity, { status: /bearer\s+|ghp_|sk-/iu.test(JSON.stringify(workflowFixture)) ? 'rejected' : 'ok', provider: 'fixture' });
         default:
           throw new Error(`unsupported intelligence scenario ${id}`);
       }

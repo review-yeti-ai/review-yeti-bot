@@ -11,7 +11,7 @@
     { "id": "compaction-bounded", "offline": true, "expected": { "status": "pass", "receipt": { "status": "accepted", "compacted": true, "maxEntries": 40 } } },
     { "id": "otel-receipt-redacted", "offline": true, "expected": { "status": "pass", "receipt": { "status": "disabled_not_configured", "exporter": "none" } } },
     { "id": "mcp-poisoning-rejected", "offline": true, "expected": { "status": "pass", "receipt": { "status": "unavailable", "reasonCode": "tool_not_allowlisted" } } },
-    { "id": "lease-loss-fenced", "offline": true, "expected": { "status": "pass", "receipt": { "status": "pending", "fence": 4 } } },
+    { "id": "lease-loss-fenced", "offline": true, "expected": { "status": "pass", "receipt": { "status": "pending", "leaseLost": true } } },
     { "id": "replay-dead-letter-authorized", "offline": true, "expected": { "status": "pass", "receipt": { "status": "dead_letter", "attempts": 3 } } },
     { "id": "secret-free-receipts", "offline": true, "expected": { "status": "pass", "receipt": { "status": "ok", "provider": "fixture" } } }
   ]

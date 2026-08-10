@@ -93,7 +93,7 @@ export async function evaluateOfflinePromotionMatrix(matrix = {}, suppliedInputs
   const workflow = inputs.workflowFixture;
   if (inputs.errors.includes('workflow_fixture') || workflow?.id !== INTELLIGENCE_FIXTURE
     || !sameIdentity(workflow?.event, { repository: 'acme/review-yeti', prNumber: 42, headSha: 'a'.repeat(40) })
-    || workflow?.config?.provider !== 'mem0') failures.push('workflow_fixture');
+    || workflow?.config?.provider !== 'mem0' || unsafe(workflow)) failures.push('workflow_fixture');
   let runner = null;
   try { runner = createReviewIntelligenceScenarioRunner({ workflowFixture: workflow, cassette: inputs.cassette }); }
   catch (_) { failures.push('vcr_fixture'); }
