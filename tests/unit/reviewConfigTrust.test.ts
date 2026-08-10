@@ -9,7 +9,61 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const actionPath = path.join(rootRepoDir, 'action.yml');
 
-const { resolveConfigRoot, loadLocalRepoConfig, loadPersonaFiles, resolvePersonaRoster } = pipeline;
+const { resolveConfigRoot, loadLocalRepoConfig, loadPersonaFiles, resolvePersonaRoster, resolveTrustedReviewUnitsPolicy, buildReviewUnitManifest } = pipeline;
+
+describe('review-unit manifests require exact trusted-base policy', () => {
+  const prContext = { repo: 'owner/repo', prNumber: 7, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), diffText: 'diff --git a/a b/a' };
+
+  it('stays disabled by default and cannot be enabled from an untrusted directory', () => {
+    expect(resolveTrustedReviewUnitsPolicy({ localConfig: { parsed: {} }, prContext, env: {}, commandRunner: () => ({ status: 0, stdout: JSON.stringify({ baseRefOid: prContext.baseSha, headRefOid: prContext.headSha }) }) })).toMatchObject({ enabled: false, status: 'disabled_not_configured' });
+    expect(resolveTrustedReviewUnitsPolicy({
+      localConfig: { raw: 'review:\n  units:\n    enabled: true\n', parsed: { review: { units: { enabled: true } } } },
+      prContext,
+      env: {},
+      commandRunner: () => ({ status: 0, stdout: JSON.stringify({ baseRefOid: prContext.baseSha, headRefOid: prContext.headSha }) }),
+    })).toMatchObject({ enabled: false, status: 'disabled_untrusted_config' });
+  });
+
+  it('accepts only the trusted base configuration and hashes its exact policy', () => {
+    const trusted = '/tmp/review-units-trusted';
+    const commandRunner = () => ({ status: 0, stdout: JSON.stringify({ baseRefOid: prContext.baseSha, headRefOid: prContext.headSha }) });
+    const policy = resolveTrustedReviewUnitsPolicy({
+      localConfig: { raw: 'review:\n  units:\n    enabled: true\n', parsed: { exclude: ['generated/**'], review: { units: { enabled: true, allow_waived: true } }, limits: { max_file_diff_chars: 99 } } },
+      prContext,
+      env: { REVIEW_YETI_CONFIG_DIR: trusted, REVIEW_YETI_TRUSTED_CONFIG_DIR: trusted, REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA: prContext.baseSha },
+      commandRunner,
+    });
+
+    expect(policy).toMatchObject({ enabled: true, status: 'trusted', trustedBaseRef: prContext.baseSha, maxFileDiffChars: 99, allowWaived: true });
+    expect(policy.policyDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(policy.rules.exclude).toEqual(['generated/**']);
+  });
+});
+
+describe('review-unit coverage integration', () => {
+  const policy: any = {
+    enabled: true,
+    configDigest: 'c'.repeat(64),
+    policyDigest: 'd'.repeat(64),
+    rules: { maxFileDiffChars: 100 },
+  };
+  const prContext: any = { repo: 'owner/repo', prNumber: 9, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), diffText: 'exact diff' };
+
+  it('uses deterministic units for coverage and fails closed on omitted eligible paths', () => {
+    const manifest = buildReviewUnitManifest(policy, prContext, [
+      { path: 'src/reviewed.js', patch: '+ok' },
+      { path: 'src/omitted.js', patch: '+later' },
+      { path: 'generated/schema.json', patch: '+{}' },
+    ], { reviewed: ['src/reviewed.js'], omitted: ['src/omitted.js'], truncated: [], providerFailures: [] });
+
+    expect(manifest.units.map((unit: any) => [unit.path, unit.status])).toEqual([
+      ['src/reviewed.js', 'completed'],
+      ['src/omitted.js', 'failed'],
+      ['generated/schema.json', 'excluded'],
+    ]);
+    expect(manifest.coverage).toMatchObject({ complete: false, shipEligible: false, uncoveredPaths: ['src/omitted.js'] });
+  });
+});
 
 describe('Configuration is read from an explicit trusted root', () => {
   const originalCwd = process.cwd();
