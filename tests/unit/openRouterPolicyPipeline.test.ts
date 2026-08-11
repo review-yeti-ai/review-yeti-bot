@@ -180,13 +180,13 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
   it('forwards documented provider routing fields and normalizes provider slugs', () => {
     const policy = resolveOpenRouterPolicy({}, {
       OPENROUTER_PROVIDER_ROUTING: JSON.stringify({
-        order: ['Novita', 'akash'],
+        order: ['Wafer', 'akash'],
         allow_fallbacks: false,
         require_parameters: true,
         data_collection: 'deny',
         zdr: true,
         enforce_distillable_text: true,
-        only: ['novita'],
+        only: ['wafer'],
         quantizations: ['FP8'],
         sort: { by: 'throughput', partition: 'none' },
         preferred_min_throughput: { p90: 50 },
@@ -196,13 +196,13 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     });
 
     expect(policy.providerRouting).toEqual({
-      order: ['novita', 'akash'],
+      order: ['wafer', 'akash'],
       allow_fallbacks: false,
       require_parameters: true,
       data_collection: 'deny',
       zdr: true,
       enforce_distillable_text: true,
-      only: ['novita'],
+      only: ['wafer'],
       quantizations: ['fp8'],
       sort: { by: 'throughput', partition: 'none' },
       preferred_min_throughput: { p90: 50 },
@@ -218,7 +218,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     })).toThrow(/hard-banned provider/);
   });
 
-  it.each(['openrouter', 'decart', 'sail-research', 'inceptron', 'fireworks', 'together', 'mancer', 'parasail'])(
+  it.each(['openrouter', 'novita', 'decart', 'sail-research', 'inceptron', 'fireworks', 'together', 'mancer', 'parasail'])(
     'fails closed when provider routing selects degraded provider %s',
     (provider) => {
       expect(() => resolveOpenRouterPolicy({}, {
@@ -238,13 +238,13 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       github_action: {
         openrouter: {
           provider_routing: {
-            only: ['novita'],
+            only: ['wafer'],
             allow_fallbacks: false,
           },
         },
       },
     }, {}).providerRouting).toEqual({
-      only: ['novita'],
+      only: ['wafer'],
       allow_fallbacks: false,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
       preferred_max_latency: 8000,
