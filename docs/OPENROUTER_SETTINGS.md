@@ -11,7 +11,7 @@ github_action:
     model: openrouter/auto-beta
     allowed_models: [openrouter/auto-beta]
     fallback_models: [deepseek/deepseek-v4-flash-0731]
-    timeout_ms: 30000
+    timeout_ms: 60000
     stream: false
     data_collection: deny
     cost_quality_tradeoff: 5
@@ -35,7 +35,7 @@ Defaults (when section or keys are missing):
 |-----|---------|
 | `model` | `openrouter/auto-beta` |
 | `fallback_models` | empty |
-| `timeout_ms` | `30000` |
+| `timeout_ms` | `60000` |
 | `stream` | `false` |
 | `provider_routing` | unset, except for the enforced degraded-provider ignore policy |
 
@@ -49,7 +49,7 @@ Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL
 | `model` | Default model when no action input overrides it | `openrouter/auto-beta` |
 | `allowed_models` | Model allowlist | empty (no additional allowlist) |
 | `fallback_models` | Ordered fallback models for transient failures | empty |
-| `timeout_ms` | Per-request timeout, clamped to `500..600000` | `30000` |
+| `timeout_ms` | Per-request timeout, clamped to `500..600000` | `60000` |
 | `stream` | Use SSE streaming | `false` |
 | `data_collection` | Provider data-collection header policy: `allow` or `deny` | unset |
 | `cost_quality_tradeoff` | Auto Router quality/cost band, `0..10` | unset |

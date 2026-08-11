@@ -362,7 +362,7 @@ github_action:
   openrouter:
     model: openrouter/auto-beta # primary model; Action `model` input can override
     allowed_models: [openrouter/auto-beta]
-    timeout_ms: 30000         # hard per-request timeout (default 30000 = 30s)
+    timeout_ms: 60000         # hard per-request timeout (default 60000 = 60s)
     stream: false             # SSE streaming (default false)
     data_collection: deny     # allow | deny
     cost_quality_tradeoff: 5  # 0=cheapest … 10=highest quality
@@ -378,7 +378,7 @@ github_action:
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `timeout_ms` | `number` | `30000` | Per-request hard timeout in milliseconds. Lanes that do not return in time fail as `timeout`. Action input `openrouter-timeout-ms` / env `OPENROUTER_TIMEOUT_MS` / var `OPENROUTER_TIMEOUT_MS` override YAML. Clamped to 500–600000. |
+| `timeout_ms` | `number` | `60000` | Per-request hard timeout in milliseconds. Lanes that do not return in time fail as `timeout`. Action input `openrouter-timeout-ms` / env `OPENROUTER_TIMEOUT_MS` / var `OPENROUTER_TIMEOUT_MS` override YAML. Clamped to 500–600000. |
 | `stream` | `boolean` | `false` | When true, use OpenRouter SSE streaming. Action input `openrouter-stream` / env `OPENROUTER_STREAM` / var `OPENROUTER_STREAM` override YAML. |
 | `model` | `string` | `openrouter/auto-beta` | Primary model id. The explicit Action `model` input/environment has precedence. |
 | `fallback_models` | `string[]` | `[]` | Ordered model ids used after the primary exhausts its transient-failure retries. Timeouts, network failures, 408, 429, and 5xx responses can move to the next model. Action input `openrouter-fallback-models` / env `OPENROUTER_FALLBACK_MODELS` overrides YAML. |
