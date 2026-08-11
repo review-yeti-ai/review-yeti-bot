@@ -233,6 +233,32 @@ inputs:
       order or only. Action input wins over github_action.openrouter.provider_routing in YAML.
     required: false
     default: ''
+  dashboard-api-key:
+    description: >-
+      Optional Review Yeti Cloud ingestion key (ctd_live_...). When empty, the action does not
+      contact the cloud dashboard and publishes the GitHub review normally.
+    required: false
+    default: ''
+  dashboard-api-url:
+    description: >-
+      Review Yeti Cloud ingestion endpoint. Override this for a self-hosted dashboard; the
+      default is the production /api/v1/review-events endpoint.
+    required: false
+    default: 'https://api.reviewyeti.ai/api/v1/review-events'
+  dashboard-url:
+    description: >-
+      Review Yeti Cloud site origin used for the full-review link in the GitHub review. Set this
+      alongside dashboard-api-url for a self-hosted dashboard.
+    required: false
+    default: 'https://reviewyeti.ai'
+  dashboard-detail:
+    description: "Cloud telemetry detail: 'full' includes structured findings; 'metrics' sends aggregates only."
+    required: false
+    default: 'full'
+  dashboard-timeout-ms:
+    description: 'Cloud dashboard delivery timeout in milliseconds. Delivery is always fail-soft.'
+    required: false
+    default: '10000'
 
 outputs:
   verdict:
@@ -307,6 +333,12 @@ outputs:
   telemetry-events:
     description: 'Count of bounded telemetry events emitted; raw telemetry is never exposed as an Action output.'
     value: ${{ steps.review.outputs.telemetry-events }}
+  dashboard-delivery:
+    description: 'Cloud dashboard delivery result: disabled, accepted, duplicate, cancelled, or failed.'
+    value: ${{ steps.review.outputs.dashboard-delivery }}
+  dashboard-review-url:
+    description: 'Full cloud review URL returned by the dashboard after accepted or duplicate delivery.'
+    value: ${{ steps.review.outputs.dashboard-review-url }}
   review-unit-identity:
     description: 'Exact bounded review-unit identity JSON, emitted only when trusted review.units.enabled is active.'
     value: ${{ steps.review.outputs.review-unit-identity }}
@@ -500,6 +532,11 @@ runs:
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
+        DASHBOARD_API_KEY: ${{ inputs.dashboard-api-key }}
+        DASHBOARD_API_URL: ${{ inputs.dashboard-api-url }}
+        DASHBOARD_SITE_URL: ${{ inputs.dashboard-url }}
+        DASHBOARD_DETAIL: ${{ inputs.dashboard-detail }}
+        DASHBOARD_TIMEOUT_MS: ${{ inputs.dashboard-timeout-ms }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
         GITHUB_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
         PR_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
