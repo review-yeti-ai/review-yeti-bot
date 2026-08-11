@@ -6,7 +6,7 @@ import {
 
 const DEFAULTS = {
   ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
-  timeoutMs: 30000,
+  timeoutMs: 60000,
   stream: false,
   model: undefined,
   fallbackModels: [],
@@ -151,8 +151,8 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     });
   });
 
-  it('defaults timeout_ms to 30000 and clamps extreme values', () => {
-    expect(resolveOpenRouterPolicy({}, {}).timeoutMs).toBe(30000);
+  it('defaults timeout_ms to 60000 and clamps extreme values', () => {
+    expect(resolveOpenRouterPolicy({}, {}).timeoutMs).toBe(60000);
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '100' }).timeoutMs).toBe(500); // floor
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '9999999' }).timeoutMs).toBe(600_000); // ceiling
   });

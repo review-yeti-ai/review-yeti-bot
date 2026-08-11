@@ -153,7 +153,7 @@ github_action:
     model: openrouter/auto-beta
     allowed_models: [openrouter/auto-beta]
     fallback_models: [deepseek/deepseek-v4-flash-0731]
-    timeout_ms: 30000
+    timeout_ms: 60000
     stream: false
     data_collection: deny       # allow | deny
     cost_quality_tradeoff: 5    # 0..10
