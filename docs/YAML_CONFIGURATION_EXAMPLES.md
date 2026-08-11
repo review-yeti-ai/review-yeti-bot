@@ -157,7 +157,7 @@ github_action:
     stream: false
     data_collection: deny       # allow | deny
     cost_quality_tradeoff: 5    # 0..10
-    ignore_providers: [deepinfra]
+    ignore_providers: [deepinfra, openrouter]
     provider_routing:
       allow_fallbacks: false
       require_parameters: true
