@@ -143,6 +143,7 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
     });
     const receipt = await runReviewPipeline({
       env,
+      publicationMode: 'github',
       cwd: tempRoot,
       now: () => 1_754_752_800_000,
       commandRunner: commandRunnerFactory(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha),

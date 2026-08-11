@@ -78,6 +78,13 @@ review:
     max_turns: 4
 ```
 
+## Local CLI configuration
+
+`reviewyeti review` accepts exactly one immutable source (`--base/--head`, `--diff-file`, or
+`--pr`) and never reads CI-only configuration implicitly. `OPENROUTER_API_KEY` supplies the model
+credential; PR reads use `GITHUB_TOKEN`, `GH_TOKEN`, or the existing `gh auth token` command. No
+credential is persisted. See [CLI.md](CLI.md) for exit codes and atomic receipt output.
+
 Incomplete execution is represented by a redacted receipt and is always non-mergeable.
 
 ---

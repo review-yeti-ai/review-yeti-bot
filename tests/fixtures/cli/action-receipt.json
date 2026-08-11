@@ -1,0 +1,8 @@
+{
+  "identity": { "repository": "owner/repo", "prNumber": 1, "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "verdict": "SHIP",
+  "coverage": { "status": "complete", "mergeEligible": true },
+  "investigation": { "receiptDigest": "evidence-digest" },
+  "reviewUnits": { "status": "complete", "units": [] },
+  "findingVerification": { "summary": { "incomplete": false, "verified": 0, "rejected": 0 } }
+}

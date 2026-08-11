@@ -68,3 +68,17 @@ Recording is an explicit maintenance operation. It requires both `REVIEW_YETI_VC
 endpoint origin in the harness allowlist; it is never enabled implicitly by a missing cassette or an
 environment credential. Review generated cassettes for secrets and customer data before committing
 them.
+## Local CLI and equivalence proof
+
+The installed CLI is a thin adapter over the canonical bounded Action engine. Run the offline
+contract suite with `npm run test:cli`, build with `npm run build`, and compare exact-head
+authority receipts with:
+
+```bash
+node scripts/verify-action-cli-equivalence.mjs \
+  --action-receipt ./action-receipt.json \
+  --cli-receipt ./cli-receipt.json
+```
+
+The CLI uses no automatic live evaluation workflow. Live provider runs are explicit, receipt-backed,
+and kept outside the repository.

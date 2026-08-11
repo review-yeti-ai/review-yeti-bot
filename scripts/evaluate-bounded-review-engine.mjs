@@ -20,7 +20,32 @@ function evaluateBoundedReviewMatrix(matrix = {}, receipt = null) {
     if (receipt?.schemaVersion !== 'review-investigation-summary-v1' || typeof receipt.complete !== 'boolean') failures.push('receipt_schema');
     if (receipt?.unsafeShips > 0 || receipt?.invalidAnchors > 0 || receipt?.hiddenSkippedUnits > 0) failures.push('receipt_safety');
   }
-  return { status: failures.length ? 'fail' : 'pass', deterministic: true, cases: REQUIRED.map(([id, expected]) => ({ id, expected })), failures };
+  const source = receipt?.result || receipt || {};
+  const usage = source.usage || source.usageTotal || {};
+  const investigation = source.investigation || {};
+  const verification = source.findingVerification || {};
+  return {
+    schemaVersion: 'bounded-review-eval-result-v1',
+    status: failures.length ? 'fail' : 'pass',
+    deterministic: true,
+    exactHeadSha: source.headSha || source.identity?.headSha || null,
+    completedPersonas: source.coverage?.completedPersonas ?? null,
+    expectedPersonas: source.coverage?.totalPersonas ?? null,
+    evidenceCalls: investigation.evidenceReceipts ?? investigation.evidenceCalls ?? null,
+    evidenceTruncations: investigation.truncations ?? null,
+    validPublicationAnchors: verification.summary?.verified ?? null,
+    invalidPublicationAnchors: verification.summary?.rejected ?? null,
+    promptTokens: usage.promptTokens ?? null,
+    completionTokens: usage.completionTokens ?? null,
+    costUSD: usage.costUSD ?? null,
+    latencyMs: source.latencyMs ?? null,
+    p95LatencyMs: source.p95LatencyMs ?? null,
+    unsafeShips: source.unsafeShips ?? 0,
+    hiddenSkippedUnits: source.hiddenSkippedUnits ?? 0,
+    actionCliEquivalence: source.equivalence?.equivalent ?? null,
+    cases: REQUIRED.map(([id, expected]) => ({ id, expected })),
+    failures,
+  };
 }
 
 const fixture = process.argv[process.argv.indexOf('--fixture') + 1];
