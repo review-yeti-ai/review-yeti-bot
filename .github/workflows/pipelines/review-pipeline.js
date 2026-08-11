@@ -1042,6 +1042,69 @@ function navigationCompletenessMatters({ personaResults, navigationSnapshot, opt
   return !navigationSnapshot || navigationSnapshot.complete !== true;
 }
 
+/**
+ * Runs the soundness/decision-ledger finding filters (withholdUnsoundAbsenceClaims,
+ * reconcileDecisionFindings) and only then computes findingVerification -- including the
+ * navigationCompletenessMatters contribution -- from the resulting, FINAL personaResults.
+ *
+ * Order matters here and is the entire fix (issue #52): withholdUnsoundAbsenceClaims and
+ * reconcileDecisionFindings can both strip a persona's raw finding down to zero (an absence
+ * claim withheld because no reviewer saw the whole partial-coverage view, or a finding the
+ * decision ledger already resolved). navigationCompletenessMatters only "matters" when a
+ * surviving finding is navigation-grounded (see its own doc comment) -- but a previous version of
+ * this pipeline called it, and built findingVerification from it, BEFORE those two filters ran.
+ * A raw finding that was navigation-grounded at that earlier point, but did not survive to the
+ * final published set, still poisoned findingVerification.summary.incomplete -- permanently
+ * baking BLOCK into a truncated-navigation monorepo review that produced zero real findings
+ * (cisco-cdr, 2026-08-11, issue #52), even though there was nothing left whose grounding needed
+ * verifying. Computing it here, after both filters, closes that gap without touching
+ * navigationCompletenessMatters itself or reviewOutcome.js's unconditional trust of
+ * findingVerification.summary.incomplete (see the comment on `verificationIncomplete` in
+ * reviewOutcome.js for why that trust must stay unconditional).
+ */
+function finalizeBoundedReviewFindings({
+  personaResults,
+  findingVerifierPolicy,
+  verifierSummary,
+  evidenceOwnershipIncomplete,
+  navigationSnapshot,
+  options,
+  partialView,
+  decisionLedger,
+} = {}) {
+  const absencePass = withholdUnsoundAbsenceClaims(personaResults, partialView);
+  const reconciliation = reconcileDecisionFindings(absencePass.personaResults, decisionLedger);
+  const finalPersonaResults = reconciliation.personaResults;
+
+  const navigationMatters = navigationCompletenessMatters({ personaResults: finalPersonaResults, navigationSnapshot, options });
+  const findingVerification = findingVerifierPolicy?.enabled
+    ? {
+      ...verifierSummary,
+      summary: {
+        ...verifierSummary.summary,
+        incomplete: verifierSummary.summary.incomplete || evidenceOwnershipIncomplete || navigationMatters,
+      },
+    }
+    : {
+      summary: {
+        incomplete: evidenceOwnershipIncomplete
+          || navigationMatters
+          || finalPersonaResults.some((lane) => (lane?.findings || []).length > 0),
+        verified: 0,
+        rejected: 0,
+      },
+    };
+
+  return {
+    personaResults: finalPersonaResults,
+    findingVerification,
+    withheldAbsenceClaims: absencePass.withheld,
+    carriedOpen: reconciliation.carriedOpen,
+    ignored: reconciliation.ignored,
+    recurrentResolved: reconciliation.recurrentResolved,
+  };
+}
+
 function applyFindingVerifierGate(arbitration, verification, policy) {
   if (!policy?.enabled || policy.mode !== 'enforce' || verification?.summary?.incomplete !== true) return arbitration;
   return {
@@ -6777,28 +6840,11 @@ async function main(options = {}) {
           });
           return { ...lane, findings, decision: lane.decision === 'ERROR' ? 'ERROR' : (findings.length ? 'FINDINGS' : 'APPROVE') };
         });
+        let verifierSummary = null;
         if (findingVerifierPolicy.enabled) {
           const verified = await applyFindingVerifier(personaResults, shownReviewFiles, findingVerifierPolicy, prContext, { commandRunner, fetchImplementation });
           personaResults = verified.personaResults;
-          findingVerification = {
-            ...verified.verification,
-            summary: {
-              ...verified.verification.summary,
-              incomplete: verified.verification.summary.incomplete
-                || evidenceOwnershipIncomplete
-                || navigationCompletenessMatters({ personaResults, navigationSnapshot, options }),
-            },
-          };
-        } else {
-          findingVerification = {
-            summary: {
-              incomplete: evidenceOwnershipIncomplete
-                || navigationCompletenessMatters({ personaResults, navigationSnapshot, options })
-                || personaResults.some((lane) => lane.findings.length > 0),
-              verified: 0,
-              rejected: 0,
-            },
-          };
+          verifierSummary = verified.verification;
         }
         const failed = personaResults.filter((result) => result.decision === 'ERROR');
         for (const lane of failed) console.warn(`[Persona ${lane.personaId}] Lane failed (${formatRouteLabel(lane)}): ${lane.error}`);
@@ -6813,14 +6859,25 @@ async function main(options = {}) {
           personaResults.filter((result) => result.decision === 'ERROR').map((result) => result.personaId || 'unknown'),
         )];
         const partialView = reviewViewWasPartial(coverage);
-        const absencePass = withholdUnsoundAbsenceClaims(personaResults, partialView);
-        personaResults = absencePass.personaResults;
-        withheldAbsenceClaims = absencePass.withheld;
-        const reconciliation = reconcileDecisionFindings(personaResults, decisionLedger);
-        personaResults = reconciliation.personaResults;
-        carriedOpen = reconciliation.carriedOpen;
-        ignored = reconciliation.ignored;
-        recurrentResolved = reconciliation.recurrentResolved;
+        // findingVerification (including the navigationCompletenessMatters contribution) is
+        // deliberately computed AFTER the soundness/decision-ledger filters below, from their
+        // final output -- see finalizeBoundedReviewFindings's doc comment (issue #52).
+        const finalized = finalizeBoundedReviewFindings({
+          personaResults,
+          findingVerifierPolicy,
+          verifierSummary,
+          evidenceOwnershipIncomplete,
+          navigationSnapshot,
+          options,
+          partialView,
+          decisionLedger,
+        });
+        personaResults = finalized.personaResults;
+        findingVerification = finalized.findingVerification;
+        withheldAbsenceClaims = finalized.withheldAbsenceClaims;
+        carriedOpen = finalized.carriedOpen;
+        ignored = finalized.ignored;
+        recurrentResolved = finalized.recurrentResolved;
         // Evidence tooling counts as enabled only if a real registry (or an explicit test
         // double) was actually constructed for personas to call -- not merely attempted. A
         // snapshot fetch failure, a snapshot too large for the bounded registry, or any other
@@ -7286,6 +7343,7 @@ module.exports = {
   applyFindingVerifier,
   applyFindingVerifierGate,
   navigationCompletenessMatters,
+  finalizeBoundedReviewFindings,
   buildReviewUnitManifest,
   buildReviewUnitReceipt,
   reviewTelemetryReceipt,
