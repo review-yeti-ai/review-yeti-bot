@@ -2549,6 +2549,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               ? `Provider CONNECT timeout after ${connectTimeoutMs}ms (no headers; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
               : `Provider RESPONSE timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
             lastError = msg;
+            const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
             if (timedOutProvider && timedOutProvider !== 'openrouter') {
               timedOutProviders.add(timedOutProvider);
               console.warn(
