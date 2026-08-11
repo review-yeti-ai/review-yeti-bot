@@ -126,6 +126,15 @@ mcp:
 
 # Optional deterministic compaction of untrusted memory/documentation context.
 review:
+  investigation:
+    max_calls: 12
+    max_read_lines: 400
+    max_search_matches: 50
+    max_result_bytes: 8000
+    max_repeated_calls: 2
+    max_candidate_findings: 5
+    max_verifier_calls_per_finding: 3
+    max_turns: 4
   context:
     compaction:
       enabled: false
@@ -138,7 +147,7 @@ review:
     vendor_patterns: []
     allow_waived: false
   finding_verifier:
-    mode: report_only             # report_only | enforce
+    mode: enforce
 
 # Optional exact-base OpenTelemetry export. Values come from named environment variables.
 telemetry:
@@ -176,7 +185,7 @@ memory:
   enabled: false
 review:
   finding_verifier:
-    mode: report_only
+    mode: enforce
 ```
 
 ### Honcho recall and feedback persistence

@@ -16,6 +16,7 @@ export function runPersonaInvestigation(input: {
   optionalContextBlock?: string;
   limits?: Partial<InvestigationLimits>;
   evidenceRegistry: { call(tool: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>> };
+  requireEvidenceBoundary?: boolean;
   modelTurn(input: { messages: Array<{ role: string; content: string }>; turn: number; finalOnly: boolean; signal?: AbortSignal }): Promise<Record<string, unknown>>;
   signal?: AbortSignal;
   clock?: () => number;

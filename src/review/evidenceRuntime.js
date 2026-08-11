@@ -11,7 +11,7 @@ const REASON_CODES = new Set([
   'disabled', 'call_budget_exhausted', 'file_not_in_snapshot', 'invalid file path',
   'invalid ref', 'paths_required', 'cancelled', 'blob_fetch_failed', 'blob_sha_mismatch',
   'blob_response_too_large', 'request_timeout', 'tool_not_registered', 'result_too_large',
-  'invalid line range', 'invalid path query', 'invalid code query',
+  'invalid line range', 'invalid path query', 'invalid code query', 'navigation_snapshot_unavailable',
 ]);
 
 function safeObject(value) {
