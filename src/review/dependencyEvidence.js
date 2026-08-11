@@ -179,6 +179,7 @@ function renderDependencyEvidence(evidence = {}, maxChars = DEFAULT_MAX_CHARS) {
 module.exports = {
   MANIFEST_NAMES,
   LOCKFILE_NAMES,
+  normalizePath,
   classifyDependencyPath,
   buildDependencyEvidence,
   renderDependencyEvidence,

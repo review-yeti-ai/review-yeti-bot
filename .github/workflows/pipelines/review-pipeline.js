@@ -24,7 +24,11 @@ const { normalizeCoveragePolicy } = require('../../../src/review/coveragePolicy'
 const { planFindingPublication } = require('../../../src/review/findingPublication');
 const { verifyFindings } = require('../../../src/review/findingVerifier');
 const { assertsAbsence, claimType, compareClaims } = require('../../../src/review/claimSimilarity');
-const { buildDependencyEvidence, renderDependencyEvidence } = require('../../../src/review/dependencyEvidence');
+const {
+  buildDependencyEvidence,
+  renderDependencyEvidence,
+  normalizePath: normalizeDependencyPath,
+} = require('../../../src/review/dependencyEvidence');
 const {
   buildDecisionLedger,
   parseBotFindingComment,
@@ -1238,10 +1242,13 @@ function parseJsonCandidates(content) {
 function normalizeEvidenceRequests(rawRequests) {
   if (!Array.isArray(rawRequests)) return [];
   return rawRequests.slice(0, 8).map((request) => {
-    if (typeof request === 'string') return { path: request, kind: 'other', reason: 'requested by the reviewer' };
+    if (typeof request === 'string') {
+      const path = normalizeDependencyPath(request);
+      return path ? { path, kind: 'other', reason: 'requested by the reviewer' } : null;
+    }
     if (!request || typeof request !== 'object' || typeof request.path !== 'string') return null;
-    const path = request.path.replace(/\\/g, '/').replace(/^\.\//u, '');
-    if (!path || path.startsWith('/') || path.split('/').includes('..')) return null;
+    const path = normalizeDependencyPath(request.path);
+    if (!path) return null;
     return {
       path,
       kind: typeof request.kind === 'string' && request.kind.trim() ? request.kind.trim().slice(0, 80) : 'other',
