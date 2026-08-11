@@ -59,6 +59,27 @@ Only settings marked Action-native affect the composite Action. Compatibility se
 so existing configuration files remain usable, but they do not create a local database, grant
 memory authority, or enable a feature by themselves.
 
+## Bounded investigation limits
+
+The production Action always runs the bounded evidence engine. Trusted-base configuration may set
+these values lower, while the runtime clamps every value to its hard ceiling; no key disables the
+engine or permits arbitrary tools:
+
+```yaml
+review:
+  investigation:
+    max_calls: 12
+    max_read_lines: 400
+    max_search_matches: 50
+    max_result_bytes: 8000
+    max_repeated_calls: 2
+    max_candidate_findings: 5
+    max_verifier_calls_per_finding: 3
+    max_turns: 4
+```
+
+Incomplete execution is represented by a redacted receipt and is always non-mergeable.
+
 ---
 
 ## 📐 Top-Level Schema Overview
@@ -138,17 +159,16 @@ telemetry:
     endpoint_env: REVIEW_YETI_OTEL_TRACES_ENDPOINT
     credential_env: REVIEW_YETI_OTEL_BEARER_TOKEN
 
-# Optional exact-snapshot finding verification. This block is read only from the trusted PR base
-# reference after the Action proves the current base/head pair. Omitting it preserves legacy
-# publication behavior. A configured verifier defaults to report_only.
+# Exact-snapshot finding verification is enforced by the production bounded engine. This block is
+# read only from the trusted PR base reference after the Action proves the current base/head pair.
 review:
   finding_verifier:
-    mode: report_only       # report_only | enforce
+    mode: enforce
 ```
 
 ### Exact-snapshot finding verification
 
-`review.finding_verifier` is an opt-in trusted-base boundary for model findings. The verifier
+`review.finding_verifier` is a trusted-base boundary for model findings. The verifier
 normalizes a relative path, checks the exact changed `RIGHT` or `LEFT` line from the unified
 patch, permits file-level findings only for binary, gitlink, or patchless files, optionally
 compares a supplied content hash with the immutable snapshot, and assigns a deterministic claim
@@ -158,11 +178,10 @@ it never contains model title/body text, author, source, prompt, or blob content
 ```yaml
 review:
   finding_verifier:
-    mode: report_only  # default when this block is present
+    mode: enforce
 ```
 
-`report_only` leaves the established arbitration and publication inputs unchanged and appends a
-redacted verifier count to the compact review summary. `enforce` removes rejected findings before
+The production engine removes rejected findings before
 arbitration and publication. A `needs_review` result (including an exact identity/snapshot,
 ambiguous anchor, or content-hash uncertainty) forces `INCOMPLETE_REVIEW`, `BLOCKED`, and a
 non-merge-eligible result; it can never produce `SHIP`. Immediately before any GitHub publication
@@ -171,13 +190,13 @@ that was reviewed.
 
 ### Deterministic review units
 
-`review.units` creates an exact-head manifest for changed files. It is disabled unless the trusted
-base configuration enables it. Unit IDs include canonical path/range, content/blob identity,
+`review.units` creates an exact-head manifest for changed files. The production engine always
+creates this manifest from trusted-base rules. Unit IDs include canonical path/range, content/blob identity,
 repository/head identity, and policy digest. A failed or uncovered unit is never merge-eligible.
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `enabled` | `boolean` | `false` | Enables trusted manifest generation and coverage receipts. |
+| `enabled` | `boolean` | `true` | Legacy compatibility key; production generation cannot be disabled. |
 | `generated_patterns` | `string[]` | `[]` | Additional trusted-base generated-file patterns. |
 | `vendor_patterns` | `string[]` | `[]` | Additional trusted-base vendored-file patterns. |
 | `allow_waived` | `boolean` | `false` | Allows only explicitly trusted maintainer waivers. Failed or uncovered evidence still cannot become `SHIP`. |

@@ -285,6 +285,15 @@ outputs:
   merge-eligible:
     description: 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'
     value: ${{ steps.review.outputs.merge-eligible }}
+  investigation-status:
+    description: 'Bounded investigation status: complete, partial, or incomplete.'
+    value: ${{ steps.review.outputs.investigation-status }}
+  investigation-receipt:
+    description: 'Redacted bounded investigation receipt summary for the exact reviewed head.'
+    value: ${{ steps.review.outputs.investigation-receipt }}
+  evidence-calls:
+    description: 'Count of bounded immutable evidence calls executed across persona lanes.'
+    value: ${{ steps.review.outputs.evidence-calls }}
   findings-count:
     description: 'Total findings across all personas.'
     value: ${{ steps.review.outputs.findings-count }}

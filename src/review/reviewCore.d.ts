@@ -59,6 +59,8 @@ export interface CanonicalArbitration {
 export interface ArbitrationOptions {
   changedFiles?: ReviewChangedFile[];
   coverageComplete?: boolean;
+  promotionReady?: boolean;
+  executionTerminationReasons?: string[];
   expectedPersonaIds?: string[];
   coveragePolicy?: Partial<import('./coveragePolicy').CoveragePolicy>;
   candidateVerdict?: CanonicalVerdict;
