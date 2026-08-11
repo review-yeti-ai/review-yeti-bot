@@ -223,7 +223,7 @@ inputs:
       excludes the built-in degraded-provider blocklist (including deepinfra); this input can
       add further provider bans without enabling fallbacks outside the remaining providers.
     required: false
-    default: 'deepinfra,openrouter'
+    default: 'deepinfra,openrouter,decart,sail-research,inceptron,fireworks,together,mancer,parasail'
   openrouter-provider-routing:
     description: >-
       Optional JSON object forwarded as OpenRouter's provider routing policy. Supports the raw
