@@ -44,6 +44,7 @@ github_action:
       - fireworks
       - together
       - mancer
+      - parasail
     # Hard per-request timeout (60s default). Lanes that do not return in time fail as timeout.
     timeout_ms: 60000
     # SSE streaming (default false). Enable only if you need mid-flight provider attribution.

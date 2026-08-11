@@ -206,7 +206,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     })).toThrow(/hard-banned provider/);
   });
 
-  it.each(['openrouter', 'decart', 'sail-research', 'inceptron', 'fireworks', 'together', 'mancer'])(
+  it.each(['openrouter', 'decart', 'sail-research', 'inceptron', 'fireworks', 'together', 'mancer', 'parasail'])(
     'fails closed when provider routing selects degraded provider %s',
     (provider) => {
       expect(() => resolveOpenRouterPolicy({}, {
