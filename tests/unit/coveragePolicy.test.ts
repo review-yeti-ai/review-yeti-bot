@@ -66,8 +66,14 @@ describe('coverage lane classification', () => {
       status: 'timeout',
       trustworthy: false,
     });
+    // Recovered multi-pass: partial>0 with APPROVE is still a trustworthy verdict.
     expect(classifyLane(verdictLane('security', 'provider-a', { partial: 1 }))).toMatchObject({
-      status: 'partial',
+      status: 'verdict',
+      trustworthy: true,
+    });
+    // Explicit partial without a recovered decision remains untrustworthy.
+    expect(classifyLane(verdictLane('security', 'provider-a', { status: 'partial', decision: 'ERROR', error: 'pass failed' }))).toMatchObject({
+      status: 'error',
       trustworthy: false,
     });
     expect(classifyLane(verdictLane('security', 'provider-a', { findings: undefined }))).toMatchObject({
