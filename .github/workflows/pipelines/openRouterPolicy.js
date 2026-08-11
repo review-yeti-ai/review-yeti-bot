@@ -16,7 +16,7 @@
  *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
  *      deepinfra, the openrouter fallback route, and known degraded providers
- *      ignored, timeout_ms=60000, stream=false).
+ *      ignored, timeout_ms=30000, stream=false).
  *
  * @param {object|undefined} localConfig  Parsed local config, or an object whose
  *    `parsed` field holds the parse result (as produced by the pipeline).
@@ -75,7 +75,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
   const cfgProviderRouting = cfgOr.provider_routing ?? cfgOr.providerRouting;
 
   // 3. Defaults — 60s per request is the product default.
-  const DEFAULT_TIMEOUT_MS = 60_000;
+  const DEFAULT_TIMEOUT_MS = 30_000;
 
   let allowedModels = (envAllowed.length > 0 ? envAllowed : cfgAllowed) || [];
   let tradeoff = (envTradeoff !== undefined && envTradeoff !== '' ? Number(envTradeoff) : (Number.isFinite(cfgTradeoff) ? cfgTradeoff : undefined));
@@ -90,7 +90,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
     .map((provider) => String(provider).trim().toLowerCase())
     .filter(Boolean);
 
-  // timeout_ms: action env > yaml > 60000. Clamp 500ms..600_000ms.
+  // timeout_ms: action env > yaml > 30000. Clamp 500ms..600_000ms.
   let timeoutMs = DEFAULT_TIMEOUT_MS;
   if (envTimeout !== undefined && envTimeout !== '') {
     const n = Number(envTimeout);
@@ -100,6 +100,22 @@ function resolveOpenRouterPolicy(localConfig, env) {
     if (Number.isFinite(n)) timeoutMs = n;
   }
   timeoutMs = Math.max(500, Math.min(600_000, Math.round(timeoutMs)));
+
+  // connect_timeout_ms: max wait for HTTP headers / first byte. Separate from the total
+  // response budget so a hung TCP handshake cannot burn the whole review window.
+  // Default 8s; clamped 500ms..timeoutMs. Env OPENROUTER_CONNECT_TIMEOUT_MS wins.
+  const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
+  let connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS;
+  const envConnect = env.OPENROUTER_CONNECT_TIMEOUT_MS;
+  const cfgConnect = cfgOr.connect_timeout_ms ?? cfgOr.connectTimeoutMs;
+  if (envConnect !== undefined && envConnect !== '') {
+    const n = Number(envConnect);
+    if (Number.isFinite(n)) connectTimeoutMs = n;
+  } else if (cfgConnect !== undefined && cfgConnect !== '') {
+    const n = Number(cfgConnect);
+    if (Number.isFinite(n)) connectTimeoutMs = n;
+  }
+  connectTimeoutMs = Math.max(500, Math.min(timeoutMs, Math.round(connectTimeoutMs)));
 
   // stream: action env > yaml > false.
   let stream = false;
@@ -126,16 +142,30 @@ function resolveOpenRouterPolicy(localConfig, env) {
     envIgnored.length > 0 ? envIgnored : cfgIgnored,
   );
 
+  // Prefer endpoints that answer quickly. This is not a higher total budget — it tells
+  // OpenRouter to avoid providers whose historical latency exceeds the connect window.
+  // Callers can still override via OPENROUTER_PROVIDER_ROUTING / YAML provider_routing.
+  let finalRouting = providerRouting && typeof providerRouting === 'object' ? { ...providerRouting } : { ignore: ignoredProviders };
+  if (finalRouting.preferred_max_latency === undefined) {
+    finalRouting.preferred_max_latency = connectTimeoutMs;
+  }
+  if (!Array.isArray(finalRouting.ignore)) {
+    finalRouting.ignore = ignoredProviders;
+  } else {
+    finalRouting.ignore = [...new Set([...(finalRouting.ignore || []), ...ignoredProviders])];
+  }
+
   return {
     allowedModels,
     costQualityTradeoff: tradeoff,
     dataCollection,
     ignoredProviders,
     timeoutMs,
+    connectTimeoutMs,
     stream,
     model,
     fallbackModels,
-    providerRouting,
+    providerRouting: finalRouting,
   };
 }
 
@@ -310,5 +340,5 @@ function isHardBannedProvider(provider) {
 module.exports = {
   resolveOpenRouterPolicy,
   HARD_BANNED_PROVIDER_SLUGS,
-  DEFAULT_OPENROUTER_TIMEOUT_MS: 60_000,
+  DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000,
 };

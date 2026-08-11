@@ -1424,8 +1424,21 @@ function waitForAbortableDelay(delayMs, signal) {
  * retains the Auto-Router-resolved provider + model from the first SSE event.
  * Falls back to non-stream if the proxy/body is not a ReadableStream.
  */
-async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, preferStream = false, signal }) {
-  const requestAbort = createAbortLink({ signals: [signal], timeoutMs });
+async function callOpenRouterChat(fetchImpl, {
+  url,
+  headers,
+  body,
+  timeoutMs,
+  connectTimeoutMs,
+  preferStream = false,
+  signal,
+}) {
+  // Total budget covers connect + body. Connect budget is a SEPARATE concern: if headers
+  // never arrive within connectTimeoutMs, we refuse the attempt as CONNECT_TIMEOUT and ban
+  // the upstream when known — we do NOT raise timeoutMs.
+  const totalMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30_000;
+  const connectMs = Math.max(500, Math.min(totalMs, Number.isFinite(connectTimeoutMs) && connectTimeoutMs > 0 ? connectTimeoutMs : 8_000));
+  const totalAbort = createAbortLink({ signals: [signal], timeoutMs: totalMs });
   const execute = async () => {
   const baseHeaders = { ...headers };
   // Default OFF. Streaming under 12-way fan-out often causes timeouts / StreamReset 502s.
@@ -1433,27 +1446,41 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
   // Opt in with OPENROUTER_STREAM=true, preferStream:true, or github_action.openrouter.stream.
   const attemptStream = preferStream === true || process.env.OPENROUTER_STREAM === 'true';
 
+  const providerFromHeaders = (response) => {
+    if (!response?.headers?.get) return null;
+    for (const key of ['x-openrouter-provider', 'x-provider', 'x-or-provider']) {
+      const v = response.headers.get(key);
+      if (v && String(v).trim()) return String(v).trim();
+    }
+    return null;
+  };
+
   const nonStreamOnce = async () => {
     const t0 = Date.now();
     let response;
+    // Phase 1 — CONNECT: headers only. Fail fast if the upstream never answers.
+    const connectAbort = createAbortLink({ signals: [signal, totalAbort.signal], timeoutMs: connectMs });
     try {
       response = await fetchImpl(url, {
         method: 'POST',
         headers: baseHeaders,
         body: JSON.stringify({ ...body, stream: false }),
-        signal: requestAbort.signal,
+        signal: connectAbort.signal,
       });
     } catch (err) {
       const elapsed = Math.max(0, Date.now() - t0);
-      const aborted = Boolean(requestAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
+      const connectTimedOut = Boolean(connectAbort.signal?.aborted && elapsed <= connectMs + 250);
+      const aborted = Boolean(totalAbort.signal?.aborted || connectAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
+      const phase = connectTimedOut ? 'connect' : 'response';
       console.warn(
-        `[OpenRouter] non-stream fetch ${aborted ? 'ABORTED' : 'ERROR'}`
-        + ` model=${body.model} elapsed_ms=${elapsed} budget_ms=${timeoutMs}`
+        `[OpenRouter] non-stream ${phase === 'connect' ? 'CONNECT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
+        + ` model=${body.model} elapsed_ms=${elapsed} connect_budget_ms=${connectMs} total_budget_ms=${totalMs}`
         + ` name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 160)}`,
       );
       return {
         ok: false,
         aborted,
+        timeoutPhase: aborted ? phase : undefined,
         status: 0,
         detail: String(err?.message || err).slice(0, 500),
         model: body.model,
@@ -1464,6 +1491,8 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
         streamed: false,
         error: err,
       };
+    } finally {
+      connectAbort.dispose();
     }
 
     if (!response.ok) {
@@ -1488,23 +1517,27 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
     }
 
     let payload;
+    // Attach provider from headers as soon as connect succeeds (before body parse).
+    const headerProvider = providerFromHeaders(response);
     try {
       payload = await response.json();
     } catch (err) {
       const elapsed = Math.max(0, Date.now() - t0);
-      const aborted = Boolean(requestAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
+      const aborted = Boolean(totalAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
       console.warn(
-        `[OpenRouter] non-stream response.json() ${aborted ? 'ABORTED' : 'ERROR'}`
-        + ` model=${body.model} elapsed_ms=${elapsed} budget_ms=${timeoutMs}`
+        `[OpenRouter] non-stream RESPONSE_TIMEOUT body`
+        + ` model=${body.model} provider=${headerProvider || 'unknown'} elapsed_ms=${elapsed}`
+        + ` connect_budget_ms=${connectMs} total_budget_ms=${totalMs}`
         + ` name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 160)}`,
       );
       return {
         ok: false,
         aborted,
+        timeoutPhase: aborted ? 'response' : undefined,
         status: response.status,
         detail: String(err?.message || err).slice(0, 500),
         model: body.model,
-        provider: 'openrouter',
+        provider: headerProvider || 'openrouter',
         generationId: null,
         content: '',
         usage: null,
@@ -1513,9 +1546,17 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
       };
     }
     const route = resolveRouteMeta(payload, body.model);
+    if (headerProvider && (!route.provider || route.provider === 'openrouter')) {
+      route.provider = headerProvider;
+    }
     const genHeader = response.headers?.get?.('x-generation-id') || response.headers?.get?.('X-Generation-Id');
     if (genHeader && !route.generationId) route.generationId = String(genHeader).trim();
     const content = payload?.choices?.[0]?.message?.content || '';
+    const ttfbMs = Math.max(0, Date.now() - t0); // approximate; body already read
+    console.log(
+      `[OpenRouter] non-stream OK model=${route.model} provider=${route.provider}`
+      + ` elapsed_ms=${ttfbMs} total_budget_ms=${totalMs}`,
+    );
     return {
       ok: true,
       ...route,
@@ -1543,7 +1584,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
         stream: true,
         stream_options: { include_usage: true },
       }),
-      signal: requestAbort.signal,
+      signal: totalAbort.signal,
     });
 
     if (!response.ok) {
@@ -1629,7 +1670,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
         }
       }
     } catch (err) {
-      if (signal?.aborted || requestAbort.signal.aborted) {
+      if (signal?.aborted || totalAbort.signal.aborted) {
         return {
           ok: false,
           aborted: true,
@@ -1646,7 +1687,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
       const msg = err?.message || String(err);
       if (/StreamReset|stream_id|remote_reset|ECONNRESET|aborted|timeout|network/i.test(msg)) {
         console.warn(`[OpenRouter] stream read failed (${formatRouteLabel(streamRoute)}): ${msg.slice(0, 120)}; falling back to non-stream`);
-        if (requestAbort.signal.aborted) {
+        if (totalAbort.signal.aborted) {
           return {
             ok: false,
             aborted: true,
@@ -1706,7 +1747,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
       },
     };
   } catch (err) {
-    if (signal?.aborted || requestAbort.signal.aborted) {
+    if (signal?.aborted || totalAbort.signal.aborted) {
       return { ok: false, aborted: true, error: err, ...streamRoute, content: '', usage: null, streamed: true, partial: false };
     }
     const msg = String(err?.message || err);
@@ -1727,7 +1768,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
     }
   }
   };
-  return execute().finally(() => requestAbort.dispose());
+  return execute().finally(() => totalAbort.dispose());
 }
 
 
@@ -2189,7 +2230,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
     fallbackModels: [],
     providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
-    timeoutMs: 60_000,
+    timeoutMs: 30_000,
     stream: false,
   };
   const plugins = [];
@@ -2307,10 +2348,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
   // Per-request hard cap. Default 30s; override via action input,
   // OPENROUTER_TIMEOUT_MS, or github_action.openrouter.timeout_ms in .review-yeti.yaml.
+  // Total response budget. Do NOT raise this to paper over slow providers — ban them instead.
   const timeoutMs = options.timeoutMs
     || Number(process.env.OPENROUTER_TIMEOUT_MS)
     || Number(orPolicy.timeoutMs)
-    || 60_000;
+    || 30_000;
+  const connectTimeoutMs = options.connectTimeoutMs
+    || Number(process.env.OPENROUTER_CONNECT_TIMEOUT_MS)
+    || Number(orPolicy.connectTimeoutMs)
+    || 8_000;
   const maxAttempts = options.maxAttempts || 2;
   const fallbackModels = Array.isArray(orPolicy.fallbackModels) ? orPolicy.fallbackModels : [];
   const models = [...new Set([cfg.model, ...fallbackModels].filter(Boolean))];
@@ -2433,6 +2479,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           headers: requestHeaders,
           body: requestBody,
           timeoutMs,
+          connectTimeoutMs,
           preferStream: options.preferStream === true
             || process.env.OPENROUTER_STREAM === 'true'
             || orPolicy.stream === true
@@ -2454,15 +2501,37 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             streamRetryRequested = true;
             const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
             if (timedOutProvider && timedOutProvider !== 'openrouter') timedOutProviders.add(timedOutProvider);
-            const msg = `Provider timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
+            const phase = result.timeoutPhase || 'response';
+            const msg = phase === 'connect'
+              ? `Provider CONNECT timeout after ${connectTimeoutMs}ms (no headers; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
+              : `Provider RESPONSE timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
             lastError = msg;
+            const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
+            if (timedOutProvider && timedOutProvider !== 'openrouter') {
+              timedOutProviders.add(timedOutProvider);
+              console.warn(
+                `[OpenRouter] BAN provider=${timedOutProvider} reason=${phase}_timeout`
+                + ` persona=${persona.id} elapsed_ms=${elapsedMs}`
+                + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
+                + ` — will not retry this provider for the rest of the review run`,
+              );
+              console.warn(`::warning::Banned slow OpenRouter provider ${timedOutProvider} after ${phase} timeout`);
+            } else {
+              // Unknown provider on non-stream timeout: force SSE next so the first chunk names it.
+              streamRetryRequested = true;
+              console.warn(
+                `[OpenRouter] CONNECT/RESPONSE timeout with unresolved provider; next attempt uses stream for attribution`
+                + ` persona=${persona.id} elapsed_ms=${elapsedMs}`,
+              );
+            }
             console.warn(
-              `[OpenRouter] TIMEOUT persona=${persona.id} requested=${requestedModel}`
-              + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} budget_ms=${timeoutMs}`
+              `[OpenRouter] TIMEOUT phase=${phase} persona=${persona.id} requested=${requestedModel}`
+              + ` resolved=${routeLabel} elapsed_ms=${elapsedMs}`
+              + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
               + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`
               + ` status=${result.status || 'aborted'} detail=${String(result.detail || result.error?.message || '').slice(0, 160)}`,
             );
-            console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
+            console.warn(`::warning::OpenRouter ${phase} timeout persona=${persona.id} elapsed_ms=${elapsedMs} route=${routeLabel}`);
             // A streaming retry is what reveals the provider. Give that newly identified route
             // one additional attempt on a fresh session after adding it to provider.ignore.
             if (attempt >= maxAttempts && timedOutProvider && timedOutProvider !== 'openrouter' && !providerRetryUsed) {
@@ -6089,6 +6158,7 @@ async function main(options = {}) {
   console.log(
     `[OpenRouter] policy model=${modelConfig.model}`
     + ` timeout_ms=${openRouterPolicy.timeoutMs}`
+    + ` connect_timeout_ms=${openRouterPolicy.connectTimeoutMs}`
     + ` stream=${openRouterPolicy.stream}`
     + ` ignore_providers=${JSON.stringify(openRouterPolicy.ignoredProviders || [])}`
     + ` fallback_models=${JSON.stringify(openRouterPolicy.fallbackModels || [])}`
