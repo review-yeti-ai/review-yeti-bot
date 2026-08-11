@@ -1531,7 +1531,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
           if (chunk.error) {
             const errMsg = chunk.error.message || chunk.error.code || JSON.stringify(chunk.error);
             console.warn(`[OpenRouter] mid-stream error (${provider}/${model}): ${String(errMsg).slice(0, 120)}; falling back to non-stream`);
-            try { reader.cancel(); } catch (_) {}
+            try { await reader.cancel(); } catch (_) {}
             return nonStreamOnce();
           }
         }
@@ -1594,7 +1594,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
         partial: sawChunk,
       };
     } finally {
-      try { reader.cancel(); } catch (_) {}
+      try { await reader.cancel(); } catch (_) {}
     }
 
     return {
