@@ -237,11 +237,11 @@ inputs:
       excludes the built-in degraded-provider blocklist (including deepinfra); this input can
       add further provider bans without enabling fallbacks outside the remaining providers.
     required: false
-    default: 'deepinfra,openrouter,novita,decart,sail-research,inceptron,fireworks,together,mancer,parasail'
+    default: 'deepinfra,openrouter,wafer,novita,decart,sail-research,inceptron,fireworks,together,mancer,parasail'
   openrouter-provider-routing:
     description: >-
       JSON object forwarded as OpenRouter's provider routing policy. Defaults to the certified
-      Wafer and Morph provider cohort with fallbacks disabled. Novita is hard-banned after
+      Morph provider with fallbacks disabled. Wafer and Novita are hard-banned after
       repeated provider-error/timeout lanes. Supports the raw API
       fields order, allow_fallbacks, require_parameters, data_collection, zdr,
       enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,
@@ -249,7 +249,7 @@ inputs:
       hard-banned and cannot appear in order or only. Action input wins over
       github_action.openrouter.provider_routing in YAML.
     required: false
-    default: '{"only":["wafer","morph"],"allow_fallbacks":false}'
+    default: '{"only":["morph"],"allow_fallbacks":false}'
   dashboard-api-key:
     description: >-
       Optional Review Yeti dashboard ingestion key (ctd_live_...). When empty, the action does
