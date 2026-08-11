@@ -31,6 +31,41 @@ describe('persona investigation state machine', () => {
     expect(result.executionReceipt).toMatchObject({ termination: 'completed', turns: 1, evidenceCalls: 0 });
   });
 
+  it('credits the bounded batch when a completed clean response has no explicit risk plan', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      investigationUnitIds: ['ru_auth', 'ru_events'],
+      modelTurn: sequence([completeResponse({ risk_plan: [], risk_dispositions: [] })]),
+    });
+
+    expect(result.executionReceipt).toMatchObject({
+      termination: 'completed',
+      completedUnitIds: ['ru_auth', 'ru_events'],
+    });
+  });
+
+  it('does not fill in units omitted by an explicit partial risk plan', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      investigationUnitIds: ['ru_auth', 'ru_events'],
+      modelTurn: sequence([completeResponse()]),
+    });
+
+    expect(result.executionReceipt.completedUnitIds).toEqual(['ru_auth']);
+  });
+
+  it('does not fill in units when an explicit risk plan has no unit assignment', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      investigationUnitIds: ['ru_auth', 'ru_events'],
+      modelTurn: sequence([completeResponse({
+        risk_plan: [{ id: 'risk-1', unit_ids: [], statement: 'unassigned review risk', evidence_needed: [], allowed_tools: [] }],
+      })]),
+    });
+
+    expect(result.executionReceipt.completedUnitIds).toEqual([]);
+  });
+
   it('executes requested evidence and requires a final response', async () => {
     let call = 0;
     const modelTurn = async ({ messages }: { messages: Array<{ content: string }> }) => {
