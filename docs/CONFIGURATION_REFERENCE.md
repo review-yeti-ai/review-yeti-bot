@@ -386,7 +386,7 @@ github_action:
 | `ignore_providers` | `string[]` | `[deepinfra, openrouter, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` | Provider slugs excluded from routing; the built-in degraded-provider blocklist is always excluded. |
 | `cost_quality_tradeoff` | `number` | unset | Auto Router cost/quality 0–10. |
 | `data_collection` | `allow`\|`deny` | unset | When `deny`, sends OpenRouter training opt-out header. |
-| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. |
+| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. The action input defaults to `only=[novita, wafer, morph]` with `allow_fallbacks=false`; this YAML field is used only when a caller explicitly clears or overrides the action input. |
 
 **Precedence:** action input / env → `.review-yeti.yaml` → defaults (`timeout_ms=30000`, `stream=false`, `fallback_models=[]`).
 
