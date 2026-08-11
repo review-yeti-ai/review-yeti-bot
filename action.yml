@@ -131,6 +131,13 @@ inputs:
       reported as unreviewed rather than dropped. More passes cost more tokens.
     required: false
     default: '3'
+  max-investigation-turns:
+    description: >-
+      Maximum bounded evidence follow-up turns per persona pass (1-3, default 2). A dependency
+      persona that still lacks requested changed-file evidence after this ceiling is marked
+      INCOMPLETE_REVIEW and blocks merge approval; it is never treated as a clean approval.
+    required: false
+    default: '2'
   exclude:
     description: >-
       Extra comma-separated path globs to skip, on top of the built-in generated-content list
@@ -532,6 +539,7 @@ runs:
         MAX_FILE_DIFF_CHARS: ${{ inputs.max-file-diff-chars }}
         MAX_PERSONAS: ${{ inputs.max-personas }}
         MAX_PASSES: ${{ inputs.max-passes }}
+        MAX_INVESTIGATION_TURNS: ${{ inputs.max-investigation-turns }}
         EXCLUDE_PATHS: ${{ inputs.exclude }}
         SKIP_UNCHANGED_REVIEW: ${{ inputs.skip-unchanged }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
