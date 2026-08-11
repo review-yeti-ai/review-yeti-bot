@@ -2499,8 +2499,6 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
           if (result.aborted) {
             streamRetryRequested = true;
-            const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
-            if (timedOutProvider && timedOutProvider !== 'openrouter') timedOutProviders.add(timedOutProvider);
             const phase = result.timeoutPhase || 'response';
             const msg = phase === 'connect'
               ? `Provider CONNECT timeout after ${connectTimeoutMs}ms (no headers; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
