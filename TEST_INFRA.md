@@ -9,6 +9,8 @@ npm run test:integration
 npm run test:replay   # cassette replay — no credentials, no network
 npm run test:all      # unit, fixtures, provider VCR, workflow, outbox, security, runtime, lint, build
 npm run test:workflow  # real pipeline boundary with injected GitHub/model/memory seams
+npx review-yeti eval run --fixture tests/fixtures/review-intelligence/offline-promotion-matrix.json  # manual deterministic eval
+npx review-yeti eval tui  # manual receipt browser and runner
 npm run test:outbox    # atomic outbox, leases, retries, dead-letter, and retarget protection
 npm run test:chaos     # same-head lease/concurrency and duplicate-delivery contracts
 npm run test:receipts  # validates all workflow fixtures and cassette manifests

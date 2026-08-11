@@ -4,6 +4,7 @@ coverage/
 .env
 *.log
 .review-yeti-memory/
+.review-yeti/evaluations/
 fixtures/tmp/
 .tmp/
 test-results/
