@@ -154,6 +154,9 @@ function resolveOpenRouterPolicy(localConfig, env) {
   } else {
     finalRouting.ignore = [...new Set([...(finalRouting.ignore || []), ...ignoredProviders])];
   }
+  for (const candidateModel of [model, ...fallbackModels].filter(Boolean)) {
+    validateFixedModelProviderCompatibility(candidateModel, finalRouting);
+  }
 
   return {
     allowedModels,
@@ -204,6 +207,86 @@ const HARD_BANNED_PROVIDER_SLUGS = Object.freeze([
   'mancer',
   'parasail',
 ]);
+
+// Fixed-model compatibility is deliberately explicit. This is a compatibility guard, not a
+// liveness claim: OpenRouter may add/remove endpoints over time, but a fixed model must never be
+// sent to a provider cohort that cannot host it. Keep this list limited to providers approved for
+// the model; do not infer compatibility from the model owner's namespace or broaden routing here.
+const FIXED_MODEL_PROVIDER_COMPATIBILITY = Object.freeze({
+  'openai/gpt-5.6-luna': Object.freeze(['openai', 'azure']),
+  'openai/gpt-5.6-luna-20260709': Object.freeze(['openai', 'azure']),
+});
+
+function normalizeModelId(model) {
+  return String(model || '').trim().toLowerCase();
+}
+
+function providerBaseSlug(provider) {
+  return String(provider || '').trim().toLowerCase().split('/')[0];
+}
+
+function safeRoutingIdentifier(value, fallback = 'redacted') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return /^[a-z0-9._/-]{1,100}$/u.test(normalized) ? normalized : fallback;
+}
+
+/**
+ * Rejects a fixed model when an explicit provider restriction cannot serve it.
+ *
+ * `only` is the strictest restriction. An `order` list with fallbacks disabled is also a closed
+ * cohort, so validate that shape for the same reason. An absent restriction remains untouched:
+ * this helper never widens a provider list or turns fallbacks on.
+ *
+ * @param {string|undefined} model
+ * @param {object|undefined} providerRouting
+ * @returns {{model: string, compatibleProviders: string[], restrictedProviders: string[]}|undefined}
+ */
+function validateFixedModelProviderCompatibility(model, providerRouting) {
+  const normalizedModel = normalizeModelId(model);
+  const compatibleProviders = FIXED_MODEL_PROVIDER_COMPATIBILITY[normalizedModel];
+  if (!compatibleProviders || !providerRouting || typeof providerRouting !== 'object') return undefined;
+
+  const only = Array.isArray(providerRouting.only) ? providerRouting.only : [];
+  const order = Array.isArray(providerRouting.order) ? providerRouting.order : [];
+  const restriction = only.length > 0
+    ? { field: 'only', providers: only }
+    : (providerRouting.allow_fallbacks === false && order.length > 0
+      ? { field: 'order (with allow_fallbacks=false)', providers: order }
+      : undefined);
+  if (!restriction) return undefined;
+
+  const ignored = new Set((Array.isArray(providerRouting.ignore) ? providerRouting.ignore : [])
+    .map((provider) => String(provider || '').trim().toLowerCase())
+    .filter(Boolean));
+  const effectiveCompatibleProviders = restriction.providers.filter((provider) => {
+    const normalizedProvider = String(provider || '').trim().toLowerCase();
+    const baseProvider = providerBaseSlug(normalizedProvider);
+    return compatibleProviders.includes(baseProvider)
+      && !ignored.has(normalizedProvider)
+      && !ignored.has(baseProvider);
+  });
+  if (effectiveCompatibleProviders.length > 0) return {
+    model: normalizedModel,
+    compatibleProviders: [...compatibleProviders],
+    restrictedProviders: restriction.providers.map((provider) => safeRoutingIdentifier(provider)),
+  };
+
+  const restrictedProviders = restriction.providers.map((provider) => safeRoutingIdentifier(provider));
+  const ignoredCompatible = compatibleProviders.filter((provider) => ignored.has(provider));
+  const ignoredNote = ignoredCompatible.length > 0
+    ? ` The effective ignore policy also excludes ${ignoredCompatible.join(', ')}.`
+    : '';
+  throw new Error(
+    `OpenRouter fixed-model compatibility check failed: model "${safeRoutingIdentifier(normalizedModel, 'configured-model')}" `
+    + `has approved compatible provider(s) ${compatibleProviders.join(' or ')}, but provider.${restriction.field} permits only `
+    + `[${restrictedProviders.join(', ')}]. No permitted provider can serve this model.${ignoredNote} `
+    + `Set openrouter-provider-routing to an explicit compatible policy such as `
+    + `{"only":["openai","azure"],"allow_fallbacks":false} while retaining the current `
+    + `data_collection, zdr, and ignore restrictions, or select a model served by the approved `
+    + `provider cohort. No provider access was broadened and no fallback was attempted.`,
+  );
+}
+
 function normalizeProviderList(value, field) {
   if (!Array.isArray(value)) {
     throw new Error(`OpenRouter provider routing field ${field} must be an array`);
@@ -341,6 +424,8 @@ function isHardBannedProvider(provider) {
 
 module.exports = {
   resolveOpenRouterPolicy,
+  FIXED_MODEL_PROVIDER_COMPATIBILITY,
+  validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,
   DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000,
 };

@@ -62,6 +62,29 @@ defaults. Action inputs cannot select an untrusted configuration ref. `provider_
 `data_collection`, `zdr`, `enforce_distillable_text`, `sort`, throughput/latency preferences, and
 `max_price`; unknown fields fail closed. See the [canonical YAML example](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration).
 
+## Fixed model/provider compatibility
+
+The action keeps fixed-model compatibility explicit and validates it before persona fan-out. The
+current registry includes `openai/gpt-5.6-luna`, which is approved for the `openai` and `azure`
+provider slugs. A policy such as `only: [morph]` therefore fails early for Luna with an actionable
+error; it is not treated as evidence that the model was retired. The validator never removes an
+`ignore`, `data_collection`, `zdr`, or `require_parameters` restriction and never enables a
+fallback to make an incompatible policy work.
+
+If a consumer has approved OpenAI/Azure for Luna, route it explicitly:
+
+```yaml
+github_action:
+  openrouter:
+    model: openai/gpt-5.6-luna
+    provider_routing:
+      only: [openai, azure]
+      allow_fallbacks: false
+      # Keep the repository's existing data-policy and ignore settings here.
+```
+
+If the consumer must remain Morph-only, choose a model that the Morph provider serves instead.
+
 Docs: https://openrouter.ai/docs/guides/routing/routers/auto-router
 
 Provider routing fields and semantics: https://openrouter.ai/docs/guides/routing/provider-selection
