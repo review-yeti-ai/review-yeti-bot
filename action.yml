@@ -87,11 +87,11 @@ inputs:
     default: 'false'
   openrouter-timeout-ms:
     description: >-
-      Per-request OpenRouter hard timeout in milliseconds (default 30000 = 30s).
+      Per-request OpenRouter hard timeout in milliseconds (default 60000 = 60s).
       Models that do not return in time fail the persona lane. Also set via
       github_action.openrouter.timeout_ms in .review-yeti.yaml; action input wins.
     required: false
-    default: '30000'
+    default: '60000'
   model:
     description: 'Model identifier passed to the provider.'
     required: false
@@ -561,7 +561,7 @@ runs:
         NODE_PATH: ${{ github.action_path }}/node_modules
       run: |
         echo "OpenRouter base URL: $OPENROUTER_BASE_URL (direct)"
-        echo "OpenRouter timeout_ms=${OPENROUTER_TIMEOUT_MS:-30000} stream=${OPENROUTER_STREAM:-false}"
+        echo "OpenRouter timeout_ms=${OPENROUTER_TIMEOUT_MS:-60000} stream=${OPENROUTER_STREAM:-false}"
         if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
           echo "::error::llm-api-key / OPENROUTER_API_KEY is empty. Pass a single OpenRouter API key."
           exit 1
