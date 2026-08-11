@@ -121,6 +121,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(reviewStep?.env?.DASHBOARD_API_KEY).toBe('${{ inputs.dashboard-api-key }}');
     expect(reviewStep?.env?.DASHBOARD_API_URL).toBe('${{ inputs.dashboard-api-url }}');
     expect(reviewStep?.env?.DASHBOARD_SITE_URL).toBe('${{ inputs.dashboard-url }}');
+    expect(reviewStep?.env?.DASHBOARD_DETAIL).toBe('${{ inputs.dashboard-detail }}');
+    expect(reviewStep?.env?.DASHBOARD_TIMEOUT_MS).toBe('${{ inputs.dashboard-timeout-ms }}');
   });
 
   it('resolves the pipeline through GITHUB_ACTION_PATH, not the consumer workspace', () => {
