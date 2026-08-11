@@ -42,3 +42,24 @@ Keep the feature default-on only when all of these hold:
 - p95 latency no higher than 1.50x baseline.
 
 The deterministic command reports `promotionReady: false` until live cost and latency receipts are supplied.
+
+## Provider-backed evaluation
+
+Run only with an explicitly provisioned review-fleet key:
+
+```bash
+npm run test:dependency-live-eval
+```
+
+The live runner uses the configured dependency persona and model, reuses the same first-turn result for the legacy baseline, and charges only the candidate's bounded follow-up when evidence is available. It writes no GitHub comments and does not run as part of CI. A nonzero result means the promotion thresholds were not met; it is not permission to merge automatically.
+
+### Current pilot receipt
+
+On 2026-08-11, a three-fixture, one-repetition pilot using the review-fleet key and `deepseek/deepseek-v4-flash-0731` completed with these results:
+
+| Arm | Expected-decision accuracy | Fault recall | Unsafe `SHIP` | Tokens | Cost | p95 latency |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Legacy baseline | 66.67% | 100% | 100% | 5,641 | $0.000966 | 16.725s |
+| Candidate | 100% | 100% | 0% | 5,641 | $0.000966 | 16.725s |
+
+The pilot is safety evidence for the missing-lockfile case, not a promotion result: it is too small to establish recall or cost/latency thresholds, and the full 16-fixture × 3-repetition run remains pending.

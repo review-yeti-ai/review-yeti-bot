@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { buildDependencyEvidence, classifyDependencyPath } = require('../src/review/dependencyEvidence.js');
+const { buildDependencyEvidence, classifyDependencyPath, requestKindMatchesPath } = require('../src/review/dependencyEvidence.js');
 
 const CATEGORIES = new Set(['fault', 'clean', 'boundary']);
 const REQUIRED_FIXTURES = 16;
@@ -46,7 +46,8 @@ function candidateDecision(fixture) {
 }
 
 function validRequest(request) {
-  return Boolean(request && typeof request.path === 'string' && classifyDependencyPath(request.path));
+  const classified = request && typeof request.path === 'string' ? classifyDependencyPath(request.path) : null;
+  return Boolean(classified && requestKindMatchesPath(classified, request.kind));
 }
 
 function validateFixture(fixture, index) {

@@ -93,6 +93,16 @@ describe('dependency evidence extraction', () => {
     expect(result.complete).toBe(false);
   });
 
+  it('fails closed when the requested evidence kind does not match the changed path', () => {
+    const result = buildDependencyEvidence([
+      { path: 'package.json', patch: '@@ -1 +1 @@\n+{"dependencies":{}}' },
+    ], [{ path: 'package.json', kind: 'lockfile', reason: 'inspect the resolved entry' }]);
+
+    expect(result.entries[0]).toMatchObject({ availability: 'rejected' });
+    expect(result.unresolvedRequests).toEqual([expect.objectContaining({ path: 'package.json', kind: 'lockfile' })]);
+    expect(result.complete).toBe(false);
+  });
+
   it('normalizes a bare string evidence request against the changed-file allowlist', () => {
     const result = buildDependencyEvidence([
       { path: 'package-lock.json', patch: '@@ -1 +1 @@\n+"lockfileVersion": 3' },

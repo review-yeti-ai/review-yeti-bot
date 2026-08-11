@@ -54,6 +54,11 @@ function classifyDependencyPath(filePath) {
   return null;
 }
 
+function requestKindMatchesPath(classifiedKind, requestedKind) {
+  if (!requestedKind || requestedKind === 'other' || requestedKind === 'provenance') return true;
+  return requestedKind === classifiedKind;
+}
+
 function normalizeRequest(request) {
   if (typeof request === 'string') return { path: normalizePath(request), kind: 'other', reason: 'requested by the reviewer' };
   if (!request || typeof request !== 'object') return null;
@@ -113,7 +118,7 @@ function buildDependencyEvidence(diffFiles = [], requests = [], options = {}) {
   for (const request of targets) {
     if (!request.path) continue;
     const classified = classifyDependencyPath(request.path);
-    if (!classified) {
+    if (!classified || !requestKindMatchesPath(classified, request.kind)) {
       entries.push({ path: request.path, kind: request.kind, availability: 'rejected', reason: 'path is not an allowed dependency evidence file' });
       unresolvedRequests.push(request);
       continue;
@@ -182,6 +187,7 @@ module.exports = {
   LOCKFILE_NAMES,
   normalizePath,
   classifyDependencyPath,
+  requestKindMatchesPath,
   buildDependencyEvidence,
   renderDependencyEvidence,
 };

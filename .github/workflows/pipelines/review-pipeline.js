@@ -2068,6 +2068,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ? [
       '- This persona has a bounded evidence-investigation contract.',
       '- If required dependency evidence is missing, return review_status NEEDS_EVIDENCE and list only changed-file paths in evidence_requests; do not approve from absence.',
+      '- Each evidence_requests path must be the exact file being requested, and its kind must match the path (for example, package.json is manifest and package-lock.json is lockfile). Do not label a manifest as a lockfile or request the manifest again as a substitute for a missing lockfile.',
       investigationFollowup
         ? '- This is an evidence follow-up. Use the supplied evidence, and return INCOMPLETE_REVIEW if required evidence remains unavailable after this turn.'
         : '- The first turn may request one targeted evidence follow-up; do not spend the request on generic audit advice.',
@@ -2174,6 +2175,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ],
     temperature: 0.1,
     response_format: { type: 'json_object' },
+    ...(Number.isFinite(Number(options.maxTokens)) && Number(options.maxTokens) > 0
+      ? { max_tokens: Math.min(Math.trunc(Number(options.maxTokens)), 8192) }
+      : {}),
   };
 
   const requestHeaders = {

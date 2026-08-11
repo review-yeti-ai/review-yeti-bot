@@ -477,6 +477,7 @@ describe('reviewWithModel', () => {
     const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
     const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
     expect(system).toContain('evidence follow-up');
+    expect(system).toContain('kind must match the path');
     expect(user).toContain('Dependency evidence follow-up turn 2 of 2');
     expect(user).toContain('sha512-example');
     expect(res.turn).toBe(2);
