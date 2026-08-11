@@ -413,6 +413,36 @@ describe('writeStepOutputs', () => {
     expect(content).toContain('review-dispatch-manifest-path=/tmp/sessions/review-unit-manifest-abc.json');
   });
 
+  it('emits the complete dispatch identity and unit/reflection outputs from a provider receipt', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-contract-output-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, null, {
+      reviewDispatchReceipt: {
+        run_id: 'run-candidate',
+        run_attempt: 3,
+        arm: 'candidate',
+        plan_digest: 'f'.repeat(64),
+        units_total: 4,
+        units_emitted: 3,
+        units_omitted: 1,
+        reflection: { candidates: 2, kept: 1, downgraded: 0, dropped: 0, needs_review: 1 },
+        policy_digest: 'b'.repeat(64),
+        manifest_digest: 'c'.repeat(64),
+        manifest_artifact_digest: 'e'.repeat(64),
+        provider_receipt_digest: null,
+      },
+      reviewDispatchReceiptDigest: 'a'.repeat(64),
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain('review-dispatch-mode=candidate');
+    expect(content).toContain('review-dispatch-run-id=run-candidate');
+    expect(content).toContain('review-dispatch-run-attempt=3');
+    expect(content).toContain(`review-dispatch-plan-digest=${'f'.repeat(64)}`);
+    expect(content).toContain('review-dispatch-units-total=4');
+    expect(content).toContain('review-dispatch-units-emitted=3');
+    expect(content).toContain('review-dispatch-units-omitted=1');
+    expect(content).toContain('review-dispatch-reflection-status=needs_review');
+  });
+
   it('does not allow artifact paths to inject output records or escape the artifact directory', () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-path-safety-')), 'out.txt');
     writeStepOutputs(arbitration, file, null, null, {

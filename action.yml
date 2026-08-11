@@ -302,6 +302,30 @@ outputs:
   merge-eligible:
     description: 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'
     value: ${{ steps.review.outputs.merge-eligible }}
+  review-dispatch-mode:
+    description: 'Provider dispatch arm for this exact run: baseline or candidate.'
+    value: ${{ steps.review.outputs.review-dispatch-mode }}
+  review-dispatch-run-id:
+    description: 'Provider-owned run identity for the dispatch receipt.'
+    value: ${{ steps.review.outputs.review-dispatch-run-id }}
+  review-dispatch-run-attempt:
+    description: 'Provider-owned run attempt for the dispatch receipt.'
+    value: ${{ steps.review.outputs.review-dispatch-run-attempt }}
+  review-dispatch-plan-digest:
+    description: 'Digest of the deterministic dispatch assignments for this run.'
+    value: ${{ steps.review.outputs.review-dispatch-plan-digest }}
+  review-dispatch-units-total:
+    description: 'Total units in the complete provider-owned dispatch manifest.'
+    value: ${{ steps.review.outputs.review-dispatch-units-total }}
+  review-dispatch-units-emitted:
+    description: 'Units emitted by the provider-owned dispatch run.'
+    value: ${{ steps.review.outputs.review-dispatch-units-emitted }}
+  review-dispatch-units-omitted:
+    description: 'Units omitted by the provider-owned dispatch run.'
+    value: ${{ steps.review.outputs.review-dispatch-units-omitted }}
+  review-dispatch-reflection-status:
+    description: 'Receipt-safe reflection status: complete or needs_review.'
+    value: ${{ steps.review.outputs.review-dispatch-reflection-status }}
   review-dispatch-digest:
     description: 'Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head.'
     value: ${{ steps.review.outputs.review-dispatch-digest }}

@@ -5678,6 +5678,13 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
   const digestOutput = (name, value) => /^[a-f0-9]{64}$/u.test(String(value || '').trim().toLowerCase())
     ? `${name}=${String(value).trim().toLowerCase()}`
     : null;
+  const boundedOutput = (name, value) => typeof value === 'string'
+    && /^[A-Za-z0-9._:-]{1,120}$/u.test(value)
+    ? `${name}=${value}`
+    : null;
+  const boundedCountOutput = (name, value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000
+    ? `${name}=${value}`
+    : null;
   const lines = [
     `verdict=${arbitration.verdict}`,
     `findings-count=${m.totalFindings || 0}`,
@@ -5715,6 +5722,14 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
       `review-unit-summary=${JSON.stringify({ schemaVersion: reviewUnitReceipt.schemaVersion, policyDigest: reviewUnitReceipt.policyDigest, summary: reviewUnitReceipt.summary, coverage: reviewUnitReceipt.coverage, units: reviewUnitReceipt.units })}`,
     ] : []),
     ...(dispatchReceipt ? [
+      boundedOutput('review-dispatch-mode', dispatchReceipt.arm),
+      boundedOutput('review-dispatch-run-id', dispatchReceipt.run_id),
+      boundedCountOutput('review-dispatch-run-attempt', dispatchReceipt.run_attempt),
+      digestOutput('review-dispatch-plan-digest', dispatchReceipt.plan_digest),
+      boundedCountOutput('review-dispatch-units-total', dispatchReceipt.units_total),
+      boundedCountOutput('review-dispatch-units-emitted', dispatchReceipt.units_emitted),
+      boundedCountOutput('review-dispatch-units-omitted', dispatchReceipt.units_omitted),
+      boundedOutput('review-dispatch-reflection-status', dispatchReceipt.reflection?.needs_review > 0 ? 'needs_review' : 'complete'),
       digestOutput('review-dispatch-digest', extra.reviewDispatchReceiptDigest),
       digestOutput('review-dispatch-policy-digest', dispatchReceipt.policy_digest),
       digestOutput('review-dispatch-manifest-digest', dispatchReceipt.manifest_digest),
