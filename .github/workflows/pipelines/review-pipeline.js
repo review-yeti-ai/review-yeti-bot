@@ -4099,7 +4099,7 @@ function renderReviewStateNotes(reviewState, prContext) {
   return sections.join('');
 }
 
-function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}, coverage = null, usage = null, publicationPlan = null, reviewState = null) {
+function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}, coverage = null, usage = null, publicationPlan = null, reviewState = null, options = {}) {
   const verdictBadge = arbitration.verdict === 'SHIP'
     ? '🟢 **Verdict: SHIP**'
     : arbitration.verdict === 'FIX_FIRST'
@@ -4356,7 +4356,13 @@ ${findingsDetails}`;
   const coverageMarker = coverageIdentity
     ? `\n\n<!-- review-yeti-bot:coverage:v1:${coverageIdentity} -->`
     : '';
-  return `${commentMarkdown}${coverageMarker}`;
+  const dashboardReviewUrl = typeof options.dashboardReviewUrl === 'string' && /^https?:\/\//u.test(options.dashboardReviewUrl)
+    ? options.dashboardReviewUrl
+    : '';
+  const dashboardLink = dashboardReviewUrl
+    ? `\n\n---\n\n[📊 Open full review in Review Yeti ↗](${dashboardReviewUrl})`
+    : '';
+  return `${commentMarkdown}${dashboardLink}${coverageMarker}`;
 }
 
 const REVIEW_THREADS_QUERY = `
@@ -4952,6 +4958,8 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     ...(extra.memoryWriteStatus ? [`memory-write-status=${extra.memoryWriteStatus}`] : []),
     ...(extra.telemetryStatus ? [`telemetry-status=${extra.telemetryStatus}`] : []),
     ...(Number.isSafeInteger(extra.telemetryEvents) ? [`telemetry-events=${extra.telemetryEvents}`] : []),
+    ...(extra.dashboardDelivery ? [`dashboard-delivery=${extra.dashboardDelivery}`] : []),
+    ...(extra.dashboardReviewUrl ? [`dashboard-review-url=${extra.dashboardReviewUrl}`] : []),
     ...(reviewUnitReceipt ? [
       `review-unit-identity=${JSON.stringify(reviewUnitReceipt.identity)}`,
       `review-unit-summary=${JSON.stringify({ schemaVersion: reviewUnitReceipt.schemaVersion, policyDigest: reviewUnitReceipt.policyDigest, summary: reviewUnitReceipt.summary, coverage: reviewUnitReceipt.coverage, units: reviewUnitReceipt.units })}`,
@@ -5332,7 +5340,11 @@ function writeDashboardStepOutput(outputPath, delivery = {}) {
     ? delivery.status
     : 'failed';
   try {
-    fs.appendFileSync(outputPath, `dashboard-delivery=${status}\n`, 'utf-8');
+    const lines = [`dashboard-delivery=${status}`];
+    if (typeof delivery.reviewUrl === 'string' && /^https?:\/\//u.test(delivery.reviewUrl)) {
+      lines.push(`dashboard-review-url=${delivery.reviewUrl}`);
+    }
+    fs.appendFileSync(outputPath, `${lines.join('\n')}\n`, 'utf-8');
   } catch (err) {
     console.warn(`[Outputs] Could not write dashboard delivery output: ${err.message}`);
   }
@@ -5493,15 +5505,19 @@ async function main(options = {}) {
         status: process.exitCode ? 'failed' : 'incomplete',
         startedAtMs: startedAt,
         completedAtMs: now(),
+        detail: runtimeEnv.DASHBOARD_DETAIL,
       }, runtimeEnv);
       dashboardDelivery = await deliverReviewEvent({
         event,
         url: runtimeEnv.DASHBOARD_API_URL,
         apiKey: runtimeEnv.DASHBOARD_API_KEY,
+        siteUrl: runtimeEnv.DASHBOARD_SITE_URL,
+        timeoutMs: runtimeEnv.DASHBOARD_TIMEOUT_MS,
         fetchImplementation,
       });
       if (dashboardDelivery.status === 'accepted' || dashboardDelivery.status === 'duplicate') {
         console.log(`[Dashboard] Review event ${dashboardDelivery.status} after ${dashboardDelivery.attempts} attempt(s).`);
+        if (dashboardDelivery.reviewUrl) console.log(`[Dashboard] Review available at ${dashboardDelivery.reviewUrl}`);
       } else {
         console.warn(`[Dashboard] Review event delivery failed after ${dashboardDelivery.attempts} attempt(s) (${dashboardDelivery.reason || 'unknown error'}). Review outcome is unchanged.`);
       }
@@ -6051,6 +6067,7 @@ async function main(options = {}) {
       personaResults,
       coverage,
       usage: usageTotal,
+      detail: runtimeEnv.DASHBOARD_DETAIL,
       publicationPlan,
       startedAtMs: startedAt,
       completedAtMs: now(),
