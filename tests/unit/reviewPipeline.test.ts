@@ -200,18 +200,26 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     expect(result.comment).not.toContain('INCOMPLETE_REVIEW');
   });
 
-  it('marks a partial provider lane as incomplete for arbitration', () => {
+  it('treats recovered partial multi-pass lanes as complete when decision is not ERROR', () => {
+    // One failed provider attempt of a multi-pass lane is telemetry, not a hard incomplete.
     expect(pipeline.reviewCoverageCompleteForArbitration(
       true,
       { omitted: [], truncated: [] },
-      [{ personaId: 'security', partial: 1 }],
-    )).toBe(false);
+      [{ personaId: 'security', decision: 'APPROVE', partial: 1 }],
+    )).toBe(true);
 
     expect(pipeline.reviewCoverageCompleteForArbitration(
       true,
       { omitted: [], truncated: [] },
       [{ personaId: 'security' }],
     )).toBe(true);
+
+    // Hard ERROR still leaves coverage incomplete.
+    expect(pipeline.reviewCoverageCompleteForArbitration(
+      true,
+      { omitted: [], truncated: [] },
+      [{ personaId: 'security', decision: 'ERROR', partial: 1 }],
+    )).toBe(false);
   });
 
   it('explains that partial provider lanes retain successful findings', () => {
