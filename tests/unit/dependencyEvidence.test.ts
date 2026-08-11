@@ -39,6 +39,20 @@ describe('dependency evidence extraction', () => {
     expect(result.totalChars).toBeLessThanOrEqual(120);
   });
 
+  it('auto-classifies changed dependency files when no explicit request is supplied', () => {
+    const result = buildDependencyEvidence([
+      { path: 'package.json', patch: '@@ -1 +1 @@\n+{"dependencies":{"example":"1.0.0"}}' },
+      { path: 'package-lock.json', patch: '@@ -1 +1 @@\n+{"lockfileVersion":3}' },
+      { path: 'src/index.ts', patch: '@@ -1 +1 @@\n+export const value = 1;' },
+    ]);
+
+    expect(result.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'package.json', kind: 'manifest', availability: 'available' }),
+      expect.objectContaining({ path: 'package-lock.json', kind: 'lockfile', availability: 'available' }),
+    ]));
+    expect(result.entries).toHaveLength(2);
+  });
+
   it('uses only changed files and reports requested evidence that is unavailable', () => {
     const result = buildDependencyEvidence([
       { path: 'README.md', patch: '@@ -1 +1 @@\n+dependency docs' },
