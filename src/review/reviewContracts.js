@@ -51,6 +51,13 @@ function createReviewIdentity({ repository, prNumber, baseSha, headSha, trustedC
   });
 }
 
+function reviewIdentityDigest(identity) {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
+    throw new TypeError('review identity is required');
+  }
+  return sha256(canonicalJson(identity));
+}
+
 function createNoopReviewEventSink() {
   return Object.freeze({
     schemaVersion: REVIEW_EVENT_SINK_VERSION,
@@ -70,6 +77,7 @@ module.exports = {
   REVIEW_EVENT_SINK_VERSION,
   REVIEW_TELEMETRY_SINK_VERSION,
   createReviewIdentity,
+  reviewIdentityDigest,
   createNoopReviewEventSink,
   createNoopReviewTelemetrySink,
 };
