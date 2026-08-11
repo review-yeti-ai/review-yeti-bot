@@ -46,6 +46,14 @@ describe('review workflow scenario expectation matrix', () => {
       expect(expected).toMatchObject({ verdict: 'SHIP', mergeEligible: true, publishedThreadCount: 0 });
       return;
     }
+    if (fixture.id === 'intelligence-evaluation') {
+      // This fixture's harness never wires a real navigation/evidence token, so bounded
+      // evidence tooling is genuinely unavailable for the run -- coverageStatus reflects that
+      // honestly (degraded-tooling) rather than silently claiming full evidence-backed coverage.
+      // See src/review/reviewOutcome.js deriveReceiptOutcome's evidenceEnabled degradation path.
+      expect(expected).toMatchObject({ verdict: 'SHIP', coverageStatus: 'degraded-tooling', mergeEligible: true, publishedReviewCount: 1 });
+      return;
+    }
     expect(expected).toMatchObject({ verdict: 'SHIP', coverageStatus: 'complete', mergeEligible: true, publishedReviewCount: 1 });
   });
 
