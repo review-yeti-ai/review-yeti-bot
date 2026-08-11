@@ -33,7 +33,13 @@ function commandRunnerFactory(repository: string, prNumber: number, headSha: str
       };
     }
     if (joined.includes(reviewEndpoint) && args.includes('--method') && args.includes('POST')) {
-      createdReview = { id: 9001, user: { login: 'review-yeti-bot' }, body: JSON.parse(options.input || '{}').body || '' };
+      const payload = JSON.parse(options.input || '{}');
+      createdReview = {
+        id: 9001,
+        commit_id: payload.commit_id,
+        user: { login: 'review-yeti-bot' },
+        body: payload.body || '',
+      };
       return { status: 0, stdout: JSON.stringify(createdReview), stderr: '' };
     }
     if (joined.includes(reviewEndpoint) && !args.includes('--method')) return { status: 0, stdout: JSON.stringify(createdReview ? [createdReview] : []), stderr: '' };

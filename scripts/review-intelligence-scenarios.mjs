@@ -77,7 +77,13 @@ function commandRunner(repository, prNumber, headSha) {
     if (args.includes('user')) return { status: 0, stdout: 'review-yeti-bot\n', stderr: '' };
     if (args.includes('graphql')) return { status: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), stderr: '' };
     if (joined.includes(reviewEndpoint) && args.includes('--method') && args.includes('POST')) {
-      createdReview = { id: 9001, user: { login: 'review-yeti-bot' }, body: JSON.parse(options.input || '{}').body || '' };
+      const payload = JSON.parse(options.input || '{}');
+      createdReview = {
+        id: 9001,
+        commit_id: payload.commit_id,
+        user: { login: 'review-yeti-bot' },
+        body: payload.body || '',
+      };
       return { status: 0, stdout: JSON.stringify(createdReview), stderr: '' };
     }
     if (joined.includes(reviewEndpoint)) return { status: 0, stdout: JSON.stringify(createdReview ? [createdReview] : []), stderr: '' };

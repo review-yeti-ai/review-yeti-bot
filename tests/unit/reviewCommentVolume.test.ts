@@ -518,10 +518,10 @@ describe('work item 2 — a rerun does not re-litigate what it already said', ()
 
 /* -------------------------------------------------------------------------------------------- */
 
-describe('work item 2 — one pull request gets one summary, not one per push', () => {
+describe('work item 2 — each reviewed head gets an immutable summary, without duplicate retries', () => {
   const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead' };
 
-  function githubRunner(seedReviews: any[] = []) {
+  function githubRunner(seedReviews: any[] = [], options: { createdReviewCommitId?: string } = {}) {
     const state = {
       reviews: [...seedReviews],
       posted: [] as Array<{ method: string; endpoint: string; payload: any }>,
@@ -550,7 +550,12 @@ describe('work item 2 — one pull request gets one summary, not one per push', 
           return { status: 0, stdout: JSON.stringify({ id: target?.id, user: { login: 'github-actions[bot]' } }), stderr: '' };
         }
         if (endpoint.endsWith('/reviews')) {
-          state.reviews.push({ id: state.nextId, body: payload.body, user: { login: 'github-actions[bot]' } });
+          state.reviews.push({
+            id: state.nextId,
+            body: payload.body,
+            commit_id: options.createdReviewCommitId || payload.commit_id,
+            user: { login: 'github-actions[bot]' },
+          });
         }
         return { status: 0, stdout: JSON.stringify({ id: state.nextId, user: { login: 'github-actions[bot]' } }), stderr: '' };
       }
@@ -580,9 +585,10 @@ describe('work item 2 — one pull request gets one summary, not one per push', 
     expect(state.reviews[0].body).toContain('review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action');
   });
 
-  it('edits the earlier summary in place on the next push instead of adding a second', () => {
+  it('creates a new review for the next push so GitHub binds the verdict to its immutable head', () => {
     const priorReview = {
       id: 777,
+      commit_id: 'oldhead',
       user: { login: 'github-actions[bot]' },
       body: `## 🟡 Verdict: FIX_FIRST\n\n- **Commit SHA**: \`oldhead\`\n\n${actionSummaryAnchor(context)}\n\n<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:oldhead:action -->`,
     };
@@ -590,17 +596,17 @@ describe('work item 2 — one pull request gets one summary, not one per push', 
 
     const result = postOrOutputComment('## Verdict for the new head', context, emptyPlan, { commandRunner });
 
-    expect(result).toMatchObject({ success: true, reviewId: 777 });
-    expect(state.reviews).toHaveLength(1);
-    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(0);
+    expect(result).toMatchObject({ success: true });
+    expect(state.reviews).toHaveLength(2);
+    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(1);
+    expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(0);
 
-    const put = state.posted.find((p) => p.method === 'PUT')!;
-    expect(put.endpoint).toBe('repos/review-yeti-ai/review-yeti-bot/pulls/42/reviews/777');
-    // The consumer verifies publication by grepping the head SHA out of a review body, so an
-    // in-place edit is only safe while the edited body carries the new head.
-    expect(state.reviews[0].body).toContain('review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action');
-    expect(state.reviews[0].body).toContain('## Verdict for the new head');
-    expect(state.reviews[0].body).not.toContain('oldhead');
+    const created = state.posted.find((p) => p.method === 'POST')!;
+    expect(created.endpoint).toBe('repos/review-yeti-ai/review-yeti-bot/pulls/42/reviews');
+    expect(created.payload.commit_id).toBe('newhead');
+    expect(state.reviews[1].body).toContain('review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action');
+    expect(state.reviews[1].body).toContain('## Verdict for the new head');
+    expect(state.reviews[0].body).toContain('oldhead');
   });
 
   it('still deduplicates a retry of the same push rather than editing anything', () => {
@@ -612,6 +618,33 @@ describe('work item 2 — one pull request gets one summary, not one per push', 
     expect(replay).toMatchObject({ success: true, deduplicated: true });
     expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(0);
     expect(state.reviews).toHaveLength(1);
+  });
+
+  it('repairs a legacy body marker when its immutable review commit belongs to an earlier head', () => {
+    const legacyReview = {
+      id: 777,
+      commit_id: 'oldhead',
+      user: { login: 'github-actions[bot]' },
+      body: `## 🟢 Verdict: SHIP\n\n${actionSummaryAnchor(context)}\n\n<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action -->`,
+    };
+    const { state, commandRunner } = githubRunner([legacyReview]);
+
+    const result = postOrOutputComment('## Verdict for the new head', context, emptyPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: true });
+    expect(state.reviews).toHaveLength(2);
+    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(1);
+    expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(0);
+    expect(state.posted.find((p) => p.method === 'POST')?.payload.commit_id).toBe('newhead');
+  });
+
+  it('fails closed when GitHub exposes the compact review at a different commit than the requested head', () => {
+    const { commandRunner } = githubRunner([], { createdReviewCommitId: 'oldhead' });
+
+    const result = postOrOutputComment('body', context, emptyPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('exact-head compact review was not visible after publication');
   });
 });
 
