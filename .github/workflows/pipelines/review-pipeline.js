@@ -102,6 +102,7 @@ try {
 
 const {
   resolveOpenRouterPolicy,
+  validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,
 } = require('./openRouterPolicy.js');
 const { classifyReviewFile, resolveMaxFileDiffChars } = require('../../../src/review/reviewIgnorePolicy');
@@ -2429,6 +2430,24 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const maxAttempts = options.maxAttempts || 2;
   const fallbackModels = Array.isArray(orPolicy.fallbackModels) ? orPolicy.fallbackModels : [];
   const models = [...new Set([cfg.model, ...fallbackModels].filter(Boolean))];
+  // Direct callers may supply an already-built policy and bypass resolveOpenRouterPolicy. Keep
+  // the same fail-closed guard at the model boundary so no request is sent for an incompatible
+  // fixed model, including an explicitly configured fallback model.
+  for (const requestedModel of models) {
+    try {
+      validateFixedModelProviderCompatibility(requestedModel, orPolicy.providerRouting);
+    } catch (error) {
+      return {
+        ...base,
+        model: requestedModel,
+        provider: 'openrouter',
+        decision: 'ERROR',
+        findings: [],
+        error: error instanceof Error ? error.message : String(error),
+        generationId: null,
+      };
+    }
+  }
   // A non-streaming timeout cannot identify the upstream OpenRouter endpoint. The next attempt
   // therefore enables SSE so the first route chunk can identify it, then carries that provider
   // into `provider.ignore` for subsequent retries/fallbacks. This keeps the normal path stable
