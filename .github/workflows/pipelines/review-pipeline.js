@@ -1017,16 +1017,32 @@ async function applyFindingVerifier(personaResults, changedFiles, policy, prCont
   return { personaResults: sanitized, verification };
 }
 
-function applyFindingVerifierGate(arbitration, verification, policy, { evidenceEnabled = true } = {}) {
+// Whether a truncated/unavailable bounded-navigation snapshot should count against finding
+// verification at all. It only matters when a persona actually produced a finding *grounded* in
+// that snapshot's evidence tools (i.e. NOT `unverified: true` -- see reviewInvestigation.js
+// candidateFindings, which marks a finding unverified exactly when evidence tooling was globally
+// disabled for that persona's investigation). A truncated snapshot with zero navigation-grounded
+// findings has nothing left for the finding verifier to worry about: forcing `incomplete: true`
+// in that case regardless of findings is precisely the false-BLOCK bug this pipeline had
+// (cisco-cdr, 2026-08-11) -- every monorepo review resolved to BLOCK/DEGRADED with 0 findings and
+// 5/5 personas APPROVE. `unverified: true` findings are still real findings and still flow through
+// `personaResults[].findings` into arbitration and the independent exact-blob finding verifier
+// (findingVerifier.js) unaffected by this function; this only concerns the extra navigation-
+// completeness signal layered on top of that.
+//
+// options.modelClient marks a synthetic test/CLI harness that never fetches a real navigation
+// snapshot at all -- same carve-out this file already applied before this function existed.
+function navigationCompletenessMatters({ personaResults, navigationSnapshot, options } = {}) {
+  if (options?.modelClient) return false;
+  const hasNavigationGroundedFindings = (Array.isArray(personaResults) ? personaResults : []).some((lane) => (
+    Array.isArray(lane?.findings) ? lane.findings : []
+  ).some((finding) => finding?.unverified !== true));
+  if (!hasNavigationGroundedFindings) return false;
+  return !navigationSnapshot || navigationSnapshot.complete !== true;
+}
+
+function applyFindingVerifierGate(arbitration, verification, policy) {
   if (!policy?.enabled || policy.mode !== 'enforce' || verification?.summary?.incomplete !== true) return arbitration;
-  // Evidence/navigation tooling can be deliberately unavailable for the whole review (e.g. a
-  // monorepo over the bounded-navigation-snapshot cap -- reviewNavigationTools.js / PR #37).
-  // With evidence tooling off, personas structurally cannot produce a finding carrying valid
-  // evidence-receipt ids (see the evidence-ownership filter and reviewInvestigation.js
-  // candidateFindings), so `verification.summary.incomplete` here can only mean "there was
-  // nothing to verify," not a real coverage gap. Do not let it override a clean arbitration;
-  // any real finding still flows through `arbitration.verdict` untouched by this early return.
-  if (evidenceEnabled === false) return arbitration;
   return {
     ...arbitration,
     verdict: 'BLOCK',
@@ -6088,9 +6104,11 @@ async function main(options = {}) {
   let investigationSummary = null;
   // Whether bounded evidence/navigation tooling was actually available and enabled for this
   // review. False for monorepos over the bounded-navigation-snapshot file cap (PR #37) or any
-  // other fail-soft navigation-registry degradation. Threaded into applyFindingVerifierGate and
-  // deriveReceiptOutcome so that "evidence tooling was deliberately unavailable" degrades those
-  // gates to the persona-arbitration verdict instead of forcing a false BLOCK.
+  // other fail-soft navigation-registry degradation. Findings themselves are never dropped for
+  // this reason (see reviewInvestigation.js candidateFindings / navigationCompletenessMatters
+  // above) -- this flag only threads into deriveReceiptOutcome's genuinely receipt-execution-only
+  // concern: an empty lane-receipt list is a real failure when evidence tooling was expected to
+  // run, and not when it was deliberately disabled.
   let evidenceEnabled = true;
   let finalResult = null;
   let dashboardStartedDelivery = { status: 'disabled', attempts: 0 };
@@ -6704,6 +6722,13 @@ async function main(options = {}) {
         let evidenceOwnershipIncomplete = false;
         personaResults = personaResults.map((lane) => {
           const findings = (Array.isArray(lane.findings) ? lane.findings : []).filter((finding) => {
+            // A finding reviewInvestigation.js marked `unverified: true` was deliberately kept
+            // despite carrying no evidence receipts, because evidence tooling was globally
+            // unavailable for that persona's whole investigation -- there was never a receipt to
+            // own. Do not re-filter it here on the same missing-receipts basis a second time; the
+            // independent finding verifier below still gets a chance to confirm or reject it
+            // against the exact immutable blob.
+            if (finding.unverified === true) return true;
             const ids = Array.isArray(finding.evidence_receipt_ids || finding.evidenceReceiptIds)
               ? (finding.evidence_receipt_ids || finding.evidenceReceiptIds)
               : [];
@@ -6716,14 +6741,25 @@ async function main(options = {}) {
         if (findingVerifierPolicy.enabled) {
           const verified = await applyFindingVerifier(personaResults, shownReviewFiles, findingVerifierPolicy, prContext, { commandRunner, fetchImplementation });
           personaResults = verified.personaResults;
-          const navigationIncomplete = !options.modelClient && (!navigationSnapshot || navigationSnapshot.complete !== true);
           findingVerification = {
             ...verified.verification,
-            summary: { ...verified.verification.summary, incomplete: verified.verification.summary.incomplete || evidenceOwnershipIncomplete || navigationIncomplete },
+            summary: {
+              ...verified.verification.summary,
+              incomplete: verified.verification.summary.incomplete
+                || evidenceOwnershipIncomplete
+                || navigationCompletenessMatters({ personaResults, navigationSnapshot, options }),
+            },
           };
         } else {
-          const navigationIncomplete = !options.modelClient && (!navigationSnapshot || navigationSnapshot.complete !== true);
-          findingVerification = { summary: { incomplete: navigationIncomplete || evidenceOwnershipIncomplete || personaResults.some((lane) => lane.findings.length > 0), verified: 0, rejected: 0 } };
+          findingVerification = {
+            summary: {
+              incomplete: evidenceOwnershipIncomplete
+                || navigationCompletenessMatters({ personaResults, navigationSnapshot, options })
+                || personaResults.some((lane) => lane.findings.length > 0),
+              verified: 0,
+              rejected: 0,
+            },
+          };
         }
         const failed = personaResults.filter((result) => result.decision === 'ERROR');
         for (const lane of failed) console.warn(`[Persona ${lane.personaId}] Lane failed (${formatRouteLabel(lane)}): ${lane.error}`);
@@ -6744,9 +6780,9 @@ async function main(options = {}) {
         // Evidence tooling counts as enabled only if a real registry (or an explicit test
         // double) was actually constructed for personas to call -- not merely attempted. A
         // snapshot fetch failure, a snapshot too large for the bounded registry, or any other
-        // fail-soft path (see makeEvidenceRegistry above) leaves navigationError set and must
-        // report evidenceEnabled=false so applyFindingVerifierGate/deriveReceiptOutcome degrade
-        // instead of forcing a false BLOCK.
+        // fail-soft path (see makeEvidenceRegistry above) leaves navigationError set. This feeds
+        // deriveReceiptOutcome's empty-receipt-list check below; findings are handled separately
+        // and are never dropped just because this is false (see candidateFindings).
         evidenceEnabled = typeof options.evidenceRegistryFactory === 'function'
           || Boolean(options.evidenceRegistry && typeof options.evidenceRegistry.call === 'function')
           || Boolean(navigationSnapshot && blobClient && !navigationError);
@@ -6861,7 +6897,7 @@ async function main(options = {}) {
       carriedFindings: carriedOpen,
       carriedChangedFiles: diffFiles,
     });
-    arbitration = applyFindingVerifierGate(arbitration, findingVerification, findingVerifierPolicy, { evidenceEnabled });
+    arbitration = applyFindingVerifierGate(arbitration, findingVerification, findingVerifierPolicy);
     if (boundedMode) {
       arbitration = deriveReceiptOutcome({
         arbitration,
@@ -7199,6 +7235,7 @@ module.exports = {
   fetchExactFindingBlobSnapshot,
   applyFindingVerifier,
   applyFindingVerifierGate,
+  navigationCompletenessMatters,
   buildReviewUnitManifest,
   buildReviewUnitReceipt,
   reviewTelemetryReceipt,

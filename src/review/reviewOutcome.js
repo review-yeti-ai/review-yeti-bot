@@ -22,22 +22,28 @@ function deriveReceiptOutcome({
   // a known, expected degradation the pipeline fails soft into (PR #37): personas still ran and
   // reached a real verdict, they just never had bounded evidence tools to call. An *empty*
   // receipt list only signals a genuine lane-execution failure when evidence tooling was
-  // actually expected to run -- do not delete this check, only scope it.
+  // actually expected to run -- do not delete this check, only scope it. This is purely about
+  // whether personas *ran*; it has no bearing on findings (see below).
   const receiptsMissing = rows.length === 0 && evidenceEnabled !== false;
   const receiptsInvalid = rows.length > 0 && validations.some((row) => !row.valid);
   const someReceiptIncomplete = rows.length > 0 && rows.some((receipt) => !COMPLETE_TERMINATIONS.has(receipt?.termination));
   const invalid = receiptsMissing || receiptsInvalid || someReceiptIncomplete;
 
-  // The finding verifier can only be "incomplete" about findings it never had evidence tooling
-  // to check against the exact immutable snapshot. With evidence tooling unavailable, personas
-  // structurally cannot produce a finding carrying valid evidence-receipt ids (see
-  // reviewInvestigation.js candidateFindings / review-pipeline.js's evidence-ownership filter),
-  // so a run that reaches here with evidence disabled can only mean "every persona approved
-  // with nothing to point at" -- there was nothing left for the verifier to establish. Letting
-  // that signal force BLOCK regardless is exactly the false-BLOCK bug this fixes; it is not a
-  // false-SHIP risk because a persona-reported finding still flows through `arbitration` and
-  // decides `ship` below unconditionally.
-  const verificationIncomplete = evidenceEnabled !== false && findingVerification?.summary?.incomplete === true;
+  // `findingVerification.summary.incomplete` is trusted unconditionally here -- it must NOT be
+  // gated by evidenceEnabled. It is tempting to reason "with evidence tooling off, personas can't
+  // produce a grounded finding, so this signal can only be vacuous" -- that reasoning is false.
+  // reviewInvestigation.js's candidateFindings *retains* a finding reported without evidence
+  // receipts when evidence tooling was globally disabled (marked `unverified: true`), specifically
+  // so it is not silently dropped and mislabeled APPROVE. That retained finding still needs
+  // independent verification (findingVerifier.js, an exact-blob check unrelated to bounded
+  // navigation tooling), and `incomplete` can genuinely be true here for reasons that have nothing
+  // to do with bounded-navigation availability (e.g. the exact-blob fetch itself failed). Bypassing
+  // this check based on evidenceEnabled would let an unverifiable real finding through as SHIP --
+  // precisely the false-SHIP class this repo's gate exists to prevent (see the 2026-08-11
+  // cisco-cdr incident writeup: an earlier version of this function did exactly that).
+  // review-pipeline.js's navigationCompletenessMatters() already scopes the navigation-truncation
+  // contribution to this flag correctly at the source, so no further scoping belongs here.
+  const verificationIncomplete = findingVerification?.summary?.incomplete === true;
 
   const completedCount = rows.filter((receipt) => COMPLETE_TERMINATIONS.has(receipt?.termination)).length;
   const incomplete = invalid

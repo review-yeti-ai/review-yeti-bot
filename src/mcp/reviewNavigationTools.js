@@ -162,13 +162,21 @@ function normalizeSnapshot(snapshot, identity) {
   if (!Array.isArray(snapshot.files) || snapshot.files.length > 5_000) {
     throw new Error('review navigation snapshot must contain a bounded file list');
   }
+  // A malformed individual record (an overlong or unusual path, an unexpected ref, a duplicate
+  // key -- all realistic in a large real-world monorepo tree: generated assets, deeply nested
+  // vendored dependencies, build output) used to throw and disable navigation tooling for the
+  // *entire* review, for every other otherwise-valid file in the snapshot. That is strictly worse
+  // than just excluding the one bad record: it silently drops evidence tooling repo-wide, which
+  // (via reviewInvestigation.js candidateFindings) can turn a real defect into a manufactured
+  // APPROVE. Skip the bad record and keep going; the file is simply unreachable via file_read /
+  // file_find, same as any other file that was never in the snapshot to begin with.
   const files = new Map();
   for (const file of snapshot.files) {
     const ref = String(file?.ref || 'head').toLowerCase();
-    if (!['base', 'head'].includes(ref) || !validPath(file?.path) || !SHA.test(String(file?.blobSha || '')) || files.has(`${ref}:${file.path}`)) {
-      throw new Error('review navigation snapshot contains an invalid file record');
-    }
-    files.set(`${ref}:${file.path}`, Object.freeze({
+    if (!['base', 'head'].includes(ref) || !validPath(file?.path) || !SHA.test(String(file?.blobSha || ''))) continue;
+    const key = `${ref}:${file.path}`;
+    if (files.has(key)) continue;
+    files.set(key, Object.freeze({
       ref,
       path: file.path,
       blobSha: String(file.blobSha).toLowerCase(),

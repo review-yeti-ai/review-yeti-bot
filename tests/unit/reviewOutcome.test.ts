@@ -65,8 +65,17 @@ describe('receipt-derived review outcome', () => {
   // Regression coverage for the cisco-cdr false-BLOCK incident (2026-08-11): a monorepo whose
   // navigation snapshot exceeds the bounded-file cap (reviewNavigationTools.js) deliberately
   // disables evidence tooling for the whole review (PR #37, "fail-soft registry construction").
-  // That is a known, expected degradation -- not a lane execution failure -- so it must not
-  // force BLOCK on a review where every persona actually completed and approved.
+  // That is a known, expected degradation -- not a lane execution failure -- so an *empty* lane
+  // receipt list must not force BLOCK on a review where every persona actually completed and
+  // approved.
+  //
+  // Scope note (corrects an earlier draft of this fix): `evidenceEnabled` only relaxes the
+  // lane-receipt-count check below (receiptsMissing). It does NOT, and must not, relax
+  // `findingVerification.summary.incomplete` -- see the DANGER GUARD test and the comment on
+  // `verificationIncomplete` in reviewOutcome.js for why that would reintroduce a false-SHIP risk.
+  // The real fix for the finding-verification side lives in reviewInvestigation.js
+  // (candidateFindings no longer drops a finding just because evidence tooling was off) and
+  // review-pipeline.js (navigationCompletenessMatters, tested in findingVerifierPipeline.test.ts).
   describe('evidence-tooling-unavailable degradation (does not force a false BLOCK)', () => {
     it('CORE REGRESSION: ships a clean SHIP verdict with zero lane receipts when evidence tooling was deliberately unavailable', () => {
       const result = deriveReceiptOutcome({
@@ -107,10 +116,16 @@ describe('receipt-derived review outcome', () => {
       expect(result).toMatchObject({ verdict: 'FIX_FIRST', gateDecision: 'BLOCKED', mergeEligible: false });
     });
 
-    it('reproduces the live incident shape: 5 completed persona lanes, finding-verifier flagged incomplete only because navigation was truncated', () => {
-      // This mirrors the exact production shape: laneReceipts are NOT empty (every persona
-      // lane completed normally), but findingVerification.summary.incomplete was forced true
-      // upstream by the monorepo navigation-snapshot truncation, not a real defect.
+    it('DANGER GUARD: a real findingVerification incompleteness still forces BLOCK even with 5 completed lanes and evidence tooling unavailable', () => {
+      // This is the corrected replacement for a since-removed test that made the opposite
+      // (wrong) assertion. It mirrors the same production shape -- laneReceipts are NOT empty,
+      // every persona lane completed normally, evidence tooling was off -- but
+      // findingVerification.summary.incomplete=true must still be trusted: it can be true for
+      // reasons that have nothing to do with bounded-navigation availability (a real,
+      // independently-unverifiable finding -- see findingVerifier.js). Once
+      // review-pipeline.js's navigationCompletenessMatters is fixed at the source, this flag is
+      // never true in the genuinely-nothing-to-verify case in the first place, so
+      // deriveReceiptOutcome does not need, and must not have, a bypass here.
       const completedLanes = ['security', 'testing', 'style', 'architecture', 'performance'].map((personaId) => (
         createLaneExecutionReceipt({ identity, personaId, plan, termination: 'completed' })
       ));
@@ -118,11 +133,11 @@ describe('receipt-derived review outcome', () => {
         arbitration: cleanShip,
         unitManifest: completeManifest,
         laneReceipts: completedLanes,
-        findingVerification: { summary: { incomplete: true, needsReview: 0 } },
+        findingVerification: { summary: { incomplete: true, needsReview: 1 } },
         headCurrent: true,
         evidenceEnabled: false,
       });
-      expect(result).toMatchObject({ verdict: 'SHIP', gateDecision: 'PASS', mergeEligible: true });
+      expect(result).toMatchObject({ verdict: 'BLOCK', gateDecision: 'BLOCKED', mergeEligible: false });
     });
   });
 });
