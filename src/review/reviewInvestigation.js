@@ -46,16 +46,30 @@ function boundedRoute(response) {
   ].filter(([, value]) => value !== undefined && value !== null && String(value).length <= 200));
 }
 
-function candidateFindings(parsed, receiptIds) {
+// evidenceEnabled=false means bounded evidence/navigation tooling was never available for this
+// persona's whole investigation (a disabled registry -- see reviewNavigationTools.js /
+// review-pipeline.js makeEvidenceRegistry), not merely that the model chose not to call it. In
+// that case a finding with no evidence receipts is not ungrounded model noise -- it is the only
+// kind of finding this persona could possibly produce, since every tool call it could have made
+// would have returned "unavailable". Dropping it here would silently convert a real defect
+// report into a manufactured APPROVE (see the 2026-08-11 cisco-cdr false-SHIP incident). Keep it,
+// marked `unverified: true`, so it still reaches arbitration and severity gating; downstream, the
+// independent finding verifier (src/review/findingVerifier.js, a separate exact-blob check that
+// does not depend on this registry) still gets a chance to confirm or reject it.
+//
+// A finding that *does* cite evidence receipt ids must still resolve against real, known receipts
+// regardless of evidenceEnabled -- that grounding discipline is unconditional.
+function candidateFindings(parsed, receiptIds, { evidenceEnabled = true } = {}) {
   const known = new Set(receiptIds);
-  return (Array.isArray(parsed?.findings) ? parsed.findings : []).filter((finding) => (
-    Array.isArray(finding.evidenceReceiptIds)
-      && finding.evidenceReceiptIds.length > 0
-      && finding.evidenceReceiptIds.every((id) => known.has(id))
-  )).map((finding) => ({
+  return (Array.isArray(parsed?.findings) ? parsed.findings : []).filter((finding) => {
+    const ids = Array.isArray(finding.evidenceReceiptIds) ? finding.evidenceReceiptIds : [];
+    if (ids.length > 0) return ids.every((id) => known.has(id));
+    return evidenceEnabled === false;
+  }).map((finding) => ({
     ...finding,
-    evidence_receipt_ids: finding.evidenceReceiptIds,
+    evidence_receipt_ids: Array.isArray(finding.evidenceReceiptIds) ? finding.evidenceReceiptIds : [],
     risk_id: finding.riskId,
+    ...(Array.isArray(finding.evidenceReceiptIds) && finding.evidenceReceiptIds.length > 0 ? {} : { unverified: true }),
   }));
 }
 
@@ -95,10 +109,10 @@ function makeLaneReceipt({ input, plan, evidence, findings, termination, turns, 
   });
 }
 
-function incompleteLane({ input, runtime, parsed, termination, turns, usage, routes }) {
+function incompleteLane({ input, runtime, parsed, termination, turns, usage, routes, evidenceEnabled = true }) {
   const receipts = runtime.receipts();
   const plan = planFromParsed(input.identity, input.persona.id, parsed);
-  const findings = candidateFindings(parsed, receipts.map((receipt) => receipt.id));
+  const findings = candidateFindings(parsed, receipts.map((receipt) => receipt.id), { evidenceEnabled });
   const executionReceipt = makeLaneReceipt({ input, plan, evidence: receipts, findings, termination, turns, completedUnitIds: [] });
   return {
     personaResult: {
@@ -116,10 +130,10 @@ function incompleteLane({ input, runtime, parsed, termination, turns, usage, rou
   };
 }
 
-function completedLane({ input, runtime, parsed, response, turns, usage, routes }) {
+function completedLane({ input, runtime, parsed, response, turns, usage, routes, evidenceEnabled = true }) {
   const receipts = runtime.receipts();
   const plan = planFromParsed(input.identity, input.persona.id, parsed);
-  const findings = candidateFindings(parsed, receipts.map((receipt) => receipt.id));
+  const findings = candidateFindings(parsed, receipts.map((receipt) => receipt.id), { evidenceEnabled });
   const completedUnitIds = [...new Set((parsed.riskPlan || []).flatMap((risk) => risk.unitIds || []))];
   const executionReceipt = makeLaneReceipt({ input, plan, evidence: receipts, findings, termination: 'completed', turns, completedUnitIds });
   return {
@@ -148,8 +162,16 @@ function retryableProvider(response, termination) {
 async function runPersonaInvestigation(input = {}) {
   if (!input.identity || !input.persona?.id || typeof input.modelTurn !== 'function') throw new TypeError('persona investigation requires identity, persona, and modelTurn');
   const limits = normalizeInvestigationLimits(input.limits);
+  // Whether bounded evidence/navigation tooling was actually constructed for this persona (not
+  // merely attempted -- see review-pipeline.js makeEvidenceRegistry's fail-soft disabled
+  // fallback). Computed once and threaded through the prompt, the parser, and candidateFindings
+  // so all three treat "evidence tooling is off" consistently: the model is told it may report a
+  // diff-grounded finding without a receipt id, the parser accepts one, and candidateFindings
+  // retains it (marked unverified) instead of silently discarding it. Stable across a
+  // provider-quarantine retry (below) because it depends only on the registry, not the provider.
+  const evidenceEnabled = input.evidenceRegistry?.capabilities?.enabled === true;
   let runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
-  let messages = buildInvestigationMessages({ ...input, limits, remaining: { calls: limits.maxCalls, turns: limits.maxTurns } });
+  let messages = buildInvestigationMessages({ ...input, limits, evidenceEnabled, remaining: { calls: limits.maxCalls, turns: limits.maxTurns } });
   const initialMessages = messages;
   let parsed = null;
   const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 };
@@ -158,7 +180,7 @@ async function runPersonaInvestigation(input = {}) {
   let providerRetries = 0;
   let turn = 1;
   while (turn <= limits.maxTurns) {
-    if (input.signal?.aborted) return incompleteLane({ input, runtime, parsed, termination: 'cancelled', turns: turn - 1, usage, routes });
+    if (input.signal?.aborted) return incompleteLane({ input, runtime, parsed, termination: 'cancelled', turns: turn - 1, usage, routes, evidenceEnabled });
     const finalOnly = turn === limits.maxTurns;
     let response;
     try {
@@ -170,7 +192,7 @@ async function runPersonaInvestigation(input = {}) {
         providerIgnore: ignoredProviders.length > 0 ? [...ignoredProviders] : undefined,
       });
     } catch (error) {
-      return incompleteLane({ input, runtime, parsed, termination: input.signal?.aborted ? 'cancelled' : 'provider_failure', turns: turn, usage, routes });
+      return incompleteLane({ input, runtime, parsed, termination: input.signal?.aborted ? 'cancelled' : 'provider_failure', turns: turn, usage, routes, evidenceEnabled });
     }
     addUsage(usage, response);
     const route = boundedRoute(response);
@@ -191,10 +213,10 @@ async function runPersonaInvestigation(input = {}) {
         turn = 1;
         continue;
       }
-      return incompleteLane({ input, runtime, parsed, termination, turns: turn, usage, routes });
+      return incompleteLane({ input, runtime, parsed, termination, turns: turn, usage, routes, evidenceEnabled });
     }
     try {
-      parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id });
+      parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled });
     } catch (_) {
       const provider = retryableProvider(response, 'malformed_response');
       if (provider && providerRetries < 1) {
@@ -206,10 +228,10 @@ async function runPersonaInvestigation(input = {}) {
         turn = 1;
         continue;
       }
-      return incompleteLane({ input, runtime, parsed, termination: 'malformed_response', turns: turn, usage, routes });
+      return incompleteLane({ input, runtime, parsed, termination: 'malformed_response', turns: turn, usage, routes, evidenceEnabled });
     }
-    if (parsed.reviewStatus === 'COMPLETE') return completedLane({ input, runtime, parsed, response, turns: turn, usage, routes });
-    if (finalOnly) return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes });
+    if (parsed.reviewStatus === 'COMPLETE') return completedLane({ input, runtime, parsed, response, turns: turn, usage, routes, evidenceEnabled });
+    if (finalOnly) return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes, evidenceEnabled });
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
     if (!evidence.complete) {
       const provider = retryableProvider(response, evidence.termination);
@@ -222,12 +244,12 @@ async function runPersonaInvestigation(input = {}) {
         turn = 1;
         continue;
       }
-      return incompleteLane({ input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes });
+      return incompleteLane({ input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes, evidenceEnabled });
     }
     messages = appendUntrustedEvidence(messages, evidence.outputs, { ...runtime.remaining(), turns: limits.maxTurns - turn });
     turn += 1;
   }
-  return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: limits.maxTurns, usage, routes });
+  return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: limits.maxTurns, usage, routes, evidenceEnabled });
 }
 
 module.exports = { runPersonaInvestigation, appendUntrustedEvidence };

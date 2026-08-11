@@ -106,7 +106,17 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
     const evidenceReceiptIds = Array.isArray(value.evidence_receipt_ids)
       ? value.evidence_receipt_ids.map((id) => requiredId(id, 'evidence receipt id')).slice(0, 3)
       : [];
-    if (evidenceReceiptIds.length === 0) throw new Error(`finding ${index} must cite evidence receipts`);
+    // Bounded evidence tooling can be globally unavailable for this whole investigation (a
+    // disabled navigation registry -- see reviewNavigationTools.js / review-pipeline.js
+    // makeEvidenceRegistry). When it is, no tool call this persona could make would ever
+    // succeed, so requiring a receipt id here would make it structurally impossible to report a
+    // real, diff-grounded finding -- exactly how a real defect went unreported as a manufactured
+    // APPROVE in the 2026-08-11 cisco-cdr incident. options.evidenceEnabled === false is the only
+    // condition that relaxes this; with evidence tooling on (the default), the requirement is
+    // unchanged and unconditional.
+    if (evidenceReceiptIds.length === 0 && options.evidenceEnabled !== false) {
+      throw new Error(`finding ${index} must cite evidence receipts`);
+    }
     const line = Number(value.line);
     if (!Number.isSafeInteger(line) || line < 1) throw new Error(`finding ${index} has an invalid line`);
     return {
@@ -127,7 +137,7 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
   return { reviewStatus: status, riskPlan, evidenceRequests: requests, riskDispositions, findings };
 }
 
-function buildInvestigationMessages({ persona = {}, manifest = '', diffText = '', priorDecisionBlock = '', optionalContextBlock = '', remaining = {} } = {}) {
+function buildInvestigationMessages({ persona = {}, manifest = '', diffText = '', priorDecisionBlock = '', optionalContextBlock = '', remaining = {}, evidenceEnabled = true } = {}) {
   const system = [
     `You are ${bounded(persona.name || persona.id || 'the assigned reviewer', 160)}, one reviewer in a bounded code-review panel.`,
     '',
@@ -138,8 +148,12 @@ function buildInvestigationMessages({ persona = {}, manifest = '', diffText = ''
     'Review only behavior changed by this pull request and only within your charter.',
     'Before flagging a defect, establish a realistic trigger and investigate the relevant caller, guard, contract, or version evidence.',
     'Prefer an empty clean result to speculation. If evidence cannot be obtained within the limits, mark the risk incomplete.',
-    'Use only the four immutable read-only evidence tools listed in the response schema. Do not request shell, writes, credentials, arbitrary URLs, or publication.',
-    'A finding requires a changed diff anchor and one or more evidence receipt ids emitted by this run.',
+    evidenceEnabled
+      ? 'Use only the four immutable read-only evidence tools listed in the response schema. Do not request shell, writes, credentials, arbitrary URLs, or publication.'
+      : 'Bounded evidence tools are unavailable for this review; no tool call will succeed. Do not request any evidence_requests.',
+    evidenceEnabled
+      ? 'A finding requires a changed diff anchor and one or more evidence receipt ids emitted by this run.'
+      : 'A finding still requires a changed diff anchor. You may omit evidence_receipt_ids (or return an empty list) when the pull request diff and manifest text alone let you establish a real, specific defect with confidence -- never fabricate a receipt id that was never emitted, and prefer marking the risk incomplete over speculating past what the diff actually shows.',
     `You have at most ${Number(remaining.calls || 0)} evidence calls and ${Number(remaining.turns || 0)} turns remaining.`,
     'Return JSON only in the exact schema shown in the user message. Do not return Markdown, praise, summaries, or hidden absence claims.',
   ].join('\n');
