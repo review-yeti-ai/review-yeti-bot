@@ -55,4 +55,24 @@ describe('persona investigation state machine', () => {
     const result = await runPersonaInvestigation({ ...baseInput, modelTurn: sequence([completeResponse({ findings: [{ severity: 'P1', path: 'src/a.js', line: 1, side: 'RIGHT', title: 'bad', body: 'bad', risk_id: 'risk-1', evidence_receipt_ids: ['er_unknown'] }] })]) });
     expect(result.personaResult.findings).toEqual([]);
   });
+
+  it('retries unresolved evidence once while excluding the failed provider', async () => {
+    const calls: Array<{ providerIgnore?: string[]; turn: number }> = [];
+    const modelTurn = async ({ providerIgnore, turn }: { providerIgnore?: string[]; turn: number }) => {
+      calls.push({ providerIgnore, turn });
+      if (calls.length === 1) return { ok: false, error: 'unresolved_evidence', model: 'test/model', provider: 'test' };
+      return completeResponse();
+    };
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      modelTurn,
+    });
+
+    expect(calls).toEqual([
+      { providerIgnore: undefined, turn: 1 },
+      { providerIgnore: ['test'], turn: 1 },
+    ]);
+    expect(result.executionReceipt).toMatchObject({ termination: 'completed', turns: 1, evidenceCalls: 0 });
+    expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
+  });
 });
