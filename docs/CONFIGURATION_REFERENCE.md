@@ -661,6 +661,22 @@ An operator can replay an authorized artifact with
 Replay validates the stored repository/PR/head/policy identity, uses the current trusted Doppler
 endpoint, takes a lease, retries with bounded backoff, and moves repeated failures to dead-letter.
 
+### Optional Review Yeti Cloud link
+
+Pass `dashboard-api-key` to publish the bounded review event to Review Yeti Cloud. On an accepted
+or idempotent duplicate response, the final GitHub review includes a link to the exact cloud run.
+Set `dashboard-api-url` and `dashboard-url` together for a self-hosted deployment. Delivery is
+fail-soft and never changes the GitHub verdict, review publication, or merge gate.
+
+```yaml
+- uses: review-yeti-ai/review-yeti-bot@main
+  with:
+    llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+    dashboard-api-key: ${{ secrets.REVIEW_YETI_CLOUD_KEY }}
+    dashboard-api-url: https://api.reviewyeti.ai/api/v1/review-events
+    dashboard-url: https://reviewyeti.ai
+```
+
 For DigitalOcean self-hosting, require HTTPS at the reverse proxy, JWT authentication with a
 workspace-scoped token, PostgreSQL with pgvector, Redis, a configured LLM provider, and a running
 deriver. Honcho `/health` only proves process reachability; it does not prove representations can

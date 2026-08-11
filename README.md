@@ -531,6 +531,15 @@ over collapsing two distinct defects, since the second hides one.
 | `pr-number` | — | Pull request to review. Defaults to the PR that triggered the workflow. |
 | `repo` | — | Repository owning the pull request, as owner/name. Defaults to the current repository. |
 | `github-token` | workflow token | Token used to read the diff and post the review comment. The default workflow token is sufficient for same-repository reviews. |
+| `dashboard-api-key` | — | Optional Review Yeti Cloud ingestion key. When set, the action publishes the bounded review event and adds a link to the cloud review when delivery succeeds. |
+| `dashboard-api-url` | `https://api.reviewyeti.ai/api/v1/review-events` | Review Yeti Cloud ingestion endpoint. Override for a self-hosted dashboard. |
+| `dashboard-url` | `https://reviewyeti.ai` | Cloud site origin used to build the full-review link. Set this with `dashboard-api-url` for a self-hosted dashboard. |
+| `dashboard-detail` | `full` | Cloud detail level: `full` retains structured findings; `metrics` sends aggregates only. |
+| `dashboard-timeout-ms` | `10000` | Fail-soft cloud delivery timeout in milliseconds. |
+
+When `dashboard-api-key` is configured and the cloud accepts the event, the final GitHub review
+includes **📊 Open full review in Review Yeti ↗**. Cloud delivery is advisory: a disabled or
+unavailable dashboard never changes the GitHub verdict or publication result.
 
 Provider routing uses OpenRouter's raw API field names. For example:
 
