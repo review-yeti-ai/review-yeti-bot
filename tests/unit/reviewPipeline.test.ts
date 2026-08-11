@@ -800,7 +800,7 @@ deleted file mode 100644
     expect(comment).toContain('| Testing | ✅ APPROVE | None | $0.0063 |');
     expect(comment).toContain('| **Total** | — | **P0 1 · P1 1 · P2 1** | **$0.0137** |');
     expect(comment).toContain('<summary><b>Model and usage details</b> (300 in / 60 out)</summary>');
-    expect(comment).toContain('- **Security \\| Guardian**<br>Model: `openai/gpt-5.6-luna` via `OpenAI`<br>Fallback used: `deepseek/deepseek-v4-flash-0731`<br>Usage: 100 in / 20 out');
+    expect(comment).toContain('- **Security \\| Guardian**<br>Model: `openai/gpt-5.6-luna` via `OpenAI`<br>Fallback used: `deepseek/deepseek-v4-flash-0731`<br>Turns: 1<br>Usage: 100 in / 20 out');
     expect(comment).not.toContain('P3');
   });
 
@@ -835,7 +835,7 @@ deleted file mode 100644
 
     expect(comment).toContain("| A 'reviewer' \\| one | ✅ APPROVE | None | $0.0010 |");
     expect(comment).toContain('| **Total** | — | **None** | **≥$0.0010** |');
-    expect(comment).toContain("- **A 'reviewer' \\| one**<br>Model: `model'name` via `Open|AI`<br>Usage: 1 in / 2 out");
+    expect(comment).toContain("- **A 'reviewer' \\| one**<br>Model: `model'name` via `Open|AI`<br>Turns: 1<br>Usage: 1 in / 2 out");
     expect(comment).toContain('<summary><b>Model and usage details</b> (4 in / 6 out)</summary>');
   });
 
@@ -891,7 +891,7 @@ deleted file mode 100644
     }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
 
     expect(comment).toContain('| Security | ✅ APPROVE | None | — |');
-    expect(comment).toContain('- **Security**<br>Model: `deepseek/deepseek-v4-flash-0731` via `openrouter`<br>Usage: 0 in / 0 out');
+    expect(comment).toContain('- **Security**<br>Model: `deepseek/deepseek-v4-flash-0731` via `openrouter`<br>Turns: 1<br>Usage: 0 in / 0 out');
     expect(comment).toContain('<summary><b>Model and usage details</b> (0 in / 0 out)</summary>');
     expect(comment).not.toContain('NaN');
   });
