@@ -420,10 +420,10 @@ github_action:
 | `model` | `string` | `openrouter/auto-beta` | Primary model id. The explicit Action `model` input/environment has precedence. |
 | `fallback_models` | `string[]` | `[]` | Ordered model ids used after the primary exhausts its transient-failure retries. Timeouts, network failures, 408, 429, and 5xx responses can move to the next model. Action input `openrouter-fallback-models` / env `OPENROUTER_FALLBACK_MODELS` overrides YAML. |
 | `allowed_models` | `string[]` | `[]` | Auto Router model allowlist. |
-| `ignore_providers` | `string[]` | `[deepinfra, openrouter, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` | Provider slugs excluded from routing; the built-in degraded-provider blocklist is always excluded. |
+| `ignore_providers` | `string[]` | `[deepinfra, openrouter, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` | Provider slugs excluded from routing; the built-in degraded-provider blocklist is always excluded. |
 | `cost_quality_tradeoff` | `number` | unset | Auto Router cost/quality 0–10. |
 | `data_collection` | `allow`\|`deny` | unset | When `deny`, sends OpenRouter training opt-out header. |
-| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. The action input defaults to `only=[novita, wafer, morph]` with `allow_fallbacks=false`; this YAML field is used only when a caller explicitly clears or overrides the action input. |
+| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. The action input defaults to `only=[wafer, morph]` with `allow_fallbacks=false`; `novita` is hard-banned after repeated timeout/provider-error lanes. This YAML field is used only when a caller explicitly clears or overrides the action input. |
 
 **Precedence:** action input / env → `.review-yeti.yaml` → defaults (`timeout_ms=30000`, `stream=false`, `fallback_models=[]`).
 
