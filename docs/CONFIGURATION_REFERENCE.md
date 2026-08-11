@@ -114,6 +114,7 @@ limits:
   max_completion_tokens: 8000
   max_cost_usd: 5
   max_turns: 20
+  max_investigation_turns: 2
   max_concurrency: 12
 
 memory:
@@ -279,6 +280,16 @@ limits:
 `max-file-diff-chars` is the workflow-level override; `limits.max_file_diff_chars` is the
 per-repository override. If an excluded built-in file is restored with a `!` pattern, it becomes
 eligible for review but still obeys the effective per-file size cap.
+
+### Bounded evidence investigation
+
+`limits.max_investigation_turns` (default `2`, clamped to `1-3`) gives a persona a small number of
+targeted follow-up turns when it requests dependency evidence such as a changed manifest,
+lockfile, registry configuration, or provenance line. Evidence is assembled from the pull-request
+diff only and is bounded before it enters the follow-up prompt. If the requested path is not part of
+the diff, the lane ends as `INCOMPLETE_REVIEW`; it never silently becomes `APPROVE`. The composite
+Action input `max-investigation-turns` / environment variable `MAX_INVESTIGATION_TURNS` wins over
+the trusted YAML value and is always clamped to three.
 
 The built-in catalog is deliberately curated rather than language-based. Ordinary source files
 are not excluded merely because of their language or extension. The categories are:

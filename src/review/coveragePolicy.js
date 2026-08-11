@@ -1,7 +1,7 @@
 'use strict';
 
 const QUORUMS = new Set(['two_thirds', 'simple_majority', 'unanimous']);
-const LANE_STATUSES = new Set(['verdict', 'error', 'timeout', 'empty', 'partial', 'invalid']);
+const LANE_STATUSES = new Set(['verdict', 'error', 'timeout', 'empty', 'partial', 'incomplete', 'invalid']);
 
 const DEFAULT_COVERAGE_POLICY = Object.freeze({
   quorum: 'two_thirds',
@@ -64,6 +64,7 @@ function statusForLane(lane) {
   const explicit = String(lane?.status || '').trim().toLowerCase();
   if (explicit === 'timeout' || explicit === 'timed_out') return 'timeout';
   if (explicit === 'partial') return 'partial';
+  if (explicit === 'incomplete' || lane?.incomplete === true || lane?.reviewStatus === 'INCOMPLETE_REVIEW' || lane?.decision === 'INCOMPLETE_REVIEW') return 'incomplete';
   if (explicit === 'empty') return 'empty';
   if (explicit === 'error' || explicit === 'failed') return 'error';
   if (lane?.error || lane?.decision === 'ERROR') return 'error';
@@ -111,6 +112,7 @@ function evaluateCoverage({ expectedPersonaIds, lanes, policy } = {}) {
   const required = requiredCoverageCount(expectedIds.length, normalizedPolicy.quorum);
   const trustworthyPersonaIds = classifications.filter((row) => row.trustworthy).map((row) => row.id);
   const failedPersonaIds = classifications.filter((row) => !row.trustworthy).map((row) => row.id);
+  const incompletePersonaIds = classifications.filter((row) => row.status === 'incomplete').map((row) => row.id);
   const missingPersonaIds = expectedIds.filter((id) => !seen.has(id));
   const missingMandatoryPersonaIds = normalizedPolicy.mandatory_personas
     .filter((id) => !trustworthyPersonaIds.includes(id));
@@ -139,6 +141,7 @@ function evaluateCoverage({ expectedPersonaIds, lanes, policy } = {}) {
     trustworthyPersonaIds,
     trustworthyCount: trustworthyPersonaIds.length,
     failedPersonaIds,
+    incompletePersonaIds,
     missingPersonaIds,
     missingMandatoryPersonaIds,
     mandatorySatisfied,

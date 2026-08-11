@@ -38,6 +38,8 @@
     "test:intelligence-eval": "node scripts/evaluate-review-intelligence.mjs --fixture tests/fixtures/review-intelligence/offline-promotion-matrix.json",
     "test:intelligence-promotion": "node scripts/run-review-intelligence-promotion.mjs",
     "test:live-intelligence-smoke": "node scripts/review-intelligence-live-smoke.mjs",
+    "test:dependency-eval": "node scripts/evaluate-dependency-investigation.mjs --fixture tests/fixtures/dependency-evaluation.json",
+    "test:dependency-live-eval": "node scripts/evaluate-dependency-investigation-live.mjs --fixture tests/fixtures/dependency-evaluation.json --repetitions 3",
     "test:all": "npm run test:unit && npm run test:cassettes && npm run test:fixtures && npm run test:memory-vcr && npm run test:workflow && npm run test:outbox && npm run test:security && npm run test:chaos && npm run test:receipts && npm run test:action-runtime && npm run test:pi-adapter && npm run test:intelligence-eval && npm run test:intelligence-promotion && npm run lint && npm run build",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
