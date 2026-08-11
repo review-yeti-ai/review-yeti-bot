@@ -36,6 +36,8 @@ const {
   reviewWithModel,
   suppressPriorFindings,
   withholdUnsoundAbsenceClaims,
+  withholdFalseAbsenceClaims,
+  extractReferencedPaths,
 } = pipeline;
 
 /* -------------------------------------------------------------------------------------------- */
@@ -210,6 +212,114 @@ describe('work item 1 — a reviewer cannot tell "not shown to me" from "not in 
     }];
 
     expect(withholdUnsoundAbsenceClaims(lanes, true).personaResults[0].decision).toBe('ERROR');
+  });
+});
+
+/* -------------------------------------------------------------------------------------------- */
+
+/**
+ * cisco-cdr#4144: the Testing & Quality Assurance persona had the whole diff — coverage was
+ * complete, no pass, no truncation, no exclusion — and still named the exact path of a real test
+ * file in its own finding text while asserting that file was "not in this diff". It did this nine
+ * times, worded nine different ways, and was wrong all nine times.
+ *
+ * withholdUnsoundAbsenceClaims only fires under a partial view, so it never touches this case.
+ * withholdFalseAbsenceClaims is the narrower, unconditional backstop: when a reviewer's own words
+ * name a real path in the pull request, the claim is checkably false regardless of coverage.
+ */
+describe('a reviewer that names a real path and calls it missing is checkably wrong', () => {
+  const GATE_SCRIPT = 'scripts/ci/check_review_verdict.sh';
+  const TEST_FILE = 'scripts/tests/test_check_review_verdict.py';
+  const changedFiles = [
+    { path: '.github/workflows/ct-review-verdict-gate.yml' },
+    { path: GATE_SCRIPT },
+    { path: TEST_FILE },
+    { path: 'scripts/tests/test_ct_review_bot_verdict_enforcement.py' },
+  ];
+
+  it('withholds a missing-tests claim that names a test file the pull request actually contains', () => {
+    const lanes = [{
+      personaId: 'testing',
+      displayName: 'Testing & Quality Assurance',
+      decision: 'FINDINGS',
+      findings: [{
+        severity: 'P1',
+        path: GATE_SCRIPT,
+        line: 165,
+        title: 'Untested final BLOCK/FIX_FIRST exit path',
+        body: `The final exit path is the most critical gate behavior, but the diff does not include the test file it references. Include the test file ${TEST_FILE} in this PR.`,
+      }],
+    }];
+
+    const result = withholdFalseAbsenceClaims(lanes, changedFiles);
+
+    expect(result.withheld).toHaveLength(1);
+    expect(result.withheld[0]).toMatchObject({ reason: 'referenced_path_exists', verifiedPath: TEST_FILE, persona: 'Testing & Quality Assurance' });
+    expect(result.personaResults[0].findings).toEqual([]);
+    expect(result.personaResults[0].decision).toBe('APPROVE');
+  });
+
+  it('runs regardless of coverage — unlike withholdUnsoundAbsenceClaims, no partial-view flag is needed', () => {
+    const lanes = [{
+      personaId: 'testing',
+      decision: 'FINDINGS',
+      findings: [{ severity: 'P1', path: GATE_SCRIPT, line: 90, title: 'No tests for the new gate script', body: `No accompanying tests. The contract test file ${TEST_FILE} is referenced in the docs but not included in this diff.` }],
+    }];
+
+    // A complete view (partialView === false) is exactly the case withholdUnsoundAbsenceClaims
+    // lets through unexamined; this check has no such precondition.
+    expect(withholdUnsoundAbsenceClaims(lanes, false).personaResults[0].findings).toHaveLength(1);
+    expect(withholdFalseAbsenceClaims(lanes, changedFiles).personaResults[0].findings).toEqual([]);
+  });
+
+  it('does not touch an absence claim that names no real path, or names one this PR does not have', () => {
+    const lanes = [{
+      personaId: 'testing',
+      decision: 'FINDINGS',
+      findings: [
+        { severity: 'P1', path: GATE_SCRIPT, line: 1, title: 'No tests for the new gate script', body: 'There are no accompanying tests anywhere in this diff.' },
+        { severity: 'P1', path: GATE_SCRIPT, line: 2, title: 'No tests for the new gate script', body: 'The referenced test/nonexistent_file.py is not part of this diff.' },
+      ],
+    }];
+
+    const result = withholdFalseAbsenceClaims(lanes, changedFiles);
+
+    expect(result.withheld).toEqual([]);
+    expect(result.personaResults[0].findings).toHaveLength(2);
+  });
+
+  it('never withholds a real defect merely because its prose happens to contain a filename', () => {
+    const lanes = [{
+      personaId: 'security',
+      decision: 'FINDINGS',
+      findings: [{ severity: 'P0', path: GATE_SCRIPT, line: 12, title: 'Command injection via unsanitized env var', body: `scripts/ci/check_review_verdict.sh interpolates $PR_TITLE directly into a shell command.` }],
+    }];
+
+    const result = withholdFalseAbsenceClaims(lanes, changedFiles);
+
+    // Not an absence claim at all — assertsAbsence() must gate this, not path extraction alone.
+    expect(result.withheld).toEqual([]);
+    expect(result.personaResults[0].findings).toHaveLength(1);
+  });
+});
+
+describe('extractReferencedPaths', () => {
+  it('recovers slash-separated and bare filenames a finding names as evidence', () => {
+    const finding = {
+      title: 'No tests for the new gate script',
+      body: 'Include scripts/tests/test_check_review_verdict.py, or at least a `bats` test in test_helper.bash.',
+    };
+
+    const found = extractReferencedPaths(finding);
+
+    expect(found.has('scripts/tests/test_check_review_verdict.py')).toBe(true);
+    expect(found.has('test_helper.bash')).toBe(true);
+  });
+
+  it('does not mistake ordinary prose for a path', () => {
+    const finding = { title: 'Version bump', body: 'Bumped from v2.0 to v2.1, e.g. see step 1.2 of the runbook.' };
+
+    expect(extractReferencedPaths(finding).size).toBe(0);
   });
 });
 

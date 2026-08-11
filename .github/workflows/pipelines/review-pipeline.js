@@ -2006,6 +2006,74 @@ function withholdUnsoundAbsenceClaims(personaResults, partialView) {
 }
 
 /**
+ * Path-like tokens a model might cite as evidence for an absence claim: a slash-separated path
+ * (`scripts/tests/test_x.py`) or a bare filename with a recognizable source/config extension
+ * (`test_x.py`). Deliberately requires a path separator or a known extension so it does not match
+ * ordinary prose ("e.g.", "v2.0", "step 1.2").
+ */
+const REFERENCED_PATH_RE = /`?((?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]{1,10}|[\w-]+\.(?:exs?|ts|tsx|jsx?|py|rb|go|rs|java|kt|sh|bash|ya?ml|json|toml))`?/g;
+
+function extractReferencedPaths(finding) {
+  const text = `${finding?.title || ''} ${finding?.body || ''}`;
+  const found = new Set();
+  let match;
+  REFERENCED_PATH_RE.lastIndex = 0;
+  while ((match = REFERENCED_PATH_RE.exec(text))) {
+    found.add(String(match[1]).replace(/^\.\//, ''));
+  }
+  return found;
+}
+
+/**
+ * Withholds an absence claim when the model's own text names a path this pull request
+ * demonstrably contains, regardless of whether the review's own coverage was complete.
+ *
+ * {@link withholdUnsoundAbsenceClaims} covers "no reviewer saw enough of the change to know" —
+ * an excusable inference from a partial slice. This covers a different, narrower failure: the
+ * reviewer both had the file and named it, and was wrong anyway. That is not a coverage gap, it
+ * is a checkable factual error, so it is withheld unconditionally rather than only when the view
+ * was partial. `changedFiles` must be the complete, unfiltered file list for the pull request —
+ * this check is only sound against ground truth, never a budget-truncated or persona-scoped slice.
+ *
+ * @returns {{personaResults: object[], withheld: object[]}}
+ */
+function withholdFalseAbsenceClaims(personaResults, changedFiles) {
+  const knownPaths = new Set((changedFiles || [])
+    .map((file) => String(file?.path || '').replace(/^\.\//, ''))
+    .filter(Boolean));
+  if (knownPaths.size === 0) return { personaResults: personaResults || [], withheld: [] };
+
+  const withheld = [];
+  const kept = (personaResults || []).map((lane) => {
+    const findings = [];
+    for (const finding of lane.findings || []) {
+      if (assertsAbsence(finding)) {
+        const verifiedPath = [...extractReferencedPaths(finding)].find((candidate) => knownPaths.has(candidate));
+        if (verifiedPath) {
+          withheld.push({
+            ...finding,
+            persona: lane.displayName || lane.personaId,
+            claimType: claimType(finding),
+            reason: 'referenced_path_exists',
+            verifiedPath,
+          });
+          continue;
+        }
+      }
+      findings.push(finding);
+    }
+    if (findings.length === (lane.findings || []).length) return lane;
+    return {
+      ...lane,
+      findings,
+      decision: lane.decision === 'ERROR' ? 'ERROR' : (findings.length === 0 ? 'APPROVE' : 'FINDINGS'),
+    };
+  });
+
+  return { personaResults: kept, withheld };
+}
+
+/**
  * Allocates the diff budget across changed files and reports what was actually covered.
  *
  * The budget is per-persona and each persona is one request per push. A large pull request must
@@ -2709,6 +2777,7 @@ function buildHonchoReviewEvents({
   ignored = [],
   neutralResolved = [],
   recurrentResolved = [],
+  suppressedRepeats = [],
   obsolete = [],
   decisionEntries = [],
   sessionTurn = 1,
@@ -2841,6 +2910,7 @@ function buildHonchoReviewEvents({
     add('finding_neutral_resolved', claimId, { domain: 'feedback', state: 'resolved', severity: entry.severity, path: entry.path, line: entry.line, side: entry.side });
   }
   for (const entry of recurrentResolved) add('finding_reopened', entryClaimId('finding_reopened', entry), { domain: 'feedback', state: 'reopened', severity: entry.severity, path: entry.path, line: entry.line, side: entry.side, source: 'github-ledger', threadId: entry.threadId });
+  for (const entry of suppressedRepeats) add('finding_repeat_suppressed', entryClaimId('finding_repeat_suppressed', entry), { domain: 'feedback', state: 'suppressed', severity: entry.severity, path: entry.path, line: entry.line, side: entry.side, source: 'github-ledger', threadId: entry.threadId });
   for (const entry of obsolete) add('finding_obsolete', entryClaimId('finding_obsolete', entry), { domain: 'feedback', state: 'obsolete', severity: entry.severity, path: entry.path, line: entry.line, side: entry.side, source: 'github-ledger', threadId: entry.threadId });
   for (const entry of decisionEntries) {
     const history = Array.isArray(entry?.decisionHistory) && entry.decisionHistory.length > 0
@@ -4340,7 +4410,8 @@ function postPlainIssueComment(commentBody, prContext, options = {}) {
  */
 function renderReviewStateNotes(reviewState, prContext) {
   const {
-    withheldAbsenceClaims = [], carriedOpen = [], ignored = [], neutralResolved = [], recurrentResolved = [], obsolete = [],
+    withheldAbsenceClaims = [], carriedOpen = [], ignored = [], neutralResolved = [], recurrentResolved = [],
+    suppressedRepeats = [], obsolete = [],
   } = reviewState || {};
   const sections = [];
 
@@ -4379,8 +4450,22 @@ function renderReviewStateNotes(reviewState, prContext) {
     sections.push(`\n> 🔄 **${recurrentResolved.length} finding(s) recurred after a neutrally resolved thread and were published as fresh conversations.**\n`);
   }
 
-  if (neutralResolved.length > recurrentResolved.length) {
-    sections.push(`\n> ✅ **${neutralResolved.length - recurrentResolved.length} neutrally resolved prior finding(s) did not recur in this review. Resolution intent remains unknown.**\n`);
+  if (suppressedRepeats.length > 0) {
+    const rows = suppressedRepeats
+      .map((item) => `- ${link(item)} — **${item.title}**${item.severity ? ` (${item.severity})` : ''}`)
+      .join('\n');
+    sections.push(
+      `\n<details>\n<summary><b>🧊 Suppressed repeats — resolved with a reply, unchanged (${suppressedRepeats.length})</b></summary>\n\n`
+      + 'Each of these matched a thread the author replied to before resolving. Repeating the '
+      + 'identical claim after that is not new evidence, so it was not republished as a fresh '
+      + 'conversation. Reply on the original thread if this needs to be reopened.\n\n'
+      + `${rows}\n\n</details>\n`,
+    );
+  }
+
+  const accountedForResolved = recurrentResolved.length + suppressedRepeats.length;
+  if (neutralResolved.length > accountedForResolved) {
+    sections.push(`\n> ✅ **${neutralResolved.length - accountedForResolved} neutrally resolved prior finding(s) did not recur in this review. Resolution intent remains unknown.**\n`);
   }
 
   if (obsolete.length > 0) {
@@ -4391,14 +4476,18 @@ function renderReviewStateNotes(reviewState, prContext) {
     const rows = withheldAbsenceClaims.map((item) => {
       const label = `${abbreviatePath(item.path)}${Number.isInteger(item.line) ? `:${item.line}` : ''}`.replace(/`/g, "'");
       const persona = item.persona ? ` — reported by \`${String(item.persona).replace(/`/g, "'")}\`` : '';
-      return `- \`${label}\` — **${String(item.title || 'Untitled').replace(/\s+/g, ' ')}**${persona}`;
+      const verified = item.reason === 'referenced_path_exists' && item.verifiedPath
+        ? ` — names \`${String(item.verifiedPath).replace(/`/g, "'")}\`, which this pull request contains`
+        : '';
+      return `- \`${label}\` — **${String(item.title || 'Untitled').replace(/\s+/g, ' ')}**${persona}${verified}`;
     }).join('\n');
     sections.push(
       `\n<details>\n<summary><b>🚫 Claims of absence, not published (${withheldAbsenceClaims.length})</b></summary>\n\n`
-      + 'Each of these says something is not in this pull request. No reviewer saw the whole change '
-      + '— it was split across passes, truncated, or narrowed by `exclude:` — so none of them could '
-      + 'know that. They are listed rather than published so a genuine one is still visible without '
-      + 'costing you a round-trip to disprove a false one.\n\n'
+      + 'Each of these says something is not in this pull request. Either no reviewer saw the whole '
+      + 'change — it was split across passes, truncated, or narrowed by `exclude:` — or the claim '
+      + 'names a specific path that this pull request demonstrably contains. They are listed rather '
+      + 'than published so a genuine one is still visible without costing you a round-trip to '
+      + 'disprove a false one.\n\n'
       + `${rows}\n\n</details>\n`,
     );
   }
@@ -6068,6 +6157,7 @@ async function main(options = {}) {
   let carriedOpen = initialReconciliation.carriedOpen;
   let ignored = initialReconciliation.ignored;
   let recurrentResolved = [];
+  let suppressedRepeats = [];
   const neutralResolved = decisionLedger.entries.filter((entry) => entry.state === 'resolved');
   const obsolete = decisionLedger.entries.filter((entry) => entry.state === 'obsolete');
   const skipUnchanged = ['1', 'true', 'yes', 'on'].includes(String(runtimeEnv.SKIP_UNCHANGED_REVIEW || '').toLowerCase());
@@ -6255,11 +6345,20 @@ async function main(options = {}) {
       const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0);
       coverage.providerFailures = partialPersonaResults.map((result) => result.personaId || 'unknown');
       const partialView = reviewViewWasPartial(coverage);
+      // Runs first and unconditionally: a claim that names a real path in this pull request is
+      // wrong regardless of whether coverage was complete, so it does not need the partial-view
+      // precondition below. What survives this pass still goes through the coverage-based check,
+      // which catches absence claims that never named a specific, checkable path at all.
+      const falseAbsencePass = withholdFalseAbsenceClaims(personaResults, diffFiles);
+      personaResults = falseAbsencePass.personaResults;
+      if (falseAbsencePass.withheld.length > 0) {
+        console.log(`[Soundness] Withheld ${falseAbsencePass.withheld.length} finding(s) asserting absence of a path this pull request actually contains: ${falseAbsencePass.withheld.map((item) => item.verifiedPath).join(', ')}.`);
+      }
       const absencePass = withholdUnsoundAbsenceClaims(personaResults, partialView);
       personaResults = absencePass.personaResults;
-      withheldAbsenceClaims = absencePass.withheld;
-      if (withheldAbsenceClaims.length > 0) {
-        console.log(`[Soundness] Withheld ${withheldAbsenceClaims.length} finding(s) asserting absence: no reviewer saw the whole change (${coverage.passes} pass(es), ${coverage.skipped.length + coverage.oversized.length} policy-excluded, ${coverage.omitted.length} unreviewed).`);
+      withheldAbsenceClaims = [...falseAbsencePass.withheld, ...absencePass.withheld];
+      if (absencePass.withheld.length > 0) {
+        console.log(`[Soundness] Withheld ${absencePass.withheld.length} finding(s) asserting absence: no reviewer saw the whole change (${coverage.passes} pass(es), ${coverage.skipped.length + coverage.oversized.length} policy-excluded, ${coverage.omitted.length} unreviewed).`);
       }
 
       const reconciliation = reconcileDecisionFindings(personaResults, decisionLedger);
@@ -6267,7 +6366,8 @@ async function main(options = {}) {
       carriedOpen = reconciliation.carriedOpen;
       ignored = reconciliation.ignored;
       recurrentResolved = reconciliation.recurrentResolved;
-      console.log(`[Decision ledger] ${carriedOpen.length} open blocker(s) carried, ${reconciliation.matchedOpenRepeats.length} duplicate repeat(s) reused, ${ignored.length} explicit ignore(s), ${recurrentResolved.length} neutral-resolution recurrence(s).`);
+      suppressedRepeats = reconciliation.suppressedRepeats;
+      console.log(`[Decision ledger] ${carriedOpen.length} open blocker(s) carried, ${reconciliation.matchedOpenRepeats.length} duplicate repeat(s) reused, ${ignored.length} explicit ignore(s), ${recurrentResolved.length} neutral-resolution recurrence(s), ${suppressedRepeats.length} repeat(s) suppressed after an author-replied resolution.`);
     } else {
       console.error('[Review] No OPENROUTER_API_KEY configured. Refusing to post a heuristic or successful verdict.');
       process.exitCode = 1;
@@ -6321,7 +6421,7 @@ async function main(options = {}) {
     }
   }
   console.log(`[Formatting] Planned ${publicationPlan.lineComments.length} line conversation(s), ${publicationPlan.fileComments.length} file conversation(s), ${publicationPlan.advisories.length} P2 advisory item(s), and ${publicationPlan.rejected.length} rejected finding(s).`);
-  const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, neutralResolved, recurrentResolved, obsolete, findingVerification };
+  const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, neutralResolved, recurrentResolved, suppressedRepeats, obsolete, findingVerification };
   if (runtimeEnv.DASHBOARD_API_KEY && runtimeEnv.DASHBOARD_API_URL) {
     try {
       const dashboardEvent = buildReviewEvent({
@@ -6404,6 +6504,7 @@ async function main(options = {}) {
       ignored,
       neutralResolved,
       recurrentResolved,
+      suppressedRepeats,
       obsolete,
       decisionEntries: decisionLedger.entries,
       sessionTurn,
@@ -6561,6 +6662,8 @@ module.exports = {
   reviewViewWasPartial,
   reviewCoverageCompleteForArbitration,
   withholdUnsoundAbsenceClaims,
+  withholdFalseAbsenceClaims,
+  extractReferencedPaths,
   parseBotFindingComment,
   readAuthenticatedPublisherLogin,
   readActionReviewThreads,
