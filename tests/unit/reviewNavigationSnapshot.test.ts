@@ -60,7 +60,9 @@ describe('immutable review navigation snapshot', () => {
 
     expect(snapshot.files.length).toBeLessThanOrEqual(MAX_FILES);
     expect(snapshot.truncated).toBe(true);
-    expect(snapshot.complete).toBe(false);
+    // Ambient monorepo truncation must NOT mark complete=false when the PR
+    // changed path is fully indexed — that used to force BLOCK with 0 findings.
+    expect(snapshot.complete).toBe(true);
     expect(snapshot.files).toEqual(expect.arrayContaining([
       expect.objectContaining({ ref: 'head', path: 'zzz/important.js', blobSha: '3'.repeat(40), patch: expect.stringContaining('@@') }),
     ]));
