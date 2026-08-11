@@ -63,12 +63,21 @@ function requiredCoverageCount(expectedCount, quorum = DEFAULT_COVERAGE_POLICY.q
 function statusForLane(lane) {
   const explicit = String(lane?.status || '').trim().toLowerCase();
   if (explicit === 'timeout' || explicit === 'timed_out') return 'timeout';
-  if (explicit === 'partial') return 'partial';
   if (explicit === 'incomplete' || lane?.incomplete === true || lane?.reviewStatus === 'INCOMPLETE_REVIEW' || lane?.decision === 'INCOMPLETE_REVIEW') return 'incomplete';
   if (explicit === 'empty') return 'empty';
   if (explicit === 'error' || explicit === 'failed') return 'error';
   if (lane?.error || lane?.decision === 'ERROR') return 'error';
-  if (lane?.partial || lane?.partial === 0 && explicit === 'partial') return 'partial';
+  // Recovered multi-pass: aggregatePersonaRuns sets partial>0 with APPROVE/FINDINGS when
+  // one provider attempt failed but a later pass succeeded. That is still a trustworthy
+  // verdict — classifying it as 'partial' made evaluateCoverage incomplete and forced
+  // BLOCK/DEGRADED with 0 findings on multi-pass cisco-cdr reviews (#4213).
+  if (['APPROVE', 'FINDINGS'].includes(lane?.decision)
+      && Array.isArray(lane?.findings)
+      && typeof lane?.provider === 'string' && lane.provider.trim()
+      && typeof lane?.model === 'string' && lane.model.trim()) {
+    return 'verdict';
+  }
+  if (explicit === 'partial' || Number(lane?.partial) > 0) return 'partial';
   if (!Array.isArray(lane?.findings)) return 'empty';
   if (!['APPROVE', 'FINDINGS'].includes(lane?.decision)) return 'invalid';
   if (typeof lane?.provider !== 'string' || !lane.provider.trim()
