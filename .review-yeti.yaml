@@ -28,6 +28,9 @@ github_action:
     # Use Auto Router as the primary; the fixed DeepSeek model below is the failover.
     # deepseek/deepseek-v4-flash-latest is NOT a valid OpenRouter id.
     model: openrouter/auto-beta
+    # DeepInfra is unsafe and the openrouter fallback route timed out in trusted
+    # production review lanes; the action also enforces these bans in code.
+    ignore_providers: [deepinfra, openrouter]
     # Retry the primary once, then use this ordered fallback for transient provider failures.
     fallback_models:
       - deepseek/deepseek-v4-flash-0731
