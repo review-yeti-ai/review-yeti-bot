@@ -55,11 +55,32 @@ describe('receipt-derived review outcome', () => {
     expect(first.executionTerminationReasons).toEqual(second.executionTerminationReasons);
   });
 
-  it('preserves completed evidence while blocking a mixed run', () => {
+  it('preserves completed evidence while blocking a mixed run across personas', () => {
+    // Different persona fully failed → incomplete review (testing never completed).
     const failedLane = createLaneExecutionReceipt({ identity, personaId: 'testing', plan, termination: 'provider_failure' });
     const result = deriveReceiptOutcome({ arbitration: { ...cleanShip, findings: [{ title: 'confirmed' }] }, unitManifest: completeManifest, laneReceipts: [validLane, failedLane], findingVerification: completeVerification, headCurrent: true });
     expect(result).toMatchObject({ status: 'PARTIAL_REVIEW', verdict: 'BLOCK', mergeEligible: false });
     expect(result.findings).toEqual([{ title: 'confirmed' }]);
+  });
+
+  it('ships when the same persona recovers after a failed multi-pass attempt', () => {
+    // Multi-pass: pass1 timeout + pass2 completed for security → recovered, not incomplete.
+    const failedPass = createLaneExecutionReceipt({ identity, personaId: 'security', plan, termination: 'timeout' });
+    const recoveredPass = createLaneExecutionReceipt({ identity, personaId: 'security', plan, termination: 'completed' });
+    const result = deriveReceiptOutcome({
+      arbitration: cleanShip,
+      unitManifest: completeManifest,
+      laneReceipts: [failedPass, recoveredPass],
+      findingVerification: completeVerification,
+      headCurrent: true,
+    });
+    expect(result).toMatchObject({
+      verdict: 'SHIP',
+      status: 'SHIP',
+      gateDecision: 'PASS',
+      mergeEligible: true,
+      recoveredPartialPasses: true,
+    });
   });
 
   // Regression coverage for the cisco-cdr false-BLOCK incident (2026-08-11): a monorepo whose

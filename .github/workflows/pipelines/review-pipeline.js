@@ -4813,8 +4813,18 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   const actionableCount = finalPlan.lineComments.length + finalPlan.fileComments.length;
   const carriedForwardCount = reviewState?.carriedOpen?.length || 0;
 
-  // Lane failures first — never claim a clean review when providers timed out or returned garbage.
-  const failedLanes = personaResults.filter((r) => r.decision === 'ERROR' || Number(r.partial) > 0 || r.incomplete === true || r.reviewStatus === 'INCOMPLETE_REVIEW');
+  // Hard lane failures only. Recovered multi-pass (partial>0 + APPROVE/FINDINGS) is telemetry,
+  // not a failed review — counting it here forced DEGRADED comment text and check_review_verdict
+  // failures after arbitration already SHIPped (cisco-cdr #4213 with Yeti #46/#47).
+  const failedLanes = personaResults.filter((r) =>
+    r.decision === 'ERROR'
+    || r.incomplete === true
+    || r.reviewStatus === 'INCOMPLETE_REVIEW');
+  const recoveredPartialLanes = personaResults.filter((r) =>
+    Number(r.partial) > 0
+    && r.decision !== 'ERROR'
+    && r.incomplete !== true
+    && r.reviewStatus !== 'INCOMPLETE_REVIEW');
   const incomplete = Boolean(
     failedLanes.length > 0
     || arbitration.status === 'INCOMPLETE_REVIEW'
@@ -4823,8 +4833,10 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   );
 
   const failureNote = failedLanes.length > 0
-    ? `\n- **Degraded Lanes**: ${failedLanes.length} persona(s) did not complete cleanly — ${failedLanes.map((lane) => `${lane.displayName} (${lane.error || (lane.incomplete || lane.reviewStatus === 'INCOMPLETE_REVIEW' ? 'required dependency evidence remained unavailable after bounded investigation turns' : Number(lane.partial) > 0 ? `${lane.partial} provider pass(es) failed; successful findings retained, but coverage is incomplete` : 'unknown error')})`).join('; ')}`
-    : '';
+    ? `\n- **Degraded Lanes**: ${failedLanes.length} persona(s) did not complete cleanly — ${failedLanes.map((lane) => `${lane.displayName} (${lane.error || (lane.incomplete || lane.reviewStatus === 'INCOMPLETE_REVIEW' ? 'required dependency evidence remained unavailable after bounded investigation turns' : 'unknown error')})`).join('; ')}`
+    : (recoveredPartialLanes.length > 0
+      ? `\n- **Recovered multi-pass lanes**: ${recoveredPartialLanes.length} persona(s) lost a provider pass then completed — ${recoveredPartialLanes.map((lane) => `${lane.displayName} (${lane.partial} failed pass(es), decision ${lane.decision})`).join('; ')}`
+      : '');
 
   let laneFailureDetails = '';
   if (failedLanes.length > 0) {
