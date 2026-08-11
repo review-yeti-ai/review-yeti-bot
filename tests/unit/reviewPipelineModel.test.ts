@@ -441,6 +441,28 @@ describe('reviewWithModel', () => {
     expect(res.findings).toEqual([]);
   });
 
+  it('bounds string and unsafe evidence requests before they reach the follow-up loop', async () => {
+    const { impl } = stubFetch(JSON.stringify({
+      review_status: 'NEEDS_EVIDENCE',
+      evidence_requests: [
+        'package-lock.json',
+        { path: '../secrets.txt', kind: 'lockfile' },
+        { path: '/absolute.txt', kind: 'lockfile' },
+        { path: 'package.json', kind: 'manifest', reason: 'r'.repeat(500) },
+      ],
+      findings: [],
+    }));
+    const res = await reviewWithModel(dependencyPersona, [{
+      path: 'package-lock.json',
+      patch: '@@ -1 +1 @@\n+"lockfileVersion": 3',
+    }], { repo: 'o/r' }, null, { apiKey: 'k', fetchImpl: impl });
+
+    expect(res.evidenceRequests).toEqual([
+      { path: 'package-lock.json', kind: 'other', reason: 'requested by the reviewer' },
+      { path: 'package.json', kind: 'manifest', reason: 'r'.repeat(400) },
+    ]);
+  });
+
   it('includes bounded evidence and turn state in an investigation follow-up prompt', async () => {
     const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
     const res = await reviewWithModel(dependencyPersona, [{

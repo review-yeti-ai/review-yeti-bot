@@ -55,6 +55,15 @@ describe('dependency evidence extraction', () => {
     expect(result.unresolvedRequests.map((request: any) => request.path)).not.toContain('../secrets.txt');
   });
 
+  it('normalizes a bare string evidence request against the changed-file allowlist', () => {
+    const result = buildDependencyEvidence([
+      { path: 'package-lock.json', patch: '@@ -1 +1 @@\n+"lockfileVersion": 3' },
+    ], ['package-lock.json']);
+
+    expect(result.entries[0]).toMatchObject({ path: 'package-lock.json', kind: 'lockfile', availability: 'available' });
+    expect(result.complete).toBe(true);
+  });
+
   it('marks policy-excluded dependency files while exposing only a bounded excerpt', () => {
     const result = buildDependencyEvidence([
       { path: 'mix.lock', patch: '@@ -1 +1,4 @@\n+  "plug": {:hex, :plug, "1.15.0", "sha256-abc"}' },
