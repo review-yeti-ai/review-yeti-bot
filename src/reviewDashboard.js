@@ -7,7 +7,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_API_URL = 'https://api.reviewyeti.ai/api/v1/review-events';
 const DEFAULT_SITE_URL = 'https://reviewyeti.ai';
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
-const VALID_STATUSES = new Set(['completed', 'failed', 'incomplete']);
+const VALID_STATUSES = new Set(['reviewing', 'completed', 'failed', 'incomplete']);
 const VALID_ENFORCEMENT = new Set(['advisory', 'block_on_block', 'block_non_ship']);
 const VALID_GATE_DECISIONS = new Set(['PASS', 'BLOCKED']);
 
@@ -121,6 +121,7 @@ function buildReviewEvent(options = {}, env = process.env) {
   const headSha = clampString(context.headSha || eventPr.head?.sha || env.PR_HEAD_SHA || env.GITHUB_SHA || 'unknown', 100);
   const baseSha = clampString(context.baseSha || eventPr.base?.sha || env.GITHUB_BASE_SHA || '', 100);
   const eventKey = [repository.toLowerCase(), prNumber, headSha, workflow.runId, workflow.runAttempt].join(':');
+  const isStarted = options.eventType === 'review.started' || options.status === 'reviewing';
   const personaResults = Array.isArray(options.personaResults) ? options.personaResults : [];
   const metrics = options.arbitration?.metrics || {};
   const usage = options.usage || {};
@@ -128,19 +129,23 @@ function buildReviewEvent(options = {}, env = process.env) {
   const startedAtMs = Number(options.startedAtMs) || Date.now();
   const completedAtMs = Number(options.completedAtMs) || Date.now();
   const requestedStatus = options.status || 'completed';
-  const status = VALID_STATUSES.has(requestedStatus) ? requestedStatus : 'failed';
+  const status = isStarted ? 'reviewing' : (VALID_STATUSES.has(requestedStatus) ? requestedStatus : 'failed');
+  const eventType = isStarted ? 'review.started' : (status === 'failed' ? 'review.failed' : 'review.completed');
+  const eventCompletedAtMs = isStarted ? startedAtMs : completedAtMs;
   const verdict = VALID_VERDICTS.has(options.arbitration?.verdict) ? options.arbitration.verdict : undefined;
   const enforcementMode = VALID_ENFORCEMENT.has(env.REVIEW_ENFORCEMENT_MODE)
     ? env.REVIEW_ENFORCEMENT_MODE
     : 'advisory';
+  const canonicalGithubUrl = `${String(env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '')}/${repository}/pull/${prNumber}`;
   const githubUrl = eventPr.html_url
     || (prNumber ? `${String(env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '')}/${repository}/pull/${prNumber}` : '');
-  const sourceFindings = Array.isArray(options.findings)
+  const eventUrl = isStarted ? canonicalGithubUrl : clampString(env.PR_URL || eventPr.html_url || githubUrl, 1000);
+  const sourceFindings = isStarted ? [] : (Array.isArray(options.findings)
     ? options.findings
     : Array.isArray(options.arbitration?.findings)
       ? options.arbitration.findings
       : personaResults.flatMap((lane) => (lane.findings || [])
-        .map((finding) => ({ ...finding, persona: finding.persona || lane.personaId || lane.id })));
+        .map((finding) => ({ ...finding, persona: finding.persona || lane.personaId || lane.id }))));
   const findings = sourceFindings
     .map((finding) => sanitizeFinding(repository, finding.persona || finding.personaId || 'unknown', {
       ...finding,
@@ -153,9 +158,9 @@ function buildReviewEvent(options = {}, env = process.env) {
 
   return {
     schemaVersion: '1.0',
-    eventId: `ctre_${sha256(eventKey).slice(0, 40)}`,
-    eventType: status === 'failed' ? 'review.failed' : 'review.completed',
-    occurredAt: new Date(completedAtMs).toISOString(),
+    eventId: `ctre_${sha256(isStarted ? `${eventKey}:started` : eventKey).slice(0, 40)}`,
+    eventType,
+    occurredAt: new Date(eventCompletedAtMs).toISOString(),
     producer: {
       name: 'ct-review-bot',
       version: clampString(env.REVIEW_YETI_ACTION_REF || env.GITHUB_ACTION_REF || 'review-yeti-bot', 100),
@@ -166,44 +171,44 @@ function buildReviewEvent(options = {}, env = process.env) {
     },
     pullRequest: {
       number: prNumber,
-      title: sanitizeDashboardText(context.title || eventPr.title || env.PR_TITLE || 'Automated PR Review', 500),
-      url: clampString(env.PR_URL || eventPr.html_url || githubUrl, 1000),
+      title: isStarted ? 'Review in progress' : sanitizeDashboardText(context.title || eventPr.title || env.PR_TITLE || 'Automated PR Review', 500),
+      url: eventUrl,
       headSha,
       ...(baseSha ? { baseSha } : {}),
     },
     workflow,
     review: {
       status,
-      ...(verdict ? { verdict } : {}),
-      ...(options.arbitration?.rationale ? { rationale: sanitizeDashboardText(options.arbitration.rationale, 2000) } : {}),
+      ...(!isStarted && verdict ? { verdict } : {}),
+      ...(!isStarted && options.arbitration?.rationale ? { rationale: sanitizeDashboardText(options.arbitration.rationale, 2000) } : {}),
       startedAt: new Date(startedAtMs).toISOString(),
-      completedAt: new Date(completedAtMs).toISOString(),
-      durationMs: Math.max(0, completedAtMs - startedAtMs),
+      completedAt: new Date(eventCompletedAtMs).toISOString(),
+      durationMs: isStarted ? 0 : Math.max(0, completedAtMs - startedAtMs),
       enforcement: { mode: enforcementMode },
       severityCounts: {
-        p0: nonNegativeInteger(metrics.p0Count),
-        p1: nonNegativeInteger(metrics.p1Count),
-        p2: nonNegativeInteger(metrics.p2Count),
+        p0: isStarted ? 0 : nonNegativeInteger(metrics.p0Count),
+        p1: isStarted ? 0 : nonNegativeInteger(metrics.p1Count),
+        p2: isStarted ? 0 : nonNegativeInteger(metrics.p2Count),
       },
       coverage: {
-        filesReviewed: Array.isArray(coverage.reviewed) ? coverage.reviewed.length : 0,
-        filesOmitted: Array.isArray(coverage.omitted) ? coverage.omitted.length : 0,
-        filesSkippedGenerated: Array.isArray(coverage.skipped) ? coverage.skipped.length : 0,
-        passes: nonNegativeInteger(coverage.passes),
+        filesReviewed: isStarted ? 0 : (Array.isArray(coverage.reviewed) ? coverage.reviewed.length : 0),
+        filesOmitted: isStarted ? 0 : (Array.isArray(coverage.omitted) ? coverage.omitted.length : 0),
+        filesSkippedGenerated: isStarted ? 0 : (Array.isArray(coverage.skipped) ? coverage.skipped.length : 0),
+        passes: isStarted ? 0 : nonNegativeInteger(coverage.passes),
       },
       usage: {
-        promptTokens: nonNegativeInteger(usage.promptTokens),
-        completionTokens: nonNegativeInteger(usage.completionTokens),
-        totalTokens: nonNegativeInteger(usage.totalTokens),
-        costUSD: finiteCost(usage.costUSD),
+        promptTokens: isStarted ? 0 : nonNegativeInteger(usage.promptTokens),
+        completionTokens: isStarted ? 0 : nonNegativeInteger(usage.completionTokens),
+        totalTokens: isStarted ? 0 : nonNegativeInteger(usage.totalTokens),
+        costUSD: isStarted ? null : finiteCost(usage.costUSD),
       },
-      ...(options.arbitration ? {
+      ...(!isStarted && options.arbitration ? {
         arbitration: normalizeArbitration({
           ...options.arbitration,
           ...(Array.isArray(options.expectedPersonas) ? { expectedPersonas: options.expectedPersonas } : {}),
         }, personaResults, options.publicationPlan),
       } : {}),
-      personas: personaResults.map((lane) => ({
+      personas: isStarted ? [] : personaResults.map((lane) => ({
         persona: clampString(lane.personaId || lane.id, 100),
         provider: clampString(lane.provider || 'unknown', 100),
         model: clampString(lane.model || 'unknown', 300),
@@ -215,9 +220,13 @@ function buildReviewEvent(options = {}, env = process.env) {
           || nonNegativeInteger(lane.usage?.promptTokens) + nonNegativeInteger(lane.usage?.completionTokens),
         costUSD: finiteCost(lane.usage?.costUSD),
       })),
-      ...(options.detail === 'metrics' ? {} : { findings: uniqueFindings }),
+      ...(!isStarted && options.detail !== 'metrics' ? { findings: uniqueFindings } : {}),
     },
   };
+}
+
+function buildReviewStartedEvent(options = {}, env = process.env) {
+  return buildReviewEvent({ ...options, status: 'reviewing', eventType: 'review.started' }, env);
 }
 
 function validateUrl(value, fallback) {
@@ -317,6 +326,7 @@ module.exports = {
   DEFAULT_SITE_URL,
   MAX_PAYLOAD_BYTES,
   buildReviewEvent,
+  buildReviewStartedEvent,
   deliverReviewEvent,
   findingFingerprint,
   reviewUrlForRun,
