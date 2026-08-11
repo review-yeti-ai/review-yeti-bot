@@ -72,13 +72,13 @@ describe('review navigation tools', () => {
     const { registry: tools, blobClient } = registry();
 
     const found = await tools.call('file_find', { query: 'src' });
-    const matches = await tools.call('code_search', { query: 'matched' });
+    const matches = await tools.call('code_search', { query: 'matched', paths: ['src/app.js'] });
 
     expect(found).toMatchObject({ status: 'ok', tool: 'file_find', paths: ['src/app.js'], identity });
     expect(matches).toMatchObject({ status: 'ok', tool: 'code_search', identity });
     expect(matches.matches).toEqual([{ path: 'src/app.js', line: 1, text: 'const matched = true;' }]);
-    expect(blobClient.getBlob).toHaveBeenCalledTimes(2);
-    expect(blobClient.getBlob).toHaveBeenNthCalledWith(2, expect.objectContaining({ blobSha: '2'.repeat(40) }));
+    expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    expect(blobClient.getBlob).toHaveBeenNthCalledWith(1, expect.objectContaining({ blobSha: '1'.repeat(40) }));
   });
 
   it('serves an immutable API patch without shelling out or calling a mutable diff endpoint', async () => {
