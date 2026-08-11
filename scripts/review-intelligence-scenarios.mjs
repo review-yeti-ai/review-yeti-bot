@@ -111,7 +111,7 @@ async function executeWorkflow(fixture, replay) {
   console.log = console.warn = console.error = () => {};
   try {
     process.chdir(root);
-    const pipeline = await runReviewPipeline({ env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async (input, init = {}) => {
+    const pipeline = await runReviewPipeline({ publicationMode: 'github', env, cwd: root, now: () => 1_754_752_800_000, commandRunner: commandRunner(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha), fetchImplementation: async (input, init = {}) => {
       const headers = Object.fromEntries(Object.entries(init.headers || {}).map(([key, value]) => [key.toLowerCase(), /authorization|token|key/iu.test(key) ? '<redacted>' : String(value)]));
       const body = init.body ? JSON.parse(String(init.body)) : null;
       const response = replay.fetch('provider-failure-fail-open', { method: String(init.method || 'GET').toUpperCase(), url: String(input), headers, body });

@@ -9,8 +9,30 @@
   },
   "homepage": "https://github.com/review-yeti-ai/review-yeti-bot#readme",
   "bin": {
-    "review-yeti": "./bin/review-yeti.mjs"
+    "review-yeti": "./bin/review-yeti.mjs",
+    "reviewyeti": "./bin/reviewyeti.js"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    ".github/workflows/pipelines/",
+    "src/runtime/",
+    "src/review/",
+    "src/mcp/",
+    "src/pi/",
+    "src/memory/",
+    "src/telemetry/",
+    "src/reviewDashboard.js",
+    "src/evaluation/",
+    "src/tui/",
+    "src/cli/",
+    "scripts/evaluate-review-intelligence.mjs",
+    "scripts/evaluate-dependency-investigation.mjs",
+    "scripts/evaluate-dependency-investigation-live.mjs",
+    "scripts/evaluate-memory-providers.mjs",
+    "README.md",
+    "LICENSE"
+  ],
   "bugs": {
     "url": "https://github.com/review-yeti-ai/review-yeti-bot/issues"
   },
@@ -46,7 +68,10 @@
     "test:dependency-live-eval": "node scripts/evaluate-dependency-investigation-live.mjs --fixture tests/fixtures/dependency-evaluation.json --repetitions 3",
     "eval": "node bin/review-yeti.mjs eval",
     "eval:tui": "node bin/review-yeti.mjs eval tui",
-    "test:all": "npm run test:unit && npm run test:cassettes && npm run test:fixtures && npm run test:memory-vcr && npm run test:workflow && npm run test:outbox && npm run test:security && npm run test:chaos && npm run test:receipts && npm run test:action-runtime && npm run test:pi-adapter && npm run test:intelligence-eval && npm run test:bounded-review-eval && npm run test:dependency-eval && npm run test:intelligence-promotion && npm run lint && npm run build",
+    "review": "npm run build && node bin/reviewyeti.js review",
+    "test:cli": "vitest run tests/unit/reviewSourceAdapters.test.ts tests/unit/atomicOutput.test.ts tests/unit/reviewyetiCli.test.ts tests/unit/reviewyetiDoctor.test.ts",
+    "test:equivalence": "vitest run tests/integration/actionCliEquivalence.integration.test.ts",
+    "test:all": "npm run test:unit && npm run test:cassettes && npm run test:fixtures && npm run test:memory-vcr && npm run test:workflow && npm run test:outbox && npm run test:security && npm run test:chaos && npm run test:receipts && npm run test:action-runtime && npm run test:pi-adapter && npm run test:intelligence-eval && npm run test:bounded-review-eval && npm run test:dependency-eval && npm run test:equivalence && npm run test:intelligence-promotion && npm run lint && npm run build",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "clean": "rm -rf dist"
