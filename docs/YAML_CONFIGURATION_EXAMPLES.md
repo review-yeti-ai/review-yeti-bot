@@ -20,6 +20,7 @@ limits:
   max_completion_tokens: 8000   # receipt/policy ceiling
   max_cost_usd: 5               # receipt/policy ceiling
   max_turns: 20
+  max_investigation_turns: 2       # 1-3 bounded evidence follow-up turns per persona pass
   max_concurrency: 12
 
 # Submodules are metadata-only by default and must be pinned.

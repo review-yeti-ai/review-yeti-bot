@@ -64,6 +64,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('personas');
     expect(inputs).toContain('max-diff-chars');
     expect(inputs).toContain('max-file-diff-chars');
+    expect(inputs).toContain('max-investigation-turns');
     expect(inputs).toContain('github-token');
     expect(inputs).toContain('dashboard-api-key');
     expect(inputs).toContain('dashboard-api-url');
@@ -124,6 +125,7 @@ describe('action.yml — installable GitHub Action contract', () => {
   it('exports the distinct per-file input into the review pipeline environment', () => {
     const reviewStep = (action.runs.steps || []).find((step: any) => step.id === 'review');
     expect(reviewStep?.env?.MAX_FILE_DIFF_CHARS).toBe('${{ inputs.max-file-diff-chars }}');
+    expect(reviewStep?.env?.MAX_INVESTIGATION_TURNS).toBe('${{ inputs.max-investigation-turns }}');
     expect(reviewStep?.env?.DASHBOARD_API_KEY).toBe('${{ inputs.dashboard-api-key }}');
     expect(reviewStep?.env?.DASHBOARD_API_URL).toBe('${{ inputs.dashboard-api-url }}');
     expect(reviewStep?.env?.DASHBOARD_SITE_URL).toBe('${{ inputs.dashboard-url }}');

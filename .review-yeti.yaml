@@ -12,6 +12,7 @@ mcp:
 # No artificial cheap throttle — full safety ceiling (matches action default).
 limits:
   max_diff_bytes: 2000000
+  max_investigation_turns: 2 # bounded dependency-evidence follow-up turns per persona pass
 
 # Durable persona coverage is evaluated against the trusted-base enabled roster.
 # complete => normal verdict; partial => PARTIAL_REVIEW/BLOCKED; incomplete => INCOMPLETE_REVIEW/BLOCKED.
