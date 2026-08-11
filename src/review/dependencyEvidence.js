@@ -113,8 +113,9 @@ function buildDependencyEvidence(diffFiles = [], requests = [], options = {}) {
   for (const request of targets) {
     if (!request.path) continue;
     const classified = classifyDependencyPath(request.path);
-    if (!classified && request.kind !== 'registry-config' && request.kind !== 'provenance') {
+    if (!classified) {
       entries.push({ path: request.path, kind: request.kind, availability: 'rejected', reason: 'path is not an allowed dependency evidence file' });
+      unresolvedRequests.push(request);
       continue;
     }
 

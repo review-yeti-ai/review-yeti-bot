@@ -69,6 +69,30 @@ describe('dependency evidence extraction', () => {
     expect(result.unresolvedRequests.map((request: any) => request.path)).not.toContain('../secrets.txt');
   });
 
+  it('fails closed when a reviewer requests a rejected dependency evidence path', () => {
+    const result = buildDependencyEvidence([
+      { path: 'package.json', patch: '@@ -1 +1 @@\n+{"dependencies":{}}' },
+    ], [{ path: 'README.md', kind: 'provenance', reason: 'inspect the dependency source' }]);
+
+    expect(result.entries[0]).toMatchObject({
+      path: 'README.md',
+      availability: 'rejected',
+    });
+    expect(result.unresolvedRequests).toEqual([
+      expect.objectContaining({ path: 'README.md' }),
+    ]);
+    expect(result.complete).toBe(false);
+  });
+
+  it('does not treat arbitrary changed source files as dependency provenance evidence', () => {
+    const result = buildDependencyEvidence([
+      { path: 'src/index.ts', patch: '@@ -1 +1 @@\n+const source = "https://example.invalid";' },
+    ], [{ path: 'src/index.ts', kind: 'provenance', reason: 'inspect dependency provenance' }]);
+
+    expect(result.entries[0].availability).toBe('rejected');
+    expect(result.complete).toBe(false);
+  });
+
   it('normalizes a bare string evidence request against the changed-file allowlist', () => {
     const result = buildDependencyEvidence([
       { path: 'package-lock.json', patch: '@@ -1 +1 @@\n+"lockfileVersion": 3' },
