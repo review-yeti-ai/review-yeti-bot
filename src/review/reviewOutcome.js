@@ -4,6 +4,29 @@ const { validateLaneExecutionReceipt } = require('./evidenceContracts');
 
 const COMPLETE_TERMINATIONS = new Set(['completed', 'reused']);
 
+/**
+ * Multi-pass persona lanes emit one receipt per pass. A recovered persona has at least one
+ * completed receipt and may also have a failed attempt (timeout/provider_failure). That is
+ * not an incomplete review — only a persona with *no* completed receipt is incomplete.
+ */
+function personaReceiptHealth(rows) {
+  const byPersona = new Map();
+  for (const receipt of Array.isArray(rows) ? rows : []) {
+    const id = String(receipt?.personaId || '').trim() || 'unknown';
+    if (!byPersona.has(id)) byPersona.set(id, []);
+    byPersona.get(id).push(receipt);
+  }
+  let somePersonaIncomplete = false;
+  let somePersonaRecoveredPartial = false;
+  for (const list of byPersona.values()) {
+    const hasComplete = list.some((receipt) => COMPLETE_TERMINATIONS.has(receipt?.termination));
+    const hasFailed = list.some((receipt) => !COMPLETE_TERMINATIONS.has(receipt?.termination));
+    if (!hasComplete) somePersonaIncomplete = true;
+    else if (hasFailed) somePersonaRecoveredPartial = true;
+  }
+  return { somePersonaIncomplete, somePersonaRecoveredPartial, personaCount: byPersona.size };
+}
+
 function deriveReceiptOutcome({
   arbitration = {},
   unitManifest,
@@ -26,8 +49,11 @@ function deriveReceiptOutcome({
   // whether personas *ran*; it has no bearing on findings (see below).
   const receiptsMissing = rows.length === 0 && evidenceEnabled !== false;
   const receiptsInvalid = rows.length > 0 && validations.some((row) => !row.valid);
-  const someReceiptIncomplete = rows.length > 0 && rows.some((receipt) => !COMPLETE_TERMINATIONS.has(receipt?.termination));
-  const invalid = receiptsMissing || receiptsInvalid || someReceiptIncomplete;
+  const { somePersonaIncomplete, somePersonaRecoveredPartial } = personaReceiptHealth(rows);
+  // Only personas with zero completed receipts are incomplete. A multi-pass recovery (failed
+  // attempt + later completed pass for the same personaId) must not force BLOCK — that was the
+  // residual false-BLOCK after coveragePolicy #47 on multi-pass cisco-cdr reviews.
+  const invalid = receiptsMissing || receiptsInvalid || somePersonaIncomplete;
 
   // `findingVerification.summary.incomplete` is trusted unconditionally here -- it must NOT be
   // gated by evidenceEnabled. It is tempting to reason "with evidence tooling off, personas can't
@@ -64,6 +90,7 @@ function deriveReceiptOutcome({
       mergeEligible: ship,
       promotionReady: ship,
       executionTerminationReasons: [],
+      ...(somePersonaRecoveredPartial ? { recoveredPartialPasses: true } : {}),
       ...(degraded ? {
         rationale: `${arbitration.rationale || ''} Evidence/navigation tooling was unavailable for this review (e.g. a monorepo over the bounded-navigation-snapshot cap); this verdict reflects persona arbitration without bounded evidence tool coverage.`.trim(),
       } : {}),
@@ -87,4 +114,4 @@ function deriveReceiptOutcome({
   };
 }
 
-module.exports = { deriveReceiptOutcome };
+module.exports = { deriveReceiptOutcome, personaReceiptHealth };
