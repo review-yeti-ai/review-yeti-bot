@@ -25,7 +25,28 @@ function apiOrigin(apiBaseUrl = 'https://api.github.com') {
   return base.origin;
 }
 
-async function fetchTree({ repository, ref, label, token, fetchImplementation, apiBaseUrl, signal }) {
+function changedFilePaths(changedFiles) {
+  const paths = new Set();
+  for (const file of Array.isArray(changedFiles) ? changedFiles : []) {
+    if (validPath(file?.path)) paths.add(file.path);
+    const previousPath = file?.previousPath || file?.previous_path;
+    if (validPath(previousPath)) paths.add(previousPath);
+  }
+  return paths;
+}
+
+function capTreeEntries(entries, priorityPaths) {
+  if (entries.length <= MAX_FILES) return entries;
+  const preferred = [];
+  const rest = [];
+  for (const entry of entries) {
+    if (priorityPaths?.has(entry.path)) preferred.push(entry);
+    else rest.push(entry);
+  }
+  return [...preferred, ...rest].slice(0, MAX_FILES);
+}
+
+async function fetchTree({ repository, ref, label, token, fetchImplementation, apiBaseUrl, signal, priorityPaths }) {
   const response = await fetchImplementation(`${apiOrigin(apiBaseUrl)}/repos/${repository}/git/trees/${ref}?recursive=1`, {
     method: 'GET',
     headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
@@ -37,7 +58,7 @@ async function fetchTree({ repository, ref, label, token, fetchImplementation, a
   const allEntries = payload.tree
     .filter((entry) => entry?.type === 'blob' && validPath(entry.path) && SHA.test(String(entry.sha || '')))
     .map((entry) => ({ path: entry.path, blobSha: String(entry.sha).toLowerCase(), ref: label }));
-  return { entries: allEntries.slice(0, MAX_FILES), truncated: payload.truncated === true || allEntries.length > MAX_FILES };
+  return { entries: capTreeEntries(allEntries, priorityPaths), truncated: payload.truncated === true || allEntries.length > MAX_FILES };
 }
 
 function overlayChangedFiles(entries, changedFiles, ref) {
@@ -98,61 +119,26 @@ function boundSnapshotFiles(files, changedFiles, maxFiles = MAX_FILES) {
   return { files: selected, truncated: true };
 }
 
-/**
- * complete means "every PR-changed path with a resolvable blob SHA is indexed",
- * NOT "the ambient monorepo tree fits under MAX_FILES". Ambient truncation is
- * reported via truncated; pipeline finding-verifier treats complete===false as BLOCK.
- */
-function changedFilesCovered(files, changedFiles) {
-  const list = Array.isArray(changedFiles) ? changedFiles : [];
-  if (list.length === 0) return true;
-  const headPaths = new Set();
-  const basePaths = new Set();
-  for (const file of Array.isArray(files) ? files : []) {
-    if (file?.ref === 'head' && validPath(file.path)) headPaths.add(file.path);
-    if (file?.ref === 'base' && validPath(file.path)) basePaths.add(file.path);
-  }
-  for (const file of list) {
-    if (!validPath(file?.path)) continue;
-    const status = String(file.status || file.changeType || '').toLowerCase();
-    const isDeleted = status === 'removed' || status === 'deleted';
-    const previousPath = validPath(file.previousPath || file.previous_path)
-      ? (file.previousPath || file.previous_path)
-      : file.path;
-    if (isDeleted) {
-      const oldSha = [file.oldSha, file.old_sha].find((value) => SHA.test(String(value || '')));
-      if (oldSha && !basePaths.has(previousPath)) return false;
-      continue;
-    }
-    const newSha = [file.newSha, file.new_sha, file.blobSha, file.sha].find((value) => SHA.test(String(value || '')));
-    if (newSha && !headPaths.has(file.path)) return false;
-  }
-  return true;
-}
-
 async function fetchImmutableRepositorySnapshot({ identity, changedFiles = [], token, fetchImplementation = globalThis.fetch, apiBaseUrl = 'https://api.github.com', signal } = {}) {
   if (!identity || !validRepository(identity.repository) || !SHA.test(String(identity.baseSha || '')) || !SHA.test(String(identity.headSha || ''))) throw new Error('immutable navigation identity is invalid');
   if (!token || typeof token !== 'string' || typeof fetchImplementation !== 'function') throw new Error('immutable navigation snapshot requires token and fetch');
+  const priorityPaths = changedFilePaths(changedFiles);
   const [base, head] = await Promise.all([
-    fetchTree({ repository: identity.repository, ref: identity.baseSha, label: 'base', token, fetchImplementation, apiBaseUrl, signal }),
-    fetchTree({ repository: identity.repository, ref: identity.headSha, label: 'head', token, fetchImplementation, apiBaseUrl, signal }),
+    fetchTree({ repository: identity.repository, ref: identity.baseSha, label: 'base', token, fetchImplementation, apiBaseUrl, signal, priorityPaths }),
+    fetchTree({ repository: identity.repository, ref: identity.headSha, label: 'head', token, fetchImplementation, apiBaseUrl, signal, priorityPaths }),
   ]);
   const combined = overlayChangedFiles([...base.entries, ...head.entries], changedFiles, 'head');
   const bounded = boundSnapshotFiles(combined, changedFiles, MAX_FILES);
   const truncated = base.truncated || head.truncated || bounded.truncated;
-  const coverageComplete = changedFilesCovered(bounded.files, changedFiles);
-  // Without a PR file list, ambient tree completeness is the only signal.
-  const hasChangedFiles = Array.isArray(changedFiles) && changedFiles.length > 0;
-  const complete = hasChangedFiles ? coverageComplete : !truncated;
   return Object.freeze({
     schemaVersion: 'review-navigation-snapshot-v1',
     repository: identity.repository,
     baseSha: identity.baseSha,
     headSha: identity.headSha,
     files: Object.freeze(bounded.files),
-    complete,
+    complete: !truncated,
     truncated,
   });
 }
 
-module.exports = { fetchImmutableRepositorySnapshot, boundSnapshotFiles, changedFilesCovered, MAX_FILES };
+module.exports = { fetchImmutableRepositorySnapshot, boundSnapshotFiles, MAX_FILES };
