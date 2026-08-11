@@ -15,9 +15,11 @@ export interface ReviewDashboardEvent {
 }
 
 export interface ReviewDashboardDeliveryResult {
-  status: 'skipped' | 'accepted' | 'duplicate' | 'failed';
+  status: 'disabled' | 'accepted' | 'duplicate' | 'failed';
   attempts: number;
   reason?: string;
+  reviewRunId?: string;
+  reviewUrl?: string;
 }
 
 export function createReviewEventId(input: Record<string, unknown>): string;
@@ -29,6 +31,8 @@ export function deliverReviewEvent(options?: {
   event?: unknown;
   apiKey?: string;
   url?: string;
+  apiUrl?: string;
+  siteUrl?: string;
   fetchImpl?: typeof fetch;
   logger?: Pick<Console, 'info' | 'warn'>;
   wait?: (milliseconds: number) => Promise<void>;

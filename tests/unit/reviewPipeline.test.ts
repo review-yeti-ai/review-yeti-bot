@@ -553,6 +553,21 @@ deleted file mode 100644
     expect(formattedComment).toMatch(/`(openrouter\/auto(-beta)?|deepseek\/deepseek-v4-flash(-0731)?)`/);
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
     expect(formattedComment).toContain('No issues detected across completed reviewer personas');
+    expect(formattedComment).not.toContain('Open full review in Review Yeti');
+
+    const linkedComment = formatPRComment(
+      mockArbitration,
+      mockResults,
+      prContext,
+      {},
+      {},
+      null,
+      null,
+      null,
+      null,
+      { dashboardReviewUrl: 'https://reviewyeti.ai/dashboard/reviews/j57abc123' },
+    );
+    expect(linkedComment).toContain('[📊 Open full review in Review Yeti ↗](https://reviewyeti.ai/dashboard/reviews/j57abc123)');
   });
 
   it('does not claim a clean review when persona lanes ERROR', () => {

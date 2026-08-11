@@ -188,18 +188,6 @@ inputs:
     description: 'Token used to read the diff and publish the pull request review. The default workflow token is sufficient when the caller grants pull-requests: write.'
     required: false
     default: ${{ github.token }}
-  dashboard-api-url:
-    description: >-
-      Optional Review Yeti dashboard review-event.v1 endpoint. When either dashboard input is
-      empty, dashboard delivery is skipped and the GitHub review remains unchanged.
-    required: false
-    default: ''
-  dashboard-api-key:
-    description: >-
-      Optional Review Yeti dashboard ingestion key. This is separate from llm-api-key and is
-      never logged. Delivery is fail-soft and never changes the GitHub review verdict.
-    required: false
-    default: ''
   linear-api-key:
     description: >-
       Optional Linear API key (LINEAR_API_KEY only — OAuth Linear MCPs are rejected).
@@ -245,6 +233,32 @@ inputs:
       order or only. Action input wins over github_action.openrouter.provider_routing in YAML.
     required: false
     default: ''
+  dashboard-api-key:
+    description: >-
+      Optional Review Yeti dashboard ingestion key (ctd_live_...). When empty, the action does
+      not contact the dashboard and publishes the GitHub review normally. It is never logged.
+    required: false
+    default: ''
+  dashboard-api-url:
+    description: >-
+      Optional full Review Yeti review-event.v1 ingestion endpoint. Override this for a self-hosted
+      dashboard. It must be supplied together with dashboard-api-key to enable delivery.
+    required: false
+    default: ''
+  dashboard-url:
+    description: >-
+      Review Yeti Cloud site origin used to build the safe dashboard-review-url output. Set this
+      alongside dashboard-api-url for a self-hosted dashboard.
+    required: false
+    default: 'https://reviewyeti.ai'
+  dashboard-detail:
+    description: "Cloud telemetry detail: 'full' includes structured findings; 'metrics' sends aggregates only."
+    required: false
+    default: 'full'
+  dashboard-timeout-ms:
+    description: 'Cloud dashboard delivery timeout in milliseconds. Delivery is always fail-soft.'
+    required: false
+    default: '10000'
 
 outputs:
   verdict:
@@ -322,6 +336,9 @@ outputs:
   dashboard-delivery:
     description: 'Optional dashboard delivery result: disabled, accepted, duplicate, or failed. Delivery never changes the review verdict.'
     value: ${{ steps.review.outputs.dashboard-delivery }}
+  dashboard-review-url:
+    description: 'Full cloud review URL returned by the dashboard after accepted or duplicate delivery.'
+    value: ${{ steps.review.outputs.dashboard-review-url }}
   review-unit-identity:
     description: 'Exact bounded review-unit identity JSON, emitted only when trusted review.units.enabled is active.'
     value: ${{ steps.review.outputs.review-unit-identity }}
@@ -487,6 +504,9 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
+        DASHBOARD_SITE_URL: ${{ inputs.dashboard-url }}
+        DASHBOARD_DETAIL: ${{ inputs.dashboard-detail }}
+        DASHBOARD_TIMEOUT_MS: ${{ inputs.dashboard-timeout-ms }}
         DASHBOARD_API_URL: ${{ inputs.dashboard-api-url }}
         DASHBOARD_API_KEY: ${{ inputs.dashboard-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
