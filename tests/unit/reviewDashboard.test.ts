@@ -51,6 +51,28 @@ function completedEvent(detail = 'full') {
   }, env);
 }
 
+function startedEvent() {
+  return dashboard.buildReviewStartedEvent({
+    startedAtMs: 1_000,
+    prContext: {
+      repo: 'acme/widgets',
+      prNumber: 42,
+      headSha: 'abc123',
+      baseSha: 'base123',
+      title: 'Contains owner@example.com and should not be copied',
+      eventData: { pull_request: { html_url: 'https://github.com/acme/widgets/pull/42' } },
+    },
+    arbitration: {
+      verdict: 'BLOCK',
+      rationale: 'Finding prose with sk_123456789-secret and owner@example.com',
+      metrics: { p0Count: 4, p1Count: 3, p2Count: 2 },
+    },
+    usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120, costUSD: 0.01 },
+    personaResults: [{ personaId: 'security', provider: 'provider-a', model: 'secret-model', decision: 'FINDINGS' }],
+    findings: [{ severity: 'P1', path: 'src/widget.ts', line: 7, title: 'Secret finding prose' }],
+  }, env);
+}
+
 describe('review dashboard delivery', () => {
   it('builds a deterministic sanitized event compatible with the cloud contract', () => {
     const event = completedEvent();
@@ -92,6 +114,67 @@ describe('review dashboard delivery', () => {
     const retry = dashboard.buildReviewEvent(input, { ...env, GITHUB_RUN_ATTEMPT: '3' });
 
     expect(retry.eventId).not.toBe(first.eventId);
+  });
+
+  it('builds a privacy-safe reviewing event with zeroed metrics and no reviewer output', () => {
+    const event = startedEvent();
+    const terminal = completedEvent();
+
+    expect(event).toMatchObject({
+      eventType: 'review.started',
+      repository: terminal.repository,
+      pullRequest: { number: terminal.pullRequest.number, headSha: terminal.pullRequest.headSha },
+      workflow: terminal.workflow,
+      review: {
+        status: 'reviewing',
+        durationMs: 0,
+        severityCounts: { p0: 0, p1: 0, p2: 0 },
+        coverage: { filesReviewed: 0, filesOmitted: 0, filesSkippedGenerated: 0, passes: 0 },
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: null },
+        personas: [],
+      },
+    });
+    expect(event.pullRequest.title).toBe('Review in progress');
+    expect(event.review).not.toHaveProperty('verdict');
+    expect(event.review).not.toHaveProperty('rationale');
+    expect(event.review).not.toHaveProperty('findings');
+    expect(validateSchema(event)).toBe(true);
+    expect(validateSchema.errors).toBeNull();
+    expect(JSON.stringify(event)).not.toMatch(/owner@example\.com|sk_123456789-secret|secret-model|Secret finding prose/u);
+  });
+
+  it('uses distinct deterministic event and delivery identities for started and terminal events', async () => {
+    const started = startedEvent();
+    const startedAgain = startedEvent();
+    const terminal = completedEvent();
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 202 });
+
+    expect(started.eventId).toMatch(/^ctre_[a-f0-9]{40}$/u);
+    expect(started.eventId).toBe(startedAgain.eventId);
+    expect(started.eventId).not.toBe(terminal.eventId);
+
+    await dashboard.deliverReviewEvent({ event: started, apiKey: 'ctd_live_test_key', apiUrl: 'https://dashboard.test/api/v1/review-events', fetchImpl, wait: async () => {} });
+    await dashboard.deliverReviewEvent({ event: terminal, apiKey: 'ctd_live_test_key', apiUrl: 'https://dashboard.test/api/v1/review-events', fetchImpl, wait: async () => {} });
+    expect(fetchImpl.mock.calls[0][1].headers['Idempotency-Key']).toBe(started.eventId);
+    expect(fetchImpl.mock.calls[1][1].headers['Idempotency-Key']).toBe(terminal.eventId);
+    expect(fetchImpl.mock.calls[0][1].headers['Idempotency-Key']).not.toBe(fetchImpl.mock.calls[1][1].headers['Idempotency-Key']);
+  });
+
+  it('retries a started event with one stable idempotency key', async () => {
+    const event = startedEvent();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ status: 429 })
+      .mockResolvedValueOnce({ status: 202 });
+
+    await expect(dashboard.deliverReviewEvent({
+      event,
+      apiKey: 'ctd_live_test_key',
+      apiUrl: 'https://dashboard.test/api/v1/review-events',
+      fetchImpl,
+      wait: async () => {},
+    })).resolves.toMatchObject({ status: 'accepted', attempts: 2 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.every((call) => call[1].headers['Idempotency-Key'] === event.eventId)).toBe(true);
   });
 
   it('omits structured findings in metrics mode', () => {

@@ -59,21 +59,43 @@ describe('cassette-backed review workflow harness', () => {
     expect(receipt.actionOutputs).toContain('memory-write-status=accepted');
   });
 
-  it('publishes one dashboard event without changing the existing verdict or GitHub publication', async () => {
+  it('publishes reviewing before terminal dashboard state without changing the verdict or GitHub publication', async () => {
     const receipt = await runReviewWorkflowFixture('fresh-clean', { dashboardStatus: 202 });
 
     expect(receipt).toMatchObject({
       verdict: 'SHIP',
       publication: { success: true },
       dashboard: { status: 'accepted', attempts: 1 },
+      dashboardStarted: { status: 'accepted', attempts: 1 },
     });
-    expect(receipt.dashboardEvents).toHaveLength(1);
+    expect(receipt.dashboardEvents).toHaveLength(2);
     expect(receipt.dashboardEvents[0]).toMatchObject({
       repository: { fullName: 'acme/review-yeti' },
       pullRequest: { number: 42, headSha: 'a'.repeat(40) },
-      review: { verdict: 'SHIP', personas: expect.any(Array) },
+      eventType: 'review.started',
+      review: {
+        status: 'reviewing',
+        severityCounts: { p0: 0, p1: 0, p2: 0 },
+        personas: [],
+      },
     });
+    expect(receipt.dashboardEvents[1]).toMatchObject({
+      eventType: 'review.completed',
+      repository: { fullName: 'acme/review-yeti' },
+      pullRequest: { number: 42, headSha: 'a'.repeat(40) },
+      review: { status: 'completed', verdict: 'SHIP', personas: expect.any(Array) },
+    });
+    expect(receipt.dashboardEvents[0].eventId).not.toBe(receipt.dashboardEvents[1].eventId);
+    expect(receipt.dashboardEvents[0].workflow).toEqual(receipt.dashboardEvents[1].workflow);
+    const firstFanout = receipt.pipelineOrder.indexOf('fanout');
+    const startedDelivery = receipt.pipelineOrder.indexOf('dashboard:review.started');
+    const terminalDelivery = receipt.pipelineOrder.lastIndexOf('dashboard:review.completed');
+    expect(startedDelivery).toBeGreaterThanOrEqual(0);
+    expect(firstFanout).toBeGreaterThan(startedDelivery);
+    expect(terminalDelivery).toBeGreaterThan(firstFanout);
     expect(validateReviewEventSchema(receipt.dashboardEvents[0])).toBe(true);
+    expect(validateReviewEventSchema.errors).toBeNull();
+    expect(validateReviewEventSchema(receipt.dashboardEvents[1])).toBe(true);
     expect(validateReviewEventSchema.errors).toBeNull();
   });
 
@@ -84,8 +106,11 @@ describe('cassette-backed review workflow harness', () => {
       verdict: 'SHIP',
       publication: { success: true },
       dashboard: { status: 'failed', attempts: 3 },
+      dashboardStarted: { status: 'failed', attempts: 3 },
     });
-    expect(receipt.dashboardEvents).toHaveLength(3);
+    expect(receipt.dashboardEvents).toHaveLength(6);
+    expect(receipt.dashboardEvents.slice(0, 3).every((event: any) => event.eventType === 'review.started')).toBe(true);
+    expect(receipt.dashboardEvents.slice(3).every((event: any) => event.eventType === 'review.completed')).toBe(true);
   });
 
   it('continues with an unavailable provider while preserving the GitHub-ledger-only review path', async () => {
