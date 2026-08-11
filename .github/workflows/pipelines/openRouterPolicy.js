@@ -169,6 +169,7 @@ const HARD_BANNED_PROVIDER_SLUGS = Object.freeze([
   'fireworks',
   'together',
   'mancer',
+  'parasail',
 ]);
 function normalizeProviderList(value, field) {
   if (!Array.isArray(value)) {
