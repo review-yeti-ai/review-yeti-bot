@@ -142,9 +142,6 @@ async function runPersonaInvestigation(input = {}) {
   if (!input.identity || !input.persona?.id || typeof input.modelTurn !== 'function') throw new TypeError('persona investigation requires identity, persona, and modelTurn');
   const limits = normalizeInvestigationLimits(input.limits);
   const runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
-  if (input.requireEvidenceBoundary && input.evidenceRegistry?.capabilities?.enabled !== true) {
-    return incompleteLane({ input, runtime, parsed: null, termination: 'provider_failure', turns: 0, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 }, routes: [] });
-  }
   let messages = buildInvestigationMessages({ ...input, limits, remaining: { calls: limits.maxCalls, turns: limits.maxTurns } });
   let parsed = null;
   const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 };
