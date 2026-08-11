@@ -134,7 +134,15 @@ function completedLane({ input, runtime, parsed, response, turns, usage, routes,
   const receipts = runtime.receipts();
   const plan = planFromParsed(input.identity, input.persona.id, parsed);
   const findings = candidateFindings(parsed, receipts.map((receipt) => receipt.id), { evidenceEnabled });
-  const completedUnitIds = [...new Set((parsed.riskPlan || []).flatMap((risk) => risk.unitIds || []))];
+  const plannedUnitIds = [...new Set((parsed.riskPlan || []).flatMap((risk) => risk.unitIds || []))];
+  // A completed response is allowed to have an empty risk plan (for example, when the
+  // reviewer determines that the changed units contain no actionable risk). In bounded
+  // production runs the caller already supplied the exact batch being investigated. Credit
+  // that batch only when the model did not provide an explicit plan; an explicit partial plan
+  // must remain partial so coverage cannot be fabricated.
+  const completedUnitIds = (Array.isArray(parsed.riskPlan) && parsed.riskPlan.length > 0)
+    ? plannedUnitIds
+    : [...new Set(Array.isArray(input.investigationUnitIds) ? input.investigationUnitIds : [])];
   const executionReceipt = makeLaneReceipt({ input, plan, evidence: receipts, findings, termination: 'completed', turns, completedUnitIds });
   return {
     personaResult: {
