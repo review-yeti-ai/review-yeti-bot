@@ -25,10 +25,14 @@ describe('evidence runtime', () => {
     expect(JSON.stringify(runtime.receipts()[0])).not.toContain('sensitive source text');
   });
 
-  it('bounds untrusted output passed to the next turn and stops on unresolved evidence', async () => {
+  it('bounds untrusted output and continues so monorepo misses do not kill the persona lane', async () => {
     const runtime = createEvidenceRuntime({ identity, registry: registry({ status: 'unavailable', reason: 'file_not_in_snapshot', content: 'x'.repeat(10_000) }), limits: { maxResultBytes: 100 } });
     const result = await runtime.execute([request]);
-    expect(result).toMatchObject({ complete: false, termination: 'unresolved_evidence' });
+    // Soft-fail: deliver the bounded unavailable receipt and keep complete so the
+    // model can disposition risks instead of ERROR → BLOCK (unresolved_evidence).
+    expect(result).toMatchObject({ complete: true, termination: 'continue' });
+    expect(result.outputs[0].result.status).toBe('unavailable');
+    expect(String(result.outputs[0].result.reason || '')).toMatch(/file_not_in_snap/);
     expect(Buffer.byteLength(JSON.stringify(result.outputs[0].result), 'utf8')).toBeLessThanOrEqual(160);
   });
 });

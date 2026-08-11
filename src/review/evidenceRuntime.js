@@ -120,7 +120,10 @@ function createEvidenceRuntime({ identity, registry, limits = {}, clock = () => 
       receiptRows.push(receipt);
       outputs.push({ receiptId: receipt.id, riskId: request.riskId, tool: request.tool, result: bounded });
       if (bounded.status === 'cancelled') return { complete: false, termination: 'cancelled', outputs };
-      if (bounded.status === 'unavailable' || bounded.status === 'invalid') return { complete: false, termination: 'unresolved_evidence', outputs };
+      // Soft-fail: monorepos often cannot serve every requested path (snapshot is
+      // intentionally capped). Returning unresolved_evidence here aborted the whole
+      // persona lane (ERROR → BLOCK) even when the model only needed a related file.
+      // Deliver the unavailable/invalid receipt and let the model disposition risks.
     }
     return { complete: true, termination: 'continue', outputs };
   }
