@@ -30,4 +30,49 @@ describe('immutable review navigation snapshot', () => {
       .mockResolvedValueOnce(response({ truncated: false, tree: [] }));
     await expect(fetchImmutableRepositorySnapshot({ identity, token: 'test-token', fetchImplementation })).resolves.toMatchObject({ complete: false, truncated: true });
   });
+
+  it('caps base+head monorepo trees at MAX_FILES and keeps changed paths', async () => {
+    const { MAX_FILES, boundSnapshotFiles } = require('../../src/mcp/reviewNavigationSnapshot.js');
+    // Each tree contributes MAX_FILES blobs → combined overlay would exceed the registry bound.
+    const baseTree = Array.from({ length: MAX_FILES }, (_, i) => ({
+      type: 'blob',
+      path: `lib/base-${String(i).padStart(5, '0')}.js`,
+      sha: '1'.repeat(40),
+    }));
+    const headTree = Array.from({ length: MAX_FILES }, (_, i) => ({
+      type: 'blob',
+      path: `lib/head-${String(i).padStart(5, '0')}.js`,
+      sha: '2'.repeat(40),
+    }));
+    // Put the PR change outside the early alphabetical slice so only overlay can keep it.
+    headTree[MAX_FILES - 1] = { type: 'blob', path: 'zzz/important.js', sha: '3'.repeat(40) };
+
+    const fetchImplementation = vi.fn()
+      .mockResolvedValueOnce(response({ truncated: false, tree: baseTree }))
+      .mockResolvedValueOnce(response({ truncated: false, tree: headTree }));
+
+    const snapshot = await fetchImmutableRepositorySnapshot({
+      identity,
+      changedFiles: [{ path: 'zzz/important.js', patch: '@@ -1 +1 @@\n-a\n+b', newSha: '3'.repeat(40) }],
+      token: 'test-token',
+      fetchImplementation,
+    });
+
+    expect(snapshot.files.length).toBeLessThanOrEqual(MAX_FILES);
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.complete).toBe(false);
+    expect(snapshot.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ref: 'head', path: 'zzz/important.js', blobSha: '3'.repeat(40), patch: expect.stringContaining('@@') }),
+    ]));
+
+    // pure helper: changed path wins over filler when over budget
+    const oversized = [
+      ...Array.from({ length: MAX_FILES }, (_, i) => ({ ref: 'head' as const, path: `a/${i}.js`, blobSha: '4'.repeat(40) })),
+      { ref: 'head' as const, path: 'zzz/keep.js', blobSha: '5'.repeat(40), patch: 'p' },
+    ];
+    const bounded = boundSnapshotFiles(oversized, [{ path: 'zzz/keep.js' }], MAX_FILES);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.files.length).toBe(MAX_FILES);
+    expect(bounded.files.some((f: { path: string }) => f.path === 'zzz/keep.js')).toBe(true);
+  });
 });

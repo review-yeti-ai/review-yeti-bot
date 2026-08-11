@@ -6538,12 +6538,19 @@ async function main(options = {}) {
           if (typeof options.evidenceRegistryFactory === 'function') return options.evidenceRegistryFactory({ identity: navigationIdentity, snapshot: navigationSnapshot, persona });
           if (options.evidenceRegistry && typeof options.evidenceRegistry.call === 'function') return options.evidenceRegistry;
           if (navigationSnapshot && blobClient) {
-            return createReviewNavigationToolRegistry({
-              identity: navigationIdentity,
-              snapshot: navigationSnapshot,
-              blobClient,
-              config: { enabled: true, maxCalls: 12, maxResultBytes: 8_000, maxFindResults: 50, maxScanFiles: 20 },
-            });
+            try {
+              return createReviewNavigationToolRegistry({
+                identity: navigationIdentity,
+                snapshot: navigationSnapshot,
+                blobClient,
+                config: { enabled: true, maxCalls: 12, maxResultBytes: 8_000, maxFindResults: 50, maxScanFiles: 20 },
+              });
+            } catch (error) {
+              // Monorepos used to throw "must contain a bounded file list" here and
+              // kill the entire review before any persona completed. Degrade soft.
+              navigationError = error;
+              console.warn(`[Evidence] Navigation tool registry unavailable: ${error.message || error}`);
+            }
           }
           return {
             capabilities: Object.freeze({ enabled: false, readOnly: true, tools: [] }),
