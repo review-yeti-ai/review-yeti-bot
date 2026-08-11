@@ -95,7 +95,10 @@ try {
   } catch (_) {}
 }
 
-const { resolveOpenRouterPolicy } = require('./openRouterPolicy.js');
+const {
+  resolveOpenRouterPolicy,
+  HARD_BANNED_PROVIDER_SLUGS,
+} = require('./openRouterPolicy.js');
 const { classifyReviewFile, resolveMaxFileDiffChars } = require('../../../src/review/reviewIgnorePolicy');
 const { resolveTrustedReviewPolicy } = require('../../../src/review/reviewPolicyResolver');
 const { compact: compactContextWindow, resolveContextCompactionPolicy } = require('../../../src/review/contextWindow');
@@ -1972,9 +1975,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     allowedModels: [],
     costQualityTradeoff: undefined,
     dataCollection: undefined,
-    ignoredProviders: ['deepinfra'],
+    ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
     fallbackModels: [],
-    providerRouting: { ignore: ['deepinfra'] },
+    providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
     timeoutMs: 30_000,
     stream: false,
   };
@@ -2074,19 +2077,44 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const maxAttempts = options.maxAttempts || 2;
   const fallbackModels = Array.isArray(orPolicy.fallbackModels) ? orPolicy.fallbackModels : [];
   const models = [...new Set([cfg.model, ...fallbackModels].filter(Boolean))];
+  // A non-streaming timeout cannot identify the upstream OpenRouter endpoint. The next attempt
+  // therefore enables SSE so the first route chunk can identify it, then carries that provider
+  // into `provider.ignore` for subsequent retries/fallbacks. This keeps the normal path stable
+  // while making a stalled endpoint self-quarantine instead of retrying the same sticky route.
+  const timedOutProviders = new Set();
+  let streamRetryRequested = false;
 
   const requestBodyBase = {
     // Enforced Auto Router routing policy (allowlist / cost-quality tradeoff).
     ...(plugins.length > 0 ? { plugins } : {}),
-    ...(orPolicy.providerRouting
-      ? { provider: orPolicy.providerRouting }
-      : (orPolicy.ignoredProviders?.length > 0 ? { provider: { ignore: orPolicy.ignoredProviders } } : {})),
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
     temperature: 0.1,
     response_format: { type: 'json_object' },
+  };
+
+  const buildRequestBody = (requestedModel, sessionModel) => {
+    const configuredRouting = orPolicy.providerRouting && typeof orPolicy.providerRouting === 'object'
+      ? orPolicy.providerRouting
+      : null;
+    const configuredIgnored = configuredRouting?.ignore || orPolicy.ignoredProviders || [];
+    const ignored = [...new Set([
+      ...configuredIgnored,
+      ...timedOutProviders,
+    ])].map((provider) => String(provider).trim().toLowerCase()).filter(Boolean);
+    const providerRouting = configuredRouting
+      ? { ...configuredRouting, ignore: ignored }
+      : (ignored.length > 0 ? { ignore: ignored } : undefined);
+    return {
+      model: requestedModel,
+      // Sticky sessions pin model+provider. Drop the session after a timeout so the ignore list
+      // can take effect instead of sending the retry back to the same upstream endpoint.
+      ...(sessionSticky && timedOutProviders.size === 0 ? { session_id: sessionModel } : {}),
+      ...requestBodyBase,
+      ...(providerRouting ? { provider: providerRouting } : {}),
+    };
   };
 
   const requestHeaders = {
@@ -2122,24 +2150,18 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
     if (options.signal?.aborted) return cancelledResult();
     const requestedModel = models[modelIndex];
-    const sessionModel = requestedModel.replace(/[^A-Za-z0-9._-]/g, '_');
-    const requestBody = {
-      model: requestedModel,
-      // OpenRouter Auto Router sticky session: pin model+provider for multi-turn / cache.
-      // Include the requested model so a fallback cannot reuse the primary's sticky route.
-      // https://openrouter.ai/docs/guides/routing/routers/auto-router#session-stickiness
-      ...(sessionSticky ? { session_id: [
-        process.env.OPENROUTER_SESSION_ID_PREFIX || 'review-yeti',
-        prContext.repo || 'repo',
-        prContext.prNumber ? `pr${prContext.prNumber}` : String(prContext.headSha || 'head').slice(0, 12),
-        persona.id || 'persona',
-        sessionModel,
-      ].join(':').slice(0, 256) } : {}),
-      ...requestBodyBase,
-    };
+    lastRoute = { model: requestedModel, provider: 'openrouter', generationId: null };
+    const sessionModel = [
+      process.env.OPENROUTER_SESSION_ID_PREFIX || 'review-yeti',
+      prContext.repo || 'repo',
+      prContext.prNumber ? `pr${prContext.prNumber}` : String(prContext.headSha || 'head').slice(0, 12),
+      persona.id || 'persona',
+      requestedModel.replace(/[^A-Za-z0-9._-]/g, '_'),
+    ].join(':').slice(0, 256);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const requestStartedAt = Date.now();
+      const requestBody = buildRequestBody(requestedModel, sessionModel);
       try {
         // Prefer streaming so Auto Router's resolved provider/model are visible even on timeout.
         // Headroom / some proxies may not stream — callOpenRouterChat falls back to non-stream.
@@ -2150,7 +2172,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           timeoutMs,
           preferStream: options.preferStream === true
             || process.env.OPENROUTER_STREAM === 'true'
-            || orPolicy.stream === true,
+            || orPolicy.stream === true
+            || streamRetryRequested
+            || timedOutProviders.size > 0,
           signal: options.signal,
         });
 
@@ -2163,6 +2187,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         if (!result.ok) {
           const routeLabel = formatRouteLabel(lastRoute);
           if (result.aborted) {
+            streamRetryRequested = true;
+            const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
+            if (timedOutProvider && timedOutProvider !== 'openrouter') timedOutProviders.add(timedOutProvider);
             const msg = `Provider timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
             lastError = msg;
             if (attempt < maxAttempts) {
@@ -2283,6 +2310,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         };
       } catch (err) {
         const routeLabel = formatRouteLabel(lastRoute);
+        const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
+        if (/timeout|aborted/i.test(String(err?.message || err)) && timedOutProvider && timedOutProvider !== 'openrouter') {
+          timedOutProviders.add(timedOutProvider);
+        }
+        if (/timeout|aborted/i.test(String(err?.message || err))) streamRetryRequested = true;
         const msg = err?.name === 'TimeoutError' || /aborted|timeout/i.test(String(err?.message || ''))
           ? `Provider timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
           : `${err.message || String(err)} [${routeLabel}]`;

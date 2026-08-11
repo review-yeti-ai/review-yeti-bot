@@ -47,6 +47,9 @@ jobs:
       - name: Checkout Review Runner (this repository)
         uses: actions/checkout@v4
         with:
+          # Always execute the centrally reviewed runner from main for both self-review and
+          # repository-dispatch requests; the target PR supplies only diff/config metadata.
+          ref: main
           # Shallow checkout is enough; the action fetches PR diffs via the API.
           fetch-depth: 1
           persist-credentials: false
