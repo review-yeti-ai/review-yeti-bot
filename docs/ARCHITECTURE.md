@@ -9,6 +9,8 @@ The Action, CLI/runtime contracts, and Pi/MCP adapter ship from this same reposi
 adapter is an execution surface, not a second memory authority: it can read bounded exact-head
 context, while the review pipeline owns normalized memory writes and outbox delivery. See the
 [canonical YAML examples](YAML_CONFIGURATION_EXAMPLES.md) for the settings used by each surface.
+The `reviewyeti` CLI passes immutable refs, a bounded diff file, or a read-only pull request through
+the same `src/runtime/reviewPipelineRuntime.js` boundary with publication disabled.
 
 ## The run
 
