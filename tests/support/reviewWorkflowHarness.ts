@@ -89,12 +89,15 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
   const previousCwd = process.cwd();
   const previousEnv = { ...process.env };
   const dashboardEvents: unknown[] = [];
+  const pipelineOrder: string[] = [];
   const fetchImplementation = options.dashboardStatus === undefined
     ? memoryFetchFactory({ available: options.memoryAvailable !== false })
     : async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('dashboard.fixture.test')) {
-        dashboardEvents.push(JSON.parse(String(init?.body || '{}')));
+        const event = JSON.parse(String(init?.body || '{}'));
+        dashboardEvents.push(event);
+        pipelineOrder.push(`dashboard:${event.eventType}`);
         return new Response('', { status: options.dashboardStatus });
       }
       return memoryFetchFactory({ available: options.memoryAvailable !== false })(input, init);
@@ -132,15 +135,18 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
   try {
     process.chdir(tempRoot);
     Object.assign(process.env, env);
-    const modelClient = async ({ persona }: { persona: { id: string; name: string } }) => ({
-      personaId: persona.id,
-      displayName: persona.name,
-      model: 'fixture-model',
-      provider: 'fixture-openrouter',
-      decision: 'APPROVE',
-      findings: [],
-      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, costUSD: 0 },
-    });
+    const modelClient = async ({ persona }: { persona: { id: string; name: string } }) => {
+      pipelineOrder.push('fanout');
+      return {
+        personaId: persona.id,
+        displayName: persona.name,
+        model: 'fixture-model',
+        provider: 'fixture-openrouter',
+        decision: 'APPROVE',
+        findings: [],
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, costUSD: 0 },
+      };
+    };
     const receipt = await runReviewPipeline({
       env,
       cwd: tempRoot,
@@ -153,6 +159,7 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
       ...receipt,
       actionOutputs: fs.readFileSync(outputPath, 'utf8'),
       dashboardEvents,
+      pipelineOrder,
       outboxPayload: receipt.outbox.path ? JSON.parse(fs.readFileSync(receipt.outbox.path, 'utf8')) : null,
     };
   } finally {
