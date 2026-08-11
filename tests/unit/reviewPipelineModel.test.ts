@@ -446,7 +446,7 @@ describe('reviewWithModel', () => {
         dataCollection: undefined,
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: {
-          order: ['novita', 'akash'],
+          order: ['wafer', 'akash'],
           allow_fallbacks: false,
           require_parameters: true,
           ignore: HARD_BANNED_PROVIDER_SLUGS,
@@ -457,7 +457,7 @@ describe('reviewWithModel', () => {
     });
 
     expect(calls[0].body.provider).toEqual({
-      order: ['novita', 'akash'],
+      order: ['wafer', 'akash'],
       allow_fallbacks: false,
       require_parameters: true,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
@@ -474,14 +474,14 @@ describe('reviewWithModel', () => {
         costQualityTradeoff: undefined,
         dataCollection: undefined,
         ignoredProviders: ['deepinfra'],
-        providerRouting: { only: ['novita', 'wafer', 'morph'], allow_fallbacks: false, ignore: ['deepinfra'] },
+        providerRouting: { only: ['wafer', 'morph'], allow_fallbacks: false, ignore: ['deepinfra'] },
         timeoutMs: 30_000,
         stream: false,
       },
     });
 
     expect(calls[0].body.provider).toEqual({
-      only: ['novita', 'wafer', 'morph'],
+      only: ['wafer', 'morph'],
       allow_fallbacks: false,
       ignore: ['deepinfra', 'morph'],
     });
