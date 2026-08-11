@@ -101,6 +101,7 @@ const { resolveTrustedReviewPolicy } = require('../../../src/review/reviewPolicy
 const { compact: compactContextWindow, resolveContextCompactionPolicy } = require('../../../src/review/contextWindow');
 const { createReviewTelemetry } = require('../../../src/telemetry/reviewTelemetry');
 const { createReviewUnitManifest } = require('../../../src/review/reviewUnitManifest');
+const { buildReviewEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -4094,7 +4095,7 @@ function renderReviewStateNotes(reviewState, prContext) {
   return sections.join('');
 }
 
-function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}, coverage = null, usage = null, publicationPlan = null, reviewState = null) {
+function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}, coverage = null, usage = null, publicationPlan = null, reviewState = null, options = {}) {
   const verdictBadge = arbitration.verdict === 'SHIP'
     ? '🟢 **Verdict: SHIP**'
     : arbitration.verdict === 'FIX_FIRST'
@@ -4351,7 +4352,13 @@ ${findingsDetails}`;
   const coverageMarker = coverageIdentity
     ? `\n\n<!-- review-yeti-bot:coverage:v1:${coverageIdentity} -->`
     : '';
-  return `${commentMarkdown}${coverageMarker}`;
+  const dashboardReviewUrl = typeof options.dashboardReviewUrl === 'string' && /^https?:\/\//u.test(options.dashboardReviewUrl)
+    ? options.dashboardReviewUrl
+    : '';
+  const dashboardLink = dashboardReviewUrl
+    ? `\n\n---\n\n[📊 Open full review in Review Yeti ↗](${dashboardReviewUrl})`
+    : '';
+  return `${commentMarkdown}${dashboardLink}${coverageMarker}`;
 }
 
 const REVIEW_THREADS_QUERY = `
@@ -4947,6 +4954,8 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     ...(extra.memoryWriteStatus ? [`memory-write-status=${extra.memoryWriteStatus}`] : []),
     ...(extra.telemetryStatus ? [`telemetry-status=${extra.telemetryStatus}`] : []),
     ...(Number.isSafeInteger(extra.telemetryEvents) ? [`telemetry-events=${extra.telemetryEvents}`] : []),
+    ...(extra.dashboardDelivery ? [`dashboard-delivery=${extra.dashboardDelivery}`] : []),
+    ...(extra.dashboardReviewUrl ? [`dashboard-review-url=${extra.dashboardReviewUrl}`] : []),
     ...(reviewUnitReceipt ? [
       `review-unit-identity=${JSON.stringify(reviewUnitReceipt.identity)}`,
       `review-unit-summary=${JSON.stringify({ schemaVersion: reviewUnitReceipt.schemaVersion, policyDigest: reviewUnitReceipt.policyDigest, summary: reviewUnitReceipt.summary, coverage: reviewUnitReceipt.coverage, units: reviewUnitReceipt.units })}`,
@@ -5438,6 +5447,7 @@ async function main(options = {}) {
   let arbitration = null;
   let usageTotal;
   let finalResult = null;
+  let dashboardDelivery = { status: 'disabled', attempts: 0 };
   let telemetryFlush;
   let telemetryFinalized = false;
   const finalizeTelemetry = async () => {
@@ -5984,7 +5994,54 @@ async function main(options = {}) {
   }
   console.log(`[Formatting] Planned ${publicationPlan.lineComments.length} line conversation(s), ${publicationPlan.fileComments.length} file conversation(s), ${publicationPlan.advisories.length} P2 advisory item(s), and ${publicationPlan.rejected.length} rejected finding(s).`);
   const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, neutralResolved, recurrentResolved, obsolete, findingVerification };
-  const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage, usageTotal, publicationPlan, reviewState);
+  if (runtimeEnv.DASHBOARD_API_KEY) {
+    try {
+      const dashboardEvent = buildReviewEvent({
+        prContext,
+        arbitration,
+        personaResults,
+        coverage,
+        usage: usageTotal,
+        detail: runtimeEnv.DASHBOARD_DETAIL,
+        status: arbitration.status === 'INCOMPLETE_REVIEW' ? 'incomplete' : 'completed',
+        startedAtMs: startedAt,
+        completedAtMs: now(),
+      }, runtimeEnv);
+      dashboardDelivery = await cancellation.race(deliverReviewEvent({
+        apiKey: runtimeEnv.DASHBOARD_API_KEY,
+        apiUrl: runtimeEnv.DASHBOARD_API_URL,
+        siteUrl: runtimeEnv.DASHBOARD_SITE_URL,
+        timeoutMs: runtimeEnv.DASHBOARD_TIMEOUT_MS,
+        event: dashboardEvent,
+        fetchImpl: fetchImplementation,
+        signal: cancellation.signal,
+      }));
+      if (cancellation.isCancellationResult(dashboardDelivery)) {
+        dashboardDelivery = { status: 'cancelled', attempts: 0 };
+      } else if (dashboardDelivery.status === 'failed') {
+        console.warn(`[Dashboard] Delivery failed safely after ${dashboardDelivery.attempts || 0} attempt(s): ${dashboardDelivery.reason || 'unknown error'}. Review outcome is unchanged.`);
+      } else if (dashboardDelivery.reviewUrl) {
+        console.log(`[Dashboard] Review available at ${dashboardDelivery.reviewUrl}`);
+      } else {
+        console.log(`[Dashboard] Delivery ${dashboardDelivery.status}; no review URL was returned.`);
+      }
+    } catch (error) {
+      dashboardDelivery = { status: 'failed', attempts: 0, reason: 'delivery error' };
+      console.warn(`[Dashboard] Delivery failed safely: ${error.message || error}. Review outcome is unchanged.`);
+    }
+  }
+  const commentMarkdown = formatPRComment(
+    arbitration,
+    personaResults,
+    prContext,
+    mcpFleetInfo,
+    modelConfig,
+    coverage,
+    usageTotal,
+    publicationPlan,
+    reviewState,
+    { dashboardReviewUrl: dashboardDelivery.reviewUrl },
+  );
 
   console.log('[Publishing] Executing pull request review publishing...');
   if (cancellation.signal.aborted) return;
@@ -6087,6 +6144,8 @@ async function main(options = {}) {
     memoryQueryStatus: memoryQueryResult.status,
     memoryQuerySource: memoryQueryResult.source,
     memoryWriteStatus: memoryWriteResult.status,
+    dashboardDelivery: dashboardDelivery.status,
+    dashboardReviewUrl: dashboardDelivery.reviewUrl,
     reviewUnitReceipt: buildReviewUnitReceipt(reviewUnitManifest),
   });
 
