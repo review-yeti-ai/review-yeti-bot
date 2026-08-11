@@ -172,6 +172,12 @@ inputs:
       from the pull request head or any mutable ref.
     required: false
     default: ''
+  action-sha:
+    description: >-
+      Exact 40-hex commit SHA of this Review Yeti action source. Required for the durable provider
+      dispatch receipt; mutable refs and tags are rejected so consumers can bind evidence to the
+      action code that actually ran.
+    required: true
   review-intelligence-enabled:
     description: >-
       Optional v1 Review Intelligence kill switch. Empty defers to trusted base configuration;
@@ -311,6 +317,12 @@ outputs:
   review-dispatch-provider-receipt-digest:
     description: 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'
     value: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
+  review-dispatch-receipt-path:
+    description: 'Exact local path to the provider-owned review-dispatch-run.v1 receipt artifact. Upload or attach this file for durable evidence.'
+    value: ${{ steps.review.outputs.review-dispatch-receipt-path }}
+  review-dispatch-manifest-path:
+    description: 'Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence.'
+    value: ${{ steps.review.outputs.review-dispatch-manifest-path }}
   investigation-status:
     description: 'Bounded investigation status: complete, partial, or incomplete.'
     value: ${{ steps.review.outputs.investigation-status }}
@@ -583,9 +595,9 @@ runs:
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
-        # github.action_ref is the exact ref from the caller's uses: pin. The provider receipt
-        # requires it to be a full 40-hex action SHA and fails closed for mutable refs/tags.
-        REVIEW_YETI_ACTION_SHA: ${{ github.action_ref }}
+        # The caller supplies the immutable action source SHA explicitly. Mutable refs/tags are
+        # rejected by the provider receipt contract.
+        REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
         GITHUB_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
         PR_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         REVIEW_INTELLIGENCE_ENABLED: ${{ inputs.review-intelligence-enabled }}

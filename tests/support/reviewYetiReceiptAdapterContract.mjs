@@ -282,6 +282,7 @@ export function validateReviewYetiRunReceipt(receipt, expectedIdentity) {
     "plan_digest",
     "manifest_digest",
     "manifest_artifact_digest",
+    "provider_receipt_digest",
     "units_total",
     "units_emitted",
     "units_omitted",
@@ -322,6 +323,9 @@ export function validateReviewYetiRunReceipt(receipt, expectedIdentity) {
     "manifest_artifact_digest",
   ]) {
     exactDigest(receipt[field], `receipt.${field}`, errors);
+  }
+  if (receipt.provider_receipt_digest !== null && !DIGEST.test(String(receipt.provider_receipt_digest || ""))) {
+    errors.push("receipt.provider_receipt_digest must be null or a SHA-256 digest");
   }
   for (const field of [
     "units_total",
@@ -407,6 +411,7 @@ export function adaptReviewYetiRunReceipt(receipt) {
       plan_digest: receipt.plan_digest,
       manifest_digest: receipt.manifest_digest,
       manifest_artifact_digest: receipt.manifest_artifact_digest,
+      provider_receipt_digest: receipt.provider_receipt_digest,
     },
     coverage: {
       units_total: receipt.units_total,
@@ -427,7 +432,7 @@ export function adaptReviewYetiRunReceipt(receipt) {
       policy_digest: receipt.policy_digest,
       plan_digest: receipt.plan_digest,
       manifest_digest: receipt.manifest_digest,
-      provider_receipt_digests: [receiptDigest],
+      provider_receipt_digests: [receipt.provider_receipt_digest || receiptDigest],
     },
   };
 }

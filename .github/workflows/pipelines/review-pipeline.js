@@ -5663,6 +5663,18 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     })),
   };
   const dispatchReceipt = extra.reviewDispatchReceipt;
+  const safeArtifactPath = (artifacts, key, prefix) => {
+    const value = artifacts?.[key];
+    const root = artifacts?.artifactDirectory;
+    if (typeof value !== 'string' || typeof root !== 'string' || /[\r\n]/u.test(value) || /[\r\n]/u.test(root)) return null;
+    const resolvedRoot = path.resolve(root);
+    const resolvedValue = path.resolve(value);
+    const relative = path.relative(resolvedRoot, resolvedValue);
+    const basename = path.basename(resolvedValue);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)
+      || path.dirname(resolvedValue) !== resolvedRoot || !basename.startsWith(prefix) || !basename.endsWith('.json')) return null;
+    return resolvedValue;
+  };
   const digestOutput = (name, value) => /^[a-f0-9]{64}$/u.test(String(value || '').trim().toLowerCase())
     ? `${name}=${String(value).trim().toLowerCase()}`
     : null;
@@ -5707,7 +5719,9 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
       digestOutput('review-dispatch-policy-digest', dispatchReceipt.policy_digest),
       digestOutput('review-dispatch-manifest-digest', dispatchReceipt.manifest_digest),
       digestOutput('review-dispatch-manifest-artifact-digest', dispatchReceipt.manifest_artifact_digest),
-      digestOutput('review-dispatch-provider-receipt-digest', extra.reviewDispatchProviderReceiptDigest),
+      digestOutput('review-dispatch-provider-receipt-digest', dispatchReceipt.provider_receipt_digest),
+      ...(safeArtifactPath(extra.reviewDispatchArtifacts, 'receiptPath', 'review-dispatch-') ? [`review-dispatch-receipt-path=${safeArtifactPath(extra.reviewDispatchArtifacts, 'receiptPath', 'review-dispatch-')}`] : []),
+      ...(safeArtifactPath(extra.reviewDispatchArtifacts, 'manifestPath', 'review-unit-manifest-') ? [`review-dispatch-manifest-path=${safeArtifactPath(extra.reviewDispatchArtifacts, 'manifestPath', 'review-unit-manifest-')}`] : []),
     ].filter(Boolean) : []),
   ];
 
@@ -5755,6 +5769,7 @@ const REVIEW_DISPATCH_RUN_FIELDS = new Set([
   'schema', 'run_id', 'run_attempt', 'arm', 'repository', 'pr_number', 'base_sha', 'head_sha',
   'action_sha', 'model', 'provider_route_digest', 'prompt_template_digest', 'tool_policy_digest',
   'diff_digest', 'policy_digest', 'plan_digest', 'manifest_digest', 'manifest_artifact_digest',
+  'provider_receipt_digest',
   'units_total', 'units_emitted', 'units_omitted', 'files_changed', 'files_baseline_covered',
   'coverage_gaps', 'rule_ids', 'stage_durations_ms', 'reflection', 'usage', 'latency_ms',
 ]);
@@ -5872,6 +5887,10 @@ function buildPipelineReviewDispatchReceipt({
     plan_digest: sha256(canonicalJson(plans)),
     manifest_digest: digests.canonicalDigest,
     manifest_artifact_digest: digests.artifactDigest,
+    provider_receipt_digest: (() => {
+      const ids = collectProviderReceiptIds(personaResults);
+      return ids.length > 0 ? sha256(canonicalJson({ count: ids.length, ids })) : null;
+    })(),
     units_total: manifestArtifact.units.length,
     units_emitted: emitted,
     units_omitted: omitted,
@@ -5911,6 +5930,9 @@ function validateReviewDispatchRunReceipt(receipt) {
   if (typeof receipt.model !== 'string' || !receipt.model || receipt.model.length > 200) errors.push('model must be a bounded string');
   for (const field of ['provider_route_digest', 'prompt_template_digest', 'tool_policy_digest', 'diff_digest', 'policy_digest', 'plan_digest', 'manifest_digest', 'manifest_artifact_digest']) {
     if (!/^[a-f0-9]{64}$/u.test(String(receipt[field] || ''))) errors.push(`${field} must be a SHA-256 digest`);
+  }
+  if (receipt.provider_receipt_digest !== null && !/^[a-f0-9]{64}$/u.test(String(receipt.provider_receipt_digest || ''))) {
+    errors.push('provider_receipt_digest must be null or a SHA-256 digest');
   }
   for (const field of ['units_total', 'units_emitted', 'units_omitted', 'files_changed', 'files_baseline_covered', 'coverage_gaps']) {
     if (!Number.isSafeInteger(receipt[field]) || receipt[field] < 0 || receipt[field] > 1_000_000) errors.push(`${field} must be a bounded non-negative integer`);
@@ -5979,6 +6001,7 @@ function writeReviewDispatchArtifacts(receipt, { cwd = process.cwd(), fileSystem
     throw error;
   }
   return Object.freeze({
+    artifactDirectory: directory,
     receiptPath,
     manifestPath,
     receiptDigest,
@@ -6500,7 +6523,6 @@ async function main(options = {}) {
   let reviewDispatchReceipt = null;
   let reviewDispatchManifestArtifact = null;
   let reviewDispatchArtifacts = null;
-  let reviewDispatchProviderReceiptDigest = null;
   // Whether bounded evidence/navigation tooling was actually available and enabled for this
   // review. False for monorepos over the bounded-navigation-snapshot file cap (PR #37) or any
   // other fail-soft navigation-registry degradation. Findings themselves are never dropped for
@@ -7348,7 +7370,7 @@ async function main(options = {}) {
           // The shipped roster is the authoritative baseline. Candidate is opt-in for an
           // explicitly isolated shadow execution; an unset arm must never relabel production.
           arm: runtimeEnv.REVIEW_YETI_RUN_ARM || 'baseline',
-          actionSha: runtimeEnv.REVIEW_YETI_ACTION_SHA || runtimeEnv.GITHUB_ACTION_REF,
+          actionSha: runtimeEnv.REVIEW_YETI_ACTION_SHA,
         },
         providerRoute: {
           requested_model: modelConfig.model,
@@ -7364,10 +7386,6 @@ async function main(options = {}) {
         },
         latencyMs: Math.max(0, Number(now()) - Number(startedAt)),
       });
-      const providerReceiptIds = collectProviderReceiptIds(personaResults);
-      reviewDispatchProviderReceiptDigest = providerReceiptIds.length > 0
-        ? sha256(canonicalJson({ count: providerReceiptIds.length, ids: providerReceiptIds }))
-        : null;
       reviewDispatchArtifacts = writeReviewDispatchArtifacts(reviewDispatchReceipt, {
         cwd: options.cwd || process.cwd(),
         fileSystem: options.fileSystem || fs,
@@ -7555,8 +7573,8 @@ async function main(options = {}) {
     dashboardReviewUrl: dashboardDelivery.reviewUrl,
     reviewUnitReceipt: buildReviewUnitReceipt(reviewUnitManifest),
     reviewDispatchReceipt,
+    reviewDispatchArtifacts,
     reviewDispatchReceiptDigest: reviewDispatchArtifacts?.receiptDigest,
-    reviewDispatchProviderReceiptDigest,
     investigationSummary,
   });
 

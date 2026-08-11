@@ -32,6 +32,8 @@ const outputContractRows = [
   ['review-dispatch-manifest-digest', 'Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt.'],
   ['review-dispatch-manifest-artifact-digest', 'Digest of the exact complete manifest artifact bytes written by the provider run.'],
   ['review-dispatch-provider-receipt-digest', 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'],
+  ['review-dispatch-receipt-path', 'Exact local path to the provider-owned review-dispatch-run.v1 receipt artifact. Upload or attach this file for durable evidence.'],
+  ['review-dispatch-manifest-path', 'Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence.'],
   ['files-skipped-generated', 'Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap.'],
   ['files-oversized', 'Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW.'],
 ] as const;
@@ -104,6 +106,11 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['llm-api-key'].required).not.toBe(true);
   });
 
+  it('requires an explicit immutable action source SHA for durable receipts', () => {
+    expect(action.inputs['action-sha'].required).toBe(true);
+    expect(action.inputs['action-sha'].description).toMatch(/40-hex commit SHA/i);
+  });
+
   it('defaults OpenRouter routing to the certified provider cohort without fallback escape', () => {
     expect(action.inputs['openrouter-provider-routing'].default).toBe(
       '{"only":["morph"],"allow_fallbacks":false}',
@@ -118,6 +125,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(outputs).toContain('review-dispatch-digest');
     expect(outputs).toContain('review-dispatch-manifest-digest');
     expect(outputs).toContain('review-dispatch-manifest-artifact-digest');
+    expect(outputs).toContain('review-dispatch-receipt-path');
+    expect(outputs).toContain('review-dispatch-manifest-path');
     expect(outputs).toContain('dashboard-delivery');
     expect(outputs).toContain('dashboard-review-url');
     expect(action.outputs['files-oversized'].description).toMatch(/per-file/i);
@@ -139,7 +148,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(reviewStep?.env?.DASHBOARD_SITE_URL).toBe('${{ inputs.dashboard-url }}');
     expect(reviewStep?.env?.DASHBOARD_DETAIL).toBe('${{ inputs.dashboard-detail }}');
     expect(reviewStep?.env?.DASHBOARD_TIMEOUT_MS).toBe('${{ inputs.dashboard-timeout-ms }}');
-    expect(reviewStep?.env?.REVIEW_YETI_ACTION_SHA).toBe('${{ github.action_ref }}');
+    expect(reviewStep?.env?.REVIEW_YETI_ACTION_SHA).toBe('${{ inputs.action-sha }}');
   });
 
   it('resolves the pipeline through GITHUB_ACTION_PATH, not the consumer workspace', () => {
@@ -385,9 +394,14 @@ describe('writeStepOutputs', () => {
         policy_digest: 'b'.repeat(64),
         manifest_digest: 'c'.repeat(64),
         manifest_artifact_digest: 'e'.repeat(64),
+        provider_receipt_digest: 'd'.repeat(64),
       },
       reviewDispatchReceiptDigest: 'a'.repeat(64),
-      reviewDispatchProviderReceiptDigest: 'd'.repeat(64),
+      reviewDispatchArtifacts: {
+        artifactDirectory: '/tmp/sessions',
+        receiptPath: '/tmp/sessions/review-dispatch-abc.json',
+        manifestPath: '/tmp/sessions/review-unit-manifest-abc.json',
+      },
     });
     const content = fs.readFileSync(file, 'utf-8');
     expect(content).toContain(`review-dispatch-digest=${'a'.repeat(64)}`);
@@ -395,6 +409,30 @@ describe('writeStepOutputs', () => {
     expect(content).toContain(`review-dispatch-manifest-digest=${'c'.repeat(64)}`);
     expect(content).toContain(`review-dispatch-manifest-artifact-digest=${'e'.repeat(64)}`);
     expect(content).toContain(`review-dispatch-provider-receipt-digest=${'d'.repeat(64)}`);
+    expect(content).toContain('review-dispatch-receipt-path=/tmp/sessions/review-dispatch-abc.json');
+    expect(content).toContain('review-dispatch-manifest-path=/tmp/sessions/review-unit-manifest-abc.json');
+  });
+
+  it('does not allow artifact paths to inject output records or escape the artifact directory', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-path-safety-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, null, {
+      reviewDispatchReceipt: {
+        policy_digest: 'b'.repeat(64),
+        manifest_digest: 'c'.repeat(64),
+        manifest_artifact_digest: 'e'.repeat(64),
+        provider_receipt_digest: null,
+      },
+      reviewDispatchReceiptDigest: 'a'.repeat(64),
+      reviewDispatchArtifacts: {
+        artifactDirectory: '/tmp/sessions',
+        receiptPath: '/tmp/elsewhere/review-dispatch-abc.json\nforged=value',
+        manifestPath: '/tmp/sessions/../review-unit-manifest-abc.json',
+      },
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).not.toContain('review-dispatch-receipt-path=');
+    expect(content).not.toContain('review-dispatch-manifest-path=');
+    expect(content).not.toContain('forged=value');
   });
 
   it('does not invent a provider receipt digest when the provider returned none', () => {
@@ -404,6 +442,7 @@ describe('writeStepOutputs', () => {
         policy_digest: 'b'.repeat(64),
         manifest_digest: 'c'.repeat(64),
         manifest_artifact_digest: 'e'.repeat(64),
+        provider_receipt_digest: null,
       },
       reviewDispatchReceiptDigest: 'a'.repeat(64),
     });

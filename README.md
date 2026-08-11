@@ -64,8 +64,10 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: review-yeti-ai/review-yeti-bot@v1
+      - uses: review-yeti-ai/review-yeti-bot@<40-hex-action-sha>
         with:
+          # Must match the immutable action ref above; mutable refs cannot produce a durable receipt.
+          action-sha: <40-hex-action-sha>
           llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           # Optional — enables Linear issue sync when the secret exists (API key only)
           linear-api-key: ${{ secrets.LINEAR_API_KEY }}
@@ -471,8 +473,9 @@ you have a self-hosted or hosted Honcho instance and want prior review patterns 
 reviewer lane:
 
 ```yaml
-- uses: review-yeti-ai/review-yeti-bot@main
+- uses: review-yeti-ai/review-yeti-bot@<40-hex-action-sha>
   with:
+    action-sha: <40-hex-action-sha>
     llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
     honcho-enabled: 'true'
     honcho-context: 'true'
@@ -543,6 +546,7 @@ over collapsing two distinct defects, since the second hides one.
 | Input | Default | Description |
 | :--- | :--- | :--- |
 | `llm-api-key` | required | The sole OpenRouter inference API key, passed explicitly in the workflow action call. Management keys and alternate provider-key environment variables are not accepted. |
+| `action-sha` | required | Exact 40-hex commit SHA of the Review Yeti action source. It must match the immutable `uses:` ref; mutable refs and tags are rejected for durable receipts. |
 | `llm-base-url` | `https://openrouter.ai/api/v1` | OpenRouter-compatible base URL. |
 | `openrouter-provider-routing` | `{"only":["morph"],"allow_fallbacks":false}` | JSON `provider` policy forwarded to OpenRouter. The default pins review requests to the certified Morph provider and fails closed rather than escaping to another provider. Fixed models are checked against an explicit provider cohort before persona fan-out; `openai/gpt-5.6-luna` requires `only` to include `openai` or `azure`. Wafer and Novita are hard-banned after repeated timeout/provider-error lanes. It supports provider order/allow-fallbacks, parameter requirements, data-collection/ZDR policy, provider allow/deny lists, quantizations, sorting, throughput/latency preferences, and price caps. The built-in degraded-provider blocklist remains hard-banned. |
 | `openrouter-fallback-models` | — | Comma-separated ordered model fallbacks for transient timeouts, network errors, rate limits, and 5xx responses. Empty uses `github_action.openrouter.fallback_models` from the trusted base ref. |
@@ -613,6 +617,8 @@ for the complete field semantics.
 | `review-dispatch-manifest-digest` | Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt. |
 | `review-dispatch-manifest-artifact-digest` | Digest of the exact complete manifest artifact bytes written by the provider run. |
 | `review-dispatch-provider-receipt-digest` | Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs. |
+| `review-dispatch-receipt-path` | Exact local path to the provider-owned review-dispatch-run.v1 receipt artifact. Upload or attach this file for durable evidence. |
+| `review-dispatch-manifest-path` | Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence. |
 | `findings-count` | Total findings across all personas. |
 | `p0-count` | Count of P0 (exploitable or data-losing) findings. |
 | `p1-count` | Count of P1 (must fix before merge) findings. |
@@ -629,9 +635,10 @@ for the complete field semantics.
 Gate a merge on any of them:
 
 ```yaml
-      - uses: review-yeti-ai/review-yeti-bot@v1
+      - uses: review-yeti-ai/review-yeti-bot@<40-hex-action-sha>
         id: review
         with:
+          action-sha: <40-hex-action-sha>
           llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
       - if: steps.review.outputs.verdict == 'BLOCK' || steps.review.outputs.files-omitted != '0'
         run: exit 1

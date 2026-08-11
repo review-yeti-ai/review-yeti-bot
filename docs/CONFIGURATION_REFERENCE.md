@@ -392,6 +392,8 @@ from a model-backed review.
 | `review-dispatch-manifest-digest` | Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt. |
 | `review-dispatch-manifest-artifact-digest` | Digest of the exact complete manifest artifact bytes written by the provider run. |
 | `review-dispatch-provider-receipt-digest` | Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs. |
+| `review-dispatch-receipt-path` | Exact local path to the provider-owned review-dispatch-run.v1 receipt artifact. Upload or attach this file for durable evidence. |
+| `review-dispatch-manifest-path` | Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence. |
 | `files-skipped-generated` | Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap. |
 | `files-oversized` | Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW. |
 
@@ -668,8 +670,9 @@ invoke the Doppler CLI on a GitHub runner. `HONCHO_BASE_URL` and `HONCHO_WORKSPA
 aliases for self-hosted configurations. Do not place credentials in repository configuration.
 
 ```yaml
-- uses: review-yeti-ai/review-yeti-bot@main
+- uses: review-yeti-ai/review-yeti-bot@<40-hex-action-sha>
   with:
+    action-sha: <40-hex-action-sha>
     llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
     honcho-enabled: 'true'
     honcho-context: 'true'
@@ -712,8 +715,9 @@ cloud run and the action exposes it through its `dashboard-review-url` output. S
 fail-soft and never changes the GitHub verdict, review publication, or merge gate.
 
 ```yaml
-- uses: review-yeti-ai/review-yeti-bot@main
+- uses: review-yeti-ai/review-yeti-bot@<40-hex-action-sha>
   with:
+    action-sha: <40-hex-action-sha>
     llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
     dashboard-api-key: ${{ secrets.REVIEW_YETI_CLOUD_KEY }}
     dashboard-api-url: https://api.reviewyeti.ai/api/v1/review-events

@@ -102,7 +102,7 @@ function runActualProviderPipeline(cwd: string, fileSystem: typeof fs = fs) {
     env: {
       VITEST: 'true', GITHUB_ACTIONS: 'false', GITHUB_OUTPUT: outputPath,
       PR_DIFF: 'synthetic-test-input',
-      GITHUB_RUN_ID: '987654321', GITHUB_RUN_ATTEMPT: '2', GITHUB_ACTION_REF: 'f'.repeat(40),
+      GITHUB_RUN_ID: '987654321', GITHUB_RUN_ATTEMPT: '2', REVIEW_YETI_ACTION_SHA: 'f'.repeat(40),
       ACTIVE_PERSONAS: JSON.stringify(['security']), OPENROUTER_API_KEY: 'test-key', OPENROUTER_MODEL: 'model-a',
     },
     commandRunner: vi.fn((_command: string, args: string[], commandOptions: any) => {
@@ -217,7 +217,7 @@ describe('review dispatch receipt', () => {
       'action_sha', 'arm', 'base_sha', 'coverage_gaps', 'diff_digest', 'files_baseline_covered',
       'files_changed', 'head_sha', 'latency_ms', 'manifest_artifact_digest', 'manifest_digest',
       'model', 'plan_digest', 'policy_digest', 'pr_number', 'prompt_template_digest',
-      'provider_route_digest', 'reflection', 'repository', 'rule_ids', 'run_attempt', 'run_id',
+      'provider_receipt_digest', 'provider_route_digest', 'reflection', 'repository', 'rule_ids', 'run_attempt', 'run_id',
       'schema', 'stage_durations_ms', 'tool_policy_digest', 'units_emitted', 'units_omitted',
       'units_total', 'usage',
     ].sort());
@@ -244,6 +244,7 @@ describe('review dispatch receipt', () => {
       usage: { prompt_tokens: 25, completion_tokens: 5, cost_usd: 0.0125 },
       latency_ms: 4821,
     });
+    expect(receipt.provider_receipt_digest).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(receipt)).not.toMatch(/providerReceipts|receiptDigest|raw_prompt|tool_output|source/i);
   });
 
@@ -283,6 +284,15 @@ describe('review dispatch receipt', () => {
 
     expect(validateReviewYetiRunReceipt({ ...storedReceipt, raw_prompt: 'forbidden' })).toMatchObject({ valid: false });
     expect(validateReviewYetiRunReceipt({ ...storedReceipt, extra: true })).toMatchObject({ valid: false });
+  });
+
+  it('rejects mutable or missing action identity before a provider receipt can be published', () => {
+    expect(() => buildPipelineReviewDispatchReceipt(pipelineReceiptInput({
+      runtime: { ...pipelineReceiptInput().runtime, actionSha: 'v1' },
+    }))).toThrow(/action_sha must be a full 40-hex SHA/);
+    expect(() => buildPipelineReviewDispatchReceipt(pipelineReceiptInput({
+      runtime: { ...pipelineReceiptInput().runtime, actionSha: '' },
+    }))).toThrow(/action_sha must be a full 40-hex SHA/);
   });
 
   it('uses null usage facts when no successful provider response supplied receipt-backed usage', () => {
@@ -354,6 +364,7 @@ describe('review dispatch receipt', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-actual-pipeline-'));
     const result = await runActualProviderPipeline(cwd);
     const receipt = result.reviewDispatch.receipt;
+    const storedReceipt = JSON.parse(fs.readFileSync(result.reviewDispatch.artifacts.receiptPath, 'utf8'));
     const manifestArtifactText = fs.readFileSync(result.reviewDispatch.artifacts.manifestPath, 'utf8');
     const output = fs.readFileSync(path.join(cwd, 'github-output.txt'), 'utf8');
 
@@ -371,10 +382,13 @@ describe('review dispatch receipt', () => {
       manifest_artifact_digest: receipt.manifest_artifact_digest,
       manifestArtifactText,
     })).toEqual({ valid: true, errors: [] });
+    expect(storedReceipt.provider_receipt_digest).toBe(receipt.provider_receipt_digest);
     expect(output).toContain(`review-dispatch-digest=${result.reviewDispatch.artifacts.receiptDigest}`);
     expect(output).toContain(`review-dispatch-manifest-digest=${receipt.manifest_digest}`);
     expect(output).toContain(`review-dispatch-manifest-artifact-digest=${receipt.manifest_artifact_digest}`);
-    expect(output).toContain('review-dispatch-provider-receipt-digest=');
+    expect(output).toContain(`review-dispatch-provider-receipt-digest=${receipt.provider_receipt_digest}`);
+    expect(output).toContain(`review-dispatch-receipt-path=${result.reviewDispatch.artifacts.receiptPath}`);
+    expect(output).toContain(`review-dispatch-manifest-path=${result.reviewDispatch.artifacts.manifestPath}`);
     expect(output).toContain('cost-usd=\n');
     expect(output).not.toContain('cost-usd=0\n');
   }, 15_000);
