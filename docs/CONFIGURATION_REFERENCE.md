@@ -664,10 +664,10 @@ endpoint, takes a lease, retries with bounded backoff, and moves repeated failur
 ### Optional Review Yeti Cloud link
 
 Pass `dashboard-api-key` to publish the bounded review event to Review Yeti Cloud. On an accepted
-or idempotent duplicate response that includes a run id, the action exposes the exact cloud run
-through its `dashboard-review-url` output. Set `dashboard-api-url` and `dashboard-url` together
-for a self-hosted deployment. Delivery is fail-soft and never changes the GitHub verdict, review
-publication, or merge gate.
+or idempotent duplicate response that includes a run id, the final GitHub review links to the exact
+cloud run and the action exposes it through its `dashboard-review-url` output. Set
+`dashboard-api-url` and `dashboard-url` together for a self-hosted deployment. Delivery is
+fail-soft and never changes the GitHub verdict, review publication, or merge gate.
 
 ```yaml
 - uses: review-yeti-ai/review-yeti-bot@main
