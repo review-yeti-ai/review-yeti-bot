@@ -115,7 +115,7 @@ const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
 const { normalizeInvestigationLimits } = require('../../../src/review/evidenceContracts');
-const { buildReviewEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
+const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -2499,8 +2499,6 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
           if (result.aborted) {
             streamRetryRequested = true;
-            const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
-            if (timedOutProvider && timedOutProvider !== 'openrouter') timedOutProviders.add(timedOutProvider);
             const phase = result.timeoutPhase || 'response';
             const msg = phase === 'connect'
               ? `Provider CONNECT timeout after ${connectTimeoutMs}ms (no headers; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
@@ -6033,6 +6031,7 @@ async function main(options = {}) {
   let laneExecutionReceipts = [];
   let investigationSummary = null;
   let finalResult = null;
+  let dashboardStartedDelivery = { status: 'disabled', attempts: 0 };
   let dashboardDelivery = { status: 'disabled', attempts: 0 };
   let telemetryFlush;
   let telemetryFinalized = false;
@@ -6501,6 +6500,34 @@ async function main(options = {}) {
         }, { commandRunner, now });
       } catch (err) {
         console.warn(`[Publish] Started comment failed (non-fatal): ${err.message || err}`);
+      }
+
+      if (runtimeEnv.DASHBOARD_API_KEY && runtimeEnv.DASHBOARD_API_URL) {
+        try {
+          const dashboardStartedEvent = buildReviewStartedEvent({
+            prContext,
+            startedAtMs: startedAt,
+          }, runtimeEnv);
+          dashboardStartedDelivery = await cancellation.race(deliverReviewEvent({
+            apiKey: runtimeEnv.DASHBOARD_API_KEY,
+            apiUrl: runtimeEnv.DASHBOARD_API_URL,
+            siteUrl: runtimeEnv.DASHBOARD_SITE_URL,
+            timeoutMs: runtimeEnv.DASHBOARD_TIMEOUT_MS,
+            event: dashboardStartedEvent,
+            fetchImpl: fetchImplementation,
+            signal: cancellation.signal,
+          }));
+          if (cancellation.isCancellationResult(dashboardStartedDelivery)) {
+            dashboardStartedDelivery = { status: 'cancelled', attempts: 0 };
+          } else if (dashboardStartedDelivery.status === 'failed') {
+            console.warn(`[Dashboard] Started delivery failed safely after ${dashboardStartedDelivery.attempts || 0} attempt(s): ${dashboardStartedDelivery.reason || 'unknown error'}. Review outcome is unchanged.`);
+          } else {
+            console.log(`[Dashboard] Started event delivery ${dashboardStartedDelivery.status}; review outcome is unchanged.`);
+          }
+        } catch (error) {
+          dashboardStartedDelivery = { status: 'failed', attempts: 0, reason: 'delivery error' };
+          console.warn(`[Dashboard] Started delivery failed safely: ${error.message || error}. Review outcome is unchanged.`);
+        }
       }
 
       console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
@@ -6996,6 +7023,7 @@ async function main(options = {}) {
     },
     publication: { success: Boolean(publication.success), postedViaGh: Boolean(publication.postedViaGh) },
     dashboard: dashboardDelivery,
+    dashboardStarted: dashboardStartedDelivery,
     memory: { query: memoryQueryResult, write: memoryWriteResult, policy: memoryPolicyReceipt(memoryPolicy), contextCompaction: optionalReviewContext.receipt },
     telemetry: { ...reviewTelemetryReceipt(telemetryPolicy) },
     reviewUnits: reviewUnitManifest
