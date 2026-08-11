@@ -4563,9 +4563,9 @@ function readActionReviewThreads(commandRunner, prContext) {
 /**
  * Stable per-pull-request anchor for the compact summary review.
  *
- * The exact-head marker deliberately changes on every push, which is what makes a retry within one
- * push idempotent. It is also why fourteen pushes produced fourteen summaries. This marker does
- * not move, so the summary can be edited in place instead.
+ * The stable anchor links summaries for one pull request. The exact-head marker still deliberately
+ * changes on every push: GitHub review `commit_id` is immutable, so every new reviewed head needs
+ * a distinct review while retries of that same head remain idempotent.
  */
 function actionSummaryAnchor(prContext) {
   return prContext.repo && prContext.prNumber
@@ -4772,13 +4772,16 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         && typeof review.user?.login === 'string'
         && isExpectedPublisherLogin(review.user.login, authenticatedPublisherLogin)
       );
-      const existingReview = existingReviews.find((review) => publishedByUs(review) && review.body.includes(marker));
-      // A summary from an earlier push on this same pull request. Editing it is what keeps one
-      // pull request to one summary instead of one per push.
-      const priorSummaryReview = summaryAnchor && !existingReview
-        ? existingReviews.find((review) => publishedByUs(review) && review.body.includes(summaryAnchor))
-        : undefined;
-      const reviewExists = Boolean(existingReview) || Boolean(priorSummaryReview);
+      const existingReview = existingReviews.find((review) => (
+        publishedByUs(review)
+        && review.commit_id === prContext.headSha
+        && review.body.includes(marker)
+      ));
+      // GitHub binds a pull-request review to the commit supplied at creation. An edited review
+      // retains its earlier commit_id even if its body advertises a new SHA, which would make an
+      // exact-head consumer incorrectly see no verdict for the current push. Only a matching
+      // exact-head marker may deduplicate publication.
+      const reviewExists = Boolean(existingReview);
       let expectedPublisherLogin = authenticatedPublisherLogin;
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0 && expectedPublisherLogin
@@ -4808,20 +4811,6 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         }
         expectedPublisherLogin = createdPublisherLogin;
       } else {
-        if (priorSummaryReview) {
-          assertCurrentPullRequest(prContext, { commandRunner });
-          const updated = apiJson(
-            commandRunner,
-            'PUT',
-            `repos/${prContext.repo}/pulls/${prNumber}/reviews/${priorSummaryReview.id}`,
-            { body: bodyToPublish },
-          );
-          if (!isExpectedPublisherLogin(requirePublisherLogin(updated.user?.login), expectedPublisherLogin)) {
-            throw new Error('Action review publisher changed during publication');
-          }
-          reviewId = priorSummaryReview.id;
-          console.log(`[Publish] Updated the existing review summary on PR #${prNumber} in place.`);
-        }
         for (const item of missingLineComments) {
           assertCurrentPullRequest(prContext, { commandRunner });
           const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/comments`, {
@@ -4854,9 +4843,10 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       if (!verifiedReviews.some((review) => (
         typeof review?.body === 'string'
         && review.body.includes(marker)
+        && review.commit_id === prContext.headSha
         && isExpectedPublisherLogin(review.user?.login, expectedPublisherLogin)
       ))) {
-        throw new Error('exact-head compact review marker was not visible after publication');
+        throw new Error('exact-head compact review was not visible after publication');
       }
       const verified = expectedItems.length > 0
         ? readActionReviewThreads(commandRunner, prContext)
