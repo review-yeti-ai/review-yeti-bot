@@ -1366,12 +1366,37 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
   const attemptStream = preferStream === true || process.env.OPENROUTER_STREAM === 'true';
 
   const nonStreamOnce = async () => {
-    const response = await fetchImpl(url, {
-      method: 'POST',
-      headers: baseHeaders,
-      body: JSON.stringify({ ...body, stream: false }),
-      signal: requestAbort.signal,
-    });
+    const t0 = Date.now();
+    let response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        headers: baseHeaders,
+        body: JSON.stringify({ ...body, stream: false }),
+        signal: requestAbort.signal,
+      });
+    } catch (err) {
+      const elapsed = Math.max(0, Date.now() - t0);
+      const aborted = Boolean(requestAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
+      console.warn(
+        `[OpenRouter] non-stream fetch ${aborted ? 'ABORTED' : 'ERROR'}`
+        + ` model=${body.model} elapsed_ms=${elapsed} budget_ms=${timeoutMs}`
+        + ` name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 160)}`,
+      );
+      return {
+        ok: false,
+        aborted,
+        status: 0,
+        detail: String(err?.message || err).slice(0, 500),
+        model: body.model,
+        provider: 'openrouter',
+        generationId: null,
+        content: '',
+        usage: null,
+        streamed: false,
+        error: err,
+      };
+    }
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
@@ -1978,7 +2003,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
     fallbackModels: [],
     providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
-    timeoutMs: 30_000,
+    timeoutMs: 60_000,
     stream: false,
   };
   const plugins = [];
@@ -2073,7 +2098,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const timeoutMs = options.timeoutMs
     || Number(process.env.OPENROUTER_TIMEOUT_MS)
     || Number(orPolicy.timeoutMs)
-    || 30_000;
+    || 60_000;
   const maxAttempts = options.maxAttempts || 2;
   const fallbackModels = Array.isArray(orPolicy.fallbackModels) ? orPolicy.fallbackModels : [];
   const models = [...new Set([cfg.model, ...fallbackModels].filter(Boolean))];
@@ -2163,6 +2188,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const requestStartedAt = Date.now();
       const requestBody = buildRequestBody(requestedModel, sessionModel);
       try {
+        console.log(
+          `[OpenRouter] start persona=${persona.id}`
+          + ` model=${requestedModel}`
+          + ` modelIndex=${modelIndex + 1}/${models.length}`
+          + ` attempt=${attempt}/${maxAttempts}`
+          + ` timeout_ms=${timeoutMs}`
+          + ` stream=${options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true}`,
+        );
         // Prefer streaming so Auto Router's resolved provider/model are visible even on timeout.
         // Headroom / some proxies may not stream — callOpenRouterChat falls back to non-stream.
         const result = await callOpenRouterChat(fetchImpl, {
@@ -2186,12 +2219,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
         if (!result.ok) {
           const routeLabel = formatRouteLabel(lastRoute);
+          const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
           if (result.aborted) {
             streamRetryRequested = true;
             const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
             if (timedOutProvider && timedOutProvider !== 'openrouter') timedOutProviders.add(timedOutProvider);
             const msg = `Provider timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
             lastError = msg;
+            console.warn(
+              `[OpenRouter] TIMEOUT persona=${persona.id} requested=${requestedModel}`
+              + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} budget_ms=${timeoutMs}`
+              + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`
+              + ` status=${result.status || 'aborted'} detail=${String(result.detail || result.error?.message || '').slice(0, 160)}`,
+            );
+            console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
             if (attempt < maxAttempts) {
               recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_timeout', startedAt: requestStartedAt });
               if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
@@ -2215,6 +2256,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const status = result.status || 0;
           const detail = String(result.detail || '').slice(0, 200);
           const msg = `HTTP ${status}: ${detail} [${routeLabel}]`;
+          console.warn(
+            `[OpenRouter] HTTP_FAIL persona=${persona.id} requested=${requestedModel}`
+            + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} status=${status}`
+            + ` attempt=${attempt}/${maxAttempts} detail=${detail.slice(0, 160)}`,
+          );
           const retryableStatus = status === 408 || status === 429 || status >= 500;
           // Retry transient failures once before moving to the next model.
           if (attempt < maxAttempts && retryableStatus) {
@@ -2300,6 +2346,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             findings: rawFindings,
           }], shownFiles).rejected || [];
         }
+        const okElapsedMs = Math.max(0, Date.now() - requestStartedAt);
+        console.log(
+          `[OpenRouter] OK persona=${persona.id} requested=${requestedModel}`
+          + ` resolved=${formatRouteLabel(lastRoute)} elapsed_ms=${okElapsedMs}`
+          + ` attempt=${attempt}/${maxAttempts} findings=${findings.length}`
+          + ` tokens_in=${usage.promptTokens} tokens_out=${usage.completionTokens}`
+          + ` generation=${lastRoute.generationId || 'none'}`,
+        );
         recordModelTelemetry({ modelIndex, attempt, outcome: 'completed', usage: usageReported ? usage : undefined, startedAt: requestStartedAt });
         return {
           ...responseBase,
@@ -2310,6 +2364,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         };
       } catch (err) {
         const routeLabel = formatRouteLabel(lastRoute);
+        const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
         const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
         if (/timeout|aborted/i.test(String(err?.message || err)) && timedOutProvider && timedOutProvider !== 'openrouter') {
           timedOutProviders.add(timedOutProvider);
@@ -2319,6 +2374,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           ? `Provider timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
           : `${err.message || String(err)} [${routeLabel}]`;
         lastError = msg;
+        console.warn(
+          `[OpenRouter] EXCEPTION persona=${persona.id} requested=${requestedModel}`
+          + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} budget_ms=${timeoutMs}`
+          + ` attempt=${attempt}/${maxAttempts} name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 200)}`,
+        );
+        if (/timeout|aborted/i.test(msg)) {
+          console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
+        }
         if (attempt < maxAttempts && /timeout|aborted|ECONNRESET|fetch failed/i.test(msg)) {
           recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(msg) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
           if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
@@ -5592,7 +5655,16 @@ async function main(options = {}) {
     modelConfig.model = openRouterPolicy.model;
   }
 
-  console.log(`[OpenRouter] model=${modelConfig.model} timeout_ms=${openRouterPolicy.timeoutMs} stream=${openRouterPolicy.stream}`);
+  console.log(
+    `[OpenRouter] policy model=${modelConfig.model}`
+    + ` timeout_ms=${openRouterPolicy.timeoutMs}`
+    + ` stream=${openRouterPolicy.stream}`
+    + ` ignore_providers=${JSON.stringify(openRouterPolicy.ignoredProviders || [])}`
+    + ` fallback_models=${JSON.stringify(openRouterPolicy.fallbackModels || [])}`
+    + ` allowed_models=${JSON.stringify(openRouterPolicy.allowedModels || [])}`
+    + ` provider_routing=${JSON.stringify(openRouterPolicy.providerRouting || {})}`,
+  );
+  console.log(`::notice::OpenRouter policy timeout_ms=${openRouterPolicy.timeoutMs} model=${modelConfig.model} ignore=${(openRouterPolicy.ignoredProviders || []).join(',') || 'none'}`);
 
   // Then generated content, before the budget is spent: a lockfile or an EF model snapshot is
   // routinely larger than every hand-written change combined, and reviewing it pushes real

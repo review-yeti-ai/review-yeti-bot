@@ -8,3 +8,4 @@ fixtures/tmp/
 .tmp/
 test-results/
 .DS_Store
+.worktrees/

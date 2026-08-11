@@ -16,7 +16,7 @@
  *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
  *      deepinfra, the openrouter fallback route, and known degraded providers
- *      ignored, timeout_ms=30000, stream=false).
+ *      ignored, timeout_ms=60000, stream=false).
  *
  * @param {object|undefined} localConfig  Parsed local config, or an object whose
  *    `parsed` field holds the parse result (as produced by the pipeline).
@@ -74,8 +74,8 @@ function resolveOpenRouterPolicy(localConfig, env) {
     : (Array.isArray(cfgOr.fallbackModels) ? cfgOr.fallbackModels : splitCsv(cfgOr.fallback_models ?? cfgOr.fallbackModels));
   const cfgProviderRouting = cfgOr.provider_routing ?? cfgOr.providerRouting;
 
-  // 3. Defaults — 30s per request is the product default.
-  const DEFAULT_TIMEOUT_MS = 30_000;
+  // 3. Defaults — 60s per request is the product default.
+  const DEFAULT_TIMEOUT_MS = 60_000;
 
   let allowedModels = (envAllowed.length > 0 ? envAllowed : cfgAllowed) || [];
   let tradeoff = (envTradeoff !== undefined && envTradeoff !== '' ? Number(envTradeoff) : (Number.isFinite(cfgTradeoff) ? cfgTradeoff : undefined));
@@ -90,7 +90,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
     .map((provider) => String(provider).trim().toLowerCase())
     .filter(Boolean);
 
-  // timeout_ms: action env > yaml > 30000. Clamp 500ms..600_000ms.
+  // timeout_ms: action env > yaml > 60000. Clamp 500ms..600_000ms.
   let timeoutMs = DEFAULT_TIMEOUT_MS;
   if (envTimeout !== undefined && envTimeout !== '') {
     const n = Number(envTimeout);
@@ -308,5 +308,5 @@ function isHardBannedProvider(provider) {
 module.exports = {
   resolveOpenRouterPolicy,
   HARD_BANNED_PROVIDER_SLUGS,
-  DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000,
+  DEFAULT_OPENROUTER_TIMEOUT_MS: 60_000,
 };
