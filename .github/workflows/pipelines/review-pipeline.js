@@ -111,7 +111,7 @@ const { createReviewTelemetry } = require('../../../src/telemetry/reviewTelemetr
 const { createReviewUnitManifest } = require('../../../src/review/reviewUnitManifest');
 const { fetchImmutableRepositorySnapshot } = require('../../../src/mcp/reviewNavigationSnapshot');
 const { createGitHubBlobClient, createReviewNavigationToolRegistry } = require('../../../src/mcp/reviewNavigationTools');
-const { runPersonaInvestigation } = require('../../../src/review/reviewInvestigation');
+const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../../../src/review/reviewInvestigation');
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
 const { normalizeInvestigationLimits } = require('../../../src/review/evidenceContracts');
@@ -6490,7 +6490,7 @@ async function main(options = {}) {
           for (const batch of passes) {
             const batchPaths = new Set(batch.map((file) => file.path));
             const batchUnitIds = provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)).map((unit) => unit.id);
-            const run = await runPersonaInvestigation({
+            const run = await runBoundedPersonaInvestigation({
               identity: navigationIdentity,
               persona,
               manifest: `${manifest.text}\n<review_units>${canonicalJson(provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)))}</review_units>`,
