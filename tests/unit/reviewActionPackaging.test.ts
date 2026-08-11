@@ -98,6 +98,12 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['llm-api-key'].required).not.toBe(true);
   });
 
+  it('defaults OpenRouter routing to the certified provider cohort without fallback escape', () => {
+    expect(action.inputs['openrouter-provider-routing'].default).toBe(
+      '{"only":["novita","wafer","morph"],"allow_fallbacks":false}',
+    );
+  });
+
   it('exposes verdict and finding counts as outputs so callers can gate on them', () => {
     const outputs = Object.keys(action.outputs || {});
     expect(outputs).toContain('verdict');

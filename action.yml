@@ -226,14 +226,15 @@ inputs:
     default: 'deepinfra,openrouter,decart,sail-research,inceptron,fireworks,together,mancer,parasail'
   openrouter-provider-routing:
     description: >-
-      Optional JSON object forwarded as OpenRouter's provider routing policy. Supports the raw
-      API fields order, allow_fallbacks, require_parameters, data_collection, zdr,
+      JSON object forwarded as OpenRouter's provider routing policy. Defaults to the certified
+      Novita, Wafer, and Morph provider cohort with fallbacks disabled. Supports the raw API
+      fields order, allow_fallbacks, require_parameters, data_collection, zdr,
       enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,
       preferred_max_latency, and max_price. The built-in degraded-provider blocklist remains
       hard-banned and cannot appear in order or only. Action input wins over
       github_action.openrouter.provider_routing in YAML.
     required: false
-    default: ''
+    default: '{"only":["novita","wafer","morph"],"allow_fallbacks":false}'
   dashboard-api-key:
     description: >-
       Optional Review Yeti dashboard ingestion key (ctd_live_...). When empty, the action does
