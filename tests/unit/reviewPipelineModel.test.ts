@@ -282,6 +282,40 @@ describe('reviewWithModel', () => {
     expect(result.decision).toBe('FINDINGS');
   });
 
+  it('enforces the total timeout while reading a non-stream response body', async () => {
+    const calls: any[] = [];
+    const fetchImpl = async (url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url, init, body });
+      const firstAttempt = calls.length === 1;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'x-openrouter-provider' ? (firstAttempt ? 'Morph' : 'Novita') : null },
+        json: async () => {
+          if (firstAttempt) await new Promise((resolve) => setTimeout(resolve, 80));
+          return { choices: [{ message: { content: validFindings } }] };
+        },
+      };
+    };
+
+    const startedAt = Date.now();
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl,
+      maxAttempts: 1,
+      timeoutMs: 20,
+    });
+
+    expect(result.decision).toBe('FINDINGS');
+    expect(calls).toHaveLength(3);
+    expect(calls[1].body.provider.ignore).toContain('morph');
+    expect(result.provider).toBe('Novita');
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+  });
+
   it('quarantines the provider identified by a stream timeout and retries once on a fresh route', async () => {
     const calls: any[] = [];
     const streamResponse = (chunks: any[], { delayMs = 0, abortAfter = false } = {}) => {
@@ -427,6 +461,29 @@ describe('reviewWithModel', () => {
       allow_fallbacks: false,
       require_parameters: true,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
+    });
+  });
+
+  it('adds a lane retry provider exclusion without weakening the configured allowlist', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+      providerIgnore: ['Morph', 'https://not-a-provider.example/ignored'],
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: ['deepinfra'],
+        providerRouting: { only: ['novita', 'wafer', 'morph'], allow_fallbacks: false, ignore: ['deepinfra'] },
+        timeoutMs: 30_000,
+        stream: false,
+      },
+    });
+
+    expect(calls[0].body.provider).toEqual({
+      only: ['novita', 'wafer', 'morph'],
+      allow_fallbacks: false,
+      ignore: ['deepinfra', 'morph'],
     });
   });
 

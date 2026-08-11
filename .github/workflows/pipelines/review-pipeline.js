@@ -1419,6 +1419,44 @@ function waitForAbortableDelay(delayMs, signal) {
   });
 }
 
+function abortError(message = 'request aborted') {
+  return Object.assign(new Error(message), { name: 'AbortError' });
+}
+
+// A fetch response's body reader is not guaranteed to observe an AbortSignal after headers
+// arrive (some providers/proxies leave response.json() pending). Race the body promise against
+// the total request deadline and keep a rejection handler attached to the underlying promise so a
+// late body failure cannot become an unhandled rejection.
+function awaitAbortable(promise, signal) {
+  if (!signal) return Promise.resolve(promise);
+  if (signal.aborted) {
+    Promise.resolve(promise).catch(() => {});
+    return Promise.reject(abortError());
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener?.('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError());
+    };
+    signal.addEventListener?.('abort', onAbort, { once: true });
+    Promise.resolve(promise).then((value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }, (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
 /**
  * OpenRouter chat completion with streaming preferred so a mid-flight timeout still
  * retains the Auto-Router-resolved provider + model from the first SSE event.
@@ -1520,7 +1558,7 @@ async function callOpenRouterChat(fetchImpl, {
     // Attach provider from headers as soon as connect succeeds (before body parse).
     const headerProvider = providerFromHeaders(response);
     try {
-      payload = await response.json();
+      payload = await awaitAbortable(response.json(), totalAbort.signal);
     } catch (err) {
       const elapsed = Math.max(0, Date.now() - t0);
       const aborted = Boolean(totalAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
@@ -1627,7 +1665,7 @@ async function callOpenRouterChat(fetchImpl, {
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await awaitAbortable(reader.read(), totalAbort.signal);
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         // OpenRouter SSE (docs): process complete lines; skip ":" keep-alive comments.
@@ -2365,12 +2403,18 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   // into `provider.ignore` for subsequent retries/fallbacks. This keeps the normal path stable
   // while making a stalled endpoint self-quarantine instead of retrying the same sticky route.
   const timedOutProviders = new Set();
+  const explicitIgnoredProviders = [...new Set(
+    (Array.isArray(options.providerIgnore) ? options.providerIgnore : [])
+      .map((provider) => String(provider || '').trim().toLowerCase())
+      .filter((provider) => /^[a-z0-9._-]{1,100}$/u.test(provider)),
+  )].slice(0, 32);
   let streamRetryRequested = false;
   // OpenRouter session IDs are sticky across runs. Include the effective provider policy so a
   // newly quarantined provider cannot be resurrected by a prior PR/persona session.
   const sessionPolicyProviders = [...new Set([
     ...(Array.isArray(orPolicy.ignoredProviders) ? orPolicy.ignoredProviders : []),
     ...(Array.isArray(orPolicy.providerRouting?.ignore) ? orPolicy.providerRouting.ignore : []),
+    ...explicitIgnoredProviders,
   ])]
     .map((provider) => String(provider).trim().toLowerCase())
     .filter(Boolean)
@@ -2401,6 +2445,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     const configuredIgnored = configuredRouting?.ignore || orPolicy.ignoredProviders || [];
     const ignored = [...new Set([
       ...configuredIgnored,
+      ...explicitIgnoredProviders,
       ...timedOutProviders,
     ])].map((provider) => String(provider).trim().toLowerCase()).filter(Boolean);
     const providerRouting = configuredRouting
@@ -6580,7 +6625,7 @@ async function main(options = {}) {
               limits: investigationLimits,
               evidenceRegistry: makeEvidenceRegistry(persona),
               requireEvidenceBoundary: !options.modelClient,
-              modelTurn: ({ messages, turn, finalOnly, signal }) => callPersonaModelTurn({
+              modelTurn: ({ messages, turn, finalOnly, signal, providerIgnore }) => callPersonaModelTurn({
                 persona,
                 prContext,
                 sessionContext,
@@ -6588,7 +6633,7 @@ async function main(options = {}) {
                 turn,
                 finalOnly,
                 signal,
-                options: { ...modelOptions, investigationUnitIds: batchUnitIds },
+                options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore },
               }),
               signal: cancellation.signal,
               clock: now,
