@@ -4,9 +4,9 @@ const DEFAULTS = Object.freeze({
   enabled: false,
   maxCalls: 12,
   maxReadBytes: 32 * 1024,
-  maxResultBytes: 32 * 1024,
-  maxFindResults: 20,
-  maxScanFiles: 40,
+  maxResultBytes: 8 * 1024,
+  maxFindResults: 50,
+  maxScanFiles: 20,
   timeoutMs: 1_500,
 });
 const MAX_LIMITS = Object.freeze({
@@ -164,10 +164,12 @@ function normalizeSnapshot(snapshot, identity) {
   }
   const files = new Map();
   for (const file of snapshot.files) {
-    if (!validPath(file?.path) || !SHA.test(String(file?.blobSha || '')) || files.has(file.path)) {
+    const ref = String(file?.ref || 'head').toLowerCase();
+    if (!['base', 'head'].includes(ref) || !validPath(file?.path) || !SHA.test(String(file?.blobSha || '')) || files.has(`${ref}:${file.path}`)) {
       throw new Error('review navigation snapshot contains an invalid file record');
     }
-    files.set(file.path, Object.freeze({
+    files.set(`${ref}:${file.path}`, Object.freeze({
+      ref,
       path: file.path,
       blobSha: String(file.blobSha).toLowerCase(),
       patch: typeof file.patch === 'string' ? file.patch : '',
@@ -283,13 +285,15 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
   };
   const target = (tool, args) => {
     const path = args?.path;
+    const ref = String(args?.ref || 'head').toLowerCase();
     if (!validPath(path)) return { result: { status: 'invalid', ...receipt(tool, { reason: 'invalid file path' }) } };
-    const file = files.get(path);
+    if (!['base', 'head'].includes(ref)) return { result: { status: 'invalid', ...receipt(tool, { reason: 'invalid ref' }) } };
+    const file = files.get(`${ref}:${path}`);
     if (!file) return { result: disabled(tool, 'file_not_in_snapshot') };
     return { file };
   };
   const fetchFile = async (file, options) => {
-    const response = await blobClient.getBlob({ repository: identity.repository, blobSha: file.blobSha, headSha: identity.headSha, signal: options?.signal, maxBytes: effectiveConfig.maxReadBytes });
+    const response = await blobClient.getBlob({ repository: identity.repository, blobSha: file.blobSha, headSha: file.ref === 'base' ? identity.baseSha : identity.headSha, signal: options?.signal, maxBytes: effectiveConfig.maxReadBytes });
     if (String(response?.sha || '').toLowerCase() !== file.blobSha) throw navigationError('blob_sha_mismatch');
     return boundedText(response.content, effectiveConfig.maxReadBytes);
   };
@@ -300,16 +304,22 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
     try {
       if (tool === 'file_find') {
         const query = String(args.query || '').trim().toLowerCase();
+        const ref = String(args.ref || 'head').toLowerCase();
         if (!query || query.length > 200) return { status: 'invalid', ...receipt(tool, { reason: 'invalid path query' }) };
-        const paths = [...files.keys()].filter((path) => path.toLowerCase().includes(query)).slice(0, effectiveConfig.maxFindResults);
-        return { status: 'ok', ...receipt(tool, { paths, truncated: paths.length === effectiveConfig.maxFindResults }) };
+        if (!['base', 'head'].includes(ref)) return { status: 'invalid', ...receipt(tool, { reason: 'invalid ref' }) };
+        const paths = [...files.values()].filter((file) => file.ref === ref && file.path.toLowerCase().includes(query)).map((file) => file.path).slice(0, effectiveConfig.maxFindResults);
+        return { status: 'ok', ...receipt(tool, { ref, paths, truncated: paths.length === effectiveConfig.maxFindResults }) };
       }
       if (tool === 'code_search') {
         const query = String(args.query || '').trim();
+        const ref = String(args.ref || 'head').toLowerCase();
+        const paths = Array.isArray(args.paths) ? [...new Set(args.paths.map((path) => String(path).trim()))].slice(0, effectiveConfig.maxScanFiles) : [];
         if (!query || query.length > 200) return { status: 'invalid', ...receipt(tool, { reason: 'invalid code query' }) };
+        if (!['base', 'head'].includes(ref) || paths.length === 0) return { status: 'invalid', ...receipt(tool, { reason: 'paths_required' }) };
         const matches = [];
         let usedBytes = 0;
-        for (const file of [...files.values()].slice(0, effectiveConfig.maxScanFiles)) {
+        const requested = paths.map((path) => files.get(`${ref}:${path}`)).filter(Boolean);
+        for (const file of requested) {
           const loaded = await fetchFile(file, options);
           const lines = loaded.text.split(/\r?\n/u);
           for (let index = 0; index < lines.length; index += 1) {
@@ -322,20 +332,20 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
           }
           if (matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes) break;
         }
-        return { status: 'ok', ...receipt(tool, { query, matches, truncated: matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes, byteCount: usedBytes }) };
+        return { status: 'ok', ...receipt(tool, { ref, query, requestedFiles: paths.length, scannedFiles: requested.length, matches, truncated: requested.length < paths.length || matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes, byteCount: usedBytes }) };
       }
       const resolved = target(tool, args);
       if (resolved.result) return resolved.result;
       if (tool === 'file_read_diff') {
         const rendered = boundedText(resolved.file.patch, effectiveConfig.maxResultBytes);
-        return { status: 'ok', ...receipt(tool, { path: resolved.file.path, blobSha: resolved.file.blobSha, baseSha: identity.baseSha, headSha: identity.headSha, patch: rendered.text, truncated: rendered.truncated, byteCount: rendered.byteCount }) };
+        return { status: 'ok', ...receipt(tool, { ref: resolved.file.ref, path: resolved.file.path, blobSha: resolved.file.blobSha, baseSha: identity.baseSha, headSha: identity.headSha, patch: rendered.text, truncated: rendered.truncated, byteCount: rendered.byteCount }) };
       }
       if (tool === 'file_read') {
         const loaded = await fetchFile(resolved.file, options);
         const selected = lineRange(loaded.text, args.startLine, args.endLine);
         if (selected === null) return { status: 'invalid', ...receipt(tool, { reason: 'invalid line range' }) };
         const rendered = boundedText(selected, effectiveConfig.maxResultBytes);
-        return { status: 'ok', ...receipt(tool, { path: resolved.file.path, blobSha: resolved.file.blobSha, content: rendered.text, truncated: loaded.truncated || rendered.truncated, byteCount: rendered.byteCount }) };
+        return { status: 'ok', ...receipt(tool, { ref: resolved.file.ref, path: resolved.file.path, blobSha: resolved.file.blobSha, content: rendered.text, truncated: loaded.truncated || rendered.truncated, byteCount: rendered.byteCount }) };
       }
     } catch (error) {
       if (isAbort(error) || error?.reviewNavigationCode === 'cancelled' || options?.signal?.aborted) return { status: 'cancelled', ...receipt(tool, { reason: 'cancelled' }) };

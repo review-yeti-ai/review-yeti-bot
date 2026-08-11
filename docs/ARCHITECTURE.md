@@ -20,7 +20,9 @@ pull_request event
   -> read authenticated same-PR ledger and optional local session recap
   -> one provider-neutral memory query (MCP-compatible Honcho when enabled)
   -> plan diff passes within the token budget
-  -> run the applicable enabled persona lanes concurrently
+  -> create an immutable base/head navigation snapshot
+  -> run bounded persona investigations (risk plan -> read-only evidence -> verification)
+  -> derive the terminal outcome from lane, unit, verifier, and exact-head receipts
   -> require every lane marked `required`
   -> moderator reconciliation pass (dedupes across personas)
   -> separate binding arbiter pass (SHIP / FIX_FIRST / BLOCK)
@@ -85,6 +87,22 @@ same versioned event envelope through this pipeline/outbox boundary.
 The trust boundary is intentionally split: GitHub APIs provide authoritative comments, review
 threads, permissions, and exact-head state; the selected memory API provides advisory recall and
 normalized persistence; the runner filesystem provides only temporary/replayable outbox storage.
+
+## Bounded investigation
+
+The production review path is full mode: there is no shadow, dormant, or prompt-only fallback.
+Each persona receives a fixed trust-zoned JSON contract. It may request only `file_read`,
+`file_find`, `code_search`, or `file_read_diff` against an immutable base/head snapshot. Defaults
+are 12 evidence calls, 400 read lines, 50 search matches, 8,000 result bytes, two identical calls,
+five candidate findings, three verifier calls per finding, and four model turns; hard ceilings are
+enforced by the runtime. Receipts retain digests, counts, status, and termination reasons—not raw
+prompts, source text, credentials, or model prose. Any incomplete lane, unresolved evidence,
+unknown receipt, invalid anchor, verifier gap, or stale head blocks merge and publication.
+
+Dependency analysis is only a planner hint for changed manifests, lockfiles, or import contracts;
+the generic evidence runtime establishes the actual claim. See the production [bounded engine
+design](superpowers/specs/2026-08-11-bounded-evidence-review-engine-design.md) for the schema and
+termination matrix.
 
 For a DigitalOcean self-host, use HTTPS at the public reverse proxy, enable JWT authentication with
 the workspace-scoped token supplied to Doppler, and keep PostgreSQL/pgvector, Redis, the configured

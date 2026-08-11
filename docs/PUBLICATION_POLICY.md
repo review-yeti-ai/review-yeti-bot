@@ -24,11 +24,10 @@ Invalid paths and incorrect lines are rejected and counted in the review rather
 than suppressing independently validated conversations. The bot never invents a
 nearby anchor and never falls back to a generic issue comment.
 
-When trusted-base `review.finding_verifier.mode` is `enforce`, a finding must also verify against
-the exact reviewed identity and snapshot before it reaches arbitration or publication. Rejected
-findings are removed; snapshot, identity, side, or anchor uncertainty produces
-`INCOMPLETE_REVIEW`/`BLOCKED`, never `SHIP`. `report_only` is the configured default and attaches
-only a redacted verifier summary, preserving established verdict and marker behavior.
+Every finding must verify against the exact reviewed identity, an evidence receipt emitted by the
+current lane, and the immutable snapshot before it reaches arbitration or publication. Rejected
+findings are removed; snapshot, identity, evidence, side, or anchor uncertainty produces
+`INCOMPLETE_REVIEW`/`BLOCKED`, never `SHIP`. There is no report-only publication path.
 
 ## Idempotency
 

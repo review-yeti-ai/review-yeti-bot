@@ -2,6 +2,19 @@
 # Context7 is on by default for this repo when CONTEXT7_API_KEY is set.
 version: 4
 
+# The bounded investigation engine is production-authoritative. These are trusted-base limits;
+# Action inputs may only lower them and cannot disable investigation or raise the hard ceilings.
+review:
+  investigation:
+    max_calls: 12
+    max_read_lines: 400
+    max_search_matches: 50
+    max_result_bytes: 8000
+    max_repeated_calls: 2
+    max_candidate_findings: 5
+    max_verifier_calls_per_finding: 3
+    max_turns: 4
+
 mcp:
   context7:
     enabled: true
