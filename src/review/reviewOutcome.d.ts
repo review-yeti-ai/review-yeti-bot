@@ -4,6 +4,7 @@ export interface ReceiptOutcomeInput {
   laneReceipts?: unknown[];
   findingVerification?: { summary?: { incomplete?: boolean } } | null;
   headCurrent?: boolean;
+  evidenceEnabled?: boolean;
 }
 
 export function deriveReceiptOutcome(input?: ReceiptOutcomeInput): Record<string, unknown>;

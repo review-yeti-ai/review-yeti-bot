@@ -1017,8 +1017,16 @@ async function applyFindingVerifier(personaResults, changedFiles, policy, prCont
   return { personaResults: sanitized, verification };
 }
 
-function applyFindingVerifierGate(arbitration, verification, policy) {
+function applyFindingVerifierGate(arbitration, verification, policy, { evidenceEnabled = true } = {}) {
   if (!policy?.enabled || policy.mode !== 'enforce' || verification?.summary?.incomplete !== true) return arbitration;
+  // Evidence/navigation tooling can be deliberately unavailable for the whole review (e.g. a
+  // monorepo over the bounded-navigation-snapshot cap -- reviewNavigationTools.js / PR #37).
+  // With evidence tooling off, personas structurally cannot produce a finding carrying valid
+  // evidence-receipt ids (see the evidence-ownership filter and reviewInvestigation.js
+  // candidateFindings), so `verification.summary.incomplete` here can only mean "there was
+  // nothing to verify," not a real coverage gap. Do not let it override a clean arbitration;
+  // any real finding still flows through `arbitration.verdict` untouched by this early return.
+  if (evidenceEnabled === false) return arbitration;
   return {
     ...arbitration,
     verdict: 'BLOCK',
@@ -6078,6 +6086,12 @@ async function main(options = {}) {
   let usageTotal;
   let laneExecutionReceipts = [];
   let investigationSummary = null;
+  // Whether bounded evidence/navigation tooling was actually available and enabled for this
+  // review. False for monorepos over the bounded-navigation-snapshot file cap (PR #37) or any
+  // other fail-soft navigation-registry degradation. Threaded into applyFindingVerifierGate and
+  // deriveReceiptOutcome so that "evidence tooling was deliberately unavailable" degrades those
+  // gates to the persona-arbitration verdict instead of forcing a false BLOCK.
+  let evidenceEnabled = true;
   let finalResult = null;
   let dashboardStartedDelivery = { status: 'disabled', attempts: 0 };
   let dashboardDelivery = { status: 'disabled', attempts: 0 };
@@ -6727,6 +6741,15 @@ async function main(options = {}) {
         carriedOpen = reconciliation.carriedOpen;
         ignored = reconciliation.ignored;
         recurrentResolved = reconciliation.recurrentResolved;
+        // Evidence tooling counts as enabled only if a real registry (or an explicit test
+        // double) was actually constructed for personas to call -- not merely attempted. A
+        // snapshot fetch failure, a snapshot too large for the bounded registry, or any other
+        // fail-soft path (see makeEvidenceRegistry above) leaves navigationError set and must
+        // report evidenceEnabled=false so applyFindingVerifierGate/deriveReceiptOutcome degrade
+        // instead of forcing a false BLOCK.
+        evidenceEnabled = typeof options.evidenceRegistryFactory === 'function'
+          || Boolean(options.evidenceRegistry && typeof options.evidenceRegistry.call === 'function')
+          || Boolean(navigationSnapshot && blobClient && !navigationError);
         investigationSummary = {
           schemaVersion: 'review-investigation-summary-v1',
           enabled: true,
@@ -6736,6 +6759,7 @@ async function main(options = {}) {
           laneCount: laneExecutionReceipts.length,
           evidenceReceipts: laneExecutionReceipts.reduce((count, receipt) => count + Number(receipt.evidenceCalls || 0), 0),
           navigation: navigationSnapshot ? { complete: navigationSnapshot.complete, truncated: navigationSnapshot.truncated } : { complete: false, error: navigationError ? 'snapshot_unavailable' : 'snapshot_not_configured' },
+          evidenceEnabled,
           dependencyHints: dependencyRiskHints.length,
         };
       } else {
@@ -6837,7 +6861,7 @@ async function main(options = {}) {
       carriedFindings: carriedOpen,
       carriedChangedFiles: diffFiles,
     });
-    arbitration = applyFindingVerifierGate(arbitration, findingVerification, findingVerifierPolicy);
+    arbitration = applyFindingVerifierGate(arbitration, findingVerification, findingVerifierPolicy, { evidenceEnabled });
     if (boundedMode) {
       arbitration = deriveReceiptOutcome({
         arbitration,
@@ -6845,6 +6869,7 @@ async function main(options = {}) {
         laneReceipts: laneExecutionReceipts,
         findingVerification: findingVerification || { summary: { incomplete: true } },
         headCurrent: true,
+        evidenceEnabled,
       });
     }
     }

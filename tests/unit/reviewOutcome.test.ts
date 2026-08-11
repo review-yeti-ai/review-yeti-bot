@@ -61,4 +61,68 @@ describe('receipt-derived review outcome', () => {
     expect(result).toMatchObject({ status: 'PARTIAL_REVIEW', verdict: 'BLOCK', mergeEligible: false });
     expect(result.findings).toEqual([{ title: 'confirmed' }]);
   });
+
+  // Regression coverage for the cisco-cdr false-BLOCK incident (2026-08-11): a monorepo whose
+  // navigation snapshot exceeds the bounded-file cap (reviewNavigationTools.js) deliberately
+  // disables evidence tooling for the whole review (PR #37, "fail-soft registry construction").
+  // That is a known, expected degradation -- not a lane execution failure -- so it must not
+  // force BLOCK on a review where every persona actually completed and approved.
+  describe('evidence-tooling-unavailable degradation (does not force a false BLOCK)', () => {
+    it('CORE REGRESSION: ships a clean SHIP verdict with zero lane receipts when evidence tooling was deliberately unavailable', () => {
+      const result = deriveReceiptOutcome({
+        arbitration: cleanShip,
+        unitManifest: completeManifest,
+        laneReceipts: [],
+        findingVerification: completeVerification,
+        headCurrent: true,
+        evidenceEnabled: false,
+      });
+      expect(result).toMatchObject({ verdict: 'SHIP', gateDecision: 'PASS', mergeEligible: true, promotionReady: true });
+      // Must not silently claim full coverage -- the degraded state stays visible.
+      expect(result.coverageStatus).not.toBe('complete');
+    });
+
+    it('OVER-CORRECTION GUARD: still BLOCKs on zero lane receipts when evidence tooling was enabled (a genuine failure)', () => {
+      const result = deriveReceiptOutcome({
+        arbitration: cleanShip,
+        unitManifest: completeManifest,
+        laneReceipts: [],
+        findingVerification: completeVerification,
+        headCurrent: true,
+        evidenceEnabled: true,
+      });
+      expect(result).toMatchObject({ verdict: 'BLOCK', gateDecision: 'BLOCKED', mergeEligible: false });
+    });
+
+    it('FINDINGS ALWAYS WIN: still blocks a FIX_FIRST/BLOCK arbitration verdict even when evidence tooling was unavailable', () => {
+      const fixFirst = { verdict: 'FIX_FIRST', status: 'FIX_FIRST', rationale: 'Real defect found.', mergeEligible: false, findings: [{ title: 'sql injection' }] };
+      const result = deriveReceiptOutcome({
+        arbitration: fixFirst,
+        unitManifest: completeManifest,
+        laneReceipts: [],
+        findingVerification: completeVerification,
+        headCurrent: true,
+        evidenceEnabled: false,
+      });
+      expect(result).toMatchObject({ verdict: 'FIX_FIRST', gateDecision: 'BLOCKED', mergeEligible: false });
+    });
+
+    it('reproduces the live incident shape: 5 completed persona lanes, finding-verifier flagged incomplete only because navigation was truncated', () => {
+      // This mirrors the exact production shape: laneReceipts are NOT empty (every persona
+      // lane completed normally), but findingVerification.summary.incomplete was forced true
+      // upstream by the monorepo navigation-snapshot truncation, not a real defect.
+      const completedLanes = ['security', 'testing', 'style', 'architecture', 'performance'].map((personaId) => (
+        createLaneExecutionReceipt({ identity, personaId, plan, termination: 'completed' })
+      ));
+      const result = deriveReceiptOutcome({
+        arbitration: cleanShip,
+        unitManifest: completeManifest,
+        laneReceipts: completedLanes,
+        findingVerification: { summary: { incomplete: true, needsReview: 0 } },
+        headCurrent: true,
+        evidenceEnabled: false,
+      });
+      expect(result).toMatchObject({ verdict: 'SHIP', gateDecision: 'PASS', mergeEligible: true });
+    });
+  });
 });

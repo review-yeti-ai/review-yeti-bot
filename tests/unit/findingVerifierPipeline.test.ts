@@ -209,4 +209,32 @@ describe('finding verifier pipeline policy and publication fence', () => {
     }, { enabled: true, mode: 'enforce' });
     expect(blocked).toMatchObject({ verdict: 'BLOCK', status: 'INCOMPLETE_REVIEW', gateDecision: 'BLOCKED', mergeEligible: false });
   });
+
+  // Regression coverage for the cisco-cdr false-BLOCK incident (2026-08-11). This gate runs
+  // BEFORE deriveReceiptOutcome and independently rewrites arbitration.verdict to 'BLOCK'
+  // whenever verification.summary.incomplete is true -- fed by the same navigation-truncation
+  // signal that a monorepo (>5,000 files, the bounded-navigation-snapshot cap) sets on every
+  // review. Without this fix, deriveReceiptOutcome never even sees a 'SHIP' verdict to degrade
+  // gracefully: this gate already overwrote it to 'BLOCK' first.
+  describe('evidence-tooling-unavailable degradation', () => {
+    it('CORE REGRESSION: does not force BLOCK on a clean SHIP when evidence tooling was unavailable for the whole review', () => {
+      const result = pipeline.applyFindingVerifierGate(
+        { verdict: 'SHIP', status: 'SHIP', rationale: 'Clean.', mergeEligible: true },
+        { summary: { needsReview: 0, incomplete: true } },
+        { enabled: true, mode: 'enforce' },
+        { evidenceEnabled: false },
+      );
+      expect(result).toMatchObject({ verdict: 'SHIP', mergeEligible: true });
+    });
+
+    it('OVER-CORRECTION GUARD: still forces BLOCK when evidence tooling was enabled (default, unchanged behavior)', () => {
+      const result = pipeline.applyFindingVerifierGate(
+        { verdict: 'SHIP', status: 'SHIP', rationale: 'Clean.', mergeEligible: true },
+        { summary: { needsReview: 1, incomplete: true } },
+        { enabled: true, mode: 'enforce' },
+        { evidenceEnabled: true },
+      );
+      expect(result).toMatchObject({ verdict: 'BLOCK', gateDecision: 'BLOCKED', mergeEligible: false });
+    });
+  });
 });
