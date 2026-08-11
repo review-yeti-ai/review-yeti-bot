@@ -1480,7 +1480,31 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
       };
     }
 
-    const payload = await response.json();
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      const elapsed = Math.max(0, Date.now() - t0);
+      const aborted = Boolean(requestAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
+      console.warn(
+        `[OpenRouter] non-stream response.json() ${aborted ? 'ABORTED' : 'ERROR'}`
+        + ` model=${body.model} elapsed_ms=${elapsed} budget_ms=${timeoutMs}`
+        + ` name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 160)}`,
+      );
+      return {
+        ok: false,
+        aborted,
+        status: response.status,
+        detail: String(err?.message || err).slice(0, 500),
+        model: body.model,
+        provider: 'openrouter',
+        generationId: null,
+        content: '',
+        usage: null,
+        streamed: false,
+        error: err,
+      };
+    }
     const route = resolveRouteMeta(payload, body.model);
     const genHeader = response.headers?.get?.('x-generation-id') || response.headers?.get?.('X-Generation-Id');
     if (genHeader && !route.generationId) route.generationId = String(genHeader).trim();
@@ -5687,7 +5711,14 @@ function createPipelineCancellation({ signal, installProcessHandlers = false } =
     signal: controller.signal,
     cancel,
     race(operation) {
-      return Promise.race([Promise.resolve(operation), shutdown]);
+      const wrapped = Promise.resolve(operation);
+      // When shutdown wins, `wrapped` keeps running in the background and its eventual
+      // settlement is discarded by this race. Observe it here so a late rejection (e.g. an
+      // in-flight fetch's AbortError landing after cancellation already won) never surfaces
+      // as an unhandled promise rejection — Node treats those as fatal (exit code 1) even
+      // though the pipeline already finished publishing its verdict.
+      wrapped.catch(() => {});
+      return Promise.race([wrapped, shutdown]);
     },
     isCancellationResult(value) {
       return value === cancellationResult;
