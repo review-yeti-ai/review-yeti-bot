@@ -106,6 +106,19 @@ bounded read-only tools. It cannot run shell commands, mutate GitHub, write memo
 arbitrary tools. See [the Pi/MCP adapter guide](docs/PI_MCP_ADAPTER.md) for the construction and
 security contract.
 
+### Manual evaluation toolkit
+
+The full baseline evaluation is an explicit release-level tool, not an automatic pull-request
+workflow. Run the credential-free fixture suite with:
+
+```bash
+npx review-yeti eval run --fixture tests/fixtures/review-intelligence/offline-promotion-matrix.json
+```
+
+Use `npx review-yeti eval tui` for the terminal view, or see
+[the evaluation CLI guide](docs/EVALUATION_CLI.md) for live runs, receipts, comparisons, and exit
+codes.
+
 ---
 
 ## What you get
