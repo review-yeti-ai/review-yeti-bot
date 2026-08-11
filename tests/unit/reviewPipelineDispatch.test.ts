@@ -204,6 +204,21 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     expect(arbitration.mergeEligible).toBe(false);
   });
 
+  it('blocks a lane that exhausted its evidence investigation turns', () => {
+    const arbitration = computeArbitrationQuorum([
+      { personaId: 'dependencies', provider: 'provider-a', model: 'model-a', decision: 'INCOMPLETE_REVIEW', reviewStatus: 'INCOMPLETE_REVIEW', incomplete: true, findings: [] },
+      { personaId: 'security', provider: 'provider-b', model: 'model-b', decision: 'APPROVE', findings: [] },
+    ], 2, {
+      expectedPersonaIds: ['dependencies', 'security'],
+      coveragePolicy: { mandatory_personas: [], provider_diversity_min: 1 },
+    });
+
+    expect(arbitration.status).toBe('INCOMPLETE_REVIEW');
+    expect(arbitration.verdict).toBe('BLOCK');
+    expect(arbitration.mergeEligible).toBe(false);
+    expect(arbitration.coverage.incompletePersonaIds).toEqual(['dependencies']);
+  });
+
   it('requires mandatory personas and provider diversity before partial status', () => {
     const missingSecurity = computeArbitrationQuorum([
       { personaId: 'testing', provider: 'provider-a', model: 'model-a', decision: 'APPROVE', findings: [] },
@@ -266,6 +281,16 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     expect(source).toContain('coverageIdentity: currentCoverageIdentity');
     expect(source).toMatch(/All reviewer personas are disabled[\s\S]*coverageStatus:\s*'incomplete'/);
     expect(source).toMatch(/All reviewer personas are disabled[\s\S]*mergeEligible:\s*false/);
+    expect(source).toContain('maxInvestigationTurns');
+    expect(source).toContain('buildDependencyEvidence');
+    expect(source).toContain('INCOMPLETE_REVIEW');
+  });
+
+  it('resolves a bounded investigation-turn policy from trusted config and action env', () => {
+    const policy = pipeline.resolveActionReviewPolicy({ parsed: { limits: { max_investigation_turns: 3 } } }, {});
+    expect(policy.maxInvestigationTurns).toBe(3);
+    expect(pipeline.resolveActionReviewPolicy({ parsed: {} }, { MAX_INVESTIGATION_TURNS: '1' }).maxInvestigationTurns).toBe(1);
+    expect(pipeline.resolveActionReviewPolicy({ parsed: {} }, { MAX_INVESTIGATION_TURNS: '99' }).maxInvestigationTurns).toBe(3);
   });
 
   it('keeps Honcho advisory context outside deterministic decision reconciliation', () => {

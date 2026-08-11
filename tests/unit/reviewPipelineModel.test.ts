@@ -9,6 +9,7 @@ const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/rev
 
 const { reviewWithModel, resolveModelConfig, PERSONA_CHARTERS } = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
+const dependencyPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'dependencies');
 
 const diffFiles = [
   {
@@ -415,6 +416,75 @@ describe('reviewWithModel', () => {
     expect(res.findings[0].severity).toBe('P1');
     expect(res.findings[0].path).toBe('src/api/user.ts');
     expect(res.decision).toBe('FINDINGS');
+  });
+
+  it('normalizes a dependency evidence request without treating it as a clean approval', async () => {
+    const { impl } = stubFetch(JSON.stringify({
+      review_status: 'NEEDS_EVIDENCE',
+      evidence_requests: [{ path: 'package-lock.json', kind: 'lockfile', reason: 'verify the resolved integrity entry' }],
+      findings: [],
+    }));
+    const res = await reviewWithModel(dependencyPersona, [{
+      path: 'package.json',
+      patch: '@@ -1 +1 @@\n+{"dependencies":{"example":"1.0.0"}}',
+    }], { repo: 'o/r' }, null, {
+      apiKey: 'k', fetchImpl: impl,
+    });
+
+    expect(res.reviewStatus).toBe('NEEDS_EVIDENCE');
+    expect(res.evidenceRequests).toEqual([{
+      path: 'package-lock.json',
+      kind: 'lockfile',
+      reason: 'verify the resolved integrity entry',
+    }]);
+    expect(res.decision).toBe('NEEDS_EVIDENCE');
+    expect(res.findings).toEqual([]);
+  });
+
+  it('includes bounded evidence and turn state in an investigation follow-up prompt', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    const res = await reviewWithModel(dependencyPersona, [{
+      path: 'package-lock.json',
+      patch: '@@ -1 +1 @@\n+"integrity":"sha512-example"',
+    }], { repo: 'o/r' }, {
+      investigationContext: 'DEPENDENCY EVIDENCE\n- package-lock.json: integrity=sha512-example',
+    }, {
+      apiKey: 'k', fetchImpl: impl, turn: 2, maxInvestigationTurns: 2,
+    });
+
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
+    expect(system).toContain('evidence follow-up');
+    expect(user).toContain('Dependency evidence follow-up turn 2 of 2');
+    expect(user).toContain('sha512-example');
+    expect(res.turn).toBe(2);
+    expect(res.reviewStatus).toBe('APPROVE');
+  });
+
+  it('runs one bounded dependency evidence follow-up and marks unresolved evidence incomplete', async () => {
+    const calls: any[] = [];
+    const result = await pipeline.runPersonaInvestigation({
+      persona: dependencyPersona,
+      diffFiles: [{ path: 'package.json', patch: '@@ -1 +1 @@\n+"example":"1.0.0"' }],
+      allDiffFiles: [{ path: 'package.json', patch: '@@ -1 +1 @@\n+"example":"1.0.0"' }],
+      prContext: { repo: 'o/r', prNumber: '1' },
+      maxInvestigationTurns: 2,
+      modelOptions: {
+        modelClient: ({ options }: any) => {
+          calls.push(options);
+          return calls.length === 1
+            ? { personaId: 'dependencies', displayName: 'Dependencies', provider: 'test', model: 'test', decision: 'NEEDS_EVIDENCE', reviewStatus: 'NEEDS_EVIDENCE', evidenceRequests: [{ path: 'package-lock.json', kind: 'lockfile', reason: 'check the resolved version' }], findings: [], usage: { promptTokens: 1, completionTokens: 1 } }
+            : { personaId: 'dependencies', displayName: 'Dependencies', provider: 'test', model: 'test', decision: 'APPROVE', reviewStatus: 'APPROVE', evidenceRequests: [], findings: [], usage: { promptTokens: 1, completionTokens: 1 } };
+        },
+      },
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].turn).toBe(2);
+    expect(result.reviewStatus).toBe('INCOMPLETE_REVIEW');
+    expect(result.decision).toBe('INCOMPLETE_REVIEW');
+    expect(result.incomplete).toBe(true);
+    expect(result.investigationTurns).toBe(2);
   });
 
   it('parses findings wrapped in a markdown code fence', async () => {
