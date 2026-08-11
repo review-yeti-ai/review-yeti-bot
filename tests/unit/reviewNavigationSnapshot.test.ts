@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const { fetchImmutableRepositorySnapshot } = require('../../src/mcp/reviewNavigationSnapshot.js');
+const { fetchImmutableRepositorySnapshot, MAX_FILES } = require('../../src/mcp/reviewNavigationSnapshot.js');
+const { createReviewNavigationToolRegistry } = require('../../src/mcp/reviewNavigationTools.js');
 
 const identity = { repository: 'acme/widgets', prNumber: 17, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
 
@@ -32,7 +33,7 @@ describe('immutable review navigation snapshot', () => {
   });
 
   it('caps base+head monorepo trees at MAX_FILES and keeps changed paths', async () => {
-    const { MAX_FILES, boundSnapshotFiles } = require('../../src/mcp/reviewNavigationSnapshot.js');
+    const { boundSnapshotFiles } = require('../../src/mcp/reviewNavigationSnapshot.js');
     // Each tree contributes MAX_FILES blobs → combined overlay would exceed the registry bound.
     const baseTree = Array.from({ length: MAX_FILES }, (_, i) => ({
       type: 'blob',
@@ -60,9 +61,7 @@ describe('immutable review navigation snapshot', () => {
 
     expect(snapshot.files.length).toBeLessThanOrEqual(MAX_FILES);
     expect(snapshot.truncated).toBe(true);
-    // Ambient monorepo truncation must NOT mark complete=false when the PR
-    // changed path is fully indexed — that used to force BLOCK with 0 findings.
-    expect(snapshot.complete).toBe(true);
+    expect(snapshot.complete).toBe(false);
     expect(snapshot.files).toEqual(expect.arrayContaining([
       expect.objectContaining({ ref: 'head', path: 'zzz/important.js', blobSha: '3'.repeat(40), patch: expect.stringContaining('@@') }),
     ]));
@@ -76,5 +75,36 @@ describe('immutable review navigation snapshot', () => {
     expect(bounded.truncated).toBe(true);
     expect(bounded.files.length).toBe(MAX_FILES);
     expect(bounded.files.some((f: { path: string }) => f.path === 'zzz/keep.js')).toBe(true);
+  });
+
+  it('keeps every exact diff path navigable when a complete monorepo tree exceeds the source cap', async () => {
+    const changedFiles = Array.from({ length: 24 }, (_, index) => ({
+      path: `zzz/exact-${String(index).padStart(2, '0')}.js`,
+      patch: `@@ -1 +1 @@\n-old-${index}\n+new-${index}`,
+    }));
+    const filler = (label: string, sha: string) => Array.from({ length: MAX_FILES }, (_, index) => ({
+      type: 'blob',
+      path: `lib/${label}-${String(index).padStart(5, '0')}.js`,
+      sha,
+    }));
+    const baseTree = [...filler('base', '4'.repeat(40)), ...changedFiles.map((file) => ({ type: 'blob', path: file.path, sha: '5'.repeat(40) }))];
+    const headTree = [...filler('head', '6'.repeat(40)), ...changedFiles.map((file) => ({ type: 'blob', path: file.path, sha: '7'.repeat(40) }))];
+    const fetchImplementation = vi.fn()
+      .mockResolvedValueOnce(response({ truncated: false, tree: baseTree }))
+      .mockResolvedValueOnce(response({ truncated: false, tree: headTree }));
+
+    const snapshot = await fetchImmutableRepositorySnapshot({ identity, changedFiles, token: 'test-token', fetchImplementation });
+    const registry = createReviewNavigationToolRegistry({
+      identity,
+      snapshot,
+      blobClient: { getBlob: vi.fn() },
+      config: { enabled: true, maxFindResults: 50 },
+    });
+
+    expect(snapshot).toMatchObject({ complete: false, truncated: true });
+    await expect(registry.call('file_find', { ref: 'head', query: 'zzz/exact-' })).resolves.toMatchObject({
+      status: 'ok',
+      paths: changedFiles.map((file) => file.path),
+    });
   });
 });
