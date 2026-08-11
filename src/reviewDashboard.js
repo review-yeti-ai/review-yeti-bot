@@ -9,6 +9,7 @@ const DEFAULT_SITE_URL = 'https://reviewyeti.ai';
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 const VALID_STATUSES = new Set(['completed', 'failed', 'incomplete']);
 const VALID_ENFORCEMENT = new Set(['advisory', 'block_on_block', 'block_non_ship']);
+const VALID_GATE_DECISIONS = new Set(['PASS', 'BLOCKED']);
 
 function clampString(value, maxLength = 2000) {
   return String(value ?? '').trim().slice(0, maxLength);
@@ -66,6 +67,39 @@ function sanitizeFinding(repository, personaId, finding) {
   };
 }
 
+function normalizeArbitration(arbitration = {}, personaResults = [], publicationPlan) {
+  const thresholds = arbitration.thresholds || {};
+  const lanes = Array.isArray(personaResults) ? personaResults : [];
+  const expectedPersonas = Array.isArray(arbitration.expectedPersonas)
+    ? arbitration.expectedPersonas
+    : lanes.map((lane) => lane.personaId || lane.id).filter(Boolean);
+  const completedPersonas = Array.isArray(arbitration.completedPersonas)
+    ? arbitration.completedPersonas
+    : lanes.filter((lane) => lane.decision !== 'ERROR' && !lane.error).map((lane) => lane.personaId || lane.id).filter(Boolean);
+  const gateDecision = String(arbitration.gateDecision || '').toUpperCase();
+  const publication = publicationPlan ? {
+    publishedFindings: (publicationPlan.lineComments || []).length
+      + (publicationPlan.fileComments || []).length
+      + (publicationPlan.advisories || []).length,
+    rejectedFindings: (publicationPlan.rejected || []).length,
+  } : undefined;
+
+  return {
+    algorithmVersion: clampString(arbitration.algorithmVersion || 'review-arbitration-v1', 100),
+    expectedPersonas: expectedPersonas.map((persona) => clampString(persona, 100)),
+    completedPersonas: completedPersonas.map((persona) => clampString(persona, 100)),
+    quorumSatisfied: Boolean(arbitration.quorumSatisfied),
+    coverageQuorumSatisfied: Boolean(arbitration.coverageQuorumSatisfied),
+    gateDecision: VALID_GATE_DECISIONS.has(gateDecision) ? gateDecision : 'BLOCKED',
+    mergeEligible: Boolean(arbitration.mergeEligible),
+    thresholds: {
+      blockP1: nonNegativeInteger(thresholds.blockP1),
+      fixP2: nonNegativeInteger(thresholds.fixP2),
+    },
+    ...(publication ? { publication } : {}),
+  };
+}
+
 function workflowIdentity(env = process.env) {
   const server = String(env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '');
   const repository = clampString(env.PR_REPO || env.GITHUB_REPOSITORY || 'unknown/unknown', 300);
@@ -83,7 +117,7 @@ function buildReviewEvent(options = {}, env = process.env) {
   const eventPr = context.eventData?.pull_request || {};
   const repository = clampString(context.repo || env.PR_REPO || env.GITHUB_REPOSITORY || 'unknown/unknown', 300);
   const workflow = workflowIdentity({ ...env, PR_REPO: repository });
-  const prNumber = nonNegativeInteger(context.prNumber || env.PR_NUMBER);
+  const prNumber = Math.max(1, nonNegativeInteger(context.prNumber || env.PR_NUMBER));
   const headSha = clampString(context.headSha || eventPr.head?.sha || env.PR_HEAD_SHA || env.GITHUB_SHA || 'unknown', 100);
   const baseSha = clampString(context.baseSha || eventPr.base?.sha || env.GITHUB_BASE_SHA || '', 100);
   const eventKey = [repository.toLowerCase(), prNumber, headSha, workflow.runId, workflow.runAttempt].join(':');
@@ -101,14 +135,21 @@ function buildReviewEvent(options = {}, env = process.env) {
     : 'advisory';
   const githubUrl = eventPr.html_url
     || (prNumber ? `${String(env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '')}/${repository}/pull/${prNumber}` : '');
-  const findings = personaResults.flatMap((lane) => (lane.findings || [])
-    .map((finding) => sanitizeFinding(repository, lane.personaId || lane.id, {
+  const sourceFindings = Array.isArray(options.findings)
+    ? options.findings
+    : Array.isArray(options.arbitration?.findings)
+      ? options.arbitration.findings
+      : personaResults.flatMap((lane) => (lane.findings || [])
+        .map((finding) => ({ ...finding, persona: finding.persona || lane.personaId || lane.id })));
+  const findings = sourceFindings
+    .map((finding) => sanitizeFinding(repository, finding.persona || finding.personaId || 'unknown', {
       ...finding,
       githubUrl: finding.githubUrl || (githubUrl && finding.path
         ? `${githubUrl}/files#diff-${sha256(finding.path)}${finding.line ? `R${nonNegativeInteger(finding.line)}` : ''}`
         : ''),
     }))
-    .filter(Boolean));
+    .filter(Boolean);
+  const uniqueFindings = [...new Map(findings.map((finding) => [finding.fingerprint, finding])).values()];
 
   return {
     schemaVersion: '1.0',
@@ -156,6 +197,12 @@ function buildReviewEvent(options = {}, env = process.env) {
         totalTokens: nonNegativeInteger(usage.totalTokens),
         costUSD: finiteCost(usage.costUSD),
       },
+      ...(options.arbitration ? {
+        arbitration: normalizeArbitration({
+          ...options.arbitration,
+          ...(Array.isArray(options.expectedPersonas) ? { expectedPersonas: options.expectedPersonas } : {}),
+        }, personaResults, options.publicationPlan),
+      } : {}),
       personas: personaResults.map((lane) => ({
         persona: clampString(lane.personaId || lane.id, 100),
         provider: clampString(lane.provider || 'unknown', 100),
@@ -168,7 +215,7 @@ function buildReviewEvent(options = {}, env = process.env) {
           || nonNegativeInteger(lane.usage?.promptTokens) + nonNegativeInteger(lane.usage?.completionTokens),
         costUSD: finiteCost(lane.usage?.costUSD),
       })),
-      ...(options.detail === 'metrics' ? {} : { findings }),
+      ...(options.detail === 'metrics' ? {} : { findings: uniqueFindings }),
     },
   };
 }
@@ -208,14 +255,15 @@ function parseResponseBody(response) {
 
 async function deliverReviewEvent(options = {}) {
   const apiKey = String(options.apiKey || '');
-  if (!apiKey) return { status: 'disabled', attempts: 0 };
+  const configuredUrl = String(options.apiUrl || options.url || '');
+  if (!apiKey || !configuredUrl) return { status: 'disabled', attempts: 0 };
   if (!/^ctd_live_[A-Za-z0-9_-]+$/.test(apiKey)) return { status: 'failed', attempts: 0, reason: 'invalid dashboard key format' };
 
   const event = typeof options.event === 'string' ? JSON.parse(options.event) : options.event;
   const payload = JSON.stringify(event);
   if (Buffer.byteLength(payload) > MAX_PAYLOAD_BYTES) return { status: 'failed', attempts: 0, reason: 'payload exceeds 1 MB' };
-  const endpoint = resolveApiUrl(options.apiUrl || options.url);
-  const timeoutMs = Math.max(500, Math.min(60_000, nonNegativeInteger(options.timeoutMs) || DEFAULT_TIMEOUT_MS));
+  const endpoint = resolveApiUrl(configuredUrl);
+  const timeoutMs = Math.max(1, Math.min(10_000, nonNegativeInteger(options.timeoutMs) || DEFAULT_TIMEOUT_MS));
   const fetchImpl = options.fetchImpl || fetch;
   const wait = options.wait || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const signal = options.signal;
@@ -238,7 +286,7 @@ async function deliverReviewEvent(options = {}) {
         body: payload,
         signal: controller.signal,
       });
-      if (response.status === 200 || response.status === 202) {
+      if (response.status >= 200 && response.status < 300) {
         const body = await parseResponseBody(response);
         const status = response.status === 200 ? 'duplicate' : 'accepted';
         const reviewRunId = typeof body?.reviewRunId === 'string' ? body.reviewRunId : undefined;
