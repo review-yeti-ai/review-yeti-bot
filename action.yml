@@ -247,8 +247,8 @@ inputs:
     default: ''
   dashboard-url:
     description: >-
-      Review Yeti Cloud site origin used to build the safe dashboard-review-url output. Set this
-      alongside dashboard-api-url for a self-hosted dashboard.
+      Review Yeti Cloud site origin used to build the safe dashboard-review-url output and link in
+      the final GitHub review. Set this alongside dashboard-api-url for a self-hosted dashboard.
     required: false
     default: 'https://reviewyeti.ai'
   dashboard-detail:
@@ -334,7 +334,7 @@ outputs:
     description: 'Count of bounded telemetry events emitted; raw telemetry is never exposed as an Action output.'
     value: ${{ steps.review.outputs.telemetry-events }}
   dashboard-delivery:
-    description: 'Optional dashboard delivery result: disabled, accepted, duplicate, or failed. Delivery never changes the review verdict.'
+    description: 'Optional dashboard delivery result: disabled, accepted, duplicate, cancelled, or failed. Delivery never changes the review verdict.'
     value: ${{ steps.review.outputs.dashboard-delivery }}
   dashboard-review-url:
     description: 'Full cloud review URL returned by the dashboard after accepted or duplicate delivery.'

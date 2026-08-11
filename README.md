@@ -533,13 +533,14 @@ over collapsing two distinct defects, since the second hides one.
 | `github-token` | workflow token | Token used to read the diff and post the review comment. The default workflow token is sufficient for same-repository reviews. |
 | `dashboard-api-key` | — | Optional Review Yeti Cloud ingestion key. It is sent only as a Bearer credential and is never logged; delivery failures never change the GitHub review verdict. |
 | `dashboard-api-url` | — | Optional full `review-event.v1` ingestion endpoint, such as `https://api.reviewyeti.ai/api/v1/review-events`. Must be paired with `dashboard-api-key`. |
-| `dashboard-url` | `https://reviewyeti.ai` | Cloud site origin used to build the safe `dashboard-review-url` output when the response includes a review run id. |
+| `dashboard-url` | `https://reviewyeti.ai` | Cloud site origin used to build the safe `dashboard-review-url` output and link in the final GitHub review. |
 | `dashboard-detail` | `full` | Cloud detail level: `full` retains structured findings; `metrics` sends aggregates only. |
 | `dashboard-timeout-ms` | `10000` | Fail-soft cloud delivery timeout in milliseconds. |
 
-When `dashboard-api-key` is configured and the cloud accepts the event, the action exposes a safe
-`dashboard-review-url` output when the response includes a review run id. Cloud delivery is
-advisory: a disabled or unavailable dashboard never changes the GitHub verdict or publication result.
+When `dashboard-api-key` is configured and the cloud accepts the event, the final GitHub review
+includes a link to the exact cloud run when the response includes a review run id. The action also
+exposes that URL as `dashboard-review-url`. Cloud delivery is advisory: a disabled or unavailable
+dashboard never changes the GitHub verdict or publication result.
 
 Provider routing uses OpenRouter's raw API field names. For example:
 

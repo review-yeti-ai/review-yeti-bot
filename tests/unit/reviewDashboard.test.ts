@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import Ajv2020 from 'ajv/dist/2020';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const dashboard = require('../../src/reviewDashboard.js');
+const schema = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../schemas/review-event.v1.schema.json'), 'utf8'));
+const validateSchema = new Ajv2020({ strict: false, validateFormats: false }).compile(schema);
 
 const env = {
   GITHUB_REPOSITORY: 'acme/widgets',
@@ -58,9 +63,35 @@ describe('review dashboard delivery', () => {
     expect(event.review.durationMs).toBe(1_500);
     expect(event.review.findings).toHaveLength(1);
     expect(event.review.findings[0].fingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(event.review.arbitration).toMatchObject({
+      algorithmVersion: 'review-arbitration-v1',
+      expectedPersonas: ['security'],
+      completedPersonas: ['security'],
+      gateDecision: 'BLOCKED',
+      mergeEligible: false,
+    });
+    expect(validateSchema(event)).toBe(true);
+    expect(validateSchema.errors).toBeNull();
     expect(JSON.stringify(event)).not.toContain('sk_123456789-secret');
     expect(JSON.stringify(event)).not.toContain('owner@example.com');
     expect(JSON.stringify(event)).toContain('[REDACTED]');
+  });
+
+  it('changes the event identity when the workflow attempt changes', () => {
+    const input = {
+      prContext: {
+        repo: 'acme/widgets',
+        prNumber: 42,
+        headSha: 'abc123',
+        baseSha: 'base123',
+        title: 'Harden widget lookup',
+      },
+      arbitration: { verdict: 'FIX_FIRST', metrics: { p0Count: 0, p1Count: 1, p2Count: 0 } },
+    };
+    const first = dashboard.buildReviewEvent(input, env);
+    const retry = dashboard.buildReviewEvent(input, { ...env, GITHUB_RUN_ATTEMPT: '3' });
+
+    expect(retry.eventId).not.toBe(first.eventId);
   });
 
   it('omits structured findings in metrics mode', () => {
@@ -99,10 +130,78 @@ describe('review dashboard delivery', () => {
     expect(duplicate).toMatchObject({ status: 'duplicate', reviewUrl: 'https://reviewyeti.ai/dashboard/reviews/j57abc123' });
   });
 
-  it('does not contact the cloud when no key is configured', async () => {
+  it('does not contact the cloud when either credential is missing', async () => {
     const fetchImpl = vi.fn();
     await expect(dashboard.deliverReviewEvent({ event: completedEvent(), apiKey: '', fetchImpl }))
       .resolves.toEqual({ status: 'disabled', attempts: 0 });
+    await expect(dashboard.deliverReviewEvent({ event: completedEvent(), apiKey: 'ctd_live_test_key', apiUrl: '', fetchImpl }))
+      .resolves.toEqual({ status: 'disabled', attempts: 0 });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('POSTs exactly once and accepts every 2xx response', async () => {
+    const event = completedEvent();
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 201 });
+
+    await expect(dashboard.deliverReviewEvent({
+      event,
+      apiKey: 'ctd_live_test_key',
+      apiUrl: 'https://dashboard.test/api/v1/review-events',
+      fetchImpl,
+      wait: async () => {},
+    })).resolves.toMatchObject({ status: 'accepted', attempts: 1 });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://dashboard.test/api/v1/review-events');
+    expect(fetchImpl.mock.calls[0][1]).toMatchObject({
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ctd_live_test_key',
+        'Content-Type': 'application/json',
+        'Idempotency-Key': event.eventId,
+      },
+      body: JSON.stringify(event),
+    });
+  });
+
+  it.each([401, 422])('does not retry HTTP %s', async (status) => {
+    const fetchImpl = vi.fn().mockResolvedValue({ status });
+    await expect(dashboard.deliverReviewEvent({
+      event: completedEvent(), apiKey: 'ctd_live_test_key', apiUrl: 'https://dashboard.test/api/v1/review-events', fetchImpl, wait: async () => {},
+    })).resolves.toMatchObject({ status: 'failed', attempts: 1, reason: `HTTP ${status}` });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries transient HTTP failures and remains fail-soft', async () => {
+    const retryThenSuccess = vi.fn()
+      .mockResolvedValueOnce({ status: 429 })
+      .mockResolvedValueOnce({ status: 202 });
+    await expect(dashboard.deliverReviewEvent({
+      event: completedEvent(), apiKey: 'ctd_live_test_key', apiUrl: 'https://dashboard.test/api/v1/review-events', fetchImpl: retryThenSuccess, wait: async () => {},
+    })).resolves.toMatchObject({ status: 'accepted', attempts: 2 });
+
+    const exhausted = vi.fn().mockResolvedValue({ status: 500 });
+    await expect(dashboard.deliverReviewEvent({
+      event: completedEvent(), apiKey: 'ctd_live_test_key', apiUrl: 'https://dashboard.test/api/v1/review-events', fetchImpl: exhausted, wait: async () => {},
+    })).resolves.toMatchObject({ status: 'failed', attempts: 3, reason: 'HTTP 500' });
+    expect(exhausted).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps timeout and network errors fail-soft without exposing the key', async () => {
+    const secret = 'ctd_live_do-not-log-this-key';
+    const timeoutFetch = vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('timeout'), { name: 'AbortError' })));
+    }));
+    await expect(dashboard.deliverReviewEvent({
+      event: completedEvent(), apiKey: secret, apiUrl: 'https://dashboard.test/api/v1/review-events', fetchImpl: timeoutFetch, timeoutMs: 1, wait: async () => {},
+    })).resolves.toMatchObject({ status: 'failed', attempts: 3, reason: 'timeout' });
+
+    const networkFetch = vi.fn().mockRejectedValue(new Error(`response body contains ${secret}`));
+    const networkResult = await dashboard.deliverReviewEvent({
+      event: completedEvent(), apiKey: secret, apiUrl: 'https://dashboard.test/api/v1/review-events', fetchImpl: networkFetch, wait: async () => {},
+    });
+    expect(networkResult).toMatchObject({ status: 'failed', attempts: 3, reason: 'network error' });
+    expect(networkFetch).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(networkResult)).not.toContain(secret);
   });
 });
