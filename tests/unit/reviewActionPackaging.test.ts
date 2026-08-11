@@ -65,8 +65,11 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('max-diff-chars');
     expect(inputs).toContain('max-file-diff-chars');
     expect(inputs).toContain('github-token');
-    expect(inputs).toContain('dashboard-api-url');
     expect(inputs).toContain('dashboard-api-key');
+    expect(inputs).toContain('dashboard-api-url');
+    expect(inputs).toContain('dashboard-url');
+    expect(inputs).toContain('dashboard-detail');
+    expect(inputs).toContain('dashboard-timeout-ms');
   });
 
   it('leaves the per-file input empty by default and distinguishes it from the whole-request budget', () => {
@@ -100,6 +103,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(outputs).toContain('verdict');
     expect(outputs).toContain('findings-count');
     expect(outputs).toContain('files-oversized');
+    expect(outputs).toContain('dashboard-delivery');
+    expect(outputs).toContain('dashboard-review-url');
     expect(action.outputs['files-oversized'].description).toMatch(/per-file/i);
   });
 
@@ -113,8 +118,11 @@ describe('action.yml — installable GitHub Action contract', () => {
   it('exports the distinct per-file input into the review pipeline environment', () => {
     const reviewStep = (action.runs.steps || []).find((step: any) => step.id === 'review');
     expect(reviewStep?.env?.MAX_FILE_DIFF_CHARS).toBe('${{ inputs.max-file-diff-chars }}');
-    expect(reviewStep?.env?.DASHBOARD_API_URL).toBe('${{ inputs.dashboard-api-url }}');
     expect(reviewStep?.env?.DASHBOARD_API_KEY).toBe('${{ inputs.dashboard-api-key }}');
+    expect(reviewStep?.env?.DASHBOARD_API_URL).toBe('${{ inputs.dashboard-api-url }}');
+    expect(reviewStep?.env?.DASHBOARD_SITE_URL).toBe('${{ inputs.dashboard-url }}');
+    expect(reviewStep?.env?.DASHBOARD_DETAIL).toBe('${{ inputs.dashboard-detail }}');
+    expect(reviewStep?.env?.DASHBOARD_TIMEOUT_MS).toBe('${{ inputs.dashboard-timeout-ms }}');
   });
 
   it('resolves the pipeline through GITHUB_ACTION_PATH, not the consumer workspace', () => {
@@ -316,6 +324,18 @@ describe('writeStepOutputs', () => {
     expect(content).toContain('coverage-status=partial');
     expect(content).toContain('gate-decision=BLOCKED');
     expect(content).toContain('merge-eligible=false');
+  });
+
+  it('writes the dashboard delivery receipt and URL without exposing the API key', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-dashboard-output-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, null, {
+      dashboardDelivery: 'accepted',
+      dashboardReviewUrl: 'https://reviewyeti.ai/dashboard/reviews/j57abc123',
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain('dashboard-delivery=accepted');
+    expect(content).toContain('dashboard-review-url=https://reviewyeti.ai/dashboard/reviews/j57abc123');
+    expect(content).not.toContain('ctd_live_');
   });
 
   it('appends rather than truncating, since GITHUB_OUTPUT is shared across steps', () => {

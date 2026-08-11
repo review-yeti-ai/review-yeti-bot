@@ -146,9 +146,9 @@ describe('review dashboard telemetry', () => {
     const logs = logger();
 
     await expect(telemetry.deliverReviewEvent({ event: completedEvent(), url: 'https://dashboard.test', apiKey: '', fetchImpl, logger: logs }))
-      .resolves.toEqual({ status: 'skipped', attempts: 0 });
+      .resolves.toEqual({ status: 'disabled', attempts: 0 });
     await expect(telemetry.deliverReviewEvent({ event: completedEvent(), url: '', apiKey: 'ctd_live_secret-key', fetchImpl, logger: logs }))
-      .resolves.toEqual({ status: 'skipped', attempts: 0 });
+      .resolves.toEqual({ status: 'disabled', attempts: 0 });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(logs.warn).toHaveBeenCalled();
   });
@@ -187,6 +187,29 @@ describe('review dashboard telemetry', () => {
       event: completedEvent(), apiKey: 'key', url: 'https://dashboard.test',
       fetchImpl: vi.fn().mockResolvedValue({ status: 202 }), wait: async () => {},
     })).resolves.toEqual({ status: 'accepted', attempts: 1 });
+  });
+
+  it('returns a safe Review Yeti run URL without logging response data', async () => {
+    const logs = logger();
+    const result = await telemetry.deliverReviewEvent({
+      event: completedEvent(),
+      apiKey: 'key',
+      url: 'https://dashboard.test/events',
+      siteUrl: 'https://reviewyeti.ai',
+      fetchImpl: vi.fn().mockResolvedValue({
+        status: 202,
+        json: async () => ({ status: 'accepted', reviewRunId: 'j57abc123', privateNote: 'do not log' }),
+      }),
+      logger: logs,
+      wait: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      status: 'accepted',
+      reviewRunId: 'j57abc123',
+      reviewUrl: 'https://reviewyeti.ai/dashboard/reviews/j57abc123',
+    });
+    expect(JSON.stringify(logs.info.mock.calls)).not.toContain('privateNote');
   });
 
   it.each([401, 422])('does not retry non-transient HTTP %s', async (status) => {

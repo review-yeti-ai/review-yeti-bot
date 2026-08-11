@@ -5,6 +5,8 @@ const crypto = require('node:crypto');
 const SCHEMA_VERSION = '1.0';
 const PRODUCER_NAME = 'ct-review-bot';
 const EVENT_ID_PREFIX = 'ctre_';
+const DEFAULT_API_URL = 'https://api.reviewyeti.ai/api/v1/review-events';
+const DEFAULT_SITE_URL = 'https://reviewyeti.ai';
 const MAX_ATTEMPTS = 3;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 10_000;
@@ -419,22 +421,43 @@ function successStatus(status) {
   return 'accepted';
 }
 
+function reviewUrlForRun(siteUrl, reviewRunId) {
+  if (!asString(reviewRunId)) return undefined;
+  try {
+    const parsed = new URL(asString(siteUrl) || DEFAULT_SITE_URL);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return undefined;
+    parsed.pathname = `${parsed.pathname.replace(/\/$/u, '')}/dashboard/reviews/${encodeURIComponent(asString(reviewRunId))}`;
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch (_) {
+    return undefined;
+  }
+}
+
 /**
  * Delivers one already-built event. Every failure is converted to a result and a safe log line;
  * this function never throws and never exposes the credential or response body.
  */
-async function deliverReviewEvent({ event, apiKey, url, fetchImpl, fetchImplementation, logger = console, wait, timeoutMs, retryDelayMs } = {}) {
+async function deliverReviewEvent({ event, apiKey, url, apiUrl, siteUrl, fetchImpl, fetchImplementation, logger = console, wait, timeoutMs, retryDelayMs } = {}) {
   const credential = asString(apiKey);
-  const endpoint = asString(url);
-  if (!credential || !endpoint) {
+  const configuredUrl = asString(url || apiUrl);
+  if (!credential || !configuredUrl) {
     log(logger, 'warn', '[Review Yeti dashboard] Telemetry skipped: dashboard URL and API key are required.');
-    return { status: 'skipped', attempts: 0 };
+    return { status: 'disabled', attempts: 0 };
   }
   let parsedEndpoint;
   try {
-    parsedEndpoint = new URL(endpoint);
+    parsedEndpoint = new URL(configuredUrl);
     if (!['http:', 'https:'].includes(parsedEndpoint.protocol) || parsedEndpoint.username || parsedEndpoint.password) {
       throw new Error('unsupported endpoint');
+    }
+    // Preserve the pre-v1.1 base-URL compatibility surface only for the legacy apiUrl alias.
+    // The new dashboard-api-url input is a full endpoint and is posted to exactly as configured.
+    if (!url && apiUrl && !parsedEndpoint.pathname.endsWith('/api/v1/review-events')) {
+      parsedEndpoint.pathname = `${parsedEndpoint.pathname.replace(/\/$/u, '')}/api/v1/review-events`;
+      parsedEndpoint.search = '';
+      parsedEndpoint.hash = '';
     }
   } catch (_) {
     log(logger, 'warn', '[Review Yeti dashboard] Telemetry skipped: dashboard URL is invalid.');
@@ -461,7 +484,7 @@ async function deliverReviewEvent({ event, apiKey, url, fetchImpl, fetchImplemen
     let timer;
     try {
       timer = setTimeout(() => controller.abort(), boundedTimeoutMs);
-      const response = await requestFetch(endpoint, {
+      const response = await requestFetch(parsedEndpoint.toString(), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${credential}`,
@@ -473,7 +496,20 @@ async function deliverReviewEvent({ event, apiKey, url, fetchImpl, fetchImplemen
       });
       const status = Number(response?.status || 0);
       if (status >= 200 && status < 300) {
-        const result = { status: successStatus(status), attempts: attempt };
+        let body = {};
+        if (typeof response?.json === 'function') {
+          try { body = await response.json(); } catch (_) { body = {}; }
+        }
+        const reviewRunId = asString(body?.reviewRunId);
+        const result = {
+          status: successStatus(status),
+          attempts: attempt,
+          ...(reviewRunId ? {
+            reviewRunId,
+            reviewUrl: reviewUrlForRun(siteUrl, reviewRunId),
+          } : {}),
+        };
+        if (!result.reviewUrl) delete result.reviewUrl;
         log(logger, 'info', `[Review Yeti dashboard] Telemetry ${result.status} (HTTP ${status}) after ${attempt} attempt(s).`);
         return result;
       }
@@ -498,6 +534,8 @@ async function deliverReviewEvent({ event, apiKey, url, fetchImpl, fetchImplemen
 
 module.exports = {
   DEFAULT_TIMEOUT_MS,
+  DEFAULT_API_URL,
+  DEFAULT_SITE_URL,
   EVENT_ID_PREFIX,
   MAX_ATTEMPTS,
   PRODUCER_NAME,
@@ -512,5 +550,6 @@ module.exports = {
   normalizeArbitration,
   normalizeUsage,
   redactSensitiveText,
+  reviewUrlForRun,
   validateReviewEvent,
 };
