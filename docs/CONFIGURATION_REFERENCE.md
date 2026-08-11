@@ -387,6 +387,10 @@ from a model-backed review.
 | `coverage-status` | Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible. |
 | `gate-decision` | Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED. |
 | `merge-eligible` | Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings. |
+| `review-dispatch-digest` | Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head. |
+| `review-dispatch-policy-digest` | Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one. |
+| `review-dispatch-manifest-digest` | Digest of the complete bounded manifest artifact bound into the provider-owned dispatch receipt. |
+| `review-dispatch-provider-receipt-digest` | Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs. |
 | `files-skipped-generated` | Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap. |
 | `files-oversized` | Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW. |
 

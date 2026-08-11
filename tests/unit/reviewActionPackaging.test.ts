@@ -27,6 +27,10 @@ const outputContractRows = [
   ['coverage-status', 'Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible.'],
   ['gate-decision', 'Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED.'],
   ['merge-eligible', 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'],
+  ['review-dispatch-digest', 'Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head.'],
+  ['review-dispatch-policy-digest', 'Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one.'],
+  ['review-dispatch-manifest-digest', 'Digest of the complete bounded manifest artifact bound into the provider-owned dispatch receipt.'],
+  ['review-dispatch-provider-receipt-digest', 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'],
   ['files-skipped-generated', 'Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap.'],
   ['files-oversized', 'Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW.'],
 ] as const;
@@ -110,6 +114,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(outputs).toContain('verdict');
     expect(outputs).toContain('findings-count');
     expect(outputs).toContain('files-oversized');
+    expect(outputs).toContain('review-dispatch-digest');
+    expect(outputs).toContain('review-dispatch-manifest-digest');
     expect(outputs).toContain('dashboard-delivery');
     expect(outputs).toContain('dashboard-review-url');
     expect(action.outputs['files-oversized'].description).toMatch(/per-file/i);
@@ -367,6 +373,40 @@ describe('writeStepOutputs', () => {
     expect(content).toContain('review-unit-summary=');
     expect(content).toContain('"id":"ru_123"');
     expect(content).not.toContain('ignored prose must not appear');
+  });
+
+  it('emits dispatch receipt digests only when the provider actually produced them', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-output-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, null, {
+      reviewDispatchReceipt: {
+        receiptDigest: 'a'.repeat(64),
+        identity: { policyDigest: 'b'.repeat(64) },
+        manifest: { digest: 'c'.repeat(64) },
+        providerReceipts: { count: 1, ids: ['gen_alpha'], digest: 'd'.repeat(64) },
+      },
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain(`review-dispatch-digest=${'a'.repeat(64)}`);
+    expect(content).toContain(`review-dispatch-policy-digest=${'b'.repeat(64)}`);
+    expect(content).toContain(`review-dispatch-manifest-digest=${'c'.repeat(64)}`);
+    expect(content).toContain(`review-dispatch-provider-receipt-digest=${'d'.repeat(64)}`);
+  });
+
+  it('does not invent a provider receipt digest when the provider returned none', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-no-provider-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, null, {
+      reviewDispatchReceipt: {
+        receiptDigest: 'a'.repeat(64),
+        identity: { policyDigest: 'b'.repeat(64) },
+        manifest: { digest: 'c'.repeat(64) },
+        providerReceipts: { count: 0, ids: [], digest: 'd'.repeat(64) },
+      },
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+    expect(content).toContain(`review-dispatch-digest=${'a'.repeat(64)}`);
+    expect(content).toContain(`review-dispatch-policy-digest=${'b'.repeat(64)}`);
+    expect(content).toContain(`review-dispatch-manifest-digest=${'c'.repeat(64)}`);
+    expect(content).not.toContain('review-dispatch-provider-receipt-digest=');
   });
 
   it('is a no-op when no output path is provided, so local runs do not throw', () => {

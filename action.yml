@@ -296,6 +296,18 @@ outputs:
   merge-eligible:
     description: 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'
     value: ${{ steps.review.outputs.merge-eligible }}
+  review-dispatch-digest:
+    description: 'Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head.'
+    value: ${{ steps.review.outputs.review-dispatch-digest }}
+  review-dispatch-policy-digest:
+    description: 'Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one.'
+    value: ${{ steps.review.outputs.review-dispatch-policy-digest }}
+  review-dispatch-manifest-digest:
+    description: 'Digest of the complete bounded manifest artifact bound into the provider-owned dispatch receipt.'
+    value: ${{ steps.review.outputs.review-dispatch-manifest-digest }}
+  review-dispatch-provider-receipt-digest:
+    description: 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'
+    value: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
   investigation-status:
     description: 'Bounded investigation status: complete, partial, or incomplete.'
     value: ${{ steps.review.outputs.investigation-status }}
