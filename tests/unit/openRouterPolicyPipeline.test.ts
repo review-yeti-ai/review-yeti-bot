@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { resolveOpenRouterPolicy } from '../../.github/workflows/pipelines/openRouterPolicy.js';
+import {
+  resolveOpenRouterPolicy,
+  HARD_BANNED_PROVIDER_SLUGS,
+} from '../../.github/workflows/pipelines/openRouterPolicy.js';
 
 const DEFAULTS = {
-  ignoredProviders: ['deepinfra', 'openrouter'],
+  ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
   timeoutMs: 30000,
   stream: false,
   model: undefined,
   fallbackModels: [],
-  providerRouting: { ignore: ['deepinfra', 'openrouter'] },
+  providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
 };
 
 const ENV_ALL = {
@@ -51,9 +54,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['a/b', 'c/d'],
       costQualityTradeoff: 4,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra', 'openrouter', 'siliconflow'],
+      ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'],
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
-      providerRouting: { ignore: ['deepinfra', 'openrouter', 'siliconflow'] },
+      providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'] },
       timeoutMs: 8000,
       stream: true,
     });
@@ -64,9 +67,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['openai/gpt-5.6-luna', 'moonshotai/kimi-k2.6'],
       costQualityTradeoff: 7,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra', 'openrouter', 'siliconflow'],
+      ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'],
       fallbackModels: ['deepseek/deepseek-v4-flash-0731', 'openai/gpt-5.6-luna'],
-      providerRouting: { ignore: ['deepinfra', 'openrouter', 'siliconflow'] },
+      providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'] },
       timeoutMs: 5000,
       stream: true,
     });
@@ -111,10 +114,10 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['a/b', 'c/d'],
       costQualityTradeoff: 9,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra', 'openrouter', 'siliconflow'],
+      ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'],
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
       model: undefined,
-      providerRouting: { ignore: ['deepinfra', 'openrouter', 'siliconflow'] },
+      providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'] },
       timeoutMs: 8000,
       stream: true,
     });
@@ -140,9 +143,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['m/n'],
       costQualityTradeoff: 3,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra', 'openrouter'],
+      ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: [],
-      providerRouting: { ignore: ['deepinfra', 'openrouter'] },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
       timeoutMs: 2500,
       stream: false,
     });
@@ -154,12 +157,12 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '9999999' }).timeoutMs).toBe(600_000); // ceiling
   });
 
-  it('permanently bans unsafe and timeout-prone fallback routes while accepting additional configured bans', () => {
-    expect(resolveOpenRouterPolicy({}, {}).ignoredProviders).toEqual(['deepinfra', 'openrouter']);
+  it('permanently bans degraded and fallback routes while accepting additional configured bans', () => {
+    expect(resolveOpenRouterPolicy({}, {}).ignoredProviders).toEqual(HARD_BANNED_PROVIDER_SLUGS);
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { ignore_providers: ['siliconflow', 'deepinfra'] } } },
       {},
-    ).ignoredProviders).toEqual(['deepinfra', 'openrouter', 'siliconflow']);
+    ).ignoredProviders).toEqual([...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow']);
   });
 
   it('forwards documented provider routing fields and normalizes provider slugs', () => {
@@ -193,20 +196,29 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       preferred_min_throughput: { p90: 50 },
       preferred_max_latency: { p90: 3 },
       max_price: { prompt: 1, completion: 2 },
-      ignore: ['deepinfra', 'openrouter'],
+      ignore: HARD_BANNED_PROVIDER_SLUGS,
     });
   });
 
   it('fails closed when a provider routing selection tries to re-enable DeepInfra', () => {
     expect(() => resolveOpenRouterPolicy({}, {
       OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['deepinfra/turbo'] }),
-    })).toThrow(/hard-banned DeepInfra/);
+    })).toThrow(/hard-banned provider/);
   });
 
-  it('fails closed when a provider routing selection tries to re-enable the timeout-prone fallback route', () => {
-    expect(() => resolveOpenRouterPolicy({}, {
-      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['openrouter'] }),
-    })).toThrow(/hard-banned fallback provider/);
+  it.each(['openrouter', 'decart', 'sail-research', 'inceptron', 'fireworks', 'together', 'mancer'])(
+    'fails closed when provider routing selects degraded provider %s',
+    (provider) => {
+      expect(() => resolveOpenRouterPolicy({}, {
+        OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: [provider] }),
+      })).toThrow(/hard-banned provider/);
+    },
+  );
+
+  it('always keeps the hard-banned providers when an action input supplies another ignore list', () => {
+    const policy = resolveOpenRouterPolicy({}, { OPENROUTER_IGNORE_PROVIDERS: 'siliconflow' });
+    expect(policy.ignoredProviders).toEqual([...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow']);
+    expect(policy.providerRouting.ignore).toEqual([...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow']);
   });
 
   it('uses github_action.openrouter.provider_routing when the action input is empty', () => {
@@ -222,7 +234,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     }, {}).providerRouting).toEqual({
       only: ['novita'],
       allow_fallbacks: false,
-      ignore: ['deepinfra', 'openrouter'],
+      ignore: HARD_BANNED_PROVIDER_SLUGS,
     });
   });
 
