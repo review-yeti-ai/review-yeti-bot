@@ -6,6 +6,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   ? path.resolve(__dirname, '../..')
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
+const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
 
 const { reviewWithModel, resolveModelConfig, PERSONA_CHARTERS } = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
@@ -174,8 +175,8 @@ describe('reviewWithModel', () => {
           fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
           costQualityTradeoff: undefined,
           dataCollection: undefined,
-          ignoredProviders: ['deepinfra'],
-          providerRouting: { ignore: ['deepinfra'] },
+          ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+          providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
           timeoutMs: 30_000,
           stream: false,
         },
@@ -222,8 +223,8 @@ describe('reviewWithModel', () => {
         fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
         costQualityTradeoff: undefined,
         dataCollection: undefined,
-        ignoredProviders: ['deepinfra'],
-        providerRouting: { ignore: ['deepinfra'] },
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
         stream: false,
       },
@@ -265,15 +266,17 @@ describe('reviewWithModel', () => {
         fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
         costQualityTradeoff: undefined,
         dataCollection: undefined,
-        ignoredProviders: ['deepinfra'],
-        providerRouting: { ignore: ['deepinfra'] },
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
         stream: false,
       },
     });
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(calls[1].body.stream).toBe(true);
+    expect(calls[2].body.stream).toBe(false);
     expect(result.fallbackUsed).toBe(true);
     expect(result.decision).toBe('FINDINGS');
   });
@@ -310,8 +313,8 @@ describe('reviewWithModel', () => {
         fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
         costQualityTradeoff: undefined,
         dataCollection: undefined,
-        ignoredProviders: ['deepinfra'],
-        providerRouting: { ignore: ['deepinfra'] },
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
         stream: false,
       },
@@ -334,7 +337,7 @@ describe('reviewWithModel', () => {
     expect(calls[0].url).toBe('https://api.example.com/v1/chat/completions');
     expect(calls[0].init.headers.Authorization).toBe('Bearer k');
     expect(calls[0].body.model).toBe('m');
-    expect(calls[0].body.provider).toEqual({ ignore: ['deepinfra'] });
+    expect(calls[0].body.provider).toEqual({ ignore: HARD_BANNED_PROVIDER_SLUGS });
     const system = calls[0].body.messages.find((m: any) => m.role === 'system').content;
     expect(system).toContain(securityPersona.charter);
   });
@@ -347,12 +350,12 @@ describe('reviewWithModel', () => {
         allowedModels: [],
         costQualityTradeoff: undefined,
         dataCollection: undefined,
-        ignoredProviders: ['deepinfra'],
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: {
           order: ['novita', 'akash'],
           allow_fallbacks: false,
           require_parameters: true,
-          ignore: ['deepinfra'],
+          ignore: HARD_BANNED_PROVIDER_SLUGS,
         },
         timeoutMs: 30_000,
         stream: false,
@@ -363,7 +366,7 @@ describe('reviewWithModel', () => {
       order: ['novita', 'akash'],
       allow_fallbacks: false,
       require_parameters: true,
-      ignore: ['deepinfra'],
+      ignore: HARD_BANNED_PROVIDER_SLUGS,
     });
   });
 
