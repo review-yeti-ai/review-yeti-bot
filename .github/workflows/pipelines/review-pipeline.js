@@ -2090,14 +2090,21 @@ function reviewViewWasPartial(coverage) {
 
 /**
  * Returns whether the evidence passed to canonical arbitration covers every required lane and
- * every eligible file. Policy exclusions are complete by design; provider partials and budget
- * omissions are not.
+ * every eligible file. Policy exclusions are complete by design; budget omissions are not.
+ *
+ * A multi-pass persona with `partial > 0` but decision APPROVE/FINDINGS is a recovered lane
+ * (one provider attempt failed, a later pass succeeded). Treating that as incomplete forced
+ * BLOCK/DEGRADED with 0 findings on cisco-cdr after multi-pass reviews (#4213 shape).
+ * Only ERROR and true incomplete investigations leave coverage incomplete.
  */
 function reviewCoverageCompleteForArbitration(submoduleCoverageComplete, coverage = {}, personaResults = []) {
   return submoduleCoverageComplete !== false
     && (coverage.omitted?.length || 0) === 0
     && (coverage.truncated?.length || 0) === 0
-    && !(personaResults || []).some((result) => Number(result?.partial) > 0 || result?.incomplete === true || result?.reviewStatus === 'INCOMPLETE_REVIEW');
+    && !(personaResults || []).some((result) =>
+      result?.decision === 'ERROR'
+      || result?.incomplete === true
+      || result?.reviewStatus === 'INCOMPLETE_REVIEW');
 }
 
 /**
@@ -6763,11 +6770,16 @@ async function main(options = {}) {
         }
         const failed = personaResults.filter((result) => result.decision === 'ERROR');
         for (const lane of failed) console.warn(`[Persona ${lane.personaId}] Lane failed (${formatRouteLabel(lane)}): ${lane.error}`);
-        const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0);
-        coverage.providerFailures = [...new Set([
-          ...partialPersonaResults.map((result) => result.personaId || 'unknown'),
-          ...personaResults.filter((result) => result.decision === 'ERROR').map((result) => result.personaId || 'unknown'),
-        ])];
+        // Recovered multi-pass lanes keep `partial` for human telemetry but must not be treated
+        // as providerFailures — that path marks unit coverage failed and forces BLOCK.
+        const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0 && result.decision !== 'ERROR');
+        if (partialPersonaResults.length > 0) {
+          coverage.recoveredPartialLanes = partialPersonaResults.map((result) => result.personaId || 'unknown');
+          console.warn(`[Persona] ${partialPersonaResults.length} lane(s) recovered after a failed provider pass: ${coverage.recoveredPartialLanes.join(', ')}`);
+        }
+        coverage.providerFailures = [...new Set(
+          personaResults.filter((result) => result.decision === 'ERROR').map((result) => result.personaId || 'unknown'),
+        )];
         const partialView = reviewViewWasPartial(coverage);
         const absencePass = withholdUnsoundAbsenceClaims(personaResults, partialView);
         personaResults = absencePass.personaResults;
@@ -6850,8 +6862,14 @@ async function main(options = {}) {
         coverage.incompletePersonas = incompletePersonaResults.map((result) => result.personaId || 'unknown');
         console.warn(`[Investigation] ${incompletePersonaResults.length} persona lane(s) exhausted bounded evidence turns: ${coverage.incompletePersonas.join(', ')}`);
       }
-      const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0);
-      coverage.providerFailures = partialPersonaResults.map((result) => result.personaId || 'unknown');
+      const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0 && result.decision !== 'ERROR');
+      if (partialPersonaResults.length > 0) {
+        coverage.recoveredPartialLanes = partialPersonaResults.map((result) => result.personaId || 'unknown');
+        console.warn(`[Persona] ${partialPersonaResults.length} lane(s) recovered after a failed provider pass: ${coverage.recoveredPartialLanes.join(', ')}`);
+      }
+      coverage.providerFailures = personaResults
+        .filter((result) => result.decision === 'ERROR')
+        .map((result) => result.personaId || 'unknown');
       const partialView = reviewViewWasPartial(coverage);
       // Runs first and unconditionally: a claim that names a real path in this pull request is
       // wrong regardless of whether coverage was complete, so it does not need the partial-view
