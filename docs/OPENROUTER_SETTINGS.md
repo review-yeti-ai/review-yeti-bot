@@ -15,7 +15,7 @@ github_action:
     stream: false
     data_collection: deny
     cost_quality_tradeoff: 5
-    ignore_providers: [deepinfra, openrouter]
+    ignore_providers: [deepinfra, openrouter, decart, sail-research, inceptron, fireworks, together, mancer]
     # Optional raw OpenRouter provider routing policy. This is forwarded as the
     # `provider` request object; use snake_case API field names.
     provider_routing:
@@ -37,7 +37,7 @@ Defaults (when section or keys are missing):
 | `fallback_models` | empty |
 | `timeout_ms` | `30000` |
 | `stream` | `false` |
-| `provider_routing` | unset, except for the enforced `ignore: [deepinfra, openrouter]` action policy |
+| `provider_routing` | unset, except for the enforced degraded-provider ignore policy |
 
 Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL`).
 `openrouter/auto` and `openrouter/auto-beta` are never rewritten into each other.
@@ -53,7 +53,7 @@ Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL
 | `stream` | Use SSE streaming | `false` |
 | `data_collection` | Provider data-collection header policy: `allow` or `deny` | unset |
 | `cost_quality_tradeoff` | Auto Router quality/cost band, `0..10` | unset |
-| `ignore_providers` | Provider slugs to ignore; `deepinfra` and the timeout-prone `openrouter` fallback route are always ignored | `[deepinfra, openrouter]` |
+| `ignore_providers` | Provider slugs to ignore; the built-in degraded-provider blocklist is always ignored | `[deepinfra, openrouter, decart, sail-research, inceptron, fireworks, together, mancer]` |
 | `provider_routing` | Validated OpenRouter provider-selection object | unset |
 
 Precedence is: explicit Action input/environment, trusted `github_action.openrouter` YAML, then
