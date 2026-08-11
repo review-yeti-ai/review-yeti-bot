@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import Ajv2020 from 'ajv/dist/2020';
+import fs from 'node:fs';
 import path from 'node:path';
 import { runReviewWorkflowFixture } from '../support/reviewWorkflowHarness';
 import { loadReviewWorkflowFixture } from '../support/reviewWorkflowFixtures';
+
+const reviewEventSchema = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../schemas/review-event.v1.schema.json'), 'utf8'));
+const validateReviewEventSchema = new Ajv2020({ strict: false, validateFormats: false }).compile(reviewEventSchema);
 
 describe('cassette-backed review workflow harness', () => {
   it('resolves the immutable base SHA before applying an opted-in trusted review policy', async () => {
@@ -52,6 +57,35 @@ describe('cassette-backed review workflow harness', () => {
     expect(receipt.actionOutputs).toContain('memory-provider=mem0');
     expect(receipt.actionOutputs).toContain('memory-query-status=empty');
     expect(receipt.actionOutputs).toContain('memory-write-status=accepted');
+  });
+
+  it('publishes one dashboard event without changing the existing verdict or GitHub publication', async () => {
+    const receipt = await runReviewWorkflowFixture('fresh-clean', { dashboardStatus: 202 });
+
+    expect(receipt).toMatchObject({
+      verdict: 'SHIP',
+      publication: { success: true },
+      dashboard: { status: 'accepted', attempts: 1 },
+    });
+    expect(receipt.dashboardEvents).toHaveLength(1);
+    expect(receipt.dashboardEvents[0]).toMatchObject({
+      repository: { fullName: 'acme/review-yeti' },
+      pullRequest: { number: 42, headSha: 'a'.repeat(40) },
+      review: { verdict: 'SHIP', personas: expect.any(Array) },
+    });
+    expect(validateReviewEventSchema(receipt.dashboardEvents[0])).toBe(true);
+    expect(validateReviewEventSchema.errors).toBeNull();
+  });
+
+  it('keeps the review green and GitHub publication successful when dashboard delivery fails', async () => {
+    const receipt = await runReviewWorkflowFixture('fresh-clean', { dashboardStatus: 500 });
+
+    expect(receipt).toMatchObject({
+      verdict: 'SHIP',
+      publication: { success: true },
+      dashboard: { status: 'failed', attempts: 3 },
+    });
+    expect(receipt.dashboardEvents).toHaveLength(3);
   });
 
   it('continues with an unavailable provider while preserving the GitHub-ledger-only review path', async () => {
