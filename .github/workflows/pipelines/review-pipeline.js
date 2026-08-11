@@ -5902,6 +5902,9 @@ async function main(options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const startedAt = now();
   const runtimeEnv = options.env || process.env;
+  const publicationMode = options.publicationMode || 'github';
+  if (!['github', 'none'].includes(publicationMode)) throw new TypeError('publicationMode must be github or none');
+  const localOnly = publicationMode === 'none';
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const fetchImplementation = options.fetchImplementation || globalThis.fetch;
   let prContext = options.prContext || getPRDiffAndContext(runtimeEnv);
@@ -5916,7 +5919,7 @@ async function main(options = {}) {
 
   let sessionContext = null;
   let sessionTurn = 1;
-  if (SessionLedger && prContext.repo && prContext.prNumber) {
+  if (!localOnly && SessionLedger && prContext.repo && prContext.prNumber) {
     try {
       const repoParts = prContext.repo.split('/');
       const owner = repoParts.length > 1 ? repoParts[0] : 'unknown';
@@ -6071,7 +6074,7 @@ async function main(options = {}) {
     .filter(([, enabled]) => enabled === true)
     .map(([name]) => name);
   if (cancellation.signal.aborted) return;
-  const memoryOutbox = createMemoryOutbox && actionPolicy.memory.enabled && actionPolicy.memory.write && persistDomains.length > 0
+  const memoryOutbox = !localOnly && createMemoryOutbox && actionPolicy.memory.enabled && actionPolicy.memory.write && persistDomains.length > 0
     ? createMemoryOutbox({ baseDir: path.join(options.cwd || process.cwd(), 'sessions'), now: () => new Date(now()) })
     : null;
   let memoryOutboxRecord = null;
@@ -6230,18 +6233,20 @@ async function main(options = {}) {
     ? Object.fromEntries(provisionalReviewUnitManifest.units.map((unit) => [unit.path, unit.id]))
     : {};
   const dependencyRiskHints = buildDependencyRiskHints({ files: reviewDiffFiles, unitIdsByPath });
-  const decisionLedger = readDecisionLedgerSnapshot(
-    commandRunner,
-    prContext,
-    new Set(diffFiles.map((file) => file.path)),
-    { memoryPolicy: actionPolicy.memory },
-  );
+  const decisionLedger = localOnly
+    ? { available: false, entries: [], reason: 'local_publication_disabled' }
+    : readDecisionLedgerSnapshot(
+      commandRunner,
+      prContext,
+      new Set(diffFiles.map((file) => file.path)),
+      { memoryPolicy: actionPolicy.memory },
+    );
   const renderedDecisionLedger = actionPolicy.memory.samePrDecisions
     ? renderDecisionLedger(decisionLedger, actionPolicy.memory)
     : { text: '', renderedEntries: 0, omittedEntries: decisionLedger.entries.length };
   console.log(`[Decision ledger] ${decisionLedger.available ? `${decisionLedger.entries.length} authenticated finding thread(s)` : 'unavailable'}; ${renderedDecisionLedger.renderedEntries} supplied to each reviewer.`);
 
-  const memoryRuntime = createReviewMemoryRouter(actionPolicy, { env: runtimeEnv, fetchImplementation, now, signal: cancellation.signal });
+  const memoryRuntime = localOnly ? null : createReviewMemoryRouter(actionPolicy, { env: runtimeEnv, fetchImplementation, now, signal: cancellation.signal });
   let honchoContextBlock = '';
   let memoryQueryResult = { status: 'unavailable', source: 'none', provider: memoryPolicy.provider || 'honcho', text: '', reason: 'memory disabled' };
   if (memoryRuntime && memoryPolicy.context) {
@@ -6360,7 +6365,7 @@ async function main(options = {}) {
     && runtimeEnv.VITEST === 'true'
     && runtimeEnv.PR_DIFF
     && !runtimeEnv.GITHUB_EVENT_PATH;
-  if (!syntheticVitestRun) assertCurrentPullRequest(prContext, { commandRunner });
+  if (!syntheticVitestRun && !localOnly) assertCurrentPullRequest(prContext, { commandRunner });
 
   let personaResults = [];
   let withheldAbsenceClaims = [];
@@ -6488,7 +6493,7 @@ async function main(options = {}) {
       // Pre-review "started" comment so humans know the panel is running before ~5m of fan-out.
       try {
         if (cancellation.signal.aborted) return;
-        postStartedComment(prContext, {
+        if (!localOnly) postStartedComment(prContext, {
           trigger: runtimeEnv.GITHUB_EVENT_NAME || 'unknown',
           eventAction: runtimeEnv.GITHUB_EVENT_ACTION || '',
           actor: runtimeEnv.GITHUB_ACTOR || runtimeEnv.TRIGGER_ACTOR || '',
@@ -6773,7 +6778,7 @@ async function main(options = {}) {
     outcome: 'completed',
   });
 
-  if (!syntheticVitestRun) assertCurrentPullRequest(prContext, { commandRunner });
+  if (!syntheticVitestRun && !localOnly) assertCurrentPullRequest(prContext, { commandRunner });
 
   console.log('[Formatting] Planning resolvable P0/P1 conversations and compact review output...');
   usageTotal = sumUsage(personaResults);
@@ -6794,7 +6799,7 @@ async function main(options = {}) {
   }
   console.log(`[Formatting] Planned ${publicationPlan.lineComments.length} line conversation(s), ${publicationPlan.fileComments.length} file conversation(s), ${publicationPlan.advisories.length} P2 advisory item(s), and ${publicationPlan.rejected.length} rejected finding(s).`);
   const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, neutralResolved, recurrentResolved, suppressedRepeats, obsolete, findingVerification };
-  if (runtimeEnv.DASHBOARD_API_KEY && runtimeEnv.DASHBOARD_API_URL) {
+  if (!localOnly && runtimeEnv.DASHBOARD_API_KEY && runtimeEnv.DASHBOARD_API_URL) {
     try {
       const dashboardEvent = buildReviewEvent({
         prContext,
@@ -6848,13 +6853,15 @@ async function main(options = {}) {
     { dashboardReviewUrl: dashboardDelivery.reviewUrl },
   );
 
-  console.log('[Publishing] Executing pull request review publishing...');
+  console.log(`[Publishing] ${localOnly ? 'Local publication disabled; returning an in-memory receipt.' : 'Executing pull request review publishing...'}`);
   if (cancellation.signal.aborted) return;
-  const publication = postOrOutputComment(commentMarkdown, prContext, publicationPlan, {
-    commandRunner,
-    cwd: options.cwd || process.cwd(),
-    fileSystem: options.fileSystem || fs,
-  });
+  const publication = localOnly
+    ? { success: true, postedViaGh: false, mode: 'none' }
+    : postOrOutputComment(commentMarkdown, prContext, publicationPlan, {
+      commandRunner,
+      cwd: options.cwd || process.cwd(),
+      fileSystem: options.fileSystem || fs,
+    });
   if (!publication.success) {
     console.error(`[Publishing] ${publication.error || 'GitHub publication failed'}`);
     recordTelemetry({ phase: 'publication', unitId: 'review', outcome: 'failed', failureClass: 'publication_unavailable' });
@@ -6864,7 +6871,7 @@ async function main(options = {}) {
   recordTelemetry({ phase: 'publication', unitId: 'review', outcome: 'completed' });
 
   let honchoEvents = [];
-  if (memoryPolicy.write) {
+  if (!localOnly && memoryPolicy.write) {
     honchoEvents = buildHonchoReviewEvents({
       repo: prContext.repo,
       prNumber: prContext.prNumber,
@@ -6901,7 +6908,7 @@ async function main(options = {}) {
     }
   }
   let memoryWriteResult = { status: 'skipped', provider: memoryPolicy.provider || 'honcho', accepted: 0, eventIds: [] };
-  if (memoryRuntime && memoryPolicy.write && persistDomains.length > 0) {
+  if (!localOnly && memoryRuntime && memoryPolicy.write && persistDomains.length > 0) {
     const eventsToPersist = filterMemoryEventsForPersistence(honchoEvents, persistDomains);
     const deliveryKey = sha256(JSON.stringify({
       schemaVersion: 'memory-delivery-v1',
@@ -6945,7 +6952,7 @@ async function main(options = {}) {
     }
   }
 
-  writeStepOutputs(arbitration, runtimeEnv.GITHUB_OUTPUT, coverage, usageTotal, {
+  if (!localOnly) writeStepOutputs(arbitration, runtimeEnv.GITHUB_OUTPUT, coverage, usageTotal, {
     memoryProvider: memoryPolicy.provider || 'honcho',
     memoryQueryStatus: memoryQueryResult.status,
     memoryQuerySource: memoryQueryResult.source,
@@ -6958,7 +6965,7 @@ async function main(options = {}) {
 
 
   // Persist session log artifacts under sessions/ directory
-  if (SessionLedger) {
+  if (!localOnly && SessionLedger) {
     try {
       const ledger = new SessionLedger();
       const repoParts = prContext.repo.split('/');
@@ -6985,6 +6992,13 @@ async function main(options = {}) {
   console.log(`✅ Review Pipeline Completed cleanly. Verdict: ${arbitration.verdict}`);
   console.log('=====================================================');
   finalResult = {
+    identity: {
+      repository: prContext.repo,
+      prNumber: prContext.prNumber,
+      baseSha: prContext.baseSha,
+      headSha: prContext.headSha,
+      ...(prContext.sourceDigest ? { sourceDigest: prContext.sourceDigest } : {}),
+    },
     verdict: arbitration.verdict,
     coverage: {
       status: arbitration.coverageStatus || coverage?.status || 'unknown',
@@ -6992,13 +7006,15 @@ async function main(options = {}) {
       completedPersonas: arbitration.completedPersonas || 0,
       totalPersonas: arbitration.totalPersonas || 0,
     },
-    publication: { success: Boolean(publication.success), postedViaGh: Boolean(publication.postedViaGh) },
+    publication: { mode: publication.mode || publicationMode, success: Boolean(publication.success), postedViaGh: Boolean(publication.postedViaGh) },
     dashboard: dashboardDelivery,
     memory: { query: memoryQueryResult, write: memoryWriteResult, policy: memoryPolicyReceipt(memoryPolicy), contextCompaction: optionalReviewContext.receipt },
     telemetry: { ...reviewTelemetryReceipt(telemetryPolicy) },
     reviewUnits: reviewUnitManifest
       ? buildReviewUnitReceipt(reviewUnitManifest)
       : { status: reviewUnitsPolicy.status, enabled: false },
+    findingVerification: findingVerification || { summary: { incomplete: true, verified: 0, rejected: 0 } },
+    usage: usageTotal,
     investigation: investigationSummary || { schemaVersion: 'review-investigation-summary-v1', enabled: boundedMode, complete: false, laneCount: 0, evidenceReceipts: 0 },
     outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
     provider: memoryPolicy.provider || 'honcho',

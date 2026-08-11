@@ -119,6 +119,21 @@ Use `npx review-yeti eval tui` for the terminal view, or see
 [the evaluation CLI guide](docs/EVALUATION_CLI.md) for live runs, receipts, comparisons, and exit
 codes.
 
+### Local bounded review
+
+The production bounded engine is also available as a no-publication local command. Use one
+immutable source mode per run and keep diagnostics off machine-readable stdout:
+
+```bash
+reviewyeti review --base "$BASE_SHA" --head "$HEAD_SHA" --json
+reviewyeti review --diff-file ./change.diff --output ./review-run.json
+reviewyeti review --pr review-yeti-ai/review-yeti-bot#31 --json
+reviewyeti doctor --json
+```
+
+See [the local CLI guide](docs/CLI.md) and [operations guide](docs/OPERATIONS.md). Local mode
+cannot publish to GitHub; incomplete coverage, provider failure, and cancellation exit nonzero.
+
 ---
 
 ## What you get
