@@ -138,37 +138,94 @@ function completedLane({ input, runtime, parsed, response, turns, usage, routes 
   };
 }
 
+function retryableProvider(response, termination) {
+  const provider = String(response?.provider || '').trim().toLowerCase().split('/')[0];
+  if (!provider || provider === 'openrouter') return null;
+  const reason = `${termination || ''} ${response?.error || ''}`;
+  return /unresolved_evidence|malformed_response|timeout|aborted|provider_failure/i.test(reason) ? provider : null;
+}
+
 async function runPersonaInvestigation(input = {}) {
   if (!input.identity || !input.persona?.id || typeof input.modelTurn !== 'function') throw new TypeError('persona investigation requires identity, persona, and modelTurn');
   const limits = normalizeInvestigationLimits(input.limits);
-  const runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
+  let runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
   let messages = buildInvestigationMessages({ ...input, limits, remaining: { calls: limits.maxCalls, turns: limits.maxTurns } });
+  const initialMessages = messages;
   let parsed = null;
   const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 };
   const routes = [];
-  for (let turn = 1; turn <= limits.maxTurns; turn += 1) {
+  const ignoredProviders = [];
+  let providerRetries = 0;
+  let turn = 1;
+  while (turn <= limits.maxTurns) {
     if (input.signal?.aborted) return incompleteLane({ input, runtime, parsed, termination: 'cancelled', turns: turn - 1, usage, routes });
     const finalOnly = turn === limits.maxTurns;
     let response;
     try {
-      response = await input.modelTurn({ messages, turn, finalOnly, signal: input.signal });
+      response = await input.modelTurn({
+        messages,
+        turn,
+        finalOnly,
+        signal: input.signal,
+        providerIgnore: ignoredProviders.length > 0 ? [...ignoredProviders] : undefined,
+      });
     } catch (error) {
       return incompleteLane({ input, runtime, parsed, termination: input.signal?.aborted ? 'cancelled' : 'provider_failure', turns: turn, usage, routes });
     }
     addUsage(usage, response);
     const route = boundedRoute(response);
     if (Object.keys(route).length > 0) routes.push(route);
-    if (!response?.ok) return incompleteLane({ input, runtime, parsed, termination: response?.error === 'cancelled' ? 'cancelled' : 'provider_failure', turns: turn, usage, routes });
+    if (!response?.ok) {
+      const termination = response?.error === 'cancelled'
+        ? 'cancelled'
+        : response?.error === 'unresolved_evidence'
+          ? 'unresolved_evidence'
+          : 'provider_failure';
+      const provider = retryableProvider(response, termination);
+      if (provider && providerRetries < 1) {
+        providerRetries += 1;
+        ignoredProviders.push(provider);
+        runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
+        messages = initialMessages;
+        parsed = null;
+        turn = 1;
+        continue;
+      }
+      return incompleteLane({ input, runtime, parsed, termination, turns: turn, usage, routes });
+    }
     try {
       parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id });
     } catch (_) {
+      const provider = retryableProvider(response, 'malformed_response');
+      if (provider && providerRetries < 1) {
+        providerRetries += 1;
+        ignoredProviders.push(provider);
+        runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
+        messages = initialMessages;
+        parsed = null;
+        turn = 1;
+        continue;
+      }
       return incompleteLane({ input, runtime, parsed, termination: 'malformed_response', turns: turn, usage, routes });
     }
     if (parsed.reviewStatus === 'COMPLETE') return completedLane({ input, runtime, parsed, response, turns: turn, usage, routes });
     if (finalOnly) return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes });
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
-    if (!evidence.complete) return incompleteLane({ input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes });
+    if (!evidence.complete) {
+      const provider = retryableProvider(response, evidence.termination);
+      if (provider && providerRetries < 1) {
+        providerRetries += 1;
+        ignoredProviders.push(provider);
+        runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
+        messages = initialMessages;
+        parsed = null;
+        turn = 1;
+        continue;
+      }
+      return incompleteLane({ input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes });
+    }
     messages = appendUntrustedEvidence(messages, evidence.outputs, { ...runtime.remaining(), turns: limits.maxTurns - turn });
+    turn += 1;
   }
   return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: limits.maxTurns, usage, routes });
 }
