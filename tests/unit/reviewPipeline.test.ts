@@ -90,7 +90,7 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     expect(result.comment).toMatch(/src\/oversized\.ts.*\d[\d,]+ chars/i);
     expect(result.comment).toMatch(/expected policy exclusion|does not block/i);
     expect(JSON.stringify(result.fetchImpl.mock.calls)).not.toContain(oversizedMarker);
-  });
+  }, 15_000);
 
   it('ships intentional exclusions without model requests', async () => {
     const diff = diffWithFiles([

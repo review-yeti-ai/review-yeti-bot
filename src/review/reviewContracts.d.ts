@@ -21,5 +21,6 @@ export function createReviewIdentity(input: {
   trustedConfig?: unknown;
   effectivePolicy?: unknown;
 }): ReviewIdentity;
+export function reviewIdentityDigest(identity: ReviewIdentity): string;
 export function createNoopReviewEventSink(): ReviewSink;
 export function createNoopReviewTelemetrySink(): ReviewSink;

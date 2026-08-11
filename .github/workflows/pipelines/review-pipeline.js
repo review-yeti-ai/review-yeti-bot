@@ -109,6 +109,12 @@ const { resolveTrustedReviewPolicy } = require('../../../src/review/reviewPolicy
 const { compact: compactContextWindow, resolveContextCompactionPolicy } = require('../../../src/review/contextWindow');
 const { createReviewTelemetry } = require('../../../src/telemetry/reviewTelemetry');
 const { createReviewUnitManifest } = require('../../../src/review/reviewUnitManifest');
+const { fetchImmutableRepositorySnapshot } = require('../../../src/mcp/reviewNavigationSnapshot');
+const { createGitHubBlobClient, createReviewNavigationToolRegistry } = require('../../../src/mcp/reviewNavigationTools');
+const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../../../src/review/reviewInvestigation');
+const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
+const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
+const { normalizeInvestigationLimits } = require('../../../src/review/evidenceContracts');
 const { buildReviewEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
@@ -857,15 +863,16 @@ function buildReviewUnitReceipt(manifest) {
   });
 }
 
-// Findings are model output, so the verifier is opt-in and can only read its mode from the same
-// exact-base configuration boundary as review units.  `report_only` is deliberately the default
-// for a configured verifier; an absent block remains inert for complete legacy compatibility.
-function resolveTrustedFindingVerifierPolicy({ localConfig, prContext, env = process.env, commandRunner } = {}) {
-  const configured = localConfig?.parsed?.review?.finding_verifier;
+// Findings are model output, so production verification is enforced from the same exact-base
+// configuration boundary as review units. Non-authoritative direct unit callers retain the
+// historical resolver contract for compatibility; the Action never uses that mode.
+function resolveTrustedFindingVerifierPolicy({ localConfig, prContext, env = process.env, commandRunner, authoritative = false } = {}) {
+  const configured = localConfig?.parsed?.review?.finding_verifier
+    || (authoritative ? { mode: 'enforce' } : undefined);
   const disabled = (status, reason) => Object.freeze({ status, reason, enabled: false, mode: 'report_only' });
   if (configured === undefined) return disabled('disabled_not_configured', 'not_configured');
   if (!configured || typeof configured !== 'object' || Array.isArray(configured)) return disabled('disabled_invalid_config', 'invalid_config');
-  const mode = configured.mode === undefined ? 'report_only' : String(configured.mode).trim();
+  const mode = authoritative ? 'enforce' : (configured.mode === undefined ? 'report_only' : String(configured.mode).trim());
   if (mode !== 'report_only' && mode !== 'enforce') return disabled('disabled_invalid_config', 'invalid_mode');
   const configDir = String(env.REVIEW_YETI_CONFIG_DIR || '').trim();
   const trustedConfigDir = String(env.REVIEW_YETI_TRUSTED_CONFIG_DIR || '').trim();
@@ -2328,7 +2335,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const requestBodyBase = {
     // Enforced Auto Router routing policy (allowlist / cost-quality tradeoff).
     ...(plugins.length > 0 ? { plugins } : {}),
-    messages: [
+    messages: Array.isArray(options.investigationMessages) && options.investigationMessages.length > 0
+      ? options.investigationMessages
+      : [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
@@ -2538,6 +2547,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         };
 
         const content = result.content ?? payload?.choices?.[0]?.message?.content;
+        if (options.rawTurn === true) {
+          const okElapsedMs = Math.max(0, Date.now() - requestStartedAt);
+          console.log(
+            `[OpenRouter] RAW_OK persona=${persona.id} requested=${requestedModel}`
+              + ` resolved=${formatRouteLabel(lastRoute)} elapsed_ms=${okElapsedMs}`
+              + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`,
+          );
+          recordModelTelemetry({ modelIndex, attempt, outcome: 'completed', usage: usageReported ? usage : undefined, startedAt: requestStartedAt });
+          return { ...responseBase, ok: true, content: typeof content === 'string' ? content : '' };
+        }
         const parsedReview = parseReviewResponse(content);
 
         if (parsedReview === null) {
@@ -2653,6 +2672,54 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     error: lastError || `unknown provider failure [${formatRouteLabel(lastRoute)}]`,
     generationId: lastRoute.generationId,
   };
+}
+
+/**
+ * Provider-neutral raw model-turn seam used by the bounded investigation state machine. The
+ * legacy findings parser remains available to unit callers, but production investigation turns
+ * receive the provider's exact JSON text and let the strict investigation parser own it.
+ */
+async function callPersonaModelTurn({ persona, prContext, sessionContext, messages, options = {}, turn = 1, finalOnly = false, signal } = {}) {
+  if (typeof options.modelClient === 'function') {
+    const response = await options.modelClient({ persona, prContext, sessionContext, messages, turn, finalOnly, signal, options });
+    if (response?.ok === true || typeof response?.content === 'string') return { ok: response.ok !== false, ...response };
+    // Test/runtime adapters may still return the old lane shape. Convert a clean adapter result
+    // into the strict response boundary; production never supplies modelClient.
+    if (response && response.decision && Array.isArray(response.findings)) {
+      const unitIds = Array.isArray(options.investigationUnitIds) ? options.investigationUnitIds.slice(0, 50) : [];
+      const riskPlan = unitIds.map((unitId, index) => ({
+        id: `adapter-risk-${index + 1}`,
+        unit_ids: [unitId],
+        statement: 'The changed review unit is covered by the deterministic test adapter.',
+        evidence_needed: [],
+        allowed_tools: [],
+      }));
+      return {
+        ok: true,
+        content: JSON.stringify({
+          review_status: 'COMPLETE',
+          risk_plan: riskPlan,
+          evidence_requests: [],
+          risk_dispositions: riskPlan.map((risk) => ({ risk_id: risk.id, status: 'rejected', reason: 'adapter result contains no candidate finding' })),
+          findings: [],
+        }),
+        model: response.model,
+        provider: response.provider,
+        generationId: response.generationId,
+        usage: response.usage,
+      };
+    }
+    return { ok: false, error: response?.error || 'provider_failure', usage: response?.usage };
+  }
+  const result = await reviewWithModel(
+    persona,
+    [],
+    prContext,
+    sessionContext,
+    { ...options, modelClient: undefined, investigationMessages: messages, rawTurn: true, signal },
+  );
+  if (result?.ok === true) return result;
+  return { ok: false, error: result?.error || 'provider_failure', usage: result?.usage, model: result?.model, provider: result?.provider, generationId: result?.generationId };
 }
 
 
@@ -5374,6 +5441,8 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     ...(Number.isSafeInteger(extra.telemetryEvents) ? [`telemetry-events=${extra.telemetryEvents}`] : []),
     ...(extra.dashboardDelivery ? [`dashboard-delivery=${extra.dashboardDelivery}`] : []),
     ...(extra.dashboardReviewUrl ? [`dashboard-review-url=${extra.dashboardReviewUrl}`] : []),
+    ...(extra.investigationSummary ? [`investigation-summary=${JSON.stringify(extra.investigationSummary)}`] : []),
+    ...(extra.investigationSummary ? [`investigation-status=${extra.investigationSummary.complete ? 'complete' : (extra.investigationSummary.laneCount > 0 ? 'partial' : 'incomplete')}`, `investigation-receipt=${JSON.stringify({ schemaVersion: extra.investigationSummary.schemaVersion, laneCount: extra.investigationSummary.laneCount, evidenceReceipts: extra.investigationSummary.evidenceReceipts, complete: extra.investigationSummary.complete, navigation: extra.investigationSummary.navigation })}`, `evidence-calls=${extra.investigationSummary.evidenceReceipts || 0}`] : []),
     ...(reviewUnitReceipt ? [
       `review-unit-identity=${JSON.stringify(reviewUnitReceipt.identity)}`,
       `review-unit-summary=${JSON.stringify({ schemaVersion: reviewUnitReceipt.schemaVersion, policyDigest: reviewUnitReceipt.policyDigest, summary: reviewUnitReceipt.summary, coverage: reviewUnitReceipt.coverage, units: reviewUnitReceipt.units })}`,
@@ -5769,6 +5838,13 @@ async function main(options = {}) {
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const fetchImplementation = options.fetchImplementation || globalThis.fetch;
   let prContext = options.prContext || getPRDiffAndContext(runtimeEnv);
+  // Bounded evidence execution is the authoritative production path whenever the event supplies
+  // an immutable review identity. Synthetic helper tests without real SHAs retain their fixture
+  // adapter path; production has no such escape hatch.
+  const boundedMode = options.boundedReview !== false
+    && Number(prContext.prNumber) > 0
+    && isImmutableCommitSha(prContext.baseSha)
+    && isImmutableCommitSha(prContext.headSha);
   console.log(`[Context] Repo: ${prContext.repo} | PR #: ${prContext.prNumber || 'N/A'} | SHA: ${prContext.headSha.slice(0, 7)}`);
 
   let sessionContext = null;
@@ -5792,6 +5868,7 @@ async function main(options = {}) {
     console.log(`[Config] Reading repository configuration from the trusted base ref, not the pull request head.`);
   }
   const localConfig = loadLocalRepoConfig(configRoot);
+  const investigationLimits = normalizeInvestigationLimits(localConfig?.parsed?.review?.investigation || {});
   if (shouldResolveTrustedReviewPolicy(localConfig)) {
     prContext = resolveTrustedPolicyPrContext(prContext, { commandRunner });
     const reviewIntelligencePolicy = resolveTrustedReviewPolicy({
@@ -5821,12 +5898,23 @@ async function main(options = {}) {
     env: runtimeEnv,
     commandRunner,
   });
+  const authoritativeUnitPolicy = reviewUnitsPolicy.enabled
+    ? reviewUnitsPolicy
+    : Object.freeze({
+      status: 'trusted_default',
+      enabled: true,
+      trustedBaseRef: prContext.baseSha,
+      configDigest: sha256(''),
+      policyDigest: sha256(canonicalJson({ schemaVersion: 'review-unit-policy-v2', trustedBaseRef: prContext.baseSha, rules: {} })),
+      rules: Object.freeze({ exclude: [], generatedPatterns: [], vendorPatterns: [], maxFileDiffChars: actionPolicy?.maxFileDiffChars }),
+    });
   if (reviewUnitsPolicy.enabled) console.log(`[Review units] Trusted manifest coverage enabled (policy=${reviewUnitsPolicy.policyDigest.slice(0, 12)}).`);
   const findingVerifierPolicy = resolveTrustedFindingVerifierPolicy({
     localConfig,
     prContext,
     env: runtimeEnv,
     commandRunner,
+    authoritative: boundedMode,
   });
   if (findingVerifierPolicy.enabled) console.log(`[Finding verifier] Trusted ${findingVerifierPolicy.mode} mode active (policy=${findingVerifierPolicy.policyDigest.slice(0, 12)}).`);
   const cancellation = createPipelineCancellation({
@@ -5873,6 +5961,8 @@ async function main(options = {}) {
   let arbitration = null;
   let expectedPersonaIds = [];
   let usageTotal;
+  let laneExecutionReceipts = [];
+  let investigationSummary = null;
   let finalResult = null;
   let dashboardDelivery = { status: 'disabled', attempts: 0 };
   let telemetryFlush;
@@ -5972,16 +6062,16 @@ async function main(options = {}) {
   // Review-unit coverage consumes only the base snapshot's .gitmodules metadata. A URL change
   // visible in the immutable PR diff makes gitlinks unreviewable; it never authorizes reading a
   // PR-checkout .gitmodules file as policy or origin metadata.
-  const trustedSubmoduleUrlChange = reviewUnitsPolicy.enabled && diffFiles.some((file) => file.path === '.gitmodules' && /^[+-]\s*url\s*=/mu.test(String(file.patch || '')));
+  const trustedSubmoduleUrlChange = boundedMode && diffFiles.some((file) => file.path === '.gitmodules' && /^[+-]\s*url\s*=/mu.test(String(file.patch || '')));
   const submoduleInputs = trustedSubmoduleUrlChange
     ? diffFiles.map((file) => isGitlinkMode(file) ? { ...file, submoduleUrlChanged: true } : file)
     : diffFiles;
-  const submoduleUrls = reviewUnitsPolicy.enabled ? baseSubmoduleUrls : loadActionSubmoduleUrls(process.cwd(), prContext.repo);
+  const submoduleUrls = boundedMode || reviewUnitsPolicy.enabled ? baseSubmoduleUrls : loadActionSubmoduleUrls(process.cwd(), prContext.repo);
   const submoduleReview = applyActionSubmodulePolicy(submoduleInputs, actionPolicy.submodules, {
     baseSubmoduleUrls,
     submoduleUrls,
     parentRepository: prContext.repo,
-    preserveIgnoredSubmodules: reviewUnitsPolicy.enabled,
+    preserveIgnoredSubmodules: boundedMode || reviewUnitsPolicy.enabled,
   });
   const reviewDiffFiles = submoduleReview.files;
   if (reviewDiffFiles.length === 0) {
@@ -6017,14 +6107,14 @@ async function main(options = {}) {
     [...configuredExcludes, ...envExcludes],
     { maxFileDiffChars: actionPolicy.maxFileDiffChars },
   );
-  if (reviewUnitsPolicy.enabled) {
+  if (boundedMode || reviewUnitsPolicy.enabled) {
     // Rebuild selection from the immutable manifest, not from Action environment exclusions.
     // The existing legacy filter remains completely untouched when this opt-in is disabled.
     const planned = createReviewUnitManifest({
-      identity: reviewUnitIdentity(reviewUnitsPolicy, prContext),
+      identity: reviewUnitIdentity(authoritativeUnitPolicy, prContext),
       files: reviewDiffFiles,
-      trustedRules: reviewUnitsPolicy.rules,
-      policy: reviewUnitsPolicy.rules,
+      trustedRules: authoritativeUnitPolicy.rules,
+      policy: authoritativeUnitPolicy.rules,
       now,
     });
     reviewableFiles = reviewDiffFiles.filter((_, index) => planned.units[index]?.status === 'selected');
@@ -6061,6 +6151,17 @@ async function main(options = {}) {
   }
   const manifest = buildFileManifest(diffFiles, exclusions);
   console.log(`[Manifest] Describing all ${manifest.entries.length} changed file(s) to every reviewer (${exclusions.size} marked excluded from review).`);
+  const provisionalReviewUnitManifest = boundedMode ? createReviewUnitManifest({
+    identity: reviewUnitIdentity(authoritativeUnitPolicy, prContext),
+    files: reviewDiffFiles,
+    trustedRules: authoritativeUnitPolicy.rules,
+    policy: authoritativeUnitPolicy.rules,
+    now,
+  }) : null;
+  const unitIdsByPath = provisionalReviewUnitManifest
+    ? Object.fromEntries(provisionalReviewUnitManifest.units.map((unit) => [unit.path, unit.id]))
+    : {};
+  const dependencyRiskHints = buildDependencyRiskHints({ files: reviewDiffFiles, unitIdsByPath });
   const decisionLedger = readDecisionLedgerSnapshot(
     commandRunner,
     prContext,
@@ -6119,8 +6220,19 @@ async function main(options = {}) {
       passes: 0,
       terminalStatus: submoduleReview.coverageComplete ? 'SHIP' : 'INCOMPLETE_REVIEW',
     };
-    reviewUnitManifest = buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
+    reviewUnitManifest = boundedMode
+      ? buildReviewUnitManifest(authoritativeUnitPolicy, prContext, reviewDiffFiles, coverage, now)
+      : buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
     if (reviewUnitManifest && !reviewUnitManifest.coverage.complete) coverage.terminalStatus = 'INCOMPLETE_REVIEW';
+    investigationSummary = {
+      schemaVersion: 'review-investigation-summary-v1',
+      enabled: boundedMode,
+      complete: Boolean(reviewUnitManifest?.coverage.complete),
+      laneCount: 0,
+      evidenceReceipts: 0,
+      navigation: { complete: false, reason: 'no_selected_units' },
+      dependencyHints: dependencyRiskHints.length,
+    };
     console.log(`[Policy] No eligible files remain; terminal status=${coverage.terminalStatus}. Skipping Context7 and persona evaluation.`);
   } else {
     // Context7 receives only files that survived the shared policy boundary. Excluded paths and
@@ -6322,6 +6434,157 @@ async function main(options = {}) {
       }
 
       console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
+      if (boundedMode) {
+        const navigationIdentity = {
+          repository: prContext.repo,
+          prNumber: Number(prContext.prNumber),
+          baseSha: prContext.baseSha,
+          headSha: prContext.headSha,
+        };
+        let navigationSnapshot = options.navigationSnapshot || null;
+        let navigationError = null;
+        const navigationToken = String(runtimeEnv.GH_TOKEN || runtimeEnv.GITHUB_TOKEN || '').trim();
+        if (!navigationSnapshot && navigationToken) {
+          try {
+            navigationSnapshot = await fetchImmutableRepositorySnapshot({
+              identity: navigationIdentity,
+              changedFiles: reviewDiffFiles,
+              token: navigationToken,
+              fetchImplementation,
+              signal: cancellation.signal,
+            });
+          } catch (error) {
+            navigationError = error;
+            console.warn(`[Evidence] Immutable repository snapshot unavailable: ${error.message || error}`);
+          }
+        }
+        const blobClient = navigationSnapshot && navigationToken
+          ? createGitHubBlobClient({ token: navigationToken, fetchImplementation })
+          : null;
+        const makeEvidenceRegistry = (persona) => {
+          if (typeof options.evidenceRegistryFactory === 'function') return options.evidenceRegistryFactory({ identity: navigationIdentity, snapshot: navigationSnapshot, persona });
+          if (options.evidenceRegistry && typeof options.evidenceRegistry.call === 'function') return options.evidenceRegistry;
+          if (navigationSnapshot && blobClient) {
+            return createReviewNavigationToolRegistry({
+              identity: navigationIdentity,
+              snapshot: navigationSnapshot,
+              blobClient,
+              config: { enabled: true, maxCalls: 12, maxResultBytes: 8_000, maxFindResults: 50, maxScanFiles: 20 },
+            });
+          }
+          return {
+            capabilities: Object.freeze({ enabled: false, readOnly: true, tools: [] }),
+            call: async () => ({ status: 'unavailable', reason: navigationError ? 'navigation_snapshot_unavailable' : 'disabled' }),
+          };
+        };
+        const modelOptions = {
+          ...modelConfig,
+          ...(sessionContext || {}),
+          fetchImplementation,
+          modelClient: options.modelClient,
+          reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
+          signal: cancellation.signal,
+        };
+        const evaluatedPersonas = await cancellation.race(Promise.all(enabledPersonas.map(async (persona) => {
+          const runs = [];
+          for (const batch of passes) {
+            const batchPaths = new Set(batch.map((file) => file.path));
+            const batchUnitIds = provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)).map((unit) => unit.id);
+            const run = await runBoundedPersonaInvestigation({
+              identity: navigationIdentity,
+              persona,
+              manifest: `${manifest.text}\n<review_units>${canonicalJson(provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)))}</review_units>`,
+              diffText: planDiffBudget(batch, modelConfig.maxDiffChars).text,
+              priorDecisionBlock: renderedDecisionLedger.text,
+              optionalContextBlock: [modelSideContext.optionalContextBlock || '', dependencyRiskHints.length > 0 ? `Dependency applicability hints (untrusted data):\n${canonicalJson(dependencyRiskHints)}` : ''].filter(Boolean).join('\n'),
+              limits: investigationLimits,
+              evidenceRegistry: makeEvidenceRegistry(persona),
+              requireEvidenceBoundary: !options.modelClient,
+              modelTurn: ({ messages, turn, finalOnly, signal }) => callPersonaModelTurn({
+                persona,
+                prContext,
+                sessionContext,
+                messages,
+                turn,
+                finalOnly,
+                signal,
+                options: { ...modelOptions, investigationUnitIds: batchUnitIds },
+              }),
+              signal: cancellation.signal,
+              clock: now,
+            });
+            runs.push(run.personaResult);
+            laneExecutionReceipts.push(run.executionReceipt);
+          }
+          return aggregatePersonaRuns(persona, runs, modelConfig.model);
+        })));
+        if (cancellation.isCancellationResult(evaluatedPersonas)) return;
+        personaResults = evaluatedPersonas;
+        const completedUnitIds = new Set(laneExecutionReceipts.filter((receipt) => receipt.complete).flatMap((receipt) => receipt.completedUnitIds || []));
+        const materializedFiles = reviewDiffFiles.map((file, index) => {
+          const unit = provisionalReviewUnitManifest.units[index];
+          return unit?.status === 'selected' ? { ...file, unitStatus: completedUnitIds.has(unit.id) ? 'completed' : 'failed' } : file;
+        });
+        reviewUnitManifest = createReviewUnitManifest({
+          identity: reviewUnitIdentity(authoritativeUnitPolicy, prContext),
+          files: materializedFiles,
+          trustedRules: authoritativeUnitPolicy.rules,
+          policy: authoritativeUnitPolicy.rules,
+          now,
+        });
+        const evidenceReceiptIds = new Set(laneExecutionReceipts.flatMap((receipt) => receipt.evidenceReceiptIds || []));
+        let evidenceOwnershipIncomplete = false;
+        personaResults = personaResults.map((lane) => {
+          const findings = (Array.isArray(lane.findings) ? lane.findings : []).filter((finding) => {
+            const ids = Array.isArray(finding.evidence_receipt_ids || finding.evidenceReceiptIds)
+              ? (finding.evidence_receipt_ids || finding.evidenceReceiptIds)
+              : [];
+            const valid = ids.length > 0 && ids.every((id) => evidenceReceiptIds.has(id));
+            if (!valid) evidenceOwnershipIncomplete = true;
+            return valid;
+          });
+          return { ...lane, findings, decision: lane.decision === 'ERROR' ? 'ERROR' : (findings.length ? 'FINDINGS' : 'APPROVE') };
+        });
+        if (findingVerifierPolicy.enabled) {
+          const verified = await applyFindingVerifier(personaResults, shownReviewFiles, findingVerifierPolicy, prContext, { commandRunner, fetchImplementation });
+          personaResults = verified.personaResults;
+          const navigationIncomplete = !options.modelClient && (!navigationSnapshot || navigationSnapshot.complete !== true);
+          findingVerification = {
+            ...verified.verification,
+            summary: { ...verified.verification.summary, incomplete: verified.verification.summary.incomplete || evidenceOwnershipIncomplete || navigationIncomplete },
+          };
+        } else {
+          const navigationIncomplete = !options.modelClient && (!navigationSnapshot || navigationSnapshot.complete !== true);
+          findingVerification = { summary: { incomplete: navigationIncomplete || evidenceOwnershipIncomplete || personaResults.some((lane) => lane.findings.length > 0), verified: 0, rejected: 0 } };
+        }
+        const failed = personaResults.filter((result) => result.decision === 'ERROR');
+        for (const lane of failed) console.warn(`[Persona ${lane.personaId}] Lane failed (${formatRouteLabel(lane)}): ${lane.error}`);
+        const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0);
+        coverage.providerFailures = [...new Set([
+          ...partialPersonaResults.map((result) => result.personaId || 'unknown'),
+          ...personaResults.filter((result) => result.decision === 'ERROR').map((result) => result.personaId || 'unknown'),
+        ])];
+        const partialView = reviewViewWasPartial(coverage);
+        const absencePass = withholdUnsoundAbsenceClaims(personaResults, partialView);
+        personaResults = absencePass.personaResults;
+        withheldAbsenceClaims = absencePass.withheld;
+        const reconciliation = reconcileDecisionFindings(personaResults, decisionLedger);
+        personaResults = reconciliation.personaResults;
+        carriedOpen = reconciliation.carriedOpen;
+        ignored = reconciliation.ignored;
+        recurrentResolved = reconciliation.recurrentResolved;
+        investigationSummary = {
+          schemaVersion: 'review-investigation-summary-v1',
+          enabled: true,
+          complete: laneExecutionReceipts.length > 0
+            && laneExecutionReceipts.every((receipt) => receipt.complete)
+            && Boolean(options.modelClient || navigationSnapshot?.complete === true),
+          laneCount: laneExecutionReceipts.length,
+          evidenceReceipts: laneExecutionReceipts.reduce((count, receipt) => count + Number(receipt.evidenceCalls || 0), 0),
+          navigation: navigationSnapshot ? { complete: navigationSnapshot.complete, truncated: navigationSnapshot.truncated } : { complete: false, error: navigationError ? 'snapshot_unavailable' : 'snapshot_not_configured' },
+          dependencyHints: dependencyRiskHints.length,
+        };
+      } else {
       const evaluatedPersonas = await cancellation.race(Promise.all(
         enabledPersonas.map(async (persona) => {
           const runs = [];
@@ -6399,6 +6662,7 @@ async function main(options = {}) {
       recurrentResolved = reconciliation.recurrentResolved;
       suppressedRepeats = reconciliation.suppressedRepeats;
       console.log(`[Decision ledger] ${carriedOpen.length} open blocker(s) carried, ${reconciliation.matchedOpenRepeats.length} duplicate repeat(s) reused, ${ignored.length} explicit ignore(s), ${recurrentResolved.length} neutral-resolution recurrence(s), ${suppressedRepeats.length} repeat(s) suppressed after an author-replied resolution.`);
+      }
     } else {
       console.error('[Review] No OPENROUTER_API_KEY configured. Refusing to post a heuristic or successful verdict.');
       process.exitCode = 1;
@@ -6406,7 +6670,7 @@ async function main(options = {}) {
     }
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
-    reviewUnitManifest = buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
+    if (!boundedMode) reviewUnitManifest = buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
       changedFiles: shownReviewFiles,
       expectedPersonaIds: enabledPersonas.map((persona) => persona.id),
@@ -6420,6 +6684,15 @@ async function main(options = {}) {
       carriedChangedFiles: diffFiles,
     });
     arbitration = applyFindingVerifierGate(arbitration, findingVerification, findingVerifierPolicy);
+    if (boundedMode) {
+      arbitration = deriveReceiptOutcome({
+        arbitration,
+        unitManifest: reviewUnitManifest,
+        laneReceipts: laneExecutionReceipts,
+        findingVerification: findingVerification || { summary: { incomplete: true } },
+        headCurrent: true,
+      });
+    }
     }
     if (currentCoverageIdentity) arbitration.coverageIdentity = currentCoverageIdentity;
   }
@@ -6612,6 +6885,7 @@ async function main(options = {}) {
     dashboardDelivery: dashboardDelivery.status,
     dashboardReviewUrl: dashboardDelivery.reviewUrl,
     reviewUnitReceipt: buildReviewUnitReceipt(reviewUnitManifest),
+    investigationSummary,
   });
 
 
@@ -6657,6 +6931,7 @@ async function main(options = {}) {
     reviewUnits: reviewUnitManifest
       ? buildReviewUnitReceipt(reviewUnitManifest)
       : { status: reviewUnitsPolicy.status, enabled: false },
+    investigation: investigationSummary || { schemaVersion: 'review-investigation-summary-v1', enabled: boundedMode, complete: false, laneCount: 0, evidenceReceipts: 0 },
     outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
     provider: memoryPolicy.provider || 'honcho',
     headSha: prContext.headSha,
@@ -6750,6 +7025,7 @@ module.exports = {
   callOpenRouterChat,
   reviewWithModel,
   runPersonaInvestigation,
+  callPersonaModelTurn,
   parseFindingsPayload,
   sanitizeFindings,
   loadLocalRepoConfig,
