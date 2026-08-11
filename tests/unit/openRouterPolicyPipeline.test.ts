@@ -6,11 +6,12 @@ import {
 
 const DEFAULTS = {
   ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
-  timeoutMs: 60000,
+  timeoutMs: 30000,
+  connectTimeoutMs: 8000,
   stream: false,
   model: undefined,
   fallbackModels: [],
-  providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
+  providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 8000 },
 };
 
 const ENV_ALL = {
@@ -56,9 +57,11 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       dataCollection: 'deny',
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 8000 },
       timeoutMs: 8000,
+      connectTimeoutMs: 8000,
       stream: true,
+      model: undefined,
     });
   });
 
@@ -69,9 +72,11 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       dataCollection: 'deny',
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731', 'openai/gpt-5.6-luna'],
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 5000 },
       timeoutMs: 5000,
+      connectTimeoutMs: 5000,
       stream: true,
+      model: undefined,
     });
   });
 
@@ -117,8 +122,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
       model: undefined,
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 8000 },
       timeoutMs: 8000,
+      connectTimeoutMs: 8000,
       stream: true,
     });
   });
@@ -145,16 +151,22 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       dataCollection: 'deny',
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: [],
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 2500 },
       timeoutMs: 2500,
+      connectTimeoutMs: 2500,
       stream: false,
+      model: undefined,
     });
   });
 
-  it('defaults timeout_ms to 60000 and clamps extreme values', () => {
-    expect(resolveOpenRouterPolicy({}, {}).timeoutMs).toBe(60000);
+  it('defaults timeout_ms to 30000 and clamps extreme values', () => {
+    expect(resolveOpenRouterPolicy({}, {}).timeoutMs).toBe(30000);
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '100' }).timeoutMs).toBe(500); // floor
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '9999999' }).timeoutMs).toBe(600_000); // ceiling
+    expect(resolveOpenRouterPolicy({}, {}).connectTimeoutMs).toBe(8000);
+    expect(resolveOpenRouterPolicy({}, { OPENROUTER_CONNECT_TIMEOUT_MS: '100' }).connectTimeoutMs).toBe(500);
+    // connect cannot exceed total budget
+    expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '2000', OPENROUTER_CONNECT_TIMEOUT_MS: '9000' }).connectTimeoutMs).toBe(2000);
   });
 
   it('permanently bans degraded and fallback routes while accepting additional configured bans', () => {
@@ -235,6 +247,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       only: ['novita'],
       allow_fallbacks: false,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
+      preferred_max_latency: 8000,
     });
   });
 
