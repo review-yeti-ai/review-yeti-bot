@@ -101,7 +101,7 @@ describe('action.yml — installable GitHub Action contract', () => {
 
   it('defaults OpenRouter routing to the certified provider cohort without fallback escape', () => {
     expect(action.inputs['openrouter-provider-routing'].default).toBe(
-      '{"only":["wafer","morph"],"allow_fallbacks":false}',
+      '{"only":["morph"],"allow_fallbacks":false}',
     );
   });
 
