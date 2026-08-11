@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import Ajv2020 from 'ajv/dist/2020';
+import fs from 'node:fs';
 import path from 'node:path';
 import { runReviewWorkflowFixture } from '../support/reviewWorkflowHarness';
 import { loadReviewWorkflowFixture } from '../support/reviewWorkflowFixtures';
+
+const reviewEventSchema = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../schemas/review-event.v1.schema.json'), 'utf8'));
+const validateReviewEventSchema = new Ajv2020({ strict: false, validateFormats: false }).compile(reviewEventSchema);
 
 describe('cassette-backed review workflow harness', () => {
   it('resolves the immutable base SHA before applying an opted-in trusted review policy', async () => {
@@ -68,6 +73,8 @@ describe('cassette-backed review workflow harness', () => {
       pullRequest: { number: 42, headSha: 'a'.repeat(40) },
       review: { verdict: 'SHIP', personas: expect.any(Array) },
     });
+    expect(validateReviewEventSchema(receipt.dashboardEvents[0])).toBe(true);
+    expect(validateReviewEventSchema.errors).toBeNull();
   });
 
   it('keeps the review green and GitHub publication successful when dashboard delivery fails', async () => {
