@@ -544,7 +544,7 @@ over collapsing two distinct defects, since the second hides one.
 | :--- | :--- | :--- |
 | `llm-api-key` | required | The sole OpenRouter inference API key, passed explicitly in the workflow action call. Management keys and alternate provider-key environment variables are not accepted. |
 | `llm-base-url` | `https://openrouter.ai/api/v1` | OpenRouter-compatible base URL. |
-| `openrouter-provider-routing` | `{"only":["morph"],"allow_fallbacks":false}` | JSON `provider` policy forwarded to OpenRouter. The default pins review requests to the certified Morph provider and fails closed rather than escaping to another provider. Wafer and Novita are hard-banned after repeated timeout/provider-error lanes. It supports provider order/allow-fallbacks, parameter requirements, data-collection/ZDR policy, provider allow/deny lists, quantizations, sorting, throughput/latency preferences, and price caps. The built-in degraded-provider blocklist remains hard-banned. |
+| `openrouter-provider-routing` | `{"only":["morph"],"allow_fallbacks":false}` | JSON `provider` policy forwarded to OpenRouter. The default pins review requests to the certified Morph provider and fails closed rather than escaping to another provider. Fixed models are checked against an explicit provider cohort before persona fan-out; `openai/gpt-5.6-luna` requires `only` to include `openai` or `azure`. Wafer and Novita are hard-banned after repeated timeout/provider-error lanes. It supports provider order/allow-fallbacks, parameter requirements, data-collection/ZDR policy, provider allow/deny lists, quantizations, sorting, throughput/latency preferences, and price caps. The built-in degraded-provider blocklist remains hard-banned. |
 | `openrouter-fallback-models` | — | Comma-separated ordered model fallbacks for transient timeouts, network errors, rate limits, and 5xx responses. Empty uses `github_action.openrouter.fallback_models` from the trusted base ref. |
 | `context7-api-key` | — | Optional Context7 API key. With a non-empty key and `mcp.context7.enabled` in the target `.review-yeti.yaml` (default on when the key is set), Context7 docs are injected into every persona. |
 | `model` | `openrouter/auto-beta` | Model identifier passed to the provider. |
@@ -578,6 +578,21 @@ Provider routing uses OpenRouter's raw API field names. For example:
             {"order":["novita","akash"],"allow_fallbacks":false,"require_parameters":true,
              "sort":{"by":"throughput","partition":"none"},"max_price":{"prompt":1}}
 ```
+
+Fixed-model routing is fail-closed. The action does not infer compatibility from the model owner's
+namespace, remove `ignore` or data-policy restrictions, or fall back to an unapproved provider. For
+the fixed `openai/gpt-5.6-luna` model, OpenRouter's compatible provider cohort is explicitly
+`openai`/`azure`, so a consumer that has approved those providers can use:
+
+```yaml
+          model: openai/gpt-5.6-luna
+          openrouter-provider-routing: >-
+            {"only":["openai","azure"],"allow_fallbacks":false}
+```
+
+Retain any existing `data_collection`, `zdr`, `require_parameters`, and `ignore` fields when
+making that change. If the repository must remain Morph-only, select a model served by Morph
+instead. A mismatch fails before persona requests with an actionable compatibility error.
 
 The action also reads reviewer personas and repository defaults from the target
 `.review-yeti.yaml`; configure this object as `github_action.openrouter.provider_routing` there.

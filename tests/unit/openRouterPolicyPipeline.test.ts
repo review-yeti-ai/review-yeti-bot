@@ -251,6 +251,40 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     });
   });
 
+  it('fails before lane fan-out when Luna is restricted to the Morph-only cohort', () => {
+    expect(() => resolveOpenRouterPolicy({}, {
+      OPENROUTER_MODEL: 'openai/gpt-5.6-luna',
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['morph'], allow_fallbacks: false }),
+    })).toThrow(/fixed-model compatibility check failed.*openai\/gpt-5\.6-luna.*openai or azure.*only permits only \[morph\]/i);
+  });
+
+  it('accepts Luna only with an explicit compatible provider allowlist and preserves data policy', () => {
+    const policy = resolveOpenRouterPolicy({}, {
+      OPENROUTER_MODEL: 'openai/gpt-5.6-luna',
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({
+        only: ['openai', 'azure'],
+        allow_fallbacks: false,
+        data_collection: 'deny',
+      }),
+    });
+
+    expect(policy.providerRouting).toEqual({
+      only: ['openai', 'azure'],
+      allow_fallbacks: false,
+      data_collection: 'deny',
+      ignore: HARD_BANNED_PROVIDER_SLUGS,
+      preferred_max_latency: 8000,
+    });
+  });
+
+  it('fails when a compatible provider is separately excluded instead of removing the exclusion', () => {
+    expect(() => resolveOpenRouterPolicy({}, {
+      OPENROUTER_MODEL: 'openai/gpt-5.6-luna',
+      OPENROUTER_IGNORE_PROVIDERS: 'openai,azure',
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['openai', 'azure'], allow_fallbacks: false }),
+    })).toThrow(/effective ignore policy also excludes openai, azure/i);
+  });
+
   it('parses stream truthy/falsey from env and yaml', () => {
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: 'true' }).stream).toBe(true);
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: '1' }).stream).toBe(true);

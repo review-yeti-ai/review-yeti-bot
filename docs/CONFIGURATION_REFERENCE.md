@@ -423,7 +423,7 @@ github_action:
 | `ignore_providers` | `string[]` | `[deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` | Provider slugs excluded from routing; the built-in degraded-provider blocklist is always excluded. |
 | `cost_quality_tradeoff` | `number` | unset | Auto Router cost/quality 0–10. |
 | `data_collection` | `allow`\|`deny` | unset | When `deny`, sends OpenRouter training opt-out header. |
-| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. The action input defaults to `only=[morph]` with `allow_fallbacks=false`; `wafer` and `novita` are hard-banned after repeated timeout/provider-error lanes. This YAML field is used only when a caller explicitly clears or overrides the action input. |
+| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. The action input defaults to `only=[morph]` with `allow_fallbacks=false`; `wafer` and `novita` are hard-banned after repeated timeout/provider-error lanes. Fixed models are checked against explicit model/provider compatibility before fan-out, and an incompatible closed cohort fails rather than broadening access. This YAML field is used only when a caller explicitly clears or overrides the action input. |
 
 **Precedence:** action input / env → `.review-yeti.yaml` → defaults (`timeout_ms=30000`, `stream=false`, `fallback_models=[]`).
 
