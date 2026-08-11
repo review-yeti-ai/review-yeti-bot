@@ -15,7 +15,8 @@
  *      (allowed_models / cost_quality_tradeoff / data_collection /
  *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
- *      deepinfra ignored, timeout_ms=30000, stream=false).
+ *      deepinfra and the openrouter fallback route ignored, timeout_ms=30000,
+ *      stream=false).
  *
  * @param {object|undefined} localConfig  Parsed local config, or an object whose
  *    `parsed` field holds the parse result (as produced by the pipeline).
@@ -79,9 +80,15 @@ function resolveOpenRouterPolicy(localConfig, env) {
   let allowedModels = (envAllowed.length > 0 ? envAllowed : cfgAllowed) || [];
   let tradeoff = (envTradeoff !== undefined && envTradeoff !== '' ? Number(envTradeoff) : (Number.isFinite(cfgTradeoff) ? cfgTradeoff : undefined));
   let dataCollection = (envData && envData !== '' ? envData : cfgData);
-  // DeepInfra is permanently banned for this action. The base slug excludes all
-  // DeepInfra endpoint variants, including turbo and regional variants.
-  const ignoredProviders = [...new Set(['deepinfra', ...(envIgnored.length > 0 ? envIgnored : cfgIgnored)])]
+  // These routes are permanently banned for this action. DeepInfra is an unsafe
+  // endpoint family, while `openrouter` is the fallback route label emitted when
+  // OpenRouter cannot identify a downstream provider. The latter was the route
+  // reported by the trusted CT review lanes that timed out; excluding it lets
+  // OpenRouter choose a different eligible downstream provider.
+  const ignoredProviders = [...new Set([
+    ...HARD_BANNED_PROVIDER_SLUGS,
+    ...(envIgnored.length > 0 ? envIgnored : cfgIgnored),
+  ])]
     .map((provider) => String(provider).trim().toLowerCase())
     .filter(Boolean);
 
@@ -151,10 +158,15 @@ const PROVIDER_ROUTING_KEYS = new Set([
 ]);
 
 const PROVIDER_LIST_KEYS = new Set(['order', 'only', 'ignore', 'quantizations']);
+const HARD_BANNED_PROVIDER_SLUGS = ['deepinfra', 'openrouter'];
 const DEEPINFRA_SLUG = 'deepinfra';
 
 function isDeepInfraProvider(provider) {
   return String(provider).trim().toLowerCase().split('/')[0] === DEEPINFRA_SLUG;
+}
+
+function isHardBannedProvider(provider) {
+  return HARD_BANNED_PROVIDER_SLUGS.includes(String(provider).trim().toLowerCase().split('/')[0]);
 }
 
 function normalizeProviderList(value, field) {
@@ -275,12 +287,16 @@ function normalizeProviderRouting(raw, source) {
 function resolveProviderRouting(raw, configuredIgnoredProviders) {
   const providerRouting = normalizeProviderRouting(raw, typeof raw === 'string' ? 'action input' : 'config');
   const selectedProviders = [...(providerRouting.order || []), ...(providerRouting.only || [])];
-  const forbidden = selectedProviders.filter(isDeepInfraProvider);
+  const forbidden = selectedProviders.filter(isHardBannedProvider);
   if (forbidden.length > 0) {
-    throw new Error(`OpenRouter provider routing cannot select hard-banned DeepInfra provider(s): ${forbidden.join(', ')}`);
+    const deepInfra = forbidden.filter(isDeepInfraProvider);
+    if (deepInfra.length > 0) {
+      throw new Error(`OpenRouter provider routing cannot select hard-banned DeepInfra provider(s): ${deepInfra.join(', ')}`);
+    }
+    throw new Error(`OpenRouter provider routing cannot select hard-banned fallback provider(s): ${forbidden.join(', ')}`);
   }
   const ignoredProviders = [...new Set([
-    DEEPINFRA_SLUG,
+    ...HARD_BANNED_PROVIDER_SLUGS,
     ...(configuredIgnoredProviders || []),
     ...(providerRouting.ignore || []),
   ])].map((provider) => String(provider).trim().toLowerCase()).filter(Boolean);

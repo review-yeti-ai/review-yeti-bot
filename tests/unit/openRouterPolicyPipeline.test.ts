@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { resolveOpenRouterPolicy } from '../../.github/workflows/pipelines/openRouterPolicy.js';
 
 const DEFAULTS = {
-  ignoredProviders: ['deepinfra'],
+  ignoredProviders: ['deepinfra', 'openrouter'],
   timeoutMs: 30000,
   stream: false,
   model: undefined,
   fallbackModels: [],
-  providerRouting: { ignore: ['deepinfra'] },
+  providerRouting: { ignore: ['deepinfra', 'openrouter'] },
 };
 
 const ENV_ALL = {
@@ -51,9 +51,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['a/b', 'c/d'],
       costQualityTradeoff: 4,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra', 'siliconflow'],
+      ignoredProviders: ['deepinfra', 'openrouter', 'siliconflow'],
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
-      providerRouting: { ignore: ['deepinfra', 'siliconflow'] },
+      providerRouting: { ignore: ['deepinfra', 'openrouter', 'siliconflow'] },
       timeoutMs: 8000,
       stream: true,
     });
@@ -64,9 +64,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['openai/gpt-5.6-luna', 'moonshotai/kimi-k2.6'],
       costQualityTradeoff: 7,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra', 'siliconflow'],
+      ignoredProviders: ['deepinfra', 'openrouter', 'siliconflow'],
       fallbackModels: ['deepseek/deepseek-v4-flash-0731', 'openai/gpt-5.6-luna'],
-      providerRouting: { ignore: ['deepinfra', 'siliconflow'] },
+      providerRouting: { ignore: ['deepinfra', 'openrouter', 'siliconflow'] },
       timeoutMs: 5000,
       stream: true,
     });
@@ -111,10 +111,10 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['a/b', 'c/d'],
       costQualityTradeoff: 9,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra', 'siliconflow'],
+      ignoredProviders: ['deepinfra', 'openrouter', 'siliconflow'],
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
       model: undefined,
-      providerRouting: { ignore: ['deepinfra', 'siliconflow'] },
+      providerRouting: { ignore: ['deepinfra', 'openrouter', 'siliconflow'] },
       timeoutMs: 8000,
       stream: true,
     });
@@ -140,9 +140,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['m/n'],
       costQualityTradeoff: 3,
       dataCollection: 'deny',
-      ignoredProviders: ['deepinfra'],
+      ignoredProviders: ['deepinfra', 'openrouter'],
       fallbackModels: [],
-      providerRouting: { ignore: ['deepinfra'] },
+      providerRouting: { ignore: ['deepinfra', 'openrouter'] },
       timeoutMs: 2500,
       stream: false,
     });
@@ -154,12 +154,12 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '9999999' }).timeoutMs).toBe(600_000); // ceiling
   });
 
-  it('permanently bans DeepInfra while accepting additional configured bans', () => {
-    expect(resolveOpenRouterPolicy({}, {}).ignoredProviders).toEqual(['deepinfra']);
+  it('permanently bans unsafe and timeout-prone fallback routes while accepting additional configured bans', () => {
+    expect(resolveOpenRouterPolicy({}, {}).ignoredProviders).toEqual(['deepinfra', 'openrouter']);
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { ignore_providers: ['siliconflow', 'deepinfra'] } } },
       {},
-    ).ignoredProviders).toEqual(['deepinfra', 'siliconflow']);
+    ).ignoredProviders).toEqual(['deepinfra', 'openrouter', 'siliconflow']);
   });
 
   it('forwards documented provider routing fields and normalizes provider slugs', () => {
@@ -193,7 +193,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       preferred_min_throughput: { p90: 50 },
       preferred_max_latency: { p90: 3 },
       max_price: { prompt: 1, completion: 2 },
-      ignore: ['deepinfra'],
+      ignore: ['deepinfra', 'openrouter'],
     });
   });
 
@@ -201,6 +201,12 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     expect(() => resolveOpenRouterPolicy({}, {
       OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['deepinfra/turbo'] }),
     })).toThrow(/hard-banned DeepInfra/);
+  });
+
+  it('fails closed when a provider routing selection tries to re-enable the timeout-prone fallback route', () => {
+    expect(() => resolveOpenRouterPolicy({}, {
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['openrouter'] }),
+    })).toThrow(/hard-banned fallback provider/);
   });
 
   it('uses github_action.openrouter.provider_routing when the action input is empty', () => {
@@ -216,7 +222,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     }, {}).providerRouting).toEqual({
       only: ['novita'],
       allow_fallbacks: false,
-      ignore: ['deepinfra'],
+      ignore: ['deepinfra', 'openrouter'],
     });
   });
 
