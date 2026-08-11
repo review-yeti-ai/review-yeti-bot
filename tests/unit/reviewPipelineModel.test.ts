@@ -487,6 +487,30 @@ describe('reviewWithModel', () => {
     });
   });
 
+  it('does not issue a request when fixed Luna is incompatible with the Morph-only policy', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '10476' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'openai/gpt-5.6-luna',
+      fetchImpl: impl,
+      maxAttempts: 1,
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS },
+        timeoutMs: 30_000,
+        stream: false,
+      },
+    });
+
+    expect(calls).toHaveLength(0);
+    expect(result.decision).toBe('ERROR');
+    expect(result.error).toMatch(/fixed-model compatibility check failed.*openai\/gpt-5\.6-luna.*openai or azure.*only permits only \[morph\]/i);
+  });
+
   it('records the provider-selected model and provider alongside nested usage metadata', async () => {
     const { impl } = stubFetch(validFindings, {
       payload: {
