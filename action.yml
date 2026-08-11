@@ -235,19 +235,19 @@ inputs:
     default: ''
   dashboard-api-key:
     description: >-
-      Optional Review Yeti Cloud ingestion key (ctd_live_...). When empty, the action does not
-      contact the cloud dashboard and publishes the GitHub review normally.
+      Optional Review Yeti dashboard ingestion key (ctd_live_...). When empty, the action does
+      not contact the dashboard and publishes the GitHub review normally. It is never logged.
     required: false
     default: ''
   dashboard-api-url:
     description: >-
-      Review Yeti Cloud ingestion endpoint. Override this for a self-hosted dashboard; the
-      default is the production /api/v1/review-events endpoint.
+      Optional full Review Yeti review-event.v1 ingestion endpoint. Override this for a self-hosted
+      dashboard. It must be supplied together with dashboard-api-key to enable delivery.
     required: false
-    default: 'https://api.reviewyeti.ai/api/v1/review-events'
+    default: ''
   dashboard-url:
     description: >-
-      Review Yeti Cloud site origin used for the full-review link in the GitHub review. Set this
+      Review Yeti Cloud site origin used to build the safe dashboard-review-url output. Set this
       alongside dashboard-api-url for a self-hosted dashboard.
     required: false
     default: 'https://reviewyeti.ai'
@@ -334,7 +334,7 @@ outputs:
     description: 'Count of bounded telemetry events emitted; raw telemetry is never exposed as an Action output.'
     value: ${{ steps.review.outputs.telemetry-events }}
   dashboard-delivery:
-    description: 'Cloud dashboard delivery result: disabled, accepted, duplicate, cancelled, or failed.'
+    description: 'Optional dashboard delivery result: disabled, accepted, duplicate, or failed. Delivery never changes the review verdict.'
     value: ${{ steps.review.outputs.dashboard-delivery }}
   dashboard-review-url:
     description: 'Full cloud review URL returned by the dashboard after accepted or duplicate delivery.'
@@ -504,6 +504,11 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
+        DASHBOARD_SITE_URL: ${{ inputs.dashboard-url }}
+        DASHBOARD_DETAIL: ${{ inputs.dashboard-detail }}
+        DASHBOARD_TIMEOUT_MS: ${{ inputs.dashboard-timeout-ms }}
+        DASHBOARD_API_URL: ${{ inputs.dashboard-api-url }}
+        DASHBOARD_API_KEY: ${{ inputs.dashboard-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
         OPENROUTER_FALLBACK_MODELS: ${{ inputs.openrouter-fallback-models }}
@@ -532,11 +537,6 @@ runs:
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
-        DASHBOARD_API_KEY: ${{ inputs.dashboard-api-key }}
-        DASHBOARD_API_URL: ${{ inputs.dashboard-api-url }}
-        DASHBOARD_SITE_URL: ${{ inputs.dashboard-url }}
-        DASHBOARD_DETAIL: ${{ inputs.dashboard-detail }}
-        DASHBOARD_TIMEOUT_MS: ${{ inputs.dashboard-timeout-ms }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
         GITHUB_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
         PR_HEAD_SHA: ${{ steps.target.outputs.head_sha }}

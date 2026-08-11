@@ -100,8 +100,12 @@ const { classifyReviewFile, resolveMaxFileDiffChars } = require('../../../src/re
 const { resolveTrustedReviewPolicy } = require('../../../src/review/reviewPolicyResolver');
 const { compact: compactContextWindow, resolveContextCompactionPolicy } = require('../../../src/review/contextWindow');
 const { createReviewTelemetry } = require('../../../src/telemetry/reviewTelemetry');
+const {
+  buildReviewEvent,
+  deliverReviewEvent,
+  markReviewEventFailed,
+} = require('../../../src/telemetry/reviewDashboardTelemetry');
 const { createReviewUnitManifest } = require('../../../src/review/reviewUnitManifest');
-const { buildReviewEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -5330,6 +5334,22 @@ function writeTelemetryStepOutputs(outputPath, telemetryFlush = {}) {
   }
 }
 
+function writeDashboardStepOutput(outputPath, delivery = {}) {
+  if (!outputPath) return;
+  const status = ['disabled', 'accepted', 'duplicate', 'failed'].includes(delivery.status)
+    ? delivery.status
+    : 'failed';
+  try {
+    const lines = [`dashboard-delivery=${status}`];
+    if (typeof delivery.reviewUrl === 'string' && /^https?:\/\//u.test(delivery.reviewUrl)) {
+      lines.push(`dashboard-review-url=${delivery.reviewUrl}`);
+    }
+    fs.appendFileSync(outputPath, `${lines.join('\n')}\n`, 'utf-8');
+  } catch (err) {
+    console.warn(`[Outputs] Could not write dashboard delivery output: ${err.message}`);
+  }
+}
+
 /**
  * Main entry point for pipeline execution.
  */
@@ -5447,9 +5467,11 @@ async function main(options = {}) {
   let arbitration = null;
   let usageTotal;
   let finalResult = null;
-  let dashboardDelivery = { status: 'disabled', attempts: 0 };
   let telemetryFlush;
   let telemetryFinalized = false;
+  let dashboardEvent = null;
+  let dashboardDelivery = null;
+  let dashboardFinalized = false;
   const finalizeTelemetry = async () => {
     if (telemetryFinalized) return telemetryFlush;
     telemetryFinalized = true;
@@ -5464,6 +5486,48 @@ async function main(options = {}) {
     }
     writeTelemetryStepOutputs(runtimeEnv.GITHUB_OUTPUT, telemetryFlush);
     return telemetryFlush;
+  };
+  const finalizeDashboardTelemetry = async () => {
+    if (dashboardFinalized) return dashboardDelivery;
+    dashboardFinalized = true;
+    const hasUrl = Boolean(String(runtimeEnv.DASHBOARD_API_URL || '').trim());
+    const hasKey = Boolean(String(runtimeEnv.DASHBOARD_API_KEY || '').trim());
+    if (!hasUrl || !hasKey) {
+      dashboardDelivery = { status: 'disabled', attempts: 0 };
+      console.warn('[Dashboard] Telemetry skipped: configure both dashboard-api-url and dashboard-api-key to enable delivery.');
+      writeDashboardStepOutput(runtimeEnv.GITHUB_OUTPUT, dashboardDelivery);
+      if (finalResult) finalResult.dashboard = dashboardDelivery;
+      return dashboardDelivery;
+    }
+    try {
+      const event = dashboardEvent || buildReviewEvent({
+        prContext,
+        status: process.exitCode ? 'failed' : 'incomplete',
+        startedAtMs: startedAt,
+        completedAtMs: now(),
+        detail: runtimeEnv.DASHBOARD_DETAIL,
+      }, runtimeEnv);
+      dashboardDelivery = await deliverReviewEvent({
+        event,
+        url: runtimeEnv.DASHBOARD_API_URL,
+        apiKey: runtimeEnv.DASHBOARD_API_KEY,
+        siteUrl: runtimeEnv.DASHBOARD_SITE_URL,
+        timeoutMs: runtimeEnv.DASHBOARD_TIMEOUT_MS,
+        fetchImplementation,
+      });
+      if (dashboardDelivery.status === 'accepted' || dashboardDelivery.status === 'duplicate') {
+        console.log(`[Dashboard] Review event ${dashboardDelivery.status} after ${dashboardDelivery.attempts} attempt(s).`);
+        if (dashboardDelivery.reviewUrl) console.log(`[Dashboard] Review available at ${dashboardDelivery.reviewUrl}`);
+      } else {
+        console.warn(`[Dashboard] Review event delivery failed after ${dashboardDelivery.attempts} attempt(s) (${dashboardDelivery.reason || 'unknown error'}). Review outcome is unchanged.`);
+      }
+    } catch (_) {
+      dashboardDelivery = { status: 'failed', attempts: 0, reason: 'delivery error' };
+      console.warn('[Dashboard] Review event delivery failed safely. Review outcome is unchanged.');
+    }
+    writeDashboardStepOutput(runtimeEnv.GITHUB_OUTPUT, dashboardDelivery);
+    if (finalResult) finalResult.dashboard = dashboardDelivery;
+    return dashboardDelivery;
   };
   try {
   const memoryPolicy = actionPolicy.memory || {};
@@ -5994,54 +6058,24 @@ async function main(options = {}) {
   }
   console.log(`[Formatting] Planned ${publicationPlan.lineComments.length} line conversation(s), ${publicationPlan.fileComments.length} file conversation(s), ${publicationPlan.advisories.length} P2 advisory item(s), and ${publicationPlan.rejected.length} rejected finding(s).`);
   const reviewState = { withheldAbsenceClaims, carriedOpen, ignored, neutralResolved, recurrentResolved, obsolete, findingVerification };
-  if (runtimeEnv.DASHBOARD_API_KEY) {
-    try {
-      const dashboardEvent = buildReviewEvent({
-        prContext,
-        arbitration,
-        personaResults,
-        coverage,
-        usage: usageTotal,
-        detail: runtimeEnv.DASHBOARD_DETAIL,
-        status: arbitration.status === 'INCOMPLETE_REVIEW' ? 'incomplete' : 'completed',
-        startedAtMs: startedAt,
-        completedAtMs: now(),
-      }, runtimeEnv);
-      dashboardDelivery = await cancellation.race(deliverReviewEvent({
-        apiKey: runtimeEnv.DASHBOARD_API_KEY,
-        apiUrl: runtimeEnv.DASHBOARD_API_URL,
-        siteUrl: runtimeEnv.DASHBOARD_SITE_URL,
-        timeoutMs: runtimeEnv.DASHBOARD_TIMEOUT_MS,
-        event: dashboardEvent,
-        fetchImpl: fetchImplementation,
-        signal: cancellation.signal,
-      }));
-      if (cancellation.isCancellationResult(dashboardDelivery)) {
-        dashboardDelivery = { status: 'cancelled', attempts: 0 };
-      } else if (dashboardDelivery.status === 'failed') {
-        console.warn(`[Dashboard] Delivery failed safely after ${dashboardDelivery.attempts || 0} attempt(s): ${dashboardDelivery.reason || 'unknown error'}. Review outcome is unchanged.`);
-      } else if (dashboardDelivery.reviewUrl) {
-        console.log(`[Dashboard] Review available at ${dashboardDelivery.reviewUrl}`);
-      } else {
-        console.log(`[Dashboard] Delivery ${dashboardDelivery.status}; no review URL was returned.`);
-      }
-    } catch (error) {
-      dashboardDelivery = { status: 'failed', attempts: 0, reason: 'delivery error' };
-      console.warn(`[Dashboard] Delivery failed safely: ${error.message || error}. Review outcome is unchanged.`);
-    }
+  const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage, usageTotal, publicationPlan, reviewState);
+
+  try {
+    dashboardEvent = buildReviewEvent({
+      prContext,
+      arbitration,
+      personaResults,
+      coverage,
+      usage: usageTotal,
+      detail: runtimeEnv.DASHBOARD_DETAIL,
+      publicationPlan,
+      startedAtMs: startedAt,
+      completedAtMs: now(),
+      status: arbitration.status === 'INCOMPLETE_REVIEW' || arbitration.status === 'PARTIAL_REVIEW' ? 'incomplete' : 'completed',
+    }, runtimeEnv);
+  } catch (error) {
+    console.warn(`[Dashboard] Could not build optional review event: ${error.message || 'unknown error'}. Review publication is unchanged.`);
   }
-  const commentMarkdown = formatPRComment(
-    arbitration,
-    personaResults,
-    prContext,
-    mcpFleetInfo,
-    modelConfig,
-    coverage,
-    usageTotal,
-    publicationPlan,
-    reviewState,
-    { dashboardReviewUrl: dashboardDelivery.reviewUrl },
-  );
 
   console.log('[Publishing] Executing pull request review publishing...');
   if (cancellation.signal.aborted) return;
@@ -6051,6 +6085,7 @@ async function main(options = {}) {
     fileSystem: options.fileSystem || fs,
   });
   if (!publication.success) {
+    if (dashboardEvent) dashboardEvent = markReviewEventFailed(dashboardEvent, now());
     console.error(`[Publishing] ${publication.error || 'GitHub publication failed'}`);
     recordTelemetry({ phase: 'publication', unitId: 'review', outcome: 'failed', failureClass: 'publication_unavailable' });
     process.exitCode = 1;
@@ -6144,8 +6179,6 @@ async function main(options = {}) {
     memoryQueryStatus: memoryQueryResult.status,
     memoryQuerySource: memoryQueryResult.source,
     memoryWriteStatus: memoryWriteResult.status,
-    dashboardDelivery: dashboardDelivery.status,
-    dashboardReviewUrl: dashboardDelivery.reviewUrl,
     reviewUnitReceipt: buildReviewUnitReceipt(reviewUnitManifest),
   });
 
@@ -6200,7 +6233,9 @@ async function main(options = {}) {
   return finalResult;
   } finally {
     const finalizedTelemetry = await finalizeTelemetry();
+    const finalizedDashboard = await finalizeDashboardTelemetry();
     if (finalResult?.telemetry) finalResult.telemetry.flush = finalizedTelemetry;
+    if (finalResult) finalResult.dashboard = finalizedDashboard;
   }
 }
 
