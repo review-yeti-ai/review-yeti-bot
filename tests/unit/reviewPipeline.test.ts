@@ -222,7 +222,7 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     )).toBe(false);
   });
 
-  it('explains that partial provider lanes retain successful findings', () => {
+  it('explains that recovered multi-pass lanes remain visible', () => {
     const comment = pipeline.formatPRComment({
       verdict: 'BLOCK',
       status: 'INCOMPLETE_REVIEW',
@@ -246,7 +246,7 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
       passes: 2,
     });
 
-    expect(comment).toContain('successful findings retained');
+    expect(comment).toContain('Recovered multi-pass lanes');
     expect(comment).not.toContain('were excluded');
   });
 

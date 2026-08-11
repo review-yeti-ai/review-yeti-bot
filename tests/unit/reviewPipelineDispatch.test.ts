@@ -190,7 +190,7 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     expect(arbitration.rationale).toMatch(/partial|merge approval remains blocked/i);
   });
 
-  it('keeps findings from a partial lane while excluding it from trustworthy coverage', () => {
+  it('keeps findings from a recovered partial lane in trustworthy coverage', () => {
     const arbitration = computeArbitrationQuorum([
       {
         personaId: 'security',
@@ -206,8 +206,8 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
       coveragePolicy: { mandatory_personas: [], provider_diversity_min: 1 },
     });
 
-    expect(arbitration.status).toBe('INCOMPLETE_REVIEW');
-    expect(arbitration.coverage.trustworthyCount).toBe(1);
+    expect(arbitration.status).toBe('PARTIAL_REVIEW');
+    expect(arbitration.coverage.trustworthyCount).toBe(2);
     expect(arbitration.metrics.p0Count).toBe(1);
     expect(arbitration.gateDecision).toBe('BLOCKED');
     expect(arbitration.mergeEligible).toBe(false);
