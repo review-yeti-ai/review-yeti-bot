@@ -188,6 +188,18 @@ inputs:
     description: 'Token used to read the diff and publish the pull request review. The default workflow token is sufficient when the caller grants pull-requests: write.'
     required: false
     default: ${{ github.token }}
+  dashboard-api-url:
+    description: >-
+      Optional Review Yeti dashboard review-event.v1 endpoint. When either dashboard input is
+      empty, dashboard delivery is skipped and the GitHub review remains unchanged.
+    required: false
+    default: ''
+  dashboard-api-key:
+    description: >-
+      Optional Review Yeti dashboard ingestion key. This is separate from llm-api-key and is
+      never logged. Delivery is fail-soft and never changes the GitHub review verdict.
+    required: false
+    default: ''
   linear-api-key:
     description: >-
       Optional Linear API key (LINEAR_API_KEY only — OAuth Linear MCPs are rejected).
@@ -307,6 +319,9 @@ outputs:
   telemetry-events:
     description: 'Count of bounded telemetry events emitted; raw telemetry is never exposed as an Action output.'
     value: ${{ steps.review.outputs.telemetry-events }}
+  dashboard-delivery:
+    description: 'Optional dashboard delivery result: disabled, accepted, duplicate, or failed. Delivery never changes the review verdict.'
+    value: ${{ steps.review.outputs.dashboard-delivery }}
   review-unit-identity:
     description: 'Exact bounded review-unit identity JSON, emitted only when trusted review.units.enabled is active.'
     value: ${{ steps.review.outputs.review-unit-identity }}
@@ -472,6 +487,8 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
+        DASHBOARD_API_URL: ${{ inputs.dashboard-api-url }}
+        DASHBOARD_API_KEY: ${{ inputs.dashboard-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
         OPENROUTER_FALLBACK_MODELS: ${{ inputs.openrouter-fallback-models }}

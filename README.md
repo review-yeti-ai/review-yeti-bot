@@ -531,6 +531,8 @@ over collapsing two distinct defects, since the second hides one.
 | `pr-number` | — | Pull request to review. Defaults to the PR that triggered the workflow. |
 | `repo` | — | Repository owning the pull request, as owner/name. Defaults to the current repository. |
 | `github-token` | workflow token | Token used to read the diff and post the review comment. The default workflow token is sufficient for same-repository reviews. |
+| `dashboard-api-url` | — | Optional full `review-event.v1` ingestion URL, such as `https://api.reviewyeti.ai/api/v1/review-events`. Must be paired with `dashboard-api-key`. |
+| `dashboard-api-key` | — | Optional dashboard ingestion key. It is sent only as a Bearer credential and is never logged; delivery failures never change the GitHub review verdict. |
 
 Provider routing uses OpenRouter's raw API field names. For example:
 

@@ -54,6 +54,33 @@ describe('cassette-backed review workflow harness', () => {
     expect(receipt.actionOutputs).toContain('memory-write-status=accepted');
   });
 
+  it('publishes one dashboard event without changing the existing verdict or GitHub publication', async () => {
+    const receipt = await runReviewWorkflowFixture('fresh-clean', { dashboardStatus: 202 });
+
+    expect(receipt).toMatchObject({
+      verdict: 'SHIP',
+      publication: { success: true },
+      dashboard: { status: 'accepted', attempts: 1 },
+    });
+    expect(receipt.dashboardEvents).toHaveLength(1);
+    expect(receipt.dashboardEvents[0]).toMatchObject({
+      repository: { fullName: 'acme/review-yeti' },
+      pullRequest: { number: 42, headSha: 'a'.repeat(40) },
+      review: { verdict: 'SHIP', personas: expect.any(Array) },
+    });
+  });
+
+  it('keeps the review green and GitHub publication successful when dashboard delivery fails', async () => {
+    const receipt = await runReviewWorkflowFixture('fresh-clean', { dashboardStatus: 500 });
+
+    expect(receipt).toMatchObject({
+      verdict: 'SHIP',
+      publication: { success: true },
+      dashboard: { status: 'failed', attempts: 3 },
+    });
+    expect(receipt.dashboardEvents).toHaveLength(3);
+  });
+
   it('continues with an unavailable provider while preserving the GitHub-ledger-only review path', async () => {
     const receipt = await runReviewWorkflowFixture('provider-unavailable', { memoryAvailable: false });
     expect(receipt).toMatchObject({ verdict: 'SHIP', publication: { success: true }, memory: { query: { status: 'unavailable' } }, outbox: { state: 'pending' } });
