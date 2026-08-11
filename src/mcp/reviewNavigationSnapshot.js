@@ -52,13 +52,50 @@ function overlayChangedFiles(entries, changedFiles, ref) {
     } else if (blobSha) {
       byPath.set(`head:${path}`, { path, blobSha: String(blobSha).toLowerCase(), ref: 'head', patch: typeof file.patch === 'string' ? file.patch : '' });
     }
-    const previousPath = validPath(file.previousPath || file.previous_path) ? (file.previousPath || file.previous_path) : null;
+    // Also index the pre-image under base when we have an old blob SHA (same path or rename).
+    const previousPath = validPath(file.previousPath || file.previous_path) ? (file.previousPath || file.previous_path) : path;
     if (previousPath && !byPath.has(`base:${previousPath}`)) {
       const oldSha = [file.oldSha, file.old_sha].find((value) => SHA.test(String(value || '')));
       if (oldSha) byPath.set(`base:${previousPath}`, { path: previousPath, blobSha: String(oldSha).toLowerCase(), ref: 'base', patch: '' });
     }
   }
   return [...byPath.values()].sort((left, right) => `${left.ref}:${left.path}`.localeCompare(`${right.ref}:${right.path}`));
+}
+
+/**
+ * Caps the immutable snapshot to MAX_FILES so monorepos (base+head trees) never
+ * produce a list that reviewNavigationTools.normalizeSnapshot rejects.
+ * Changed-file paths always win the budget when present.
+ */
+function boundSnapshotFiles(files, changedFiles, maxFiles = MAX_FILES) {
+  if (!Array.isArray(files)) return { files: [], truncated: true };
+  if (files.length <= maxFiles) return { files, truncated: false };
+
+  const priority = new Set();
+  for (const file of Array.isArray(changedFiles) ? changedFiles : []) {
+    if (validPath(file?.path)) {
+      priority.add(`head:${file.path}`);
+      priority.add(`base:${file.path}`);
+    }
+    const previousPath = validPath(file?.previousPath || file?.previous_path)
+      ? (file.previousPath || file.previous_path)
+      : null;
+    if (previousPath) {
+      priority.add(`base:${previousPath}`);
+      priority.add(`head:${previousPath}`);
+    }
+  }
+
+  const preferred = [];
+  const rest = [];
+  for (const file of files) {
+    if (priority.has(`${file.ref}:${file.path}`)) preferred.push(file);
+    else rest.push(file);
+  }
+  // preferred may itself exceed maxFiles on huge PRs — still hard-cap.
+  const selected = [...preferred, ...rest].slice(0, maxFiles);
+  selected.sort((left, right) => `${left.ref}:${left.path}`.localeCompare(`${right.ref}:${right.path}`));
+  return { files: selected, truncated: true };
 }
 
 async function fetchImmutableRepositorySnapshot({ identity, changedFiles = [], token, fetchImplementation = globalThis.fetch, apiBaseUrl = 'https://api.github.com', signal } = {}) {
@@ -68,16 +105,18 @@ async function fetchImmutableRepositorySnapshot({ identity, changedFiles = [], t
     fetchTree({ repository: identity.repository, ref: identity.baseSha, label: 'base', token, fetchImplementation, apiBaseUrl, signal }),
     fetchTree({ repository: identity.repository, ref: identity.headSha, label: 'head', token, fetchImplementation, apiBaseUrl, signal }),
   ]);
-  const files = overlayChangedFiles([...base.entries, ...head.entries], changedFiles, 'head');
+  const combined = overlayChangedFiles([...base.entries, ...head.entries], changedFiles, 'head');
+  const bounded = boundSnapshotFiles(combined, changedFiles, MAX_FILES);
+  const truncated = base.truncated || head.truncated || bounded.truncated;
   return Object.freeze({
     schemaVersion: 'review-navigation-snapshot-v1',
     repository: identity.repository,
     baseSha: identity.baseSha,
     headSha: identity.headSha,
-    files: Object.freeze(files),
-    complete: !base.truncated && !head.truncated,
-    truncated: base.truncated || head.truncated,
+    files: Object.freeze(bounded.files),
+    complete: !truncated,
+    truncated,
   });
 }
 
-module.exports = { fetchImmutableRepositorySnapshot, MAX_FILES };
+module.exports = { fetchImmutableRepositorySnapshot, boundSnapshotFiles, MAX_FILES };
