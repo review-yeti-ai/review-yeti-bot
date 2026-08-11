@@ -15,8 +15,8 @@
  *      (allowed_models / cost_quality_tradeoff / data_collection /
  *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
- *      deepinfra and the openrouter fallback route ignored, timeout_ms=30000,
- *      stream=false).
+ *      deepinfra, the openrouter fallback route, and known degraded providers
+ *      ignored, timeout_ms=30000, stream=false).
  *
  * @param {object|undefined} localConfig  Parsed local config, or an object whose
  *    `parsed` field holds the parse result (as produced by the pipeline).
@@ -80,11 +80,9 @@ function resolveOpenRouterPolicy(localConfig, env) {
   let allowedModels = (envAllowed.length > 0 ? envAllowed : cfgAllowed) || [];
   let tradeoff = (envTradeoff !== undefined && envTradeoff !== '' ? Number(envTradeoff) : (Number.isFinite(cfgTradeoff) ? cfgTradeoff : undefined));
   let dataCollection = (envData && envData !== '' ? envData : cfgData);
-  // These routes are permanently banned for this action. DeepInfra is an unsafe
-  // endpoint family, while `openrouter` is the fallback route label emitted when
-  // OpenRouter cannot identify a downstream provider. The latter was the route
-  // reported by the trusted CT review lanes that timed out; excluding it lets
-  // OpenRouter choose a different eligible downstream provider.
+  // The hard-banned list excludes all known degraded endpoint variants. The base slug excludes
+  // provider tags such as deepinfra/fp4 and decart/fp4 as well. `openrouter` is the fallback
+  // route label emitted when OpenRouter cannot identify a downstream provider.
   const ignoredProviders = [...new Set([
     ...HARD_BANNED_PROVIDER_SLUGS,
     ...(envIgnored.length > 0 ? envIgnored : cfgIgnored),
@@ -158,17 +156,20 @@ const PROVIDER_ROUTING_KEYS = new Set([
 ]);
 
 const PROVIDER_LIST_KEYS = new Set(['order', 'only', 'ignore', 'quantizations']);
-const HARD_BANNED_PROVIDER_SLUGS = ['deepinfra', 'openrouter'];
-const DEEPINFRA_SLUG = 'deepinfra';
-
-function isDeepInfraProvider(provider) {
-  return String(provider).trim().toLowerCase().split('/')[0] === DEEPINFRA_SLUG;
-}
-
-function isHardBannedProvider(provider) {
-  return HARD_BANNED_PROVIDER_SLUGS.includes(String(provider).trim().toLowerCase().split('/')[0]);
-}
-
+// These providers were returning degraded endpoint health while the central runner was
+// timing out. Keep the ban in the action itself so callers that explicitly pass only their
+// own ignore list cannot accidentally re-enable a known-bad route. Provider routing can still
+// add further temporary bans through OPENROUTER_IGNORE_PROVIDERS or trusted YAML.
+const HARD_BANNED_PROVIDER_SLUGS = Object.freeze([
+  'deepinfra',
+  'openrouter',
+  'decart',
+  'sail-research',
+  'inceptron',
+  'fireworks',
+  'together',
+  'mancer',
+]);
 function normalizeProviderList(value, field) {
   if (!Array.isArray(value)) {
     throw new Error(`OpenRouter provider routing field ${field} must be an array`);
@@ -289,11 +290,7 @@ function resolveProviderRouting(raw, configuredIgnoredProviders) {
   const selectedProviders = [...(providerRouting.order || []), ...(providerRouting.only || [])];
   const forbidden = selectedProviders.filter(isHardBannedProvider);
   if (forbidden.length > 0) {
-    const deepInfra = forbidden.filter(isDeepInfraProvider);
-    if (deepInfra.length > 0) {
-      throw new Error(`OpenRouter provider routing cannot select hard-banned DeepInfra provider(s): ${deepInfra.join(', ')}`);
-    }
-    throw new Error(`OpenRouter provider routing cannot select hard-banned fallback provider(s): ${forbidden.join(', ')}`);
+    throw new Error(`OpenRouter provider routing cannot select hard-banned provider(s): ${forbidden.join(', ')}`);
   }
   const ignoredProviders = [...new Set([
     ...HARD_BANNED_PROVIDER_SLUGS,
@@ -303,4 +300,13 @@ function resolveProviderRouting(raw, configuredIgnoredProviders) {
   return { ...providerRouting, ignore: ignoredProviders };
 }
 
-module.exports = { resolveOpenRouterPolicy, DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000 };
+function isHardBannedProvider(provider) {
+  const slug = String(provider).trim().toLowerCase().split('/')[0];
+  return HARD_BANNED_PROVIDER_SLUGS.includes(slug);
+}
+
+module.exports = {
+  resolveOpenRouterPolicy,
+  HARD_BANNED_PROVIDER_SLUGS,
+  DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000,
+};

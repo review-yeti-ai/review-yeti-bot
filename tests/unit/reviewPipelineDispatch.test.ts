@@ -70,6 +70,15 @@ describe('Dispatch path: persona resolution defaults', () => {
   });
 });
 
+describe('Central runner branch pinning', () => {
+  it('checks out the Review Yeti runner from main for both dispatch and self-review paths', async () => {
+    const yaml = await import('js-yaml');
+    const workflow = yaml.default.load(fs.readFileSync(workflowPath, 'utf8')) as any;
+    const checkout = workflow.jobs.review.steps.find((step: any) => step.name === 'Checkout Review Runner (this repository)');
+    expect(checkout?.with?.ref).toBe('main');
+  });
+});
+
 describe('Dispatch path: diff resolution never fabricates a diff', () => {
   const originalCwd = process.cwd();
 

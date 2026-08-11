@@ -220,8 +220,8 @@ inputs:
   openrouter-ignore-providers:
     description: >-
       Comma-separated OpenRouter provider slugs to exclude from routing. The action always
-      excludes deepinfra and the timeout-prone openrouter fallback route; this input can add
-      further provider bans without enabling fallbacks outside the remaining OpenRouter providers.
+      excludes the built-in degraded-provider blocklist (including deepinfra); this input can
+      add further provider bans without enabling fallbacks outside the remaining providers.
     required: false
     default: 'deepinfra,openrouter'
   openrouter-provider-routing:
@@ -229,8 +229,8 @@ inputs:
       Optional JSON object forwarded as OpenRouter's provider routing policy. Supports the raw
       API fields order, allow_fallbacks, require_parameters, data_collection, zdr,
       enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,
-      preferred_max_latency, and max_price. DeepInfra and the timeout-prone openrouter fallback
-      route remain hard-banned and cannot appear in order or only. Action input wins over
+      preferred_max_latency, and max_price. The built-in degraded-provider blocklist remains
+      hard-banned and cannot appear in order or only. Action input wins over
       github_action.openrouter.provider_routing in YAML.
     required: false
     default: ''
