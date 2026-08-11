@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ct-review.dev/schemas/review-event.v1.schema.json",
+  "title": "ct-review-bot review event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "eventId", "eventType", "occurredAt", "producer", "repository", "pullRequest", "workflow", "review"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "eventId": { "type": "string", "pattern": "^ctre_[a-f0-9]{40}$" },
+    "eventType": { "enum": ["review.completed", "review.failed"] },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "ct-review-bot" },
+        "version": { "type": "string", "maxLength": 100 }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fullName"],
+      "properties": {
+        "fullName": { "type": "string", "pattern": "^[^/]+/[^/]+$", "maxLength": 300 },
+        "githubRepositoryId": { "type": "string", "maxLength": 100 }
+      }
+    },
+    "pullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "title", "url", "headSha"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "maxLength": 500 },
+        "url": { "type": "string", "maxLength": 1000 },
+        "headSha": { "type": "string", "maxLength": 100 },
+        "baseSha": { "type": "string", "maxLength": 100 }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "runAttempt", "url", "trigger"],
+      "properties": {
+        "runId": { "type": "string", "maxLength": 100 },
+        "runAttempt": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "maxLength": 1000 },
+        "trigger": { "type": "string", "maxLength": 100 }
+      }
+    },
+    "review": { "$ref": "#/$defs/review" }
+  },
+  "$defs": {
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["promptTokens", "completionTokens", "totalTokens", "costUSD"],
+      "properties": {
+        "promptTokens": { "type": "integer", "minimum": 0 },
+        "completionTokens": { "type": "integer", "minimum": 0 },
+        "totalTokens": { "type": "integer", "minimum": 0 },
+        "costUSD": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "fingerprint", "persona", "path", "side", "line", "title", "body", "suggestion"],
+      "properties": {
+        "severity": { "enum": ["P0", "P1", "P2"] },
+        "fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "persona": { "type": "string", "maxLength": 100 },
+        "path": { "type": "string", "maxLength": 500 },
+        "side": { "enum": ["LEFT", "RIGHT"] },
+        "line": { "type": "integer", "minimum": 0 },
+        "title": { "type": "string", "maxLength": 300 },
+        "body": { "type": "string", "maxLength": 4000 },
+        "suggestion": { "type": "string", "maxLength": 4000 },
+        "githubUrl": { "type": "string", "maxLength": 1000 }
+      }
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["persona", "provider", "model", "decision", "durationMs", "promptTokens", "completionTokens", "totalTokens", "costUSD"],
+      "properties": {
+        "persona": { "type": "string", "maxLength": 100 },
+        "provider": { "type": "string", "maxLength": 100 },
+        "model": { "type": "string", "maxLength": 300 },
+        "decision": { "enum": ["APPROVE", "FINDINGS", "ERROR"] },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "promptTokens": { "type": "integer", "minimum": 0 },
+        "completionTokens": { "type": "integer", "minimum": 0 },
+        "totalTokens": { "type": "integer", "minimum": 0 },
+        "costUSD": { "type": ["number", "null"], "minimum": 0 },
+        "failureCategory": { "enum": ["timeout", "invalid_response", "rate_limited", "provider_unavailable", "provider_rejected", "provider_error"] }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "startedAt", "completedAt", "durationMs", "enforcement", "severityCounts", "coverage", "usage", "personas"],
+      "properties": {
+        "status": { "enum": ["completed", "failed", "incomplete"] },
+        "verdict": { "enum": ["SHIP", "FIX_FIRST", "BLOCK"] },
+        "rationale": { "type": "string", "maxLength": 2000 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "enforcement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": { "mode": { "enum": ["advisory", "block_on_block", "block_non_ship"] } }
+        },
+        "severityCounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p0", "p1", "p2"],
+          "properties": {
+            "p0": { "type": "integer", "minimum": 0 },
+            "p1": { "type": "integer", "minimum": 0 },
+            "p2": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["filesReviewed", "filesOmitted", "filesSkippedGenerated", "passes"],
+          "properties": {
+            "filesReviewed": { "type": "integer", "minimum": 0 },
+            "filesOmitted": { "type": "integer", "minimum": 0 },
+            "filesSkippedGenerated": { "type": "integer", "minimum": 0 },
+            "passes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "usage": { "$ref": "#/$defs/usage" },
+        "arbitration": { "$ref": "#/$defs/arbitration" },
+        "personas": { "type": "array", "items": { "$ref": "#/$defs/persona" } },
+        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } }
+      }
+    },
+    "arbitration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithmVersion", "expectedPersonas", "completedPersonas", "quorumSatisfied", "coverageQuorumSatisfied", "gateDecision", "mergeEligible", "thresholds"],
+      "properties": {
+        "algorithmVersion": { "type": "string", "maxLength": 100 },
+        "expectedPersonas": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 100 } },
+        "completedPersonas": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 100 } },
+        "quorumSatisfied": { "type": "boolean" },
+        "coverageQuorumSatisfied": { "type": "boolean" },
+        "gateDecision": { "enum": ["PASS", "BLOCKED"] },
+        "mergeEligible": { "type": "boolean" },
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["blockP1", "fixP2"],
+          "properties": {
+            "blockP1": { "type": "integer", "minimum": 0 },
+            "fixP2": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "publication": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["publishedFindings", "rejectedFindings"],
+          "properties": {
+            "publishedFindings": { "type": "integer", "minimum": 0 },
+            "rejectedFindings": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

@@ -72,7 +72,7 @@ function fixtureConfig(fixture: ReviewWorkflowFixture, options: { reviewIntellig
   return `memory:\n  enabled: true\n  provider: ${config.memory.provider}\n  mode: single\n  transport: rest\n  context: true\n  write: true\n  recall:\n    decision_feedback: true\n    session_recap: true\n  persist:\n    processing: true\n    decision_feedback: true\n    session_recap: true\n  providers:\n    mem0:\n      enabled: true\n      endpoint_env: MEM0_URL\n      credential_env: MEM0_API_KEY\npersonas:\n  - id: security\n  - id: testing\n${options.reviewIntelligence ? 'review_intelligence:\n  version: 1\n  enabled: true\n  limits:\n    max_diff_chars: 5000\n' : ''}`;
 }
 
-export async function runReviewWorkflowFixture(id: string, options: { memoryAvailable?: boolean; reviewIntelligence?: boolean; repositoryDispatch?: boolean; conflictingDispatchPayload?: boolean } = {}) {
+export async function runReviewWorkflowFixture(id: string, options: { memoryAvailable?: boolean; reviewIntelligence?: boolean; repositoryDispatch?: boolean; conflictingDispatchPayload?: boolean; dashboardStatus?: number } = {}) {
   const fixture = loadReviewWorkflowFixture(fixturePath(id));
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `review-yeti-workflow-${id}-`));
   const configRoot = path.join(tempRoot, 'config');
@@ -82,6 +82,17 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
   fs.writeFileSync(outputPath, '');
   const previousCwd = process.cwd();
   const previousEnv = { ...process.env };
+  const dashboardEvents: unknown[] = [];
+  const fetchImplementation = options.dashboardStatus === undefined
+    ? memoryFetchFactory({ available: options.memoryAvailable !== false })
+    : async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('dashboard.fixture.test')) {
+        dashboardEvents.push(JSON.parse(String(init?.body || '{}')));
+        return new Response('', { status: options.dashboardStatus });
+      }
+      return memoryFetchFactory({ available: options.memoryAvailable !== false })(input, init);
+    };
   const env = {
     ...process.env,
     PR_DIFF: JSON.stringify({
@@ -107,6 +118,10 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
     MEM0_URL: 'https://mem0.fixture.test',
     MEM0_API_KEY: 'fixture-memory-key',
     GITHUB_EVENT_PATH: options.conflictingDispatchPayload ? repositoryDispatchEventPath : '',
+    ...(options.dashboardStatus === undefined ? {} : {
+      DASHBOARD_API_URL: 'https://dashboard.fixture.test/api/v1/review-events',
+      DASHBOARD_API_KEY: 'ctd_live_fixture_key',
+    }),
   } as NodeJS.ProcessEnv;
   try {
     process.chdir(tempRoot);
@@ -125,12 +140,13 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
       cwd: tempRoot,
       now: () => 1_754_752_800_000,
       commandRunner: commandRunnerFactory(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha),
-      fetchImplementation: memoryFetchFactory({ available: options.memoryAvailable !== false }),
+      fetchImplementation,
       modelClient,
     });
     return {
       ...receipt,
       actionOutputs: fs.readFileSync(outputPath, 'utf8'),
+      dashboardEvents,
       outboxPayload: receipt.outbox.path ? JSON.parse(fs.readFileSync(receipt.outbox.path, 'utf8')) : null,
     };
   } finally {
