@@ -160,4 +160,58 @@ describe('review navigation tools', () => {
     expect(JSON.stringify(result)).not.toContain('top-secret');
     expect(JSON.stringify(result)).not.toContain('evil.invalid');
   });
+
+  // Regression coverage for a plausible cause of the cisco-cdr false-BLOCK/false-SHIP incidents
+  // (2026-08-11): a single malformed record anywhere in a large real-world monorepo tree
+  // (generated assets, deeply nested vendored dependencies, build output -- all realistic at
+  // cisco-cdr's ~17k-blob scale) used to throw and disable bounded evidence tooling for the
+  // *entire* review, for every other otherwise-valid file. That silently drops evidence tooling
+  // repo-wide, which (via reviewInvestigation.js candidateFindings) can turn a real defect into a
+  // manufactured APPROVE.
+  describe('a single malformed snapshot record does not disable the whole registry', () => {
+    it('constructs a working registry and simply excludes an overlong path, keeping every valid file reachable', async () => {
+      const overlongPath = `src/${'x'.repeat(600)}.js`;
+      const { registry: tools, blobClient } = registry({
+        snapshot: {
+          ...snapshot,
+          files: [
+            ...snapshot.files,
+            { path: overlongPath, blobSha: '3'.repeat(40), patch: '@@ -1 +1 @@\n-old\n+new' },
+          ],
+        },
+      });
+
+      await expect(tools.call('file_read', { path: 'src/app.js', startLine: 1, endLine: 1 })).resolves.toMatchObject({ status: 'ok', content: 'const matched = true;\n' });
+      // The overlong path is rejected by the same call-time validPath() check any caller would
+      // hit for a path that was never in the snapshot -- the point is it does not crash
+      // registry construction and does not affect any other (valid) file.
+      await expect(tools.call('file_read', { path: overlongPath })).resolves.toMatchObject({ status: 'invalid', reason: 'invalid file path' });
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it('excludes a record with an invalid blob SHA and a duplicate ref:path record, keeping the rest of the snapshot usable', async () => {
+      const { registry: tools } = registry({
+        snapshot: {
+          ...snapshot,
+          files: [
+            ...snapshot.files,
+            { path: 'src/app.js', blobSha: 'not-a-sha', patch: '' }, // invalid SHA, different path collision-adjacent record
+            { path: 'src/app.js', blobSha: '9'.repeat(40), patch: '' }, // duplicate key (first occurrence wins)
+          ],
+        },
+      });
+
+      const found = await tools.call('file_find', { query: 'app' });
+      expect(found).toMatchObject({ status: 'ok', paths: ['src/app.js'] });
+      const read = await tools.call('file_read', { path: 'src/app.js' });
+      // The duplicate/invalid records must not have overwritten the original valid blob SHA.
+      expect(read).toMatchObject({ status: 'ok', blobSha: '1'.repeat(40) });
+    });
+
+    it('still throws for a snapshot whose file count exceeds the hard 5,000-file bound (unchanged -- not weakened by this fix)', () => {
+      const oversized = { ...snapshot, files: Array.from({ length: 5_001 }, (_, index) => ({ path: `src/f${index}.js`, blobSha: '1'.repeat(40), patch: '' })) };
+      expect(() => createReviewNavigationToolRegistry({ identity, snapshot: oversized, config: { enabled: true }, blobClient: { getBlob: vi.fn() } }))
+        .toThrow('review navigation snapshot must contain a bounded file list');
+    });
+  });
 });

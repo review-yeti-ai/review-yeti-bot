@@ -4,6 +4,8 @@ import fs from 'node:fs';
 
 const root = path.resolve(__dirname, '../..');
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
+const { runPersonaInvestigation } = require(path.join(root, 'src/review/reviewInvestigation.js'));
+const { deriveReceiptOutcome } = require(path.join(root, 'src/review/reviewOutcome.js'));
 const identity = {
   repo: 'owner/repository', prNumber: 42,
   baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40),
@@ -208,5 +210,182 @@ describe('finding verifier pipeline policy and publication fence', () => {
       summary: { needsReview: 1, incomplete: true },
     }, { enabled: true, mode: 'enforce' });
     expect(blocked).toMatchObject({ verdict: 'BLOCK', status: 'INCOMPLETE_REVIEW', gateDecision: 'BLOCKED', mergeEligible: false });
+  });
+
+  // Regression coverage for the cisco-cdr false-BLOCK incident (2026-08-11) and its false-SHIP
+  // near-miss.
+  //
+  // An earlier version of this fix threaded an `evidenceEnabled` flag straight into
+  // applyFindingVerifierGate and skipped it wholesale whenever bounded evidence/navigation
+  // tooling was off. That was wrong and was caught before merging: `verification.summary.
+  // incomplete` can be true for reasons that have nothing to do with bounded-navigation
+  // availability (the finding verifier's own exact-blob check -- findingVerifier.js -- is an
+  // independent mechanism that can fail on its own, e.g. a real finding it could not confirm).
+  // Blanket-skipping this gate on that basis would have let an unverifiable real finding through
+  // as SHIP -- the exact false-SHIP class this repo's gate exists to prevent. Also, with evidence
+  // tooling off, reviewInvestigation.js's candidateFindings no longer silently discards a
+  // findings-bearing persona result (see reviewInvestigation.test.ts): a real P1 finding still
+  // reaches `arbitration.verdict`, so this gate never needed a bypass to let a genuinely clean
+  // SHIP through in the first place.
+  //
+  // The actual fix lives further upstream, in review-pipeline.js's navigationCompletenessMatters:
+  // a truncated/unavailable bounded-navigation snapshot only feeds into
+  // `findingVerification.summary.incomplete` when a persona produced a finding actually grounded
+  // in that snapshot's evidence tools. This gate itself is unchanged from before PR #37 and stays
+  // that way -- it always blocks a genuinely incomplete verification.
+  describe('applyFindingVerifierGate never bypasses genuine incompleteness', () => {
+    it('DANGER GUARD: still forces BLOCK on a real needsReview>0 verification gap, with no evidence-availability escape hatch', () => {
+      const result = pipeline.applyFindingVerifierGate(
+        { verdict: 'SHIP', status: 'SHIP', rationale: 'Clean.', mergeEligible: true },
+        { summary: { needsReview: 1, incomplete: true } },
+        { enabled: true, mode: 'enforce' },
+      );
+      expect(result).toMatchObject({ verdict: 'BLOCK', gateDecision: 'BLOCKED', mergeEligible: false });
+    });
+
+    it('has no fourth-argument bypass at all (signature reverted to its pre-incident shape)', () => {
+      // Calling with a would-be bypass options object as a 4th arg must be a no-op: the function
+      // only takes 3 params. This pins the signature so a future edit cannot silently reintroduce
+      // the blanket bypass.
+      const result = pipeline.applyFindingVerifierGate(
+        { verdict: 'SHIP', status: 'SHIP', rationale: 'Clean.', mergeEligible: true },
+        { summary: { needsReview: 1, incomplete: true } },
+        { enabled: true, mode: 'enforce' },
+        { evidenceEnabled: false },
+      );
+      expect(result).toMatchObject({ verdict: 'BLOCK', gateDecision: 'BLOCKED', mergeEligible: false });
+    });
+  });
+
+  describe('navigationCompletenessMatters (the actual source-level fix)', () => {
+    it('CORE REGRESSION: a truncated snapshot does not matter when zero personas produced a navigation-grounded finding', () => {
+      const matters = pipeline.navigationCompletenessMatters({
+        personaResults: [
+          { personaId: 'security', findings: [] },
+          { personaId: 'testing', findings: [] },
+        ],
+        navigationSnapshot: { complete: false, truncated: true },
+        options: {},
+      });
+      expect(matters).toBe(false);
+    });
+
+    it('still matters when a finding is grounded in the (truncated) navigation snapshot', () => {
+      const matters = pipeline.navigationCompletenessMatters({
+        personaResults: [
+          { personaId: 'security', findings: [{ severity: 'P1', evidence_receipt_ids: ['er_1'] }] },
+        ],
+        navigationSnapshot: { complete: false, truncated: true },
+        options: {},
+      });
+      expect(matters).toBe(true);
+    });
+
+    it('DANGER GUARD: does not matter for a finding reviewInvestigation.js marked unverified (evidence tooling was globally off, not navigation-dependent)', () => {
+      const matters = pipeline.navigationCompletenessMatters({
+        personaResults: [
+          { personaId: 'security', findings: [{ severity: 'P1', unverified: true }] },
+        ],
+        navigationSnapshot: { complete: false, truncated: true },
+        options: {},
+      });
+      expect(matters).toBe(false);
+    });
+
+    it('does not matter once the snapshot is complete, regardless of findings', () => {
+      const matters = pipeline.navigationCompletenessMatters({
+        personaResults: [
+          { personaId: 'security', findings: [{ severity: 'P1', evidence_receipt_ids: ['er_1'] }] },
+        ],
+        navigationSnapshot: { complete: true, truncated: false },
+        options: {},
+      });
+      expect(matters).toBe(false);
+    });
+
+    it('never matters for a synthetic modelClient test/CLI harness that never fetches real navigation', () => {
+      const matters = pipeline.navigationCompletenessMatters({
+        personaResults: [{ personaId: 'security', findings: [{ severity: 'P1', evidence_receipt_ids: ['er_1'] }] }],
+        navigationSnapshot: null,
+        options: { modelClient: async () => ({}) },
+      });
+      expect(matters).toBe(false);
+    });
+  });
+
+  // The acceptance criterion the coordinator required before this PR could merge: a persona that
+  // reports a real P1 finding, with bounded evidence tooling unavailable for the whole review,
+  // must not resolve to SHIP end-to-end. This composes the real fixed functions across all three
+  // files this incident touched (reviewInvestigation.js, review-pipeline.js, reviewOutcome.js) --
+  // it is not just each gate tested in isolation.
+  describe('end-to-end acceptance: a P1 finding with evidence tooling unavailable must not resolve to SHIP', () => {
+    it('ACCEPTANCE', async () => {
+      const reviewIdentity = { provider: 'github', repository: identity.repo, prNumber: identity.prNumber, baseSha: identity.baseSha, headSha: identity.headSha };
+      const disabledRegistry = { capabilities: { enabled: false, readOnly: true, tools: [] }, call: async () => ({ status: 'unavailable', reason: 'disabled' }) };
+      const changedFiles = [{ path: 'lib/repo.ex', patch: '@@ -1 +1 @@\n-old\n+new' }];
+
+      // The flagging persona actually runs the real investigation state machine end to end, with
+      // evidence tooling disabled, and reports a real defect it can establish from the diff alone.
+      const flaggingRun = await runPersonaInvestigation({
+        identity: reviewIdentity,
+        persona: { id: 'security', name: 'Security', charter: 'Flag correctness defects.' },
+        manifest: 'ru_1 lib/repo.ex',
+        diffText: changedFiles[0].patch,
+        evidenceRegistry: disabledRegistry,
+        clock: () => 100,
+        modelTurn: async () => ({
+          ok: true,
+          content: JSON.stringify({
+            review_status: 'COMPLETE',
+            risk_plan: [{ id: 'risk-1', unit_ids: ['ru_1'], statement: 'insert_all may skip the usec cast', evidence_needed: [], allowed_tools: [] }],
+            evidence_requests: [],
+            risk_dispositions: [{ risk_id: 'risk-1', status: 'confirmed', reason: 'visible directly in the diff' }],
+            findings: [{ severity: 'P1', path: 'lib/repo.ex', line: 1, side: 'RIGHT', title: 'insert_all skips usec cast', body: 'insert_all bypasses the changeset cast on a :utc_datetime_usec column.', risk_id: 'risk-1' }],
+          }),
+          model: 'test/model', provider: 'test', usage: { promptTokens: 10, completionTokens: 5 },
+        }),
+      });
+      // Sanity check on the retention fix (reviewInvestigation.test.ts covers this directly too):
+      // the finding must have survived candidateFindings, not been silently dropped.
+      expect(flaggingRun.personaResult.decision).toBe('FINDINGS');
+
+      const cleanPersonaResult = (personaId: string) => ({
+        personaId, decision: 'APPROVE', findings: [], partial: 0,
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, costUSD: 0 }, routes: [],
+      });
+      const personaResults = [
+        pipeline.aggregatePersonaRuns({ id: 'security', name: 'Security' }, [flaggingRun.personaResult], 'test/model'),
+        ...['testing', 'style', 'architecture', 'performance'].map((id) => (
+          pipeline.aggregatePersonaRuns({ id, name: id }, [cleanPersonaResult(id)], 'test/model')
+        )),
+      ];
+
+      const arbitration0 = pipeline.computeArbitrationQuorum(personaResults, 5, { changedFiles, coverageComplete: true });
+      // The P1 finding alone must be enough to keep arbitration off SHIP -- this is the
+      // fundamental property: arbitration actually saw the finding because it was never dropped.
+      expect(arbitration0.verdict).not.toBe('SHIP');
+
+      // Nothing in this run is navigation-grounded (the retained finding is `unverified: true`),
+      // so a truncated/unavailable bounded-navigation snapshot correctly adds no extra
+      // incompleteness on top -- this is the actual source-level fix, verified in the
+      // navigationCompletenessMatters suite above.
+      const findingVerification = {
+        summary: { incomplete: pipeline.navigationCompletenessMatters({ personaResults, navigationSnapshot: { complete: false, truncated: true }, options: {} }) },
+      };
+      expect(findingVerification.summary.incomplete).toBe(false);
+
+      const arbitration1 = pipeline.applyFindingVerifierGate(arbitration0, findingVerification, { enabled: true, mode: 'enforce' });
+      const finalOutcome = deriveReceiptOutcome({
+        arbitration: arbitration1,
+        unitManifest: { coverage: { complete: true } },
+        laneReceipts: [flaggingRun.executionReceipt],
+        findingVerification,
+        headCurrent: true,
+        evidenceEnabled: false,
+      });
+
+      expect(finalOutcome.verdict).not.toBe('SHIP');
+      expect(finalOutcome.mergeEligible).not.toBe(true);
+    });
   });
 });
