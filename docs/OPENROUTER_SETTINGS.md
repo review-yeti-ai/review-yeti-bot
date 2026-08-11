@@ -15,7 +15,7 @@ github_action:
     stream: false
     data_collection: deny
     cost_quality_tradeoff: 5
-    ignore_providers: [deepinfra, openrouter, decart, sail-research, inceptron, fireworks, together, mancer, parasail]
+    ignore_providers: [deepinfra, openrouter, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]
     # Optional raw OpenRouter provider routing policy. This is forwarded as the
     # `provider` request object; use snake_case API field names.
     provider_routing:
@@ -53,7 +53,7 @@ Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL
 | `stream` | Use SSE streaming | `false` |
 | `data_collection` | Provider data-collection header policy: `allow` or `deny` | unset |
 | `cost_quality_tradeoff` | Auto Router quality/cost band, `0..10` | unset |
-| `ignore_providers` | Provider slugs to ignore; the built-in degraded-provider blocklist is always ignored | `[deepinfra, openrouter, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` |
+| `ignore_providers` | Provider slugs to ignore; the built-in degraded-provider blocklist is always ignored | `[deepinfra, openrouter, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` |
 | `provider_routing` | Validated OpenRouter provider-selection object | unset |
 
 Precedence is: explicit Action input/environment, trusted `github_action.openrouter` YAML, then

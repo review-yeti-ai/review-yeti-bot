@@ -38,6 +38,7 @@ github_action:
     ignore_providers:
       - deepinfra
       - openrouter
+      - siliconflow
       - decart
       - sail-research
       - inceptron
