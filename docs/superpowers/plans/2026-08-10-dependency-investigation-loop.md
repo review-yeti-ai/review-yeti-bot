@@ -95,7 +95,7 @@
 - [x] **Step 2: Inspect the exact diff and verify the plan checklist.**
 - [x] **Step 3: Commit the implementation with focused messages.**
 - [x] **Step 4: Push the branch to the fork and open an upstream Review Yeti PR.** PR [#22](https://github.com/review-yeti-ai/review-yeti-bot/pull/22); exact-head verification is recorded by the PR checks for each pushed revision.
-- [x] **Step 5: Run the hosted Review Yeti panel against the exact head, inspect persona turns/evidence/usage, and address findings.** Upstream's self-review job is skipped for fork PRs because its `OPENROUTER_API_KEY` secret is unavailable; the same pipeline was run credentialed locally with the review-fleet secret and publication disabled: 5 parallel personas, 1 turn each, 99,683 tokens, $0.0259, SHIP, no findings.
+- [x] **Step 5: Run the hosted Review Yeti panel against the exact head, inspect persona turns/evidence/usage, and address findings.** Upstream's self-review job is skipped for fork PRs because its `OPENROUTER_API_KEY` secret is unavailable; the same pipeline was run credentialed locally with the review-fleet secret and publication disabled at head `9c6d174`: 5 parallel personas, 1 turn each, 153,738 tokens, $0.0452, SHIP, no findings.
 - [ ] **Step 6: Re-run exact-head tests and hosted review, then merge only after required checks and review evidence are green.** Exact-head CI is green; merge remains pending because the upstream repository denies this account `MergePullRequest` permission and the hosted self-review secret is intentionally unavailable to fork PRs.
 
 ### Task 6: Evaluate efficacy before default-on promotion
