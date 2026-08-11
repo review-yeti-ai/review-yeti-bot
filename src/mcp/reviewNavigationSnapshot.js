@@ -98,6 +98,38 @@ function boundSnapshotFiles(files, changedFiles, maxFiles = MAX_FILES) {
   return { files: selected, truncated: true };
 }
 
+/**
+ * complete means "every PR-changed path with a resolvable blob SHA is indexed",
+ * NOT "the ambient monorepo tree fits under MAX_FILES". Ambient truncation is
+ * reported via truncated; pipeline finding-verifier treats complete===false as BLOCK.
+ */
+function changedFilesCovered(files, changedFiles) {
+  const list = Array.isArray(changedFiles) ? changedFiles : [];
+  if (list.length === 0) return true;
+  const headPaths = new Set();
+  const basePaths = new Set();
+  for (const file of Array.isArray(files) ? files : []) {
+    if (file?.ref === 'head' && validPath(file.path)) headPaths.add(file.path);
+    if (file?.ref === 'base' && validPath(file.path)) basePaths.add(file.path);
+  }
+  for (const file of list) {
+    if (!validPath(file?.path)) continue;
+    const status = String(file.status || file.changeType || '').toLowerCase();
+    const isDeleted = status === 'removed' || status === 'deleted';
+    const previousPath = validPath(file.previousPath || file.previous_path)
+      ? (file.previousPath || file.previous_path)
+      : file.path;
+    if (isDeleted) {
+      const oldSha = [file.oldSha, file.old_sha].find((value) => SHA.test(String(value || '')));
+      if (oldSha && !basePaths.has(previousPath)) return false;
+      continue;
+    }
+    const newSha = [file.newSha, file.new_sha, file.blobSha, file.sha].find((value) => SHA.test(String(value || '')));
+    if (newSha && !headPaths.has(file.path)) return false;
+  }
+  return true;
+}
+
 async function fetchImmutableRepositorySnapshot({ identity, changedFiles = [], token, fetchImplementation = globalThis.fetch, apiBaseUrl = 'https://api.github.com', signal } = {}) {
   if (!identity || !validRepository(identity.repository) || !SHA.test(String(identity.baseSha || '')) || !SHA.test(String(identity.headSha || ''))) throw new Error('immutable navigation identity is invalid');
   if (!token || typeof token !== 'string' || typeof fetchImplementation !== 'function') throw new Error('immutable navigation snapshot requires token and fetch');
@@ -108,15 +140,19 @@ async function fetchImmutableRepositorySnapshot({ identity, changedFiles = [], t
   const combined = overlayChangedFiles([...base.entries, ...head.entries], changedFiles, 'head');
   const bounded = boundSnapshotFiles(combined, changedFiles, MAX_FILES);
   const truncated = base.truncated || head.truncated || bounded.truncated;
+  const coverageComplete = changedFilesCovered(bounded.files, changedFiles);
+  // Without a PR file list, ambient tree completeness is the only signal.
+  const hasChangedFiles = Array.isArray(changedFiles) && changedFiles.length > 0;
+  const complete = hasChangedFiles ? coverageComplete : !truncated;
   return Object.freeze({
     schemaVersion: 'review-navigation-snapshot-v1',
     repository: identity.repository,
     baseSha: identity.baseSha,
     headSha: identity.headSha,
     files: Object.freeze(bounded.files),
-    complete: !truncated,
+    complete,
     truncated,
   });
 }
 
-module.exports = { fetchImmutableRepositorySnapshot, boundSnapshotFiles, MAX_FILES };
+module.exports = { fetchImmutableRepositorySnapshot, boundSnapshotFiles, changedFilesCovered, MAX_FILES };
