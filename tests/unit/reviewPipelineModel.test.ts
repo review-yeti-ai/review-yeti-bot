@@ -281,6 +281,65 @@ describe('reviewWithModel', () => {
     expect(result.decision).toBe('FINDINGS');
   });
 
+  it('quarantines the provider identified by a stream timeout and retries once on a fresh route', async () => {
+    const calls: any[] = [];
+    const streamResponse = (chunks: any[], { delayMs = 0, abortAfter = false } = {}) => {
+      let index = 0;
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          getReader: () => ({
+            read: async () => {
+              if (index >= chunks.length) {
+                if (!abortAfter) return { done: true, value: undefined };
+                if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+                throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+              }
+              const chunk = chunks[index++];
+              const data = chunk === '[DONE]' ? '[DONE]' : JSON.stringify(chunk);
+              return { done: false, value: Buffer.from(`data: ${data}\n\n`) };
+            },
+            cancel: async () => {},
+          }),
+        },
+      };
+    };
+    const fetchImpl = async (url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url, init, body });
+      if (calls.length === 1) {
+        throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+      }
+      if (calls.length === 2) {
+        return streamResponse([
+          { id: 'gen-silicon', model: 'test/model', provider: 'SiliconFlow', choices: [{ delta: { content: '{"findings":[]}' } }] },
+        ], { delayMs: 25, abortAfter: true });
+      }
+      return streamResponse([
+        { id: 'gen-healthy', model: 'test/model', provider: 'Novita', choices: [{ delta: { content: '{"findings":[]}' } }] },
+        '[DONE]',
+      ]);
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl,
+      maxAttempts: 2,
+      timeoutMs: 10,
+    });
+
+    expect(calls).toHaveLength(3);
+    expect(calls[1].body.stream).toBe(true);
+    expect(calls[2].body.stream).toBe(true);
+    expect(calls[2].body.provider.ignore).toContain('siliconflow');
+    expect(calls[2].body.session_id).toBeUndefined();
+    expect(result.provider).toBe('Novita');
+    expect(result.decision).toBe('APPROVE');
+  });
+
   it('treats empty model output as retryable before using the fallback', async () => {
     const calls: any[] = [];
     const fetchImpl = async (url: string, init: any) => {

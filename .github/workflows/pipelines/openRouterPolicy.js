@@ -163,6 +163,7 @@ const PROVIDER_LIST_KEYS = new Set(['order', 'only', 'ignore', 'quantizations'])
 const HARD_BANNED_PROVIDER_SLUGS = Object.freeze([
   'deepinfra',
   'openrouter',
+  'siliconflow',
   'decart',
   'sail-research',
   'inceptron',

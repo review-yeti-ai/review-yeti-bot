@@ -1537,7 +1537,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
         }
       }
     } catch (err) {
-      if (signal?.aborted) {
+      if (signal?.aborted || requestAbort.signal.aborted) {
         return {
           ok: false,
           aborted: true,
@@ -1554,7 +1554,32 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
       const msg = err?.message || String(err);
       if (/StreamReset|stream_id|remote_reset|ECONNRESET|aborted|timeout|network/i.test(msg)) {
         console.warn(`[OpenRouter] stream read failed (${formatRouteLabel(streamRoute)}): ${msg.slice(0, 120)}; falling back to non-stream`);
-        return nonStreamOnce();
+        if (requestAbort.signal.aborted) {
+          return {
+            ok: false,
+            aborted: true,
+            error: err,
+            ...streamRoute,
+            content,
+            usage,
+            streamed: true,
+            partial: sawChunk,
+          };
+        }
+        try {
+          return await nonStreamOnce();
+        } catch (fallbackError) {
+          return {
+            ok: false,
+            aborted: true,
+            error: fallbackError,
+            ...streamRoute,
+            content,
+            usage,
+            streamed: true,
+            partial: sawChunk,
+          };
+        }
       }
       return {
         ok: false,
@@ -1589,7 +1614,7 @@ async function callOpenRouterChat(fetchImpl, { url, headers, body, timeoutMs, pr
       },
     };
   } catch (err) {
-    if (signal?.aborted) {
+    if (signal?.aborted || requestAbort.signal.aborted) {
       return { ok: false, aborted: true, error: err, ...streamRoute, content: '', usage: null, streamed: true, partial: false };
     }
     const msg = String(err?.message || err);
@@ -2108,6 +2133,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   // while making a stalled endpoint self-quarantine instead of retrying the same sticky route.
   const timedOutProviders = new Set();
   let streamRetryRequested = false;
+  // OpenRouter session IDs are sticky across runs. Include the effective provider policy so a
+  // newly quarantined provider cannot be resurrected by a prior PR/persona session.
+  const sessionPolicyProviders = [...new Set([
+    ...(Array.isArray(orPolicy.ignoredProviders) ? orPolicy.ignoredProviders : []),
+    ...(Array.isArray(orPolicy.providerRouting?.ignore) ? orPolicy.providerRouting.ignore : []),
+  ])]
+    .map((provider) => String(provider).trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(',');
+  const sessionPolicyKey = sha256(sessionPolicyProviders).slice(0, 12);
 
   const requestBodyBase = {
     // Enforced Auto Router routing policy (allowlist / cost-quality tradeoff).
@@ -2182,9 +2218,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       prContext.prNumber ? `pr${prContext.prNumber}` : String(prContext.headSha || 'head').slice(0, 12),
       persona.id || 'persona',
       requestedModel.replace(/[^A-Za-z0-9._-]/g, '_'),
+      `policy${sessionPolicyKey}`,
     ].join(':').slice(0, 256);
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let providerRetryUsed = false;
+    for (let attempt = 1; attempt <= maxAttempts + (providerRetryUsed ? 1 : 0); attempt++) {
       const requestStartedAt = Date.now();
       const requestBody = buildRequestBody(requestedModel, sessionModel);
       try {
@@ -2233,7 +2271,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               + ` status=${result.status || 'aborted'} detail=${String(result.detail || result.error?.message || '').slice(0, 160)}`,
             );
             console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
-            if (attempt < maxAttempts) {
+            // A streaming retry is what reveals the provider. Give that newly identified route
+            // one additional attempt on a fresh session after adding it to provider.ignore.
+            if (attempt >= maxAttempts && timedOutProvider && timedOutProvider !== 'openrouter' && !providerRetryUsed) {
+              providerRetryUsed = true;
+            }
+            if (attempt < maxAttempts || providerRetryUsed) {
               recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_timeout', startedAt: requestStartedAt });
               if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
               continue;
@@ -2382,7 +2425,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         if (/timeout|aborted/i.test(msg)) {
           console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
         }
-        if (attempt < maxAttempts && /timeout|aborted|ECONNRESET|fetch failed/i.test(msg)) {
+        if (attempt >= maxAttempts && timedOutProvider && timedOutProvider !== 'openrouter' && !providerRetryUsed) {
+          providerRetryUsed = true;
+        }
+        if ((attempt < maxAttempts || providerRetryUsed) && /timeout|aborted|ECONNRESET|fetch failed/i.test(msg)) {
           recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(msg) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
           if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
           continue;

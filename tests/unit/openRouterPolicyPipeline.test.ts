@@ -54,9 +54,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['a/b', 'c/d'],
       costQualityTradeoff: 4,
       dataCollection: 'deny',
-      ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'],
+      ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
-      providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'] },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
       timeoutMs: 8000,
       stream: true,
     });
@@ -67,9 +67,9 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['openai/gpt-5.6-luna', 'moonshotai/kimi-k2.6'],
       costQualityTradeoff: 7,
       dataCollection: 'deny',
-      ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'],
+      ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731', 'openai/gpt-5.6-luna'],
-      providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'] },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
       timeoutMs: 5000,
       stream: true,
     });
@@ -114,10 +114,10 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allowedModels: ['a/b', 'c/d'],
       costQualityTradeoff: 9,
       dataCollection: 'deny',
-      ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'],
+      ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
       model: undefined,
-      providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow'] },
+      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
       timeoutMs: 8000,
       stream: true,
     });
@@ -162,7 +162,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { ignore_providers: ['siliconflow', 'deepinfra'] } } },
       {},
-    ).ignoredProviders).toEqual([...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow']);
+    ).ignoredProviders).toEqual(HARD_BANNED_PROVIDER_SLUGS);
   });
 
   it('forwards documented provider routing fields and normalizes provider slugs', () => {
@@ -217,8 +217,8 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
 
   it('always keeps the hard-banned providers when an action input supplies another ignore list', () => {
     const policy = resolveOpenRouterPolicy({}, { OPENROUTER_IGNORE_PROVIDERS: 'siliconflow' });
-    expect(policy.ignoredProviders).toEqual([...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow']);
-    expect(policy.providerRouting.ignore).toEqual([...HARD_BANNED_PROVIDER_SLUGS, 'siliconflow']);
+    expect(policy.ignoredProviders).toEqual(HARD_BANNED_PROVIDER_SLUGS);
+    expect(policy.providerRouting.ignore).toEqual(HARD_BANNED_PROVIDER_SLUGS);
   });
 
   it('uses github_action.openrouter.provider_routing when the action input is empty', () => {
