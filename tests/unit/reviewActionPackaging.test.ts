@@ -29,7 +29,8 @@ const outputContractRows = [
   ['merge-eligible', 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'],
   ['review-dispatch-digest', 'Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head.'],
   ['review-dispatch-policy-digest', 'Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one.'],
-  ['review-dispatch-manifest-digest', 'Digest of the complete bounded manifest artifact bound into the provider-owned dispatch receipt.'],
+  ['review-dispatch-manifest-digest', 'Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt.'],
+  ['review-dispatch-manifest-artifact-digest', 'Digest of the exact complete manifest artifact bytes written by the provider run.'],
   ['review-dispatch-provider-receipt-digest', 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'],
   ['files-skipped-generated', 'Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap.'],
   ['files-oversized', 'Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW.'],
@@ -116,6 +117,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(outputs).toContain('files-oversized');
     expect(outputs).toContain('review-dispatch-digest');
     expect(outputs).toContain('review-dispatch-manifest-digest');
+    expect(outputs).toContain('review-dispatch-manifest-artifact-digest');
     expect(outputs).toContain('dashboard-delivery');
     expect(outputs).toContain('dashboard-review-url');
     expect(action.outputs['files-oversized'].description).toMatch(/per-file/i);
@@ -137,6 +139,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(reviewStep?.env?.DASHBOARD_SITE_URL).toBe('${{ inputs.dashboard-url }}');
     expect(reviewStep?.env?.DASHBOARD_DETAIL).toBe('${{ inputs.dashboard-detail }}');
     expect(reviewStep?.env?.DASHBOARD_TIMEOUT_MS).toBe('${{ inputs.dashboard-timeout-ms }}');
+    expect(reviewStep?.env?.REVIEW_YETI_ACTION_SHA).toBe('${{ github.action_ref }}');
   });
 
   it('resolves the pipeline through GITHUB_ACTION_PATH, not the consumer workspace', () => {
@@ -379,16 +382,18 @@ describe('writeStepOutputs', () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-output-')), 'out.txt');
     writeStepOutputs(arbitration, file, null, null, {
       reviewDispatchReceipt: {
-        receiptDigest: 'a'.repeat(64),
-        identity: { policyDigest: 'b'.repeat(64) },
-        manifest: { digest: 'c'.repeat(64) },
-        providerReceipts: { count: 1, ids: ['gen_alpha'], digest: 'd'.repeat(64) },
+        policy_digest: 'b'.repeat(64),
+        manifest_digest: 'c'.repeat(64),
+        manifest_artifact_digest: 'e'.repeat(64),
       },
+      reviewDispatchReceiptDigest: 'a'.repeat(64),
+      reviewDispatchProviderReceiptDigest: 'd'.repeat(64),
     });
     const content = fs.readFileSync(file, 'utf-8');
     expect(content).toContain(`review-dispatch-digest=${'a'.repeat(64)}`);
     expect(content).toContain(`review-dispatch-policy-digest=${'b'.repeat(64)}`);
     expect(content).toContain(`review-dispatch-manifest-digest=${'c'.repeat(64)}`);
+    expect(content).toContain(`review-dispatch-manifest-artifact-digest=${'e'.repeat(64)}`);
     expect(content).toContain(`review-dispatch-provider-receipt-digest=${'d'.repeat(64)}`);
   });
 
@@ -396,16 +401,17 @@ describe('writeStepOutputs', () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-dispatch-no-provider-')), 'out.txt');
     writeStepOutputs(arbitration, file, null, null, {
       reviewDispatchReceipt: {
-        receiptDigest: 'a'.repeat(64),
-        identity: { policyDigest: 'b'.repeat(64) },
-        manifest: { digest: 'c'.repeat(64) },
-        providerReceipts: { count: 0, ids: [], digest: 'd'.repeat(64) },
+        policy_digest: 'b'.repeat(64),
+        manifest_digest: 'c'.repeat(64),
+        manifest_artifact_digest: 'e'.repeat(64),
       },
+      reviewDispatchReceiptDigest: 'a'.repeat(64),
     });
     const content = fs.readFileSync(file, 'utf-8');
     expect(content).toContain(`review-dispatch-digest=${'a'.repeat(64)}`);
     expect(content).toContain(`review-dispatch-policy-digest=${'b'.repeat(64)}`);
     expect(content).toContain(`review-dispatch-manifest-digest=${'c'.repeat(64)}`);
+    expect(content).toContain(`review-dispatch-manifest-artifact-digest=${'e'.repeat(64)}`);
     expect(content).not.toContain('review-dispatch-provider-receipt-digest=');
   });
 

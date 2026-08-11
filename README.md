@@ -610,7 +610,8 @@ for the complete field semantics.
 | `merge-eligible` | Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings. |
 | `review-dispatch-digest` | Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head. |
 | `review-dispatch-policy-digest` | Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one. |
-| `review-dispatch-manifest-digest` | Digest of the complete bounded manifest artifact bound into the provider-owned dispatch receipt. |
+| `review-dispatch-manifest-digest` | Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt. |
+| `review-dispatch-manifest-artifact-digest` | Digest of the exact complete manifest artifact bytes written by the provider run. |
 | `review-dispatch-provider-receipt-digest` | Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs. |
 | `findings-count` | Total findings across all personas. |
 | `p0-count` | Count of P0 (exploitable or data-losing) findings. |

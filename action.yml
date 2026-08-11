@@ -303,8 +303,11 @@ outputs:
     description: 'Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one.'
     value: ${{ steps.review.outputs.review-dispatch-policy-digest }}
   review-dispatch-manifest-digest:
-    description: 'Digest of the complete bounded manifest artifact bound into the provider-owned dispatch receipt.'
+    description: 'Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt.'
     value: ${{ steps.review.outputs.review-dispatch-manifest-digest }}
+  review-dispatch-manifest-artifact-digest:
+    description: 'Digest of the exact complete manifest artifact bytes written by the provider run.'
+    value: ${{ steps.review.outputs.review-dispatch-manifest-artifact-digest }}
   review-dispatch-provider-receipt-digest:
     description: 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'
     value: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
@@ -580,6 +583,9 @@ runs:
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
+        # github.action_ref is the exact ref from the caller's uses: pin. The provider receipt
+        # requires it to be a full 40-hex action SHA and fails closed for mutable refs/tags.
+        REVIEW_YETI_ACTION_SHA: ${{ github.action_ref }}
         GITHUB_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
         PR_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         REVIEW_INTELLIGENCE_ENABLED: ${{ inputs.review-intelligence-enabled }}
