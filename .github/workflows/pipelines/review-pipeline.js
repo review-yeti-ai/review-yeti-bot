@@ -2751,7 +2751,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         // `openrouter` is our explicit unknown-route sentinel when the response supplied no
         // downstream provider at all. It remains a fail-closed attribution state, but cannot be
         // treated as proof that the OpenRouter fallback label itself was selected.
-        if (lastRoute.provider !== 'openrouter' && isIgnoredProvider(lastRoute.provider, effectiveIgnoredProviders)) {
+        if (normalizeProviderSlug(lastRoute.provider) !== 'openrouter' && isIgnoredProvider(lastRoute.provider, effectiveIgnoredProviders)) {
           const ignoredProvider = normalizeProviderSlug(lastRoute.provider);
           if (ignoredProvider) timedOutProviders.add(ignoredProvider);
           const msg = `OpenRouter selected ignored provider ${ignoredProvider || 'unknown'} [${formatRouteLabel(lastRoute)}]`;
@@ -5273,8 +5273,19 @@ function actionReviewMarker(prContext) {
 }
 
 function publicationAttemptId(options, commentBody) {
-  const candidate = options?.publicationAttemptId || process.env.GITHUB_RUN_ID;
-  if (typeof candidate === 'string' && /^[A-Za-z0-9._:-]{1,120}$/u.test(candidate)) return candidate;
+  const explicitAttemptId = options?.publicationAttemptId;
+  if (typeof explicitAttemptId === 'string' && /^[A-Za-z0-9._:-]{1,120}$/u.test(explicitAttemptId)) return explicitAttemptId;
+  const runId = process.env.GITHUB_RUN_ID;
+  if (typeof runId === 'string' && /^[A-Za-z0-9._:-]{1,100}$/u.test(runId)) {
+    const runAttempt = process.env.GITHUB_RUN_ATTEMPT;
+    const normalizedAttempt = typeof runAttempt === 'string' && /^[1-9][0-9]{0,9}$/u.test(runAttempt)
+      ? runAttempt
+      : 'unknown';
+    // GitHub keeps GITHUB_RUN_ID stable across a re-run and increments only
+    // GITHUB_RUN_ATTEMPT. Bind the durable result to both identities so a prior attempt can
+    // never satisfy this attempt's post-write readback.
+    return `${runId}:attempt-${normalizedAttempt}`;
+  }
   // Local/offline callers have no run identity. The content-derived fallback preserves
   // idempotence for an unchanged result; hosted runs always use the immutable GitHub run id.
   return `body-${sha256(String(commentBody || '')).slice(0, 16)}`;
@@ -5308,6 +5319,12 @@ function latestActionReview(reviews) {
     return 0;
   });
   return ordered.at(-1);
+}
+
+function reviewResultMarker(prContext, review) {
+  const prefix = `<!-- review-yeti-bot:result:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:`;
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return String(review?.body || '').match(new RegExp(`${escapedPrefix}[^\\s>]{1,120} -->`, 'u'))?.[0] || '';
 }
 
 function actionFindingMarker(prContext, item) {
@@ -5689,7 +5706,8 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       // retains its earlier commit_id even if its body advertises a new SHA, which would make an
       // exact-head consumer incorrectly see no verdict for the current push. Only a matching
       // exact-head marker may deduplicate publication.
-      const reviewExists = Boolean(existingReview) && !reviewRequiresResultRepublish(existingReview);
+      const existingResultMarker = reviewResultMarker(prContext, existingReview);
+      const reviewExists = Boolean(existingReview) && Boolean(existingResultMarker) && !reviewRequiresResultRepublish(existingReview);
       let expectedPublisherLogin = authenticatedPublisherLogin;
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0 && expectedPublisherLogin
@@ -5748,9 +5766,10 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       }
 
       const verifiedReviews = readActionReviews(commandRunner, prContext);
+      const requiredResultMarker = reviewExists ? existingResultMarker : resultMarker;
       if (!verifiedReviews.some((review) => (
         typeof review?.body === 'string'
-        && review.body.includes(resultMarker)
+        && review.body.includes(requiredResultMarker)
         && review.commit_id === prContext.headSha
         && isExpectedPublisherLogin(review.user?.login, expectedPublisherLogin)
       ))) {
