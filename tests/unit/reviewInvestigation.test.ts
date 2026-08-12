@@ -86,10 +86,27 @@ describe('persona investigation state machine', () => {
     // termination=repeated_call (which forced a degraded-quorum BLOCK).
     expect(result.personaResult.decision).toBe('APPROVE');
     expect(result.executionReceipt.termination).toBe('completed');
-    const lastMessages = calls[calls.length - 1].messages;
-    const nudge = lastMessages[lastMessages.length - 1];
-    expect(nudge.role).toBe('user');
-    expect(nudge.content).toContain('Do not request that same evidence again');
+    // The nudge is present in the final turn's messages (the final-turn
+    // decision instruction may be appended after it).
+    expect(JSON.stringify(calls[calls.length - 1].messages)).toContain('Do not request that same evidence again');
+  });
+
+  it('tells the model explicitly when it is on its final turn', async () => {
+    const calls: any[] = [];
+    let index = 0;
+    const responses = [needsEvidenceResponse(), completeResponse()];
+    const modelTurn = async (turnInput: any) => {
+      calls.push(turnInput);
+      return responses[Math.min(index++, responses.length - 1)];
+    };
+    const result = await runPersonaInvestigation({ ...baseInput, modelTurn, limits: { maxTurns: 2 } });
+    expect(result.personaResult.decision).toBe('APPROVE');
+    // Turn 1 (not final) carries no final-turn order; turn 2 (final) must.
+    expect(JSON.stringify(calls[0].messages)).not.toContain('FINAL TURN');
+    const lastMessages = calls[1].messages;
+    expect(calls[1].finalOnly).toBe(true);
+    expect(lastMessages[lastMessages.length - 1].role).toBe('user');
+    expect(lastMessages[lastMessages.length - 1].content).toContain('FINAL TURN');
   });
 
   it('completes a clean review without forcing a tool call', async () => {
@@ -138,7 +155,10 @@ describe('persona investigation state machine', () => {
     const modelTurn = async ({ messages }: { messages: Array<{ content: string }> }) => {
       call += 1;
       if (call === 1) return needsEvidenceResponse();
-      const evidenceId = JSON.parse(messages.at(-1).content.match(/<evidence_results>\n([\s\S]*?)\n<\/evidence_results>/u)[1])[0].receipt_id;
+      // Evidence results may not be the last message (the final-turn decision
+      // instruction is appended after them on the final turn) — scan all messages.
+      const evidenceMessage = messages.map((m: any) => m.content).join('\n');
+      const evidenceId = JSON.parse(evidenceMessage.match(/<evidence_results>\n([\s\S]*?)\n<\/evidence_results>/u)[1])[0].receipt_id;
       return completeResponse({ findings: [{ severity: 'P1', path: 'src/a.js', line: 1, side: 'RIGHT', title: 'guard', body: 'trigger', risk_id: 'risk-1', evidence_receipt_ids: [evidenceId] }] });
     };
     const result = await runPersonaInvestigation({ ...baseInput, modelTurn });

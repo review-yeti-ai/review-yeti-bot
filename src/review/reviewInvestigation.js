@@ -345,11 +345,24 @@ async function runPersonaInvestigation(input = {}) {
       });
     }
     const finalOnly = turn === limits.maxTurns;
+    // The model must be TOLD it is on its final turn — `finalOnly` was previously
+    // only an internal flag, so a persona could keep answering NEEDS_EVIDENCE in
+    // good faith and die as budget_exhausted (cisco-cdr#4337 canaries 8-9: the
+    // testing lane requested evidence through every turn on every gateway).
+    // A final-turn NEEDS_EVIDENCE still terminates as budget_exhausted below;
+    // this instruction just makes that outcome a disobeyed order instead of an
+    // unavoidable trap.
+    const turnMessages = finalOnly
+      ? [...messages, {
+        role: 'user',
+        content: 'FINAL TURN: evidence tooling is no longer available and NEEDS_EVIDENCE is not an accepted answer. Respond with review_status COMPLETE now — dispose every risk-plan item using the evidence already supplied, keep only findings you can ground in existing evidence receipts, and leave evidence_requests empty.',
+      }]
+      : messages;
     let response;
     modelAttempts += 1;
     try {
       response = await input.modelTurn({
-        messages,
+        messages: turnMessages,
         turn,
         finalOnly,
         attempt: modelAttempts,
