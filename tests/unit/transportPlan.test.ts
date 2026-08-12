@@ -210,6 +210,45 @@ describe('reviewWithTransports', () => {
     expect(result).toMatchObject({ ok: true, content: 'still not JSON' });
   });
 
+  it('fails over on a caller-supplied contract validator, not just JSON validity', async () => {
+    const attempts: string[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      // Valid JSON on every transport; only the second passes the full contract.
+      return { ok: true, content: options.transportName === 'fireworks' ? '{"unexpected":"shape"}' : '{"review_status":"COMPLETE"}' };
+    };
+    const seen: string[] = [];
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      rawTurn: true,
+      transportPlan: plannedTransports(),
+      turnValidator: (content: string) => {
+        seen.push(content);
+        const parsed = JSON.parse(content);
+        if (parsed.review_status !== 'COMPLETE') throw new Error('contract violation');
+        return parsed;
+      },
+    });
+    expect(attempts).toEqual(['fireworks', 'openrouter-fallback']);
+    // The final transport's content is deliberately NOT validated in the wrapper —
+    // upstream owns classification there — so the validator ran exactly once.
+    expect(seen).toEqual(['{"unexpected":"shape"}']);
+    expect(result.content).toContain('COMPLETE');
+  });
+
+  it('does not fail over when the contract validator accepts the first transport', async () => {
+    const attempts: string[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      return { ok: true, content: '{"review_status":"COMPLETE"}' };
+    };
+    await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      rawTurn: true,
+      transportPlan: plannedTransports(),
+      turnValidator: (content: string) => JSON.parse(content),
+    });
+    expect(attempts).toEqual(['fireworks']);
+  });
+
   it('end-to-end: an openai-compat transport produces a gateway-neutral request through the real client', async () => {
     const requests: any[] = [];
     const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
