@@ -126,6 +126,54 @@ unchanged. Any host that is not a listed gateway — including a private proxy
 in front of OpenRouter — keeps full OpenRouter semantics; add new direct
 gateways to `KNOWN_DIRECT_GATEWAYS` explicitly.
 
+### Explicit transport plan (`github_action.transports`) — recommended
+
+Host detection above is the implicit fallback. The explicit, ordered transport
+plan is the recommended configuration style: each entry declares its gateway
+compatibility (`compat`), model id, and credential env var, and entries are
+tried **in declared order per model call** — the first non-failed result wins.
+This restores cross-gateway failover (a Fireworks outage fails over to a
+pinned-OpenRouter transport instead of failing the lane) and removes any
+dependence on the built-in host list.
+
+```yaml
+github_action:
+  transports:
+    - name: fireworks
+      base_url: https://api.fireworks.ai/inference/v1
+      api_key_env: FIREWORKS_PR_REVIEW_API_KEY
+      model: accounts/fireworks/models/deepseek-v4-flash-0731
+      compat: openai
+    - name: openrouter-fallback
+      base_url: https://openrouter.ai/api/v1
+      api_key_env: OPENROUTER_PR_REVIEW_API_KEY
+      model: deepseek/deepseek-v4-flash-0731
+      compat: openrouter
+      provider_routing: { order: [coreweave, phala], allow_fallbacks: false, data_collection: deny }
+```
+
+Rules:
+
+- `compat: openai | openrouter` (default: detected from `base_url`).
+  OpenRouter-only keys (`provider_routing`, `ignore_providers`,
+  `data_collection`, `allowed_models`, `cost_quality_tradeoff`,
+  `allow_banned_providers`) are **rejected** on `compat: openai` entries.
+- `api_key_env` names the env var carrying that transport's key; the CALLER
+  workflow must export it on the action step. It must end in `_API_KEY` or
+  `_KEY` and may never name a CI credential (`GITHUB_*`, `ACTIONS_*`,
+  `RUNNER_*`, `INPUT_*`, `GH_TOKEN` are rejected).
+- An entry whose key env is empty at runtime is dropped with a warning (so a
+  fallback can be declared before its secret exists); a plan with zero usable
+  entries fails the run closed. At most 6 entries.
+- Unset per-entry `timeout_ms` / `connect_timeout_ms` / `stream` /
+  `structured_output` inherit the global action inputs; per-entry values are
+  clamped by the same rules as the global ones.
+- The action input `transports` (JSON array, env `REVIEW_YETI_TRANSPORTS`)
+  wins over the YAML block. The chat preflight targets `transports[0]`.
+- Every model turn starts again from `transports[0]`, so the primary stays
+  authoritative and a transient failover does not pin later turns to the
+  fallback.
+
 ---
 
 ## 📐 Top-Level Schema Overview
