@@ -23,7 +23,9 @@ function commandRunnerFactory(repository: string, prNumber: number, headSha: str
     if (args[0] === 'pr' && args[1] === 'view') {
       return { status: 0, stdout: JSON.stringify({ headRefOid: headSha, baseRefOid: 'b'.repeat(40) }), stderr: '' };
     }
-    if (joined.includes(commentsEndpoint)) return { status: 0, stdout: '[]', stderr: '' };
+    if (!args.includes('--method') && (joined.includes(commentsEndpoint) || (args[0] === 'api' && String(args[1] || '').includes(`/issues/${prNumber}/comments`)))) {
+      return { status: 0, stdout: '[]', stderr: '' };
+    }
     if (args.includes('user')) return { status: 0, stdout: 'review-yeti-bot\n', stderr: '' };
     if (args.includes('graphql')) {
       return {

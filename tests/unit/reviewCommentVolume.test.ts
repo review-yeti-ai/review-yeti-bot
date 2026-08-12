@@ -30,9 +30,12 @@ const {
   planDiffPasses,
   PERSONA_CHARTERS,
   postOrOutputComment,
+  postStickySummaryComment,
+  renderStickySummaryBody,
   readPriorBotFindings,
   reviewablePathsChangedSince,
   reviewViewWasPartial,
+  splitStickySummaryBody,
   reviewWithModel,
   suppressPriorFindings,
   withholdUnsoundAbsenceClaims,
@@ -634,6 +637,7 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
   function githubRunner(seedReviews: any[] = [], options: { createdReviewCommitId?: string } = {}) {
     const state = {
       reviews: [...seedReviews],
+      comments: [] as Array<{ id: number; body: string; user: { login: string } }>,
       posted: [] as Array<{ method: string; endpoint: string; payload: any }>,
       threads: [] as any[],
       nextId: 500,
@@ -648,18 +652,28 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
       if (args[0] === 'api' && args[1] === 'user') {
         return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
       }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
       if (args[0] === 'api' && args.includes('--method')) {
         const method = args[args.indexOf('--method') + 1];
         const endpoint = args[3];
         const payload = JSON.parse(commandOptions.input);
         state.posted.push({ method, endpoint, payload });
         state.nextId += 1;
+        if (method === 'PATCH') {
+          const target = state.comments.find((comment) => endpoint.endsWith(`/${comment.id}`));
+          if (target) target.body = payload.body;
+          return { status: 0, stdout: JSON.stringify({ id: target?.id, user: { login: 'github-actions[bot]' } }), stderr: '' };
+        }
         if (method === 'PUT') {
           const target = state.reviews.find((r) => endpoint.endsWith(`/${r.id}`));
           if (target) target.body = payload.body;
           return { status: 0, stdout: JSON.stringify({ id: target?.id, user: { login: 'github-actions[bot]' } }), stderr: '' };
         }
-        if (endpoint.endsWith('/reviews')) {
+        if (endpoint.endsWith('/issues/42/comments')) {
+          state.comments.push({ id: state.nextId, body: payload.body, user: { login: 'github-actions[bot]' } });
+        } else if (endpoint.endsWith('/reviews')) {
           state.reviews.push({
             id: state.nextId,
             body: payload.body,
@@ -684,18 +698,21 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
     expect(actionSummaryAnchor({ ...context, headSha: 'different' })).toBe(actionSummaryAnchor(context));
   });
 
-  it('posts a review on the first push and stamps both markers', () => {
+  it('posts a compact review receipt and one full sticky summary on the first push', () => {
     const { state, commandRunner } = githubRunner();
 
     const result = postOrOutputComment('body for head one', context, emptyPlan, { commandRunner });
 
     expect(result.success).toBe(true);
-    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(1);
-    expect(state.reviews[0].body).toContain(actionSummaryAnchor(context));
+    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(2);
+    expect(state.reviews[0].body).not.toContain(actionSummaryAnchor(context));
     expect(state.reviews[0].body).toContain('review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action');
+    expect(state.comments).toHaveLength(1);
+    expect(state.comments[0].body).toContain(actionSummaryAnchor(context));
+    expect(state.comments[0].body).toContain('body for head one');
   });
 
-  it('creates a new review for the next push so GitHub binds the verdict to its immutable head', () => {
+  it('creates a new exact-head receipt and compacts the legacy full review during migration', () => {
     const priorReview = {
       id: 777,
       commit_id: 'oldhead',
@@ -708,15 +725,20 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
 
     expect(result).toMatchObject({ success: true });
     expect(state.reviews).toHaveLength(2);
-    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(1);
-    expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(0);
+    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(2);
+    expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(1);
 
-    const created = state.posted.find((p) => p.method === 'POST')!;
+    const created = state.posted.find((p) => p.method === 'POST' && p.endpoint.endsWith('/reviews'))!;
     expect(created.endpoint).toBe('repos/review-yeti-ai/review-yeti-bot/pulls/42/reviews');
     expect(created.payload.commit_id).toBe('newhead');
     expect(state.reviews[1].body).toContain('review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action');
-    expect(state.reviews[1].body).toContain('## Verdict for the new head');
+    expect(state.reviews[1].body).not.toContain('## Verdict for the new head');
+    expect(state.comments).toHaveLength(1);
+    expect(state.comments[0].body).toContain('## Verdict for the new head');
+    expect(state.comments[0].body).toContain('<summary>Previous review rounds (1)</summary>');
     expect(state.reviews[0].body).toContain('oldhead');
+    expect(state.reviews[0].body).not.toContain(actionSummaryAnchor(context));
+    expect(state.reviews[0].body).toContain('Full round details are maintained in the sticky Review Yeti summary comment.');
   });
 
   it('still deduplicates a retry of the same push rather than editing anything', () => {
@@ -728,6 +750,7 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
     expect(replay).toMatchObject({ success: true, deduplicated: true });
     expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(0);
     expect(state.reviews).toHaveLength(1);
+    expect(state.comments).toHaveLength(1);
   });
 
   it('repairs a legacy body marker when its immutable review commit belongs to an earlier head', () => {
@@ -743,9 +766,37 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
 
     expect(result).toMatchObject({ success: true, postedViaGh: true });
     expect(state.reviews).toHaveLength(2);
-    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(1);
-    expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(0);
+    expect(state.posted.filter((p) => p.method === 'POST')).toHaveLength(2);
+    expect(state.posted.filter((p) => p.method === 'PUT')).toHaveLength(1);
     expect(state.posted.find((p) => p.method === 'POST')?.payload.commit_id).toBe('newhead');
+  });
+
+  it('keeps the latest round expanded while retaining earlier rounds in collapsed history', () => {
+    const first = renderStickySummaryBody('## 🟢 **Verdict: SHIP**\nfirst round', context, null);
+    const second = renderStickySummaryBody('## 🔴 **Verdict: BLOCK**\nsecond round', context, first.body);
+
+    expect(second.deduplicated).toBe(false);
+    expect(second.body).toContain('## 🔴 **Verdict: BLOCK**\nsecond round');
+    expect(second.body).toContain('<details>\n<summary>Previous review rounds (1)</summary>');
+    expect(second.body).toContain('## 🟢 **Verdict: SHIP**\nfirst round');
+    expect(splitStickySummaryBody(second.body).entries).toHaveLength(1);
+    expect(renderStickySummaryBody('## 🔴 **Verdict: BLOCK**\nsecond round', context, second.body).deduplicated).toBe(true);
+  });
+
+  it('patches the one sticky comment when a later round changes the summary', () => {
+    const { state, commandRunner } = githubRunner();
+
+    expect(postStickySummaryComment('first round', context, { commandRunner })).toMatchObject({ success: true });
+    expect(postStickySummaryComment('second round', context, { commandRunner })).toMatchObject({
+      success: true,
+      updatedInPlace: true,
+    });
+
+    expect(state.comments).toHaveLength(1);
+    expect(state.comments[0].body).toContain('second round');
+    expect(state.comments[0].body).toContain('<summary>Previous review rounds (1)</summary>');
+    expect(state.posted.filter((post) => post.method === 'POST' && post.endpoint.endsWith('/issues/42/comments'))).toHaveLength(1);
+    expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
   });
 
   it('fails closed when GitHub exposes the compact review at a different commit than the requested head', () => {
