@@ -113,8 +113,9 @@ representation requires the deriver and its dependencies.
 
 ## Publication
 
-Writes are bound to the exact reviewed head SHA. Every comment carries a stable
-marker so a rerun updates in place instead of duplicating. See
+Writes are bound to the exact reviewed head SHA. The sticky summary issue comment carries a stable
+per-PR marker and is updated in place; each exact-head review receipt remains immutable, and prior
+summary rounds are retained under collapsed bounded history. See
 [Publication Policy](PUBLICATION_POLICY.md).
 
 ## Layout
