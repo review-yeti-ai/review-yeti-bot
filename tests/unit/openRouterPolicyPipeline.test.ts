@@ -194,6 +194,23 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     ).ignoredProviders).toEqual(HARD_BANNED_PROVIDER_SLUGS);
   });
 
+  it.each(['openinference', 'OpenInference', 'open-inference', 'Open Inference', 'open_inference'])(
+    'canonicalizes the OpenInference alias %s to the documented outbound slug',
+    (provider) => {
+      const policy = resolveOpenRouterPolicy({}, { OPENROUTER_IGNORE_PROVIDERS: provider });
+      expect(policy.ignoredProviders).toContain('open-inference');
+      expect(policy.providerRouting.ignore).toContain('open-inference');
+      expect(policy.ignoredProviders).not.toContain('openinference');
+    },
+  );
+
+  it('canonicalizes provider-routing ignore aliases before they reach OpenRouter', () => {
+    const policy = resolveOpenRouterPolicy({}, {
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ ignore: ['OpenInference', 'open_inference'] }),
+    });
+    expect(policy.providerRouting.ignore.filter((provider) => provider === 'open-inference')).toHaveLength(1);
+  });
+
   it('forwards documented provider routing fields and normalizes provider slugs', () => {
     const policy = resolveOpenRouterPolicy({}, {
       OPENROUTER_PROVIDER_ROUTING: JSON.stringify({
