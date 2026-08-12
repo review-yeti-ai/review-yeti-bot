@@ -649,9 +649,197 @@ function resolveGatewayIdentity(baseUrl) {
   return { id: 'openrouter', isOpenRouter: true };
 }
 
+// ---------------------------------------------------------------------------
+// Explicit transport plan (github_action.transports / REVIEW_YETI_TRANSPORTS)
+// ---------------------------------------------------------------------------
+
+const TRANSPORT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,39}$/;
+const TRANSPORT_KEY_ENV_PATTERN = /^[A-Z][A-Z0-9_]{2,79}$/;
+// A trusted-base config names which env var carries each transport's model
+// credential. Never let it name a CI credential — combined with an
+// attacker-ish base_url that would exfiltrate the token as an Authorization
+// header. Base-ref config is maintainer-trusted, but defense in depth is cheap.
+const TRANSPORT_KEY_ENV_DENYLIST = Object.freeze([
+  'GITHUB_TOKEN', 'GH_TOKEN', 'REVIEW_YETI_GITHUB_APP_PRIVATE_KEY',
+]);
+const TRANSPORT_KEY_ENV_DENY_PREFIXES = Object.freeze(['GITHUB_', 'ACTIONS_', 'RUNNER_', 'INPUT_']);
+const MAX_TRANSPORTS = 6;
+const TRANSPORT_OPENROUTER_ONLY_KEYS = Object.freeze([
+  'provider_routing', 'providerRouting', 'ignore_providers', 'ignoreProviders',
+  'allow_banned_providers', 'allowBannedProviders', 'data_collection', 'dataCollection',
+  'allowed_models', 'allowedModels', 'cost_quality_tradeoff', 'costQualityTradeoff',
+]);
+
+/**
+ * Resolves the explicit ordered transport plan, if configured.
+ *
+ * Precedence: env REVIEW_YETI_TRANSPORTS (JSON array string, action input
+ * `transports`) > trusted-base YAML `github_action.transports`. Absent → null,
+ * and the legacy single-transport inputs (llm-api-key / llm-base-url / model)
+ * apply unchanged.
+ *
+ * Each entry:
+ *   name          required, /^[a-z][a-z0-9-]{0,39}$/, unique
+ *   base_url      required, https URL
+ *   api_key_env   required, names the env var holding this transport's key;
+ *                 must end in _API_KEY or _KEY and may not name a CI credential
+ *   model         required, gateway-native model id
+ *   compat        'openai' | 'openrouter' (default: detected from base_url)
+ *   fallback_models, timeout_ms, connect_timeout_ms, stream, structured_output
+ *                 optional; unset values inherit the global env/action inputs
+ *   provider_routing, ignore_providers, data_collection, allowed_models,
+ *   cost_quality_tradeoff, allow_banned_providers
+ *                 OpenRouter-only; rejected on compat 'openai'
+ *
+ * An entry whose api_key_env is empty at runtime is DROPPED with a warning so
+ * a fallback transport can be declared before its secret is provisioned; if no
+ * usable transport remains the plan fails closed.
+ *
+ * @returns {{transports: ReadonlyArray<object>, warnings: ReadonlyArray<string>}|null}
+ */
+function resolveTransportPlan(localConfig, env) {
+  if (env === undefined) env = (typeof process !== 'undefined' ? process.env : {});
+  const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object'
+    ? localConfig.parsed
+    : (localConfig && typeof localConfig === 'object' ? localConfig : {});
+  const githubAction = parsed.github_action && typeof parsed.github_action === 'object'
+    ? parsed.github_action
+    : {};
+
+  let rawEntries = null;
+  const envRaw = typeof env.REVIEW_YETI_TRANSPORTS === 'string' ? env.REVIEW_YETI_TRANSPORTS.trim() : '';
+  if (envRaw) {
+    try {
+      rawEntries = JSON.parse(envRaw);
+    } catch (error) {
+      throw new Error(`REVIEW_YETI_TRANSPORTS must be valid JSON: ${error.message}`);
+    }
+  } else if (githubAction.transports !== undefined) {
+    rawEntries = githubAction.transports;
+  }
+  if (rawEntries === null || rawEntries === undefined) return null;
+  if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
+    throw new Error('transports must be a non-empty array of transport objects');
+  }
+  if (rawEntries.length > MAX_TRANSPORTS) {
+    throw new Error(`transports supports at most ${MAX_TRANSPORTS} entries`);
+  }
+
+  const warnings = [];
+  const transports = [];
+  const seenNames = new Set();
+  for (const [index, rawEntry] of rawEntries.entries()) {
+    const raw = rawEntry && typeof rawEntry === 'object' && !Array.isArray(rawEntry) ? rawEntry : null;
+    if (!raw) throw new Error(`transports[${index}] must be an object`);
+    const name = String(raw.name || '').trim();
+    if (!TRANSPORT_NAME_PATTERN.test(name)) {
+      throw new Error(`transports[${index}].name must match ${TRANSPORT_NAME_PATTERN}`);
+    }
+    if (seenNames.has(name)) throw new Error(`transports[${index}].name "${name}" is duplicated`);
+    seenNames.add(name);
+
+    const baseUrl = String(raw.base_url ?? raw.baseUrl ?? '').trim().replace(/\/+$/u, '');
+    let parsedUrl = null;
+    try { parsedUrl = new URL(baseUrl); } catch (_) { parsedUrl = null; }
+    if (!parsedUrl || parsedUrl.protocol !== 'https:') {
+      throw new Error(`transports[${index}] (${name}): base_url must be an https:// URL`);
+    }
+
+    const detected = resolveGatewayIdentity(baseUrl);
+    const compatRaw = String(raw.compat || '').trim().toLowerCase();
+    const compat = compatRaw || (detected.isOpenRouter ? 'openrouter' : 'openai');
+    if (compat !== 'openai' && compat !== 'openrouter') {
+      throw new Error(`transports[${index}] (${name}): compat must be "openai" or "openrouter"`);
+    }
+    if (compat === 'openai') {
+      for (const key of TRANSPORT_OPENROUTER_ONLY_KEYS) {
+        if (raw[key] !== undefined) {
+          throw new Error(`transports[${index}] (${name}): ${key} is OpenRouter-only and not valid with compat: openai`);
+        }
+      }
+    }
+
+    const model = String(raw.model || '').trim();
+    if (!model || model.length > 200) {
+      throw new Error(`transports[${index}] (${name}): model is required (max 200 chars)`);
+    }
+
+    const apiKeyEnv = String(raw.api_key_env ?? raw.apiKeyEnv ?? '').trim();
+    if (!TRANSPORT_KEY_ENV_PATTERN.test(apiKeyEnv)) {
+      throw new Error(`transports[${index}] (${name}): api_key_env must match ${TRANSPORT_KEY_ENV_PATTERN}`);
+    }
+    if (TRANSPORT_KEY_ENV_DENYLIST.includes(apiKeyEnv)
+      || TRANSPORT_KEY_ENV_DENY_PREFIXES.some((prefix) => apiKeyEnv.startsWith(prefix))) {
+      throw new Error(`transports[${index}] (${name}): api_key_env may not name a CI credential (${apiKeyEnv})`);
+    }
+    if (!/(_API_KEY|_KEY)$/u.test(apiKeyEnv)) {
+      throw new Error(`transports[${index}] (${name}): api_key_env must end in _API_KEY or _KEY`);
+    }
+    const apiKey = String(env[apiKeyEnv] || '').trim();
+    if (!apiKey) {
+      warnings.push(`transports[${index}] (${name}) dropped: env ${apiKeyEnv} is unset or empty`);
+      continue;
+    }
+
+    // Reuse resolveOpenRouterPolicy for normalization/validation/clamping by
+    // synthesizing a per-transport env. Unset per-transport values inherit the
+    // caller's global inputs so one shared timeout/stream setting applies.
+    const toCsv = (value) => (Array.isArray(value) ? value.join(',') : String(value ?? ''));
+    const envLike = {
+      OPENROUTER_FALLBACK_MODELS: raw.fallback_models !== undefined || raw.fallbackModels !== undefined
+        ? toCsv(raw.fallback_models ?? raw.fallbackModels)
+        : '',
+      OPENROUTER_TIMEOUT_MS: raw.timeout_ms !== undefined ? String(raw.timeout_ms) : String(env.OPENROUTER_TIMEOUT_MS || ''),
+      OPENROUTER_CONNECT_TIMEOUT_MS: raw.connect_timeout_ms !== undefined ? String(raw.connect_timeout_ms) : String(env.OPENROUTER_CONNECT_TIMEOUT_MS || ''),
+      OPENROUTER_STREAM: raw.stream !== undefined ? String(raw.stream) : String(env.OPENROUTER_STREAM || ''),
+      OPENROUTER_STRUCTURED_OUTPUT: raw.structured_output !== undefined ? String(raw.structured_output) : String(env.OPENROUTER_STRUCTURED_OUTPUT || ''),
+      ...(compat === 'openrouter' ? {
+        OPENROUTER_PROVIDER_ROUTING: raw.provider_routing !== undefined || raw.providerRouting !== undefined
+          ? JSON.stringify(raw.provider_routing ?? raw.providerRouting)
+          : String(env.OPENROUTER_PROVIDER_ROUTING || ''),
+        OPENROUTER_IGNORE_PROVIDERS: raw.ignore_providers !== undefined || raw.ignoreProviders !== undefined
+          ? toCsv(raw.ignore_providers ?? raw.ignoreProviders)
+          : String(env.OPENROUTER_IGNORE_PROVIDERS || ''),
+        OPENROUTER_DATA_COLLECTION: raw.data_collection !== undefined || raw.dataCollection !== undefined
+          ? String(raw.data_collection ?? raw.dataCollection)
+          : String(env.OPENROUTER_DATA_COLLECTION || ''),
+        OPENROUTER_ALLOW_BANNED_PROVIDERS: raw.allow_banned_providers !== undefined || raw.allowBannedProviders !== undefined
+          ? toCsv(raw.allow_banned_providers ?? raw.allowBannedProviders)
+          : String(env.OPENROUTER_ALLOW_BANNED_PROVIDERS || ''),
+        OPENROUTER_ALLOWED_MODELS: toCsv(raw.allowed_models ?? raw.allowedModels ?? ''),
+        OPENROUTER_COST_QUALITY_TRADEOFF: raw.cost_quality_tradeoff !== undefined || raw.costQualityTradeoff !== undefined
+          ? String(raw.cost_quality_tradeoff ?? raw.costQualityTradeoff)
+          : '',
+      } : {}),
+    };
+    const openRouterPolicy = resolveOpenRouterPolicy(null, envLike);
+    validateFixedModelProviderCompatibility(model, openRouterPolicy.providerRouting);
+
+    transports.push(Object.freeze({
+      name,
+      baseUrl,
+      compat,
+      model,
+      apiKey,
+      apiKeyEnv,
+      fallbackModels: openRouterPolicy.fallbackModels,
+      timeoutMs: openRouterPolicy.timeoutMs,
+      connectTimeoutMs: openRouterPolicy.connectTimeoutMs,
+      stream: openRouterPolicy.stream,
+      openRouterPolicy,
+    }));
+  }
+
+  if (transports.length === 0) {
+    throw new Error(`transports resolved to zero usable entries (${warnings.join('; ') || 'all entries invalid'})`);
+  }
+  return Object.freeze({ transports: Object.freeze(transports), warnings: Object.freeze(warnings) });
+}
+
 module.exports = {
   resolveOpenRouterPolicy,
   resolveGatewayIdentity,
+  resolveTransportPlan,
   FIXED_MODEL_PROVIDER_COMPATIBILITY,
   validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,

@@ -1,0 +1,190 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import path from 'path';
+import fs from 'fs';
+
+const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
+  ? path.resolve(__dirname, '../..')
+  : path.resolve(__dirname, '../../..');
+const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
+const policy = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
+
+const { resolveTransportPlan } = policy;
+const { reviewWithTransports, PERSONA_CHARTERS } = pipeline;
+const persona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
+const diffFiles = [{ path: 'src/a.ts', patch: '+x', addedLines: [], deletedLines: [] }];
+
+const fireworksEntry = {
+  name: 'fireworks',
+  base_url: 'https://api.fireworks.ai/inference/v1',
+  api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY',
+  model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+};
+const openrouterEntry = {
+  name: 'openrouter-fallback',
+  base_url: 'https://openrouter.ai/api/v1',
+  api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
+  model: 'deepseek/deepseek-v4-flash-0731',
+  provider_routing: { order: ['coreweave', 'phala'], allow_fallbacks: false, data_collection: 'deny' },
+};
+const bothKeys = { FIREWORKS_PR_REVIEW_API_KEY: 'fw-key', OPENROUTER_PR_REVIEW_API_KEY: 'or-key' };
+
+describe('resolveTransportPlan', () => {
+  it('returns null when no transports are configured', () => {
+    expect(resolveTransportPlan(null, {})).toBeNull();
+    expect(resolveTransportPlan({ parsed: { github_action: {} } }, {})).toBeNull();
+  });
+
+  it('resolves an ordered plan from trusted-base YAML with compat detected per base_url', () => {
+    const plan = resolveTransportPlan(
+      { parsed: { github_action: { transports: [fireworksEntry, openrouterEntry] } } },
+      bothKeys,
+    );
+    expect(plan!.transports.map((t: any) => t.name)).toEqual(['fireworks', 'openrouter-fallback']);
+    expect(plan!.transports[0]).toMatchObject({ compat: 'openai', apiKey: 'fw-key', baseUrl: 'https://api.fireworks.ai/inference/v1' });
+    expect(plan!.transports[1]).toMatchObject({ compat: 'openrouter', apiKey: 'or-key' });
+    // OpenRouter entries get the full normalized policy: hard bans + declared routing.
+    expect(plan!.transports[1].openRouterPolicy.providerRouting).toMatchObject({ order: ['coreweave', 'phala'], allow_fallbacks: false });
+    expect(plan!.transports[1].openRouterPolicy.ignoredProviders).toContain('deepinfra');
+  });
+
+  it('lets env REVIEW_YETI_TRANSPORTS win over the YAML block', () => {
+    const plan = resolveTransportPlan(
+      { parsed: { github_action: { transports: [openrouterEntry] } } },
+      { ...bothKeys, REVIEW_YETI_TRANSPORTS: JSON.stringify([fireworksEntry]) },
+    );
+    expect(plan!.transports.map((t: any) => t.name)).toEqual(['fireworks']);
+  });
+
+  it('inherits global timeout/stream inputs when an entry does not override them', () => {
+    const plan = resolveTransportPlan(
+      { parsed: { github_action: { transports: [fireworksEntry, { ...fireworksEntry, name: 'fireworks-slow', timeout_ms: 45000 }] } } },
+      { ...bothKeys, OPENROUTER_TIMEOUT_MS: '60000', OPENROUTER_STREAM: 'true' },
+    );
+    expect(plan!.transports[0].timeoutMs).toBe(60000);
+    expect(plan!.transports[0].stream).toBe(true);
+    expect(plan!.transports[1].timeoutMs).toBe(45000);
+  });
+
+  it('drops an entry whose api_key_env is empty and fails closed when none remain', () => {
+    const plan = resolveTransportPlan(
+      { parsed: { github_action: { transports: [fireworksEntry, openrouterEntry] } } },
+      { OPENROUTER_PR_REVIEW_API_KEY: 'or-key' },
+    );
+    expect(plan!.transports.map((t: any) => t.name)).toEqual(['openrouter-fallback']);
+    expect(plan!.warnings[0]).toContain('FIREWORKS_PR_REVIEW_API_KEY');
+
+    expect(() => resolveTransportPlan(
+      { parsed: { github_action: { transports: [fireworksEntry] } } },
+      {},
+    )).toThrow(/zero usable/);
+  });
+
+  it('rejects CI-credential env names and non-key suffixes', () => {
+    for (const bad of ['GITHUB_TOKEN', 'GH_TOKEN', 'ACTIONS_RUNTIME_TOKEN', 'RUNNER_TEMP_KEY', 'INPUT_LLM_API_KEY']) {
+      expect(() => resolveTransportPlan(
+        { parsed: { github_action: { transports: [{ ...fireworksEntry, api_key_env: bad }] } } },
+        { [bad]: 'x' },
+      )).toThrow(/CI credential|must match/);
+    }
+    expect(() => resolveTransportPlan(
+      { parsed: { github_action: { transports: [{ ...fireworksEntry, api_key_env: 'FIREWORKS_SECRET' }] } } },
+      { FIREWORKS_SECRET: 'x' },
+    )).toThrow(/_API_KEY or _KEY/);
+  });
+
+  it('rejects OpenRouter-only keys on an openai-compat transport', () => {
+    expect(() => resolveTransportPlan(
+      { parsed: { github_action: { transports: [{ ...fireworksEntry, provider_routing: { only: ['morph'] } }] } } },
+      bothKeys,
+    )).toThrow(/OpenRouter-only/);
+  });
+
+  it('rejects malformed structure: bad name, duplicate name, non-https URL, missing model', () => {
+    const base = { ...fireworksEntry };
+    expect(() => resolveTransportPlan({ parsed: { github_action: { transports: [{ ...base, name: 'Bad Name' }] } } }, bothKeys)).toThrow(/name/);
+    expect(() => resolveTransportPlan({ parsed: { github_action: { transports: [base, { ...openrouterEntry, name: 'fireworks' }] } } }, bothKeys)).toThrow(/duplicated/);
+    expect(() => resolveTransportPlan({ parsed: { github_action: { transports: [{ ...base, base_url: 'http://api.fireworks.ai/v1' }] } } }, bothKeys)).toThrow(/https/);
+    expect(() => resolveTransportPlan({ parsed: { github_action: { transports: [{ ...base, model: '' }] } } }, bothKeys)).toThrow(/model/);
+  });
+});
+
+describe('reviewWithTransports', () => {
+  const realImpl = reviewWithTransports.reviewWithModelImpl;
+  afterEach(() => { reviewWithTransports.reviewWithModelImpl = realImpl; });
+
+  function plannedTransports(env = bothKeys) {
+    return resolveTransportPlan(
+      { parsed: { github_action: { transports: [fireworksEntry, openrouterEntry] } } },
+      env,
+    )!.transports;
+  }
+
+  it('passes through to reviewWithModel when no plan is configured', async () => {
+    const calls: any[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (...args: any[]) => { calls.push(args); return { ok: true, content: '{}' }; };
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, { apiKey: 'k' });
+    // Passthrough path calls the real reviewWithModel directly (not the seam).
+    expect(calls).toHaveLength(0);
+    expect(result).toBeDefined();
+  });
+
+  it('fails over in declared order and carries per-transport identity into each attempt', async () => {
+    const attempts: any[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options);
+      if (options.transportName === 'fireworks') return { decision: 'ERROR', error: 'timeout' };
+      return { ok: true, content: '{"findings":[]}', provider: 'coreweave' };
+    };
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      transportPlan: plannedTransports(),
+    });
+    expect(attempts.map((a) => a.transportName)).toEqual(['fireworks', 'openrouter-fallback']);
+    expect(attempts[0]).toMatchObject({ apiKey: 'fw-key', baseUrl: 'https://api.fireworks.ai/inference/v1', gatewayCompat: 'openai' });
+    expect(attempts[1]).toMatchObject({ apiKey: 'or-key', baseUrl: 'https://openrouter.ai/api/v1', gatewayCompat: 'openrouter' });
+    expect(attempts[1].transportPlan).toBeUndefined();
+    expect(result).toMatchObject({ ok: true, provider: 'coreweave' });
+  });
+
+  it('returns the last failure when every transport fails', async () => {
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => (
+      { decision: 'ERROR', error: `boom-${options.transportName}` }
+    );
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      transportPlan: plannedTransports(),
+    });
+    expect(result).toMatchObject({ decision: 'ERROR', error: 'boom-openrouter-fallback' });
+  });
+
+  it('does not fail over past a cancellation', async () => {
+    const attempts: string[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      return { decision: 'ERROR', error: 'cancelled' };
+    };
+    await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, { transportPlan: plannedTransports() });
+    expect(attempts).toEqual(['fireworks']);
+  });
+
+  it('end-to-end: an openai-compat transport produces a gateway-neutral request through the real client', async () => {
+    const requests: any[] = [];
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      transportPlan: plannedTransports(),
+      sessionSticky: true,
+      fetchImpl: async (url: string, init: any) => {
+        requests.push({ url, body: JSON.parse(init.body) });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }),
+        };
+      },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('https://api.fireworks.ai/inference/v1/chat/completions');
+    expect(requests[0].body).not.toHaveProperty('provider');
+    expect(requests[0].body).not.toHaveProperty('session_id');
+    expect(requests[0].body.model).toBe('accounts/fireworks/models/deepseek-v4-flash-0731');
+    expect(result.provider).toBe('fireworks');
+  });
+});
