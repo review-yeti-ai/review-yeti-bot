@@ -2704,13 +2704,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     for (let attempt = 1; attempt <= maxAttempts + (providerRetryUsed ? 1 : 0); attempt++) {
       const requestStartedAt = Date.now();
       const requestBody = buildRequestBody(requestedModel, sessionModel);
+      // A recovery retry uses SSE to identify/quarantine a slow upstream. Give that
+      // bounded retry one additional response window so a provider that only needs
+      // more generation time is not misclassified as unavailable at the original
+      // non-stream budget. The cap remains finite and does not alter normal requests.
+      const attemptTimeoutMs = streamRetryRequested || timedOutProviders.size > 0
+        ? Math.min(timeoutMs * 2, 600_000)
+        : timeoutMs;
       try {
         console.log(
           `[OpenRouter] start persona=${persona.id}`
           + ` model=${requestedModel}`
           + ` modelIndex=${modelIndex + 1}/${models.length}`
           + ` attempt=${attempt}/${maxAttempts}`
-          + ` timeout_ms=${timeoutMs}`
+          + ` timeout_ms=${attemptTimeoutMs}`
           + ` stream=${options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true}`,
         );
         // Prefer streaming so Auto Router's resolved provider/model are visible even on timeout.
@@ -2719,7 +2726,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           url: `${cfg.baseUrl}/chat/completions`,
           headers: requestHeaders,
           body: requestBody,
-          timeoutMs,
+          timeoutMs: attemptTimeoutMs,
           connectTimeoutMs,
           preferStream: options.preferStream === true
             || process.env.OPENROUTER_STREAM === 'true'
