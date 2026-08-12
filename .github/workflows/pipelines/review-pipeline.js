@@ -119,7 +119,7 @@ const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../
 const { buildInvestigationMessages } = require('../../../src/review/reviewInvestigationPrompt');
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
-const { EVIDENCE_TOOLS, normalizeInvestigationLimits } = require('../../../src/review/evidenceContracts');
+const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMITS } = require('../../../src/review/evidenceContracts');
 const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
@@ -739,6 +739,33 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
     },
   };
   return { maxDiffChars, maxFileDiffChars, maxInvestigationTurns, submodules, memory };
+}
+
+/**
+ * Resolves bounded-mode investigation limits (REL-272 / D6). Bounded mode previously built its
+ * limits from `localConfig?.parsed?.review?.investigation` (repo YAML) only, via
+ * normalizeInvestigationLimits -- the max-investigation-turns action input was read into
+ * actionPolicy.maxInvestigationTurns but consumed only by the legacy runPersonaInvestigation
+ * path, so it silently never reached the production bounded path.
+ *
+ * Precedence: action input (MAX_INVESTIGATION_TURNS) > repo YAML (review.investigation.maxTurns)
+ * > default (2). The 1-3 clamp matches resolveActionReviewPolicy's existing clamp for the same
+ * concept on the legacy path.
+ */
+function resolveBoundedInvestigationLimits(localConfig, env = process.env) {
+  const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object'
+    ? localConfig.parsed
+    : (localConfig && typeof localConfig === 'object' ? localConfig : {});
+  const investigationYaml = parsed.review?.investigation && typeof parsed.review.investigation === 'object'
+    ? parsed.review.investigation
+    : {};
+  const configuredTurns = Number(investigationYaml.maxTurns);
+  const requestedTurns = Number(env.MAX_INVESTIGATION_TURNS || configuredTurns || DEFAULT_INVESTIGATION_LIMITS.maxTurns);
+  const resolvedMaxTurns = Math.max(1, Math.min(
+    Number.isFinite(requestedTurns) ? Math.trunc(requestedTurns) : DEFAULT_INVESTIGATION_LIMITS.maxTurns,
+    3,
+  ));
+  return normalizeInvestigationLimits({ ...investigationYaml, maxTurns: resolvedMaxTurns });
 }
 
 function resolveReviewIntelligenceActionInputs(env = process.env) {
@@ -1642,14 +1669,27 @@ async function callOpenRouterChat(fetchImpl, {
   body,
   timeoutMs,
   connectTimeoutMs,
+  ttftMs,
   preferStream = false,
   signal,
 }) {
-  // Total budget covers connect + body. Connect budget is a SEPARATE concern: if headers
-  // never arrive within connectTimeoutMs, we refuse the attempt as CONNECT_TIMEOUT and ban
-  // the upstream when known — we do NOT raise timeoutMs.
+  // Total budget covers connect + body. TTFT (time-to-first-token) is the SEPARATE
+  // "is the provider talking to us at all" concern: if no headers/first-byte (non-stream) or no
+  // first SSE chunk (stream) arrive within the TTFT budget, we refuse the attempt as
+  // TTFT_TIMEOUT — we do NOT raise timeoutMs, and (operator directive, REL-271) we do NOT add
+  // the provider to any ignore/quarantine/ban set on this path; sort:latency stays the routing
+  // authority and the caller simply re-asks.
   const totalMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30_000;
-  const connectMs = Math.max(500, Math.min(totalMs, Number.isFinite(connectTimeoutMs) && connectTimeoutMs > 0 ? connectTimeoutMs : 8_000));
+  const resolvedTtftMs = Number.isFinite(ttftMs) && ttftMs > 0 ? ttftMs : undefined;
+  // The stream path previously had NO connect/TTFT budget at all (bound only to totalAbort) —
+  // that is the core bug this fixes, so it always gets a budget (30s fallback when the caller
+  // supplies none). The non-stream path already had an approximate connect budget; drive it
+  // explicitly from ttftMs when the caller supplies one, and preserve the legacy
+  // connectTimeoutMs/8s behavior for callers that have not been updated to pass ttftMs.
+  const ttftBudgetMs = Math.max(500, Math.min(totalMs, resolvedTtftMs !== undefined ? Math.round(resolvedTtftMs) : 30_000));
+  const connectMs = resolvedTtftMs !== undefined
+    ? ttftBudgetMs
+    : Math.max(500, Math.min(totalMs, Number.isFinite(connectTimeoutMs) && connectTimeoutMs > 0 ? connectTimeoutMs : 8_000));
   const totalAbort = createAbortLink({ signals: [signal], timeoutMs: totalMs });
   const execute = async () => {
   const baseHeaders = { ...headers };
@@ -1683,16 +1723,19 @@ async function callOpenRouterChat(fetchImpl, {
       const elapsed = Math.max(0, Date.now() - t0);
       const connectTimedOut = Boolean(connectAbort.signal?.aborted && elapsed <= connectMs + 250);
       const aborted = Boolean(totalAbort.signal?.aborted || connectAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
-      const phase = connectTimedOut ? 'connect' : 'response';
+      // 'ttft' here is the non-stream analogue of the stream path's TTFT timer: no headers
+      // arrived within the deadline, so the provider never demonstrated it was alive.
+      const phase = connectTimedOut ? 'ttft' : 'response';
       console.warn(
-        `[OpenRouter] non-stream ${phase === 'connect' ? 'CONNECT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
-        + ` model=${body.model} elapsed_ms=${elapsed} connect_budget_ms=${connectMs} total_budget_ms=${totalMs}`
+        `[OpenRouter] non-stream ${phase === 'ttft' ? 'TTFT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
+        + ` model=${body.model} elapsed_ms=${elapsed} ttft_budget_ms=${connectMs} total_budget_ms=${totalMs}`
         + ` name=${err?.name || 'Error'}`,
       );
       return {
         ok: false,
         aborted,
         timeoutPhase: aborted ? phase : undefined,
+        ...(aborted && phase === 'ttft' ? { failureClass: 'ttft_timeout' } : {}),
         status: 0,
         detail: 'request_error',
         model: body.model,
@@ -1784,6 +1827,22 @@ async function callOpenRouterChat(fetchImpl, {
   }
 
   let streamRoute = { model: body.model, provider: 'openrouter', generationId: null };
+  // TTFT: started at request dispatch (right here), cleared the moment the first SSE data chunk
+  // parses. This is the fix for the core D1 bug — the stream path previously bound only to
+  // totalAbort and had no connect-level budget at all, so a provider that accepted the
+  // connection and then queued silently burned the entire total budget before anyone noticed.
+  // `ttftTimer` is a bare, unlinked timer so checking its own signal after the fact reliably
+  // answers "did TTFT itself fire" without being confused by a totalAbort/caller cancellation
+  // also observed through the merged `requestAbort`.
+  let sawFirstChunk = false;
+  const ttftTimer = createAbortLink({ signals: [], timeoutMs: ttftBudgetMs });
+  const requestAbort = createAbortLink({ signals: [signal, totalAbort.signal, ttftTimer.signal] });
+  let ttftTimerDisposed = false;
+  const clearTtftTimer = () => {
+    if (ttftTimerDisposed) return;
+    ttftTimerDisposed = true;
+    ttftTimer.dispose();
+  };
   try {
     const response = await fetchImpl(url, {
       method: 'POST',
@@ -1796,7 +1855,7 @@ async function callOpenRouterChat(fetchImpl, {
         stream: true,
         stream_options: { include_usage: true },
       }),
-      signal: totalAbort.signal,
+      signal: requestAbort.signal,
     });
 
     if (!response.ok) {
@@ -1839,7 +1898,7 @@ async function callOpenRouterChat(fetchImpl, {
 
     try {
       while (true) {
-        const { done, value } = await awaitAbortable(reader.read(), totalAbort.signal);
+        const { done, value } = await awaitAbortable(reader.read(), requestAbort.signal);
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         // OpenRouter SSE (docs): process complete lines; skip ":" keep-alive comments.
@@ -1860,6 +1919,8 @@ async function callOpenRouterChat(fetchImpl, {
             continue;
           }
           sawChunk = true;
+          sawFirstChunk = true;
+          clearTtftTimer();
           const route = resolveRouteMeta(chunk, model);
           if (route.generationId) generationId = route.generationId;
           if (route.model) model = route.model;
@@ -1881,6 +1942,25 @@ async function callOpenRouterChat(fetchImpl, {
         }
       }
     } catch (err) {
+      // TTFT fired before any SSE chunk arrived. Report a dedicated failure class and never
+      // resolve/attribute a provider here — the connection stalled before OpenRouter told us who
+      // it routed to, so there is nothing legitimate to quarantine (operator directive: a TTFT
+      // abort adds nothing to any ignore/ban set).
+      if (!sawFirstChunk && ttftTimer.signal.aborted) {
+        return {
+          ok: false,
+          aborted: true,
+          timeoutPhase: 'ttft',
+          failureClass: 'ttft_timeout',
+          model,
+          provider: 'openrouter',
+          generationId,
+          content,
+          usage,
+          streamed: true,
+          partial: false,
+        };
+      }
       if (signal?.aborted || totalAbort.signal.aborted) {
         return {
           ok: false,
@@ -1940,6 +2020,7 @@ async function callOpenRouterChat(fetchImpl, {
         partial: sawChunk,
       };
     } finally {
+      clearTtftTimer();
       try { await reader.cancel(); } catch (_) {}
     }
 
@@ -1960,6 +2041,19 @@ async function callOpenRouterChat(fetchImpl, {
       },
     };
   } catch (err) {
+    if (!sawFirstChunk && ttftTimer.signal.aborted) {
+      return {
+        ok: false,
+        aborted: true,
+        timeoutPhase: 'ttft',
+        failureClass: 'ttft_timeout',
+        ...streamRoute,
+        content: '',
+        usage: null,
+        streamed: true,
+        partial: false,
+      };
+    }
     if (signal?.aborted || totalAbort.signal.aborted) {
       return { ok: false, aborted: true, error: err, ...streamRoute, content: '', usage: null, streamed: true, partial: false };
     }
@@ -1980,6 +2074,9 @@ async function callOpenRouterChat(fetchImpl, {
         partial: false,
       };
     }
+  } finally {
+    clearTtftTimer();
+    requestAbort.dispose();
   }
   };
   return execute().finally(() => totalAbort.dispose());
@@ -2647,7 +2744,19 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     || Number(process.env.OPENROUTER_CONNECT_TIMEOUT_MS)
     || Number(orPolicy.connectTimeoutMs)
     || 8_000;
-  const maxAttempts = options.maxAttempts || 2;
+  // Time-to-first-token deadline (REL-271 D1/D2/D10). Threaded into callOpenRouterChat, which
+  // uses it to bound the stream path's connect timer (previously unbounded) and drive the
+  // non-stream connect budget explicitly.
+  const ttftMs = options.ttftMs
+    || Number(process.env.OPENROUTER_TTFT_MS)
+    || Number(orPolicy.ttftMs)
+    || 30_000;
+  // 1 retry max per lane (REL-271 operator directive). Configurable via openrouter-max-attempts
+  // (default 2 = one initial attempt + one retry); no longer hard-wired.
+  const maxAttempts = options.maxAttempts
+    || Number(process.env.OPENROUTER_MAX_ATTEMPTS)
+    || Number(orPolicy.maxAttempts)
+    || 2;
   const fallbackModels = Array.isArray(orPolicy.fallbackModels) ? orPolicy.fallbackModels : [];
   const models = [...new Set([cfg.model, ...fallbackModels].filter(Boolean))];
   // Direct callers may supply an already-built policy and bypass resolveOpenRouterPolicy. Keep
@@ -2782,17 +2891,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       `policy${sessionPolicyKey}`,
     ].join(':').slice(0, 256);
 
-    let providerRetryUsed = false;
-    for (let attempt = 1; attempt <= maxAttempts + (providerRetryUsed ? 1 : 0); attempt++) {
+    // Flattened retry pyramid (REL-271 D3/D4/D5/D9): exactly maxAttempts attempts per model, no
+    // budget escalation and no bonus attempt after a provider is identified/quarantined. The
+    // attempt loop IS the retry now.
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const requestStartedAt = Date.now();
       const requestBody = buildRequestBody(requestedModel, sessionModel);
-      // A recovery retry uses SSE to identify/quarantine a slow upstream. Give that
-      // bounded retry one additional response window so a provider that only needs
-      // more generation time is not misclassified as unavailable at the original
-      // non-stream budget. The cap remains finite and does not alter normal requests.
-      const attemptTimeoutMs = streamRetryRequested || timedOutProviders.size > 0
-        ? Math.min(timeoutMs * 2, 600_000)
-        : timeoutMs;
+      // Every attempt uses the same total budget -- no x2 escalation on retry (D3).
+      const attemptTimeoutMs = timeoutMs;
       try {
         console.log(
           `[OpenRouter] start persona=${persona.id}`
@@ -2810,6 +2916,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           body: requestBody,
           timeoutMs: attemptTimeoutMs,
           connectTimeoutMs,
+          ttftMs,
           preferStream: options.preferStream === true
             || process.env.OPENROUTER_STREAM === 'true'
             || orPolicy.stream === true
@@ -2880,14 +2987,25 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const routeLabel = formatRouteLabel(lastRoute);
           const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
           if (result.aborted) {
-            streamRetryRequested = true;
             const phase = result.timeoutPhase || 'response';
-            const msg = phase === 'connect'
-              ? `Provider CONNECT timeout after ${connectTimeoutMs}ms (no headers; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
+            const isTtftTimeout = phase === 'ttft';
+            const msg = isTtftTimeout
+              ? `Provider TTFT timeout after ${ttftMs}ms (no first token; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
               : `Provider RESPONSE timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
             lastError = msg;
             const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
-            if (timedOutProvider && timedOutProvider !== 'openrouter') {
+            if (isTtftTimeout) {
+              // Operator directive (REL-271): a TTFT abort adds NOTHING to any ignore/quarantine/
+              // ban set. OpenRouter's own sort:latency routing stays the sole authority; the retry
+              // simply re-asks. In practice the provider is never resolved this early anyway
+              // (headers/first chunk never arrived), but this guard makes the invariant explicit
+              // and independent of that coincidence.
+              streamRetryRequested = true;
+              console.warn(
+                `[OpenRouter] TTFT_TIMEOUT persona=${persona.id} elapsed_ms=${elapsedMs}`
+                + ` ttft_budget_ms=${ttftMs} — not banned (sort:latency remains routing authority)`,
+              );
+            } else if (timedOutProvider && timedOutProvider !== 'openrouter') {
               timedOutProviders.add(timedOutProvider);
               addRunScopedProviderBan(runTimedOutProviders, timedOutProvider);
               console.warn(
@@ -2903,7 +3021,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               // Unknown provider on non-stream timeout: force SSE next so the first chunk names it.
               streamRetryRequested = true;
               console.warn(
-                `[OpenRouter] CONNECT/RESPONSE timeout with unresolved provider; next attempt uses stream for attribution`
+                `[OpenRouter] RESPONSE timeout with unresolved provider; next attempt uses stream for attribution`
                 + ` persona=${persona.id} elapsed_ms=${elapsedMs}`,
               );
             }
@@ -2915,26 +3033,25 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               + ` status=${result.status || 'aborted'}`,
             );
             console.warn(`::warning::OpenRouter ${phase} timeout persona=${persona.id} elapsed_ms=${elapsedMs} route=${routeLabel}`);
-            // A streaming retry is what reveals the provider. Give that newly identified route
-            // one additional attempt on a fresh session after adding it to provider.ignore.
-            if (attempt >= maxAttempts && timedOutProvider && timedOutProvider !== 'openrouter' && !providerRetryUsed) {
-              providerRetryUsed = true;
-            }
-            if (attempt < maxAttempts || providerRetryUsed) {
-              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_timeout', startedAt: requestStartedAt });
-              if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
+            // Flattened retry (REL-271 D3/D4/D5): the attempt loop IS the retry now -- no bonus
+            // attempt after a provider is identified, no escalated budget. Backoff is 0 after a
+            // TTFT abort (a dead provider needs no politeness delay) and a flat 250ms otherwise.
+            if (attempt < maxAttempts) {
+              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: isTtftTimeout ? 'ttft_timeout' : 'provider_timeout', startedAt: requestStartedAt });
+              if (!isTtftTimeout && !await waitForAbortableDelay(250, options.signal)) return cancelledResult();
               continue;
             }
             if (modelIndex < models.length - 1) {
-              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_timeout', startedAt: requestStartedAt });
+              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: isTtftTimeout ? 'ttft_timeout' : 'provider_timeout', startedAt: requestStartedAt });
               break;
             }
-            recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_timeout', startedAt: requestStartedAt });
+            recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: isTtftTimeout ? 'ttft_timeout' : 'provider_timeout', startedAt: requestStartedAt });
             return {
               ...base,
               ...lastRoute,
               decision: 'ERROR',
               findings: [],
+              ...(isTtftTimeout ? { failureClass: 'ttft_timeout' } : {}),
               error: msg,
               generationId: lastRoute.generationId,
             };
@@ -2952,7 +3069,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (attempt < maxAttempts && retryableStatus) {
             lastError = msg;
             recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_unavailable', startedAt: requestStartedAt });
-            if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
+            if (!await waitForAbortableDelay(250, options.signal)) return cancelledResult();
             continue;
           }
           if (retryableStatus && modelIndex < models.length - 1) {
@@ -3020,7 +3137,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           lastError = msg;
           if (attempt < maxAttempts) {
             recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_invalid_response', usage: usageReported ? usage : undefined, startedAt: requestStartedAt });
-            if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
+            if (!await waitForAbortableDelay(250, options.signal)) return cancelledResult();
             continue;
           }
           if (modelIndex < models.length - 1) {
@@ -3091,12 +3208,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         if (/timeout|aborted/i.test(msg)) {
           console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
         }
-        if (attempt >= maxAttempts && timedOutProvider && timedOutProvider !== 'openrouter' && !providerRetryUsed) {
-          providerRetryUsed = true;
-        }
-        if ((attempt < maxAttempts || providerRetryUsed) && /timeout|aborted|ECONNRESET|fetch failed/i.test(rawErrorMessage)) {
+        if (attempt < maxAttempts && /timeout|aborted|ECONNRESET|fetch failed/i.test(rawErrorMessage)) {
           recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(rawErrorMessage) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
-          if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
+          if (!await waitForAbortableDelay(250, options.signal)) return cancelledResult();
           continue;
         }
         if (/timeout|aborted|ECONNRESET|fetch failed/i.test(rawErrorMessage) && modelIndex < models.length - 1) {
@@ -7006,7 +7120,10 @@ async function main(options = {}) {
     console.log(`[Config] Reading repository configuration from the trusted base ref, not the pull request head.`);
   }
   const localConfig = loadLocalRepoConfig(configRoot);
-  const investigationLimits = normalizeInvestigationLimits(localConfig?.parsed?.review?.investigation || {});
+  const investigationLimits = resolveBoundedInvestigationLimits(localConfig, runtimeEnv);
+  // Per-lane wall-clock backstop (REL-271). Default 4m; a lane that exceeds it fails closed with
+  // `lane_deadline` rather than running until the job is killed.
+  const laneDeadlineMs = Math.max(1_000, Number(runtimeEnv.LANE_DEADLINE_MS) || 240_000);
   if (shouldResolveTrustedReviewPolicy(localConfig)) {
     prContext = resolveTrustedPolicyPrContext(prContext, { commandRunner });
     const reviewIntelligencePolicy = resolveTrustedReviewPolicy({
@@ -7683,31 +7800,45 @@ async function main(options = {}) {
           for (const batch of passes) {
             const batchPaths = new Set(batch.map((file) => file.path));
             const batchUnitIds = provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)).map((unit) => unit.id);
-            const run = await runBoundedPersonaInvestigation({
-              identity: navigationIdentity,
-              persona,
-              manifest: `${manifest.text}\n<review_units>${canonicalJson(provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)))}</review_units>`,
-              diffText: planDiffBudget(batch, modelConfig.maxDiffChars).text,
-              priorDecisionBlock: renderedDecisionLedger.text,
-              optionalContextBlock: [modelSideContext.optionalContextBlock || '', dependencyRiskHints.length > 0 ? `Dependency applicability hints (untrusted data):\n${canonicalJson(dependencyRiskHints)}` : ''].filter(Boolean).join('\n'),
-              limits: investigationLimits,
-              investigationUnitIds: batchUnitIds,
-              providerRouting: modelOptions.openRouterPolicy?.providerRouting,
-              evidenceRegistry: makeEvidenceRegistry(persona),
-              requireEvidenceBoundary: !options.modelClient,
-              modelTurn: ({ messages, turn, finalOnly, signal, providerIgnore }) => callPersonaModelTurn({
+            // Per-lane wall-clock backstop (REL-271 D-new / lane-deadline-ms): a lane that somehow
+            // exceeds this fails closed with `lane_deadline` instead of running until the job is
+            // killed, making the ceiling a stated number immune to future knob drift. Merged with
+            // the outer job-cancellation signal so a lane deadline propagates the same way a
+            // cancellation would (turn loop check + every in-flight HTTP request).
+            const laneDeadline = createAbortLink({ signals: [], timeoutMs: laneDeadlineMs });
+            const laneSignal = createAbortLink({ signals: [cancellation.signal, laneDeadline.signal] });
+            let run;
+            try {
+              run = await runBoundedPersonaInvestigation({
+                identity: navigationIdentity,
                 persona,
-                prContext,
-                sessionContext,
-                messages,
-                turn,
-                finalOnly,
-                signal,
-                options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore },
-              }),
-              signal: cancellation.signal,
-              clock: now,
-            });
+                manifest: `${manifest.text}\n<review_units>${canonicalJson(provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)))}</review_units>`,
+                diffText: planDiffBudget(batch, modelConfig.maxDiffChars).text,
+                priorDecisionBlock: renderedDecisionLedger.text,
+                optionalContextBlock: [modelSideContext.optionalContextBlock || '', dependencyRiskHints.length > 0 ? `Dependency applicability hints (untrusted data):\n${canonicalJson(dependencyRiskHints)}` : ''].filter(Boolean).join('\n'),
+                limits: investigationLimits,
+                investigationUnitIds: batchUnitIds,
+                providerRouting: modelOptions.openRouterPolicy?.providerRouting,
+                evidenceRegistry: makeEvidenceRegistry(persona),
+                requireEvidenceBoundary: !options.modelClient,
+                modelTurn: ({ messages, turn, finalOnly, signal, providerIgnore }) => callPersonaModelTurn({
+                  persona,
+                  prContext,
+                  sessionContext,
+                  messages,
+                  turn,
+                  finalOnly,
+                  signal,
+                  options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore },
+                }),
+                signal: laneSignal.signal,
+                laneDeadlineSignal: laneDeadline.signal,
+                clock: now,
+              });
+            } finally {
+              laneDeadline.dispose();
+              laneSignal.dispose();
+            }
             runs.push(run.personaResult);
             laneExecutionReceipts.push(run.executionReceipt);
           }
@@ -8297,6 +8428,7 @@ module.exports = {
   resolveConfigRoot,
   resolveModelConfig,
   resolveActionReviewPolicy,
+  resolveBoundedInvestigationLimits,
   compactOptionalReviewContext,
   resolveTrustedContextCompactionPolicy,
   resolveTrustedReviewTelemetryPolicy,

@@ -22,8 +22,15 @@ describe('bounded evidence contracts', () => {
       maxRepeatedCalls: 2,
       maxCandidateFindings: 5,
       maxVerifierCallsPerFinding: 3,
-      maxTurns: 4,
+      // REL-272: bounded default dropped 4 -> 2.
+      maxTurns: 2,
     });
+  });
+
+  it('clamps an explicit maxTurns at the hard ceiling of 3 (REL-272)', () => {
+    expect(contracts.normalizeInvestigationLimits({ maxTurns: 99 }).maxTurns).toBe(3);
+    expect(contracts.normalizeInvestigationLimits({ maxTurns: 1 }).maxTurns).toBe(1);
+    expect(contracts.normalizeInvestigationLimits({ maxTurns: 3 }).maxTurns).toBe(3);
   });
 
   it('binds every lane receipt to the immutable review identity', () => {

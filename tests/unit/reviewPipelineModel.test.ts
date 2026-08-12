@@ -282,7 +282,10 @@ describe('reviewWithModel', () => {
     expect(result.decision).toBe('FINDINGS');
   });
 
-  it('gives the streaming recovery retry a bounded response budget extension', async () => {
+  // REL-271 (D3): attempt 2 no longer gets a doubled response budget -- every attempt uses the
+  // same flat timeoutMs. The recovery mechanism (force SSE on retry so the resolved provider is
+  // visible) still works as long as the provider responds within the *unescalated* budget.
+  it('streaming recovery retry uses the same (non-doubled) response budget', async () => {
     const calls: any[] = [];
     const fetchImpl = async (_url: string, init: any) => {
       const body = JSON.parse(init.body);
@@ -299,7 +302,9 @@ describe('reviewWithModel', () => {
             return {
               read: async () => {
                 if (sent) return { done: true, value: undefined };
-                await new Promise((resolve) => setTimeout(resolve, 15));
+                // Comfortably under the flat 10ms budget -- proves recovery survives without
+                // needing the removed x2 escalation.
+                await new Promise((resolve) => setTimeout(resolve, 3));
                 sent = true;
                 return {
                   done: false,
@@ -334,6 +339,60 @@ describe('reviewWithModel', () => {
     expect(result.provider).toBe('Morph');
   });
 
+  // REL-271 (D3): a delay that would have succeeded under the removed x2 escalation (15ms, twice
+  // the 10ms flat budget less a small margin) now fails on the final attempt instead of quietly
+  // recovering -- proving there is no budget escalation left anywhere in the retry path.
+  it('does not extend the response budget on retry -- a delay that needed the old x2 escalation now fails', async () => {
+    const calls: any[] = [];
+    const fetchImpl = async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ body });
+      if (calls.length === 1) {
+        throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          getReader: () => {
+            let sent = false;
+            return {
+              read: async () => {
+                if (sent) return { done: true, value: undefined };
+                // Exceeds the flat 10ms budget, but would have fit inside the old doubled 20ms
+                // budget -- this is the regression check for D3.
+                await new Promise((resolve) => setTimeout(resolve, 15));
+                sent = true;
+                return {
+                  done: false,
+                  value: Buffer.from(`data: ${JSON.stringify({
+                    id: 'gen-recovery',
+                    model: 'test/model',
+                    provider: 'Morph',
+                    choices: [{ delta: { content: '{"findings":[]}' } }],
+                  })}\n\ndata: [DONE]\n\n`),
+                };
+              },
+              cancel: async () => {},
+            };
+          },
+        },
+      };
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl,
+      maxAttempts: 2,
+      timeoutMs: 10,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(result.decision).toBe('ERROR');
+  });
+
   it('enforces the total timeout while reading a non-stream response body', async () => {
     const calls: any[] = [];
     const fetchImpl = async (url: string, init: any) => {
@@ -357,7 +416,10 @@ describe('reviewWithModel', () => {
       baseUrl: 'https://api.example.com/v1',
       model: 'test/model',
       fetchImpl,
-      maxAttempts: 1,
+      // REL-271 (D3/D4): recovery here now requires 2 real attempts (no bonus attempt after
+      // attribution) -- attempt 1 times out during body-read and bans "morph", attempt 2 forces
+      // SSE for attribution and succeeds with "OpenAI".
+      maxAttempts: 2,
       timeoutMs: 20,
     });
 
@@ -368,7 +430,12 @@ describe('reviewWithModel', () => {
     expect(Date.now() - startedAt).toBeLessThan(3_000);
   });
 
-  it('quarantines the provider identified by a stream timeout and retries once on a fresh route', async () => {
+  // REL-271 (D4): a provider identified by a stream timeout used to get a bonus 3rd attempt on a
+  // fresh route ("retries once" beyond the configured maxAttempts). That bonus attempt is
+  // removed -- the identify-and-quarantine now has to happen within the configured attempt
+  // budget itself (here: attempt 1 identifies+bans Cerebras, attempt 2 -- the last one -- is the
+  // recovery). No third attempt is ever made regardless of outcome.
+  it('quarantines the provider identified by a stream timeout within the configured attempt budget (no bonus attempt)', async () => {
     const calls: any[] = [];
     const streamResponse = (chunks: any[], { delayMs = 0, abortAfter = false } = {}) => {
       let index = 0;
@@ -396,9 +463,6 @@ describe('reviewWithModel', () => {
       const body = JSON.parse(init.body);
       calls.push({ url, init, body });
       if (calls.length === 1) {
-        throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
-      }
-      if (calls.length === 2) {
         return streamResponse([
           { id: 'gen-cerebras', model: 'test/model', provider: 'Cerebras', choices: [{ delta: { content: '{"findings":[]}' } }] },
         ], { delayMs: 25, abortAfter: true });
@@ -416,13 +480,14 @@ describe('reviewWithModel', () => {
       fetchImpl,
       maxAttempts: 2,
       timeoutMs: 10,
+      preferStream: true,
     });
 
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.stream).toBe(true);
     expect(calls[1].body.stream).toBe(true);
-    expect(calls[2].body.stream).toBe(true);
-    expect(calls[2].body.provider.ignore).toContain('cerebras');
-    expect(calls[2].body.session_id).toBeUndefined();
+    expect(calls[1].body.provider.ignore).toContain('cerebras');
+    expect(calls[1].body.session_id).toBeUndefined();
     expect(result.provider).toBe('OpenAI');
     expect(result.decision).toBe('APPROVE');
   });
@@ -481,14 +546,31 @@ describe('reviewWithModel', () => {
     it('a provider timed out by one lane is not selected by a later lane in the same run', async () => {
       const runTimedOutProviders = new Set<string>();
       const laneOneCalls: any[] = [];
+      // REL-271 (D4): no bonus attempt after a provider is identified, so the ban has to happen
+      // within the configured attempt budget itself -- attempt 1 (forced to stream via
+      // preferStream) identifies+bans DigitalOcean, attempt 2 (the last one) is the recovery.
+      const laneOneFetch = async (url: string, init: any) => {
+        const body = JSON.parse(init.body);
+        laneOneCalls.push({ url, init, body });
+        if (laneOneCalls.length === 1) {
+          return streamResponse([
+            { id: 'gen-digitalocean', model: 'test/model', provider: 'DigitalOcean', choices: [{ delta: { content: '{"findings":[]}' } }] },
+          ], { delayMs: 25, abortAfter: true });
+        }
+        return streamResponse([
+          { id: 'gen-healthy', model: 'test/model', provider: 'OpenAI', choices: [{ delta: { content: '{"findings":[]}' } }] },
+          '[DONE]',
+        ]);
+      };
 
       const laneOne = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
         apiKey: 'k',
         baseUrl: 'https://api.example.com/v1',
         model: 'test/model',
-        fetchImpl: timeoutThenSucceedFetch('DigitalOcean', laneOneCalls),
+        fetchImpl: laneOneFetch,
         maxAttempts: 2,
         timeoutMs: 10,
+        preferStream: true,
         runTimedOutProviders,
       });
 

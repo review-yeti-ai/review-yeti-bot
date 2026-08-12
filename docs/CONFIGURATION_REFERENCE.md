@@ -75,8 +75,15 @@ review:
     max_repeated_calls: 2
     max_candidate_findings: 5
     max_verifier_calls_per_finding: 3
-    max_turns: 4
+    max_turns: 2
 ```
+
+`max_turns` (default `2`, hard ceiling `3`) is the same concept as the `max-investigation-turns`
+Action input / `MAX_INVESTIGATION_TURNS` environment variable documented under [Bounded evidence
+investigation](#bounded-evidence-investigation) below — the input wins over this YAML value, which
+in turn wins over the default. This is a direct multiplier on the whole retry chain (`turns x
+attempts` HTTP calls per lane), so setting it explicitly is the primary lever for controlling
+review cost and latency.
 
 ## Local CLI configuration
 
@@ -315,7 +322,15 @@ lockfile, registry configuration, or provenance line. Evidence is assembled from
 diff only and is bounded before it enters the follow-up prompt. If the requested path is not part of
 the diff, the lane ends as `INCOMPLETE_REVIEW`; it never silently becomes `APPROVE`. The composite
 Action input `max-investigation-turns` / environment variable `MAX_INVESTIGATION_TURNS` wins over
-the trusted YAML value and is always clamped to three.
+the trusted YAML value and is always clamped to three. This also drives the bounded
+`review.investigation.max_turns` limit ([Bounded investigation limits](#bounded-investigation-limits)
+above) — the two are the same clamp applied to both execution paths.
+
+`lane-deadline-ms` (Action input, default `240000` = 4 minutes) is a per-lane wall-clock backstop
+checked at the turn loop and threaded into every in-flight OpenRouter request for that lane. A lane
+that somehow exceeds it fails closed with termination `lane_deadline` instead of running until the
+job is killed, making the ceiling a stated number immune to future knob drift (turns, attempts, and
+per-request budgets can all be reconfigured independently of this backstop).
 
 The built-in catalog is deliberately curated rather than language-based. Ordinary source files
 are not excluded merely because of their language or extension. The categories are:
@@ -423,6 +438,8 @@ github_action:
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `timeout_ms` | `number` | `60000` | Per-request hard timeout in milliseconds. Lanes that do not return in time fail as `timeout`. Action input `openrouter-timeout-ms` / env `OPENROUTER_TIMEOUT_MS` / var `OPENROUTER_TIMEOUT_MS` override YAML. Clamped to 500–600000. |
+| `ttft_ms` | `number` | `30000` | Time-to-first-token deadline. On the streaming path this starts at request dispatch and clears on the first SSE chunk; on expiry it aborts with failure class `ttft_timeout` and adds the provider to **no** ignore/quarantine/ban set (OpenRouter's own `sort:latency` routing stays the sole authority — the retry simply re-asks). On the non-stream path it drives the connect budget. Also sets `provider_routing.preferred_max_latency` when not explicitly configured. Action input `openrouter-ttft-ms` / env `OPENROUTER_TTFT_MS` override YAML. Clamped to 500ms–`timeout_ms`. |
+| `max_attempts` | `number` | `2` | Maximum attempts per model per persona lane (one initial attempt plus one retry — "1 retry max per lane"). No budget escalation and no bonus attempt after a provider is identified; the attempt loop is the whole retry. Action input `openrouter-max-attempts` / env `OPENROUTER_MAX_ATTEMPTS` override YAML. Clamped to 1–5. |
 | `stream` | `boolean` | `false` | When true, use OpenRouter SSE streaming. Action input `openrouter-stream` / env `OPENROUTER_STREAM` / var `OPENROUTER_STREAM` override YAML. |
 | `model` | `string` | `openrouter/auto-beta` | Primary model id. The explicit Action `model` input/environment has precedence. |
 | `fallback_models` | `string[]` | `[]` | Ordered model ids used after the primary exhausts its transient-failure retries. Timeouts, network failures, 408, 429, and 5xx responses can move to the next model. Action input `openrouter-fallback-models` / env `OPENROUTER_FALLBACK_MODELS` overrides YAML. |

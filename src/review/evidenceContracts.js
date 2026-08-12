@@ -11,7 +11,10 @@ const DEFAULT_INVESTIGATION_LIMITS = Object.freeze({
   maxRepeatedCalls: 2,
   maxCandidateFindings: 5,
   maxVerifierCallsPerFinding: 3,
-  maxTurns: 4,
+  // REL-272 (D6): bounded default dropped 4 -> 2. maxTurns is a direct multiplier on the whole
+  // retry chain (turns * attempts HTTP calls per lane), so the un-wired default of 4 was silently
+  // 2x the cost this action's own retry-flattening (REL-271) assumes.
+  maxTurns: 2,
 });
 const HARD_INVESTIGATION_LIMITS = Object.freeze({
   maxCalls: 40,
@@ -21,13 +24,18 @@ const HARD_INVESTIGATION_LIMITS = Object.freeze({
   maxRepeatedCalls: 2,
   maxCandidateFindings: 5,
   maxVerifierCallsPerFinding: 3,
-  maxTurns: 4,
+  // Matches the 1-3 clamp resolveActionReviewPolicy already enforces for the same concept on
+  // the legacy path.
+  maxTurns: 3,
 });
 const EVIDENCE_TOOLS = new Set(['file_read', 'file_find', 'code_search', 'file_read_diff']);
 const EVIDENCE_STATUSES = new Set(['ok', 'unavailable', 'invalid', 'cancelled']);
 const TERMINATIONS = new Set([
   'completed', 'reused', 'budget_exhausted', 'provider_failure', 'timeout', 'cancelled',
   'repeated_call', 'malformed_response', 'unresolved_evidence', 'verification_incomplete',
+  // REL-271: per-lane wall-clock backstop (lane-deadline-ms), distinct from an ordinary outer
+  // job cancellation so the failure table shows which ceiling actually fired.
+  'lane_deadline',
 ]);
 const ID = /^[A-Za-z0-9_.:-]{1,100}$/u;
 
