@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "bounded-investigation-fixture-v1",
+  "cases": [
+    {
+      "id": "empty-model-content",
+      "content": "",
+      "expected": "semantic_invalid_response",
+      "reason": "empty_response"
+    },
+    {
+      "id": "invalid-json",
+      "content": "{not valid json",
+      "expected": "semantic_invalid_response",
+      "reason": "invalid_json"
+    },
+    {
+      "id": "fenced-json",
+      "content": "```json\n{\"review_status\":\"COMPLETE\",\"risk_plan\":[],\"evidence_requests\":[],\"risk_dispositions\":[],\"findings\":[]}\n```",
+      "expected": "complete"
+    },
+    {
+      "id": "legacy-findings-shaped-json",
+      "content": "{\"findings\":[]}",
+      "expected": "semantic_invalid_response",
+      "reason": "missing_required_fields"
+    },
+    {
+      "id": "valid-bounded-investigation",
+      "content": "{\"review_status\":\"COMPLETE\",\"risk_plan\":[{\"id\":\"risk-1\",\"unit_ids\":[],\"statement\":\"No actionable risk\",\"evidence_needed\":[],\"allowed_tools\":[]}],\"evidence_requests\":[],\"risk_dispositions\":[{\"risk_id\":\"risk-1\",\"status\":\"rejected\",\"reason\":\"The changed unit is safe\"}],\"findings\":[]}",
+      "expected": "complete"
+    },
+    {
+      "id": "partial-provider-response",
+      "providerResponse": {
+        "ok": false,
+        "error": "aborted",
+        "failureClass": "provider_timeout",
+        "provider": "azure",
+        "model": "openai/gpt-5.6-luna",
+        "generationId": "gen-aborted"
+      },
+      "expected": "provider_invalid_response",
+      "reason": "provider_timeout"
+    },
+    {
+      "id": "provider-http-error",
+      "providerResponse": {
+        "ok": false,
+        "status": 503,
+        "error": "HTTP 503",
+        "provider": "openai",
+        "model": "openai/gpt-5.6-luna",
+        "generationId": "gen-http"
+      },
+      "expected": "provider_invalid_response",
+      "reason": "http_503"
+    }
+  ]
+}
