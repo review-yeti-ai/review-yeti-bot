@@ -2422,6 +2422,41 @@ function renderDiffForPrompt(diffFiles, maxDiffChars) {
   return planDiffBudget(diffFiles, maxDiffChars).text;
 }
 
+// Run-scoped provider quarantine (2026-08-12 lane-resilience defects, evidence:
+// calltelemetry/cisco-cdr run 31601485579). `timedOutProviders` inside reviewWithModel is local to
+// a single call -- one model turn, one lane-quarantine retry pass. Every persona lane calls
+// reviewWithModel() fresh per turn (see callPersonaModelTurn / runBoundedPersonaInvestigation's
+// modelTurn callback), so that local set cannot deliver on its own log line's claim ("will not
+// retry this provider for the rest of the review run"): the evidence run banned DigitalOcean via
+// the security lane at 14:41:47 and re-served it to the architecture lane at 14:47:51 -- six
+// minutes later, in the same run.
+//
+// A caller that wants the ban to actually span the run passes one Set instance via
+// `options.runTimedOutProviders`, shared by reference across every persona lane's modelOptions
+// (see the boundedMode and legacy dispatch sites below). This module only ever mutates that Set
+// through addRunScopedProviderBan, which caps its size. Deliberately NOT a module-level global:
+// that would leak a ban across unrelated PRs/reviews in any process that reviews more than one PR
+// (and across parallel test runs) -- the Set must be constructed fresh per review run and threaded
+// through explicitly.
+const RUN_SCOPED_PROVIDER_BAN_MAX = 4;
+
+function addRunScopedProviderBan(banSet, provider) {
+  if (!(banSet instanceof Set) || !provider) return;
+  if (banSet.has(provider)) return;
+  if (banSet.size >= RUN_SCOPED_PROVIDER_BAN_MAX) {
+    // Bounded quarantine, not a monotonically growing block-list: evict the oldest ban (a JS Set
+    // iterates in insertion order) instead of refusing new information or growing without bound.
+    // An unbounded run-scoped ban is exactly how you reproduce the unrelated "404 No endpoints
+    // available" failure mode this repo has already hit -- enough accumulated bans eventually
+    // cover every provider `provider.ignore` would otherwise let OpenRouter route to. A provider
+    // banned several timeouts ago is stale signal; letting OpenRouter try it again is safer than
+    // starving the pool to zero.
+    const oldest = banSet.values().next().value;
+    banSet.delete(oldest);
+  }
+  banSet.add(provider);
+}
+
 /**
  * Evaluates one persona charter against the diff using an LLM.
  *
@@ -2601,6 +2636,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   // into `provider.ignore` for subsequent retries/fallbacks. This keeps the normal path stable
   // while making a stalled endpoint self-quarantine instead of retrying the same sticky route.
   const timedOutProviders = new Set();
+  // Run-scoped ban set shared by reference across every persona lane in the current review run
+  // (see addRunScopedProviderBan above). Absent when the caller does not opt in (tests, or a
+  // caller reviewing a single lane in isolation) -- fail open to local-only banning rather than
+  // require this everywhere.
+  const runTimedOutProviders = options.runTimedOutProviders instanceof Set ? options.runTimedOutProviders : null;
   const explicitIgnoredProviders = [...new Set(
     (Array.isArray(options.providerIgnore) ? options.providerIgnore : [])
       .map(normalizeProviderSlug)
@@ -2644,6 +2684,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       ...configuredIgnored,
       ...explicitIgnoredProviders,
       ...timedOutProviders,
+      ...(runTimedOutProviders || []),
     ].map(normalizeProviderSlug))].filter(Boolean);
     const providerRouting = configuredRouting
       ? { ...configuredRouting, ignore: ignored }
@@ -2651,7 +2692,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     return {
       model: requestedModel,
       // Sticky sessions pin model+provider. Drop the session after a timeout so the ignore list
-      // can take effect instead of sending the retry back to the same upstream endpoint.
+      // can take effect instead of sending the retry back to the same upstream endpoint. A
+      // run-scoped ban inherited from an earlier lane does not gate this call's own session_id --
+      // sessionModel already keys on persona.id (see below), so a different persona's lane cannot
+      // collide with a route this lane never pinned itself.
       ...(sessionSticky && timedOutProviders.size === 0 ? { session_id: sessionModel } : {}),
       ...requestBodyBase,
       ...(providerRouting ? { provider: providerRouting } : {}),
@@ -2783,11 +2827,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
             if (timedOutProvider && timedOutProvider !== 'openrouter') {
               timedOutProviders.add(timedOutProvider);
+              addRunScopedProviderBan(runTimedOutProviders, timedOutProvider);
               console.warn(
                 `[OpenRouter] BAN provider=${timedOutProvider} reason=${phase}_timeout`
                 + ` persona=${persona.id} elapsed_ms=${elapsedMs}`
                 + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
-                + ` — will not retry this provider for the rest of the review run`,
+                + (runTimedOutProviders
+                  ? ` — banned for the rest of the review run (run-scoped, cap=${RUN_SCOPED_PROVIDER_BAN_MAX})`
+                  : ` — banned for the remainder of this lane call only (no run-scoped ban set was provided)`),
               );
               console.warn(`::warning::Banned slow OpenRouter provider ${timedOutProvider} after ${phase} timeout`);
             } else {
@@ -2964,6 +3011,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
         if (/timeout|aborted/i.test(String(err?.message || err)) && timedOutProvider && timedOutProvider !== 'openrouter') {
           timedOutProviders.add(timedOutProvider);
+          addRunScopedProviderBan(runTimedOutProviders, timedOutProvider);
         }
         if (/timeout|aborted/i.test(String(err?.message || err))) streamRetryRequested = true;
         const msg = err?.name === 'TimeoutError' || /aborted|timeout/i.test(String(err?.message || ''))
@@ -7548,6 +7596,11 @@ async function main(options = {}) {
             call: async () => ({ status: 'unavailable', reason: navigationError ? 'navigation_snapshot_unavailable' : 'disabled' }),
           };
         };
+        // Shared by reference across every persona lane below so a provider timeout banned by
+        // one lane (e.g. security) is honored by every other lane in this same review run (e.g.
+        // architecture) -- see addRunScopedProviderBan's doc comment for the incident this fixes.
+        // Constructed fresh per review run, not module-level, so it cannot leak across PRs.
+        const runTimedOutProviders = new Set();
         const modelOptions = {
           ...modelConfig,
           ...(sessionContext || {}),
@@ -7555,6 +7608,7 @@ async function main(options = {}) {
           modelClient: options.modelClient,
           reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
           signal: cancellation.signal,
+          runTimedOutProviders,
         };
         const evaluatedPersonas = await cancellation.race(Promise.all(enabledPersonas.map(async (persona) => {
           const runs = [];
@@ -7685,6 +7739,9 @@ async function main(options = {}) {
           dependencyHints: dependencyRiskHints.length,
         };
       } else {
+      // See the boundedMode branch above for why this is a single Set shared by reference across
+      // every persona lane in this review run, constructed fresh per run rather than module-level.
+      const runTimedOutProviders = new Set();
       const evaluatedPersonas = await cancellation.race(Promise.all(
         enabledPersonas.map(async (persona) => {
           const runs = [];
@@ -7700,7 +7757,7 @@ async function main(options = {}) {
                 maxChars: 12_000,
                 excludedPaths: [...skipped.map((entry) => entry.path), ...oversized.map((entry) => entry.path)],
               },
-              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal },
+              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders },
             }));
           }
           return aggregatePersonaRuns(persona, runs, modelConfig.model);
@@ -8199,6 +8256,8 @@ module.exports = {
   formatRouteLabel,
   callOpenRouterChat,
   reviewWithModel,
+  addRunScopedProviderBan,
+  RUN_SCOPED_PROVIDER_BAN_MAX,
   runPersonaInvestigation,
   callPersonaModelTurn,
   parseFindingsPayload,

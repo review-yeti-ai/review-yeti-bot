@@ -7,6 +7,19 @@ const { buildInvestigationMessages, parseInvestigationResponse } = require('./re
 
 const DISPATCH_UNIT_ID = /^ru_[a-f0-9]{64}$/u;
 
+// A lane-level quarantine restart replays the whole turn budget after excluding the provider that
+// just failed. Depth 1 (the previous ceiling) handles the common case -- one bad provider, one
+// clean retry -- but the 2026-08-11 architecture-lane incident (evidence: calltelemetry/cisco-cdr
+// run 31601485579) shows a lane can burn its sole retry on a run of *timeouts* (Ionstream, then
+// AkashML) and then have nothing left when a later, genuinely different failure class (Phala
+// returning an empty response, `semantic_invalid_response/empty_response`) arrives. Raising the
+// ceiling to 2 gives that distinct failure a chance without making retries unbounded: the loop
+// below still terminates in at most MAX_LANE_PROVIDER_RETRIES + 1 provider attempts regardless of
+// failure class. A simple attempt-count ceiling was chosen over tracking distinct failure classes
+// per lane -- the extra bookkeeping is not justified by this evidence, which shows a fixed depth
+// of 2 would have recovered the run.
+const MAX_LANE_PROVIDER_RETRIES = 2;
+
 function safeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -333,7 +346,7 @@ async function runPersonaInvestigation(input = {}) {
           ? 'unresolved_evidence'
           : 'provider_failure';
       const provider = retryableProvider(response, termination);
-      if (provider && providerRetries < 1) {
+      if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
         providerRetries += 1;
         if (quarantineRetryProvider) ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
@@ -349,7 +362,7 @@ async function runPersonaInvestigation(input = {}) {
       parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds });
     } catch (error) {
       const provider = retryableProvider(response, 'malformed_response');
-      if (provider && providerRetries < 1) {
+      if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
         providerRetries += 1;
         if (quarantineRetryProvider) ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
@@ -378,7 +391,7 @@ async function runPersonaInvestigation(input = {}) {
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
     if (!evidence.complete) {
       const provider = retryableProvider(response, evidence.termination);
-      if (provider && providerRetries < 1) {
+      if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
         providerRetries += 1;
         if (quarantineRetryProvider) ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
@@ -396,4 +409,4 @@ async function runPersonaInvestigation(input = {}) {
   return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: limits.maxTurns, usage, routes, evidenceEnabled });
 }
 
-module.exports = { runPersonaInvestigation, appendUntrustedEvidence };
+module.exports = { runPersonaInvestigation, appendUntrustedEvidence, MAX_LANE_PROVIDER_RETRIES };
