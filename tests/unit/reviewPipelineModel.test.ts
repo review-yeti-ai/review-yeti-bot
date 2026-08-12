@@ -489,6 +489,42 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.provider.require_parameters).toBe(true);
   });
 
+  it('uses the strict investigation schema on both initial and evidence-follow-up raw turns', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    const options = {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+      rawTurn: true,
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        structuredOutput: 'strict',
+        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        timeoutMs: 30_000,
+        stream: false,
+      },
+    };
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      ...options,
+      investigationMessages: [{ role: 'user', content: 'Return the investigation envelope.' }],
+    });
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      ...options,
+      investigationMessages: [{ role: 'user', content: '<evidence_results>[]</evidence_results> Return the investigation envelope.' }],
+    });
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.body.response_format).toMatchObject({
+        type: 'json_schema',
+        json_schema: { name: 'review_investigation', strict: true },
+      });
+      expect(call.body.provider.require_parameters).toBe(true);
+    }
+  });
+
   it('does not apply the investigation schema to a legacy review turn', async () => {
     const { impl, calls } = stubFetch(validFindings);
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
