@@ -8,7 +8,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
 
-const { reviewWithModel, resolveModelConfig, PERSONA_CHARTERS } = pipeline;
+const { reviewWithModel, resolveModelConfig, PERSONA_CHARTERS, addRunScopedProviderBan, RUN_SCOPED_PROVIDER_BAN_MAX } = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
 const dependencyPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'dependencies');
 
@@ -425,6 +425,205 @@ describe('reviewWithModel', () => {
     expect(calls[2].body.session_id).toBeUndefined();
     expect(result.provider).toBe('OpenAI');
     expect(result.decision).toBe('APPROVE');
+  });
+
+  // Regression coverage for the "false advertising" ban-scope defect (2026-08-12, evidence:
+  // calltelemetry/cisco-cdr run 31601485579). Proof from that run: DigitalOcean was banned by the
+  // security lane at 14:41:47 and served the architecture lane again at 14:47:51 -- six minutes
+  // later, in the same review run -- despite the (now corrected) log line claiming the provider
+  // "will not retry ... for the rest of the review run". `timedOutProviders` inside
+  // reviewWithModel is local to one call; each persona lane calls reviewWithModel fresh per turn,
+  // so nothing survived between lanes without an explicit, threaded run-scoped ban set.
+  describe('run-scoped provider ban (options.runTimedOutProviders)', () => {
+    function streamResponse(chunks: any[], { delayMs = 0, abortAfter = false } = {}) {
+      let index = 0;
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          getReader: () => ({
+            read: async () => {
+              if (index >= chunks.length) {
+                if (!abortAfter) return { done: true, value: undefined };
+                if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+                throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+              }
+              const chunk = chunks[index++];
+              const data = chunk === '[DONE]' ? '[DONE]' : JSON.stringify(chunk);
+              return { done: false, value: Buffer.from(`data: ${data}\n\n`) };
+            },
+            cancel: async () => {},
+          }),
+        },
+      };
+    }
+
+    /** A lane whose second attempt times out on a named provider, then a third attempt succeeds. */
+    function timeoutThenSucceedFetch(bannedProvider: string, calls: any[]) {
+      return async (url: string, init: any) => {
+        const body = JSON.parse(init.body);
+        calls.push({ url, init, body });
+        if (calls.length === 1) {
+          throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+        }
+        if (calls.length === 2) {
+          return streamResponse([
+            { id: `gen-${bannedProvider}`, model: 'test/model', provider: bannedProvider, choices: [{ delta: { content: '{"findings":[]}' } }] },
+          ], { delayMs: 25, abortAfter: true });
+        }
+        return streamResponse([
+          { id: 'gen-healthy', model: 'test/model', provider: 'OpenAI', choices: [{ delta: { content: '{"findings":[]}' } }] },
+          '[DONE]',
+        ]);
+      };
+    }
+
+    it('a provider timed out by one lane is not selected by a later lane in the same run', async () => {
+      const runTimedOutProviders = new Set<string>();
+      const laneOneCalls: any[] = [];
+
+      const laneOne = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'test/model',
+        fetchImpl: timeoutThenSucceedFetch('DigitalOcean', laneOneCalls),
+        maxAttempts: 2,
+        timeoutMs: 10,
+        runTimedOutProviders,
+      });
+
+      expect(laneOne.decision).toBe('APPROVE');
+      expect(runTimedOutProviders.has('digitalocean')).toBe(true);
+
+      // A second, structurally fresh lane call (a different persona lane in the same review run)
+      // -- its own local `timedOutProviders` Set starts empty, so only the shared run-scoped Set
+      // can be the source of the ban below.
+      const laneTwoCalls: any[] = [];
+      const laneTwoFetch = async (url: string, init: any) => {
+        const body = JSON.parse(init.body);
+        laneTwoCalls.push({ url, init, body });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }),
+        };
+      };
+      await reviewWithModel(dependencyPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'test/model',
+        fetchImpl: laneTwoFetch,
+        maxAttempts: 1,
+        timeoutMs: 30_000,
+        runTimedOutProviders,
+      });
+
+      expect(laneTwoCalls[0].body.provider.ignore).toContain('digitalocean');
+    });
+
+    it('does not leak a provider ban across separate review runs', async () => {
+      const runOneBans = new Set<string>();
+      const laneOneCalls: any[] = [];
+      await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'test/model',
+        fetchImpl: timeoutThenSucceedFetch('DigitalOcean', laneOneCalls),
+        maxAttempts: 2,
+        timeoutMs: 10,
+        runTimedOutProviders: runOneBans,
+      });
+      expect(runOneBans.has('digitalocean')).toBe(true);
+
+      // A second review run (e.g. a later PR review in the same long-lived process, or simply a
+      // caller that never opted in to run-scoped banning) must not inherit that ban. There is
+      // deliberately no module-level Set backing this feature -- passing nothing here is the
+      // regression check for that.
+      const laneTwoCalls: any[] = [];
+      const laneTwoFetch = async (url: string, init: any) => {
+        const body = JSON.parse(init.body);
+        laneTwoCalls.push({ url, init, body });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }),
+        };
+      };
+      await reviewWithModel(dependencyPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'test/model',
+        fetchImpl: laneTwoFetch,
+        maxAttempts: 1,
+        timeoutMs: 30_000,
+        // No runTimedOutProviders passed.
+      });
+
+      const secondLaneIgnore = laneTwoCalls[0].body.provider?.ignore || [];
+      expect(secondLaneIgnore).not.toContain('digitalocean');
+    });
+
+    it('caps the run-scoped ban so enough timeouts cannot reduce the eligible pool to zero', () => {
+      const bans = new Set<string>();
+      // None of these overlap HARD_BANNED_PROVIDER_SLUGS -- this test is purely about
+      // addRunScopedProviderBan's own bound, not the separately-enforced permanent ban list.
+      const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'cerebras', 'morph', 'groq'];
+      expect(providers.length).toBeGreaterThan(RUN_SCOPED_PROVIDER_BAN_MAX);
+
+      for (const provider of providers) addRunScopedProviderBan(bans, provider);
+
+      // Bounded, not monotonically growing: the ban set never exceeds the cap no matter how many
+      // distinct providers time out in a single run.
+      expect(bans.size).toBe(RUN_SCOPED_PROVIDER_BAN_MAX);
+      // FIFO eviction: the earliest bans are dropped so the most recent (most actionable) signal
+      // survives, and at least one config-eligible provider is always left un-banned.
+      expect(bans.has('ionstream')).toBe(false);
+      expect(bans.has('akashml')).toBe(false);
+      expect([...bans]).toEqual(providers.slice(-RUN_SCOPED_PROVIDER_BAN_MAX));
+    });
+
+    it('a run-scoped ban at the cap still leaves the request ignore list short of every observed provider', async () => {
+      const bans = new Set<string>();
+      const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'cerebras', 'morph'];
+      for (const provider of providers) addRunScopedProviderBan(bans, provider);
+      expect(bans.size).toBe(RUN_SCOPED_PROVIDER_BAN_MAX);
+
+      const calls: any[] = [];
+      const fetchImpl = async (url: string, init: any) => {
+        const body = JSON.parse(init.body);
+        calls.push({ url, init, body });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }),
+        };
+      };
+      await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'test/model',
+        fetchImpl,
+        maxAttempts: 1,
+        timeoutMs: 30_000,
+        runTimedOutProviders: bans,
+      });
+
+      const ignore: string[] = calls[0].body.provider.ignore;
+      // The two oldest run-scoped bans were evicted by the cap, so they must not appear in the
+      // outgoing request even though they were "banned" earlier in this same run.
+      expect(ignore).not.toContain('ionstream');
+      expect(ignore).not.toContain('akashml');
+      // The most recent bans (within the cap) still take effect.
+      expect(ignore).toContain('cerebras');
+      expect(ignore).toContain('morph');
+      // The combined ignore list (hard-banned + run-scoped) never includes every provider this
+      // run has ever observed -- it is strictly bounded, not a monotonically growing block-list.
+      expect(ignore.length).toBe(HARD_BANNED_PROVIDER_SLUGS.length + RUN_SCOPED_PROVIDER_BAN_MAX);
+      expect(ignore.length).toBeLessThan(HARD_BANNED_PROVIDER_SLUGS.length + providers.length);
+    });
   });
 
   it('treats empty model output as retryable before using the fallback', async () => {

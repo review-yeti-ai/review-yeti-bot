@@ -258,6 +258,56 @@ describe('persona investigation state machine', () => {
     expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
   });
 
+  // Regression coverage for the architecture-lane near-miss (2026-08-12, evidence:
+  // calltelemetry/cisco-cdr run 31601485579). The lane's real history was: Ionstream timeout,
+  // AkashML timeout (client-side retry), DigitalOcean timeout (stream-attribution extra attempt),
+  // then a lane-level quarantine retry that hit AkashML again (timeout), and finally Phala
+  // returned RAW_OK but with empty content (`semantic_invalid_response/empty_response`). With a
+  // quarantine-retry ceiling of 1, that single retry was consumed entirely by timeouts, so the
+  // genuinely different empty-response failure had nothing left and the lane died
+  // (4/5 personas, DEGRADED, BLOCK). MAX_LANE_PROVIDER_RETRIES=2 fixes this without making
+  // retries unbounded.
+  describe('lane-level quarantine retry depth', () => {
+    it('survives a timeout-class retry followed by a distinct empty-response failure (depth 2)', async () => {
+      const calls: Array<{ providerIgnore?: string[] }> = [];
+      const modelTurn = async ({ providerIgnore }: { providerIgnore?: string[] }) => {
+        calls.push({ providerIgnore });
+        if (calls.length === 1) return { ok: false, error: 'provider_failure', model: 'test/model', provider: 'ionstream' };
+        if (calls.length === 2) return { ok: true, content: '', model: 'test/model', provider: 'akashml' };
+        return completeResponse();
+      };
+
+      const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
+
+      expect(calls).toEqual([
+        { providerIgnore: undefined },
+        { providerIgnore: ['ionstream'] },
+        { providerIgnore: ['ionstream', 'akashml'] },
+      ]);
+      expect(result.executionReceipt).toMatchObject({ termination: 'completed', complete: true });
+      expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
+    });
+
+    it('still terminates a lane that keeps failing past the retry ceiling (bounded, not unlimited)', async () => {
+      const calls: Array<{ providerIgnore?: string[] }> = [];
+      let providerIndex = 0;
+      const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'ionstream-again'];
+      const modelTurn = async ({ providerIgnore }: { providerIgnore?: string[] }) => {
+        calls.push({ providerIgnore });
+        return { ok: false, error: 'provider_failure', model: 'test/model', provider: providers[providerIndex++] };
+      };
+
+      const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
+
+      // MAX_LANE_PROVIDER_RETRIES quarantine restarts => MAX_LANE_PROVIDER_RETRIES + 1 total
+      // model calls before the lane gives up. This must remain finite regardless of how many
+      // distinct providers keep failing.
+      expect(calls).toHaveLength(3);
+      expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'provider_failure' });
+      expect(result.executionReceipt).toMatchObject({ termination: 'provider_failure', complete: false });
+    });
+  });
+
   // Regression coverage for the cisco-cdr false-SHIP near-miss (2026-08-11, caught before
   // merging PR #43). An earlier version of the fix reasoned "with evidence tooling off, a
   // persona structurally cannot produce a finding with valid evidence receipt ids, so it's safe
