@@ -429,6 +429,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
   function githubRunner(options: {
     headSha?: string;
     failReviewPost?: boolean;
+    suppressPublishedReview?: boolean;
     suppressPublishedThreads?: boolean;
     responsePublisherLogin?: string;
     threadPublisherLogin?: string;
@@ -440,7 +441,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     const responsePublisherLogin = options.responsePublisherLogin ?? 'github-actions[bot]';
     const state = {
       commands: [] as Array<{ executable: string; args: string[]; options: any }>,
-      reviews: [] as Array<{ body: string; commit_id: string; user: { login: string } }>,
+      reviews: [] as Array<{ id: number; submitted_at: string; body: string; commit_id: string; user: { login: string } }>,
       threads: [] as any[],
       postedPayloads: [] as Array<{ endpoint: string; payload: any }>,
       nextId: 100,
@@ -493,12 +494,16 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
           return { status: 1, stdout: '', stderr: 'permission denied' };
         }
         if (endpoint.endsWith('/reviews')) {
-          state.reviews.push({
-            body: payload.body,
-            commit_id: payload.commit_id,
-            user: { login: responsePublisherLogin },
-          });
-          payload.comments.forEach(addThread);
+          if (!options.suppressPublishedReview) {
+            state.reviews.push({
+              id: state.nextId,
+              submitted_at: new Date(state.nextId * 1000).toISOString(),
+              body: payload.body,
+              commit_id: payload.commit_id,
+              user: { login: responsePublisherLogin },
+            });
+            payload.comments.forEach(addThread);
+          }
         } else {
           addThread(payload);
         }
@@ -511,6 +516,21 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       return { status: 1, stdout: '', stderr: `unexpected command: ${args.join(' ')}` };
     };
     return { state, commandRunner };
+  }
+
+  function withHostedRunAttempt<T>(runId: string, attempt: string, callback: () => T): T {
+    const previousRunId = process.env.GITHUB_RUN_ID;
+    const previousAttempt = process.env.GITHUB_RUN_ATTEMPT;
+    process.env.GITHUB_RUN_ID = runId;
+    process.env.GITHUB_RUN_ATTEMPT = attempt;
+    try {
+      return callback();
+    } finally {
+      if (previousRunId === undefined) delete process.env.GITHUB_RUN_ID;
+      else process.env.GITHUB_RUN_ID = previousRunId;
+      if (previousAttempt === undefined) delete process.env.GITHUB_RUN_ATTEMPT;
+      else process.env.GITHUB_RUN_ATTEMPT = previousAttempt;
+    }
   }
 
   it('publishes every P0/P1 line in one uncapped COMMENT review and file findings separately', () => {
@@ -548,9 +568,82 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     expect(state.postedPayloads).toHaveLength(postsAfterFirstRun);
   });
 
+  it('deduplicates a later hosted SHIP retry against the trusted prior result', () => {
+    const { state, commandRunner } = githubRunner();
+    const plan = { lineComments: [], fileComments: [], advisories: [], rejected: [] };
+    const body = '## 🟢 **Verdict: SHIP**\n- **Review Status**: `SHIP`';
+    expect(withHostedRunAttempt('31566509329', '1', () => pipeline.postOrOutputComment(body, context, plan, { commandRunner })).success).toBe(true);
+    const postsAfterFirstRun = state.postedPayloads.length;
+    expect(state.reviews.at(-1)?.body).toContain('review-yeti-bot:result:v1:review-yeti-ai/review-yeti-bot#42:exact-head:31566509329:attempt-1 -->');
+
+    const replay = withHostedRunAttempt('31566509330', '1', () => pipeline.postOrOutputComment(body, context, plan, { commandRunner }));
+
+    expect(replay).toMatchObject({ success: true, postedViaGh: true, deduplicated: true });
+    expect(state.postedPayloads).toHaveLength(postsAfterFirstRun);
+  });
+
+  it('publishes a later exact-head result when the previous bot review is blocked', () => {
+    const { state, commandRunner } = githubRunner();
+    const plan = { lineComments: [], fileComments: [], advisories: [], rejected: [] };
+    expect(pipeline.postOrOutputComment('## 🔴 **Verdict: BLOCK**\n- **Review Status**: `PARTIAL_REVIEW`', context, plan, {
+      commandRunner,
+      publicationAttemptId: 'run-1',
+    }).success).toBe(true);
+
+    const retry = pipeline.postOrOutputComment('## 🟢 **Verdict: SHIP**\n- **Review Status**: `SHIP`', context, plan, {
+      commandRunner,
+      publicationAttemptId: 'run-2',
+    });
+
+    expect(retry).toMatchObject({ success: true, postedViaGh: true });
+    const reviews = state.postedPayloads.filter((post) => post.endpoint.endsWith('/reviews'));
+    expect(reviews).toHaveLength(2);
+    expect(reviews[1].payload).toMatchObject({ commit_id: 'exact-head', event: 'COMMENT' });
+    expect(reviews[1].payload.body).toContain('Verdict: SHIP');
+    expect(reviews[1].payload.body).toContain('review-yeti-bot:result:v1:review-yeti-ai/review-yeti-bot#42:exact-head:run-2');
+  });
+
+  it('does not accept an earlier blocked-result marker when the retry review is not visible', () => {
+    const { state, commandRunner } = githubRunner({ suppressPublishedReview: true });
+    state.reviews.push({
+      id: 1,
+      submitted_at: '2026-08-12T00:00:00Z',
+      commit_id: 'exact-head',
+      body: '## 🔴 **Verdict: BLOCK**\n<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:exact-head:action -->\n<!-- review-yeti-bot:result:v1:review-yeti-ai/review-yeti-bot#42:exact-head:run-1 -->',
+      user: { login: 'github-actions[bot]' },
+    });
+
+    const retry = pipeline.postOrOutputComment('## 🟢 **Verdict: SHIP**\n- **Review Status**: `SHIP`', context, {
+      lineComments: [], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner, publicationAttemptId: 'run-2' });
+
+    expect(retry).toMatchObject({ success: false, postedViaGh: false });
+    expect(retry.error).toContain('exact-head compact review was not visible');
+  });
+
+  it('does not accept a prior rerun result when the same GitHub run reaches a later attempt', () => {
+    const { state, commandRunner } = githubRunner({ suppressPublishedReview: true });
+    state.reviews.push({
+      id: 1,
+      submitted_at: '2026-08-12T00:00:00Z',
+      commit_id: 'exact-head',
+      body: '## 🔴 **Verdict: BLOCK**\n<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:exact-head:action -->\n<!-- review-yeti-bot:result:v1:review-yeti-ai/review-yeti-bot#42:exact-head:31566509329 -->',
+      user: { login: 'github-actions[bot]' },
+    });
+
+    const retry = withHostedRunAttempt('31566509329', '2', () => pipeline.postOrOutputComment('## 🟢 **Verdict: SHIP**\n- **Review Status**: `SHIP`', context, {
+      lineComments: [], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner }));
+
+    expect(retry).toMatchObject({ success: false, postedViaGh: false });
+    expect(retry.error).toContain('exact-head compact review was not visible');
+  });
+
   it('does not trust an exact-head summary marker forged by another review author', () => {
     const { state, commandRunner } = githubRunner();
     state.reviews.push({
+      id: 1,
+      submitted_at: '2026-08-12T00:00:00Z',
       commit_id: 'exact-head',
       body: '<!-- review-yeti-bot:summary:v1:review-yeti-ai/review-yeti-bot#42 -->\n<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:exact-head:action -->',
       user: { login: 'malicious-contributor' },
