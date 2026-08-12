@@ -102,6 +102,7 @@ try {
 
 const {
   resolveOpenRouterPolicy,
+  resolveGatewayIdentity,
   validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,
   normalizeProviderSlug,
@@ -2605,6 +2606,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
   const sessionSticky = options.sessionSticky === undefined ? SESSION_STICKY : Boolean(options.sessionSticky);
+  // OPENROUTER_BASE_URL may point at a non-OpenRouter OpenAI-compatible gateway
+  // (Fireworks, Ollama Cloud, OpenCode Zen). OpenRouter-specific request fields
+  // and routing-policy checks only apply on OpenRouter; direct gateways get a
+  // clean OpenAI-shape body and their own route label so lane retries work.
+  const gateway = resolveGatewayIdentity(cfg.baseUrl);
+  const unknownRouteProvider = gateway.isOpenRouter ? 'openrouter' : gateway.id;
   const promptPlan = planDiffBudget(diffFiles, maxDiffChars);
   const shownFiles = diffFiles.filter((file) => promptPlan.reviewed.includes(file.path));
 
@@ -2621,7 +2628,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     stream: false,
   };
   const plugins = [];
-  if (orPolicy.allowedModels.length > 0 || orPolicy.costQualityTradeoff !== undefined) {
+  // The auto-router plugin is an OpenRouter feature; never send it to a direct gateway.
+  if (gateway.isOpenRouter && (orPolicy.allowedModels.length > 0 || orPolicy.costQualityTradeoff !== undefined)) {
     const autoRouter = { id: 'auto-router' };
     if (orPolicy.allowedModels.length > 0) autoRouter.allowed_models = orPolicy.allowedModels;
     if (orPolicy.costQualityTradeoff !== undefined) autoRouter.cost_quality_tradeoff = orPolicy.costQualityTradeoff;
@@ -2719,7 +2727,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     personaId: persona.id,
     displayName: persona.name,
     model: cfg.model,
-    provider: 'openrouter',
+    provider: unknownRouteProvider,
     turn,
     maxInvestigationTurns,
     usage: ZERO_USAGE,
@@ -2842,9 +2850,13 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       // run-scoped ban inherited from an earlier lane does not gate this call's own session_id --
       // sessionModel already keys on persona.id (see below), so a different persona's lane cannot
       // collide with a route this lane never pinned itself.
-      ...(sessionSticky && timedOutProviders.size === 0 ? { session_id: sessionModel } : {}),
+      // Both `session_id` and `provider` are OpenRouter request extensions; direct
+      // OpenAI-compatible gateways reject unknown fields (Fireworks: HTTP 400
+      // "Extra inputs are not permitted, field: 'provider'"), so neither is
+      // attached off-OpenRouter.
+      ...(gateway.isOpenRouter && sessionSticky && timedOutProviders.size === 0 ? { session_id: sessionModel } : {}),
       ...requestBodyBase,
-      ...(providerRouting ? { provider: providerRouting } : {}),
+      ...(gateway.isOpenRouter && providerRouting ? { provider: providerRouting } : {}),
     };
   };
 
@@ -2857,7 +2869,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   };
 
   let lastError = null;
-  let lastRoute = { model: models[0] || cfg.model, provider: 'openrouter', generationId: null };
+  let lastRoute = { model: models[0] || cfg.model, provider: unknownRouteProvider, generationId: null };
   const recordModelTelemetry = ({ modelIndex, attempt, outcome, failureClass, usage, startedAt }) => {
     if (!options.reviewTelemetry || typeof options.reviewTelemetry.record !== 'function') return;
     try {
@@ -2881,7 +2893,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
     if (options.signal?.aborted) return cancelledResult();
     const requestedModel = models[modelIndex];
-    lastRoute = { model: requestedModel, provider: 'openrouter', generationId: null };
+    lastRoute = { model: requestedModel, provider: unknownRouteProvider, generationId: null };
     const sessionModel = [
       process.env.OPENROUTER_SESSION_ID_PREFIX || 'review-yeti',
       prContext.repo || 'repo',
@@ -2927,7 +2939,13 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
         lastRoute = {
           model: result.model || requestedModel,
-          provider: result.provider || 'openrouter',
+          // callOpenRouterChat reports `openrouter` when the response named no
+          // downstream provider; on a direct gateway that sentinel means "the
+          // gateway itself", so relabel it with the gateway id (the `openrouter`
+          // label would also disable lane retries in retryableProvider).
+          provider: result.provider && result.provider !== 'openrouter'
+            ? result.provider
+            : unknownRouteProvider,
           generationId: result.generationId || null,
         };
 
@@ -2961,7 +2979,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const effectiveRouting = requestBody.provider || orPolicy.providerRouting;
         const closedProviderPolicy = Array.isArray(effectiveRouting?.only) && effectiveRouting.only.length > 0
           || effectiveRouting?.allow_fallbacks === false && Array.isArray(effectiveRouting?.order) && effectiveRouting.order.length > 0;
-        if (result.ok && closedProviderPolicy && !isProviderAllowedByRouting(lastRoute.provider, effectiveRouting)) {
+        // Provider routing is an OpenRouter concept; a direct gateway's route label
+        // (e.g. `fireworks-direct`) must not be judged against an OpenRouter cohort.
+        if (result.ok && gateway.isOpenRouter && closedProviderPolicy && !isProviderAllowedByRouting(lastRoute.provider, effectiveRouting)) {
           const msg = 'provider_policy_violation';
           lastError = msg;
           console.warn(
