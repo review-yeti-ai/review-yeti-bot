@@ -7,18 +7,17 @@ const { buildInvestigationMessages, parseInvestigationResponse } = require('./re
 
 const DISPATCH_UNIT_ID = /^ru_[a-f0-9]{64}$/u;
 
-// A lane-level quarantine restart replays the whole turn budget after excluding the provider that
-// just failed. Depth 1 (the previous ceiling) handles the common case -- one bad provider, one
-// clean retry -- but the 2026-08-11 architecture-lane incident (evidence: calltelemetry/cisco-cdr
-// run 31601485579) shows a lane can burn its sole retry on a run of *timeouts* (Ionstream, then
-// AkashML) and then have nothing left when a later, genuinely different failure class (Phala
-// returning an empty response, `semantic_invalid_response/empty_response`) arrives. Raising the
-// ceiling to 2 gives that distinct failure a chance without making retries unbounded: the loop
-// below still terminates in at most MAX_LANE_PROVIDER_RETRIES + 1 provider attempts regardless of
-// failure class. A simple attempt-count ceiling was chosen over tracking distinct failure classes
-// per lane -- the extra bookkeeping is not justified by this evidence, which shows a fixed depth
-// of 2 would have recovered the run.
-const MAX_LANE_PROVIDER_RETRIES = 2;
+// REL-271 (D5): flattened to 0. A lane-level quarantine restart used to replay the whole turn
+// budget (resetting `turn = 1`) after excluding the provider that just failed -- see git history
+// for the prior depth-2 rationale (the 2026-08-11 architecture-lane incident,
+// calltelemetry/cisco-cdr run 31601485579). That mechanism multiplied with the per-request
+// attempt loop in review-pipeline.js's reviewWithModel to produce the 36-HTTP-calls-per-lane
+// pyramid documented in REL-270. The operator directive is "1 retry max per lane" with no
+// client-side provider bans on that retry (sort:latency is the routing authority) -- the
+// per-request attempt loop (openrouter-max-attempts, default 2) IS the retry now. Quarantine
+// restarts (the `turn = 1` resets after a provider failure) are removed entirely; this constant
+// stays 0, not deleted, so any future reintroduction is a deliberate, reviewable diff.
+const MAX_LANE_PROVIDER_RETRIES = 0;
 
 function safeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -305,29 +304,6 @@ function completedLane({ input, runtime, parsed, response, turns, usage, routes,
   };
 }
 
-function retryableProvider(response, termination) {
-  const provider = String(response?.provider || '').trim().toLowerCase().split('/')[0];
-  const reason = `${termination || ''} ${response?.error || ''}`;
-  if (!/unresolved_evidence|malformed_response|timeout|aborted|provider_failure/i.test(reason)) return null;
-  // The generic OpenRouter route is an unresolved downstream-provider sentinel. It may be
-  // retried, but must never be added to provider.ignore because that would alter routing or
-  // accidentally broaden fallback selection. Known providers are quarantined run-locally below.
-  return !provider || provider === 'openrouter' ? 'unresolved' : provider;
-}
-
-function hasSingleClosedProvider(providerRouting) {
-  if (!providerRouting || typeof providerRouting !== 'object') return false;
-  const only = Array.isArray(providerRouting.only) ? providerRouting.only : [];
-  const order = Array.isArray(providerRouting.order) ? providerRouting.order : [];
-  const configured = only.length > 0
-    ? only
-    : (providerRouting.allow_fallbacks === false ? order : []);
-  const providers = [...new Set(configured
-    .map((provider) => String(provider || '').trim().toLowerCase().split('/')[0])
-    .filter(Boolean))];
-  return providers.length === 1;
-}
-
 async function runPersonaInvestigation(input = {}) {
   if (!input.identity || !input.persona?.id || typeof input.modelTurn !== 'function') throw new TypeError('persona investigation requires identity, persona, and modelTurn');
   const dispatchAssignment = normalizeDispatchAssignment(input.dispatchAssignment, input.persona.id);
@@ -339,30 +315,35 @@ async function runPersonaInvestigation(input = {}) {
   // fallback). Computed once and threaded through the prompt, the parser, and candidateFindings
   // so all three treat "evidence tooling is off" consistently: the model is told it may report a
   // diff-grounded finding without a receipt id, the parser accepts one, and candidateFindings
-  // retains it (marked unverified) instead of silently discarding it. Stable across a
-  // provider-quarantine retry (below) because it depends only on the registry, not the provider.
+  // retains it (marked unverified) instead of silently discarding it.
   const evidenceEnabled = input.evidenceRegistry?.capabilities?.enabled === true;
-  let runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
+  const runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
   let messages = buildInvestigationMessages({ ...scopedInput, limits, evidenceEnabled, remaining: { calls: limits.maxCalls, turns: limits.maxTurns } });
-  const initialMessages = messages;
   let parsed = null;
   const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 };
   const routes = [];
-  const ignoredProviders = [];
-  // A retry normally quarantines the upstream that returned a malformed or failed response.
-  // A single closed cohort has no alternate endpoint, however; sending both `only: [provider]`
-  // and `ignore: [provider]` makes OpenRouter return a deterministic 404 instead of retrying.
-  const quarantineRetryProvider = !hasSingleClosedProvider(input.providerRouting);
+  // REL-271 (D5): a lane-level quarantine restart (reset turn=1, exclude the failed provider,
+  // replay the whole conversation) used to live here, up to MAX_LANE_PROVIDER_RETRIES times.
+  // Removed -- it multiplied with the per-request attempt loop in review-pipeline.js's
+  // reviewWithModel to produce the retry pyramid documented in REL-270, and it fed a per-lane
+  // provider-ignore list the operator's "no client-side bans" directive forbids growing on a
+  // retry. MAX_LANE_PROVIDER_RETRIES stays 0 (see its declaration above); providerIgnore is
+  // therefore always undefined below -- no ban/quarantine list is populated by this function.
   let providerUsageFacts = [];
-  let providerRetries = 0;
   let modelAttempts = 0;
   let turn = 1;
   while (turn <= limits.maxTurns) {
-    if (input.signal?.aborted) return incompleteLane({
-      input, runtime, parsed, termination: 'cancelled', turns: turn - 1, usage, routes,
-      failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_failure', 'cancelled'),
-      evidenceEnabled,
-    });
+    if (input.signal?.aborted) {
+      // Distinguish the per-lane wall-clock backstop (lane-deadline-ms) from an ordinary outer
+      // job cancellation so the failure table shows which ceiling actually fired.
+      const laneDeadlineFired = input.laneDeadlineSignal?.aborted === true;
+      const termination = laneDeadlineFired ? 'lane_deadline' : 'cancelled';
+      return incompleteLane({
+        input, runtime, parsed, termination, turns: turn - 1, usage, routes,
+        failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_failure', termination),
+        evidenceEnabled,
+      });
+    }
     const finalOnly = turn === limits.maxTurns;
     let response;
     modelAttempts += 1;
@@ -373,13 +354,19 @@ async function runPersonaInvestigation(input = {}) {
         finalOnly,
         attempt: modelAttempts,
         signal: input.signal,
-        providerIgnore: ignoredProviders.length > 0 ? [...ignoredProviders] : undefined,
+        // Always undefined: this lane no longer accumulates a provider-ignore list on retry
+        // (see MAX_LANE_PROVIDER_RETRIES above). Kept as an explicit field so a future,
+        // deliberately reviewed caller of a different kind can populate it without a signature
+        // change here.
+        providerIgnore: undefined,
       });
     } catch (error) {
       const cancelled = input.signal?.aborted;
+      const laneDeadlineFired = cancelled && input.laneDeadlineSignal?.aborted === true;
+      const termination = laneDeadlineFired ? 'lane_deadline' : (cancelled ? 'cancelled' : 'provider_failure');
       return incompleteLane({
-        input, runtime, parsed, termination: cancelled ? 'cancelled' : 'provider_failure', turns: turn, usage, routes,
-        failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_invalid_response', cancelled ? 'cancelled' : 'provider_exception'),
+        input, runtime, parsed, termination, turns: turn, usage, routes,
+        failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_invalid_response', termination === 'provider_failure' ? 'provider_exception' : termination),
         evidenceEnabled,
       });
     }
@@ -392,17 +379,6 @@ async function runPersonaInvestigation(input = {}) {
         : response?.error === 'unresolved_evidence'
           ? 'unresolved_evidence'
           : 'provider_failure';
-      const provider = retryableProvider(response, termination);
-      if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
-        providerRetries += 1;
-        if (quarantineRetryProvider && provider !== 'unresolved') ignoredProviders.push(provider);
-        runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
-        messages = initialMessages;
-        parsed = null;
-        providerUsageFacts = [];
-        turn = 1;
-        continue;
-      }
       return incompleteLane({
         input, runtime, parsed, termination, turns: turn, usage, routes,
         failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', safeFailureReason(response)),
@@ -412,17 +388,6 @@ async function runPersonaInvestigation(input = {}) {
     try {
       parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds });
     } catch (error) {
-      const provider = retryableProvider(response, 'malformed_response');
-      if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
-        providerRetries += 1;
-        if (quarantineRetryProvider && provider !== 'unresolved') ignoredProviders.push(provider);
-        runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
-        messages = initialMessages;
-        parsed = null;
-        providerUsageFacts = [];
-        turn = 1;
-        continue;
-      }
       return incompleteLane({
         input,
         runtime,
@@ -445,17 +410,6 @@ async function runPersonaInvestigation(input = {}) {
     });
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
     if (!evidence.complete) {
-      const provider = retryableProvider(response, evidence.termination);
-      if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
-        providerRetries += 1;
-        if (quarantineRetryProvider && provider !== 'unresolved') ignoredProviders.push(provider);
-        runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
-        messages = initialMessages;
-        parsed = null;
-        providerUsageFacts = [];
-        turn = 1;
-        continue;
-      }
       return incompleteLane({
         input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes,
         failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', evidence.termination || 'unresolved_evidence'),
