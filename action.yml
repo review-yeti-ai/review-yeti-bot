@@ -245,6 +245,16 @@ inputs:
       every review request; overrides github_action.openrouter.data_collection in .review-yeti.yaml.
     required: false
     default: ''
+  openrouter-allow-banned-providers:
+    description: >-
+      Comma-separated provider slugs to REMOVE from the action's built-in hard-ban list.
+      The hard-ban list is a safety default for callers that supply no policy of their own; it
+      must not silently override an operator who has deliberately allow-listed a provider
+      upstream (for example an OpenRouter workspace guardrail in only-allow mode). Where the two
+      intersect to nothing, every request fails with "No endpoints available". Use this only for
+      providers you have explicitly permitted upstream, and record why.
+    required: false
+    default: ''
   openrouter-ignore-providers:
     description: >-
       Comma-separated OpenRouter provider slugs to exclude from routing. The action always
@@ -625,6 +635,7 @@ runs:
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
         OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
+        OPENROUTER_ALLOW_BANNED_PROVIDERS: ${{ inputs.openrouter-allow-banned-providers }}
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
         OPENROUTER_STRUCTURED_OUTPUT: ${{ inputs.openrouter-structured-output }}
