@@ -410,6 +410,27 @@ async function runPersonaInvestigation(input = {}) {
     });
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
     if (!evidence.complete) {
+      // A repeated evidence request is a model behavior, not a provider failure:
+      // terminating the lane here turned one duplicate call into a dead lane and
+      // a degraded-quorum BLOCK — and with lane-level provider replays flattened
+      // (MAX_LANE_PROVIDER_RETRIES = 0), it would be instantly fatal. Nudge the
+      // model once per occurrence instead — feed back whatever evidence did
+      // execute plus an explicit instruction not to repeat the call. The turn
+      // budget still bounds the loop, so a model that keeps repeating exhausts
+      // maxTurns and terminates as budget_exhausted.
+      // (Previously shipped by calltelemetry/cisco-cdr as a checkout-time patch,
+      // .github/review-yeti-repeat-call.patch; upstreamed so callers can drop it.)
+      if (evidence.termination === 'repeated_call') {
+        messages = [
+          ...appendUntrustedEvidence(messages, evidence.outputs, { ...runtime.remaining(), turns: limits.maxTurns - turn }),
+          {
+            role: 'user',
+            content: 'The last evidence request repeated a previous call and was not executed again. Do not request that same evidence again. Use the bounded evidence already supplied to decide, or return INCOMPLETE_REVIEW if it is insufficient.',
+          },
+        ];
+        turn += 1;
+        continue;
+      }
       return incompleteLane({
         input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes,
         failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', evidence.termination || 'unresolved_evidence'),
