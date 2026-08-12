@@ -165,6 +165,51 @@ describe('reviewWithTransports', () => {
     expect(attempts).toEqual(['fireworks']);
   });
 
+  it('fails over when a raw-turn response is not JSON, using the lane parser\'s own leniency', async () => {
+    const attempts: string[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      if (options.transportName === 'fireworks') {
+        return { ok: true, content: 'Sure! Here is my review in prose, not JSON.' };
+      }
+      return { ok: true, content: '{"review_status":"COMPLETE","risk_plan":[],"evidence_requests":[],"risk_dispositions":[],"findings":[]}' };
+    };
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      rawTurn: true,
+      transportPlan: plannedTransports(),
+    });
+    expect(attempts).toEqual(['fireworks', 'openrouter-fallback']);
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('review_status');
+  });
+
+  it('does not fail over on fenced JSON the lane parser accepts', async () => {
+    const attempts: string[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      return { ok: true, content: '```json\n{"review_status":"COMPLETE","risk_plan":[],"evidence_requests":[],"risk_dispositions":[],"findings":[]}\n```' };
+    };
+    await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      rawTurn: true,
+      transportPlan: plannedTransports(),
+    });
+    expect(attempts).toEqual(['fireworks']);
+  });
+
+  it('returns the last transport\'s non-JSON content unchanged so upstream classifies the lane failure', async () => {
+    const attempts: string[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      return { ok: true, content: 'still not JSON' };
+    };
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      rawTurn: true,
+      transportPlan: plannedTransports(),
+    });
+    expect(attempts).toEqual(['fireworks', 'openrouter-fallback']);
+    expect(result).toMatchObject({ ok: true, content: 'still not JSON' });
+  });
+
   it('end-to-end: an openai-compat transport produces a gateway-neutral request through the real client', async () => {
     const requests: any[] = [];
     const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
