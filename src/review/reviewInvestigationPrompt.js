@@ -79,8 +79,17 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
   if (!parsed) throw new Error('model response must be a JSON object');
   const missing = TOP_LEVEL_REQUIRED_KEYS.filter((key) => !Object.hasOwn(parsed, key));
   if (missing.length > 0) throw new Error(`response is missing required fields: ${missing.join(', ')}`);
-  const unknown = Object.keys(parsed).filter((key) => !TOP_LEVEL_KEYS.has(key));
-  if (unknown.length > 0) throw new Error(`unknown response fields: ${unknown.join(', ')}`);
+  // Unknown top-level keys are STRIPPED, not rejected. Every consumer below reads
+  // only allowlisted keys, so an extra key carries no authority — but rejecting it
+  // turned benign model chatter (a "summary"/"notes" field) into a fatal lane
+  // failure on every transport at once: cisco-cdr#4337 canary 7 saw the same
+  // persona emit an extra field on three independent model builds, exhausting the
+  // whole transport plan with unknown_response_fields. Everything about the KNOWN
+  // fields below (statuses, risk references, receipt ownership, severities,
+  // bounds) remains strictly validated and fail-closed.
+  for (const key of Object.keys(parsed)) {
+    if (!TOP_LEVEL_KEYS.has(key)) delete parsed[key];
+  }
   const status = String(parsed.review_status || '').trim();
   if (!RESPONSE_STATUSES.has(status)) throw new Error('review_status must be NEEDS_EVIDENCE or COMPLETE');
   const riskRows = requiredArray(parsed.risk_plan, 'risk_plan');

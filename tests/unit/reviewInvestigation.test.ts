@@ -146,7 +146,9 @@ describe('persona investigation state machine', () => {
     expect(result.personaResult).toMatchObject({ decision: 'FINDINGS', findings: [{ evidence_receipt_ids: [expect.stringMatching(/^er_/)] }] });
   });
 
-  it('fails closed with a bounded semantic failure and resolved route when the strict evidence follow-up is invalid', async () => {
+  it('strips an unknown follow-up field and completes instead of failing the lane', async () => {
+    // Rejecting unknown keys made benign extra fields fatal across every transport at
+    // once (cisco-cdr#4337 canary 7); extras are now stripped and never published.
     const result = await runPersonaInvestigation({
       ...baseInput,
       providerRouting: { only: ['morph'], allow_fallbacks: false },
@@ -162,12 +164,33 @@ describe('persona investigation state machine', () => {
       ]),
     });
 
+    expect(result.personaResult.decision).toBe('APPROVE');
+    expect(result.executionReceipt).toMatchObject({ termination: 'completed' });
+    expect(JSON.stringify(result.personaResult)).not.toContain('do-not-publish-this');
+  });
+
+  it('fails closed with a bounded semantic failure and resolved route when the strict evidence follow-up is invalid', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      providerRouting: { only: ['morph'], allow_fallbacks: false },
+      modelTurn: sequence([
+        { ...needsEvidenceResponse(), model: 'deepseek/deepseek-v4-flash-0731', provider: 'Morph', generationId: 'gen-first' },
+        {
+          ok: true,
+          content: JSON.stringify({ review_status: 'NOT_A_REAL_STATUS', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }),
+          model: 'deepseek/deepseek-v4-flash-0731',
+          provider: 'Morph',
+          generationId: 'gen-second',
+        },
+      ]),
+    });
+
     expect(result.personaResult).toMatchObject({
       decision: 'ERROR',
       error: 'malformed_response',
       failure: {
         class: 'semantic_invalid_response',
-        reason: 'unknown_response_fields',
+        reason: 'invalid_review_status',
         route: { provider: 'Morph', model: 'deepseek/deepseek-v4-flash-0731', generationId: 'gen-second' },
       },
     });
