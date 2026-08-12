@@ -139,6 +139,11 @@ dependence on the built-in host list.
 ```yaml
 github_action:
   transports:
+    - name: ollama
+      base_url: https://ollama.com/v1
+      api_key_env: OLLAMA_PR_REVIEW_API_KEY
+      model: deepseek-v4-flash:0731
+      compat: openai
     - name: fireworks
       base_url: https://api.fireworks.ai/inference/v1
       api_key_env: FIREWORKS_PR_REVIEW_API_KEY
