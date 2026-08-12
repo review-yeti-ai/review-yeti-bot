@@ -313,33 +313,49 @@ describe('review dispatch receipt', () => {
     ])).toEqual(['gen_success']);
   });
 
-  it('keeps only the successful usage-backed provider id from the actual bounded investigation pipeline', async () => {
-    let calls = 0;
+  it('captures the successful usage-backed provider id and usage from a completed bounded investigation lane', async () => {
     const run = await runBoundedPersonaInvestigation({
       identity: { repository: 'owner/repository', prNumber: 42, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) },
       persona: { id: 'security', name: 'Security', charter: 'Review security.' },
       manifest: '<review_units>[]</review_units>',
       diffText: '+const safe = true;',
       evidenceRegistry: { capabilities: { enabled: false, readOnly: true, tools: [] }, call: async () => ({ status: 'unavailable' }) },
-      modelTurn: async () => {
-        calls += 1;
-        if (calls === 1) return {
-          ok: false, error: 'provider_failure', provider: 'morph', model: 'model-a',
-          generationId: 'gen_failed', providerUsageReported: true,
-          usage: { promptTokens: 9, completionTokens: 3 },
-        };
-        return {
-          ok: true, provider: 'openai', model: 'model-b', generationId: 'gen_success',
-          providerUsageReported: true, providerCostReported: false,
-          usage: { promptTokens: 25, completionTokens: 5 },
-          content: JSON.stringify({ review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }),
-        };
-      },
+      modelTurn: async () => ({
+        ok: true, provider: 'openai', model: 'model-b', generationId: 'gen_success',
+        providerUsageReported: true, providerCostReported: false,
+        usage: { promptTokens: 25, completionTokens: 5 },
+        content: JSON.stringify({ review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }),
+      }),
     });
 
     expect(run.personaResult.providerReceiptIds).toEqual(['gen_success']);
     expect(run.personaResult.providerUsage).toEqual({ promptTokens: 25, completionTokens: 5 });
     expect(collectProviderReceiptIds([run.personaResult])).toEqual(['gen_success']);
+  });
+
+  // REL-271 (D5): MAX_LANE_PROVIDER_RETRIES=0 means a failed modelTurn call terminates the lane
+  // immediately -- there is no retry that could let a failed attempt's usage "sneak in" beside a
+  // later successful one within the same lane. This replaces the old fail-then-succeed-via-retry
+  // regression test (retries no longer exist) with the equivalent no-retry-era guarantee: a
+  // failed lane never reports provider usage/receipt ids at all.
+  it('never surfaces provider usage/receipt ids when the lane fails outright', async () => {
+    const run = await runBoundedPersonaInvestigation({
+      identity: { repository: 'owner/repository', prNumber: 42, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) },
+      persona: { id: 'security', name: 'Security', charter: 'Review security.' },
+      manifest: '<review_units>[]</review_units>',
+      diffText: '+const safe = true;',
+      evidenceRegistry: { capabilities: { enabled: false, readOnly: true, tools: [] }, call: async () => ({ status: 'unavailable' }) },
+      modelTurn: async () => ({
+        ok: false, error: 'provider_failure', provider: 'morph', model: 'model-a',
+        generationId: 'gen_failed', providerUsageReported: true,
+        usage: { promptTokens: 9, completionTokens: 3 },
+      }),
+    });
+
+    expect(run.personaResult.decision).toBe('ERROR');
+    expect(run.personaResult.providerReceiptIds).toBeUndefined();
+    expect(run.personaResult.providerUsage).toBeUndefined();
+    expect(collectProviderReceiptIds([run.personaResult])).toEqual([]);
   });
 
   it('throws and withholds ordinary verdict outputs when provider artifact writing fails', async () => {
