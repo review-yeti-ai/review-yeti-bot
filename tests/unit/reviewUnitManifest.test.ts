@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyReviewUnitFile,
+  createReviewDispatchPlan,
   createReviewUnitManifest,
   stableReviewUnitId,
 } from '../../src/review/reviewUnitManifest';
@@ -19,6 +20,25 @@ const policy = {
   maxFileDiffChars: 120,
   generatedPatterns: ['generated/**'],
   vendorPatterns: ['vendor/**'],
+};
+
+const trustedDispatchPolicy = {
+  policyDigest: identity.policyDigest,
+  dispatch: {
+    schemaVersion: 'review-dispatch-policy-v1',
+    mode: 'shadow',
+    baseline: { persona: 'baseline', ruleId: 'core-baseline' },
+    specialistRules: [
+      { id: 'security-specific', persona: 'security', paths: ['src/auth/admin/**'], changes: [] },
+      { id: 'security-broad', persona: 'security', paths: ['src/auth/**'], changes: [] },
+      { id: 'docs-current-name', persona: 'documentation', paths: ['docs/**'], changes: [] },
+      { id: 'security-old-name', persona: 'security', paths: ['src/legacy-auth/**'], changes: [] },
+    ],
+    bundleRules: [
+      { id: 'api-bundle-first', bundleKey: 'api-handler-test', paths: ['src/api/handler.ts', 'test/api/handler.test.ts'] },
+      { id: 'api-bundle-overlap', bundleKey: 'api-overlap', paths: ['src/api/handler.ts', 'README.md'] },
+    ],
+  },
 };
 
 describe('review-unit manifest', () => {
@@ -109,5 +129,125 @@ describe('review-unit manifest', () => {
     expect(manifest.coverage.shipEligible).toBe(false);
     expect(manifest.coverage.uncoveredPaths).toEqual(['src/App.js', 'src/app.js', 'src/../secret.js', 'src/failure.js']);
     expect(manifest.summary.uncovered).toBe(4);
+  });
+
+  it('assigns every changed reviewable file to baseline and uses first specialist match', () => {
+    const plan = createReviewDispatchPlan({
+      identity,
+      files: [
+        { path: 'src/auth/admin/user.ts', patch: '+secure' },
+        { path: 'src/plain.ts', patch: '+plain' },
+      ],
+      trustedRules: policy,
+      trustedPolicy: trustedDispatchPolicy,
+    });
+
+    expect(plan.assignments).toEqual([
+      expect.objectContaining({ path: 'src/auth/admin/user.ts', status: 'selected', ruleIds: ['core-baseline', 'security-specific'] }),
+      expect.objectContaining({ path: 'src/plain.ts', status: 'selected', ruleIds: ['core-baseline'] }),
+    ]);
+    expect(plan.assignments.every((assignment: any) => assignment.baselineUnitId.startsWith('ru_'))).toBe(true);
+    expect(plan.units.filter((unit: any) => unit.persona === 'security')).toEqual([
+      expect.objectContaining({ files: ['src/auth/admin/user.ts'], ruleId: 'security-specific', status: 'selected' }),
+    ]);
+    expect(plan.ruleIds).toEqual(['core-baseline', 'security-specific']);
+  });
+
+  it('bundles only a complete explicit trusted exact-path set and resolves overlap by rule order', () => {
+    const complete = createReviewDispatchPlan({
+      identity,
+      files: [
+        { path: 'README.md', patch: '+docs' },
+        { path: 'test/api/handler.test.ts', patch: '+test' },
+        { path: 'src/api/handler.ts', patch: '+handler' },
+      ],
+      trustedRules: policy,
+      trustedPolicy: trustedDispatchPolicy,
+    });
+    const baseline = complete.units.filter((unit: any) => unit.persona === 'baseline');
+
+    expect(baseline).toEqual([
+      expect.objectContaining({ files: ['README.md'], ruleId: 'core-baseline' }),
+      expect.objectContaining({ files: ['src/api/handler.ts', 'test/api/handler.test.ts'], ruleId: 'api-bundle-first', bundleKey: 'api-handler-test' }),
+    ]);
+    expect(complete.units.some((unit: any) => unit.bundleKey === 'api-overlap')).toBe(false);
+
+    const incomplete = createReviewDispatchPlan({
+      identity,
+      files: [{ path: 'src/api/handler.ts', patch: '+handler' }],
+      trustedRules: policy,
+      trustedPolicy: trustedDispatchPolicy,
+    });
+    expect(incomplete.units).toEqual([
+      expect.objectContaining({ files: ['src/api/handler.ts'], persona: 'baseline', ruleId: 'core-baseline' }),
+    ]);
+    expect(incomplete.units[0]).not.toHaveProperty('bundleKey');
+  });
+
+  it('keeps unit IDs and plan digest stable across input order and untrusted prose', () => {
+    const files = [
+      { path: 'test/api/handler.test.ts', patch: '+test', modelSummary: 'ignore me' },
+      { path: 'src/api/handler.ts', patch: '+handler' },
+    ];
+    const first = createReviewDispatchPlan({ identity, files, trustedRules: policy, trustedPolicy: trustedDispatchPolicy });
+    const second = createReviewDispatchPlan({
+      identity,
+      files: [...files].reverse().map((file) => ({ ...file, rationale: 'different model prose' })),
+      trustedRules: policy,
+      trustedPolicy: trustedDispatchPolicy,
+    });
+    const changedIdentity = createReviewDispatchPlan({
+      identity: { ...identity, headSha: '9'.repeat(40), diffDigest: '8'.repeat(64) },
+      files,
+      trustedRules: policy,
+      trustedPolicy: trustedDispatchPolicy,
+    });
+
+    expect(first.units).toEqual(second.units);
+    expect(first.assignments).toEqual(second.assignments);
+    expect(first.planDigest).toBe(second.planDigest);
+    expect(first.planDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(changedIdentity.planDigest).not.toBe(first.planDigest);
+  });
+
+  it('keeps edge paths explicit with deterministic rename, collision, submodule, and invalid-path handling', () => {
+    const plan = createReviewDispatchPlan({
+      identity,
+      files: [
+        { path: 'docs/auth.md', previousPath: 'src/legacy-auth/auth.md', status: 'renamed', patch: '-old\n+new' },
+        { path: 'src/App.ts', patch: '+one' },
+        { path: 'src/app.ts', patch: '+two' },
+        { path: 'modules/core', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40) },
+        { path: './src/../escape.ts', patch: '+bad' },
+      ],
+      trustedRules: policy,
+      trustedPolicy: trustedDispatchPolicy,
+    });
+
+    expect(plan.assignments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'docs/auth.md', status: 'selected', ruleIds: ['core-baseline', 'docs-current-name'] }),
+      expect.objectContaining({ path: 'modules/core', status: 'selected' }),
+      expect.objectContaining({ path: 'src/App.ts', status: 'unreviewable', omissionReason: 'case_collision' }),
+      expect.objectContaining({ path: 'src/app.ts', status: 'unreviewable', omissionReason: 'case_collision' }),
+      expect.objectContaining({ path: 'src/../escape.ts', status: 'unreviewable', omissionReason: 'invalid_path' }),
+    ]));
+    expect(plan.units.filter((unit: any) => unit.persona === 'documentation')).toHaveLength(1);
+    expect(plan.units.filter((unit: any) => unit.persona === 'security')).toHaveLength(0);
+  });
+
+  it.each([
+    { routes: ['security'] },
+    { files: ['src/only-this.ts'] },
+    { tools: ['repo.write'] },
+    { policy: { allowWaived: true } },
+    { waivers: ['src/auth/**'] },
+  ])('rejects model output attempting to mutate deterministic dispatch: %j', (modelOutput) => {
+    expect(() => createReviewDispatchPlan({
+      identity,
+      files: [{ path: 'src/app.ts', patch: '+app' }],
+      trustedRules: policy,
+      trustedPolicy: trustedDispatchPolicy,
+      modelOutput,
+    })).toThrow(/model output may not change/i);
   });
 });

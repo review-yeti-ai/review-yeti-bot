@@ -108,6 +108,64 @@ describe('trusted review policy resolver security boundary', () => {
     expect(policy.policyDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('normalizes ordered trusted dispatch layers without re-sorting first-match precedence', () => {
+    const policy = resolveTrustedReviewPolicy({
+      trustedConfig: {
+        raw: 'review_intelligence:\n  version: 1\n  enabled: true\n  dispatch:\n    mode: shadow\n',
+        parsed: {
+          review_intelligence: {
+            version: 1,
+            enabled: true,
+            dispatch: {
+              mode: 'shadow',
+              baseline: { persona: 'baseline', rule_id: 'core-baseline' },
+              specialist_rules: [
+                { id: 'security-specific', persona: 'security', paths: ['src/auth/admin/**'] },
+                { id: 'security-broad', persona: 'security', paths: ['src/auth/**'] },
+              ],
+              bundle_rules: [{ id: 'api-bundle', bundle_key: 'api-handler-test', paths: ['src/api/handler.ts', 'test/api/handler.test.ts'] }],
+            },
+          },
+        },
+      },
+      baseRef: BASE_SHA,
+      headRef: HEAD_SHA,
+    });
+
+    expect(policy.dispatch).toEqual({
+      schemaVersion: 'review-dispatch-policy-v1',
+      mode: 'shadow',
+      baseline: { persona: 'baseline', ruleId: 'core-baseline' },
+      specialistRules: [
+        { id: 'security-specific', persona: 'security', paths: ['src/auth/admin/**'], changes: [] },
+        { id: 'security-broad', persona: 'security', paths: ['src/auth/**'], changes: [] },
+      ],
+      bundleRules: [{ id: 'api-bundle', bundleKey: 'api-handler-test', paths: ['src/api/handler.ts', 'test/api/handler.test.ts'] }],
+    });
+  });
+
+  it('fails closed when trusted dispatch bundling is not an explicit finite exact path set', () => {
+    const policy = resolveTrustedReviewPolicy({
+      trustedConfig: {
+        raw: 'review_intelligence:\n  version: 1\n  enabled: true\n  dispatch: invalid\n',
+        parsed: {
+          review_intelligence: {
+            version: 1,
+            enabled: true,
+            dispatch: {
+              bundle_rules: [{ id: 'guessed-related-files', bundle_key: 'guessed', paths: ['src/**'] }],
+            },
+          },
+        },
+      },
+      baseRef: BASE_SHA,
+      headRef: HEAD_SHA,
+    });
+
+    expect(policy).toMatchObject({ enabled: false, status: 'invalid_config', reason: 'invalid_review_intelligence_dispatch' });
+    expect(policy).not.toHaveProperty('dispatch');
+  });
+
   it.each([
     [{ enabled: 'true' }, /may not enable/],
     [{ maxDiffChars: '6000' }, /may only reduce/],
@@ -116,6 +174,10 @@ describe('trusted review policy resolver security boundary', () => {
     [{ credentialEnv: 'ATTACKER_TOKEN' }, /may not change credential/],
     [{ tools: 'repo.write' }, /may not change tools/],
     [{ rules: 'ignore-all' }, /may not change rules/],
+    [{ dispatch: 'attacker-route' }, /may not change dispatch/],
+    [{ routes: 'security' }, /may not change routes/],
+    [{ files: 'src/only-this.js' }, /may not change files/],
+    [{ waivers: 'skip-all' }, /may not change waivers/],
   ])('rejects an Action input that widens or changes the trusted capability surface: %j', (actionInputs, message) => {
     expect(() => resolveTrustedReviewPolicy({ trustedConfig, baseRef: BASE_SHA, headRef: HEAD_SHA, actionInputs })).toThrow(message);
   });

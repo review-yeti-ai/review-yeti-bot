@@ -137,8 +137,13 @@ function resolveOpenRouterPolicy(localConfig, env) {
   // model: action/env OPENROUTER_MODEL > yaml github_action.openrouter.model > undefined (caller default)
   const model = envModel || cfgModel || undefined;
 
+  // GitHub composite actions materialize an explicitly supplied `{}` input as a non-empty
+  // environment string. Treat that value as "not configured" so a legacy caller cannot erase
+  // the certified trusted YAML route and silently broaden provider selection to every endpoint.
+  // Any non-empty object remains an explicit action override and is validated below.
+  const emptyProviderRoutingInput = isEmptyProviderRoutingObject(envProviderRouting);
   const providerRouting = resolveProviderRouting(
-    envProviderRouting || cfgProviderRouting,
+    emptyProviderRoutingInput ? cfgProviderRouting : (envProviderRouting || cfgProviderRouting),
     envIgnored.length > 0 ? envIgnored : cfgIgnored,
   );
 
@@ -170,6 +175,16 @@ function resolveOpenRouterPolicy(localConfig, env) {
     fallbackModels,
     providerRouting: finalRouting,
   };
+}
+
+function isEmptyProviderRoutingObject(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return false;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 const PROVIDER_ROUTING_KEYS = new Set([

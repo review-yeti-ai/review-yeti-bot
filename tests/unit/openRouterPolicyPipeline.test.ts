@@ -251,6 +251,24 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     });
   });
 
+  it('treats an explicit empty JSON routing object as unset instead of broadening provider selection', () => {
+    expect(resolveOpenRouterPolicy({
+      github_action: {
+        openrouter: {
+          provider_routing: {
+            only: ['morph'],
+            allow_fallbacks: false,
+          },
+        },
+      },
+    }, { OPENROUTER_PROVIDER_ROUTING: '{}' }).providerRouting).toEqual({
+      only: ['morph'],
+      allow_fallbacks: false,
+      ignore: HARD_BANNED_PROVIDER_SLUGS,
+      preferred_max_latency: 8000,
+    });
+  });
+
   it('fails before lane fan-out when Luna is restricted to the Morph-only cohort', () => {
     expect(() => resolveOpenRouterPolicy({}, {
       OPENROUTER_MODEL: 'openai/gpt-5.6-luna',

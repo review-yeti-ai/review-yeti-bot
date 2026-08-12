@@ -8,6 +8,23 @@ import { loadReviewWorkflowFixture } from '../support/reviewWorkflowFixtures';
 const reviewEventSchema = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../schemas/review-event.v1.schema.json'), 'utf8'));
 const validateReviewEventSchema = new Ajv2020({ strict: false, validateFormats: false }).compile(reviewEventSchema);
 
+function canonicalReceipt(value: any) {
+  const artifacts = value.reviewDispatch?.artifacts;
+  return {
+    ...value,
+    startedAt: 0,
+    finishedAt: 0,
+    outbox: { ...value.outbox, path: '<outbox>' },
+    reviewDispatch: artifacts
+      ? { ...value.reviewDispatch, artifacts: { ...artifacts, artifactDirectory: '<artifacts>', receiptPath: '<receipt>', manifestPath: '<manifest>' } }
+      : value.reviewDispatch,
+    actionOutputs: value.actionOutputs
+      .replace(/memory-outbox-path=.*\n/u, 'memory-outbox-path=<outbox>\n')
+      .replace(/review-dispatch-receipt-path=.*\n/u, 'review-dispatch-receipt-path=<receipt>\n')
+      .replace(/review-dispatch-manifest-path=.*\n/u, 'review-dispatch-manifest-path=<manifest>\n'),
+  };
+}
+
 describe('cassette-backed review workflow harness', () => {
   it('resolves the immutable base SHA before applying an opted-in trusted review policy', async () => {
     const receipt = await runReviewWorkflowFixture('fresh-clean', { reviewIntelligence: true });
@@ -122,14 +139,7 @@ describe('cassette-backed review workflow harness', () => {
     const first = await runReviewWorkflowFixture('fresh-clean');
     const second = await runReviewWorkflowFixture('fresh-clean');
     expect(first.outboxPayload).toEqual(second.outboxPayload);
-    const canonical = (receipt: any) => ({
-      ...receipt,
-      startedAt: 0,
-      finishedAt: 0,
-      outbox: { ...receipt.outbox, path: '<outbox>' },
-      actionOutputs: receipt.actionOutputs.replace(/memory-outbox-path=.*\n/u, 'memory-outbox-path=<outbox>\n'),
-    });
-    expect(canonical(first)).toEqual(canonical(second));
+    expect(canonicalReceipt(first)).toEqual(canonicalReceipt(second));
   });
 
   it.each([
@@ -154,13 +164,6 @@ describe('cassette-backed review workflow harness', () => {
     });
     expect(JSON.stringify(receipt)).not.toMatch(/fixture-(?:memory|openrouter)-key|authorization|api_key/iu);
     expect(receipt.outboxPayload).toEqual(repeat.outboxPayload);
-    const canonical = (value: any) => ({
-      ...value,
-      startedAt: 0,
-      finishedAt: 0,
-      outbox: { ...value.outbox, path: '<outbox>' },
-      actionOutputs: value.actionOutputs.replace(/memory-outbox-path=.*\n/u, 'memory-outbox-path=<outbox>\n'),
-    });
-    expect(canonical(receipt)).toEqual(canonical(repeat));
+    expect(canonicalReceipt(receipt)).toEqual(canonicalReceipt(repeat));
   });
 });

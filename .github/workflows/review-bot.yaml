@@ -54,6 +54,11 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Resolve immutable Review Yeti action SHA
+        id: action-source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       # "Central repo controls all personas and settings and each repo can override with a local
       # file." On the dispatch path the workspace holds this repository, so the target's override
       # is fetched in. On the pull_request path the workspace is already the repo under review.
@@ -128,6 +133,7 @@ jobs:
         if: steps.self-review-gate.outputs.skip != 'true'
         uses: ./
         with:
+          action-sha: ${{ steps.action-source.outputs.sha }}
           repo: ${{ github.event.client_payload.target_repo || github.repository }}
           pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           # Default "all" turns on every built-in persona (security, performance, architecture,
