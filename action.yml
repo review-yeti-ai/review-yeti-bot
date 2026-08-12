@@ -102,11 +102,42 @@ inputs:
     default: '30000'
   openrouter-connect-timeout-ms:
     description: >-
-      Max milliseconds to wait for OpenRouter HTTP headers / first byte (default 8000).
-      Separate from openrouter-timeout-ms (total response budget). A hung connect fails
-      fast and the upstream provider is banned for the rest of the review run.
+      Legacy fallback for the non-stream connect budget, only used when openrouter-ttft-ms is
+      entirely unset (default 8000). Separate from openrouter-timeout-ms (total response
+      budget). Prefer openrouter-ttft-ms, which now drives this budget explicitly and also
+      covers the streaming path.
     required: false
     default: '8000'
+  openrouter-ttft-ms:
+    description: >-
+      Time-to-first-token deadline in milliseconds (default 30000 = 30s). On the streaming path
+      this starts at request dispatch and clears on the first SSE chunk; on expiry it aborts
+      with failure class ttft_timeout. On the non-stream path it drives the connect budget
+      (superseding openrouter-connect-timeout-ms when set). A TTFT abort never adds the
+      provider to any ignore/quarantine/ban set -- OpenRouter's own sort:latency routing stays
+      the sole authority and the retry simply re-asks. Also sets provider.preferred_max_latency.
+      Also configurable via github_action.openrouter.ttft_ms in .review-yeti.yaml; action input
+      wins.
+    required: false
+    default: '30000'
+  openrouter-max-attempts:
+    description: >-
+      Maximum attempts per model per persona lane (default 2 = one initial attempt plus one
+      retry; operator directive "1 retry max per lane"). No budget escalation and no bonus
+      attempt after a provider is identified — the attempt loop is the whole retry. Also
+      configurable via github_action.openrouter.max_attempts in .review-yeti.yaml; action input
+      wins.
+    required: false
+    default: '2'
+  lane-deadline-ms:
+    description: >-
+      Per-lane wall-clock deadline in milliseconds (default 240000 = 4m), checked at the
+      investigation turn loop. A backstop so the ceiling on how long one persona lane can run is
+      a stated number immune to future knob drift, rather than an emergent property of
+      turns * attempts * budgets. A lane that exceeds it fails closed with lane_deadline instead
+      of running until the job is killed.
+    required: false
+    default: '240000'
   model:
     description: 'Model identifier passed to the provider.'
     required: false
@@ -661,6 +692,9 @@ runs:
         OPENROUTER_STREAM: ${{ inputs.openrouter-stream }}
         OPENROUTER_TIMEOUT_MS: ${{ inputs.openrouter-timeout-ms }}
         OPENROUTER_CONNECT_TIMEOUT_MS: ${{ inputs.openrouter-connect-timeout-ms }}
+        OPENROUTER_TTFT_MS: ${{ inputs.openrouter-ttft-ms }}
+        OPENROUTER_MAX_ATTEMPTS: ${{ inputs.openrouter-max-attempts }}
+        LANE_DEADLINE_MS: ${{ inputs.lane-deadline-ms }}
         # Ensure bare requires (js-yaml) resolve from the action install even if
         # Node's walk-up from pipelines/ is disrupted on some runners.
         NODE_PATH: ${{ github.action_path }}/node_modules

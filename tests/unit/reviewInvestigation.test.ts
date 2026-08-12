@@ -252,32 +252,32 @@ describe('persona investigation state machine', () => {
     expect(result.personaResult.findings).toEqual([]);
   });
 
-  it('retries unresolved evidence once while excluding the failed provider', async () => {
+  // REL-271 (D5): the lane-level quarantine restart (reset turn=1, exclude the failed provider,
+  // replay the whole conversation) is gone. MAX_LANE_PROVIDER_RETRIES=0 -- a single unresolved
+  // evidence response fails the lane on the first call; the per-request attempt loop in
+  // review-pipeline.js's reviewWithModel is the only retry left, and it never touches this
+  // lane-scoped providerIgnore path.
+  it('fails closed on the first unresolved-evidence response instead of quarantine-restarting the provider', async () => {
     const calls: Array<{ providerIgnore?: string[]; turn: number }> = [];
     const modelTurn = async ({ providerIgnore, turn }: { providerIgnore?: string[]; turn: number }) => {
       calls.push({ providerIgnore, turn });
-      if (calls.length === 1) return { ok: false, error: 'unresolved_evidence', model: 'test/model', provider: 'test' };
-      return completeResponse();
+      return { ok: false, error: 'unresolved_evidence', model: 'test/model', provider: 'test' };
     };
     const result = await runPersonaInvestigation({
       ...baseInput,
       modelTurn,
     });
 
-    expect(calls).toEqual([
-      { providerIgnore: undefined, turn: 1 },
-      { providerIgnore: ['test'], turn: 1 },
-    ]);
-    expect(result.executionReceipt).toMatchObject({ termination: 'completed', turns: 1, evidenceCalls: 0 });
-    expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
+    expect(calls).toEqual([{ providerIgnore: undefined, turn: 1 }]);
+    expect(result.executionReceipt).toMatchObject({ termination: 'unresolved_evidence', complete: false });
+    expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'unresolved_evidence' });
   });
 
-  it('retries a malformed response without self-excluding the sole closed provider', async () => {
+  it('fails closed on the first malformed response instead of quarantine-restarting the provider', async () => {
     const calls: Array<{ providerIgnore?: string[]; turn: number }> = [];
     const modelTurn = async ({ providerIgnore, turn }: { providerIgnore?: string[]; turn: number }) => {
       calls.push({ providerIgnore, turn });
-      if (calls.length === 1) return { ok: true, content: '{not valid json', model: 'test/model', provider: 'morph' };
-      return completeResponse();
+      return { ok: true, content: '{not valid json', model: 'test/model', provider: 'morph' };
     };
 
     const result = await runPersonaInvestigation({
@@ -286,15 +286,12 @@ describe('persona investigation state machine', () => {
       modelTurn,
     });
 
-    expect(calls).toEqual([
-      { providerIgnore: undefined, turn: 1 },
-      { providerIgnore: undefined, turn: 1 },
-    ]);
-    expect(result.executionReceipt).toMatchObject({ termination: 'completed', turns: 1, evidenceCalls: 0 });
-    expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
+    expect(calls).toEqual([{ providerIgnore: undefined, turn: 1 }]);
+    expect(result.executionReceipt).toMatchObject({ termination: 'malformed_response', complete: false });
+    expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'malformed_response' });
   });
 
-  it('retries an invalid response with an unresolved OpenRouter route without broadening routing', async () => {
+  it('fails closed on a single unresolved-OpenRouter-route response without any retry', async () => {
     const calls: Array<{ providerIgnore?: string[] }> = [];
     const modelTurn = async ({ providerIgnore }: { providerIgnore?: string[] }) => {
       calls.push({ providerIgnore });
@@ -303,23 +300,21 @@ describe('persona investigation state machine', () => {
 
     const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
 
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(1);
     expect(calls.every((call) => call.providerIgnore === undefined)).toBe(true);
     expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'malformed_response' });
     expect(result.personaResult.failure).toMatchObject({ class: 'semantic_invalid_response', reason: 'empty_response' });
   });
 
   // Regression coverage for the architecture-lane near-miss (2026-08-12, evidence:
-  // calltelemetry/cisco-cdr run 31601485579). The lane's real history was: Ionstream timeout,
-  // AkashML timeout (client-side retry), DigitalOcean timeout (stream-attribution extra attempt),
-  // then a lane-level quarantine retry that hit AkashML again (timeout), and finally Phala
-  // returned RAW_OK but with empty content (`semantic_invalid_response/empty_response`). With a
-  // quarantine-retry ceiling of 1, that single retry was consumed entirely by timeouts, so the
-  // genuinely different empty-response failure had nothing left and the lane died
-  // (4/5 personas, DEGRADED, BLOCK). MAX_LANE_PROVIDER_RETRIES=2 fixes this without making
-  // retries unbounded.
-  describe('lane-level quarantine retry depth', () => {
-    it('survives a timeout-class retry followed by a distinct empty-response failure (depth 2)', async () => {
+  // calltelemetry/cisco-cdr run 31601485579) that originally motivated a depth-2 quarantine
+  // ceiling. REL-271/REL-270 supersede that fix: the operator directive is "1 retry max per
+  // lane, no client-side provider bans on that retry" -- so instead of surviving a run of
+  // provider failures via lane-level restarts, the lane now fails fast on the very first
+  // failure, and the retry that remains (review-pipeline.js's per-request attempt loop) never
+  // grows this lane-scoped providerIgnore list.
+  describe('lane-level quarantine retry removed (REL-271 D5)', () => {
+    it('does not survive a second, distinct failure after the first -- the attempt loop is the only retry now', async () => {
       const calls: Array<{ providerIgnore?: string[] }> = [];
       const modelTurn = async ({ providerIgnore }: { providerIgnore?: string[] }) => {
         calls.push({ providerIgnore });
@@ -330,16 +325,14 @@ describe('persona investigation state machine', () => {
 
       const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
 
-      expect(calls).toEqual([
-        { providerIgnore: undefined },
-        { providerIgnore: ['ionstream'] },
-        { providerIgnore: ['ionstream', 'akashml'] },
-      ]);
-      expect(result.executionReceipt).toMatchObject({ termination: 'completed', complete: true });
-      expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
+      // Exactly one call: MAX_LANE_PROVIDER_RETRIES=0 means no restart, so the lane never sees
+      // the second (would-be-recoverable) response at all.
+      expect(calls).toEqual([{ providerIgnore: undefined }]);
+      expect(result.executionReceipt).toMatchObject({ termination: 'provider_failure', complete: false });
+      expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'provider_failure' });
     });
 
-    it('still terminates a lane that keeps failing past the retry ceiling (bounded, not unlimited)', async () => {
+    it('a counting mock proves the lane makes at most 1 model call regardless of how many distinct providers would fail', async () => {
       const calls: Array<{ providerIgnore?: string[] }> = [];
       let providerIndex = 0;
       const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'ionstream-again'];
@@ -350,10 +343,9 @@ describe('persona investigation state machine', () => {
 
       const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
 
-      // MAX_LANE_PROVIDER_RETRIES quarantine restarts => MAX_LANE_PROVIDER_RETRIES + 1 total
-      // model calls before the lane gives up. This must remain finite regardless of how many
-      // distinct providers keep failing.
-      expect(calls).toHaveLength(3);
+      expect(calls).toHaveLength(1);
+      // No quarantine list is ever populated -- this lane-scoped ban set stays empty.
+      expect(calls.every((call) => call.providerIgnore === undefined)).toBe(true);
       expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'provider_failure' });
       expect(result.executionReceipt).toMatchObject({ termination: 'provider_failure', complete: false });
     });
