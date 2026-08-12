@@ -73,12 +73,14 @@ describe('persona investigation state machine', () => {
   it('nudges the model instead of terminating the lane on a repeated evidence call', async () => {
     const calls: any[] = [];
     let index = 0;
-    const responses = [needsEvidenceResponse(), needsEvidenceResponse(), needsEvidenceResponse(), completeResponse()];
+    const responses = [needsEvidenceResponse(), needsEvidenceResponse(), completeResponse()];
     const modelTurn = async (turnInput: any) => {
       calls.push(turnInput);
       return responses[Math.min(index++, responses.length - 1)];
     };
-    const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
+    // maxRepeatedCalls 1 so the second identical request triggers repeated_call on a
+    // non-final turn (maxTurns 3 is the post-REL-272 hard ceiling), exercising the nudge.
+    const result = await runPersonaInvestigation({ ...baseInput, modelTurn, limits: { maxTurns: 3, maxRepeatedCalls: 1 } });
     // Turn 3 repeats the same evidence request past maxRepeatedCalls (2); the lane
     // must get a corrective nudge and continue to a normal completion, not die as
     // termination=repeated_call (which forced a degraded-quorum BLOCK).
