@@ -3,7 +3,13 @@
 const { canonicalJson, sha256 } = require('./reviewCore');
 
 const POLICY_VERSION = 'trusted-review-policy-v1';
+const DISPATCH_POLICY_VERSION = 'review-dispatch-policy-v1';
 const COMMIT_SHA = /^[a-f0-9]{40,64}$/u;
+const BOUNDED_ID = /^[a-z0-9][a-z0-9._:-]{0,119}$/iu;
+const DISPATCH_MODES = new Set(['baseline', 'shadow', 'enforce']);
+const CHANGE_TYPES = new Set(['added', 'changed', 'copied', 'deleted', 'gitlink', 'modified', 'removed', 'renamed']);
+const MAX_DISPATCH_RULES = 128;
+const MAX_RULE_PATHS = 64;
 const PROTECTED_INPUTS = new Map([
   ['provider', 'provider'],
   ['endpoint', 'endpoint'],
@@ -11,6 +17,13 @@ const PROTECTED_INPUTS = new Map([
   ['credential-env', 'credential'],
   ['tools', 'tools'],
   ['rules', 'rules'],
+  ['dispatch', 'dispatch'],
+  ['routes', 'routes'],
+  ['files', 'files'],
+  ['personas', 'personas'],
+  ['bundles', 'bundles'],
+  ['waivers', 'waivers'],
+  ['policy', 'policy'],
 ]);
 const LIMIT_INPUTS = new Map([
   ['maxDiffChars', 'maxDiffChars'],
@@ -131,6 +144,114 @@ function normalizeCapabilities(value) {
   return result;
 }
 
+function rejectUnknownFields(value, allowed, label) {
+  for (const field of Object.keys(value)) {
+    if (!allowed.has(field)) throw new Error(`${label}.${field} is not allowed`);
+  }
+}
+
+function normalizeBoundedId(value, label) {
+  const normalized = String(value || '').trim();
+  if (!BOUNDED_ID.test(normalized)) throw new Error(`${label} must be a bounded identifier`);
+  return normalized;
+}
+
+function normalizeRulePath(value, label, { exact = false } = {}) {
+  if (typeof value !== 'string') throw new Error(`${label} must be a relative path${exact ? '' : ' glob'}`);
+  const normalized = value.replace(/\\/gu, '/').replace(/^\.\//u, '').trim();
+  if (!normalized || normalized.length > 240 || normalized.startsWith('/') || normalized.includes('\0')
+    || normalized.split('/').includes('..') || normalized.startsWith('!')) {
+    throw new Error(`${label} must be a canonical relative path${exact ? '' : ' glob'}`);
+  }
+  if (exact && /[*?\[\]{}]/u.test(normalized)) throw new Error(`${label} must be an exact path`);
+  return normalized;
+}
+
+function normalizeRulePaths(value, label, options = {}) {
+  if (!Array.isArray(value) || value.length < (options.minimum || 1) || value.length > MAX_RULE_PATHS) {
+    throw new Error(`${label} must be a finite path list`);
+  }
+  const paths = value.map((entry, index) => normalizeRulePath(entry, `${label}[${index}]`, options));
+  if (new Set(paths.map((entry) => entry.toLowerCase())).size !== paths.length) {
+    throw new Error(`${label} must not contain duplicate or case-colliding paths`);
+  }
+  return options.exact ? paths.sort((left, right) => left.localeCompare(right)) : paths;
+}
+
+function normalizeSpecialistRule(value, index) {
+  const source = asObject(value);
+  const label = `review_intelligence.dispatch.specialist_rules[${index}]`;
+  if (!source) throw new Error(`${label} must be a plain object`);
+  rejectUnknownFields(source, new Set(['id', 'persona', 'paths', 'changes']), label);
+  const changes = source.changes === undefined ? [] : source.changes;
+  if (!Array.isArray(changes) || changes.length > CHANGE_TYPES.size) throw new Error(`${label}.changes must be a finite list`);
+  const normalizedChanges = changes.map((entry) => String(entry || '').trim().toLowerCase());
+  if (normalizedChanges.some((entry) => !CHANGE_TYPES.has(entry)) || new Set(normalizedChanges).size !== normalizedChanges.length) {
+    throw new Error(`${label}.changes contains an invalid or duplicate change type`);
+  }
+  return Object.freeze({
+    id: normalizeBoundedId(source.id, `${label}.id`),
+    persona: normalizeBoundedId(source.persona, `${label}.persona`),
+    paths: Object.freeze(normalizeRulePaths(source.paths, `${label}.paths`)),
+    changes: Object.freeze(normalizedChanges),
+  });
+}
+
+function normalizeBundleRule(value, index) {
+  const source = asObject(value);
+  const label = `review_intelligence.dispatch.bundle_rules[${index}]`;
+  if (!source) throw new Error(`${label} must be a plain object`);
+  rejectUnknownFields(source, new Set(['id', 'bundle_key', 'bundleKey', 'paths']), label);
+  const bundleKey = source.bundle_key ?? source.bundleKey;
+  return Object.freeze({
+    id: normalizeBoundedId(source.id, `${label}.id`),
+    bundleKey: normalizeBoundedId(bundleKey, `${label}.bundle_key`),
+    paths: Object.freeze(normalizeRulePaths(source.paths, `${label}.paths`, { exact: true, minimum: 2 })),
+  });
+}
+
+function oneRuleList(source, fields, nested, label) {
+  const present = [];
+  for (const field of fields) if (source[field] !== undefined) present.push(source[field]);
+  if (nested) for (const field of fields) if (nested[field] !== undefined) present.push(nested[field]);
+  if (present.length > 1) throw new Error(`${label} may be declared only once`);
+  const result = present[0] ?? [];
+  if (!Array.isArray(result) || result.length > MAX_DISPATCH_RULES) throw new Error(`${label} must be a finite rule list`);
+  return result;
+}
+
+function normalizeDispatch(value) {
+  const source = asObject(value);
+  if (!source) throw new Error('review_intelligence.dispatch must be a plain object');
+  rejectUnknownFields(source, new Set(['mode', 'baseline', 'specialist_rules', 'specialists', 'bundle_rules', 'bundles', 'rules']), 'review_intelligence.dispatch');
+  const nestedRules = source.rules === undefined ? null : asObject(source.rules);
+  if (source.rules !== undefined && !nestedRules) throw new Error('review_intelligence.dispatch.rules must be a plain object');
+  if (nestedRules) rejectUnknownFields(nestedRules, new Set(['specialist_rules', 'specialists', 'bundle_rules', 'bundles']), 'review_intelligence.dispatch.rules');
+
+  const mode = String(source.mode || 'baseline').trim().toLowerCase();
+  if (!DISPATCH_MODES.has(mode)) throw new Error('review_intelligence.dispatch.mode is invalid');
+  const baseline = source.baseline === undefined ? {} : asObject(source.baseline);
+  if (!baseline) throw new Error('review_intelligence.dispatch.baseline must be a plain object');
+  rejectUnknownFields(baseline, new Set(['persona', 'rule_id', 'ruleId']), 'review_intelligence.dispatch.baseline');
+  const specialistSource = oneRuleList(source, ['specialist_rules', 'specialists'], nestedRules, 'review_intelligence.dispatch.specialist_rules');
+  const bundleSource = oneRuleList(source, ['bundle_rules', 'bundles'], nestedRules, 'review_intelligence.dispatch.bundle_rules');
+  const specialistRules = specialistSource.map(normalizeSpecialistRule);
+  const bundleRules = bundleSource.map(normalizeBundleRule);
+  const allRuleIds = [...specialistRules, ...bundleRules].map((rule) => rule.id);
+  if (new Set(allRuleIds).size !== allRuleIds.length) throw new Error('review_intelligence.dispatch rule ids must be unique');
+
+  return Object.freeze({
+    schemaVersion: DISPATCH_POLICY_VERSION,
+    mode,
+    baseline: Object.freeze({
+      persona: normalizeBoundedId(baseline.persona || 'baseline', 'review_intelligence.dispatch.baseline.persona'),
+      ruleId: normalizeBoundedId(baseline.rule_id ?? baseline.ruleId ?? 'core-baseline', 'review_intelligence.dispatch.baseline.rule_id'),
+    }),
+    specialistRules: Object.freeze(specialistRules),
+    bundleRules: Object.freeze(bundleRules),
+  });
+}
+
 function applyActionInputReductions(policy, actionInputs) {
   const inputs = asObject(actionInputs) || {};
   for (const [key, field] of PROTECTED_INPUTS) {
@@ -178,6 +299,9 @@ function resolveTrustedReviewPolicy({ trustedConfig, baseRef, headRef, configRef
   if (intelligence.capabilities !== undefined && !asObject(intelligence.capabilities)) {
     return disabledPolicy({ raw, baseRef: base, status: 'invalid_config', reason: 'invalid_review_intelligence_capabilities' });
   }
+  if (intelligence.dispatch !== undefined && !asObject(intelligence.dispatch)) {
+    return disabledPolicy({ raw, baseRef: base, status: 'invalid_config', reason: 'invalid_review_intelligence_dispatch' });
+  }
 
   let limits;
   try {
@@ -193,6 +317,14 @@ function resolveTrustedReviewPolicy({ trustedConfig, baseRef, headRef, configRef
       return disabledPolicy({ raw, baseRef: base, status: 'invalid_config', reason: 'invalid_review_intelligence_capabilities' });
     }
   }
+  let dispatch;
+  if (intelligence.dispatch !== undefined) {
+    try {
+      dispatch = normalizeDispatch(intelligence.dispatch);
+    } catch (_) {
+      return disabledPolicy({ raw, baseRef: base, status: 'invalid_config', reason: 'invalid_review_intelligence_dispatch' });
+    }
+  }
 
   const enabled = intelligence.enabled === true;
   const policy = {
@@ -204,7 +336,8 @@ function resolveTrustedReviewPolicy({ trustedConfig, baseRef, headRef, configRef
     limits,
   };
   if (capabilities) policy.capabilities = capabilities;
+  if (dispatch) policy.dispatch = dispatch;
   return finalize(applyActionInputReductions(policy, actionInputs));
 }
 
-module.exports = { POLICY_VERSION, resolveTrustedReviewPolicy, validateTrustedConfigRef };
+module.exports = { POLICY_VERSION, DISPATCH_POLICY_VERSION, resolveTrustedReviewPolicy, validateTrustedConfigRef };

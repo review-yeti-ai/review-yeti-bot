@@ -5,8 +5,33 @@ const { createEvidenceRuntime } = require('./evidenceRuntime');
 const { createRiskPlan, createLaneExecutionReceipt, normalizeInvestigationLimits } = require('./evidenceContracts');
 const { buildInvestigationMessages, parseInvestigationResponse } = require('./reviewInvestigationPrompt');
 
+const DISPATCH_UNIT_ID = /^ru_[a-f0-9]{64}$/u;
+
 function safeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function normalizeDispatchAssignment(value, personaId) {
+  if (value === undefined || value === null) return null;
+  const assignment = safeObject(value);
+  const id = String(assignment.id || '').trim();
+  if (!DISPATCH_UNIT_ID.test(id)) throw new TypeError('dispatch assignment requires a deterministic unit id');
+  if (assignment.status !== 'selected') throw new TypeError('dispatch assignment must be a selected review unit');
+  if (String(assignment.persona || '').trim() !== personaId) throw new TypeError('dispatch assignment persona does not match the investigation persona');
+  const unitLimits = safeObject(assignment.limits);
+  return Object.freeze({ ...assignment, id, limits: Object.freeze({ ...unitLimits }) });
+}
+
+function intersectInvestigationLimits(globalLimits, unitLimits = {}) {
+  const effective = { ...globalLimits };
+  const unknown = Object.keys(unitLimits).filter((key) => !Object.hasOwn(globalLimits, key));
+  if (unknown.length > 0) throw new TypeError(`dispatch assignment contains unknown limits: ${unknown.join(', ')}`);
+  for (const [key, value] of Object.entries(unitLimits)) {
+    const limit = Number(value);
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError(`dispatch assignment limit ${key} must be a positive integer`);
+    effective[key] = Math.min(globalLimits[key], limit);
+  }
+  return Object.freeze(effective);
 }
 
 function emptyPlan(identity, personaId) {
@@ -26,8 +51,14 @@ function usageFor(response) {
   const promptTokens = Number(usage.promptTokens ?? usage.prompt_tokens) || 0;
   const completionTokens = Number(usage.completionTokens ?? usage.completion_tokens) || 0;
   const totalTokens = Number(usage.totalTokens ?? usage.total_tokens) || promptTokens + completionTokens;
-  const costUSD = Number(usage.costUSD ?? usage.cost) || 0;
-  return { promptTokens, completionTokens, totalTokens, costUSD };
+  const rawCost = usage.costUSD ?? usage.cost;
+  const costUSD = rawCost === undefined || rawCost === null || rawCost === '' ? null : Number(rawCost);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    ...(Number.isFinite(costUSD) && costUSD >= 0 ? { costUSD } : {}),
+  };
 }
 
 function addUsage(total, response) {
@@ -35,7 +66,18 @@ function addUsage(total, response) {
   total.promptTokens += current.promptTokens;
   total.completionTokens += current.completionTokens;
   total.totalTokens += current.totalTokens;
-  total.costUSD += current.costUSD;
+  if (total.costUSD !== null) {
+    total.costUSD = typeof current.costUSD === 'number' ? total.costUSD + current.costUSD : null;
+  }
+}
+
+function reportedUsage(usage) {
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    totalTokens: usage.totalTokens,
+    ...(typeof usage.costUSD === 'number' ? { costUSD: usage.costUSD } : {}),
+  };
 }
 
 function boundedRoute(response) {
@@ -44,6 +86,35 @@ function boundedRoute(response) {
     ['provider', response?.provider],
     ['generationId', response?.generationId || response?.generation_id],
   ].filter(([, value]) => value !== undefined && value !== null && String(value).length <= 200));
+}
+
+function successfulProviderUsage(response) {
+  const generationId = response?.generationId || response?.generation_id;
+  if (response?.ok !== true || response?.providerUsageReported !== true || typeof generationId !== 'string' || !generationId.trim()) return null;
+  const usage = safeObject(response.usage);
+  const promptTokens = Number(usage.promptTokens ?? usage.prompt_tokens);
+  const completionTokens = Number(usage.completionTokens ?? usage.completion_tokens);
+  if (!Number.isSafeInteger(promptTokens) || promptTokens < 0 || !Number.isSafeInteger(completionTokens) || completionTokens < 0) return null;
+  return {
+    id: generationId.trim(),
+    promptTokens,
+    completionTokens,
+    ...(response.providerCostReported === true && Number.isFinite(Number(usage.costUSD ?? usage.cost))
+      ? { costUSD: Number(usage.costUSD ?? usage.cost) }
+      : {}),
+  };
+}
+
+function aggregateSuccessfulProviderUsage(facts) {
+  if (!Array.isArray(facts) || facts.length === 0) return null;
+  const promptTokens = facts.reduce((total, fact) => total + fact.promptTokens, 0);
+  const completionTokens = facts.reduce((total, fact) => total + fact.completionTokens, 0);
+  const completeCost = facts.every((fact) => typeof fact.costUSD === 'number' && Number.isFinite(fact.costUSD));
+  return {
+    promptTokens,
+    completionTokens,
+    ...(completeCost ? { costUSD: facts.reduce((total, fact) => total + fact.costUSD, 0) } : {}),
+  };
 }
 
 // evidenceEnabled=false means bounded evidence/navigation tooling was never available for this
@@ -69,6 +140,7 @@ function candidateFindings(parsed, receiptIds, { evidenceEnabled = true } = {}) 
     ...finding,
     evidence_receipt_ids: Array.isArray(finding.evidenceReceiptIds) ? finding.evidenceReceiptIds : [],
     risk_id: finding.riskId,
+    ...(finding.unitId ? { unit_id: finding.unitId } : {}),
     ...(Array.isArray(finding.evidenceReceiptIds) && finding.evidenceReceiptIds.length > 0 ? {} : { unverified: true }),
   }));
 }
@@ -121,7 +193,7 @@ function incompleteLane({ input, runtime, parsed, termination, turns, usage, rou
       findings,
       partial: receipts.length > 0 ? 1 : 0,
       error: termination,
-      usage,
+      usage: reportedUsage(usage),
       routes,
     },
     executionReceipt,
@@ -130,7 +202,7 @@ function incompleteLane({ input, runtime, parsed, termination, turns, usage, rou
   };
 }
 
-function completedLane({ input, runtime, parsed, response, turns, usage, routes, evidenceEnabled = true }) {
+function completedLane({ input, runtime, parsed, response, turns, usage, routes, providerUsageFacts, evidenceEnabled = true }) {
   const receipts = runtime.receipts();
   const plan = planFromParsed(input.identity, input.persona.id, parsed);
   const findings = candidateFindings(parsed, receipts.map((receipt) => receipt.id), { evidenceEnabled });
@@ -142,17 +214,26 @@ function completedLane({ input, runtime, parsed, response, turns, usage, routes,
   // must remain partial so coverage cannot be fabricated.
   const completedUnitIds = (Array.isArray(parsed.riskPlan) && parsed.riskPlan.length > 0)
     ? plannedUnitIds
-    : [...new Set(Array.isArray(input.investigationUnitIds) ? input.investigationUnitIds : [])];
+    : [...new Set(input.dispatchAssignment
+      ? [input.dispatchAssignment.id]
+      : (Array.isArray(input.investigationUnitIds) ? input.investigationUnitIds : []))];
   const executionReceipt = makeLaneReceipt({ input, plan, evidence: receipts, findings, termination: 'completed', turns, completedUnitIds });
+  const providerUsage = aggregateSuccessfulProviderUsage(providerUsageFacts);
+  const providerReceiptIds = providerUsage
+    ? [...new Set(providerUsageFacts.map((fact) => fact.id))].sort()
+    : [];
   return {
     personaResult: {
       personaId: input.persona.id,
+      model: response?.model,
+      provider: response?.provider,
       decision: findings.length > 0 ? 'FINDINGS' : 'APPROVE',
       findings,
       partial: 0,
-      usage,
+      usage: reportedUsage(usage),
       routes,
       generationId: response?.generationId || response?.generation_id,
+      ...(providerUsage ? { providerUsage, providerReceiptIds } : {}),
     },
     executionReceipt,
     evidenceReceipts: receipts,
@@ -169,7 +250,10 @@ function retryableProvider(response, termination) {
 
 async function runPersonaInvestigation(input = {}) {
   if (!input.identity || !input.persona?.id || typeof input.modelTurn !== 'function') throw new TypeError('persona investigation requires identity, persona, and modelTurn');
-  const limits = normalizeInvestigationLimits(input.limits);
+  const dispatchAssignment = normalizeDispatchAssignment(input.dispatchAssignment, input.persona.id);
+  const assignedUnitIds = dispatchAssignment ? [dispatchAssignment.id] : undefined;
+  const limits = intersectInvestigationLimits(normalizeInvestigationLimits(input.limits), dispatchAssignment?.limits);
+  const scopedInput = dispatchAssignment ? { ...input, dispatchAssignment } : input;
   // Whether bounded evidence/navigation tooling was actually constructed for this persona (not
   // merely attempted -- see review-pipeline.js makeEvidenceRegistry's fail-soft disabled
   // fallback). Computed once and threaded through the prompt, the parser, and candidateFindings
@@ -179,12 +263,13 @@ async function runPersonaInvestigation(input = {}) {
   // provider-quarantine retry (below) because it depends only on the registry, not the provider.
   const evidenceEnabled = input.evidenceRegistry?.capabilities?.enabled === true;
   let runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
-  let messages = buildInvestigationMessages({ ...input, limits, evidenceEnabled, remaining: { calls: limits.maxCalls, turns: limits.maxTurns } });
+  let messages = buildInvestigationMessages({ ...scopedInput, limits, evidenceEnabled, remaining: { calls: limits.maxCalls, turns: limits.maxTurns } });
   const initialMessages = messages;
   let parsed = null;
   const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 };
   const routes = [];
   const ignoredProviders = [];
+  let providerUsageFacts = [];
   let providerRetries = 0;
   let turn = 1;
   while (turn <= limits.maxTurns) {
@@ -218,13 +303,14 @@ async function runPersonaInvestigation(input = {}) {
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
+        providerUsageFacts = [];
         turn = 1;
         continue;
       }
       return incompleteLane({ input, runtime, parsed, termination, turns: turn, usage, routes, evidenceEnabled });
     }
     try {
-      parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled });
+      parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds });
     } catch (_) {
       const provider = retryableProvider(response, 'malformed_response');
       if (provider && providerRetries < 1) {
@@ -233,12 +319,15 @@ async function runPersonaInvestigation(input = {}) {
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
+        providerUsageFacts = [];
         turn = 1;
         continue;
       }
       return incompleteLane({ input, runtime, parsed, termination: 'malformed_response', turns: turn, usage, routes, evidenceEnabled });
     }
-    if (parsed.reviewStatus === 'COMPLETE') return completedLane({ input, runtime, parsed, response, turns: turn, usage, routes, evidenceEnabled });
+    const providerUsageFact = successfulProviderUsage(response);
+    if (providerUsageFact) providerUsageFacts.push(providerUsageFact);
+    if (parsed.reviewStatus === 'COMPLETE') return completedLane({ input: scopedInput, runtime, parsed, response, turns: turn, usage, routes, providerUsageFacts, evidenceEnabled });
     if (finalOnly) return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes, evidenceEnabled });
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
     if (!evidence.complete) {
@@ -249,6 +338,7 @@ async function runPersonaInvestigation(input = {}) {
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
+        providerUsageFacts = [];
         turn = 1;
         continue;
       }

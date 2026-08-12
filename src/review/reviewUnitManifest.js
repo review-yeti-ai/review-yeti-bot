@@ -4,9 +4,16 @@ const { canonicalJson, sha256 } = require('./reviewCore');
 const { classifyReviewFile, matchReviewGlob } = require('./reviewIgnorePolicy');
 
 const SCHEMA_VERSION = 'review-unit-manifest-v1';
+const DISPATCH_PLAN_VERSION = 'review-dispatch-plan-v1';
+const DISPATCH_POLICY_VERSION = 'review-dispatch-policy-v1';
 const COMMIT_SHA = /^[a-f0-9]{40,64}$/iu;
 const TERMINAL_STATUSES = new Set(['completed', 'reused', 'failed', 'waived']);
 const COVERED_STATUSES = new Set(['completed', 'reused', 'waived', 'excluded', 'oversized']);
+const MODEL_DISPATCH_FIELDS = new Set([
+  'assignment', 'assignments', 'bundle', 'bundles', 'file', 'files', 'limit', 'limits',
+  'persona', 'personas', 'policy', 'policies', 'route', 'routes', 'rule', 'rules', 'tool',
+  'tools', 'unit', 'units', 'waiver', 'waivers',
+]);
 
 function object(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -196,4 +203,262 @@ function createReviewUnitManifest({ identity, files, trustedRules, policy, now }
   });
 }
 
-module.exports = { SCHEMA_VERSION, createReviewUnitManifest, stableReviewUnitId, classifyReviewUnitFile };
+function compareText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function deterministicPathKey(path, unitId) {
+  const normalized = canonicalPath(path);
+  return normalized ? `${normalized.toLowerCase()}\0${normalized}\0${unitId}` : `~\0${String(path || '')}\0${unitId}`;
+}
+
+function sourceFileSortKey(file) {
+  const path = canonicalPath(file?.path);
+  const shown = path || displayPath(file?.path);
+  return canonicalJson({
+    pathKey: path ? `${path.toLowerCase()}\0${path}` : `~\0${shown}`,
+    previousPath: canonicalPath(file?.previousPath ?? file?.previous_path) || '',
+    range: normalizedRange(file),
+    contentDigest: contentDigest(file),
+    blobDigest: blobDigest(file),
+  });
+}
+
+function rejectModelDispatchOverrides(modelOutput) {
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      const normalized = String(key).replace(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase().replace(/_/gu, '');
+      const protectedField = [...MODEL_DISPATCH_FIELDS].find((field) => field.replace(/_/gu, '') === normalized);
+      if (protectedField) throw new TypeError(`model output may not change ${protectedField}`);
+      visit(child);
+    }
+  };
+  visit(modelOutput);
+}
+
+function normalizedDispatchPolicy(value) {
+  const source = object(value);
+  const baseline = object(source.baseline);
+  const specialistRules = Array.isArray(source.specialistRules) ? source.specialistRules : [];
+  const bundleRules = Array.isArray(source.bundleRules) ? source.bundleRules : [];
+  const policy = {
+    schemaVersion: source.schemaVersion || DISPATCH_POLICY_VERSION,
+    mode: String(source.mode || 'baseline'),
+    baseline: {
+      persona: String(baseline.persona || 'baseline'),
+      ruleId: String(baseline.ruleId || 'core-baseline'),
+    },
+    specialistRules: specialistRules.map((rule) => ({
+      id: String(rule?.id || ''),
+      persona: String(rule?.persona || ''),
+      paths: Array.isArray(rule?.paths) ? rule.paths.map(String) : [],
+      changes: Array.isArray(rule?.changes) ? rule.changes.map((change) => String(change).toLowerCase()) : [],
+    })),
+    bundleRules: bundleRules.map((rule) => ({
+      id: String(rule?.id || ''),
+      bundleKey: String(rule?.bundleKey || ''),
+      paths: Array.isArray(rule?.paths) ? rule.paths.map(String).sort(compareText) : [],
+    })),
+  };
+  if (policy.schemaVersion !== DISPATCH_POLICY_VERSION) throw new TypeError('trusted dispatch policy schema is invalid');
+  if (!['baseline', 'shadow', 'enforce'].includes(policy.mode)) throw new TypeError('trusted dispatch policy mode is invalid');
+  if (!policy.baseline.persona || !policy.baseline.ruleId) throw new TypeError('trusted dispatch baseline is invalid');
+  if (policy.specialistRules.some((rule) => !rule.id || !rule.persona || rule.paths.length === 0)) {
+    throw new TypeError('trusted dispatch specialist rule is invalid');
+  }
+  if (policy.bundleRules.some((rule) => !rule.id || !rule.bundleKey || rule.paths.length < 2
+    || rule.paths.some((path) => !canonicalPath(path) || /[*?\[\]{}]/u.test(path)))) {
+    throw new TypeError('trusted dispatch bundle rule must contain an explicit finite exact path set');
+  }
+  return policy;
+}
+
+function stableDispatchUnitId(input = {}) {
+  const exactIdentity = normalizeIdentity(input.identity);
+  const policyDigest = String(input.policyDigest || exactIdentity.policyDigest).trim().toLowerCase();
+  if (policyDigest !== exactIdentity.policyDigest) throw new TypeError('dispatch unit policyDigest must match immutable identity');
+  const fileUnitIds = Array.isArray(input.fileUnitIds) ? [...input.fileUnitIds].map(String).sort(compareText) : [];
+  if (fileUnitIds.length === 0 || fileUnitIds.some((id) => !/^ru_[a-f0-9]{64}$/u.test(id))) {
+    throw new TypeError('dispatch unit requires stable review unit ids');
+  }
+  const payload = {
+    schemaVersion: DISPATCH_PLAN_VERSION,
+    identity: exactIdentity,
+    policyDigest,
+    persona: String(input.persona || ''),
+    ruleId: String(input.ruleId || ''),
+    bundleKey: input.bundleKey ? String(input.bundleKey) : null,
+    status: String(input.status || ''),
+    fileUnitIds,
+  };
+  if (!payload.persona || !payload.ruleId || !payload.status) throw new TypeError('dispatch unit assignment is incomplete');
+  return `ru_${sha256(canonicalJson(payload))}`;
+}
+
+function manifestDigestPayload(manifest) {
+  return {
+    schemaVersion: manifest.schemaVersion,
+    identity: manifest.identity,
+    policyDigest: manifest.policyDigest,
+    units: manifest.units,
+    coverage: manifest.coverage,
+    summary: manifest.summary,
+  };
+}
+
+function fileChange(entry) {
+  if (entry.unit.change === 'gitlink') return 'gitlink';
+  if (entry.unit.change === 'deleted') return 'removed';
+  return String(entry.file?.status || entry.file?.changeStatus || 'modified').trim().toLowerCase();
+}
+
+function firstSpecialistRule(entry, dispatch) {
+  const current = canonicalPath(entry.file?.path);
+  const previous = canonicalPath(entry.file?.previousPath ?? entry.file?.previous_path);
+  for (const candidatePath of [current, previous]) {
+    if (!candidatePath) continue;
+    for (const rule of dispatch.specialistRules) {
+      const changeMatches = rule.changes.length === 0 || rule.changes.includes(fileChange(entry));
+      if (changeMatches && rule.paths.some((pattern) => matchReviewGlob(pattern, candidatePath))) return rule;
+    }
+  }
+  return null;
+}
+
+function dispatchUnit({ entries, identity, persona, ruleId, bundleKey }) {
+  const orderedEntries = [...entries].sort((left, right) => compareText(deterministicPathKey(left.unit.path, left.unit.id), deterministicPathKey(right.unit.path, right.unit.id)));
+  const files = orderedEntries.map((entry) => entry.unit.path);
+  const statuses = [...new Set(orderedEntries.map((entry) => entry.unit.status))];
+  const status = statuses.length === 1 ? statuses[0] : 'unreviewable';
+  const omissionReason = status === 'selected' ? undefined : statuses.length === 1
+    ? orderedEntries[0].unit.reason || status
+    : 'mixed_unreviewable_bundle';
+  return Object.freeze({
+    id: stableDispatchUnitId({
+      identity,
+      policyDigest: identity.policyDigest,
+      persona,
+      ruleId,
+      bundleKey,
+      status,
+      fileUnitIds: orderedEntries.map((entry) => entry.unit.id),
+    }),
+    status,
+    files: Object.freeze(files),
+    persona,
+    ruleId,
+    ...(bundleKey ? { bundleKey } : {}),
+    ...(omissionReason ? { omissionReason } : {}),
+  });
+}
+
+/**
+ * Compiles immutable dispatch assignments from the existing trusted manifest. Model output is
+ * accepted only to enforce the negative boundary: it can never route, bundle, waive, or select.
+ */
+function createReviewDispatchPlan({ identity, files, trustedRules, trustedPolicy, modelOutput } = {}) {
+  rejectModelDispatchOverrides(modelOutput);
+  const exactIdentity = normalizeIdentity(identity);
+  const policy = object(trustedPolicy);
+  if (policy.policyDigest !== undefined && String(policy.policyDigest).trim().toLowerCase() !== exactIdentity.policyDigest) {
+    throw new TypeError('trusted dispatch policy digest must match immutable identity');
+  }
+  const dispatch = normalizedDispatchPolicy(policy.dispatch);
+  const sourceFiles = Array.isArray(files) ? [...files].sort((left, right) => compareText(sourceFileSortKey(left), sourceFileSortKey(right))) : [];
+  const manifest = createReviewUnitManifest({ identity: exactIdentity, files: sourceFiles, trustedRules, policy: trustedRules });
+  const entries = manifest.units.map((unit, index) => ({ file: sourceFiles[index], unit }))
+    .sort((left, right) => compareText(deterministicPathKey(left.unit.path, left.unit.id), deterministicPathKey(right.unit.path, right.unit.id)));
+
+  const baselineUnits = [];
+  const baselineByFileUnitId = new Map();
+  const claimed = new Set();
+  const selectedByPath = new Map(entries.filter((entry) => entry.unit.status === 'selected' && canonicalPath(entry.unit.path))
+    .map((entry) => [canonicalPath(entry.unit.path), entry]));
+
+  for (const rule of dispatch.bundleRules) {
+    const members = rule.paths.map((path) => selectedByPath.get(path));
+    if (members.some((entry) => !entry) || members.some((entry) => claimed.has(entry.unit.id))) continue;
+    const unit = dispatchUnit({ entries: members, identity: exactIdentity, persona: dispatch.baseline.persona, ruleId: rule.id, bundleKey: rule.bundleKey });
+    baselineUnits.push(unit);
+    for (const entry of members) {
+      claimed.add(entry.unit.id);
+      baselineByFileUnitId.set(entry.unit.id, unit);
+    }
+  }
+
+  for (const entry of entries) {
+    if (claimed.has(entry.unit.id)) continue;
+    const unit = dispatchUnit({ entries: [entry], identity: exactIdentity, persona: dispatch.baseline.persona, ruleId: dispatch.baseline.ruleId });
+    baselineUnits.push(unit);
+    baselineByFileUnitId.set(entry.unit.id, unit);
+  }
+  baselineUnits.sort((left, right) => compareText(deterministicPathKey(left.files[0], left.id), deterministicPathKey(right.files[0], right.id)));
+
+  const specialistByFileUnitId = new Map();
+  const specialistUnits = [];
+  for (const entry of entries) {
+    if (entry.unit.status !== 'selected') continue;
+    const rule = firstSpecialistRule(entry, dispatch);
+    if (!rule) continue;
+    const unit = dispatchUnit({ entries: [entry], identity: exactIdentity, persona: rule.persona, ruleId: rule.id });
+    specialistByFileUnitId.set(entry.unit.id, unit);
+    specialistUnits.push(unit);
+  }
+  specialistUnits.sort((left, right) => compareText(`${left.persona}\0${left.ruleId}\0${left.files[0]}\0${left.id}`, `${right.persona}\0${right.ruleId}\0${right.files[0]}\0${right.id}`));
+
+  const units = Object.freeze([...baselineUnits, ...specialistUnits]);
+  const assignments = Object.freeze(entries.map((entry) => {
+    const baselineUnit = baselineByFileUnitId.get(entry.unit.id);
+    const specialistUnit = specialistByFileUnitId.get(entry.unit.id);
+    return Object.freeze({
+      path: entry.unit.path,
+      status: entry.unit.status,
+      baselineUnitId: baselineUnit.id,
+      specialistUnitIds: Object.freeze(specialistUnit ? [specialistUnit.id] : []),
+      ruleIds: Object.freeze([baselineUnit.ruleId, ...(specialistUnit ? [specialistUnit.ruleId] : [])]),
+      ...(entry.unit.reason ? { omissionReason: entry.unit.reason } : {}),
+      ...(entry.unit.change ? { change: entry.unit.change } : {}),
+    });
+  }));
+  const ruleIds = Object.freeze([...new Set(units.map((unit) => unit.ruleId))]);
+  const manifestPayload = manifestDigestPayload(manifest);
+  const manifestDigest = sha256(canonicalJson(manifestPayload));
+  const planPayload = {
+    schemaVersion: DISPATCH_PLAN_VERSION,
+    identity: exactIdentity,
+    policyDigest: exactIdentity.policyDigest,
+    policy: dispatch,
+    manifest: manifestPayload,
+    manifestDigest,
+    units,
+    assignments,
+  };
+  return Object.freeze({
+    schemaVersion: DISPATCH_PLAN_VERSION,
+    identity: Object.freeze(exactIdentity),
+    policyDigest: exactIdentity.policyDigest,
+    mode: dispatch.mode,
+    manifestDigest,
+    manifest,
+    units,
+    assignments,
+    ruleIds,
+    planDigest: sha256(canonicalJson(planPayload)),
+  });
+}
+
+module.exports = {
+  SCHEMA_VERSION,
+  DISPATCH_PLAN_VERSION,
+  createReviewUnitManifest,
+  createReviewDispatchPlan,
+  stableReviewUnitId,
+  stableDispatchUnitId,
+  classifyReviewUnitFile,
+  rejectModelDispatchOverrides,
+};
