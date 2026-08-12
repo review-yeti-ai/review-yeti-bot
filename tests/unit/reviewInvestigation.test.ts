@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { runPersonaInvestigation } from '../../src/review/reviewInvestigation';
 
 const identity = { provider: 'github', repository: 'owner/repo', prNumber: 22, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) };
+const assignedUnitId = `ru_${'1'.repeat(64)}`;
+const outsideUnitId = `ru_${'2'.repeat(64)}`;
+const dispatchAssignment = {
+  id: assignedUnitId,
+  status: 'selected',
+  persona: 'security',
+  ruleId: 'security-specific',
+  files: ['src/a.js'],
+};
 const baseInput = {
   identity,
   persona: { id: 'security', name: 'Security reviewer', charter: 'Review authorization changes.' },
@@ -77,6 +86,93 @@ describe('persona investigation state machine', () => {
     const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
     expect(result.executionReceipt).toMatchObject({ termination: 'completed', turns: 2, evidenceCalls: 1 });
     expect(result.personaResult).toMatchObject({ decision: 'FINDINGS', findings: [{ evidence_receipt_ids: [expect.stringMatching(/^er_/)] }] });
+  });
+
+  it('completes only the deterministic dispatch unit assigned to the persona', async () => {
+    const response = completeResponse({
+      risk_plan: [{ id: 'risk-1', unit_ids: [assignedUnitId], statement: 'auth guard can be bypassed', evidence_needed: [], allowed_tools: [] }],
+      risk_dispositions: [{ risk_id: 'risk-1', status: 'rejected', reason: 'guard is present' }],
+    });
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      dispatchAssignment,
+      modelTurn: sequence([response]),
+    });
+
+    expect(result.personaResult.decision).toBe('APPROVE');
+    expect(result.executionReceipt.completedUnitIds).toEqual([assignedUnitId]);
+  });
+
+  it('fails closed when a model risk plan escapes the deterministic dispatch assignment', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      dispatchAssignment,
+      modelTurn: sequence([completeResponse({
+        risk_plan: [{ id: 'risk-1', unit_ids: [outsideUnitId], statement: 'unassigned risk', evidence_needed: [], allowed_tools: [] }],
+        risk_dispositions: [{ risk_id: 'risk-1', status: 'rejected', reason: 'not defective' }],
+      })]),
+    });
+
+    expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'malformed_response' });
+    expect(result.executionReceipt).toMatchObject({ termination: 'malformed_response', complete: false });
+  });
+
+  it('fails closed before tool execution when evidence names an unassigned unit', async () => {
+    let evidenceCalls = 0;
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      dispatchAssignment,
+      evidenceRegistry: {
+        capabilities: { enabled: true, readOnly: true, tools: ['file_read'] },
+        call: async () => { evidenceCalls += 1; return { status: 'ok', content: 'guard', byteCount: 5 }; },
+      },
+      modelTurn: sequence([{
+        ...needsEvidenceResponse(),
+        content: JSON.stringify({
+          review_status: 'NEEDS_EVIDENCE',
+          risk_plan: [{ id: 'risk-1', unit_ids: [assignedUnitId], statement: 'auth risk', evidence_needed: ['caller'], allowed_tools: ['file_read'] }],
+          evidence_requests: [{ risk_id: 'risk-1', unit_id: outsideUnitId, tool: 'file_read', args: { path: 'src/a.js', startLine: 1, endLine: 20 }, reason: 'escape assignment' }],
+          risk_dispositions: [],
+          findings: [],
+        }),
+      }]),
+    });
+
+    expect(evidenceCalls).toBe(0);
+    expect(result.personaResult.decision).toBe('ERROR');
+    expect(result.executionReceipt.termination).toBe('malformed_response');
+  });
+
+  it.each([
+    { globalMaxCalls: 12, unitMaxCalls: 1, label: 'unit budget lowers the global budget' },
+    { globalMaxCalls: 1, unitMaxCalls: 12, label: 'unit budget cannot raise the global budget' },
+  ])('$label', async ({ globalMaxCalls, unitMaxCalls }) => {
+    let evidenceCalls = 0;
+    const scopedNeedsEvidence = (path: string) => ({
+      ...needsEvidenceResponse(path),
+      provider: 'openrouter',
+      content: JSON.stringify({
+        review_status: 'NEEDS_EVIDENCE',
+        risk_plan: [{ id: 'risk-1', unit_ids: [assignedUnitId], statement: 'auth risk', evidence_needed: ['caller'], allowed_tools: ['file_read'] }],
+        evidence_requests: [{ risk_id: 'risk-1', unit_id: assignedUnitId, tool: 'file_read', args: { path, startLine: 1, endLine: 20 }, reason: 'bounded read' }],
+        risk_dispositions: [],
+        findings: [],
+      }),
+    });
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      dispatchAssignment: { ...dispatchAssignment, limits: { maxCalls: unitMaxCalls } },
+      limits: { maxCalls: globalMaxCalls },
+      evidenceRegistry: {
+        capabilities: { enabled: true, readOnly: true, tools: ['file_read'] },
+        call: async () => { evidenceCalls += 1; return { status: 'ok', content: 'guard', byteCount: 5 }; },
+      },
+      modelTurn: sequence([scopedNeedsEvidence('src/a.js'), scopedNeedsEvidence('src/b.js')]),
+    });
+
+    expect(evidenceCalls).toBe(1);
+    expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'budget_exhausted' });
+    expect(result.executionReceipt).toMatchObject({ termination: 'budget_exhausted', evidenceCalls: 1, complete: false });
   });
 
   it('fails closed when the final-turn reserve is reached without COMPLETE', async () => {

@@ -113,9 +113,10 @@ const { createReviewUnitManifest } = require('../../../src/review/reviewUnitMani
 const { fetchImmutableRepositorySnapshot } = require('../../../src/mcp/reviewNavigationSnapshot');
 const { createGitHubBlobClient, createReviewNavigationToolRegistry } = require('../../../src/mcp/reviewNavigationTools');
 const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../../../src/review/reviewInvestigation');
+const { buildInvestigationMessages } = require('../../../src/review/reviewInvestigationPrompt');
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
-const { normalizeInvestigationLimits } = require('../../../src/review/evidenceContracts');
+const { EVIDENCE_TOOLS, normalizeInvestigationLimits } = require('../../../src/review/evidenceContracts');
 const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
@@ -2597,7 +2598,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         outcome,
         ...(failureClass ? { failureClass } : {}),
         ...(startedAt ? { latencyMs: Math.max(0, Date.now() - startedAt) } : {}),
-        ...(usage && lastRoute.generationId ? { usage: { receiptId: lastRoute.generationId, ...usage } } : {}),
+        ...(outcome === 'completed' && usage && lastRoute.generationId ? { usage: { receiptId: lastRoute.generationId, ...usage } } : {}),
       });
     } catch (_) {
       // Telemetry is advisory even when a caller supplies a custom sink.
@@ -2768,6 +2769,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           provider: lastRoute.provider,
           generationId: lastRoute.generationId,
           usage,
+          providerUsageReported: usageReported,
+          providerCostReported: hasReportedCost,
           ...(modelIndex > 0 ? { fallbackUsed: true, fallbackModel: requestedModel } : {}),
         };
 
@@ -3052,8 +3055,18 @@ function sumUsage(lanes) {
 function aggregatePersonaRuns(persona, runs, fallbackModel) {
   const completedRuns = Array.isArray(runs) ? runs : [];
   const failedRuns = completedRuns.filter((run) => run.decision === 'ERROR');
+  const providerReceiptIds = collectProviderReceiptIds(completedRuns);
+  const receiptUsage = collectProviderReceiptUsage(completedRuns);
+  const providerUsage = receiptUsage.prompt_tokens === null || receiptUsage.completion_tokens === null
+    ? null
+    : {
+      promptTokens: receiptUsage.prompt_tokens,
+      completionTokens: receiptUsage.completion_tokens,
+      ...(receiptUsage.cost_usd !== null ? { costUSD: receiptUsage.cost_usd } : {}),
+    };
   if (failedRuns.length === completedRuns.length) {
-    return completedRuns[0] || { personaId: persona.id, displayName: persona.name, model: fallbackModel, decision: 'ERROR', findings: [], error: 'no passes ran' };
+    const failed = completedRuns[0] || { personaId: persona.id, displayName: persona.name, model: fallbackModel, decision: 'ERROR', findings: [], error: 'no passes ran' };
+    return { ...failed, ...(providerReceiptIds.length > 0 ? { providerReceiptIds } : {}) };
   }
   const findings = mergeFindings(completedRuns.map((run) => run.findings));
   const rawFindings = completedRuns.flatMap((run) => Array.isArray(run.rawFindings) ? run.rawFindings : []);
@@ -3074,6 +3087,7 @@ function aggregatePersonaRuns(persona, runs, fallbackModel) {
     rejectedFindings: completedRuns.flatMap((run) => run.rejectedFindings || []),
     // Every pass was billed, including ones whose output was unusable.
     usage: sumUsage(completedRuns),
+    ...(providerReceiptIds.length > 0 && providerUsage ? { providerReceiptIds, providerUsage } : {}),
     ...(failedRuns.length > 0 ? { partial: failedRuns.length } : {}),
   };
 }
@@ -5648,6 +5662,29 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
       ...(unit.reason && REVIEW_UNIT_REASON_CODES.has(unit.reason) ? { reason: unit.reason } : {}),
     })),
   };
+  const dispatchReceipt = extra.reviewDispatchReceipt;
+  const safeArtifactPath = (artifacts, key, prefix) => {
+    const value = artifacts?.[key];
+    const root = artifacts?.artifactDirectory;
+    if (typeof value !== 'string' || typeof root !== 'string' || /[\r\n]/u.test(value) || /[\r\n]/u.test(root)) return null;
+    const resolvedRoot = path.resolve(root);
+    const resolvedValue = path.resolve(value);
+    const relative = path.relative(resolvedRoot, resolvedValue);
+    const basename = path.basename(resolvedValue);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)
+      || path.dirname(resolvedValue) !== resolvedRoot || !basename.startsWith(prefix) || !basename.endsWith('.json')) return null;
+    return resolvedValue;
+  };
+  const digestOutput = (name, value) => /^[a-f0-9]{64}$/u.test(String(value || '').trim().toLowerCase())
+    ? `${name}=${String(value).trim().toLowerCase()}`
+    : null;
+  const boundedOutput = (name, value) => typeof value === 'string'
+    && /^[A-Za-z0-9._:-]{1,120}$/u.test(value)
+    ? `${name}=${value}`
+    : null;
+  const boundedCountOutput = (name, value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000
+    ? `${name}=${value}`
+    : null;
   const lines = [
     `verdict=${arbitration.verdict}`,
     `findings-count=${m.totalFindings || 0}`,
@@ -5684,6 +5721,23 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
       `review-unit-identity=${JSON.stringify(reviewUnitReceipt.identity)}`,
       `review-unit-summary=${JSON.stringify({ schemaVersion: reviewUnitReceipt.schemaVersion, policyDigest: reviewUnitReceipt.policyDigest, summary: reviewUnitReceipt.summary, coverage: reviewUnitReceipt.coverage, units: reviewUnitReceipt.units })}`,
     ] : []),
+    ...(dispatchReceipt ? [
+      boundedOutput('review-dispatch-mode', dispatchReceipt.arm),
+      boundedOutput('review-dispatch-run-id', dispatchReceipt.run_id),
+      boundedCountOutput('review-dispatch-run-attempt', dispatchReceipt.run_attempt),
+      digestOutput('review-dispatch-plan-digest', dispatchReceipt.plan_digest),
+      boundedCountOutput('review-dispatch-units-total', dispatchReceipt.units_total),
+      boundedCountOutput('review-dispatch-units-emitted', dispatchReceipt.units_emitted),
+      boundedCountOutput('review-dispatch-units-omitted', dispatchReceipt.units_omitted),
+      boundedOutput('review-dispatch-reflection-status', dispatchReceipt.reflection?.needs_review > 0 ? 'needs_review' : 'complete'),
+      digestOutput('review-dispatch-digest', extra.reviewDispatchReceiptDigest),
+      digestOutput('review-dispatch-policy-digest', dispatchReceipt.policy_digest),
+      digestOutput('review-dispatch-manifest-digest', dispatchReceipt.manifest_digest),
+      digestOutput('review-dispatch-manifest-artifact-digest', dispatchReceipt.manifest_artifact_digest),
+      digestOutput('review-dispatch-provider-receipt-digest', dispatchReceipt.provider_receipt_digest),
+      ...(safeArtifactPath(extra.reviewDispatchArtifacts, 'receiptPath', 'review-dispatch-') ? [`review-dispatch-receipt-path=${safeArtifactPath(extra.reviewDispatchArtifacts, 'receiptPath', 'review-dispatch-')}`] : []),
+      ...(safeArtifactPath(extra.reviewDispatchArtifacts, 'manifestPath', 'review-unit-manifest-') ? [`review-dispatch-manifest-path=${safeArtifactPath(extra.reviewDispatchArtifacts, 'manifestPath', 'review-unit-manifest-')}`] : []),
+    ].filter(Boolean) : []),
   ];
 
   try {
@@ -5691,6 +5745,284 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
   } catch (err) {
     console.warn(`[Outputs] Could not write step outputs: ${err.message}`);
   }
+}
+
+const PROVIDER_RECEIPT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
+
+function successfulProviderReceiptResult(result) {
+  const usage = result?.providerUsage;
+  const ids = Array.isArray(result?.providerReceiptIds)
+    ? result.providerReceiptIds.map((value) => String(value || '').trim()).filter((value) => PROVIDER_RECEIPT_ID_PATTERN.test(value))
+    : [];
+  if (result?.decision === 'ERROR' || ids.length === 0
+    || !usage || typeof usage !== 'object'
+    || !Number.isSafeInteger(usage.promptTokens) || usage.promptTokens < 0
+    || !Number.isSafeInteger(usage.completionTokens) || usage.completionTokens < 0) return null;
+  return { ids, usage };
+}
+
+function collectProviderReceiptIds(results = []) {
+  const ids = (Array.isArray(results) ? results : [])
+    .flatMap((result) => successfulProviderReceiptResult(result)?.ids || []);
+  return [...new Set(ids)].sort();
+}
+
+function collectProviderReceiptUsage(results = []) {
+  const backed = (Array.isArray(results) ? results : [])
+    .map(successfulProviderReceiptResult).filter(Boolean);
+  if (backed.length === 0) return { prompt_tokens: null, completion_tokens: null, cost_usd: null };
+  return {
+    prompt_tokens: backed.reduce((total, result) => total + result.usage.promptTokens, 0),
+    completion_tokens: backed.reduce((total, result) => total + result.usage.completionTokens, 0),
+    cost_usd: backed.every((result) => typeof result.usage.costUSD === 'number' && Number.isFinite(result.usage.costUSD))
+      ? backed.reduce((total, result) => total + result.usage.costUSD, 0)
+      : null,
+  };
+}
+
+const REVIEW_DISPATCH_RUN_FIELDS = new Set([
+  'schema', 'run_id', 'run_attempt', 'arm', 'repository', 'pr_number', 'base_sha', 'head_sha',
+  'action_sha', 'model', 'provider_route_digest', 'prompt_template_digest', 'tool_policy_digest',
+  'diff_digest', 'policy_digest', 'plan_digest', 'manifest_digest', 'manifest_artifact_digest',
+  'provider_receipt_digest',
+  'units_total', 'units_emitted', 'units_omitted', 'files_changed', 'files_baseline_covered',
+  'coverage_gaps', 'rule_ids', 'stage_durations_ms', 'reflection', 'usage', 'latency_ms',
+]);
+const REVIEW_DISPATCH_MANIFEST_UNIT_FIELDS = new Set([
+  'unit_id', 'status', 'files', 'persona', 'rule_id', 'omission_reason', 'bundle_key',
+]);
+const REVIEW_DISPATCH_FORBIDDEN_DIGEST_SOURCE_KEYS = new Set([
+  'api_key', 'apikey', 'authorization', 'credential', 'credentials', 'prompt', 'raw_prompt',
+  'secret', 'source', 'source_text', 'token', 'tool_output',
+]);
+
+function assertSafeDigestSource(value, label) {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => assertSafeDigestSource(entry, label));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    const normalized = String(key).replace(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase();
+    if (REVIEW_DISPATCH_FORBIDDEN_DIGEST_SOURCE_KEYS.has(normalized)) throw new TypeError(`${label} contains forbidden field ${key}`);
+    assertSafeDigestSource(child, label);
+  }
+}
+
+function buildReviewDispatchManifestArtifact(manifest) {
+  if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.units)) {
+    throw new TypeError('review dispatch receipt requires a complete review-unit manifest');
+  }
+  const emittedStatuses = new Set(['completed', 'reused']);
+  const units = manifest.units.map((unit) => {
+    const emitted = emittedStatuses.has(unit?.status);
+    const mapped = {
+      unit_id: String(unit?.id || '').trim(),
+      status: emitted ? 'emitted' : 'omitted',
+      files: [String(unit?.path || '').trim()],
+      ...(!emitted ? { omission_reason: String(unit?.reason || unit?.status || 'unknown').trim().slice(0, 120) } : {}),
+    };
+    return Object.freeze(mapped);
+  });
+  return Object.freeze({ schema: String(manifest.schemaVersion || 'review-unit-manifest-v1'), units: Object.freeze(units) });
+}
+
+function reviewDispatchManifestArtifactText(manifestArtifact) {
+  return `${canonicalJson(manifestArtifact)}\n`;
+}
+
+function reviewDispatchManifestDigests(manifestArtifact) {
+  const artifactText = reviewDispatchManifestArtifactText(manifestArtifact);
+  return Object.freeze({
+    canonicalDigest: sha256(canonicalJson(manifestArtifact)),
+    artifactDigest: sha256(artifactText),
+    artifactText,
+  });
+}
+
+function buildReflectionCounts(findingVerification) {
+  const summary = findingVerification?.summary || {};
+  const kept = Number.isSafeInteger(summary.accepted) && summary.accepted >= 0 ? summary.accepted : 0;
+  const dropped = Number.isSafeInteger(summary.rejected) && summary.rejected >= 0 ? summary.rejected : 0;
+  const needsReview = Number.isSafeInteger(summary.needsReview) && summary.needsReview >= 0 ? summary.needsReview : 0;
+  return { candidates: kept + dropped + needsReview, kept, downgraded: 0, dropped, needs_review: needsReview };
+}
+
+function buildPipelineReviewDispatchReceipt({
+  manifest,
+  manifestArtifact,
+  personaResults,
+  laneExecutionReceipts,
+  findingVerification,
+  model,
+  runtime,
+  providerRoute,
+  promptTemplateDigest,
+  toolPolicy,
+  ruleIds = [],
+  stageDurationsMs,
+  latencyMs,
+} = {}) {
+  if (!manifest?.identity) throw new TypeError('review dispatch receipt requires a complete review-unit manifest');
+  const expectedArtifact = buildReviewDispatchManifestArtifact(manifest);
+  if (canonicalJson(manifestArtifact) !== canonicalJson(expectedArtifact)) {
+    throw new TypeError('review dispatch manifest artifact must exactly match the review-unit manifest');
+  }
+  assertSafeDigestSource(providerRoute, 'provider route');
+  assertSafeDigestSource(toolPolicy, 'tool policy');
+  const plans = (Array.isArray(laneExecutionReceipts) ? laneExecutionReceipts : []).map((receipt) => ({
+    persona_id: String(receipt?.personaId || '').trim(),
+    plan_digest: String(receipt?.planDigest || '').trim().toLowerCase(),
+  })).sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  if (plans.length === 0 || plans.some((plan) => !plan.persona_id || !/^[a-f0-9]{64}$/u.test(plan.plan_digest))) {
+    throw new TypeError('review dispatch receipt requires run-owned lane plan digests');
+  }
+  const digests = reviewDispatchManifestDigests(manifestArtifact);
+  const filesChanged = new Set(manifestArtifact.units.flatMap((unit) => unit.files)).size;
+  const coverageGaps = new Set(Array.isArray(manifest.coverage?.uncoveredPaths) ? manifest.coverage.uncoveredPaths : []).size;
+  const emitted = manifestArtifact.units.filter((unit) => unit.status === 'emitted').length;
+  const omitted = manifestArtifact.units.filter((unit) => unit.status === 'omitted').length;
+  const stages = stageDurationsMs || { planning: 0, investigation: 0, reflection: 0, publication: 0 };
+  const receipt = {
+    schema: 'review-dispatch-run.v1',
+    run_id: String(runtime?.runId || '').trim(),
+    run_attempt: Number(runtime?.runAttempt),
+    arm: String(runtime?.arm || '').trim(),
+    repository: manifest.identity.repository,
+    pr_number: manifest.identity.prNumber,
+    base_sha: manifest.identity.baseSha,
+    head_sha: manifest.identity.headSha,
+    action_sha: String(runtime?.actionSha || '').trim().toLowerCase(),
+    model: String(model || '').trim(),
+    provider_route_digest: sha256(canonicalJson(providerRoute || {})),
+    prompt_template_digest: String(promptTemplateDigest || '').trim().toLowerCase(),
+    tool_policy_digest: sha256(canonicalJson(toolPolicy || {})),
+    diff_digest: manifest.identity.diffDigest,
+    policy_digest: manifest.identity.policyDigest,
+    plan_digest: sha256(canonicalJson(plans)),
+    manifest_digest: digests.canonicalDigest,
+    manifest_artifact_digest: digests.artifactDigest,
+    provider_receipt_digest: (() => {
+      const ids = collectProviderReceiptIds(personaResults);
+      return ids.length > 0 ? sha256(canonicalJson({ count: ids.length, ids })) : null;
+    })(),
+    units_total: manifestArtifact.units.length,
+    units_emitted: emitted,
+    units_omitted: omitted,
+    files_changed: filesChanged,
+    files_baseline_covered: Math.max(0, filesChanged - coverageGaps),
+    coverage_gaps: coverageGaps,
+    rule_ids: [...new Set((Array.isArray(ruleIds) ? ruleIds : []).map((id) => String(id).trim()).filter(Boolean))].sort(),
+    stage_durations_ms: {
+      planning: Number(stages.planning),
+      investigation: Number(stages.investigation),
+      reflection: Number(stages.reflection),
+      publication: Number(stages.publication),
+    },
+    reflection: buildReflectionCounts(findingVerification),
+    usage: collectProviderReceiptUsage(personaResults),
+    latency_ms: latencyMs === undefined || latencyMs === null ? null : Number(latencyMs),
+  };
+  const validation = validateReviewDispatchRunReceipt(receipt);
+  if (!validation.valid) throw new TypeError(`review dispatch receipt is invalid: ${validation.errors.join('; ')}`);
+  return Object.freeze(receipt);
+}
+
+function validateReviewDispatchRunReceipt(receipt) {
+  const errors = [];
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return { valid: false, errors: ['receipt must be an object'] };
+  const unknown = Object.keys(receipt).filter((key) => !REVIEW_DISPATCH_RUN_FIELDS.has(key));
+  const missing = [...REVIEW_DISPATCH_RUN_FIELDS].filter((key) => !Object.hasOwn(receipt, key));
+  if (unknown.length) errors.push(`unknown receipt fields: ${unknown.join(', ')}`);
+  if (missing.length) errors.push(`missing receipt fields: ${missing.join(', ')}`);
+  if (receipt.schema !== 'review-dispatch-run.v1') errors.push('schema must be review-dispatch-run.v1');
+  if (typeof receipt.run_id !== 'string' || !receipt.run_id || receipt.run_id.length > 120) errors.push('run_id must be a bounded string');
+  if (!Number.isSafeInteger(receipt.run_attempt) || receipt.run_attempt < 1 || receipt.run_attempt > 1000) errors.push('run_attempt must be 1-1000');
+  if (!['baseline', 'candidate'].includes(receipt.arm)) errors.push('arm must be baseline or candidate');
+  if (!/^[^/\s]+\/[^/\s]+$/u.test(String(receipt.repository || ''))) errors.push('repository must be owner/repository');
+  if (!Number.isSafeInteger(receipt.pr_number) || receipt.pr_number < 1) errors.push('pr_number must be positive');
+  for (const field of ['base_sha', 'head_sha', 'action_sha']) if (!/^[a-f0-9]{40}$/u.test(String(receipt[field] || ''))) errors.push(`${field} must be a full 40-hex SHA`);
+  if (typeof receipt.model !== 'string' || !receipt.model || receipt.model.length > 200) errors.push('model must be a bounded string');
+  for (const field of ['provider_route_digest', 'prompt_template_digest', 'tool_policy_digest', 'diff_digest', 'policy_digest', 'plan_digest', 'manifest_digest', 'manifest_artifact_digest']) {
+    if (!/^[a-f0-9]{64}$/u.test(String(receipt[field] || ''))) errors.push(`${field} must be a SHA-256 digest`);
+  }
+  if (receipt.provider_receipt_digest !== null && !/^[a-f0-9]{64}$/u.test(String(receipt.provider_receipt_digest || ''))) {
+    errors.push('provider_receipt_digest must be null or a SHA-256 digest');
+  }
+  for (const field of ['units_total', 'units_emitted', 'units_omitted', 'files_changed', 'files_baseline_covered', 'coverage_gaps']) {
+    if (!Number.isSafeInteger(receipt[field]) || receipt[field] < 0 || receipt[field] > 1_000_000) errors.push(`${field} must be a bounded non-negative integer`);
+  }
+  if (receipt.units_emitted + receipt.units_omitted !== receipt.units_total) errors.push('unit counts must balance');
+  if (!Array.isArray(receipt.rule_ids) || receipt.rule_ids.length > 128 || new Set(receipt.rule_ids).size !== receipt.rule_ids.length
+    || receipt.rule_ids.some((id) => typeof id !== 'string' || !id || id.length > 120)) errors.push('rule_ids must be unique bounded strings');
+  const exactObject = (value, fields, label) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) { errors.push(`${label} must be an object`); return; }
+    const keys = Object.keys(value);
+    if (keys.some((key) => !fields.includes(key)) || fields.some((key) => !Object.hasOwn(value, key))) errors.push(`${label} fields must be closed and complete`);
+  };
+  exactObject(receipt.stage_durations_ms, ['planning', 'investigation', 'reflection', 'publication'], 'stage_durations_ms');
+  for (const field of ['planning', 'investigation', 'reflection', 'publication']) if (!Number.isSafeInteger(receipt.stage_durations_ms?.[field]) || receipt.stage_durations_ms[field] < 0 || receipt.stage_durations_ms[field] > 86_400_000) errors.push(`stage_durations_ms.${field} is invalid`);
+  exactObject(receipt.reflection, ['candidates', 'kept', 'downgraded', 'dropped', 'needs_review'], 'reflection');
+  for (const field of ['candidates', 'kept', 'downgraded', 'dropped', 'needs_review']) if (!Number.isSafeInteger(receipt.reflection?.[field]) || receipt.reflection[field] < 0) errors.push(`reflection.${field} is invalid`);
+  exactObject(receipt.usage, ['prompt_tokens', 'completion_tokens', 'cost_usd'], 'usage');
+  for (const field of ['prompt_tokens', 'completion_tokens']) if (receipt.usage?.[field] !== null && (!Number.isSafeInteger(receipt.usage[field]) || receipt.usage[field] < 0)) errors.push(`usage.${field} is invalid`);
+  if (receipt.usage?.cost_usd !== null && (!Number.isFinite(receipt.usage.cost_usd) || receipt.usage.cost_usd < 0)) errors.push('usage.cost_usd is invalid');
+  if (receipt.latency_ms !== null && (!Number.isSafeInteger(receipt.latency_ms) || receipt.latency_ms < 0 || receipt.latency_ms > 86_400_000)) errors.push('latency_ms is invalid');
+  return { valid: errors.length === 0, errors };
+}
+
+function validateReviewDispatchManifestArtifact(manifestArtifact) {
+  const errors = [];
+  if (!manifestArtifact || typeof manifestArtifact !== 'object' || Array.isArray(manifestArtifact)) return { valid: false, errors: ['manifest artifact must be an object'] };
+  const keys = Object.keys(manifestArtifact);
+  if (keys.some((key) => !['schema', 'units'].includes(key)) || !keys.includes('schema') || !keys.includes('units')) errors.push('manifest artifact fields must be exactly schema and units');
+  if (typeof manifestArtifact.schema !== 'string' || !manifestArtifact.schema || manifestArtifact.schema.length > 80) errors.push('manifest artifact schema is invalid');
+  if (!Array.isArray(manifestArtifact.units)) errors.push('manifest artifact units must be an array');
+  else manifestArtifact.units.forEach((unit, index) => {
+    if (!unit || typeof unit !== 'object' || Array.isArray(unit)) { errors.push(`manifest unit ${index} must be an object`); return; }
+    if (Object.keys(unit).some((key) => !REVIEW_DISPATCH_MANIFEST_UNIT_FIELDS.has(key))) errors.push(`manifest unit ${index} has unknown fields`);
+    if (typeof unit.unit_id !== 'string' || !unit.unit_id || unit.unit_id.length > 120) errors.push(`manifest unit ${index} id is invalid`);
+    if (!['emitted', 'omitted'].includes(unit.status)) errors.push(`manifest unit ${index} status is invalid`);
+    if (!Array.isArray(unit.files) || unit.files.length === 0 || unit.files.some((file) => typeof file !== 'string' || !file || file.length > 240 || file.startsWith('/') || file.split('/').includes('..') || /\s/u.test(file))) errors.push(`manifest unit ${index} files are invalid`);
+  });
+  return { valid: errors.length === 0, errors };
+}
+
+function writeReviewDispatchArtifacts(receipt, { cwd = process.cwd(), fileSystem = fs, manifestArtifact } = {}) {
+  const validation = validateReviewDispatchRunReceipt(receipt);
+  if (!validation.valid) throw new TypeError(`review dispatch receipt is invalid: ${validation.errors.join('; ')}`);
+  const manifestValidation = validateReviewDispatchManifestArtifact(manifestArtifact);
+  if (!manifestValidation.valid) throw new TypeError(`review dispatch manifest artifact is invalid: ${manifestValidation.errors.join('; ')}`);
+  const manifestDigests = reviewDispatchManifestDigests(manifestArtifact);
+  if (receipt.manifest_digest !== manifestDigests.canonicalDigest) throw new TypeError('review dispatch canonical manifest digest mismatch');
+  if (receipt.manifest_artifact_digest !== manifestDigests.artifactDigest) throw new TypeError('review dispatch manifest artifact-byte digest mismatch');
+  const receiptDigest = sha256(canonicalJson(receipt));
+  const artifactId = sha256(canonicalJson({ repository: receipt.repository, pr_number: receipt.pr_number, head_sha: receipt.head_sha, run_id: receipt.run_id, run_attempt: receipt.run_attempt })).slice(0, 32);
+  const directory = path.resolve(cwd, 'sessions');
+  const receiptPath = path.join(directory, `review-dispatch-${artifactId}.json`);
+  const manifestPath = path.join(directory, `review-unit-manifest-${artifactId}.json`);
+  fileSystem.mkdirSync(directory, { recursive: true });
+  const receiptTemporary = `${receiptPath}.tmp-${process.pid}`;
+  const manifestTemporary = `${manifestPath}.tmp-${process.pid}`;
+  try {
+    fileSystem.writeFileSync(manifestTemporary, manifestDigests.artifactText, { encoding: 'utf8', mode: 0o600 });
+    fileSystem.writeFileSync(receiptTemporary, `${canonicalJson(receipt)}\n`, { encoding: 'utf8', mode: 0o600 });
+    fileSystem.renameSync(manifestTemporary, manifestPath);
+    fileSystem.renameSync(receiptTemporary, receiptPath);
+  } catch (error) {
+    for (const temporary of [receiptTemporary, manifestTemporary]) {
+      try { if (fileSystem.existsSync?.(temporary)) fileSystem.unlinkSync?.(temporary); } catch (_) {}
+    }
+    throw error;
+  }
+  return Object.freeze({
+    artifactDirectory: directory,
+    receiptPath,
+    manifestPath,
+    receiptDigest,
+    manifestDigest: manifestDigests.canonicalDigest,
+    manifestArtifactDigest: manifestDigests.artifactDigest,
+  });
 }
 
 /**
@@ -6203,6 +6535,9 @@ async function main(options = {}) {
   let usageTotal;
   let laneExecutionReceipts = [];
   let investigationSummary = null;
+  let reviewDispatchReceipt = null;
+  let reviewDispatchManifestArtifact = null;
+  let reviewDispatchArtifacts = null;
   // Whether bounded evidence/navigation tooling was actually available and enabled for this
   // review. False for monorepos over the bounded-navigation-snapshot file cap (PR #37) or any
   // other fail-soft navigation-registry degradation. Findings themselves are never dropped for
@@ -7034,6 +7369,49 @@ async function main(options = {}) {
   if (usageTotal.totalTokens > 0) {
     console.log(`[Usage] ${usageTotal.totalTokens} token(s) across ${personaResults.length} reviewer(s)${usageTotal.costUSD ? ` — $${usageTotal.costUSD.toFixed(4)}` : ''}.`);
   }
+  if (!localOnly && reviewUnitManifest && personaResults.length > 0 && investigationSummary) {
+    try {
+      reviewDispatchManifestArtifact = buildReviewDispatchManifestArtifact(reviewUnitManifest);
+      reviewDispatchReceipt = buildPipelineReviewDispatchReceipt({
+        manifest: reviewUnitManifest,
+        manifestArtifact: reviewDispatchManifestArtifact,
+        personaResults,
+        laneExecutionReceipts,
+        findingVerification,
+        model: modelConfig.model,
+        runtime: {
+          runId: runtimeEnv.GITHUB_RUN_ID,
+          runAttempt: runtimeEnv.GITHUB_RUN_ATTEMPT,
+          // The shipped roster is the authoritative baseline. Candidate is opt-in for an
+          // explicitly isolated shadow execution; an unset arm must never relabel production.
+          arm: runtimeEnv.REVIEW_YETI_RUN_ARM || 'baseline',
+          actionSha: runtimeEnv.REVIEW_YETI_ACTION_SHA,
+        },
+        providerRoute: {
+          requested_model: modelConfig.model,
+          allowed_models: openRouterPolicy.allowedModels || [],
+          fallback_models: openRouterPolicy.fallbackModels || [],
+          provider_routing: openRouterPolicy.providerRouting || {},
+          data_collection: openRouterPolicy.dataCollection || null,
+        },
+        promptTemplateDigest: sha256(buildInvestigationMessages.toString()),
+        toolPolicy: {
+          tools: [...EVIDENCE_TOOLS].sort(),
+          limits: investigationLimits,
+        },
+        latencyMs: Math.max(0, Number(now()) - Number(startedAt)),
+      });
+      reviewDispatchArtifacts = writeReviewDispatchArtifacts(reviewDispatchReceipt, {
+        cwd: options.cwd || process.cwd(),
+        fileSystem: options.fileSystem || fs,
+        manifestArtifact: reviewDispatchManifestArtifact,
+      });
+      console.log(`[Dispatch receipt] Wrote bounded receipt ${reviewDispatchArtifacts.receiptDigest.slice(0, 12)}, canonical manifest ${reviewDispatchArtifacts.manifestDigest.slice(0, 12)}, and manifest artifact bytes ${reviewDispatchArtifacts.manifestArtifactDigest.slice(0, 12)}.`);
+    } catch (error) {
+      process.exitCode = 1;
+      throw new Error(`Provider receipt/artifact emission failed closed: ${error.message || error}`, { cause: error });
+    }
+  }
 
   const publicationPlan = planFindingPublication(personaResults, shownReviewFiles);
   const rejectedFindingKeys = new Set(publicationPlan.rejected.map((item) => JSON.stringify([
@@ -7209,6 +7587,9 @@ async function main(options = {}) {
     dashboardDelivery: dashboardDelivery.status,
     dashboardReviewUrl: dashboardDelivery.reviewUrl,
     reviewUnitReceipt: buildReviewUnitReceipt(reviewUnitManifest),
+    reviewDispatchReceipt,
+    reviewDispatchArtifacts,
+    reviewDispatchReceiptDigest: reviewDispatchArtifacts?.receiptDigest,
     investigationSummary,
   });
 
@@ -7263,6 +7644,9 @@ async function main(options = {}) {
     reviewUnits: reviewUnitManifest
       ? buildReviewUnitReceipt(reviewUnitManifest)
       : { status: reviewUnitsPolicy.status, enabled: false },
+    reviewDispatch: reviewDispatchReceipt
+      ? { receipt: reviewDispatchReceipt, artifacts: reviewDispatchArtifacts }
+      : null,
     findingVerification: findingVerification || { summary: { incomplete: true, verified: 0, rejected: 0 } },
     usage: usageTotal,
     investigation: investigationSummary || { schemaVersion: 'review-investigation-summary-v1', enabled: boundedMode, complete: false, laneCount: 0, evidenceReceipts: 0 },
@@ -7366,6 +7750,12 @@ module.exports = {
   sanitizeFindings,
   loadLocalRepoConfig,
   writeStepOutputs,
+  collectProviderReceiptIds,
+  collectProviderReceiptUsage,
+  buildReviewDispatchManifestArtifact,
+  buildPipelineReviewDispatchReceipt,
+  validateReviewDispatchRunReceipt,
+  writeReviewDispatchArtifacts,
   initMcpFleet,
   resolveContext7Policy,
   inferLibrariesFromDiff,
