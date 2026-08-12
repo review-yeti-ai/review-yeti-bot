@@ -103,6 +103,7 @@ try {
 const {
   resolveOpenRouterPolicy,
   resolveGatewayIdentity,
+  resolveTransportPlan,
   validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,
   normalizeProviderSlug,
@@ -2610,7 +2611,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   // (Fireworks, Ollama Cloud, OpenCode Zen). OpenRouter-specific request fields
   // and routing-policy checks only apply on OpenRouter; direct gateways get a
   // clean OpenAI-shape body and their own route label so lane retries work.
-  const gateway = resolveGatewayIdentity(cfg.baseUrl);
+  // An explicit transport plan (reviewWithTransports) overrides detection via
+  // options.gatewayCompat/options.transportName — explicit beats magical.
+  const gateway = (() => {
+    const detected = resolveGatewayIdentity(cfg.baseUrl);
+    if (options.gatewayCompat === 'openai') {
+      return { id: String(options.transportName || detected.id || 'gateway'), isOpenRouter: false };
+    }
+    if (options.gatewayCompat === 'openrouter') return { id: 'openrouter', isOpenRouter: true };
+    return detected;
+  })();
   const unknownRouteProvider = gateway.isOpenRouter ? 'openrouter' : gateway.id;
   const promptPlan = planDiffBudget(diffFiles, maxDiffChars);
   const shownFiles = diffFiles.filter((file) => promptPlan.reviewed.includes(file.path));
@@ -3271,6 +3281,59 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
  * legacy findings parser remains available to unit callers, but production investigation turns
  * receive the provider's exact JSON text and let the strict investigation parser own it.
  */
+/**
+ * Explicit ordered multi-transport failover around reviewWithModel.
+ *
+ * When options.transportPlan (from github_action.transports /
+ * REVIEW_YETI_TRANSPORTS, normalized by resolveTransportPlan) is a non-empty
+ * array, each transport is tried in declared order until one returns a
+ * non-failed result. Each attempt runs the full existing single-transport
+ * machinery — per-transport attempts, same-transport model fallbacks, and (for
+ * compat: openrouter) provider routing/bans — so a Fireworks outage fails over
+ * to a pinned-OpenRouter transport instead of killing the lane. Every model
+ * turn starts again from transport[0], keeping the primary authoritative.
+ *
+ * Without a plan this is a pass-through: legacy single-transport behavior is
+ * byte-identical.
+ */
+async function reviewWithTransports(persona, diffFiles, prContext, sessionContext, options = {}) {
+  const plan = Array.isArray(options.transportPlan) ? options.transportPlan.filter(Boolean) : [];
+  if (plan.length === 0) return reviewWithModel(persona, diffFiles, prContext, sessionContext, options);
+  let lastResult = null;
+  for (let transportIndex = 0; transportIndex < plan.length; transportIndex++) {
+    const transport = plan[transportIndex];
+    const transportOptions = {
+      ...options,
+      transportPlan: undefined,
+      apiKey: transport.apiKey,
+      baseUrl: transport.baseUrl,
+      model: transport.model,
+      openRouterPolicy: transport.openRouterPolicy,
+      timeoutMs: transport.timeoutMs,
+      connectTimeoutMs: transport.connectTimeoutMs,
+      ...(transport.stream === true ? { preferStream: true } : {}),
+      gatewayCompat: transport.compat,
+      transportName: transport.name,
+    };
+    const result = await reviewWithTransports.reviewWithModelImpl(persona, diffFiles, prContext, sessionContext, transportOptions);
+    const failed = result?.ok === false || result?.decision === 'ERROR';
+    if (!failed) return result;
+    lastResult = result;
+    if (String(result?.error || '') === 'cancelled' || options.signal?.aborted) return result;
+    if (transportIndex < plan.length - 1) {
+      console.warn(
+        `[Transport] FAILOVER persona=${persona?.id || 'unknown'}`
+        + ` transport=${transport.name} (${transportIndex + 1}/${plan.length})`
+        + ` error=${String(result?.error || 'provider_failure').slice(0, 120)}`
+        + ` — trying transport=${plan[transportIndex + 1].name}`,
+      );
+    }
+  }
+  return lastResult;
+}
+// Injectable seam for tests; production always uses the real implementation.
+reviewWithTransports.reviewWithModelImpl = reviewWithModel;
+
 async function callPersonaModelTurn({ persona, prContext, sessionContext, messages, options = {}, turn = 1, finalOnly = false, signal } = {}) {
   if (typeof options.modelClient === 'function') {
     const response = await options.modelClient({ persona, prContext, sessionContext, messages, turn, finalOnly, signal, options });
@@ -3303,7 +3366,7 @@ async function callPersonaModelTurn({ persona, prContext, sessionContext, messag
     }
     return { ok: false, error: response?.error || 'provider_failure', usage: response?.usage };
   }
-  const result = await reviewWithModel(
+  const result = await reviewWithTransports(
     persona,
     [],
     prContext,
@@ -3348,7 +3411,7 @@ async function runPersonaInvestigation({
   let unresolvedEvidence = false;
 
   while (turn <= maxTurns) {
-    const run = await reviewWithModel(
+    const run = await reviewWithTransports(
       persona,
       diffFiles,
       prContext,
@@ -7367,7 +7430,21 @@ async function main(options = {}) {
   }
 
   const openRouterPolicy = resolveOpenRouterPolicy(localConfig, runtimeEnv);
-  const modelConfig = { ...resolveModelConfig(runtimeEnv), maxDiffChars: actionPolicy.maxDiffChars, openRouterPolicy };
+  // Explicit ordered transport plan (github_action.transports / REVIEW_YETI_TRANSPORTS).
+  // Invalid configuration fails the run closed; absent configuration keeps legacy behavior.
+  const transportPlan = resolveTransportPlan(localConfig, runtimeEnv);
+  if (transportPlan) {
+    for (const warning of transportPlan.warnings) console.warn(`[Transport] ${warning}`);
+    console.log(`[Transport] Explicit transport plan active: ${transportPlan.transports
+      .map((transport) => `${transport.name}(${transport.compat}:${transport.model})`)
+      .join(' -> ')}`);
+  }
+  const modelConfig = {
+    ...resolveModelConfig(runtimeEnv),
+    maxDiffChars: actionPolicy.maxDiffChars,
+    openRouterPolicy,
+    ...(transportPlan ? { transportPlan: transportPlan.transports, enabled: true } : {}),
+  };
   // Env/action OPENROUTER_MODEL wins; else github_action.openrouter.model from base-ref YAML.
   if (!(runtimeEnv.OPENROUTER_MODEL || '').trim() && openRouterPolicy.model) {
     modelConfig.model = openRouterPolicy.model;
@@ -7604,21 +7681,27 @@ async function main(options = {}) {
   } else {
     // Optional single-key chat preflight (not /models): the one configured OPENROUTER_API_KEY
     // must authenticate for chat. Callers choose which secret to pass as llm-api-key.
+    // With an explicit transport plan the preflight targets transport[0] — the
+    // primary that lanes will actually hit first.
     if (modelConfig.enabled && runtimeEnv.VITEST !== 'true'
         && !['1', 'true', 'yes', 'on'].includes(String(runtimeEnv.OPENROUTER_SKIP_CHAT_PREFLIGHT || '').toLowerCase())) {
+      const primaryTransport = Array.isArray(modelConfig.transportPlan) ? modelConfig.transportPlan[0] : null;
+      const preflightTarget = primaryTransport
+        ? { baseUrl: primaryTransport.baseUrl, apiKey: primaryTransport.apiKey, model: primaryTransport.model, label: `transport=${primaryTransport.name} (${primaryTransport.apiKeyEnv})` }
+        : { baseUrl: modelConfig.baseUrl, apiKey: modelConfig.apiKey, model: modelConfig.model, label: 'llm-api-key' };
       const timeoutMs = Math.min(Number(openRouterPolicy.timeoutMs) || 30_000, 20_000);
       if (cancellation.signal.aborted) return;
       const preflightAbort = createAbortLink({ signals: [cancellation.signal], timeoutMs });
       try {
-        const res = await cancellation.race(Promise.resolve().then(() => fetchImplementation(`${modelConfig.baseUrl}/chat/completions`, {
+        const res = await cancellation.race(Promise.resolve().then(() => fetchImplementation(`${preflightTarget.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             Accept: 'application/json',
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${modelConfig.apiKey}`,
+            Authorization: `Bearer ${preflightTarget.apiKey}`,
           },
           body: JSON.stringify({
-            model: modelConfig.model,
+            model: preflightTarget.model,
             messages: [{ role: 'user', content: 'reply with the single word ok' }],
             max_tokens: 4,
             stream: false,
@@ -7629,11 +7712,11 @@ async function main(options = {}) {
         if (!res.ok) {
           const bodyText = await cancellation.race(res.text());
           if (cancellation.isCancellationResult(bodyText)) return;
-          console.error(`[Model] OpenRouter chat preflight failed for the configured llm-api-key (HTTP ${res.status}).`);
-          console.error('[Model] Fix the key passed via llm-api-key — the action does not search alternate secret names.');
+          console.error(`[Model] Chat preflight failed for ${preflightTarget.label} (HTTP ${res.status}).`);
+          console.error('[Model] Fix the configured credential — the action does not search alternate secret names.');
           modelConfig.enabled = false;
         } else {
-          console.log('[Model] OpenRouter chat preflight ok');
+          console.log(`[Model] Chat preflight ok (${preflightTarget.label})`);
         }
       } catch (err) {
         if (cancellation.signal.aborted) return;
@@ -8476,6 +8559,7 @@ module.exports = {
   formatRouteLabel,
   callOpenRouterChat,
   reviewWithModel,
+  reviewWithTransports,
   addRunScopedProviderBan,
   RUN_SCOPED_PROVIDER_BAN_MAX,
   runPersonaInvestigation,

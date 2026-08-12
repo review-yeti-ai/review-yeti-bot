@@ -293,6 +293,21 @@ inputs:
       add further provider bans without enabling fallbacks outside the remaining providers.
     required: false
     default: 'deepinfra,openrouter,wafer,novita,decart,sail-research,inceptron,fireworks,together,mancer,parasail'
+  transports:
+    description: >-
+      Optional JSON array declaring an explicit ordered transport plan. Each entry:
+      {"name","base_url","api_key_env","model","compat"("openai"|"openrouter"),
+      "fallback_models","timeout_ms","connect_timeout_ms","stream","structured_output",
+      and (compat openrouter only) "provider_routing","ignore_providers","data_collection",
+      "allowed_models","cost_quality_tradeoff","allow_banned_providers"}.
+      Transports are tried in order per model call; the first non-failed result wins.
+      api_key_env names an environment variable the CALLER must export on this action's
+      step (it may not name a CI credential and must end in _API_KEY or _KEY). When set,
+      this overrides the single-transport model/llm-base-url selection for reviewer lanes
+      and the chat preflight; may also be provided via the trusted base-ref YAML
+      github_action.transports (this input wins). Invalid plans fail the run closed.
+    required: false
+    default: ''
   openrouter-provider-routing:
     description: >-
       JSON object forwarded as OpenRouter's provider routing policy. Defaults to the certified
@@ -669,6 +684,7 @@ runs:
         OPENROUTER_ALLOW_BANNED_PROVIDERS: ${{ inputs.openrouter-allow-banned-providers }}
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
+        REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
         OPENROUTER_STRUCTURED_OUTPUT: ${{ inputs.openrouter-structured-output }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
         # The caller supplies the immutable action source SHA explicitly. Mutable refs/tags are
