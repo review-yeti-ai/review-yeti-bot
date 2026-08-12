@@ -86,8 +86,13 @@ describe('bounded investigation prompt', () => {
     expect(() => parseInvestigationResponse(JSON.stringify({ ...baseResponse, review_status: 'COMPLETE', evidence_requests: [], risk_dispositions: [], findings: [] }), limits)).toThrow(/dispose every/);
   });
 
-  it('rejects unknown top-level fields and malformed JSON', () => {
-    expect(() => parseInvestigationResponse(JSON.stringify({ ...baseResponse, review_status: 'COMPLETE', unknown: true }), limits)).toThrow(/unknown response fields/);
+  it('strips unknown top-level fields (they carry no authority) and still rejects malformed JSON', () => {
+    // Rejecting unknown keys turned benign model chatter into a fatal lane failure on
+    // every transport at once (cisco-cdr#4337 canary 7). Only allowlisted keys are ever
+    // read, so extras are dropped; known-field validation stays strict below and elsewhere.
+    const parsed = parseInvestigationResponse(JSON.stringify({ ...baseResponse, unknown: true }), limits);
+    expect(parsed.reviewStatus).toBeTruthy();
+    expect(JSON.stringify(parsed)).not.toContain('unknown');
     expect(() => parseInvestigationResponse('not json', limits)).toThrow(/valid JSON/);
   });
 });
