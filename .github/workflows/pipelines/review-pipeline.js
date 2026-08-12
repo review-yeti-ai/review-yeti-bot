@@ -8015,7 +8015,22 @@ async function main(options = {}) {
               ? (finding.evidence_receipt_ids || finding.evidenceReceiptIds)
               : [];
             const valid = ids.length > 0 && ids.every((id) => evidenceReceiptIds.has(id));
-            if (!valid) evidenceOwnershipIncomplete = true;
+            if (!valid) {
+              // An unverifiable P0/P1 claim means gate-relevant review coverage is
+              // genuinely incomplete — fail closed. An unverifiable P2 NIT is
+              // advisory-only content that could never block the merge even if it
+              // verified; dropping it must not convert a clean 5/5-approve review
+              // into an INCOMPLETE_REVIEW BLOCK. Observed live: cisco-cdr#4337
+              // canary 6 — "All 5 persona evaluation(s) passed or contained only
+              // minor nits" + 0 surviving findings, blocked solely by a dropped
+              // unreceipted nit.
+              const severity = String(finding.severity || '').trim().toUpperCase();
+              if (severity === 'P0' || severity === 'P1') {
+                evidenceOwnershipIncomplete = true;
+              } else {
+                console.warn(`[Evidence] Dropped an unreceipted ${severity || 'unclassified'} advisory finding from lane ${lane.personaId || 'unknown'} (invalid or missing evidence_receipt_ids); advisory drops do not mark coverage incomplete.`);
+              }
+            }
             return valid;
           });
           return { ...lane, findings, decision: lane.decision === 'ERROR' ? 'ERROR' : (findings.length ? 'FINDINGS' : 'APPROVE') };
