@@ -464,6 +464,72 @@ describe('reviewWithModel', () => {
     });
   });
 
+  it('uses the strict investigation schema and required parameters for raw investigation turns', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+      rawTurn: true,
+      investigationMessages: [{ role: 'user', content: 'Return the investigation envelope.' }],
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        structuredOutput: 'strict',
+        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        timeoutMs: 30_000,
+        stream: false,
+      },
+    });
+
+    expect(calls[0].body.response_format).toMatchObject({
+      type: 'json_schema',
+      json_schema: { name: 'review_investigation', strict: true },
+    });
+    expect(calls[0].body.provider.require_parameters).toBe(true);
+  });
+
+  it('does not apply the investigation schema to a legacy review turn', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        structuredOutput: 'strict',
+        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        timeoutMs: 30_000,
+        stream: false,
+      },
+    });
+
+    expect(calls[0].body.response_format).toEqual({ type: 'json_object' });
+  });
+
+  it('fails closed when the closed provider cohort rejects the strict investigation schema', async () => {
+    const { impl } = stubFetch('', { ok: false, status: 400, payload: { error: { message: 'response_format unsupported' } } });
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl, maxAttempts: 1,
+      rawTurn: true,
+      investigationMessages: [{ role: 'user', content: 'Return the investigation envelope.' }],
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        structuredOutput: 'strict',
+        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        timeoutMs: 30_000,
+        stream: false,
+      },
+    });
+
+    expect(result).toMatchObject({ decision: 'ERROR', findings: [] });
+    expect(result.error).toMatch(/HTTP 400/i);
+  });
+
   it('adds a lane retry provider exclusion without weakening the configured allowlist', async () => {
     const { impl, calls } = stubFetch(validFindings);
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {

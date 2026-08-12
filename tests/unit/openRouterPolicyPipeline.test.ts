@@ -102,6 +102,23 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     ).fallbackModels).toEqual(['deepseek/deepseek-v4-flash-0731', 'openai/gpt-5.6-luna']);
   });
 
+  it('enables strict structured output only from a trusted policy and requires compatible parameters', () => {
+    const policy = resolveOpenRouterPolicy(
+      { github_action: { openrouter: { structured_output: 'strict' } } },
+      {},
+    );
+
+    expect(policy.structuredOutput).toBe('strict');
+    expect(policy.providerRouting.require_parameters).toBe(true);
+  });
+
+  it('rejects unknown structured-output modes instead of silently weakening the contract', () => {
+    expect(() => resolveOpenRouterPolicy(
+      { github_action: { openrouter: { structured_output: 'best_effort' } } },
+      {},
+    )).toThrow(/structured output/i);
+  });
+
   it('coerces a text allowlist from config and ignores an invalid tradeoff number', () => {
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { allowed_models: 'a/b, c/d', cost_quality_tradeoff: 'not-a-number' } } },
