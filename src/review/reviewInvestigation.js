@@ -88,6 +88,24 @@ function boundedRoute(response) {
   ].filter(([, value]) => value !== undefined && value !== null && String(value).length <= 200));
 }
 
+function semanticParseFailure(error, response) {
+  const message = String(error?.message || '');
+  let reason = 'schema_contract_violation';
+  if (/model response is empty/i.test(message)) reason = 'empty_response';
+  else if (/not valid JSON/i.test(message)) reason = 'invalid_json';
+  else if (/unknown response fields/i.test(message)) reason = 'unknown_response_fields';
+  else if (/review_status must be/i.test(message)) reason = 'invalid_review_status';
+
+  // Parser messages can contain untrusted model field names or values. Preserve only a fixed,
+  // bounded classification and the provider route that OpenRouter actually resolved; never retain
+  // model content in review telemetry or the published failure table.
+  return Object.freeze({
+    class: 'semantic_invalid_response',
+    reason,
+    route: boundedRoute(response),
+  });
+}
+
 function successfulProviderUsage(response) {
   const generationId = response?.generationId || response?.generation_id;
   if (response?.ok !== true || response?.providerUsageReported !== true || typeof generationId !== 'string' || !generationId.trim()) return null;
@@ -181,7 +199,7 @@ function makeLaneReceipt({ input, plan, evidence, findings, termination, turns, 
   });
 }
 
-function incompleteLane({ input, runtime, parsed, termination, turns, usage, routes, evidenceEnabled = true }) {
+function incompleteLane({ input, runtime, parsed, termination, turns, usage, routes, failure, evidenceEnabled = true }) {
   const receipts = runtime.receipts();
   const plan = planFromParsed(input.identity, input.persona.id, parsed);
   const findings = candidateFindings(parsed, receipts.map((receipt) => receipt.id), { evidenceEnabled });
@@ -195,6 +213,7 @@ function incompleteLane({ input, runtime, parsed, termination, turns, usage, rou
       error: termination,
       usage: reportedUsage(usage),
       routes,
+      ...(failure ? { failure } : {}),
     },
     executionReceipt,
     evidenceReceipts: receipts,
@@ -328,7 +347,7 @@ async function runPersonaInvestigation(input = {}) {
     }
     try {
       parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds });
-    } catch (_) {
+    } catch (error) {
       const provider = retryableProvider(response, 'malformed_response');
       if (provider && providerRetries < 1) {
         providerRetries += 1;
@@ -340,7 +359,17 @@ async function runPersonaInvestigation(input = {}) {
         turn = 1;
         continue;
       }
-      return incompleteLane({ input, runtime, parsed, termination: 'malformed_response', turns: turn, usage, routes, evidenceEnabled });
+      return incompleteLane({
+        input,
+        runtime,
+        parsed,
+        termination: 'malformed_response',
+        turns: turn,
+        usage,
+        routes,
+        failure: semanticParseFailure(error, response),
+        evidenceEnabled,
+      });
     }
     const providerUsageFact = successfulProviderUsage(response);
     if (providerUsageFact) providerUsageFacts.push(providerUsageFact);
