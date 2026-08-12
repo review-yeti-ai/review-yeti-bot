@@ -749,19 +749,24 @@ deleted file mode 100644
       {
         personaId: 'licensing',
         displayName: '📜 Licensing',
-        // Requested router id only — resolved model lives in the error tag.
+        // Requested router id only — resolved route is retained on the semantic failure.
         model: 'openrouter/auto-beta',
         provider: 'openrouter',
         decision: 'ERROR',
         findings: [],
-        error: 'Model response contained no parseable findings JSON [provider=DeepInfra model=meta-llama/llama-4]. Preview: {',
+        error: 'malformed_response',
+        failure: {
+          class: 'semantic_invalid_response',
+          reason: 'unknown_response_fields',
+          route: { provider: 'Morph', model: 'deepseek/deepseek-v4-flash-0731' },
+        },
       },
     ], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, { enabled: true, model: 'deepseek/deepseek-v4-flash-0731' });
 
     expect(comment).toContain('| Persona | Provider | Model | Error class | Detail |');
     expect(comment).toContain('| 🛡️ Security | `OpenAI` | `openai/gpt-5` | `timeout` |');
-    // Parsed out of the error tag when structured fields still say openrouter/auto-beta.
-    expect(comment).toContain('| 📜 Licensing | `DeepInfra` | `meta-llama/llama-4` | `unparseable_response` |');
+    // Structured semantic failures retain their resolved route without publishing model output.
+    expect(comment).toContain('| 📜 Licensing | `Morph` | `deepseek/deepseek-v4-flash-0731` | `semantic_invalid_response` | unknown_response_fields |');
     expect(comment).toContain('upstream that OpenRouter');
   });
 
