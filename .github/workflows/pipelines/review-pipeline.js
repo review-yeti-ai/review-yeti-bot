@@ -123,6 +123,88 @@ const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flas
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
 const SESSION_STICKY = !['0', 'false', 'no', 'off'].includes(String(process.env.OPENROUTER_SESSION_STICKY || 'true').toLowerCase());
 
+// The provider enforces syntactic shape only. reviewInvestigationPrompt.js remains authoritative
+// for bounded identifiers, dispatch ownership, evidence receipts, and the COMPLETE disposition
+// invariant; a schema-valid but semantically invalid response still fails closed there.
+const STRICT_INVESTIGATION_RESPONSE_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: ['review_status', 'risk_plan', 'evidence_requests', 'risk_dispositions', 'findings'],
+  properties: {
+    review_status: { type: 'string', enum: ['NEEDS_EVIDENCE', 'COMPLETE'] },
+    risk_plan: {
+      type: 'array', maxItems: 12,
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['id', 'unit_ids', 'statement', 'evidence_needed', 'allowed_tools'],
+        properties: {
+          id: { type: 'string', maxLength: 100 },
+          unit_ids: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 100 } },
+          statement: { type: 'string', maxLength: 400 },
+          evidence_needed: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 240 } },
+          allowed_tools: { type: 'array', items: { type: 'string', enum: ['file_read', 'file_find', 'code_search', 'file_read_diff'] } },
+        },
+      },
+    },
+    evidence_requests: {
+      type: 'array', maxItems: 12,
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['risk_id', 'tool', 'args', 'reason'],
+        properties: {
+          risk_id: { type: 'string', maxLength: 100 },
+          unit_id: { type: 'string', maxLength: 100 },
+          tool: { type: 'string', enum: ['file_read', 'file_find', 'code_search', 'file_read_diff'] },
+          args: { type: 'object', additionalProperties: true },
+          reason: { type: 'string', maxLength: 240 },
+        },
+      },
+    },
+    risk_dispositions: {
+      type: 'array', maxItems: 12,
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['risk_id', 'status', 'reason'],
+        properties: {
+          risk_id: { type: 'string', maxLength: 100 },
+          status: { type: 'string', enum: ['confirmed', 'rejected', 'not_applicable', 'incomplete'] },
+          reason: { type: 'string', maxLength: 400 },
+        },
+      },
+    },
+    findings: {
+      type: 'array', maxItems: 5,
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['severity', 'path', 'line', 'title', 'body', 'risk_id', 'evidence_receipt_ids'],
+        properties: {
+          severity: { type: 'string', enum: ['P0', 'P1', 'P2'] },
+          path: { type: 'string', maxLength: 500 },
+          line: { type: 'integer', minimum: 1 },
+          side: { type: 'string', enum: ['RIGHT', 'LEFT'] },
+          title: { type: 'string', maxLength: 200 },
+          body: { type: 'string', maxLength: 2000 },
+          suggestion: { type: 'string', maxLength: 2000 },
+          risk_id: { type: 'string', maxLength: 100 },
+          unit_id: { type: 'string', maxLength: 100 },
+          evidence_receipt_ids: { type: 'array', maxItems: 3, items: { type: 'string', maxLength: 100 } },
+        },
+      },
+    },
+  },
+});
+
+function responseFormatForPolicy(policy, { investigation = false } = {}) {
+  if (investigation && policy?.structuredOutput === 'strict') {
+    return {
+      type: 'json_schema',
+      json_schema: { name: 'review_investigation', strict: true, schema: STRICT_INVESTIGATION_RESPONSE_SCHEMA },
+    };
+  }
+
+  return { type: 'json_object' };
+}
+
 // Whitelabel display name used in the posted comment. Override with BOT_NAME.
 const BOT_LABEL = process.env.BOT_NAME || 'AI Review Panel';
 
@@ -2546,7 +2628,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       { role: 'user', content: userPrompt },
     ],
     temperature: 0.1,
-    response_format: { type: 'json_object' },
+    response_format: responseFormatForPolicy(orPolicy, { investigation: options.rawTurn === true }),
     ...(Number.isFinite(Number(options.maxTokens)) && Number(options.maxTokens) > 0
       ? { max_tokens: Math.min(Math.trunc(Number(options.maxTokens)), 8192) }
       : {}),
