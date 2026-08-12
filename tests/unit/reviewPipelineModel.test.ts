@@ -716,7 +716,9 @@ describe('reviewWithModel', () => {
   });
 
   it('uses the strict investigation schema and required parameters for raw investigation turns', async () => {
-    const { impl, calls } = stubFetch(validFindings);
+    const { impl, calls } = stubFetch(validFindings, {
+      payload: { provider: 'morph', choices: [{ message: { content: validFindings } }] },
+    });
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
       rawTurn: true,
@@ -741,7 +743,9 @@ describe('reviewWithModel', () => {
   });
 
   it('uses the strict investigation schema on both initial and evidence-follow-up raw turns', async () => {
-    const { impl, calls } = stubFetch(validFindings);
+    const { impl, calls } = stubFetch(validFindings, {
+      payload: { provider: 'morph', choices: [{ message: { content: validFindings } }] },
+    });
     const options = {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
       rawTurn: true,
@@ -815,6 +819,31 @@ describe('reviewWithModel', () => {
 
     expect(result).toMatchObject({ decision: 'ERROR', findings: [] });
     expect(result.error).toMatch(/HTTP 400/i);
+  });
+
+  it('fails closed when OpenRouter returns a downstream provider outside the configured allowlist', async () => {
+    const { impl } = stubFetch(validFindings, {
+      payload: {
+        provider: 'OpenAI',
+        model: 'openai/gpt-5.6-luna',
+        choices: [{ message: { content: validFindings } }],
+      },
+    });
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'openai/gpt-5.6-luna', fetchImpl: impl, maxAttempts: 1,
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        providerRouting: { only: ['azure'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS },
+        timeoutMs: 30_000,
+        stream: false,
+      },
+    });
+
+    expect(result).toMatchObject({ decision: 'ERROR', findings: [], failureClass: 'provider_policy_violation' });
+    expect(result.error).toBe('provider_policy_violation');
   });
 
   it('adds a lane retry provider exclusion without weakening the configured allowlist', async () => {

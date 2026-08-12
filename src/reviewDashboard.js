@@ -15,6 +15,11 @@ function clampString(value, maxLength = 2000) {
   return String(value ?? '').trim().slice(0, maxLength);
 }
 
+function safeLabel(value, fallback, maxLength = 200) {
+  const normalized = clampString(value, maxLength);
+  return normalized && !/^(?:undefined|null)$/iu.test(normalized) ? normalized : fallback;
+}
+
 function sanitizeDashboardText(value, maxLength = 2000) {
   return clampString(value, maxLength)
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
@@ -56,7 +61,7 @@ function sanitizeFinding(repository, personaId, finding) {
   return {
     severity: finding.severity,
     fingerprint: findingFingerprint(repository, { ...finding, path, title, side }),
-    persona: clampString(personaId, 100),
+    persona: safeLabel(personaId, 'unknown-persona', 100),
     path,
     side,
     line: nonNegativeInteger(finding.line),
@@ -209,9 +214,9 @@ function buildReviewEvent(options = {}, env = process.env) {
         }, personaResults, options.publicationPlan),
       } : {}),
       personas: isStarted ? [] : personaResults.map((lane) => ({
-        persona: clampString(lane.personaId || lane.id, 100),
-        provider: clampString(lane.provider || 'unknown', 100),
-        model: clampString(lane.model || 'unknown', 300),
+        persona: safeLabel(lane.personaId || lane.id, 'unknown-persona', 100),
+        provider: safeLabel(lane.provider, 'unknown-provider', 100),
+        model: safeLabel(lane.model, 'unknown-model', 300),
         decision: ['APPROVE', 'FINDINGS', 'ERROR'].includes(lane.decision) ? lane.decision : 'ERROR',
         durationMs: nonNegativeInteger(lane.durationMs),
         promptTokens: nonNegativeInteger(lane.usage?.promptTokens),
