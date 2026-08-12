@@ -10,10 +10,12 @@
  *   1. Explicit action inputs (env OPENROUTER_ALLOWED_MODELS /
  *      OPENROUTER_COST_QUALITY_TRADEOFF / OPENROUTER_DATA_COLLECTION /
  *      OPENROUTER_IGNORE_PROVIDERS / OPENROUTER_PROVIDER_ROUTING /
- *      OPENROUTER_TIMEOUT_MS / OPENROUTER_STREAM / OPENROUTER_FALLBACK_MODELS);
+ *      OPENROUTER_TIMEOUT_MS / OPENROUTER_STREAM / OPENROUTER_FALLBACK_MODELS /
+ *      OPENROUTER_STRUCTURED_OUTPUT);
  *   2. The base-owned `.review-yeti.yaml` github_action.openrouter block
  *      (allowed_models / cost_quality_tradeoff / data_collection /
- *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models);
+ *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models /
+ *      structured_output);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
  *      deepinfra, the openrouter fallback route, and known degraded providers
  *      ignored, timeout_ms=30000, stream=false).
@@ -58,6 +60,9 @@ function resolveOpenRouterPolicy(localConfig, env) {
   const envTimeout = env.OPENROUTER_TIMEOUT_MS;
   const envStream = env.OPENROUTER_STREAM;
   const envFallbackModels = splitCsv(env.OPENROUTER_FALLBACK_MODELS);
+  const envStructuredOutput = typeof env.OPENROUTER_STRUCTURED_OUTPUT === 'string'
+    ? env.OPENROUTER_STRUCTURED_OUTPUT.trim()
+    : '';
 
   // 2. Config fallback.
   const cfgAllowed = Array.isArray(cfgOr.allowed_models) ? cfgOr.allowed_models : splitCsv(cfgOr.allowed_models);
@@ -72,6 +77,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
   const cfgFallbackModels = Array.isArray(cfgOr.fallback_models)
     ? cfgOr.fallback_models
     : (Array.isArray(cfgOr.fallbackModels) ? cfgOr.fallbackModels : splitCsv(cfgOr.fallback_models ?? cfgOr.fallbackModels));
+  const cfgStructuredOutput = cfgOr.structured_output ?? cfgOr.structuredOutput;
   const cfgProviderRouting = cfgOr.provider_routing ?? cfgOr.providerRouting;
 
   // 3. Defaults — 60s per request is the product default.
@@ -134,6 +140,17 @@ function resolveOpenRouterPolicy(localConfig, env) {
   if (tradeoff !== undefined) tradeoff = Math.max(0, Math.min(10, Math.round(tradeoff)));
   if (dataCollection !== 'allow' && dataCollection !== 'deny') dataCollection = undefined;
 
+  const structuredOutputRaw = envStructuredOutput || cfgStructuredOutput;
+  let structuredOutput;
+
+  if (structuredOutputRaw !== undefined && structuredOutputRaw !== null && structuredOutputRaw !== '') {
+    if (String(structuredOutputRaw).trim().toLowerCase() !== 'strict') {
+      throw new Error('OpenRouter structured output must be "strict" when configured');
+    }
+
+    structuredOutput = 'strict';
+  }
+
   // model: action/env OPENROUTER_MODEL > yaml github_action.openrouter.model > undefined (caller default)
   const model = envModel || cfgModel || undefined;
 
@@ -159,6 +176,10 @@ function resolveOpenRouterPolicy(localConfig, env) {
   } else {
     finalRouting.ignore = [...new Set([...(finalRouting.ignore || []), ...ignoredProviders])];
   }
+  // Strict schemas must never silently downgrade to a provider that ignores the requested
+  // response format. OpenRouter will fail the request when the closed cohort cannot honor it;
+  // the lane then remains incomplete and arbitration remains blocked.
+  if (structuredOutput === 'strict') finalRouting.require_parameters = true;
   for (const candidateModel of [model, ...fallbackModels].filter(Boolean)) {
     validateFixedModelProviderCompatibility(candidateModel, finalRouting);
   }
@@ -171,6 +192,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
     timeoutMs,
     connectTimeoutMs,
     stream,
+    ...(structuredOutput ? { structuredOutput } : {}),
     model,
     fallbackModels,
     providerRouting: finalRouting,

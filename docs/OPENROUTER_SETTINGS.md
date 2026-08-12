@@ -49,6 +49,7 @@ Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL
 | `model` | Default model when no action input overrides it | `openrouter/auto-beta` |
 | `allowed_models` | Model allowlist | empty (no additional allowlist) |
 | `fallback_models` | Ordered fallback models for transient failures | empty |
+| `structured_output` | Optional `strict` JSON Schema contract; unsupported providers fail closed | unset |
 | `timeout_ms` | Per-request timeout, clamped to `500..600000` | `60000` |
 | `stream` | Use SSE streaming | `false` |
 | `data_collection` | Provider data-collection header policy: `allow` or `deny` | unset |
@@ -70,6 +71,16 @@ provider slugs. A policy such as `only: [morph]` therefore fails early for Luna 
 error; it is not treated as evidence that the model was retired. The validator never removes an
 `ignore`, `data_collection`, `zdr`, or `require_parameters` restriction and never enables a
 fallback to make an incompatible policy work.
+
+## Strict structured output
+
+Set `structured_output: strict` only in trusted base configuration after a canary proves that the
+selected fixed model and closed provider cohort support JSON Schema responses. The action sends a
+bounded `review_investigation` JSON schema for evidence-investigation turns and sets
+`provider.require_parameters: true`; it does not broaden routing or accept a provider that ignores
+the schema. The local investigation parser still validates every identifier, dispatch assignment,
+evidence receipt, and final disposition, so schema-valid semantic violations remain a blocking
+incomplete lane.
 
 If a consumer has approved OpenAI/Azure for Luna, route it explicitly:
 

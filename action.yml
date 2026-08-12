@@ -85,6 +85,14 @@ inputs:
       github_action.openrouter.stream in .review-yeti.yaml. Action input wins over YAML.
     required: false
     default: 'false'
+  openrouter-structured-output:
+    description: >-
+      Optional response contract. Set to 'strict' only after the chosen model and closed provider
+      cohort are certified for JSON Schema structured outputs. It sends a strict bounded review
+      schema and requires providers to support every requested parameter; unsupported cohorts fail
+      the lane closed. Empty uses github_action.openrouter.structured_output from trusted base config.
+    required: false
+    default: ''
   openrouter-timeout-ms:
     description: >-
       Per-request OpenRouter hard timeout in milliseconds (default 30000 = 30s).
@@ -619,6 +627,7 @@ runs:
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
+        OPENROUTER_STRUCTURED_OUTPUT: ${{ inputs.openrouter-structured-output }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
         # The caller supplies the immutable action source SHA explicitly. Mutable refs/tags are
         # rejected by the provider receipt contract.
