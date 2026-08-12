@@ -7121,6 +7121,7 @@ async function main(options = {}) {
               optionalContextBlock: [modelSideContext.optionalContextBlock || '', dependencyRiskHints.length > 0 ? `Dependency applicability hints (untrusted data):\n${canonicalJson(dependencyRiskHints)}` : ''].filter(Boolean).join('\n'),
               limits: investigationLimits,
               investigationUnitIds: batchUnitIds,
+              providerRouting: modelOptions.openRouterPolicy?.providerRouting,
               evidenceRegistry: makeEvidenceRegistry(persona),
               requireEvidenceBoundary: !options.modelClient,
               modelTurn: ({ messages, turn, finalOnly, signal, providerIgnore }) => callPersonaModelTurn({
