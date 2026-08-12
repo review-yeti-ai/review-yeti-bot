@@ -5030,23 +5030,26 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     laneFailureDetails += '**Provider** is the upstream that OpenRouter actually routed to when known — not just `openrouter/auto-beta`. Use this to ignore/remove flaky providers.\n\n';
     laneFailureDetails += '| Persona | Provider | Model | Error class | Detail |\n|---|---|---|---|---|\n';
     for (const lane of failedLanes) {
+      const failure = lane.failure && typeof lane.failure === 'object' ? lane.failure : null;
       const err = String(lane.error || (Number(lane.partial) > 0
         ? `${lane.partial} provider pass(es) failed; this lane is only partially reviewed`
         : 'unknown error'));
-      let klass = lane.incomplete || lane.reviewStatus === 'INCOMPLETE_REVIEW' ? 'incomplete_investigation' : 'provider_error';
+      let klass = failure?.class === 'semantic_invalid_response'
+        ? 'semantic_invalid_response'
+        : lane.incomplete || lane.reviewStatus === 'INCOMPLETE_REVIEW' ? 'incomplete_investigation' : 'provider_error';
       if (/timeout|aborted|AbortError/i.test(err)) klass = 'timeout';
       else if (/parseable|JSON/i.test(err)) klass = 'unparseable_response';
       else if (/HTTP\s+\d+/i.test(err)) klass = 'http_error';
       // Prefer structured fields; fall back to provider= / model= tags embedded in the error.
-      let provider = lane.provider || '';
-      let model = lane.model || '';
+      let provider = failure?.route?.provider || lane.provider || '';
+      let model = failure?.route?.model || lane.model || '';
       const tagProvider = err.match(/provider=([^\s\]]+)/i);
       const tagModel = err.match(/model=([^\s\]]+)/i);
       if ((!provider || provider === 'openrouter') && tagProvider) provider = tagProvider[1];
       if ((!model || /auto-beta|openrouter\/auto/i.test(model)) && tagModel) model = tagModel[1];
       provider = provider || 'unknown';
       model = model || 'unknown';
-      const detail = err.replace(/\|/g, '\\|').slice(0, 280);
+      const detail = String(failure?.reason || err).replace(/\|/g, '\\|').slice(0, 280);
       laneFailureDetails += `| ${escapeMarkdownTableCell(lane.displayName)} | \`${escapeMarkdownTableCell(provider)}\` | \`${escapeMarkdownTableCell(model)}\` | \`${klass}\` | ${escapeMarkdownTableCell(detail)} |\n`;
     }
     laneFailureDetails += '\n';

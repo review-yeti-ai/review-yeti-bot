@@ -1,7 +1,7 @@
 import type { EvidenceReceipt, InvestigationLimits, LaneExecutionReceipt, RiskPlan } from './evidenceContracts';
 
 export interface PersonaInvestigationResult {
-  personaResult: { personaId: string; decision: 'APPROVE' | 'FINDINGS' | 'ERROR'; findings: unknown[]; partial: number; [key: string]: unknown };
+  personaResult: { personaId: string; decision: 'APPROVE' | 'FINDINGS' | 'ERROR'; findings: unknown[]; partial: number; failure?: { class: string; reason: string; route: Record<string, unknown> }; [key: string]: unknown };
   executionReceipt: LaneExecutionReceipt;
   evidenceReceipts: readonly EvidenceReceipt[];
   riskPlan: RiskPlan;

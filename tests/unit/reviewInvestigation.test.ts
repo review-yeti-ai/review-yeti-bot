@@ -88,6 +88,35 @@ describe('persona investigation state machine', () => {
     expect(result.personaResult).toMatchObject({ decision: 'FINDINGS', findings: [{ evidence_receipt_ids: [expect.stringMatching(/^er_/)] }] });
   });
 
+  it('fails closed with a bounded semantic failure and resolved route when the strict evidence follow-up is invalid', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      providerRouting: { only: ['morph'], allow_fallbacks: false },
+      modelTurn: sequence([
+        { ...needsEvidenceResponse(), model: 'deepseek/deepseek-v4-flash-0731', provider: 'Morph', generationId: 'gen-first' },
+        {
+          ok: true,
+          content: JSON.stringify({ review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [], unexpected_model_field: 'do-not-publish-this' }),
+          model: 'deepseek/deepseek-v4-flash-0731',
+          provider: 'Morph',
+          generationId: 'gen-second',
+        },
+      ]),
+    });
+
+    expect(result.personaResult).toMatchObject({
+      decision: 'ERROR',
+      error: 'malformed_response',
+      failure: {
+        class: 'semantic_invalid_response',
+        reason: 'unknown_response_fields',
+        route: { provider: 'Morph', model: 'deepseek/deepseek-v4-flash-0731', generationId: 'gen-second' },
+      },
+    });
+    expect(result.personaResult.failure).not.toHaveProperty('content');
+    expect(result.executionReceipt).toMatchObject({ termination: 'malformed_response', complete: false });
+  });
+
   it('completes only the deterministic dispatch unit assigned to the persona', async () => {
     const response = completeResponse({
       risk_plan: [{ id: 'risk-1', unit_ids: [assignedUnitId], statement: 'auth guard can be bypassed', evidence_needed: [], allowed_tools: [] }],
