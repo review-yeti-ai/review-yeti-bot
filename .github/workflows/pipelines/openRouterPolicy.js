@@ -605,8 +605,53 @@ function isHardBannedProvider(provider) {
   return HARD_BANNED_PROVIDER_SLUGS.includes(slug);
 }
 
+/**
+ * OPENROUTER_BASE_URL may point at any OpenAI-compatible gateway, not just
+ * OpenRouter. OpenRouter-specific request fields (`provider` routing,
+ * `session_id` stickiness, auto-router `plugins`) cause hard 400s on some of
+ * those gateways — Fireworks rejects them with "Extra inputs are not
+ * permitted, field: 'provider'". This resolves the gateway identity so the
+ * request builder can attach those fields only on OpenRouter, and so route
+ * labels/logs attribute responses to the actual gateway instead of the
+ * `openrouter` unknown-route sentinel (which also disables lane retries in
+ * reviewInvestigation.retryableProvider).
+ *
+ * Direct-gateway ids are deliberately namespaced (`fireworks-direct`, not
+ * `fireworks`) so they can never collide with OpenRouter provider slugs such
+ * as the hard-banned `fireworks` OpenRouter endpoint.
+ *
+ * @param {string|undefined} baseUrl
+ * @returns {{id: string, isOpenRouter: boolean}}
+ */
+function resolveGatewayIdentity(baseUrl) {
+  const raw = String(baseUrl || '').trim();
+  if (!raw) return { id: 'openrouter', isOpenRouter: true };
+  let host = '';
+  try {
+    host = new URL(raw).host.toLowerCase();
+  } catch (_) {
+    return { id: 'openrouter', isOpenRouter: true };
+  }
+  if (!host || host === 'openrouter.ai' || host.endsWith('.openrouter.ai')) {
+    return { id: 'openrouter', isOpenRouter: true };
+  }
+  const KNOWN_DIRECT_GATEWAYS = [
+    ['fireworks-direct', /(^|\.)fireworks\.ai$/],
+    ['ollama-cloud', /(^|\.)ollama\.com$/],
+    ['opencode-zen', /(^|\.)opencode\.ai$/],
+  ];
+  for (const [id, pattern] of KNOWN_DIRECT_GATEWAYS) {
+    if (pattern.test(host)) return { id, isOpenRouter: false };
+  }
+  // Any other host is assumed to be OpenRouter (or an OpenRouter-compatible
+  // proxy in front of it) and keeps full OpenRouter request/routing semantics.
+  // Add new direct gateways to KNOWN_DIRECT_GATEWAYS explicitly.
+  return { id: 'openrouter', isOpenRouter: true };
+}
+
 module.exports = {
   resolveOpenRouterPolicy,
+  resolveGatewayIdentity,
   FIXED_MODEL_PROVIDER_COMPATIBILITY,
   validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,

@@ -96,6 +96,38 @@ Incomplete execution is represented by a redacted receipt and is always non-merg
 
 ---
 
+## 🌐 Direct OpenAI-compatible gateways (`llm-base-url`)
+
+`llm-base-url` (env `OPENROUTER_BASE_URL`) may point at a supported direct
+gateway instead of OpenRouter. The engine detects the gateway from the URL
+host (`resolveGatewayIdentity` in `openRouterPolicy.js`) and sends a clean
+OpenAI-shape request there: the OpenRouter-only fields — `provider` routing,
+`session_id` stickiness, and the auto-router `plugins` block — are omitted
+(Fireworks hard-rejects them with `400 Extra inputs are not permitted,
+field: 'provider'`). Provider-routing policy checks and provider bans are
+OpenRouter concepts and do not judge direct-gateway responses. Route labels
+use a namespaced gateway id (`fireworks-direct`, never `fireworks`) so they
+cannot collide with OpenRouter provider slugs, and so lane retries stay
+available (the `openrouter` label is the no-retry unknown-route sentinel).
+
+Supported gateways and model id shapes:
+
+| Gateway | `llm-base-url` | Model id example | Notes |
+|---|---|---|---|
+| Fireworks serverless | `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-flash-0731` | Chat Completions is zero-data-retention by default (prompts/generations live only in volatile request memory). **If any caller migrates to the Fireworks Responses API, it MUST send `store: false`** — `store: true` is that API's default and retains conversations for 30 days (see docs.fireworks.ai/guides/security_compliance/data_handling). |
+| Ollama Cloud | `https://ollama.com/v1` | `deepseek-v4-flash:0731` | Subscription-metered (session/weekly limits), not per-token. Verify limit headroom for CI volume. |
+| OpenCode Zen | `https://opencode.ai/zen/v1` | `deepseek-v4-flash` | Per-token billing. |
+
+OpenRouter-only knobs (`openrouter-provider-routing`,
+`openrouter-ignore-providers`, `openrouter-allowed-models`,
+`openrouter-cost-quality-tradeoff`, session stickiness) are inert on a direct
+gateway; timeouts, streaming, structured output, personas, and budgets apply
+unchanged. Any host that is not a listed gateway — including a private proxy
+in front of OpenRouter — keeps full OpenRouter semantics; add new direct
+gateways to `KNOWN_DIRECT_GATEWAYS` explicitly.
+
+---
+
 ## 📐 Top-Level Schema Overview
 
 A Version 3 configuration contains core policy settings along with six CodeRabbit-mirrored
