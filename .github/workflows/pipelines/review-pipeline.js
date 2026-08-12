@@ -7698,49 +7698,63 @@ async function main(options = {}) {
   } else {
     // Optional single-key chat preflight (not /models): the one configured OPENROUTER_API_KEY
     // must authenticate for chat. Callers choose which secret to pass as llm-api-key.
-    // With an explicit transport plan the preflight targets transport[0] — the
-    // primary that lanes will actually hit first.
+    // With an explicit transport plan the preflight walks the SAME ordered plan
+    // the lanes will use, and only disables the review when EVERY transport
+    // fails. A single transient hiccup on transport[0] must not kill a run
+    // whose lanes would have failed over anyway — observed live on the
+    // cisco-cdr#4337 canary: one aborted 20s preflight against the primary
+    // gateway failed the whole run while two healthy fallbacks sat unused.
     if (modelConfig.enabled && runtimeEnv.VITEST !== 'true'
         && !['1', 'true', 'yes', 'on'].includes(String(runtimeEnv.OPENROUTER_SKIP_CHAT_PREFLIGHT || '').toLowerCase())) {
-      const primaryTransport = Array.isArray(modelConfig.transportPlan) ? modelConfig.transportPlan[0] : null;
-      const preflightTarget = primaryTransport
-        ? { baseUrl: primaryTransport.baseUrl, apiKey: primaryTransport.apiKey, model: primaryTransport.model, label: `transport=${primaryTransport.name} (${primaryTransport.apiKeyEnv})` }
-        : { baseUrl: modelConfig.baseUrl, apiKey: modelConfig.apiKey, model: modelConfig.model, label: 'llm-api-key' };
+      const preflightTargets = Array.isArray(modelConfig.transportPlan) && modelConfig.transportPlan.length > 0
+        ? modelConfig.transportPlan.map((transport) => ({
+          baseUrl: transport.baseUrl,
+          apiKey: transport.apiKey,
+          model: transport.model,
+          label: `transport=${transport.name} (${transport.apiKeyEnv})`,
+        }))
+        : [{ baseUrl: modelConfig.baseUrl, apiKey: modelConfig.apiKey, model: modelConfig.model, label: 'llm-api-key' }];
       const timeoutMs = Math.min(Number(openRouterPolicy.timeoutMs) || 30_000, 20_000);
-      if (cancellation.signal.aborted) return;
-      const preflightAbort = createAbortLink({ signals: [cancellation.signal], timeoutMs });
-      try {
-        const res = await cancellation.race(Promise.resolve().then(() => fetchImplementation(`${preflightTarget.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${preflightTarget.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: preflightTarget.model,
-            messages: [{ role: 'user', content: 'reply with the single word ok' }],
-            max_tokens: 4,
-            stream: false,
-          }),
-          signal: preflightAbort.signal,
-        })));
-        if (cancellation.isCancellationResult(res)) return;
-        if (!res.ok) {
-          const bodyText = await cancellation.race(res.text());
-          if (cancellation.isCancellationResult(bodyText)) return;
-          console.error(`[Model] Chat preflight failed for ${preflightTarget.label} (HTTP ${res.status}).`);
-          console.error('[Model] Fix the configured credential — the action does not search alternate secret names.');
-          modelConfig.enabled = false;
-        } else {
-          console.log(`[Model] Chat preflight ok (${preflightTarget.label})`);
-        }
-      } catch (err) {
+      let preflightPassed = false;
+      for (const preflightTarget of preflightTargets) {
         if (cancellation.signal.aborted) return;
-        console.error(`[Model] OpenRouter chat preflight error: ${err && err.message ? err.message : err}`);
+        const preflightAbort = createAbortLink({ signals: [cancellation.signal], timeoutMs });
+        try {
+          const res = await cancellation.race(Promise.resolve().then(() => fetchImplementation(`${preflightTarget.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${preflightTarget.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: preflightTarget.model,
+              messages: [{ role: 'user', content: 'reply with the single word ok' }],
+              max_tokens: 4,
+              stream: false,
+            }),
+            signal: preflightAbort.signal,
+          })));
+          if (cancellation.isCancellationResult(res)) return;
+          if (!res.ok) {
+            const bodyText = await cancellation.race(res.text());
+            if (cancellation.isCancellationResult(bodyText)) return;
+            console.warn(`[Model] Chat preflight failed for ${preflightTarget.label} (HTTP ${res.status}); trying the next transport if one remains.`);
+          } else {
+            console.log(`[Model] Chat preflight ok (${preflightTarget.label})`);
+            preflightPassed = true;
+          }
+        } catch (err) {
+          if (cancellation.signal.aborted) return;
+          console.warn(`[Model] Chat preflight error for ${preflightTarget.label}: ${err && err.message ? err.message : err}; trying the next transport if one remains.`);
+        } finally {
+          preflightAbort.dispose();
+        }
+        if (preflightPassed) break;
+      }
+      if (!preflightPassed) {
+        console.error(`[Model] Chat preflight failed on every configured transport (${preflightTargets.map((target) => target.label).join(', ')}). Fix the configured credentials/gateways — the action does not search alternate secret names.`);
         modelConfig.enabled = false;
-      } finally {
-        preflightAbort.dispose();
       }
     }
 
@@ -8146,7 +8160,7 @@ async function main(options = {}) {
       console.log(`[Decision ledger] ${carriedOpen.length} open blocker(s) carried, ${reconciliation.matchedOpenRepeats.length} duplicate repeat(s) reused, ${ignored.length} explicit ignore(s), ${recurrentResolved.length} neutral-resolution recurrence(s), ${suppressedRepeats.length} repeat(s) suppressed after an author-replied resolution.`);
       }
     } else {
-      console.error('[Review] No OPENROUTER_API_KEY configured. Refusing to post a heuristic or successful verdict.');
+      console.error('[Review] Model transport unavailable (no credential configured, or the chat preflight failed on every transport). Refusing to post a heuristic or successful verdict.');
       process.exitCode = 1;
       return;
     }
