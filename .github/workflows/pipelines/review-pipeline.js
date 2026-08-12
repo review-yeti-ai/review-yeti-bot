@@ -5982,6 +5982,7 @@ function compactReviewBody(commentBody, prContext, options = {}) {
     String(commentBody).match(/^## .*?\*\*Verdict:\s*(?:SHIP|FIX_FIRST|BLOCK)\*\*$/mu)?.[0]
       || String(commentBody).match(/^## .*Verdict:\s*[^\n]+$/mu)?.[0]
       || '## Review Yeti result',
+    String(commentBody).match(/^- \*\*Quorum Status\*\*:.*$/mu)?.[0] || '',
     String(commentBody).match(/^- \*\*Review Status\*\*:.*$/mu)?.[0] || '',
     'Full round details are maintained in the sticky Review Yeti summary comment.',
     marker,
