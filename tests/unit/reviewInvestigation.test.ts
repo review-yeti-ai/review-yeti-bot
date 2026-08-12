@@ -207,6 +207,28 @@ describe('persona investigation state machine', () => {
     expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
   });
 
+  it('retries a malformed response without self-excluding the sole closed provider', async () => {
+    const calls: Array<{ providerIgnore?: string[]; turn: number }> = [];
+    const modelTurn = async ({ providerIgnore, turn }: { providerIgnore?: string[]; turn: number }) => {
+      calls.push({ providerIgnore, turn });
+      if (calls.length === 1) return { ok: true, content: '{not valid json', model: 'test/model', provider: 'morph' };
+      return completeResponse();
+    };
+
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      providerRouting: { only: ['morph'], allow_fallbacks: false },
+      modelTurn,
+    });
+
+    expect(calls).toEqual([
+      { providerIgnore: undefined, turn: 1 },
+      { providerIgnore: undefined, turn: 1 },
+    ]);
+    expect(result.executionReceipt).toMatchObject({ termination: 'completed', turns: 1, evidenceCalls: 0 });
+    expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
+  });
+
   // Regression coverage for the cisco-cdr false-SHIP near-miss (2026-08-11, caught before
   // merging PR #43). An earlier version of the fix reasoned "with evidence tooling off, a
   // persona structurally cannot produce a finding with valid evidence receipt ids, so it's safe
