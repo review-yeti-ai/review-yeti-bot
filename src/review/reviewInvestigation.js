@@ -359,6 +359,12 @@ async function runPersonaInvestigation(input = {}) {
         // deliberately reviewed caller of a different kind can populate it without a signature
         // change here.
         providerIgnore: undefined,
+        // Full-contract validator for the transport layer: a multi-transport caller may
+        // retry this turn on its next transport when the content would fail the exact
+        // authoritative parse below (same limits and context), instead of the failure
+        // surfacing here as an unrecoverable lane death. Validation happens at most
+        // twice per turn (transport layer + the parse below); both are pure.
+        validate: (content) => parseInvestigationResponse(content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds }),
       });
     } catch (error) {
       const cancelled = input.signal?.aborted;
