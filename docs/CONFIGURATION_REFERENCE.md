@@ -487,9 +487,10 @@ run identity.
 ### 1. `reviews`
 Controls automated code review behaviors, summaries, status publishing, and inline comment formatting.
 
-GitHub PR conversation output is quiet by default: one stable final review summary
-is updated across pushes, P0/P1 findings publish as resolvable review
-conversations, and persona/model/P2 details are kept in the review summary.
+GitHub PR conversation output is quiet by default: one stable sticky final review
+summary is updated across pushes, earlier rounds are kept in collapsed history,
+P0/P1 findings publish as resolvable review conversations, and persona/model/P2
+details are kept in the current summary.
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |

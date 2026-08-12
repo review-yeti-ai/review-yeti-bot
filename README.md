@@ -402,8 +402,9 @@ Two things prevent it:
 If `synchronize` is explicitly enabled, the panel runs again, but the pull request does not
 accumulate a fresh copy of everything it already said:
 
-- the review summary and the "Review started" notice are **edited in place**, one of each per pull
-  request rather than one per push;
+- the sticky review summary and the "Review started" notice are **edited in place**, one of each per
+  pull request rather than one per push; earlier summary rounds remain available in collapsed
+  history, while each head's compact review receipt stays attached to its immutable commit;
 - before the parallel reviewers run, the bot takes one authenticated snapshot of the conversations
   it already opened. Every reviewer receives the same bounded same-PR decision ledger; raw human
   replies, names, and command reasons are never sent to the model;

@@ -442,6 +442,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     const state = {
       commands: [] as Array<{ executable: string; args: string[]; options: any }>,
       reviews: [] as Array<{ id: number; submitted_at: string; body: string; commit_id: string; user: { login: string } }>,
+      comments: [] as Array<{ id: number; body: string; user: { login: string } }>,
       threads: [] as any[],
       postedPayloads: [] as Array<{ endpoint: string; payload: any }>,
       nextId: 100,
@@ -486,6 +487,9 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
           ? { status: 0, stdout: `${responsePublisherLogin}\n`, stderr: '' }
           : { status: 1, stdout: '', stderr: 'publisher unavailable' };
       }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
       if (args[0] === 'api' && args.includes('--method')) {
         const endpoint = args[3];
         const payload = JSON.parse(commandOptions.input);
@@ -493,7 +497,12 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
         if (options.failReviewPost && endpoint.endsWith('/reviews')) {
           return { status: 1, stdout: '', stderr: 'permission denied' };
         }
-        if (endpoint.endsWith('/reviews')) {
+        if (endpoint.endsWith('/issues/42/comments')) {
+          state.comments.push({ id: state.nextId, body: payload.body, user: { login: responsePublisherLogin } });
+        } else if (endpoint.startsWith('repos/') && endpoint.includes('/issues/comments/')) {
+          const target = state.comments.find((comment) => endpoint.endsWith(`/${comment.id}`));
+          if (target) target.body = payload.body;
+        } else if (endpoint.endsWith('/reviews')) {
           if (!options.suppressPublishedReview) {
             state.reviews.push({
               id: state.nextId,
@@ -551,7 +560,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     expect(reviewPost.payload.body).toContain('review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:exact-head:action');
     const filePost = state.postedPayloads.find((post) => post.payload.subject_type === 'file')!;
     expect(filePost.payload).toMatchObject({ commit_id: 'exact-head', path: 'assets/logo.png', subject_type: 'file' });
-    expect(state.postedPayloads).toHaveLength(2);
+    expect(state.postedPayloads).toHaveLength(3);
     expect(state.commands.some((command) => command.args[0] === 'pr' && command.args[1] === 'comment')).toBe(false);
     expect(state.commands.find((command) => command.args[1] === 'graphql')?.args).not.toContain('--paginate');
   });
@@ -735,10 +744,11 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     const reviewPost = state.postedPayloads.find((post) => post.endpoint.endsWith('/reviews'))!;
     expect(reviewPost.payload.comments).toHaveLength(1);
     expect(reviewPost.payload.comments[0]).toMatchObject({ path: 'src/app.ts', line: 4, side: 'RIGHT' });
-    expect(reviewPost.payload.body).toContain('src/app.ts:99');
-    expect(reviewPost.payload.body).toContain('Invalid anchor');
-    expect(reviewPost.payload.body).toContain('line_not_changed');
-    expect(reviewPost.payload.body).toContain('not moved to a nearby line');
+    const summaryPost = state.postedPayloads.find((post) => post.endpoint.endsWith('/issues/42/comments'))!;
+    expect(summaryPost.payload.body).toContain('src/app.ts:99');
+    expect(summaryPost.payload.body).toContain('Invalid anchor');
+    expect(summaryPost.payload.body).toContain('line_not_changed');
+    expect(summaryPost.payload.body).toContain('not moved to a nearby line');
   });
 
   it('fails closed when post-write reviewThreads verification cannot find the published conversation', () => {
