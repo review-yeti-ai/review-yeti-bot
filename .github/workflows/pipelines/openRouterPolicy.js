@@ -29,6 +29,8 @@
  *   dataCollection: ('allow'|'deny'|undefined),
  *   ignoredProviders: string[],
  *   timeoutMs: number,
+ *   connectTimeoutMs: number,
+ *   ttftMs: number,
  *   stream: boolean,
  *   fallbackModels: string[],
  *   providerRouting: object,
@@ -58,6 +60,8 @@ function resolveOpenRouterPolicy(localConfig, env) {
     ? env.OPENROUTER_PROVIDER_ROUTING.trim()
     : '';
   const envTimeout = env.OPENROUTER_TIMEOUT_MS;
+  const envTtft = env.OPENROUTER_TTFT_MS;
+  const envMaxAttempts = env.OPENROUTER_MAX_ATTEMPTS;
   const envStream = env.OPENROUTER_STREAM;
   const envFallbackModels = splitCsv(env.OPENROUTER_FALLBACK_MODELS);
   // Providers the OPERATOR has explicitly re-permitted. The hard-ban list below is a safety
@@ -78,6 +82,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
     ? cfgOr.ignore_providers
     : splitCsv(cfgOr.ignore_providers ?? cfgOr.ignoreProviders);
   const cfgTimeout = cfgOr.timeout_ms ?? cfgOr.timeoutMs ?? cfgOr.timeout_ms;
+  const cfgMaxAttempts = cfgOr.max_attempts ?? cfgOr.maxAttempts;
   const cfgStream = cfgOr.stream;
   const cfgModel = typeof cfgOr.model === 'string' ? cfgOr.model.trim() : '';
   const cfgFallbackModels = Array.isArray(cfgOr.fallback_models)
@@ -137,6 +142,37 @@ function resolveOpenRouterPolicy(localConfig, env) {
   }
   connectTimeoutMs = Math.max(500, Math.min(timeoutMs, Math.round(connectTimeoutMs)));
 
+  // ttft_ms: time-to-first-token deadline. This is now the authoritative "is the provider
+  // talking to us" budget -- it drives the stream path's connect timer (which previously had
+  // none at all) AND the non-stream path's connect budget (superseding connect_timeout_ms there
+  // so the semantic is explicit). Default 30s; clamped 500ms..timeoutMs.
+  // Env OPENROUTER_TTFT_MS wins over github_action.openrouter.ttft_ms.
+  const DEFAULT_TTFT_MS = 30_000;
+  const cfgTtft = cfgOr.ttft_ms ?? cfgOr.ttftMs;
+  let ttftMs = DEFAULT_TTFT_MS;
+  if (envTtft !== undefined && envTtft !== '') {
+    const n = Number(envTtft);
+    if (Number.isFinite(n)) ttftMs = n;
+  } else if (cfgTtft !== undefined && cfgTtft !== '') {
+    const n = Number(cfgTtft);
+    if (Number.isFinite(n)) ttftMs = n;
+  }
+  ttftMs = Math.max(500, Math.min(timeoutMs, Math.round(ttftMs)));
+
+  // max_attempts: action env > yaml > 2 (1 initial attempt + 1 retry, REL-271 operator
+  // directive "1 retry max per lane"). Clamped 1..5 -- this is an attempt cap, not a budget, so
+  // the ceiling only needs to rule out runaway configuration, not model a specific latency math.
+  const DEFAULT_MAX_ATTEMPTS = 2;
+  let maxAttempts = DEFAULT_MAX_ATTEMPTS;
+  if (envMaxAttempts !== undefined && envMaxAttempts !== '') {
+    const n = Number(envMaxAttempts);
+    if (Number.isFinite(n)) maxAttempts = n;
+  } else if (cfgMaxAttempts !== undefined && cfgMaxAttempts !== '') {
+    const n = Number(cfgMaxAttempts);
+    if (Number.isFinite(n)) maxAttempts = n;
+  }
+  maxAttempts = Math.max(1, Math.min(5, Math.trunc(maxAttempts)));
+
   // stream: action env > yaml > false.
   let stream = false;
   if (envStream !== undefined && envStream !== '') {
@@ -180,11 +216,12 @@ function resolveOpenRouterPolicy(localConfig, env) {
   );
 
   // Prefer endpoints that answer quickly. This is not a higher total budget — it tells
-  // OpenRouter to avoid providers whose historical latency exceeds the connect window.
+  // OpenRouter to avoid providers whose historical latency exceeds the time-to-first-token
+  // window (ttft_ms), not the (now largely superseded) connect timeout.
   // Callers can still override via OPENROUTER_PROVIDER_ROUTING / YAML provider_routing.
   let finalRouting = providerRouting && typeof providerRouting === 'object' ? { ...providerRouting } : { ignore: ignoredProviders };
   if (finalRouting.preferred_max_latency === undefined) {
-    finalRouting.preferred_max_latency = connectTimeoutMs;
+    finalRouting.preferred_max_latency = ttftMs;
   }
   if (!Array.isArray(finalRouting.ignore)) {
     finalRouting.ignore = ignoredProviders;
@@ -206,6 +243,8 @@ function resolveOpenRouterPolicy(localConfig, env) {
     ignoredProviders,
     timeoutMs,
     connectTimeoutMs,
+    ttftMs,
+    maxAttempts,
     stream,
     ...(structuredOutput ? { structuredOutput } : {}),
     model,
@@ -576,4 +615,5 @@ module.exports = {
   closedProviderCohort,
   isIgnoredProvider,
   DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000,
+  DEFAULT_OPENROUTER_TTFT_MS: 30_000,
 };
