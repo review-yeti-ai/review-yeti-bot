@@ -282,6 +282,58 @@ describe('reviewWithModel', () => {
     expect(result.decision).toBe('FINDINGS');
   });
 
+  it('gives the streaming recovery retry a bounded response budget extension', async () => {
+    const calls: any[] = [];
+    const fetchImpl = async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ body });
+      if (calls.length === 1) {
+        throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          getReader: () => {
+            let sent = false;
+            return {
+              read: async () => {
+                if (sent) return { done: true, value: undefined };
+                await new Promise((resolve) => setTimeout(resolve, 15));
+                sent = true;
+                return {
+                  done: false,
+                  value: Buffer.from(`data: ${JSON.stringify({
+                    id: 'gen-recovery',
+                    model: 'test/model',
+                    provider: 'Morph',
+                    choices: [{ delta: { content: '{"findings":[]}' } }],
+                  })}\n\ndata: [DONE]\n\n`),
+                };
+              },
+              cancel: async () => {},
+            };
+          },
+        },
+      };
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl,
+      maxAttempts: 2,
+      timeoutMs: 10,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.stream).toBe(false);
+    expect(calls[1].body.stream).toBe(true);
+    expect(result.decision).toBe('APPROVE');
+    expect(result.provider).toBe('Morph');
+  });
+
   it('enforces the total timeout while reading a non-stream response body', async () => {
     const calls: any[] = [];
     const fetchImpl = async (url: string, init: any) => {
