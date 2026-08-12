@@ -104,6 +104,8 @@ const {
   resolveOpenRouterPolicy,
   validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,
+  normalizeProviderSlug,
+  isIgnoredProvider,
 } = require('./openRouterPolicy.js');
 const { classifyReviewFile, resolveMaxFileDiffChars } = require('../../../src/review/reviewIgnorePolicy');
 const { resolveTrustedReviewPolicy } = require('../../../src/review/reviewPolicyResolver');
@@ -2601,7 +2603,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const timedOutProviders = new Set();
   const explicitIgnoredProviders = [...new Set(
     (Array.isArray(options.providerIgnore) ? options.providerIgnore : [])
-      .map((provider) => String(provider || '').trim().toLowerCase())
+      .map(normalizeProviderSlug)
       .filter((provider) => /^[a-z0-9._-]{1,100}$/u.test(provider)),
   )].slice(0, 32);
   let streamRetryRequested = false;
@@ -2611,8 +2613,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ...(Array.isArray(orPolicy.ignoredProviders) ? orPolicy.ignoredProviders : []),
     ...(Array.isArray(orPolicy.providerRouting?.ignore) ? orPolicy.providerRouting.ignore : []),
     ...explicitIgnoredProviders,
-  ])]
-    .map((provider) => String(provider).trim().toLowerCase())
+  ].map(normalizeProviderSlug))]
     .filter(Boolean)
     .sort()
     .join(',');
@@ -2643,7 +2644,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       ...configuredIgnored,
       ...explicitIgnoredProviders,
       ...timedOutProviders,
-    ])].map((provider) => String(provider).trim().toLowerCase()).filter(Boolean);
+    ].map(normalizeProviderSlug))].filter(Boolean);
     const providerRouting = configuredRouting
       ? { ...configuredRouting, ignore: ignored }
       : (ignored.length > 0 ? { ignore: ignored } : undefined);
@@ -2741,6 +2742,33 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           provider: result.provider || 'openrouter',
           generationId: result.generationId || null,
         };
+
+        // Provider-routing is advisory at the network boundary, not a license to accept a route
+        // that violates the trusted policy. OpenRouter may return a display name while its
+        // request API expects a hyphenated slug (OpenInference/open-inference is one observed
+        // pair), so compare canonical identifiers before any content is parsed or accepted.
+        const effectiveIgnoredProviders = requestBody.provider?.ignore || [];
+        // `openrouter` is our explicit unknown-route sentinel when the response supplied no
+        // downstream provider at all. It remains a fail-closed attribution state, but cannot be
+        // treated as proof that the OpenRouter fallback label itself was selected.
+        if (normalizeProviderSlug(lastRoute.provider) !== 'openrouter' && isIgnoredProvider(lastRoute.provider, effectiveIgnoredProviders)) {
+          const ignoredProvider = normalizeProviderSlug(lastRoute.provider);
+          if (ignoredProvider) timedOutProviders.add(ignoredProvider);
+          const msg = `OpenRouter selected ignored provider ${ignoredProvider || 'unknown'} [${formatRouteLabel(lastRoute)}]`;
+          lastError = msg;
+          console.warn(`[OpenRouter] POLICY_VIOLATION persona=${persona.id} ${msg}`);
+          recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_policy_violation', startedAt: requestStartedAt });
+          if (attempt < maxAttempts) continue;
+          if (modelIndex < models.length - 1) break;
+          return {
+            ...base,
+            ...lastRoute,
+            decision: 'ERROR',
+            findings: [],
+            error: msg,
+            generationId: lastRoute.generationId,
+          };
+        }
 
         if (!result.ok) {
           const routeLabel = formatRouteLabel(lastRoute);
@@ -5244,6 +5272,61 @@ function actionReviewMarker(prContext) {
     : '';
 }
 
+function publicationAttemptId(options, commentBody) {
+  const explicitAttemptId = options?.publicationAttemptId;
+  if (typeof explicitAttemptId === 'string' && /^[A-Za-z0-9._:-]{1,120}$/u.test(explicitAttemptId)) return explicitAttemptId;
+  const runId = process.env.GITHUB_RUN_ID;
+  if (typeof runId === 'string' && /^[A-Za-z0-9._:-]{1,100}$/u.test(runId)) {
+    const runAttempt = process.env.GITHUB_RUN_ATTEMPT;
+    const normalizedAttempt = typeof runAttempt === 'string' && /^[1-9][0-9]{0,9}$/u.test(runAttempt)
+      ? runAttempt
+      : 'unknown';
+    // GitHub keeps GITHUB_RUN_ID stable across a re-run and increments only
+    // GITHUB_RUN_ATTEMPT. Bind the durable result to both identities so a prior attempt can
+    // never satisfy this attempt's post-write readback.
+    return `${runId}:attempt-${normalizedAttempt}`;
+  }
+  // Local/offline callers have no run identity. The content-derived fallback preserves
+  // idempotence for an unchanged result; hosted runs always use the immutable GitHub run id.
+  return `body-${sha256(String(commentBody || '')).slice(0, 16)}`;
+}
+
+function actionResultMarker(prContext, attemptId) {
+  return prContext.repo && prContext.prNumber && prContext.headSha && attemptId
+    ? `<!-- review-yeti-bot:result:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:${attemptId} -->`
+    : '';
+}
+
+function reviewRequiresResultRepublish(review) {
+  const body = String(review?.body || '');
+  // A generic exact-head marker identifies the review *target*, not its result. Retain a later
+  // durable result whenever the prior result can block/partially gate the pull request. Unknown
+  // legacy bodies remain idempotent to avoid review spam, but are never used as a SHIP claim.
+  const retryable = '(?:BLOCK|FIX_FIRST|PARTIAL(?:_REVIEW)?|INCOMPLETE_REVIEW|DEGRADED|ERROR)';
+  return new RegExp('\\*\\*Verdict:\\s*(?:`)?' + retryable + '(?:`)?\\*\\*', 'iu').test(body)
+    || new RegExp('\\*\\*(?:Review Status|Quorum Status)\\*\\*:\\s*`' + retryable + '`', 'iu').test(body);
+}
+
+function latestActionReview(reviews) {
+  const ordered = [...reviews];
+  ordered.sort((left, right) => {
+    const leftTime = Date.parse(left?.submitted_at || left?.submittedAt || '') || 0;
+    const rightTime = Date.parse(right?.submitted_at || right?.submittedAt || '') || 0;
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    const leftId = Number(left?.id) || 0;
+    const rightId = Number(right?.id) || 0;
+    if (leftId !== rightId) return leftId - rightId;
+    return 0;
+  });
+  return ordered.at(-1);
+}
+
+function reviewResultMarker(prContext, review) {
+  const prefix = `<!-- review-yeti-bot:result:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:`;
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return String(review?.body || '').match(new RegExp(`${escapedPrefix}[^\\s>]{1,120} -->`, 'u'))?.[0] || '';
+}
+
 function actionFindingMarker(prContext, item) {
   return `<!-- review-yeti-bot:finding:v1:${prContext.headSha}:${item.markerKey} -->`;
 }
@@ -5591,14 +5674,18 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       : '';
 
     const marker = actionReviewMarker(prContext);
+    const resultMarker = actionResultMarker(prContext, publicationAttemptId(options, commentBody));
     const summaryAnchor = actionSummaryAnchor(prContext);
     const bodyWithRejected = `${commentBody}${rejectedDetails}`;
     const bodyWithAnchor = summaryAnchor && !bodyWithRejected.includes(summaryAnchor)
       ? `${bodyWithRejected}\n\n${summaryAnchor}`
       : bodyWithRejected;
-    const bodyToPublish = !bodyWithAnchor.includes(marker)
+    const bodyWithMarker = !bodyWithAnchor.includes(marker)
       ? `${bodyWithAnchor}\n\n${marker}`
       : bodyWithAnchor;
+    const bodyToPublish = resultMarker && !bodyWithMarker.includes(resultMarker)
+      ? `${bodyWithMarker}\n${resultMarker}`
+      : bodyWithMarker;
     try {
       // This is intentionally the first publication operation.  Reading prior reviews before a
       // fresh exact-head fence leaves a TOCTOU gap in which stale work can reach a write path.
@@ -5610,16 +5697,17 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         && typeof review.user?.login === 'string'
         && isExpectedPublisherLogin(review.user.login, authenticatedPublisherLogin)
       );
-      const existingReview = existingReviews.find((review) => (
+      const existingReview = latestActionReview(existingReviews.filter((review) => (
         publishedByUs(review)
         && review.commit_id === prContext.headSha
         && review.body.includes(marker)
-      ));
+      )));
       // GitHub binds a pull-request review to the commit supplied at creation. An edited review
       // retains its earlier commit_id even if its body advertises a new SHA, which would make an
       // exact-head consumer incorrectly see no verdict for the current push. Only a matching
       // exact-head marker may deduplicate publication.
-      const reviewExists = Boolean(existingReview);
+      const existingResultMarker = reviewResultMarker(prContext, existingReview);
+      const reviewExists = Boolean(existingReview) && Boolean(existingResultMarker) && !reviewRequiresResultRepublish(existingReview);
       let expectedPublisherLogin = authenticatedPublisherLogin;
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0 && expectedPublisherLogin
@@ -5678,9 +5766,10 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       }
 
       const verifiedReviews = readActionReviews(commandRunner, prContext);
+      const requiredResultMarker = reviewExists ? existingResultMarker : resultMarker;
       if (!verifiedReviews.some((review) => (
         typeof review?.body === 'string'
-        && review.body.includes(marker)
+        && review.body.includes(requiredResultMarker)
         && review.commit_id === prContext.headSha
         && isExpectedPublisherLogin(review.user?.login, expectedPublisherLogin)
       ))) {

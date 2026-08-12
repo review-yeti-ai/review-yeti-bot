@@ -343,7 +343,7 @@ describe('reviewWithModel', () => {
       return {
         ok: true,
         status: 200,
-        headers: { get: (name: string) => name.toLowerCase() === 'x-openrouter-provider' ? (firstAttempt ? 'Morph' : 'Novita') : null },
+        headers: { get: (name: string) => name.toLowerCase() === 'x-openrouter-provider' ? (firstAttempt ? 'Morph' : 'OpenAI') : null },
         json: async () => {
           if (firstAttempt) await new Promise((resolve) => setTimeout(resolve, 80));
           return { choices: [{ message: { content: validFindings } }] };
@@ -364,7 +364,7 @@ describe('reviewWithModel', () => {
     expect(result.decision).toBe('FINDINGS');
     expect(calls).toHaveLength(3);
     expect(calls[1].body.provider.ignore).toContain('morph');
-    expect(result.provider).toBe('Novita');
+    expect(result.provider).toBe('OpenAI');
     expect(Date.now() - startedAt).toBeLessThan(3_000);
   });
 
@@ -400,11 +400,11 @@ describe('reviewWithModel', () => {
       }
       if (calls.length === 2) {
         return streamResponse([
-          { id: 'gen-silicon', model: 'test/model', provider: 'SiliconFlow', choices: [{ delta: { content: '{"findings":[]}' } }] },
+          { id: 'gen-cerebras', model: 'test/model', provider: 'Cerebras', choices: [{ delta: { content: '{"findings":[]}' } }] },
         ], { delayMs: 25, abortAfter: true });
       }
       return streamResponse([
-        { id: 'gen-healthy', model: 'test/model', provider: 'Novita', choices: [{ delta: { content: '{"findings":[]}' } }] },
+        { id: 'gen-healthy', model: 'test/model', provider: 'OpenAI', choices: [{ delta: { content: '{"findings":[]}' } }] },
         '[DONE]',
       ]);
     };
@@ -421,9 +421,9 @@ describe('reviewWithModel', () => {
     expect(calls).toHaveLength(3);
     expect(calls[1].body.stream).toBe(true);
     expect(calls[2].body.stream).toBe(true);
-    expect(calls[2].body.provider.ignore).toContain('siliconflow');
+    expect(calls[2].body.provider.ignore).toContain('cerebras');
     expect(calls[2].body.session_id).toBeUndefined();
-    expect(result.provider).toBe('Novita');
+    expect(result.provider).toBe('OpenAI');
     expect(result.decision).toBe('APPROVE');
   });
 
@@ -639,6 +639,45 @@ describe('reviewWithModel', () => {
       allow_fallbacks: false,
       ignore: ['deepinfra', 'morph'],
     });
+  });
+
+  it.each([
+    { name: 'OpenInference' },
+    { id: 'open-inference' },
+    { slug: 'OPEN_INFERENCE' },
+  ])('fails closed when an ignored provider is resolved through a provider object %o', async (provider) => {
+    const { impl, calls } = stubFetch(validFindings, {
+      payload: {
+        provider,
+        choices: [{ message: { content: validFindings } }],
+      },
+    });
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl, maxAttempts: 1,
+      openRouterPolicy: {
+        allowedModels: [], costQualityTradeoff: undefined, dataCollection: undefined,
+        ignoredProviders: ['open-inference'], providerRouting: { ignore: ['open-inference'] }, timeoutMs: 30_000, stream: false,
+      },
+    });
+
+    expect(result).toMatchObject({ decision: 'ERROR', findings: [] });
+    expect(result.error).toMatch(/ignored provider/i);
+    expect(calls[0].body.provider.ignore).toContain('open-inference');
+  });
+
+  it('keeps the title-cased OpenRouter route as unknown attribution rather than a selected banned provider', async () => {
+    const { impl } = stubFetch(validFindings, {
+      payload: {
+        provider: { name: 'OpenRouter' },
+        choices: [{ message: { content: validFindings } }],
+      },
+    });
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl, maxAttempts: 1,
+    });
+
+    expect(result).toMatchObject({ decision: 'FINDINGS' });
+    expect(result.error).toBeUndefined();
   });
 
   it('does not issue a request when fixed Luna is incompatible with the Morph-only policy', async () => {
