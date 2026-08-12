@@ -106,6 +106,7 @@ const {
   HARD_BANNED_PROVIDER_SLUGS,
   normalizeProviderSlug,
   isIgnoredProvider,
+  isProviderAllowedByRouting,
 } = require('./openRouterPolicy.js');
 const { classifyReviewFile, resolveMaxFileDiffChars } = require('../../../src/review/reviewIgnorePolicy');
 const { resolveTrustedReviewPolicy } = require('../../../src/review/reviewPolicyResolver');
@@ -1686,14 +1687,14 @@ async function callOpenRouterChat(fetchImpl, {
       console.warn(
         `[OpenRouter] non-stream ${phase === 'connect' ? 'CONNECT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
         + ` model=${body.model} elapsed_ms=${elapsed} connect_budget_ms=${connectMs} total_budget_ms=${totalMs}`
-        + ` name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 160)}`,
+        + ` name=${err?.name || 'Error'}`,
       );
       return {
         ok: false,
         aborted,
         timeoutPhase: aborted ? phase : undefined,
         status: 0,
-        detail: String(err?.message || err).slice(0, 500),
+        detail: 'request_error',
         model: body.model,
         provider: 'openrouter',
         generationId: null,
@@ -1719,7 +1720,7 @@ async function callOpenRouterChat(fetchImpl, {
       return {
         ok: false,
         status: response.status,
-        detail: String(detail).slice(0, 2000),
+        detail: 'http_error',
         ...route,
         content: '',
         usage: null,
@@ -1739,14 +1740,14 @@ async function callOpenRouterChat(fetchImpl, {
         `[OpenRouter] non-stream RESPONSE_TIMEOUT body`
         + ` model=${body.model} provider=${headerProvider || 'unknown'} elapsed_ms=${elapsed}`
         + ` connect_budget_ms=${connectMs} total_budget_ms=${totalMs}`
-        + ` name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 160)}`,
+        + ` name=${err?.name || 'Error'}`,
       );
       return {
         ok: false,
         aborted,
         timeoutPhase: aborted ? 'response' : undefined,
         status: response.status,
-        detail: String(err?.message || err).slice(0, 500),
+        detail: 'response_body_error',
         model: body.model,
         provider: headerProvider || 'openrouter',
         generationId: null,
@@ -1801,7 +1802,7 @@ async function callOpenRouterChat(fetchImpl, {
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       if (response.status >= 500 || /StreamReset|stream_id|remote_reset|ECONNRESET/i.test(detail)) {
-        console.warn(`[OpenRouter] stream HTTP ${response.status}; falling back to non-stream (${String(detail).slice(0, 120)})`);
+        console.warn(`[OpenRouter] stream HTTP ${response.status}; falling back to non-stream`);
         return nonStreamOnce();
       }
       let route = { model: body.model, provider: 'openrouter', generationId: null };
@@ -1813,7 +1814,7 @@ async function callOpenRouterChat(fetchImpl, {
       return {
         ok: false,
         status: response.status,
-        detail: String(detail).slice(0, 2000),
+        detail: 'http_error',
         ...route,
         content: '',
         usage: null,
@@ -1873,8 +1874,7 @@ async function callOpenRouterChat(fetchImpl, {
           if (typeof msg === 'string' && msg.length > content.length) content = msg;
           if (chunk.usage) usage = chunk.usage;
           if (chunk.error) {
-            const errMsg = chunk.error.message || chunk.error.code || JSON.stringify(chunk.error);
-            console.warn(`[OpenRouter] mid-stream error (${provider}/${model}): ${String(errMsg).slice(0, 120)}; falling back to non-stream`);
+            console.warn(`[OpenRouter] mid-stream error (${provider}/${model}); falling back to non-stream`);
             try { await reader.cancel(); } catch (_) {}
             return nonStreamOnce();
           }
@@ -1895,9 +1895,11 @@ async function callOpenRouterChat(fetchImpl, {
           partial: sawChunk,
         };
       }
-      const msg = err?.message || String(err);
-      if (/StreamReset|stream_id|remote_reset|ECONNRESET|aborted|timeout|network/i.test(msg)) {
-        console.warn(`[OpenRouter] stream read failed (${formatRouteLabel(streamRoute)}): ${msg.slice(0, 120)}; falling back to non-stream`);
+      const rawErrorMessage = String(err?.message || err);
+      const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
+      const msg = `provider_stream_failed:${errorName}`;
+      if (/StreamReset|stream_id|remote_reset|ECONNRESET|aborted|timeout|network/i.test(rawErrorMessage)) {
+        console.warn(`[OpenRouter] stream read failed (${formatRouteLabel(streamRoute)}); falling back to non-stream`);
         if (totalAbort.signal.aborted) {
           return {
             ok: false,
@@ -1961,7 +1963,8 @@ async function callOpenRouterChat(fetchImpl, {
     if (signal?.aborted || totalAbort.signal.aborted) {
       return { ok: false, aborted: true, error: err, ...streamRoute, content: '', usage: null, streamed: true, partial: false };
     }
-    const msg = String(err?.message || err);
+    const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
+    const msg = `provider_request_failed:${errorName}`;
     console.warn(`[OpenRouter] stream failed; falling back to non-stream (${msg.slice(0, 100)})`);
     try {
       return await nonStreamOnce();
@@ -2018,6 +2021,40 @@ function escapeMarkdownInlineCode(value) {
   return String(value ?? '')
     .replace(/`/g, "'")
     .replace(/[\r\n]+/g, ' ');
+}
+
+function stablePersonaId(lane) {
+  const value = String(lane?.personaId || lane?.id || '').trim();
+  return value && !/^(?:undefined|null)$/iu.test(value) ? value.slice(0, 100) : 'unknown-persona';
+}
+
+function stablePersonaName(lane) {
+  const value = String(lane?.displayName || '').trim();
+  if (value && !/^(?:undefined|null)$/iu.test(value)) return value.slice(0, 160);
+  return stablePersonaId(lane);
+}
+
+function stableFailureReason(lane) {
+  const structured = String(lane?.failure?.reason || '').trim();
+  if (/^[a-z][a-z0-9_:-]{1,100}$/u.test(structured)) return structured;
+  const error = String(lane?.error || '').toLowerCase();
+  if (/timeout|aborted/.test(error)) return 'timeout';
+  if (/http\s+\d+/.test(error)) return 'provider_http_error';
+  if (/json|parse|malformed|semantic/.test(error)) return 'semantic_invalid_response';
+  if (/incomplete|budget/.test(error)) return 'incomplete_investigation';
+  return 'provider_error';
+}
+
+function stableProviderName(value) {
+  const text = String(value || '').trim();
+  if (!text || /^(?:undefined|null)$/iu.test(text)) return 'unknown-provider';
+  return text.slice(0, 120);
+}
+
+function stableModelName(value) {
+  const text = String(value || '').trim();
+  if (!text || /^(?:undefined|null)$/iu.test(text)) return 'unknown-model';
+  return text.slice(0, 200);
 }
 
 function countFindingsBySeverity(findings = []) {
@@ -2814,6 +2851,31 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           };
         }
 
+        const effectiveRouting = requestBody.provider || orPolicy.providerRouting;
+        const closedProviderPolicy = Array.isArray(effectiveRouting?.only) && effectiveRouting.only.length > 0
+          || effectiveRouting?.allow_fallbacks === false && Array.isArray(effectiveRouting?.order) && effectiveRouting.order.length > 0;
+        if (result.ok && closedProviderPolicy && !isProviderAllowedByRouting(lastRoute.provider, effectiveRouting)) {
+          const msg = 'provider_policy_violation';
+          lastError = msg;
+          console.warn(
+            `[OpenRouter] POLICY_VIOLATION persona=${persona.id}`
+              + ` requested=${requestedModel} resolved=${formatRouteLabel(lastRoute)}`
+              + ` attempt=${attempt}/${maxAttempts} reason=provider_not_in_closed_allowlist`,
+          );
+          recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: msg, startedAt: requestStartedAt });
+          if (attempt < maxAttempts) continue;
+          if (modelIndex < models.length - 1) break;
+          return {
+            ...base,
+            ...lastRoute,
+            decision: 'ERROR',
+            findings: [],
+            failureClass: msg,
+            error: msg,
+            generationId: lastRoute.generationId,
+          };
+        }
+
         if (!result.ok) {
           const routeLabel = formatRouteLabel(lastRoute);
           const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
@@ -2850,7 +2912,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               + ` resolved=${routeLabel} elapsed_ms=${elapsedMs}`
               + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
               + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`
-              + ` status=${result.status || 'aborted'} detail=${String(result.detail || result.error?.message || '').slice(0, 160)}`,
+              + ` status=${result.status || 'aborted'}`,
             );
             console.warn(`::warning::OpenRouter ${phase} timeout persona=${persona.id} elapsed_ms=${elapsedMs} route=${routeLabel}`);
             // A streaming retry is what reveals the provider. Give that newly identified route
@@ -2879,12 +2941,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
 
           const status = result.status || 0;
-          const detail = String(result.detail || '').slice(0, 200);
-          const msg = `HTTP ${status}: ${detail} [${routeLabel}]`;
+          const msg = `HTTP ${status} [${routeLabel}]`;
           console.warn(
             `[OpenRouter] HTTP_FAIL persona=${persona.id} requested=${requestedModel}`
             + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} status=${status}`
-            + ` attempt=${attempt}/${maxAttempts} detail=${detail.slice(0, 160)}`,
+            + ` attempt=${attempt}/${maxAttempts}`,
           );
           const retryableStatus = status === 408 || status === 429 || status >= 500;
           // Retry transient failures once before moving to the next model.
@@ -2905,6 +2966,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             ...lastRoute,
             decision: 'ERROR',
             findings: [],
+            failureClass: 'provider_invalid_response',
+            status,
             error: msg,
             generationId: lastRoute.generationId,
           };
@@ -2952,9 +3015,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const parsedReview = parseReviewResponse(content);
 
         if (parsedReview === null) {
-          const preview = String(content || '').replace(/\s+/g, ' ').slice(0, 180);
           const routeLabel = formatRouteLabel(lastRoute);
-          const msg = `Model response contained no parseable findings JSON [${routeLabel}].${preview ? ` Preview: ${preview}` : ' (empty content)'}`;
+          const msg = `Model response contained no parseable findings JSON [${routeLabel}]`;
           lastError = msg;
           if (attempt < maxAttempts) {
             recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_invalid_response', usage: usageReported ? usage : undefined, startedAt: requestStartedAt });
@@ -2970,6 +3032,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             ...responseBase,
             decision: 'ERROR',
             findings: [],
+            failureClass: 'provider_invalid_response',
             error: msg,
           };
         }
@@ -3009,19 +3072,21 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const routeLabel = formatRouteLabel(lastRoute);
         const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
         const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
-        if (/timeout|aborted/i.test(String(err?.message || err)) && timedOutProvider && timedOutProvider !== 'openrouter') {
+        const rawErrorMessage = String(err?.message || '');
+        const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
+        if (/timeout|aborted/i.test(rawErrorMessage) && timedOutProvider && timedOutProvider !== 'openrouter') {
           timedOutProviders.add(timedOutProvider);
           addRunScopedProviderBan(runTimedOutProviders, timedOutProvider);
         }
-        if (/timeout|aborted/i.test(String(err?.message || err))) streamRetryRequested = true;
-        const msg = err?.name === 'TimeoutError' || /aborted|timeout/i.test(String(err?.message || ''))
+        if (/timeout|aborted/i.test(rawErrorMessage)) streamRetryRequested = true;
+        const msg = err?.name === 'TimeoutError' || /aborted|timeout/i.test(rawErrorMessage)
           ? `Provider timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
-          : `${err.message || String(err)} [${routeLabel}]`;
+          : `Provider request failed (${errorName}) [${routeLabel}]`;
         lastError = msg;
         console.warn(
           `[OpenRouter] EXCEPTION persona=${persona.id} requested=${requestedModel}`
           + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} budget_ms=${timeoutMs}`
-          + ` attempt=${attempt}/${maxAttempts} name=${err?.name || 'Error'} message=${String(err?.message || err).slice(0, 200)}`,
+          + ` attempt=${attempt}/${maxAttempts} name=${errorName}`,
         );
         if (/timeout|aborted/i.test(msg)) {
           console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
@@ -3029,20 +3094,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         if (attempt >= maxAttempts && timedOutProvider && timedOutProvider !== 'openrouter' && !providerRetryUsed) {
           providerRetryUsed = true;
         }
-        if ((attempt < maxAttempts || providerRetryUsed) && /timeout|aborted|ECONNRESET|fetch failed/i.test(msg)) {
-          recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(msg) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
+        if ((attempt < maxAttempts || providerRetryUsed) && /timeout|aborted|ECONNRESET|fetch failed/i.test(rawErrorMessage)) {
+          recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(rawErrorMessage) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
           if (!await waitForAbortableDelay(1500 * attempt, options.signal)) return cancelledResult();
           continue;
         }
-        if (/timeout|aborted|ECONNRESET|fetch failed/i.test(msg) && modelIndex < models.length - 1) {
-          recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(msg) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
+        if (/timeout|aborted|ECONNRESET|fetch failed/i.test(rawErrorMessage) && modelIndex < models.length - 1) {
+          recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(rawErrorMessage) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
           break;
         }
         recordModelTelemetry({
           modelIndex,
           attempt,
           outcome: 'failed',
-          failureClass: /timeout|aborted/i.test(msg) ? 'provider_timeout' : 'provider_unavailable',
+          failureClass: /timeout|aborted/i.test(rawErrorMessage) ? 'provider_timeout' : 'provider_unavailable',
           startedAt: requestStartedAt,
         });
         return {
@@ -3112,7 +3177,17 @@ async function callPersonaModelTurn({ persona, prContext, sessionContext, messag
     { ...options, modelClient: undefined, investigationMessages: messages, rawTurn: true, signal },
   );
   if (result?.ok === true) return result;
-  return { ok: false, error: result?.error || 'provider_failure', usage: result?.usage, model: result?.model, provider: result?.provider, generationId: result?.generationId };
+  return {
+    ok: false,
+    error: result?.error || 'provider_failure',
+    failureClass: result?.failureClass,
+    status: result?.status,
+    aborted: result?.aborted,
+    usage: result?.usage,
+    model: result?.model,
+    provider: result?.provider,
+    generationId: result?.generationId,
+  };
 }
 
 
@@ -5037,9 +5112,9 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
       outputTokenCount += 1;
     }
     const icon = res.decision === 'APPROVE' ? '✅' : res.decision === 'ERROR' ? '❌' : '⚠️';
-    const displayName = escapeMarkdownTableCell(res.displayName);
-    const provider = escapeMarkdownInlineCode(res.provider || 'openrouter');
-    const model = escapeMarkdownInlineCode(res.model || modelConfig.model || DEFAULT_MODEL);
+    const displayName = escapeMarkdownTableCell(stablePersonaName(res));
+    const provider = escapeMarkdownInlineCode(stableProviderName(res.provider || 'unresolved downstream (OpenRouter)'));
+    const model = escapeMarkdownInlineCode(stableModelName(res.model || modelConfig.model || DEFAULT_MODEL));
     const formattedInputTokens = formatTableTokenCount(inputTokens);
     const formattedOutputTokens = formatTableTokenCount(outputTokens);
     const formattedCost = formatTableCost(cost);
@@ -5094,9 +5169,9 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   );
 
   const failureNote = failedLanes.length > 0
-    ? `\n- **Degraded Lanes**: ${failedLanes.length} persona(s) did not complete cleanly — ${failedLanes.map((lane) => `${lane.displayName} (${lane.error || (lane.incomplete || lane.reviewStatus === 'INCOMPLETE_REVIEW' ? 'required dependency evidence remained unavailable after bounded investigation turns' : 'unknown error')})`).join('; ')}`
+    ? `\n- **Degraded Lanes**: ${failedLanes.length} persona(s) did not complete cleanly — ${failedLanes.map((lane) => `${stablePersonaName(lane)} [${stablePersonaId(lane)}] (${stableFailureReason(lane)})`).join('; ')}`
     : (recoveredPartialLanes.length > 0
-      ? `\n- **Recovered multi-pass lanes**: ${recoveredPartialLanes.length} persona(s) lost a provider pass then completed — ${recoveredPartialLanes.map((lane) => `${lane.displayName} (${lane.partial} failed pass(es), decision ${lane.decision})`).join('; ')}`
+      ? `\n- **Recovered multi-pass lanes**: ${recoveredPartialLanes.length} persona(s) lost a provider pass then completed — ${recoveredPartialLanes.map((lane) => `${stablePersonaName(lane)} [${stablePersonaId(lane)}] (${lane.partial} failed pass(es), decision ${lane.decision})`).join('; ')}`
       : '');
 
   let laneFailureDetails = '';
@@ -5104,29 +5179,23 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     laneFailureDetails = '\n### ⚠️ Failed persona lanes (not a clean review)\n\n';
     laneFailureDetails += 'These lanes did **not** complete successfully. The verdict is incomplete; do not treat "no findings" as approval.\n\n';
     laneFailureDetails += '**Provider** is the upstream that OpenRouter actually routed to when known — not just `openrouter/auto-beta`. Use this to ignore/remove flaky providers.\n\n';
-    laneFailureDetails += '| Persona | Provider | Model | Error class | Detail |\n|---|---|---|---|---|\n';
+    laneFailureDetails += '| Persona | Persona ID | Provider | Model | Error class | Reason | Attempt | Generation |\n|---|---|---|---|---|---|---:|---|\n';
     for (const lane of failedLanes) {
       const failure = lane.failure && typeof lane.failure === 'object' ? lane.failure : null;
-      const err = String(lane.error || (Number(lane.partial) > 0
-        ? `${lane.partial} provider pass(es) failed; this lane is only partially reviewed`
-        : 'unknown error'));
+      const err = stableFailureReason(lane);
       let klass = failure?.class === 'semantic_invalid_response'
         ? 'semantic_invalid_response'
         : lane.incomplete || lane.reviewStatus === 'INCOMPLETE_REVIEW' ? 'incomplete_investigation' : 'provider_error';
       if (/timeout|aborted|AbortError/i.test(err)) klass = 'timeout';
-      else if (/parseable|JSON/i.test(err)) klass = 'unparseable_response';
-      else if (/HTTP\s+\d+/i.test(err)) klass = 'http_error';
+      else if (/http|provider_invalid/i.test(err)) klass = 'provider_invalid_response';
       // Prefer structured fields; fall back to provider= / model= tags embedded in the error.
-      let provider = failure?.route?.provider || lane.provider || '';
-      let model = failure?.route?.model || lane.model || '';
-      const tagProvider = err.match(/provider=([^\s\]]+)/i);
-      const tagModel = err.match(/model=([^\s\]]+)/i);
-      if ((!provider || provider === 'openrouter') && tagProvider) provider = tagProvider[1];
-      if ((!model || /auto-beta|openrouter\/auto/i.test(model)) && tagModel) model = tagModel[1];
-      provider = provider || 'unknown';
-      model = model || 'unknown';
-      const detail = String(failure?.reason || err).replace(/\|/g, '\\|').slice(0, 280);
-      laneFailureDetails += `| ${escapeMarkdownTableCell(lane.displayName)} | \`${escapeMarkdownTableCell(provider)}\` | \`${escapeMarkdownTableCell(model)}\` | \`${klass}\` | ${escapeMarkdownTableCell(detail)} |\n`;
+      let provider = failure?.providerRoute || failure?.route?.provider || lane.provider || '';
+      let model = failure?.model || failure?.route?.model || lane.model || '';
+      if (!provider || provider === 'openrouter') provider = 'unresolved downstream (OpenRouter)';
+      const detail = stableFailureReason(lane);
+      const attempt = Number.isSafeInteger(failure?.attempt) && failure.attempt > 0 ? failure.attempt : '—';
+      const generation = failure?.generationId || failure?.route?.generationId || lane.generationId || 'none';
+      laneFailureDetails += `| ${escapeMarkdownTableCell(stablePersonaName(lane))} | \`${escapeMarkdownTableCell(stablePersonaId(lane))}\` | \`${escapeMarkdownTableCell(stableProviderName(provider))}\` | \`${escapeMarkdownTableCell(stableModelName(model))}\` | \`${klass}\` | ${escapeMarkdownTableCell(detail)} | ${attempt} | \`${escapeMarkdownTableCell(generation)}\` |\n`;
     }
     laneFailureDetails += '\n';
   }
@@ -7423,8 +7492,7 @@ async function main(options = {}) {
         if (!res.ok) {
           const bodyText = await cancellation.race(res.text());
           if (cancellation.isCancellationResult(bodyText)) return;
-          const body = bodyText.slice(0, 300);
-          console.error(`[Model] OpenRouter chat preflight failed for the configured llm-api-key (HTTP ${res.status}): ${body}`);
+          console.error(`[Model] OpenRouter chat preflight failed for the configured llm-api-key (HTTP ${res.status}).`);
           console.error('[Model] Fix the key passed via llm-api-key — the action does not search alternate secret names.');
           modelConfig.enabled = false;
         } else {
@@ -7686,7 +7754,7 @@ async function main(options = {}) {
           verifierSummary = verified.verification;
         }
         const failed = personaResults.filter((result) => result.decision === 'ERROR');
-        for (const lane of failed) console.warn(`[Persona ${lane.personaId}] Lane failed (${formatRouteLabel(lane)}): ${lane.error}`);
+        for (const lane of failed) console.warn(`[Persona ${stablePersonaId(lane)}] Lane failed (${formatRouteLabel(lane)}): ${stableFailureReason(lane)}`);
         // Recovered multi-pass lanes keep `partial` for human telemetry but must not be treated
         // as providerFailures — that path marks unit coverage failed and forces BLOCK.
         const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0 && result.decision !== 'ERROR');
@@ -7768,7 +7836,7 @@ async function main(options = {}) {
 
       const failed = personaResults.filter((r) => r.decision === 'ERROR');
       for (const lane of failed) {
-        console.warn(`[Persona ${lane.personaId}] Lane failed (${formatRouteLabel(lane)}): ${lane.error}`);
+        console.warn(`[Persona ${stablePersonaId(lane)}] Lane failed (${formatRouteLabel(lane)}): ${stableFailureReason(lane)}`);
       }
       if (failed.length === personaResults.length) {
         console.error('[Review] Every persona lane failed. Refusing to post a verdict derived from zero completed reviews.');

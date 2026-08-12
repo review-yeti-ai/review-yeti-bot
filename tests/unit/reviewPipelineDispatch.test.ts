@@ -171,6 +171,34 @@ describe('Dispatch path: arbitration reports the real persona count', () => {
     expect(arbitration.rationale).toContain('provider failures');
   });
 
+  it('keeps a mixed successful/failed panel blocked even when the successful lanes have zero findings', () => {
+    const arbitration = computeArbitrationQuorum([
+      { personaId: 'security', decision: 'APPROVE', findings: [], provider: 'openai', model: 'openai/gpt-5.6-luna' },
+      { personaId: 'testing', decision: 'ERROR', findings: [], error: 'malformed_response', provider: 'azure', model: 'openai/gpt-5.6-luna' },
+      { personaId: 'architecture', decision: 'APPROVE', findings: [], provider: 'openai', model: 'openai/gpt-5.6-luna' },
+    ], 3, { expectedPersonaIds: ['security', 'testing', 'architecture'] });
+
+    expect(arbitration).toMatchObject({ verdict: 'BLOCK', status: 'INCOMPLETE_REVIEW', mergeEligible: false });
+    expect(arbitration.metrics.totalFindings).toBe(0);
+    expect(arbitration.coverage.failedPersonaIds).toEqual(['testing']);
+  });
+
+  it('keeps an all-persona failure run visibly incomplete and non-mergeable', () => {
+    const arbitration = computeArbitrationQuorum([
+      { personaId: 'security', decision: 'ERROR', findings: [], error: 'semantic_invalid_response' },
+      { personaId: 'testing', decision: 'ERROR', findings: [], error: 'provider_invalid_response' },
+    ], 2, { expectedPersonaIds: ['security', 'testing'] });
+
+    expect(arbitration).toMatchObject({
+      verdict: 'BLOCK',
+      status: 'INCOMPLETE_REVIEW',
+      gateDecision: 'BLOCKED',
+      mergeEligible: false,
+      completedPersonas: 0,
+    });
+    expect(arbitration.rationale).toMatch(/2 persona lane\(s\) failed|incomplete/i);
+  });
+
   it('publishes a non-mergeable partial status from a fixed configured roster', () => {
     const arbitration = computeArbitrationQuorum([
       { personaId: 'security', provider: 'provider-a', model: 'model-a', decision: 'APPROVE', findings: [] },

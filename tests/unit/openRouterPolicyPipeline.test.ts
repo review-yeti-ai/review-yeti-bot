@@ -337,6 +337,13 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     })).toThrow(/effective ignore policy also excludes openai, azure/i);
   });
 
+  it('rejects a Luna closed cohort that contains an unapproved provider instead of accepting one compatible member', () => {
+    expect(() => resolveOpenRouterPolicy({}, {
+      OPENROUTER_MODEL: 'openai/gpt-5.6-luna',
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['openai', 'unverified-gateway'], allow_fallbacks: false }),
+    })).toThrow(/incompatible or ignored member.*unverified-gateway/i);
+  });
+
   it('parses stream truthy/falsey from env and yaml', () => {
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: 'true' }).stream).toBe(true);
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: '1' }).stream).toBe(true);

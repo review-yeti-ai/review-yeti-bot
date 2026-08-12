@@ -101,22 +101,50 @@ function boundedRoute(response) {
   ].filter(([, value]) => value !== undefined && value !== null && String(value).length <= 200));
 }
 
-function semanticParseFailure(error, response) {
+function safeFailureReason(response, fallback = 'provider_failure') {
+  if (Number.isInteger(response?.status) && response.status >= 100 && response.status <= 599) return `http_${response.status}`;
+  if (response?.failureClass && /^[a-z][a-z0-9_]{1,80}$/u.test(String(response.failureClass))) return String(response.failureClass);
+  const error = String(response?.error || '').toLowerCase();
+  if (error === 'cancelled' || error === 'aborted') return error;
+  if (error === 'unresolved_evidence') return error;
+  if (/timeout/.test(error)) return 'timeout';
+  if (/network|fetch/.test(error)) return 'network_error';
+  return fallback;
+}
+
+function failureDiagnostic(input, response, attempt, className, reason) {
+  const route = boundedRoute(response);
+  const model = route.model || 'unknown';
+  const provider = route.provider || 'unknown';
+  const generationId = route.generationId || null;
+  return Object.freeze({
+    class: className,
+    reason,
+    personaId: input.persona.id,
+    provider,
+    providerRoute: provider,
+    model,
+    attempt: Number.isSafeInteger(attempt) && attempt > 0 ? attempt : 1,
+    generationId,
+    // Keep the existing route object for consumers that already render it.
+    route: Object.freeze({ model, provider, ...(generationId ? { generationId } : {}) }),
+  });
+}
+
+function semanticParseFailure(input, error, response, attempt) {
   const message = String(error?.message || '');
   let reason = 'schema_contract_violation';
   if (/model response is empty/i.test(message)) reason = 'empty_response';
   else if (/not valid JSON/i.test(message)) reason = 'invalid_json';
   else if (/unknown response fields/i.test(message)) reason = 'unknown_response_fields';
+  else if (/missing required fields/i.test(message)) reason = 'missing_required_fields';
   else if (/review_status must be/i.test(message)) reason = 'invalid_review_status';
+  else if (/must be an array|must be an object|invalid|exceeds|too many/i.test(message)) reason = 'schema_contract_violation';
 
   // Parser messages can contain untrusted model field names or values. Preserve only a fixed,
   // bounded classification and the provider route that OpenRouter actually resolved; never retain
   // model content in review telemetry or the published failure table.
-  return Object.freeze({
-    class: 'semantic_invalid_response',
-    reason,
-    route: boundedRoute(response),
-  });
+  return failureDiagnostic(input, response, attempt, 'semantic_invalid_response', reason);
 }
 
 function successfulProviderUsage(response) {
@@ -220,6 +248,10 @@ function incompleteLane({ input, runtime, parsed, termination, turns, usage, rou
   return {
     personaResult: {
       personaId: input.persona.id,
+      displayName: input.persona.name || input.persona.id,
+      ...(routes.at(-1)?.model ? { model: routes.at(-1).model } : {}),
+      ...(routes.at(-1)?.provider ? { provider: routes.at(-1).provider } : {}),
+      ...(routes.at(-1)?.generationId ? { generationId: routes.at(-1).generationId } : {}),
       decision: 'ERROR',
       findings,
       partial: receipts.length > 0 ? 1 : 0,
@@ -275,9 +307,12 @@ function completedLane({ input, runtime, parsed, response, turns, usage, routes,
 
 function retryableProvider(response, termination) {
   const provider = String(response?.provider || '').trim().toLowerCase().split('/')[0];
-  if (!provider || provider === 'openrouter') return null;
   const reason = `${termination || ''} ${response?.error || ''}`;
-  return /unresolved_evidence|malformed_response|timeout|aborted|provider_failure/i.test(reason) ? provider : null;
+  if (!/unresolved_evidence|malformed_response|timeout|aborted|provider_failure/i.test(reason)) return null;
+  // The generic OpenRouter route is an unresolved downstream-provider sentinel. It may be
+  // retried, but must never be added to provider.ignore because that would alter routing or
+  // accidentally broaden fallback selection. Known providers are quarantined run-locally below.
+  return !provider || provider === 'openrouter' ? 'unresolved' : provider;
 }
 
 function hasSingleClosedProvider(providerRouting) {
@@ -320,21 +355,33 @@ async function runPersonaInvestigation(input = {}) {
   const quarantineRetryProvider = !hasSingleClosedProvider(input.providerRouting);
   let providerUsageFacts = [];
   let providerRetries = 0;
+  let modelAttempts = 0;
   let turn = 1;
   while (turn <= limits.maxTurns) {
-    if (input.signal?.aborted) return incompleteLane({ input, runtime, parsed, termination: 'cancelled', turns: turn - 1, usage, routes, evidenceEnabled });
+    if (input.signal?.aborted) return incompleteLane({
+      input, runtime, parsed, termination: 'cancelled', turns: turn - 1, usage, routes,
+      failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_failure', 'cancelled'),
+      evidenceEnabled,
+    });
     const finalOnly = turn === limits.maxTurns;
     let response;
+    modelAttempts += 1;
     try {
       response = await input.modelTurn({
         messages,
         turn,
         finalOnly,
+        attempt: modelAttempts,
         signal: input.signal,
         providerIgnore: ignoredProviders.length > 0 ? [...ignoredProviders] : undefined,
       });
     } catch (error) {
-      return incompleteLane({ input, runtime, parsed, termination: input.signal?.aborted ? 'cancelled' : 'provider_failure', turns: turn, usage, routes, evidenceEnabled });
+      const cancelled = input.signal?.aborted;
+      return incompleteLane({
+        input, runtime, parsed, termination: cancelled ? 'cancelled' : 'provider_failure', turns: turn, usage, routes,
+        failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_invalid_response', cancelled ? 'cancelled' : 'provider_exception'),
+        evidenceEnabled,
+      });
     }
     addUsage(usage, response);
     const route = boundedRoute(response);
@@ -348,7 +395,7 @@ async function runPersonaInvestigation(input = {}) {
       const provider = retryableProvider(response, termination);
       if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
         providerRetries += 1;
-        if (quarantineRetryProvider) ignoredProviders.push(provider);
+        if (quarantineRetryProvider && provider !== 'unresolved') ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
@@ -356,7 +403,11 @@ async function runPersonaInvestigation(input = {}) {
         turn = 1;
         continue;
       }
-      return incompleteLane({ input, runtime, parsed, termination, turns: turn, usage, routes, evidenceEnabled });
+      return incompleteLane({
+        input, runtime, parsed, termination, turns: turn, usage, routes,
+        failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', safeFailureReason(response)),
+        evidenceEnabled,
+      });
     }
     try {
       parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds });
@@ -364,7 +415,7 @@ async function runPersonaInvestigation(input = {}) {
       const provider = retryableProvider(response, 'malformed_response');
       if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
         providerRetries += 1;
-        if (quarantineRetryProvider) ignoredProviders.push(provider);
+        if (quarantineRetryProvider && provider !== 'unresolved') ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
@@ -380,20 +431,24 @@ async function runPersonaInvestigation(input = {}) {
         turns: turn,
         usage,
         routes,
-        failure: semanticParseFailure(error, response),
+        failure: semanticParseFailure(input, error, response, modelAttempts),
         evidenceEnabled,
       });
     }
     const providerUsageFact = successfulProviderUsage(response);
     if (providerUsageFact) providerUsageFacts.push(providerUsageFact);
     if (parsed.reviewStatus === 'COMPLETE') return completedLane({ input: scopedInput, runtime, parsed, response, turns: turn, usage, routes, providerUsageFacts, evidenceEnabled });
-    if (finalOnly) return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes, evidenceEnabled });
+    if (finalOnly) return incompleteLane({
+      input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes,
+      failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', 'budget_exhausted'),
+      evidenceEnabled,
+    });
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
     if (!evidence.complete) {
       const provider = retryableProvider(response, evidence.termination);
       if (provider && providerRetries < MAX_LANE_PROVIDER_RETRIES) {
         providerRetries += 1;
-        if (quarantineRetryProvider) ignoredProviders.push(provider);
+        if (quarantineRetryProvider && provider !== 'unresolved') ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
@@ -401,12 +456,26 @@ async function runPersonaInvestigation(input = {}) {
         turn = 1;
         continue;
       }
-      return incompleteLane({ input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes, evidenceEnabled });
+      return incompleteLane({
+        input, runtime, parsed, termination: evidence.termination, turns: turn, usage, routes,
+        failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', evidence.termination || 'unresolved_evidence'),
+        evidenceEnabled,
+      });
     }
     messages = appendUntrustedEvidence(messages, evidence.outputs, { ...runtime.remaining(), turns: limits.maxTurns - turn });
     turn += 1;
   }
-  return incompleteLane({ input, runtime, parsed, termination: 'budget_exhausted', turns: limits.maxTurns, usage, routes, evidenceEnabled });
+  return incompleteLane({
+    input, runtime, parsed, termination: 'budget_exhausted', turns: limits.maxTurns, usage, routes,
+    failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_invalid_response', 'budget_exhausted'),
+    evidenceEnabled,
+  });
 }
 
-module.exports = { runPersonaInvestigation, appendUntrustedEvidence, MAX_LANE_PROVIDER_RETRIES };
+module.exports = {
+  runPersonaInvestigation,
+  appendUntrustedEvidence,
+  MAX_LANE_PROVIDER_RETRIES,
+  failureDiagnostic,
+  semanticParseFailure,
+};

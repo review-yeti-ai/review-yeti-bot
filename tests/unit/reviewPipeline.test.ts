@@ -613,6 +613,35 @@ deleted file mode 100644
     expect(comment).not.toMatch(/🎉 \*\*No issues detected across completed/);
   });
 
+  it('uses persona ids and stable fallbacks instead of undefined diagnostic labels', () => {
+    const comment = pipeline.formatPRComment({
+      totalPersonas: 1,
+      completedPersonas: 0,
+      quorumSatisfied: false,
+      verdict: 'BLOCK',
+      status: 'INCOMPLETE_REVIEW',
+      rationale: 'Provider response was invalid.',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    }, [{
+      personaId: 'security',
+      decision: 'ERROR',
+      findings: [],
+      failure: {
+        class: 'semantic_invalid_response',
+        reason: 'empty_response',
+        personaId: 'security',
+        providerRoute: 'azure',
+        model: 'openai/gpt-5.6-luna',
+        attempt: 2,
+        generationId: 'gen-empty',
+      },
+      error: 'malformed_response',
+    }], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, { enabled: true, model: 'openai/gpt-5.6-luna' });
+
+    expect(comment).toContain('| security | `security` | `azure` | `openai/gpt-5.6-luna` | `semantic_invalid_response` | empty_response | 2 | `gen-empty` |');
+    expect(comment).not.toContain('undefined');
+  });
+
   it('defaults to non-stream and still resolves provider/model from the JSON body', async () => {
     const { callOpenRouterChat } = pipeline;
     let seenBody = '';
@@ -763,10 +792,10 @@ deleted file mode 100644
       },
     ], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, { enabled: true, model: 'deepseek/deepseek-v4-flash-0731' });
 
-    expect(comment).toContain('| Persona | Provider | Model | Error class | Detail |');
-    expect(comment).toContain('| 🛡️ Security | `OpenAI` | `openai/gpt-5` | `timeout` |');
+    expect(comment).toContain('| Persona | Persona ID | Provider | Model | Error class | Reason | Attempt | Generation |');
+    expect(comment).toContain('| 🛡️ Security | `security` | `OpenAI` | `openai/gpt-5` | `timeout` |');
     // Structured semantic failures retain their resolved route without publishing model output.
-    expect(comment).toContain('| 📜 Licensing | `Morph` | `deepseek/deepseek-v4-flash-0731` | `semantic_invalid_response` | unknown_response_fields |');
+    expect(comment).toContain('| 📜 Licensing | `licensing` | `Morph` | `deepseek/deepseek-v4-flash-0731` | `semantic_invalid_response` | unknown_response_fields |');
     expect(comment).toContain('upstream that OpenRouter');
   });
 
@@ -908,7 +937,7 @@ deleted file mode 100644
     }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
 
     expect(comment).toContain('| Security | ✅ APPROVE | None | — |');
-    expect(comment).toContain('- **Security**<br>Model: `deepseek/deepseek-v4-flash-0731` via `openrouter`');
+    expect(comment).toContain('- **Security**<br>Model: `deepseek/deepseek-v4-flash-0731` via `unresolved downstream (OpenRouter)`');
     expect(comment).toContain('Usage: 0 in / 0 out');
     expect(comment).toMatch(/Turns:\s*1/);
     expect(comment).toContain('<summary><b>Model and usage details</b> (0 in / 0 out)</summary>');
