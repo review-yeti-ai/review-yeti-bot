@@ -21,3 +21,5 @@ export function runPersonaInvestigation(input: {
   signal?: AbortSignal;
   clock?: () => number;
 }): Promise<PersonaInvestigationResult>;
+
+export const MAX_LANE_PROVIDER_RETRIES: number;
