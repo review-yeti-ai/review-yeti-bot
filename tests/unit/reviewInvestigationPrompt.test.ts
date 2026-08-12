@@ -82,12 +82,12 @@ describe('bounded investigation prompt', () => {
 
   it('rejects findings without evidence or complete dispositions', () => {
     const finding = { severity: 'P1', path: 'src/a.js', line: 5, side: 'RIGHT', title: 'bug', body: 'trigger', risk_id: 'risk-1' };
-    expect(() => parseInvestigationResponse(JSON.stringify({ ...baseResponse, review_status: 'COMPLETE', evidence_requests: [], risk_dispositions: [{ risk_id: 'risk-1', status: 'confirmed', reason: 'confirmed' }], findings: [finding] }), limits)).toThrow(/evidence receipts/);
+    expect(() => parseInvestigationResponse(JSON.stringify({ ...baseResponse, review_status: 'COMPLETE', evidence_requests: [], risk_dispositions: [{ risk_id: 'risk-1', status: 'confirmed', reason: 'confirmed' }], findings: [finding] }), limits)).toThrow(/evidence_receipt_ids|evidence receipts/);
     expect(() => parseInvestigationResponse(JSON.stringify({ ...baseResponse, review_status: 'COMPLETE', evidence_requests: [], risk_dispositions: [], findings: [] }), limits)).toThrow(/dispose every/);
   });
 
   it('rejects unknown top-level fields and malformed JSON', () => {
-    expect(() => parseInvestigationResponse('{"review_status":"COMPLETE","unknown":true}', limits)).toThrow(/unknown response fields/);
+    expect(() => parseInvestigationResponse(JSON.stringify({ ...baseResponse, review_status: 'COMPLETE', unknown: true }), limits)).toThrow(/unknown response fields/);
     expect(() => parseInvestigationResponse('not json', limits)).toThrow(/valid JSON/);
   });
 });

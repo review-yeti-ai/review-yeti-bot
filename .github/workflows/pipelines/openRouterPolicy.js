@@ -324,6 +324,33 @@ function providerBaseSlug(provider) {
   return normalizeProviderSlug(provider).split('/')[0];
 }
 
+function closedProviderCohort(providerRouting) {
+  if (!providerRouting || typeof providerRouting !== 'object') return null;
+  const only = Array.isArray(providerRouting.only) ? providerRouting.only : [];
+  const order = Array.isArray(providerRouting.order) ? providerRouting.order : [];
+  if (only.length > 0) return only;
+  if (providerRouting.allow_fallbacks === false && order.length > 0) return order;
+  return null;
+}
+
+/**
+ * Returns whether a resolved downstream provider belongs to the closed trusted cohort.
+ * `openrouter` is a transport-level unresolved sentinel, never an actual downstream provider.
+ */
+function isProviderAllowedByRouting(provider, providerRouting) {
+  const resolved = normalizeProviderSlug(provider);
+  const cohort = closedProviderCohort(providerRouting);
+  // With no closed cohort, retain OpenRouter's normal route selection. The sentinel is still
+  // labeled as unresolved by the caller; it is not presented as a concrete downstream vendor.
+  if (!cohort) return true;
+  if (!resolved || resolved === 'openrouter') return false;
+  return cohort.some((candidate) => {
+    const allowed = normalizeProviderSlug(candidate);
+    if (!allowed) return false;
+    return allowed.includes('/') ? allowed === resolved : allowed === providerBaseSlug(resolved);
+  });
+}
+
 function safeRoutingIdentifier(value, fallback = 'redacted') {
   const normalized = String(value || '').trim().toLowerCase();
   return /^[a-z0-9._/-]{1,100}$/u.test(normalized) ? normalized : fallback;
@@ -364,7 +391,17 @@ function validateFixedModelProviderCompatibility(model, providerRouting) {
       && !ignored.has(normalizedProvider)
       && !ignored.has(baseProvider);
   });
-  if (effectiveCompatibleProviders.length > 0) return {
+  const unsupportedProviders = restriction.providers.filter((provider) => {
+    const normalizedProvider = normalizeProviderSlug(provider);
+    const baseProvider = providerBaseSlug(normalizedProvider);
+    return !compatibleProviders.includes(baseProvider)
+      || ignored.has(normalizedProvider)
+      || ignored.has(baseProvider);
+  });
+  // A closed allowlist is a contract for every provider OpenRouter may select. Checking only
+  // that one compatible endpoint exists lets an incompatible or ignored endpoint remain in the
+  // cohort and produces exactly the intermittent semantic failures this guard is meant to stop.
+  if (effectiveCompatibleProviders.length === restriction.providers.length) return {
     model: normalizedModel,
     compatibleProviders: [...compatibleProviders],
     restrictedProviders: restriction.providers.map((provider) => safeRoutingIdentifier(provider)),
@@ -372,13 +409,15 @@ function validateFixedModelProviderCompatibility(model, providerRouting) {
 
   const restrictedProviders = restriction.providers.map((provider) => safeRoutingIdentifier(provider));
   const ignoredCompatible = compatibleProviders.filter((provider) => ignored.has(provider));
+  const unsupported = unsupportedProviders.map((provider) => safeRoutingIdentifier(provider));
   const ignoredNote = ignoredCompatible.length > 0
     ? ` The effective ignore policy also excludes ${ignoredCompatible.join(', ')}.`
     : '';
   throw new Error(
     `OpenRouter fixed-model compatibility check failed: model "${safeRoutingIdentifier(normalizedModel, 'configured-model')}" `
     + `has approved compatible provider(s) ${compatibleProviders.join(' or ')}, but provider.${restriction.field} permits only `
-    + `[${restrictedProviders.join(', ')}]. No permitted provider can serve this model.${ignoredNote} `
+    + `[${restrictedProviders.join(', ')}]. The incompatible or ignored member(s) are [${unsupported.join(', ')}]. `
+    + `No permitted provider cohort can safely serve this model.${ignoredNote} `
     + `Set openrouter-provider-routing to an explicit compatible policy such as `
     + `{"only":["openai","azure"],"allow_fallbacks":false} while retaining the current `
     + `data_collection, zdr, and ignore restrictions, or select a model served by the approved `
@@ -533,6 +572,8 @@ module.exports = {
   validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,
   normalizeProviderSlug,
+  isProviderAllowedByRouting,
+  closedProviderCohort,
   isIgnoredProvider,
   DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000,
 };

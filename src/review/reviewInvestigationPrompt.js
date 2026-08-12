@@ -7,6 +7,31 @@ const DISPOSITIONS = new Set(['confirmed', 'rejected', 'not_applicable', 'incomp
 const SEVERITIES = new Set(['P0', 'P1', 'P2']);
 const SIDES = new Set(['RIGHT', 'LEFT']);
 const TOP_LEVEL_KEYS = new Set(['review_status', 'risk_plan', 'evidence_requests', 'risk_dispositions', 'findings']);
+const TOP_LEVEL_REQUIRED_KEYS = [...TOP_LEVEL_KEYS];
+
+const RISK_PLAN_KEYS = new Set(['id', 'unit_ids', 'statement', 'evidence_needed', 'allowed_tools']);
+const EVIDENCE_REQUEST_KEYS = new Set(['risk_id', 'unit_id', 'tool', 'args', 'reason']);
+const RISK_DISPOSITION_KEYS = new Set(['risk_id', 'status', 'reason']);
+const FINDING_KEYS = new Set([
+  'severity', 'path', 'line', 'side', 'title', 'body', 'suggestion', 'risk_id', 'unit_id',
+  'evidence_receipt_ids',
+]);
+
+function assertExactKeys(value, allowed, label) {
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) throw new Error(`${label} contains unknown fields: ${unknown.join(', ')}`);
+}
+
+function requiredArray(value, label) {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+
+function requiredText(value, label, max) {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be a non-empty string`);
+  if (value.length > max) throw new Error(`${label} exceeds the ${max}-character limit`);
+  return value.trim();
+}
 
 function bounded(value, max) {
   return String(value || '').trim().slice(0, max);
@@ -52,41 +77,54 @@ function scopedUnitId(value, label, assignedUnits, riskUnitIds) {
 function parseInvestigationResponse(content, limits = {}, options = {}) {
   const parsed = object(parseJson(content));
   if (!parsed) throw new Error('model response must be a JSON object');
+  const missing = TOP_LEVEL_REQUIRED_KEYS.filter((key) => !Object.hasOwn(parsed, key));
+  if (missing.length > 0) throw new Error(`response is missing required fields: ${missing.join(', ')}`);
   const unknown = Object.keys(parsed).filter((key) => !TOP_LEVEL_KEYS.has(key));
   if (unknown.length > 0) throw new Error(`unknown response fields: ${unknown.join(', ')}`);
   const status = String(parsed.review_status || '').trim();
   if (!RESPONSE_STATUSES.has(status)) throw new Error('review_status must be NEEDS_EVIDENCE or COMPLETE');
-  const riskRows = Array.isArray(parsed.risk_plan) ? parsed.risk_plan : [];
+  const riskRows = requiredArray(parsed.risk_plan, 'risk_plan');
   if (riskRows.length > Number(limits.maxRiskItems || 12)) throw new Error('risk plan exceeds the hard item limit');
   const riskIds = new Set();
   const assignedUnits = assignedUnitSet(options);
   const riskPlan = riskRows.map((row, index) => {
     const value = object(row);
     if (!value) throw new Error(`risk_plan[${index}] must be an object`);
-    const id = requiredId(value.id || `risk-${index + 1}`, 'risk id');
+    assertExactKeys(value, RISK_PLAN_KEYS, `risk_plan[${index}]`);
+    const id = requiredId(value.id, 'risk id');
     if (riskIds.has(id)) throw new Error(`duplicate risk id: ${id}`);
     riskIds.add(id);
-    const unitIds = Array.isArray(value.unit_ids) ? value.unit_ids.map((unitId) => requiredId(unitId, 'unit id')).slice(0, 50) : [];
+    const unitIds = requiredArray(value.unit_ids, `risk_plan[${index}].unit_ids`)
+      .map((unitId) => requiredId(unitId, 'unit id'));
+    if (unitIds.length > 50) throw new Error(`risk ${id} has too many unit ids`);
     if (assignedUnits && unitIds.length === 0) throw new Error(`risk ${id} must reference an assigned unit`);
     if (assignedUnits && unitIds.some((unitId) => !assignedUnits.has(unitId))) {
       throw new Error(`risk ${id} references a unit outside the dispatch assignment`);
     }
-    const allowedTools = Array.isArray(value.allowed_tools) ? [...new Set(value.allowed_tools.map((tool) => String(tool).trim()))] : [];
+    const statement = requiredText(value.statement, `risk ${id}.statement`, 400);
+    const evidenceNeeded = requiredArray(value.evidence_needed, `risk ${id}.evidence_needed`)
+      .map((entry) => requiredText(entry, `risk ${id}.evidence_needed item`, 240));
+    if (evidenceNeeded.length > 8) throw new Error(`risk ${id} requests too much evidence`);
+    const allowedTools = [...new Set(requiredArray(value.allowed_tools, `risk ${id}.allowed_tools`).map((tool) => {
+      if (typeof tool !== 'string' || !tool.trim()) throw new Error(`risk ${id} contains an invalid tool`);
+      return tool.trim();
+    }))];
     if (allowedTools.some((tool) => !EVIDENCE_TOOLS.has(tool))) throw new Error(`risk ${id} contains an unallowlisted tool`);
     return {
       id,
       unitIds,
-      statement: bounded(value.statement, 400),
-      evidenceNeeded: Array.isArray(value.evidence_needed) ? value.evidence_needed.map((entry) => bounded(entry, 240)).filter(Boolean).slice(0, 8) : [],
+      statement,
+      evidenceNeeded,
       allowedTools,
     };
   });
   const knownRiskIds = new Set(riskPlan.map((row) => row.id));
-  const evidenceRequests = Array.isArray(parsed.evidence_requests) ? parsed.evidence_requests : [];
+  const evidenceRequests = requiredArray(parsed.evidence_requests, 'evidence_requests');
   if (evidenceRequests.length > Number(limits.maxCalls || 12)) throw new Error('evidence request count exceeds the hard call limit');
   const requests = evidenceRequests.map((row, index) => {
     const value = object(row);
     if (!value) throw new Error(`evidence_requests[${index}] must be an object`);
+    assertExactKeys(value, EVIDENCE_REQUEST_KEYS, `evidence_requests[${index}]`);
     const riskId = requiredId(value.risk_id, 'risk id');
     if (!knownRiskIds.has(riskId)) throw new Error(`evidence request references unknown risk: ${riskId}`);
     const tool = String(value.tool || '').trim();
@@ -96,28 +134,33 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
     const args = object(value.args);
     if (!args) throw new Error(`evidence_requests[${index}].args must be an object`);
     const unitId = scopedUnitId(value.unit_id, `evidence request ${index}`, assignedUnits, planItem.unitIds);
+    const reason = requiredText(value.reason, `evidence_requests[${index}].reason`, 240);
     return {
       personaId: options.personaId ? requiredId(options.personaId, 'personaId') : undefined,
       riskId,
       ...(unitId ? { unitId } : {}),
       tool,
       args,
-      reason: bounded(value.reason, 240),
+      reason,
     };
   });
-  const dispositionRows = Array.isArray(parsed.risk_dispositions) ? parsed.risk_dispositions : [];
+  const dispositionRows = requiredArray(parsed.risk_dispositions, 'risk_dispositions');
   const riskDispositions = dispositionRows.map((row, index) => {
     const value = object(row);
     if (!value) throw new Error(`risk_dispositions[${index}] must be an object`);
+    assertExactKeys(value, RISK_DISPOSITION_KEYS, `risk_dispositions[${index}]`);
     const riskId = requiredId(value.risk_id, 'risk id');
     if (!knownRiskIds.has(riskId)) throw new Error(`disposition references unknown risk: ${riskId}`);
     const disposition = String(value.status || '').trim();
     if (!DISPOSITIONS.has(disposition)) throw new Error(`invalid disposition for ${riskId}`);
-    return { riskId, status: disposition, reason: bounded(value.reason, 400) };
+    return { riskId, status: disposition, reason: requiredText(value.reason, `risk_dispositions[${index}].reason`, 400) };
   });
-  const findings = (Array.isArray(parsed.findings) ? parsed.findings : []).slice(0, Number(limits.maxCandidateFindings || 5)).map((row, index) => {
+  const findingRows = requiredArray(parsed.findings, 'findings');
+  if (findingRows.length > Number(limits.maxCandidateFindings || 5)) throw new Error('findings exceed the hard candidate limit');
+  const findings = findingRows.map((row, index) => {
     const value = object(row);
     if (!value) throw new Error(`findings[${index}] must be an object`);
+    assertExactKeys(value, FINDING_KEYS, `findings[${index}]`);
     const severity = String(value.severity || '').trim();
     if (!SEVERITIES.has(severity)) throw new Error(`invalid finding severity at index ${index}`);
     const side = value.side === undefined ? 'RIGHT' : String(value.side).trim();
@@ -126,9 +169,12 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
     if (!knownRiskIds.has(riskId)) throw new Error(`finding references unknown risk: ${riskId}`);
     const planItem = riskPlan.find((item) => item.id === riskId);
     const unitId = scopedUnitId(value.unit_id, `finding ${index}`, assignedUnits, planItem.unitIds);
-    const evidenceReceiptIds = Array.isArray(value.evidence_receipt_ids)
-      ? value.evidence_receipt_ids.map((id) => requiredId(id, 'evidence receipt id')).slice(0, 3)
-      : [];
+    const evidenceReceiptIds = value.evidence_receipt_ids === undefined && options.evidenceEnabled === false
+      ? []
+      : Array.isArray(value.evidence_receipt_ids)
+        ? value.evidence_receipt_ids.map((id) => requiredId(id, 'evidence receipt id'))
+        : (() => { throw new Error(`finding ${index}.evidence_receipt_ids must be an array`); })();
+    if (evidenceReceiptIds.length > 3) throw new Error(`finding ${index} cites too many evidence receipts`);
     // Bounded evidence tooling can be globally unavailable for this whole investigation (a
     // disabled navigation registry -- see reviewNavigationTools.js / review-pipeline.js
     // makeEvidenceRegistry). When it is, no tool call this persona could make would ever
@@ -142,13 +188,19 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
     }
     const line = Number(value.line);
     if (!Number.isSafeInteger(line) || line < 1) throw new Error(`finding ${index} has an invalid line`);
+    const path = requiredText(value.path, `finding ${index}.path`, 500);
+    const title = requiredText(value.title, `finding ${index}.title`, 200);
+    const body = requiredText(value.body, `finding ${index}.body`, 2_000);
+    if (value.suggestion !== undefined && (typeof value.suggestion !== 'string' || value.suggestion.length > 2_000)) {
+      throw new Error(`finding ${index}.suggestion is invalid`);
+    }
     return {
       severity,
-      path: bounded(value.path, 500),
+      path,
       line,
       side,
-      title: bounded(value.title, 200),
-      body: bounded(value.body, 2_000),
+      title,
+      body,
       suggestion: bounded(value.suggestion, 2_000) || undefined,
       riskId,
       ...(unitId ? { unitId } : {}),

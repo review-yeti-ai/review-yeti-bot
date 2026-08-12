@@ -378,6 +378,20 @@ panel is `PARTIAL_REVIEW`; a below-quorum panel or one missing a safety floor is
 `merge-eligible=false`. Publication success therefore records evidence; it does not imply a
 successful or mergeable review.
 
+### Independent publication semantics
+
+The bounded investigation response is a closed JSON contract. Empty content, malformed JSON,
+legacy findings-only JSON, missing required fields, provider HTTP errors, and aborted/partial
+provider responses are failures, never approvals. Failed lanes retain their persona id, resolved
+downstream provider when known, model, attempt, generation id, and a bounded error class/reason;
+prompts, diffs, raw model output, credentials, and provider response bodies are not published.
+
+The GitHub check is authoritative for the review verdict and merge gate. The posted GitHub verdict
+and inline conversations are the human-readable publication of that result; inline findings are
+not a substitute for missing persona coverage. Review Yeti Cloud dashboard events are advisory
+telemetry only: a `review.started` or terminal event that receives HTTP 422, times out, or fails
+to deliver never changes the GitHub verdict, check, or publication result.
+
 ### What a reviewer is allowed to conclude from a partial view
 
 A reviewer that sees one pass of a multi-pass diff cannot tell a file it was not shown from a file
@@ -547,7 +561,7 @@ over collapsing two distinct defects, since the second hides one.
 | Input | Default | Description |
 | :--- | :--- | :--- |
 | `llm-api-key` | required | The sole OpenRouter inference API key, passed explicitly in the workflow action call. Management keys and alternate provider-key environment variables are not accepted. |
-| `action-sha` | required | Exact 40-hex commit SHA of the Review Yeti action source. It must match the immutable `uses:` ref; mutable refs and tags are rejected for durable receipts. |
+| `action-sha` | required | Exact 40-hex commit SHA of the Review Yeti action source. It must match the immutable `uses:` ref; mutable refs and tags are rejected for durable receipts. The central workflow derives it with `git rev-parse HEAD` only after checking out the action source immutably; generic consumers must pass their checked-out source SHA explicitly because an Action mount is not guaranteed to contain `.git`. |
 | `llm-base-url` | `https://openrouter.ai/api/v1` | OpenRouter-compatible base URL. |
 | `openrouter-provider-routing` | `{"only":["morph"],"allow_fallbacks":false}` | JSON `provider` policy forwarded to OpenRouter. The default pins review requests to the certified Morph provider and fails closed rather than escaping to another provider. Fixed models are checked against an explicit provider cohort before persona fan-out; `openai/gpt-5.6-luna` requires `only` to include `openai` or `azure`. Wafer and Novita are hard-banned after repeated timeout/provider-error lanes. It supports provider order/allow-fallbacks, parameter requirements, data-collection/ZDR policy, provider allow/deny lists, quantizations, sorting, throughput/latency preferences, and price caps. The built-in degraded-provider blocklist remains hard-banned. |
 | `openrouter-fallback-models` | — | Comma-separated ordered model fallbacks for transient timeouts, network errors, rate limits, and 5xx responses. Empty uses `github_action.openrouter.fallback_models` from the trusted base ref. |

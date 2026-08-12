@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { runPersonaInvestigation } from '../../src/review/reviewInvestigation';
 
 const identity = { provider: 'github', repository: 'owner/repo', prNumber: 22, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) };
@@ -34,6 +36,40 @@ function needsEvidenceResponse(path = 'src/a.js') {
 }
 
 describe('persona investigation state machine', () => {
+  it('replays the bounded provider-response fixture matrix without a clean approval on failure', async () => {
+    const fixturePath = path.join(process.cwd(), 'tests/fixtures/bounded-investigation-responses/response-cases.json');
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as { cases: Array<Record<string, any>> };
+
+    for (const testCase of fixture.cases) {
+      const providerResponse = testCase.providerResponse || {
+        ok: true,
+        content: testCase.content,
+        model: 'test/model',
+        provider: 'morph',
+        generationId: `gen-${testCase.id}`,
+      };
+      const result = await runPersonaInvestigation({
+        ...baseInput,
+        providerRouting: { only: ['morph'], allow_fallbacks: false },
+        modelTurn: sequence([providerResponse]),
+      });
+
+      if (testCase.expected === 'complete') {
+        expect(result.personaResult.decision, testCase.id).toBe('APPROVE');
+        expect(result.executionReceipt.termination, testCase.id).toBe('completed');
+      } else {
+        expect(result.personaResult.decision, testCase.id).toBe('ERROR');
+        expect(result.personaResult.failure?.class, testCase.id).toBe(testCase.expected);
+        expect(result.personaResult.failure?.reason, testCase.id).toBe(testCase.reason);
+        expect(result.personaResult.failure?.personaId, testCase.id).toBe('security');
+        expect(result.personaResult.failure?.provider, testCase.id).toBe(providerResponse.provider || 'morph');
+        expect(result.personaResult.failure?.model, testCase.id).toBe(providerResponse.model || 'test/model');
+        expect(result.personaResult.failure?.attempt, testCase.id).toBeGreaterThan(0);
+        expect(result.personaResult.failure).not.toHaveProperty('content');
+      }
+    }
+  });
+
   it('completes a clean review without forcing a tool call', async () => {
     const result = await runPersonaInvestigation({ ...baseInput, modelTurn: sequence([completeResponse()]) });
     expect(result.personaResult).toMatchObject({ decision: 'APPROVE', findings: [] });
@@ -256,6 +292,21 @@ describe('persona investigation state machine', () => {
     ]);
     expect(result.executionReceipt).toMatchObject({ termination: 'completed', turns: 1, evidenceCalls: 0 });
     expect(result.personaResult).toMatchObject({ decision: 'APPROVE', partial: 0 });
+  });
+
+  it('retries an invalid response with an unresolved OpenRouter route without broadening routing', async () => {
+    const calls: Array<{ providerIgnore?: string[] }> = [];
+    const modelTurn = async ({ providerIgnore }: { providerIgnore?: string[] }) => {
+      calls.push({ providerIgnore });
+      return { ok: true, content: '', model: 'openai/gpt-5.6-luna', provider: 'openrouter' };
+    };
+
+    const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
+
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.providerIgnore === undefined)).toBe(true);
+    expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'malformed_response' });
+    expect(result.personaResult.failure).toMatchObject({ class: 'semantic_invalid_response', reason: 'empty_response' });
   });
 
   // Regression coverage for the architecture-lane near-miss (2026-08-12, evidence:
