@@ -247,4 +247,4 @@ function buildInvestigationMessages({ persona = {}, dispatchAssignment, manifest
   return [{ role: 'system', content: system }, { role: 'user', content: user }];
 }
 
-module.exports = { buildInvestigationMessages, parseInvestigationResponse, RESPONSE_STATUSES, DISPOSITIONS };
+module.exports = { buildInvestigationMessages, parseInvestigationResponse, parseJson, RESPONSE_STATUSES, DISPOSITIONS };

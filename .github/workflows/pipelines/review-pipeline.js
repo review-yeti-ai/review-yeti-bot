@@ -118,7 +118,7 @@ const { createReviewUnitManifest } = require('../../../src/review/reviewUnitMani
 const { fetchImmutableRepositorySnapshot } = require('../../../src/mcp/reviewNavigationSnapshot');
 const { createGitHubBlobClient, createReviewNavigationToolRegistry } = require('../../../src/mcp/reviewNavigationTools');
 const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../../../src/review/reviewInvestigation');
-const { buildInvestigationMessages } = require('../../../src/review/reviewInvestigationPrompt');
+const { buildInvestigationMessages, parseJson: parseInvestigationJson } = require('../../../src/review/reviewInvestigationPrompt');
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
 const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMITS } = require('../../../src/review/evidenceContracts');
@@ -3316,7 +3316,23 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       transportName: transport.name,
     };
     const result = await reviewWithTransports.reviewWithModelImpl(persona, diffFiles, prContext, sessionContext, transportOptions);
-    const failed = result?.ok === false || result?.decision === 'ERROR';
+    let failed = result?.ok === false || result?.decision === 'ERROR';
+    let failureLabel = String(result?.error || 'provider_failure');
+    // A raw investigation turn whose content is not JSON dies upstream as an
+    // instant `invalid_json` lane failure (lane-level retries were flattened to
+    // 0 in REL-271), so a gateway that returns prose or truncated output must
+    // fail over HERE or not at all. Reuse the lane parser's own fence-tolerant
+    // extraction so this never rejects content the lane would have accepted.
+    // Observed live: cisco-cdr#4337 canary, 3/5 lanes invalid_json on the
+    // primary transport with two healthy transports sitting unused.
+    if (!failed && options.rawTurn === true && transportIndex < plan.length - 1) {
+      try {
+        parseInvestigationJson(result?.content);
+      } catch (error) {
+        failed = true;
+        failureLabel = 'invalid_json_content';
+      }
+    }
     if (!failed) return result;
     lastResult = result;
     if (String(result?.error || '') === 'cancelled' || options.signal?.aborted) return result;
@@ -3324,7 +3340,7 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       console.warn(
         `[Transport] FAILOVER persona=${persona?.id || 'unknown'}`
         + ` transport=${transport.name} (${transportIndex + 1}/${plan.length})`
-        + ` error=${String(result?.error || 'provider_failure').slice(0, 120)}`
+        + ` error=${failureLabel.slice(0, 120)}`
         + ` — trying transport=${plan[transportIndex + 1].name}`,
       );
     }
