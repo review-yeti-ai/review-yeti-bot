@@ -109,6 +109,7 @@ function runActualProviderPipeline(cwd: string, fileSystem: typeof fs = fs) {
       if (args?.[0] === 'pr' && args?.[1] === 'view') return { status: 0, stdout: JSON.stringify({ baseRefOid: 'a'.repeat(40), headRefOid: 'b'.repeat(40) }), stderr: '' };
       if (args?.[0] === 'api' && args?.[1] === 'graphql') return { status: 0, stdout: JSON.stringify([{ data: { viewer: { login: 'workflow-viewer' }, repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }]), stderr: '' };
       if (args?.[0] === 'api' && args?.[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      if (args?.[0] === 'api' && args?.[1]?.includes('/issues/42/comments') && !args.includes('--method')) return { status: 0, stdout: '', stderr: '' };
       if (args?.[0] === 'api' && args.includes('--method')) {
         const payload = JSON.parse(commandOptions.input);
         if (args[3]?.endsWith('/reviews')) postedReviews.push({ id: 101, body: payload.body, commit_id: payload.commit_id, user: { login: 'github-actions[bot]' } });
