@@ -593,6 +593,17 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     expect(state.commands.find((command) => command.args[1] === 'graphql')?.args).not.toContain('--paginate');
   });
 
+  it('retains quorum status in the compact review consumed by the trusted gate', () => {
+    const { state, commandRunner } = githubRunner();
+    const result = pipeline.postOrOutputComment('## 🟢 **Verdict: SHIP**\n- **Quorum Status**: `SATISFIED`\n- **Review Status**: `SHIP`', context, {
+      lineComments: [], fileComments: [], advisories: [], rejected: [],
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: true });
+    const reviewPost = state.postedPayloads.find((post) => post.endpoint.endsWith('/reviews'))!;
+    expect(reviewPost.payload.body).toContain('- **Quorum Status**: `SATISFIED`');
+  });
+
   it('does not publish a duplicate exact-head review or finding conversations', () => {
     const { state, commandRunner } = githubRunner();
     const plan = { lineComments: [lineComment(4)], fileComments: [], advisories: [], rejected: [] };
