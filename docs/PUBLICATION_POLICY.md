@@ -4,25 +4,28 @@ How review output is placed on a pull request, and why.
 
 ## Problem this solves
 
-Finding details need to be actionable where the code changes, without
-duplicating the same text in a large pull-request conversation comment.
-Publishing one review per persona is also too noisy.
+Finding details need to be actionable where the code changes, while the
+pull-request-level summary remains one sticky comment instead of growing a new
+expanded copy on every push. Publishing one review per persona is also too noisy.
 
 ## Policy
 
 | Surface | What goes there |
 |---------|-----------------|
-| **One `COMMENT` pull request review** | The verdict panel: exact-head metadata, finding counts, model and usage details. Later pushes update this same review rather than adding another. |
+| **One sticky issue comment** | The full per-PR summary: verdict, mapped roster, telemetry, findings, and exact-head markers. Later pushes edit this same comment and retain prior rounds under collapsed bounded history. |
+| **One `COMMENT` pull request review per reviewed head** | A compact exact-head receipt with the verdict/status and publication markers. GitHub binds it to the immutable commit; it is not the expanded summary. |
 | **Resolvable line comments** | Every cross-persona-deduped **P0/P1** finding, on an exact changed line. No bot-defined numeric cap. |
 | **Resolvable file comments** | P0/P1 findings on changed binary, gitlink, or patchless files that have no valid line anchor. |
 | **Counts only** | P2 findings are advisory. They appear as counts in the review and never open resolve-required threads. |
 
-Individual personas never submit their own reviews or root issue comments. The
-final arbiter phase owns the one review and all actionable conversations.
+Individual personas never submit their own reviews or issue comments. The final
+arbiter phase owns the sticky summary, compact review receipt, and all actionable
+conversations.
 
 Invalid paths and incorrect lines are rejected and counted in the review rather
 than suppressing independently validated conversations. The bot never invents a
-nearby anchor and never falls back to a generic issue comment.
+nearby anchor and never falls back to an unstructured generic issue comment; the
+single structured sticky summary is the intentional issue-comment surface.
 
 Every finding must verify against the exact reviewed identity, an evidence receipt emitted by the
 current lane, and the immutable snapshot before it reaches arbitration or publication. Rejected
@@ -34,8 +37,11 @@ findings are removed; snapshot, identity, evidence, side, or anchor uncertainty 
 Publication is bound to the exact reviewed head SHA:
 
 - Each finding carries a stable per-finding marker, so a retry updates in place.
-- The root review carries a stable per-PR summary marker, so it is updated
-  across pushes instead of duplicated.
+- One sticky issue comment carries the full per-PR summary and stable marker; it is
+  edited in place across pushes, with earlier rounds retained under bounded,
+  collapsed history instead of duplicating the expanded details.
+- Each reviewed head also gets an immutable, compact review receipt so GitHub
+  keeps the verdict and finding conversations attached to the exact commit.
 - Unresolved conversations are verified through GitHub's paginated GraphQL
   `reviewThreads` connection before the run reports success.
 - The Action rechecks the pull-request head immediately before it reads prior publication state

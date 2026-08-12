@@ -5482,7 +5482,7 @@ function readActionReviewThreads(commandRunner, prContext) {
 }
 
 /**
- * Stable per-pull-request anchor for the compact summary review.
+ * Stable per-pull-request anchor for the sticky full summary issue comment.
  *
  * The stable anchor links summaries for one pull request. The exact-head marker still deliberately
  * changes on every push: GitHub review `commit_id` is immutable, so every new reviewed head needs
@@ -5492,6 +5492,253 @@ function actionSummaryAnchor(prContext) {
   return prContext.repo && prContext.prNumber
     ? `<!-- review-yeti-bot:summary:v1:${prContext.repo}#${prContext.prNumber} -->`
     : '';
+}
+
+const SUMMARY_HISTORY_START = '<!-- review-yeti-bot:summary-history:v1:start -->';
+const SUMMARY_HISTORY_END = '<!-- review-yeti-bot:summary-history:v1:end -->';
+const SUMMARY_ROUND_START_PREFIX = '<!-- review-yeti-bot:summary-round:v1:start:';
+const SUMMARY_ROUND_END = '<!-- review-yeti-bot:summary-round:v1:end -->';
+const MAX_SUMMARY_HISTORY_ROUNDS = 8;
+const MAX_SUMMARY_HISTORY_CHARS = 40_000;
+const MAX_SUMMARY_ROUND_CHARS = 12_000;
+
+function summaryRoundDigest(commentBody) {
+  return sha256(String(commentBody || '')).slice(0, 16);
+}
+
+function summaryRoundMarker(prContext, commentBody) {
+  const digest = summaryRoundDigest(commentBody);
+  return prContext.repo && prContext.prNumber && prContext.headSha
+    ? `<!-- review-yeti-bot:summary-round:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:${digest} -->`
+    : '';
+}
+
+function summaryRoundStart(digest) {
+  return `${SUMMARY_ROUND_START_PREFIX}${digest} -->`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function readIssueComments(commandRunner, prContext) {
+  if (!prContext?.repo || !prContext?.prNumber) return [];
+  const result = ghApi(commandRunner, [
+    'api',
+    `repos/${prContext.repo}/issues/${prContext.prNumber}/comments?per_page=100`,
+    '--paginate',
+    '--jq',
+    '.[] | {id, body, user: .user.login} | tostring',
+  ]);
+  if (!result || result.status !== 0) {
+    throw new Error(`gh api could not read pull request issue comments: ${result?.stderr || result?.stdout || 'unknown error'}`);
+  }
+  const raw = String(result.stdout || '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    const values = Array.isArray(parsed) ? parsed.flat() : [parsed];
+    if (values.every((value) => value && typeof value === 'object')) return values.filter(Boolean);
+  } catch (_) {
+    // `--jq ... | tostring` normally returns one JSON object per line. Parse that shape below.
+  }
+  const comments = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === 'object') comments.push(parsed);
+    } catch (_) {
+      throw new Error('GitHub returned malformed pull request issue comments JSON');
+    }
+  }
+  return comments;
+}
+
+function issueCommentBelongsToPublisher(comment, expectedPublisherLogin) {
+  return !comment?.user?.login || !expectedPublisherLogin
+    || isExpectedPublisherLogin(comment.user.login, expectedPublisherLogin);
+}
+
+function splitStickySummaryBody(body) {
+  const text = String(body || '').trim();
+  const historyStart = text.indexOf(SUMMARY_HISTORY_START);
+  if (historyStart < 0) return { current: text, entries: [] };
+  const historyEnd = text.indexOf(SUMMARY_HISTORY_END, historyStart + SUMMARY_HISTORY_START.length);
+  if (historyEnd < 0) return { current: text.slice(0, historyStart).trim(), entries: [] };
+  const history = text.slice(historyStart + SUMMARY_HISTORY_START.length, historyEnd);
+  const entries = [];
+  const entryPattern = new RegExp(
+    `${escapeRegExp(SUMMARY_ROUND_START_PREFIX)}([a-f0-9]{16}) -->[\\s\\S]*?${escapeRegExp(SUMMARY_ROUND_END)}`,
+    'gu',
+  );
+  for (const match of history.matchAll(entryPattern)) entries.push(match[0]);
+  return { current: text.slice(0, historyStart).trim(), entries };
+}
+
+function summaryRoundTitle(body, roundNumber) {
+  const parsed = parsePriorSummaryReview(body);
+  const verdict = parsed.verdict || 'REVIEW';
+  const head = parsed.headSha ? parsed.headSha.slice(0, 7) : 'unknown head';
+  return `Round ${roundNumber} · ${verdict} · ${head}`;
+}
+
+function renderSummaryHistoryEntry(body, roundNumber) {
+  const digest = summaryRoundDigest(body);
+  const clipped = String(body || '').length > MAX_SUMMARY_ROUND_CHARS
+    ? `${String(body || '').slice(0, MAX_SUMMARY_ROUND_CHARS)}\n\n> _This historical round was clipped to keep the sticky summary bounded._`
+    : String(body || '');
+  return [
+    summaryRoundStart(digest),
+    '<details>',
+    `<summary>${summaryRoundTitle(body, roundNumber)}</summary>`,
+    '',
+    clipped,
+    '',
+    '</details>',
+    SUMMARY_ROUND_END,
+  ].join('\n');
+}
+
+function renderStickySummaryBody(commentBody, prContext, priorBody, options = {}) {
+  const summaryAnchor = actionSummaryAnchor(prContext);
+  const actionMarker = actionReviewMarker(prContext);
+  const resultMarker = actionResultMarker(prContext, publicationAttemptId(options, commentBody));
+  const roundMarker = summaryRoundMarker(prContext, commentBody);
+  const currentBody = [
+    String(commentBody || '').trim(),
+    summaryAnchor,
+    actionMarker,
+    resultMarker,
+    roundMarker,
+  ].filter(Boolean).join('\n\n');
+
+  if (!priorBody) return { body: currentBody, deduplicated: false, historyRounds: 0 };
+  const prior = splitStickySummaryBody(priorBody);
+  if (prior.current.includes(roundMarker)) {
+    return { body: priorBody, deduplicated: true, historyRounds: prior.entries.length };
+  }
+
+  let entries = [...prior.entries];
+  if (prior.current) entries.push(renderSummaryHistoryEntry(prior.current, entries.length + 1));
+  entries = entries.slice(-MAX_SUMMARY_HISTORY_ROUNDS);
+  while (entries.join('\n\n').length > MAX_SUMMARY_HISTORY_CHARS && entries.length > 1) entries.shift();
+
+  const history = entries.length > 0
+    ? [
+      SUMMARY_HISTORY_START,
+      '<details>',
+      `<summary>Previous review rounds (${entries.length})</summary>`,
+      '',
+      entries.join('\n\n'),
+      '',
+      '</details>',
+      SUMMARY_HISTORY_END,
+    ].join('\n')
+    : '';
+  return {
+    body: history ? `${currentBody}\n\n${history}` : currentBody,
+    deduplicated: false,
+    historyRounds: entries.length,
+  };
+}
+
+function compactReviewBody(commentBody, prContext, options = {}) {
+  const marker = Object.prototype.hasOwnProperty.call(options, 'marker') ? options.marker : actionReviewMarker(prContext);
+  const resultMarker = Object.prototype.hasOwnProperty.call(options, 'resultMarker')
+    ? options.resultMarker
+    : actionResultMarker(prContext, publicationAttemptId(options, commentBody));
+  return [
+    String(commentBody).match(/^## .*?\*\*Verdict:\s*(?:SHIP|FIX_FIRST|BLOCK)\*\*$/mu)?.[0]
+      || String(commentBody).match(/^## .*Verdict:\s*[^\n]+$/mu)?.[0]
+      || '## Review Yeti result',
+    String(commentBody).match(/^- \*\*Review Status\*\*:.*$/mu)?.[0] || '',
+    'Full round details are maintained in the sticky Review Yeti summary comment.',
+    marker,
+    resultMarker,
+  ].filter(Boolean).join('\n');
+}
+
+function postStickySummaryComment(commentBody, prContext, options = {}) {
+  const prNumber = prContext?.prNumber;
+  const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
+  if (!prNumber || !prContext?.repo || !prContext?.headSha) return { success: false, skipped: true };
+  const anchor = actionSummaryAnchor(prContext);
+  if (!anchor) return { success: false, skipped: true };
+
+  try {
+    assertCurrentPullRequest(prContext, { commandRunner });
+    const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+    const comments = readIssueComments(commandRunner, prContext);
+    const existingIssueComment = [...comments].reverse().find((comment) => (
+      typeof comment?.body === 'string'
+      && comment.body.includes(anchor)
+      && Number.isInteger(comment.id)
+      && issueCommentBelongsToPublisher(comment, expectedPublisherLogin)
+    ));
+    // Before sticky summaries existed, the full per-PR body lived in a root review. Migrate the
+    // newest bot-owned legacy body into the sticky issue comment so the first post after upgrade
+    // does not discard the historical round or create another expanded review surface.
+    const legacySummaryReview = existingIssueComment ? null : [...readActionReviews(commandRunner, prContext)]
+      .reverse()
+      .find((review) => (
+        typeof review?.body === 'string'
+        && review.body.includes(anchor)
+        && issueCommentBelongsToPublisher(review, expectedPublisherLogin)
+      ));
+    const priorBody = existingIssueComment?.body || legacySummaryReview?.body;
+    const rendered = renderStickySummaryBody(commentBody, prContext, priorBody, options);
+    if (rendered.deduplicated) {
+      return {
+        success: true,
+        postedViaGh: true,
+        deduplicated: true,
+        ...(existingIssueComment?.id ? { commentId: existingIssueComment.id } : {}),
+        historyRounds: rendered.historyRounds,
+      };
+    }
+
+    assertCurrentPullRequest(prContext, { commandRunner });
+    if (existingIssueComment) {
+      const updated = apiJson(commandRunner, 'PATCH', `repos/${prContext.repo}/issues/comments/${existingIssueComment.id}`, { body: rendered.body });
+      return {
+        success: true,
+        postedViaGh: true,
+        updatedInPlace: true,
+        commentId: updated.id || existingIssueComment.id,
+        historyRounds: rendered.historyRounds,
+      };
+    }
+
+    const created = postApiJson(commandRunner, `repos/${prContext.repo}/issues/${prNumber}/comments`, { body: rendered.body });
+    let compactedLegacyReview = false;
+    if (legacySummaryReview && Number.isInteger(legacySummaryReview.id)) {
+      try {
+        assertCurrentPullRequest(prContext, { commandRunner });
+        const legacyMarker = String(legacySummaryReview.body).match(/<!-- review-yeti-bot:v2:[^>]+ -->/u)?.[0] || '';
+        const legacyResultMarker = String(legacySummaryReview.body).match(/<!-- review-yeti-bot:result:v1:[^>]+ -->/u)?.[0] || '';
+        apiJson(commandRunner, 'PUT', `repos/${prContext.repo}/pulls/${prNumber}/reviews/${legacySummaryReview.id}`, {
+          body: compactReviewBody(legacySummaryReview.body, prContext, {
+            marker: legacyMarker,
+            resultMarker: legacyResultMarker,
+          }),
+        });
+        compactedLegacyReview = true;
+      } catch (err) {
+        console.warn(`[Publish] Could not compact legacy summary review ${legacySummaryReview.id}: ${err.message || err}`);
+      }
+    }
+    return {
+      success: true,
+      postedViaGh: true,
+      commentId: created.id,
+      historyRounds: rendered.historyRounds,
+      ...(legacySummaryReview ? { migratedLegacySummary: true } : {}),
+      ...(compactedLegacyReview ? { compactedLegacyReview: true } : {}),
+    };
+  } catch (err) {
+    return { success: false, postedViaGh: false, error: err.message || String(err) };
+  }
 }
 
 /**
@@ -5675,17 +5922,12 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
 
     const marker = actionReviewMarker(prContext);
     const resultMarker = actionResultMarker(prContext, publicationAttemptId(options, commentBody));
-    const summaryAnchor = actionSummaryAnchor(prContext);
     const bodyWithRejected = `${commentBody}${rejectedDetails}`;
-    const bodyWithAnchor = summaryAnchor && !bodyWithRejected.includes(summaryAnchor)
-      ? `${bodyWithRejected}\n\n${summaryAnchor}`
-      : bodyWithRejected;
-    const bodyWithMarker = !bodyWithAnchor.includes(marker)
-      ? `${bodyWithAnchor}\n\n${marker}`
-      : bodyWithAnchor;
-    const bodyToPublish = resultMarker && !bodyWithMarker.includes(resultMarker)
-      ? `${bodyWithMarker}\n${resultMarker}`
-      : bodyWithMarker;
+    const compactReview = compactReviewBody(commentBody, prContext, {
+      marker,
+      resultMarker,
+      publicationAttemptId: options.publicationAttemptId,
+    });
     try {
       // This is intentionally the first publication operation.  Reading prior reviews before a
       // fresh exact-head fence leaves a TOCTOU gap in which stale work can reach a write path.
@@ -5722,7 +5964,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/reviews`, {
           commit_id: prContext.headSha,
           event: 'COMMENT',
-          body: bodyToPublish,
+          body: compactReview,
           comments: missingLineComments.map((item) => ({
             path: item.path,
             line: item.line,
@@ -5783,6 +6025,14 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         throw new Error(`${missingAfterWrite.length} expected unresolved review thread(s) failed exact-head verification`);
       }
 
+      const summaryPublication = postStickySummaryComment(bodyWithRejected, prContext, {
+        commandRunner,
+        publicationAttemptId: options.publicationAttemptId,
+      });
+      if (!summaryPublication.success) {
+        throw new Error(`sticky summary publication failed: ${summaryPublication.error || 'unknown error'}`);
+      }
+
       const matchedThreads = expectedItems.map((item) => findVerifiedThread(item, prContext, verified, expectedPublisherLogin)).filter(Boolean);
       const reviewCommentIds = matchedThreads.flatMap((thread) => (thread.comments?.nodes || [])
         .filter((comment) => String(comment.body || '').includes('<!-- review-yeti-bot:finding:v1:'))
@@ -5793,6 +6043,8 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         success: true,
         postedViaGh: true,
         ...(reviewId ? { reviewId } : {}),
+        ...(summaryPublication.commentId ? { summaryCommentId: summaryPublication.commentId } : {}),
+        ...(summaryPublication.historyRounds !== undefined ? { summaryHistoryRounds: summaryPublication.historyRounds } : {}),
         reviewCommentIds,
         threadIds: matchedThreads.map((thread) => thread.id),
         ...(reviewExists && missingLineComments.length === 0 && missingFileComments.length === 0 ? { deduplicated: true } : {}),
@@ -6377,6 +6629,22 @@ function readPriorSummaryReview(commandRunner, prContext) {
   if (!anchor) return null;
   const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
   if (!expectedPublisherLogin) return null;
+
+  try {
+    const comments = readIssueComments(commandRunner, prContext);
+    const match = [...comments].reverse().find((comment) => (
+      typeof comment?.body === 'string'
+      && comment.body.includes(anchor)
+      && Number.isInteger(comment.id)
+      && issueCommentBelongsToPublisher(comment, expectedPublisherLogin)
+    ));
+    if (match) return { id: match.id, ...parsePriorSummaryReview(splitStickySummaryBody(match.body).current) };
+  } catch (err) {
+    console.warn(`[Incremental] Could not read sticky summary comments: ${err.message || err}`);
+  }
+
+  // Read legacy review summaries while repositories migrate to the sticky issue-comment format.
+  // This keeps skip-unchanged safe across an Action upgrade instead of forcing a needless rerun.
   let reviews;
   try {
     reviews = readActionReviews(commandRunner, prContext);
@@ -7872,6 +8140,7 @@ module.exports = {
   extractReferencedPaths,
   parseBotFindingComment,
   readAuthenticatedPublisherLogin,
+  readIssueComments,
   readActionReviewThreads,
   readCollaboratorPermission,
   readDecisionLedgerSnapshot,
@@ -7880,6 +8149,10 @@ module.exports = {
   readPriorBotFindings,
   suppressPriorFindings,
   actionSummaryAnchor,
+  summaryRoundMarker,
+  splitStickySummaryBody,
+  renderStickySummaryBody,
+  postStickySummaryComment,
   parsePriorSummaryReview,
   coveragePolicyIdentity,
   readPriorSummaryReview,

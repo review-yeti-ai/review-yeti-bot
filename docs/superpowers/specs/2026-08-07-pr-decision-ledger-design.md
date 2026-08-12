@@ -271,11 +271,12 @@ and exact-head gates remain unchanged.
 The existing stable summary anchor, per-finding marker, exact-head review publication, and
 post-write review-thread verification remain authoritative.
 
-The compact summary adds a bounded "Prior decisions" section containing counts for open, neutral
+The current summary adds a bounded "Prior decisions" section containing counts for open, neutral
 resolved, explicitly ignored, obsolete, and recurrent findings. Explicit ignores link to their
 GitHub command comment ids. It never reproduces command reasons automatically.
 
-Retries and reruns must update the stable summary rather than add a new root review. Existing open
+Retries and reruns must update the stable sticky summary rather than add another expanded root
+review. Each reviewed head may still receive a compact immutable receipt. Existing open
 threads are reused. A recurrent neutral-resolved finding must become actionable again rather than
 being counted as already resolved.
 
