@@ -92,8 +92,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
   const ignoredProviders = [...new Set([
     ...HARD_BANNED_PROVIDER_SLUGS,
     ...(envIgnored.length > 0 ? envIgnored : cfgIgnored),
-  ])]
-    .map((provider) => String(provider).trim().toLowerCase())
+  ].map(normalizeProviderSlug))]
     .filter(Boolean);
 
   // timeout_ms: action env > yaml > 30000. Clamp 500ms..600_000ms.
@@ -258,8 +257,55 @@ function normalizeModelId(model) {
   return String(model || '').trim().toLowerCase();
 }
 
+// OpenRouter exposes a stable machine slug (for example `open-inference`) and can return a
+// display/provider value (`OpenInference`) on a completion. Keep the request spelling
+// canonical, while comparing a separator-insensitive identity so a display name cannot evade
+// a configured exclusion. This mapping is deliberately small: unknown provider slugs retain
+// their documented spelling instead of being guessed from a display name.
+const PROVIDER_SLUG_ALIASES = Object.freeze({
+  openinference: 'open-inference',
+});
+
+function providerIdentifier(value) {
+  if (typeof value === 'string') return value.trim();
+  if (value && typeof value === 'object') {
+    for (const key of ['slug', 'id', 'name']) {
+      if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim();
+    }
+  }
+  return '';
+}
+
+function providerIdentityKey(value) {
+  const base = providerIdentifier(value).split('/')[0].trim().toLowerCase();
+  return base.normalize('NFKD').replace(/[^a-z0-9]/gu, '');
+}
+
+function normalizeProviderSlug(value) {
+  const raw = providerIdentifier(value);
+  if (!raw) return '';
+  const [base, ...suffix] = raw.split('/');
+  const identity = providerIdentityKey(base);
+  if (!identity) return '';
+  const normalizedBase = PROVIDER_SLUG_ALIASES[identity]
+    || base.trim().toLowerCase().replace(/[ _]+/gu, '-');
+  const normalizedSuffix = suffix.map((part) => part.trim().toLowerCase()).filter(Boolean);
+  return [normalizedBase, ...normalizedSuffix].join('/');
+}
+
+function isIgnoredProvider(provider, ignoredProviders) {
+  const resolved = normalizeProviderSlug(provider);
+  if (!resolved) return false;
+  const [resolvedBase] = resolved.split('/');
+  return (Array.isArray(ignoredProviders) ? ignoredProviders : []).some((ignored) => {
+    const normalized = normalizeProviderSlug(ignored);
+    if (!normalized) return false;
+    return normalized.includes('/') ? normalized === resolved : normalized === resolvedBase;
+  });
+}
+
 function providerBaseSlug(provider) {
-  return String(provider || '').trim().toLowerCase().split('/')[0];
+  return normalizeProviderSlug(provider).split('/')[0];
 }
 
 function safeRoutingIdentifier(value, fallback = 'redacted') {
@@ -293,10 +339,10 @@ function validateFixedModelProviderCompatibility(model, providerRouting) {
   if (!restriction) return undefined;
 
   const ignored = new Set((Array.isArray(providerRouting.ignore) ? providerRouting.ignore : [])
-    .map((provider) => String(provider || '').trim().toLowerCase())
+    .map(normalizeProviderSlug)
     .filter(Boolean));
   const effectiveCompatibleProviders = restriction.providers.filter((provider) => {
-    const normalizedProvider = String(provider || '').trim().toLowerCase();
+    const normalizedProvider = normalizeProviderSlug(provider);
     const baseProvider = providerBaseSlug(normalizedProvider);
     return compatibleProviders.includes(baseProvider)
       && !ignored.has(normalizedProvider)
@@ -332,7 +378,7 @@ function normalizeProviderList(value, field) {
     if (typeof provider !== 'string' || !provider.trim()) {
       throw new Error(`OpenRouter provider routing field ${field} must contain non-empty strings`);
     }
-    return provider.trim().toLowerCase();
+    return normalizeProviderSlug(provider);
   }))];
 }
 
@@ -450,12 +496,12 @@ function resolveProviderRouting(raw, configuredIgnoredProviders) {
     ...HARD_BANNED_PROVIDER_SLUGS,
     ...(configuredIgnoredProviders || []),
     ...(providerRouting.ignore || []),
-  ])].map((provider) => String(provider).trim().toLowerCase()).filter(Boolean);
+  ].map(normalizeProviderSlug))].filter(Boolean);
   return { ...providerRouting, ignore: ignoredProviders };
 }
 
 function isHardBannedProvider(provider) {
-  const slug = String(provider).trim().toLowerCase().split('/')[0];
+  const slug = providerBaseSlug(provider);
   return HARD_BANNED_PROVIDER_SLUGS.includes(slug);
 }
 
@@ -464,5 +510,7 @@ module.exports = {
   FIXED_MODEL_PROVIDER_COMPATIBILITY,
   validateFixedModelProviderCompatibility,
   HARD_BANNED_PROVIDER_SLUGS,
+  normalizeProviderSlug,
+  isIgnoredProvider,
   DEFAULT_OPENROUTER_TIMEOUT_MS: 30_000,
 };
