@@ -3326,11 +3326,17 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
     // Observed live: cisco-cdr#4337 canary, 3/5 lanes invalid_json on the
     // primary transport with two healthy transports sitting unused.
     if (!failed && options.rawTurn === true && transportIndex < plan.length - 1) {
+      // Prefer the caller's full-contract validator (the same parse the lane will
+      // run) so schema/contract violations fail over too — observed live on the
+      // cisco-cdr#4337 canary: a security lane died schema_contract_violation on
+      // the primary transport after its siblings recovered via failover. Fall
+      // back to bare fence-tolerant JSON validity when no validator is supplied.
+      const validator = typeof options.turnValidator === 'function' ? options.turnValidator : parseInvestigationJson;
       try {
-        parseInvestigationJson(result?.content);
+        validator(result?.content);
       } catch (error) {
         failed = true;
-        failureLabel = 'invalid_json_content';
+        failureLabel = typeof options.turnValidator === 'function' ? 'contract_violation_content' : 'invalid_json_content';
       }
     }
     if (!failed) return result;
@@ -7955,7 +7961,7 @@ async function main(options = {}) {
                 providerRouting: modelOptions.openRouterPolicy?.providerRouting,
                 evidenceRegistry: makeEvidenceRegistry(persona),
                 requireEvidenceBoundary: !options.modelClient,
-                modelTurn: ({ messages, turn, finalOnly, signal, providerIgnore }) => callPersonaModelTurn({
+                modelTurn: ({ messages, turn, finalOnly, signal, providerIgnore, validate }) => callPersonaModelTurn({
                   persona,
                   prContext,
                   sessionContext,
@@ -7963,7 +7969,9 @@ async function main(options = {}) {
                   turn,
                   finalOnly,
                   signal,
-                  options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore },
+                  // turnValidator lets the transport layer fail over on content that
+                  // would die upstream as an unrecoverable contract violation.
+                  options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore, turnValidator: validate },
                 }),
                 signal: laneSignal.signal,
                 laneDeadlineSignal: laneDeadline.signal,
