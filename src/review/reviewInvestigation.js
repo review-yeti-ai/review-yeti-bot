@@ -248,6 +248,19 @@ function retryableProvider(response, termination) {
   return /unresolved_evidence|malformed_response|timeout|aborted|provider_failure/i.test(reason) ? provider : null;
 }
 
+function hasSingleClosedProvider(providerRouting) {
+  if (!providerRouting || typeof providerRouting !== 'object') return false;
+  const only = Array.isArray(providerRouting.only) ? providerRouting.only : [];
+  const order = Array.isArray(providerRouting.order) ? providerRouting.order : [];
+  const configured = only.length > 0
+    ? only
+    : (providerRouting.allow_fallbacks === false ? order : []);
+  const providers = [...new Set(configured
+    .map((provider) => String(provider || '').trim().toLowerCase().split('/')[0])
+    .filter(Boolean))];
+  return providers.length === 1;
+}
+
 async function runPersonaInvestigation(input = {}) {
   if (!input.identity || !input.persona?.id || typeof input.modelTurn !== 'function') throw new TypeError('persona investigation requires identity, persona, and modelTurn');
   const dispatchAssignment = normalizeDispatchAssignment(input.dispatchAssignment, input.persona.id);
@@ -269,6 +282,10 @@ async function runPersonaInvestigation(input = {}) {
   const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUSD: 0 };
   const routes = [];
   const ignoredProviders = [];
+  // A retry normally quarantines the upstream that returned a malformed or failed response.
+  // A single closed cohort has no alternate endpoint, however; sending both `only: [provider]`
+  // and `ignore: [provider]` makes OpenRouter return a deterministic 404 instead of retrying.
+  const quarantineRetryProvider = !hasSingleClosedProvider(input.providerRouting);
   let providerUsageFacts = [];
   let providerRetries = 0;
   let turn = 1;
@@ -299,7 +316,7 @@ async function runPersonaInvestigation(input = {}) {
       const provider = retryableProvider(response, termination);
       if (provider && providerRetries < 1) {
         providerRetries += 1;
-        ignoredProviders.push(provider);
+        if (quarantineRetryProvider) ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
@@ -315,7 +332,7 @@ async function runPersonaInvestigation(input = {}) {
       const provider = retryableProvider(response, 'malformed_response');
       if (provider && providerRetries < 1) {
         providerRetries += 1;
-        ignoredProviders.push(provider);
+        if (quarantineRetryProvider) ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
@@ -334,7 +351,7 @@ async function runPersonaInvestigation(input = {}) {
       const provider = retryableProvider(response, evidence.termination);
       if (provider && providerRetries < 1) {
         providerRetries += 1;
-        ignoredProviders.push(provider);
+        if (quarantineRetryProvider) ignoredProviders.push(provider);
         runtime = createEvidenceRuntime({ identity: input.identity, registry: input.evidenceRegistry, limits, clock: input.clock });
         messages = initialMessages;
         parsed = null;
