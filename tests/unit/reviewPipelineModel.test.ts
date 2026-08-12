@@ -665,6 +665,21 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.provider.ignore).toContain('open-inference');
   });
 
+  it('keeps the title-cased OpenRouter route as unknown attribution rather than a selected banned provider', async () => {
+    const { impl } = stubFetch(validFindings, {
+      payload: {
+        provider: { name: 'OpenRouter' },
+        choices: [{ message: { content: validFindings } }],
+      },
+    });
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl, maxAttempts: 1,
+    });
+
+    expect(result).toMatchObject({ decision: 'FINDINGS' });
+    expect(result.error).toBeUndefined();
+  });
+
   it('does not issue a request when fixed Luna is incompatible with the Morph-only policy', async () => {
     const { impl, calls } = stubFetch(validFindings);
     const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '10476' }, null, {
