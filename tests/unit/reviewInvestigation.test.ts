@@ -338,10 +338,10 @@ describe('persona investigation state machine', () => {
     expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'unresolved_evidence' });
   });
 
-  it('fails closed on the first malformed response instead of quarantine-restarting the provider', async () => {
-    const calls: Array<{ providerIgnore?: string[]; turn: number }> = [];
-    const modelTurn = async ({ providerIgnore, turn }: { providerIgnore?: string[]; turn: number }) => {
-      calls.push({ providerIgnore, turn });
+  it('grants one corrective re-ask on a malformed response, then fails closed — never a quarantine restart', async () => {
+    const calls: Array<{ providerIgnore?: string[]; turn: number; messages: any[] }> = [];
+    const modelTurn = async ({ providerIgnore, turn, messages }: { providerIgnore?: string[]; turn: number; messages: any[] }) => {
+      calls.push({ providerIgnore, turn, messages });
       return { ok: true, content: '{not valid json', model: 'test/model', provider: 'morph' };
     };
 
@@ -351,12 +351,20 @@ describe('persona investigation state machine', () => {
       modelTurn,
     });
 
-    expect(calls).toEqual([{ providerIgnore: undefined, turn: 1 }]);
+    // Exactly two calls, both on turn 1 (a corrective re-ask, not a turn=1 reset
+    // with provider exclusion) — the second carries the bounded rejection class.
+    expect(calls.map((c) => ({ providerIgnore: c.providerIgnore, turn: c.turn }))).toEqual([
+      { providerIgnore: undefined, turn: 1 },
+      { providerIgnore: undefined, turn: 1 },
+    ]);
+    const reask = calls[1].messages[calls[1].messages.length - 1];
+    expect(reask.role).toBe('user');
+    expect(reask.content).toContain('rejected before publication: invalid_json');
     expect(result.executionReceipt).toMatchObject({ termination: 'malformed_response', complete: false });
     expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'malformed_response' });
   });
 
-  it('fails closed on a single unresolved-OpenRouter-route response without any retry', async () => {
+  it('fails closed after one corrective re-ask on an unresolved-OpenRouter-route empty response', async () => {
     const calls: Array<{ providerIgnore?: string[] }> = [];
     const modelTurn = async ({ providerIgnore }: { providerIgnore?: string[] }) => {
       calls.push({ providerIgnore });
@@ -365,7 +373,8 @@ describe('persona investigation state machine', () => {
 
     const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
 
-    expect(calls).toHaveLength(1);
+    // One original attempt + one corrective re-ask; never a provider exclusion.
+    expect(calls).toHaveLength(2);
     expect(calls.every((call) => call.providerIgnore === undefined)).toBe(true);
     expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'malformed_response' });
     expect(result.personaResult.failure).toMatchObject({ class: 'semantic_invalid_response', reason: 'empty_response' });

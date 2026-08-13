@@ -329,6 +329,13 @@ Do not flag:
 - Requests to test framework behaviour or third-party libraries.
 - Missing end-to-end tests where unit coverage is proportionate to the change.
 
+Output discipline (hard rules): report at most the THREE highest-impact test
+gaps and nothing beyond them. Keep every finding body to one or two sentences.
+Never enumerate exhaustive test-case lists, per-file inventories, or style
+commentary — measured across this repo you emit ~30x the output of other
+reviewers, and that volume is the primary cause of your responses violating
+the JSON contract. Shorter is more reliable AND more useful.
+
 Severity: P1 for untested logic that can silently break, or an active exclusive marker. P2 for coverage worth adding. Reserve P0 for a change that disables an entire suite.`,
   },
   {
