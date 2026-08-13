@@ -9,9 +9,9 @@ branding:
 inputs:
   llm-api-key:
     description: >-
-      The sole OpenRouter inference API key. It must be passed explicitly by the caller's
-      workflow action invocation; the action does not read alternate provider-key environment
-      variables or management keys.
+      The sole inference API key for the configured OpenRouter or direct OpenAI-compatible
+      gateway. It must be passed explicitly by the caller's workflow action invocation; the
+      action does not read alternate provider-key environment variables or management keys.
     required: false
     default: ''
   context7-api-key:
@@ -75,14 +75,15 @@ inputs:
     default: ''
   llm-base-url:
     description: >-
-      OpenRouter-compatible base URL for chat completions.
-      Default: https://openrouter.ai/api/v1.
+      OpenAI-compatible base URL for chat completions. Known direct gateways such as Fireworks
+      omit OpenRouter-only request fields automatically. Default: https://openrouter.ai/api/v1.
     required: false
     default: 'https://openrouter.ai/api/v1'
   openrouter-stream:
     description: >-
-      Use OpenRouter SSE streaming (default false). Also configurable via
-      github_action.openrouter.stream in .review-yeti.yaml. Action input wins over YAML.
+      Use SSE streaming (default false). Also configurable via github_action.openrouter.stream in
+      .review-yeti.yaml. Action input wins over YAML; direct gateways use their OpenAI-compatible
+      streaming contract.
     required: false
     default: 'false'
   openrouter-structured-output:
