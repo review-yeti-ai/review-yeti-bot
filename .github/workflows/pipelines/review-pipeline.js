@@ -1157,9 +1157,21 @@ async function applyFindingVerifier(personaResults, changedFiles, policy, prCont
 // snapshot at all -- same carve-out this file already applied before this function existed.
 function navigationCompletenessMatters({ personaResults, navigationSnapshot, options } = {}) {
   if (options?.modelClient) return false;
+  // Only GATE-RELEVANT (P0/P1) surviving grounded findings make a truncated
+  // navigation snapshot matter. The issue-#52 carve-out covered the
+  // zero-findings case, but a single surviving P2 advisory nit re-poisoned
+  // `incomplete` on monorepos where the navigation registry is unavailable —
+  // cisco-cdr#4337 canary 21: 5/5 lanes clean, "only minor nits", BLOCK. An
+  // advisory nit could not block the merge even if fully verified, so its
+  // navigation grounding cannot be what makes review coverage incomplete.
+  // P0/P1 findings keep the fail-closed behavior unchanged.
   const hasNavigationGroundedFindings = (Array.isArray(personaResults) ? personaResults : []).some((lane) => (
     Array.isArray(lane?.findings) ? lane.findings : []
-  ).some((finding) => finding?.unverified !== true));
+  ).some((finding) => {
+    if (finding?.unverified === true) return false;
+    const severity = String(finding?.severity || '').trim().toUpperCase();
+    return severity === 'P0' || severity === 'P1';
+  }));
   if (!hasNavigationGroundedFindings) return false;
   return !navigationSnapshot || navigationSnapshot.complete !== true;
 }
