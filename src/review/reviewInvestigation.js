@@ -332,6 +332,8 @@ async function runPersonaInvestigation(input = {}) {
   let providerUsageFacts = [];
   let modelAttempts = 0;
   let turn = 1;
+  // One corrective re-ask per lane for contract-rejected responses (see the parse catch below).
+  let semanticRepairAttempted = false;
   while (turn <= limits.maxTurns) {
     if (input.signal?.aborted) {
       // Distinguish the per-lane wall-clock backstop (lane-deadline-ms) from an ordinary outer
@@ -407,6 +409,23 @@ async function runPersonaInvestigation(input = {}) {
     try {
       parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds });
     } catch (error) {
+      const failure = semanticParseFailure(input, error, response, modelAttempts);
+      // One bounded corrective re-ask per lane. By the time this parse fails a
+      // multi-transport caller has already exhausted its transport plan on this
+      // turn — but every model saw the identical prompt with zero feedback. Tell
+      // the model the bounded rejection class (never the parser's raw message,
+      // which can echo untrusted content) and retry the SAME turn once. This is
+      // the feedback channel REL-271's retry-flattening never had; observed
+      // need: cisco-cdr#4337 canaries 14-19, heavy lanes drifting on contract
+      // bookkeeping across all three model builds.
+      if (!semanticRepairAttempted) {
+        semanticRepairAttempted = true;
+        messages = [...messages, {
+          role: 'user',
+          content: `Your previous response was rejected before publication: ${failure.reason}. Resend the ENTIRE corrected JSON object now — exact same schema, no commentary, no markdown fences. Fix only the rejected aspect; keep review_status, risk ids, dispositions, findings, and evidence receipt references mutually consistent.`,
+        }];
+        continue;
+      }
       return incompleteLane({
         input,
         runtime,
@@ -415,7 +434,7 @@ async function runPersonaInvestigation(input = {}) {
         turns: turn,
         usage,
         routes,
-        failure: semanticParseFailure(input, error, response, modelAttempts),
+        failure,
         evidenceEnabled,
       });
     }
