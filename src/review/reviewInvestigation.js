@@ -442,7 +442,35 @@ async function runPersonaInvestigation(input = {}) {
     }
     const providerUsageFact = successfulProviderUsage(response);
     if (providerUsageFact) providerUsageFacts.push(providerUsageFact);
-    if (parsed.reviewStatus === 'COMPLETE') return completedLane({ input: scopedInput, runtime, parsed, response, turns: turn, usage, routes, providerUsageFacts, evidenceEnabled });
+    if (parsed.reviewStatus === 'COMPLETE') {
+      const explicitRiskPlan = Array.isArray(parsed.riskPlan) && parsed.riskPlan.length > 0;
+      const assignedUnits = Array.isArray(input.investigationUnitIds)
+        ? [...new Set(input.investigationUnitIds.map((unitId) => String(unitId).trim()).filter(Boolean))]
+        : [];
+      const plannedUnits = new Set(explicitRiskPlan
+        ? parsed.riskPlan.flatMap((risk) => Array.isArray(risk.unitIds) ? risk.unitIds : [])
+        : assignedUnits);
+      const missingUnits = assignedUnits.filter((unitId) => !plannedUnits.has(unitId));
+      if (explicitRiskPlan && missingUnits.length > 0) {
+        if (finalOnly) {
+          return incompleteLane({
+            input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes,
+            failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', 'incomplete_unit_plan'),
+            evidenceEnabled,
+          });
+        }
+        messages = [
+          ...messages,
+          {
+            role: 'user',
+            content: `Your COMPLETE response omitted assigned review unit(s): ${missingUnits.join(', ')}. Return the entire JSON object again and include every assigned unit in risk_plan. For a unit with no actionable risk, add a rejected or not_applicable risk and disposition; do not invent findings or evidence receipts.`,
+          },
+        ];
+        turn += 1;
+        continue;
+      }
+      return completedLane({ input: scopedInput, runtime, parsed, response, turns: turn, usage, routes, providerUsageFacts, evidenceEnabled });
+    }
     if (finalOnly) return incompleteLane({
       input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes,
       failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', 'budget_exhausted'),
