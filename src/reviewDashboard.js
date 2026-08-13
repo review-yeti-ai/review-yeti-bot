@@ -6,6 +6,7 @@ const MAX_PAYLOAD_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_API_URL = 'https://api.reviewyeti.ai/api/v1/review-events';
 const DEFAULT_SITE_URL = 'https://reviewyeti.ai';
+const DEFAULT_DETAIL = 'metrics';
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 const VALID_STATUSES = new Set(['reviewing', 'completed', 'failed', 'incomplete']);
 const VALID_ENFORCEMENT = new Set(['advisory', 'block_on_block', 'block_non_ship']);
@@ -31,6 +32,36 @@ function sanitizeDashboardText(value, maxLength = 2000) {
 function nonNegativeInteger(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function optionalNonNegativeInteger(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+  }
+  return undefined;
+}
+
+function stableIdentifier(value, maxLength = 200) {
+  const normalized = clampString(value, maxLength);
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(normalized) ? normalized : undefined;
+}
+
+function stableInstructionHash(value) {
+  const normalized = clampString(value, 64).toLowerCase();
+  return /^[a-f0-9]{64}$/u.test(normalized) ? normalized : undefined;
+}
+
+function findingCounts(findings = []) {
+  const counts = { findingCount: 0, p0: 0, p1: 0, p2: 0 };
+  for (const finding of Array.isArray(findings) ? findings : []) {
+    const severity = String(finding?.severity || '').toUpperCase();
+    if (!['P0', 'P1', 'P2'].includes(severity)) continue;
+    counts.findingCount += 1;
+    counts[severity.toLowerCase()] += 1;
+  }
+  return counts;
 }
 
 function finiteCost(value) {
@@ -105,6 +136,40 @@ function normalizeArbitration(arbitration = {}, personaResults = [], publication
   };
 }
 
+function personaTelemetry(lane = {}) {
+  const derivedCounts = findingCounts(lane.findings);
+  const counts = Array.isArray(lane.findings)
+    ? derivedCounts
+    : {
+      findingCount: optionalNonNegativeInteger(lane.findingCount) ?? 0,
+      p0: optionalNonNegativeInteger(lane.p0) ?? 0,
+      p1: optionalNonNegativeInteger(lane.p1) ?? 0,
+      p2: optionalNonNegativeInteger(lane.p2) ?? 0,
+    };
+  const turnCount = optionalNonNegativeInteger(lane.turnCount, lane.investigationTurns, lane.turn);
+  const instructionTokens = optionalNonNegativeInteger(lane.instructionTokens);
+  const instructionVersion = stableIdentifier(lane.instructionVersion);
+  const instructionHash = stableInstructionHash(lane.instructionHash);
+
+  return {
+    persona: safeLabel(lane.personaId || lane.id, 'unknown-persona', 100),
+    provider: safeLabel(lane.provider, 'unknown-provider', 100),
+    model: safeLabel(lane.model, 'unknown-model', 300),
+    decision: ['APPROVE', 'FINDINGS', 'ERROR'].includes(lane.decision) ? lane.decision : 'ERROR',
+    durationMs: nonNegativeInteger(lane.durationMs),
+    promptTokens: nonNegativeInteger(lane.usage?.promptTokens),
+    completionTokens: nonNegativeInteger(lane.usage?.completionTokens),
+    totalTokens: nonNegativeInteger(lane.usage?.totalTokens)
+      || nonNegativeInteger(lane.usage?.promptTokens) + nonNegativeInteger(lane.usage?.completionTokens),
+    costUSD: finiteCost(lane.usage?.costUSD),
+    ...(turnCount === undefined ? {} : { turnCount }),
+    ...(instructionTokens === undefined ? {} : { instructionTokens }),
+    ...(instructionVersion ? { instructionVersion } : {}),
+    ...(instructionHash ? { instructionHash } : {}),
+    ...counts,
+  };
+}
+
 function workflowIdentity(env = process.env) {
   const server = String(env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '');
   const repository = clampString(env.PR_REPO || env.GITHUB_REPOSITORY || 'unknown/unknown', 300);
@@ -145,6 +210,7 @@ function buildReviewEvent(options = {}, env = process.env) {
   const githubUrl = eventPr.html_url
     || (prNumber ? `${String(env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '')}/${repository}/pull/${prNumber}` : '');
   const eventUrl = isStarted ? canonicalGithubUrl : clampString(env.PR_URL || eventPr.html_url || githubUrl, 1000);
+  const detail = String(options.detail || DEFAULT_DETAIL).trim().toLowerCase() === 'full' ? 'full' : DEFAULT_DETAIL;
   const sourceFindings = isStarted ? [] : (Array.isArray(options.findings)
     ? options.findings
     : Array.isArray(options.arbitration?.findings)
@@ -185,7 +251,7 @@ function buildReviewEvent(options = {}, env = process.env) {
     review: {
       status,
       ...(!isStarted && verdict ? { verdict } : {}),
-      ...(!isStarted && options.arbitration?.rationale ? { rationale: sanitizeDashboardText(options.arbitration.rationale, 2000) } : {}),
+      ...(!isStarted && detail === 'full' && options.arbitration?.rationale ? { rationale: sanitizeDashboardText(options.arbitration.rationale, 2000) } : {}),
       startedAt: new Date(startedAtMs).toISOString(),
       completedAt: new Date(eventCompletedAtMs).toISOString(),
       durationMs: isStarted ? 0 : Math.max(0, completedAtMs - startedAtMs),
@@ -213,19 +279,8 @@ function buildReviewEvent(options = {}, env = process.env) {
           ...(Array.isArray(options.expectedPersonas) ? { expectedPersonas: options.expectedPersonas } : {}),
         }, personaResults, options.publicationPlan),
       } : {}),
-      personas: isStarted ? [] : personaResults.map((lane) => ({
-        persona: safeLabel(lane.personaId || lane.id, 'unknown-persona', 100),
-        provider: safeLabel(lane.provider, 'unknown-provider', 100),
-        model: safeLabel(lane.model, 'unknown-model', 300),
-        decision: ['APPROVE', 'FINDINGS', 'ERROR'].includes(lane.decision) ? lane.decision : 'ERROR',
-        durationMs: nonNegativeInteger(lane.durationMs),
-        promptTokens: nonNegativeInteger(lane.usage?.promptTokens),
-        completionTokens: nonNegativeInteger(lane.usage?.completionTokens),
-        totalTokens: nonNegativeInteger(lane.usage?.totalTokens)
-          || nonNegativeInteger(lane.usage?.promptTokens) + nonNegativeInteger(lane.usage?.completionTokens),
-        costUSD: finiteCost(lane.usage?.costUSD),
-      })),
-      ...(!isStarted && options.detail !== 'metrics' ? { findings: uniqueFindings } : {}),
+      personas: isStarted ? [] : personaResults.map(personaTelemetry),
+      ...(!isStarted && detail === 'full' ? { findings: uniqueFindings } : {}),
     },
   };
 }
@@ -329,6 +384,7 @@ async function deliverReviewEvent(options = {}) {
 module.exports = {
   DEFAULT_API_URL,
   DEFAULT_SITE_URL,
+  DEFAULT_DETAIL,
   MAX_PAYLOAD_BYTES,
   buildReviewEvent,
   buildReviewStartedEvent,

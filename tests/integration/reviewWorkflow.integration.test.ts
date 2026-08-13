@@ -102,6 +102,15 @@ describe('cassette-backed review workflow harness', () => {
       pullRequest: { number: 42, headSha: 'a'.repeat(40) },
       review: { status: 'completed', verdict: 'SHIP', personas: expect.any(Array) },
     });
+    expect(receipt.dashboardEvents[1].review.findings).toBeUndefined();
+    expect(receipt.dashboardEvents[1].review.rationale).toBeUndefined();
+    expect(receipt.dashboardEvents[1].review.personas.every((persona: any) => (
+      persona.turnCount === 1
+      && persona.findingCount === 0
+      && persona.p0 === 0
+      && persona.p1 === 0
+      && persona.p2 === 0
+    ))).toBe(true);
     expect(receipt.dashboardEvents[0].eventId).not.toBe(receipt.dashboardEvents[1].eventId);
     expect(receipt.dashboardEvents[0].workflow).toEqual(receipt.dashboardEvents[1].workflow);
     const firstFanout = receipt.pipelineOrder.indexOf('fanout');

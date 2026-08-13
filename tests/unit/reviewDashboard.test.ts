@@ -16,7 +16,7 @@ const env = {
   GITHUB_ACTION_REF: 'v1',
 };
 
-function completedEvent(detail = 'full') {
+function completedEvent(detail?: string) {
   return dashboard.buildReviewEvent({
     detail,
     startedAtMs: 1_000,
@@ -41,6 +41,10 @@ function completedEvent(detail = 'full') {
       provider: 'provider-a',
       model: 'model-a',
       decision: 'FINDINGS',
+      investigationTurns: 2,
+      instructionTokens: 40,
+      instructionVersion: 'persona-security-v3',
+      instructionHash: 'a'.repeat(64),
       usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120, costUSD: 0.01 },
       findings: [{
         severity: 'P1', path: 'src/widget.ts', line: 7, side: 'RIGHT', title: 'Missing tenant scope',
@@ -75,7 +79,7 @@ function startedEvent() {
 
 describe('review dashboard delivery', () => {
   it('builds a deterministic sanitized event compatible with the cloud contract', () => {
-    const event = completedEvent();
+    const event = completedEvent('full');
 
     expect(event.eventId).toMatch(/^ctre_[a-f0-9]{40}$/u);
     expect(event.eventId).toBe(completedEvent().eventId);
@@ -85,6 +89,16 @@ describe('review dashboard delivery', () => {
     expect(event.review.durationMs).toBe(1_500);
     expect(event.review.findings).toHaveLength(1);
     expect(event.review.findings[0].fingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(event.review.personas[0]).toMatchObject({
+      turnCount: 2,
+      instructionTokens: 40,
+      instructionVersion: 'persona-security-v3',
+      instructionHash: 'a'.repeat(64),
+      findingCount: 1,
+      p0: 0,
+      p1: 1,
+      p2: 0,
+    });
     expect(event.review.arbitration).toMatchObject({
       algorithmVersion: 'review-arbitration-v1',
       expectedPersonas: ['security'],
@@ -177,8 +191,42 @@ describe('review dashboard delivery', () => {
     expect(fetchImpl.mock.calls.every((call) => call[1].headers['Idempotency-Key'] === event.eventId)).toBe(true);
   });
 
-  it('omits structured findings in metrics mode', () => {
+  it('defaults to metrics mode with mechanics but no finding detail or rationale', () => {
+    const event = completedEvent();
+
+    expect(event.review.findings).toBeUndefined();
+    expect(event.review.rationale).toBeUndefined();
+    expect(event.review.personas[0]).toMatchObject({
+      turnCount: 2,
+      instructionTokens: 40,
+      instructionVersion: 'persona-security-v3',
+      instructionHash: 'a'.repeat(64),
+      findingCount: 1,
+      p0: 0,
+      p1: 1,
+      p2: 0,
+    });
+    expect(JSON.stringify(event)).not.toContain('src/widget.ts');
+    expect(JSON.stringify(event)).not.toContain('Missing tenant scope');
+    expect(JSON.stringify(event)).not.toContain('The query can cross workspace boundaries');
+    expect(validateSchema(event)).toBe(true);
+    expect(validateSchema.errors).toBeNull();
+  });
+
+  it('keeps structured findings available only when full detail is explicit', () => {
+    expect(completedEvent('full').review.findings).toHaveLength(1);
     expect(completedEvent('metrics').review.findings).toBeUndefined();
+  });
+
+  it('does not fabricate a turn count when a historical persona has no turn telemetry', () => {
+    const event = dashboard.buildReviewEvent({
+      detail: 'metrics',
+      prContext: { repo: 'acme/widgets', prNumber: 42, headSha: 'abc123', title: 'Clean review' },
+      personaResults: [{ personaId: 'security', decision: 'APPROVE', findings: [] }],
+    }, env);
+
+    expect(event.review.personas[0]).not.toHaveProperty('turnCount');
+    expect(event.review.personas[0]).toMatchObject({ findingCount: 0, p0: 0, p1: 0, p2: 0 });
   });
 
   it('returns a cloud detail URL for accepted and duplicate deliveries', async () => {
