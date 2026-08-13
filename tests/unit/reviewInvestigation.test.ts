@@ -150,6 +150,24 @@ describe('persona investigation state machine', () => {
     expect(result.executionReceipt.completedUnitIds).toEqual([]);
   });
 
+  it('rejects a finding citing an unissued receipt and recovers via the corrective re-ask', async () => {
+    let call = 0;
+    const modelTurn = async ({ messages }: { messages: Array<{ content: string }> }) => {
+      call += 1;
+      if (call === 1) return needsEvidenceResponse();
+      const joined = messages.map((m: any) => m.content).join('\n');
+      const realId = JSON.parse(joined.match(/<evidence_results>\n([\s\S]*?)\n<\/evidence_results>/u)![1])[0].receipt_id;
+      const finding = (id: string) => ({ severity: 'P1', path: 'src/a.js', line: 1, side: 'RIGHT', title: 'guard', body: 'trigger', risk_id: 'risk-1', evidence_receipt_ids: [id] });
+      if (call === 2) return completeResponse({ findings: [finding('er_' + 'f'.repeat(64))] });
+      // The corrective re-ask names the bounded rejection; answer with the real receipt.
+      expect(joined).toContain('rejected before publication');
+      return completeResponse({ findings: [finding(realId)] });
+    };
+    const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
+    expect(result.personaResult).toMatchObject({ decision: 'FINDINGS' });
+    expect(result.executionReceipt.termination).toBe('completed');
+  });
+
   it('executes requested evidence and requires a final response', async () => {
     let call = 0;
     const modelTurn = async ({ messages }: { messages: Array<{ content: string }> }) => {

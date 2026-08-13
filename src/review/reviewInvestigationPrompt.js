@@ -192,6 +192,20 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
     // APPROVE in the 2026-08-11 cisco-cdr incident. options.evidenceEnabled === false is the only
     // condition that relaxes this; with evidence tooling on (the default), the requirement is
     // unchanged and unconditional.
+    // When the caller supplies the lane's executed receipt ids, a finding citing a
+    // receipt that was never issued is rejected HERE — inside the corrective
+    // re-ask loop, where the model has the real er_ ids in its evidence_results —
+    // instead of surviving the parse and being silently dropped downstream by the
+    // pipeline's ownership filter, which marks review coverage incomplete and
+    // blocks a clean review (cisco-cdr#4337 canary 20: 5/5 lanes clean, zero
+    // published findings, BLOCK solely from one hallucinated receipt id).
+    if (options.knownReceiptIds instanceof Set && options.knownReceiptIds.size > 0) {
+      for (const receiptId of evidenceReceiptIds) {
+        if (!options.knownReceiptIds.has(receiptId)) {
+          throw new Error(`finding ${index} cites an unissued evidence receipt`);
+        }
+      }
+    }
     if (evidenceReceiptIds.length === 0 && options.evidenceEnabled !== false) {
       throw new Error(`finding ${index} must cite evidence receipts`);
     }
