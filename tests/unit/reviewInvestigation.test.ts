@@ -128,14 +128,48 @@ describe('persona investigation state machine', () => {
     });
   });
 
-  it('does not fill in units omitted by an explicit partial risk plan', async () => {
+  it('re-asks for every assigned unit before accepting an explicit partial risk plan', async () => {
+    const calls: any[] = [];
+    const modelTurn = async (turnInput: any) => {
+      calls.push(turnInput);
+      if (calls.length === 1) return completeResponse();
+      return completeResponse({
+        risk_plan: [
+          { id: 'risk-auth', unit_ids: ['ru_auth'], statement: 'auth guard can be bypassed', evidence_needed: [], allowed_tools: [] },
+          { id: 'risk-events', unit_ids: ['ru_events'], statement: 'event path can bypass the guard', evidence_needed: [], allowed_tools: [] },
+        ],
+        risk_dispositions: [
+          { risk_id: 'risk-auth', status: 'rejected', reason: 'guard is present' },
+          { risk_id: 'risk-events', status: 'rejected', reason: 'guard is present' },
+        ],
+      });
+    };
+
     const result = await runPersonaInvestigation({
       ...baseInput,
       investigationUnitIds: ['ru_auth', 'ru_events'],
+      limits: { maxTurns: 2 },
+      modelTurn,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(JSON.stringify(calls[1].messages)).toContain('ru_events');
+    expect(JSON.stringify(calls[1].messages)).toMatch(/omitted|assigned units/i);
+    expect(result.personaResult.decision).toBe('APPROVE');
+    expect(result.executionReceipt.completedUnitIds).toEqual(['ru_auth', 'ru_events']);
+  });
+
+  it('fails closed when an explicit partial risk plan never covers every assigned unit', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      investigationUnitIds: ['ru_auth', 'ru_events'],
+      limits: { maxTurns: 2 },
       modelTurn: sequence([completeResponse()]),
     });
 
-    expect(result.executionReceipt.completedUnitIds).toEqual(['ru_auth']);
+    expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'budget_exhausted' });
+    expect(result.executionReceipt).toMatchObject({ termination: 'budget_exhausted', complete: false });
+    expect(result.executionReceipt.completedUnitIds).toEqual([]);
   });
 
   it('does not fill in units when an explicit risk plan has no unit assignment', async () => {
