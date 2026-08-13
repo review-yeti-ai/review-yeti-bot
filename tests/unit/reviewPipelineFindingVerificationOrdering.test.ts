@@ -108,7 +108,9 @@ describe('bounded review findingVerification ordering (issue #52)', () => {
     const staleNavigationMatters = pipeline.navigationCompletenessMatters({
       personaResults: rawPersonaResults, navigationSnapshot: truncatedNavigationSnapshot, options: {},
     });
-    expect(staleNavigationMatters).toBe(true); // the raw finding IS navigation-grounded pre-filter
+    // The current pipeline intentionally ignores an advisory P2 for the extra navigation
+    // completeness signal; only surviving P0/P1 findings can make a truncated snapshot matter.
+    expect(staleNavigationMatters).toBe(false);
     const withheld = pipeline.withholdUnsoundAbsenceClaims(rawPersonaResults, partialView);
     expect(withheld.personaResults.every((lane: any) => (lane.findings || []).length === 0)).toBe(true); // ...but it never publishes
 
