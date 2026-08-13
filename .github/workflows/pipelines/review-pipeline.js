@@ -3459,7 +3459,16 @@ async function runPersonaInvestigation({
       { ...(sessionContext || {}), turn, maxInvestigationTurns: maxTurns, investigationContext },
       { ...modelOptions, turn, maxInvestigationTurns: maxTurns, investigationContext },
     );
-    runs.push(run);
+    // The model-client compatibility seam may return the legacy lane shape without copying the
+    // loop's turn field. Preserve the actual loop turn here; this is observed state, not a
+    // historical fallback, and lets dashboard mechanics distinguish a two-turn investigation
+    // from a lane whose older result omitted telemetry entirely.
+    runs.push({
+      ...(run || {}),
+      ...(run?.turn === undefined && run?.turnCount === undefined && run?.investigationTurns === undefined
+        ? { turn }
+        : {}),
+    });
 
     const requests = Array.isArray(run?.evidenceRequests) ? run.evidenceRequests : [];
     const requestedEvidence = run?.reviewStatus === 'NEEDS_EVIDENCE'
@@ -3547,6 +3556,21 @@ function aggregatePersonaRuns(persona, runs, fallbackModel) {
     return { ...failed, ...(providerReceiptIds.length > 0 ? { providerReceiptIds } : {}) };
   }
   const findings = mergeFindings(completedRuns.map((run) => run.findings));
+  const explicitTurnCounts = completedRuns.map((run) => {
+    const parsed = Number(run.turnCount);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+  }).filter((value) => value !== undefined);
+  const reportedTurnCounts = completedRuns.map((run) => {
+    for (const candidate of [run.turnCount, run.investigationTurns, run.turn]) {
+      const parsed = Number(candidate);
+      if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+    }
+    return undefined;
+  }).filter((value) => value !== undefined);
+  const turnCount = explicitTurnCounts.length > 0
+    ? explicitTurnCounts.reduce((total, value) => total + value, 0)
+    : reportedTurnCounts.length > 0 ? Math.max(...reportedTurnCounts) : undefined;
+  const severityCounts = countFindingsBySeverity(findings);
   const rawFindings = completedRuns.flatMap((run) => Array.isArray(run.rawFindings) ? run.rawFindings : []);
   const incompleteRuns = completedRuns.filter((run) => run.incomplete === true || run.reviewStatus === 'INCOMPLETE_REVIEW' || run.decision === 'INCOMPLETE_REVIEW');
   const evidenceRequests = completedRuns.flatMap((run) => Array.isArray(run.evidenceRequests) ? run.evidenceRequests : []);
@@ -3558,9 +3582,13 @@ function aggregatePersonaRuns(persona, runs, fallbackModel) {
     model: completedRuns.find((run) => run.model)?.model || fallbackModel,
     decision: incomplete ? 'INCOMPLETE_REVIEW' : findings.length === 0 ? 'APPROVE' : 'FINDINGS',
     reviewStatus: incomplete ? 'INCOMPLETE_REVIEW' : findings.length === 0 ? 'APPROVE' : 'FINDINGS',
-    investigationTurns: Math.max(1, ...completedRuns.map((run, index) => Number(run.turn) || index + 1)),
+    ...(turnCount === undefined ? {} : { investigationTurns: turnCount, turnCount }),
     ...(incomplete ? { incomplete: true, evidenceRequests } : {}),
     findings,
+    findingCount: findings.length,
+    p0: severityCounts.P0,
+    p1: severityCounts.P1,
+    p2: severityCounts.P2,
     ...(rawFindings.length > 0 ? { rawFindings } : {}),
     rejectedFindings: completedRuns.flatMap((run) => run.rejectedFindings || []),
     // Every pass was billed, including ones whose output was unusable.
@@ -8000,7 +8028,12 @@ async function main(options = {}) {
               laneDeadline.dispose();
               laneSignal.dispose();
             }
-            runs.push(run.personaResult);
+            runs.push({
+              ...run.personaResult,
+              ...(Number.isSafeInteger(run.executionReceipt?.turns) && run.executionReceipt.turns >= 0
+                ? { turnCount: run.executionReceipt.turns }
+                : {}),
+            });
             laneExecutionReceipts.push(run.executionReceipt);
           }
           return aggregatePersonaRuns(persona, runs, modelConfig.model);

@@ -582,7 +582,7 @@ over collapsing two distinct defects, since the second hides one.
 | `dashboard-api-key` | — | Optional Review Yeti Cloud ingestion key. It is sent only as a Bearer credential and is never logged; delivery failures never change the GitHub review verdict. |
 | `dashboard-api-url` | — | Optional full `review-event.v1` ingestion endpoint, such as `https://api.reviewyeti.ai/api/v1/review-events`. Must be paired with `dashboard-api-key`. |
 | `dashboard-url` | `https://reviewyeti.ai` | Cloud site origin used to build the safe `dashboard-review-url` output and link in the final GitHub review. |
-| `dashboard-detail` | `full` | Cloud detail level: `full` retains structured findings; `metrics` sends aggregates only. |
+| `dashboard-detail` | `metrics` | Cloud detail level: `metrics` sends mechanics and aggregates only; set `full` explicitly to retain structured findings. |
 | `dashboard-timeout-ms` | `10000` | Fail-soft cloud delivery timeout in milliseconds. |
 
 When `dashboard-api-key` is configured and the cloud accepts the event, the final GitHub review

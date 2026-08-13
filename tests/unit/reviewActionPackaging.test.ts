@@ -87,6 +87,12 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['max-file-diff-chars'].description).not.toBe(action.inputs['max-diff-chars'].description);
   });
 
+  it('defaults dashboard telemetry to metrics and requires explicit full detail', () => {
+    expect(action.inputs['dashboard-detail'].default).toBe('metrics');
+    expect(action.inputs['dashboard-detail'].description).toMatch(/metrics.*default/i);
+    expect(action.inputs['dashboard-detail'].description).toMatch(/full.*explicit/i);
+  });
+
   it('keeps the trusted primary model distinct from its configured fallback', () => {
     const openrouter = reviewConfig.github_action.openrouter;
     expect(openrouter.model).not.toBe(openrouter.fallback_models[0]);
