@@ -334,6 +334,8 @@ async function runPersonaInvestigation(input = {}) {
   let turn = 1;
   // One corrective re-ask per lane for contract-rejected responses (see the parse catch below).
   let semanticRepairAttempted = false;
+  // Receipt ids actually issued to this lane; findings may only cite these.
+  const executedReceiptIds = new Set();
   while (turn <= limits.maxTurns) {
     if (input.signal?.aborted) {
       // Distinguish the per-lane wall-clock backstop (lane-deadline-ms) from an ordinary outer
@@ -379,7 +381,7 @@ async function runPersonaInvestigation(input = {}) {
         // authoritative parse below (same limits and context), instead of the failure
         // surfacing here as an unrecoverable lane death. Validation happens at most
         // twice per turn (transport layer + the parse below); both are pure.
-        validate: (content) => parseInvestigationResponse(content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds }),
+        validate: (content) => parseInvestigationResponse(content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds, knownReceiptIds: executedReceiptIds }),
       });
     } catch (error) {
       const cancelled = input.signal?.aborted;
@@ -407,7 +409,7 @@ async function runPersonaInvestigation(input = {}) {
       });
     }
     try {
-      parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds });
+      parsed = parseInvestigationResponse(response.content, limits, { personaId: input.persona.id, evidenceEnabled, assignedUnitIds, knownReceiptIds: executedReceiptIds });
     } catch (error) {
       const failure = semanticParseFailure(input, error, response, modelAttempts);
       // One bounded corrective re-ask per lane. By the time this parse fails a
@@ -447,6 +449,7 @@ async function runPersonaInvestigation(input = {}) {
       evidenceEnabled,
     });
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
+    for (const output of evidence.outputs || []) { if (output && output.receiptId) executedReceiptIds.add(output.receiptId); }
     if (!evidence.complete) {
       // A repeated evidence request is a model behavior, not a provider failure:
       // terminating the lane here turned one duplicate call into a dead lane and
