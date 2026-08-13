@@ -344,9 +344,9 @@ inputs:
     required: false
     default: 'https://reviewyeti.ai'
   dashboard-detail:
-    description: "Cloud telemetry detail: 'full' includes structured findings; 'metrics' sends aggregates only."
+    description: "Cloud telemetry detail: 'metrics' sends mechanics and aggregates by default; set 'full' explicitly for structured findings."
     required: false
-    default: 'full'
+    default: 'metrics'
   dashboard-timeout-ms:
     description: 'Cloud dashboard delivery timeout in milliseconds. Delivery is always fail-soft.'
     required: false
