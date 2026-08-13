@@ -106,6 +106,14 @@
         "completionTokens": { "type": "integer", "minimum": 0 },
         "totalTokens": { "type": "integer", "minimum": 0 },
         "costUSD": { "type": ["number", "null"], "minimum": 0 },
+        "turnCount": { "type": "integer", "minimum": 0 },
+        "instructionTokens": { "type": "integer", "minimum": 0 },
+        "instructionVersion": { "type": "string", "maxLength": 200 },
+        "instructionHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "findingCount": { "type": "integer", "minimum": 0 },
+        "p0": { "type": "integer", "minimum": 0 },
+        "p1": { "type": "integer", "minimum": 0 },
+        "p2": { "type": "integer", "minimum": 0 },
         "failureCategory": { "enum": ["timeout", "invalid_response", "rate_limited", "provider_unavailable", "provider_rejected", "provider_error"] }
       }
     },
