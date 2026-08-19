@@ -134,6 +134,7 @@ const { buildOverviewMessages, parseOverviewResponse, renderOverviewContextBlock
 const { buildRebuttalMessages, parseRebuttalResponse, renderRebuttalReply, selectRebuttalCandidates } = require('../../../src/review/rebuttalRerun');
 const { applyConfirmationOutcomes, buildConfirmationMessages, parseConfirmationResponse, selectFindingsForConfirmation } = require('../../../src/review/crossModelConfirm');
 const { demoteToAdvisories, matchConditionalLanes, resolveConditionalLanes } = require('../../../src/review/conditionalLanes');
+const { applyReflectionOutcomes, flattenPersonaFindings, runFindingReflection } = require('../../../src/review/reviewReflection');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -1109,6 +1110,31 @@ function findingVerifierIdentity(policy, prContext) {
     configDigest: policy.configDigest,
     policyDigest: policy.policyDigest,
   };
+}
+
+/**
+ * The independent LLM reflection pass (src/review/reviewReflection.js) can only ever narrow the
+ * published set -- KEEP, DOWNGRADE (never below the finding's own original severity), or DROP a
+ * finding, and DROP is refused for P0/P1 by the module itself. That is a strictly smaller blast
+ * radius than the finding verifier's own `enforce` mode (which can force a BLOCK verdict), so this
+ * does not need finding_verifier's full trusted-base-SHA config-tamper gate. It does need
+ * finding_verifier to be enabled and to have produced verified findingKeys/identity in the first
+ * place -- reflection re-verifies through the same exact-blob machinery internally
+ * (runFindingReflection -> verifyFindings) and has nothing to reflect on without it.
+ */
+function resolveFindingReflectionPolicy({ localConfig, findingVerifierPolicy, env = process.env } = {}) {
+  const disabled = (reason) => Object.freeze({ enabled: false, reason });
+  if (!findingVerifierPolicy?.enabled) return disabled('finding_verifier_disabled');
+  const configured = localConfig?.parsed?.review?.finding_reflection;
+  if (configured === undefined || configured === null) return disabled('not_configured');
+  if (configured === false) return disabled('disabled_by_config');
+  if (configured !== true && (typeof configured !== 'object' || Array.isArray(configured))) return disabled('invalid_config');
+  const settings = configured === true ? {} : configured;
+  if (settings.enabled === false) return disabled('disabled_by_config');
+  const envOverride = String(env.REVIEW_YETI_FINDING_REFLECTION ?? '').trim().toLowerCase();
+  if (envOverride === 'false') return disabled('disabled_by_env');
+  const limits = settings.limits && typeof settings.limits === 'object' && !Array.isArray(settings.limits) ? settings.limits : undefined;
+  return Object.freeze({ enabled: true, reason: 'configured', ...(limits ? { limits } : {}) });
 }
 
 function canonicalFindingPath(value) {
@@ -7045,7 +7071,7 @@ const REVIEW_DISPATCH_RUN_FIELDS = new Set([
   'diff_digest', 'policy_digest', 'plan_digest', 'manifest_digest', 'manifest_artifact_digest',
   'provider_receipt_digest',
   'units_total', 'units_emitted', 'units_omitted', 'files_changed', 'files_baseline_covered',
-  'coverage_gaps', 'rule_ids', 'stage_durations_ms', 'reflection', 'usage', 'latency_ms',
+  'coverage_gaps', 'rule_ids', 'stage_durations_ms', 'verification', 'reflection', 'usage', 'latency_ms',
 ]);
 const REVIEW_DISPATCH_MANIFEST_UNIT_FIELDS = new Set([
   'unit_id', 'status', 'files', 'persona', 'rule_id', 'omission_reason', 'bundle_key',
@@ -7099,12 +7125,37 @@ function reviewDispatchManifestDigests(manifestArtifact) {
   });
 }
 
-function buildReflectionCounts(findingVerification) {
+// Counts from the deterministic finding verifier (findingVerifier.js): exact-blob anchor and
+// base/head snapshot checks. This is NOT a self-critique -- it never reasons about whether a
+// finding is a real defect, only whether its claimed position and content are real. See
+// `buildFindingReflectionCounts` below for the actual LLM reflection pass's counts; the two used
+// to be conflated under one `reflection` field (both this receipt's and stage_durations_ms's),
+// which reported an independent-review stage that had never run. schema v2 gives each its own,
+// accurately named field.
+function buildVerificationCounts(findingVerification) {
   const summary = findingVerification?.summary || {};
-  const kept = Number.isSafeInteger(summary.accepted) && summary.accepted >= 0 ? summary.accepted : 0;
-  const dropped = Number.isSafeInteger(summary.rejected) && summary.rejected >= 0 ? summary.rejected : 0;
+  const accepted = Number.isSafeInteger(summary.accepted) && summary.accepted >= 0 ? summary.accepted : 0;
+  const rejected = Number.isSafeInteger(summary.rejected) && summary.rejected >= 0 ? summary.rejected : 0;
   const needsReview = Number.isSafeInteger(summary.needsReview) && summary.needsReview >= 0 ? summary.needsReview : 0;
-  return { candidates: kept + dropped + needsReview, kept, downgraded: 0, dropped, needs_review: needsReview };
+  return { candidates: accepted + rejected + needsReview, accepted, rejected, needs_review: needsReview };
+}
+
+// Counts from the actual independent LLM self-critique (src/review/reviewReflection.js,
+// runFindingReflection): a bounded, budget-capped KEEP/DOWNGRADE/DROP/NEEDS_REVIEW judgment on
+// each already-verified finding. `findingReflection` is that call's own `receipt.summary`, or
+// undefined when the stage did not run (disabled, no verified candidates, or a synthetic
+// modelClient test run) -- all default to zero rather than fabricating a count for a pass that
+// never executed.
+function buildFindingReflectionCounts(findingReflection) {
+  const summary = findingReflection?.summary || {};
+  const field = (name) => (Number.isSafeInteger(summary[name]) && summary[name] >= 0 ? summary[name] : 0);
+  return {
+    candidates: field('candidates'),
+    kept: field('kept'),
+    downgraded: field('downgraded'),
+    dropped: field('dropped'),
+    needs_review: field('needsReview'),
+  };
 }
 
 function buildPipelineReviewDispatchReceipt({
@@ -7113,6 +7164,7 @@ function buildPipelineReviewDispatchReceipt({
   personaResults,
   laneExecutionReceipts,
   findingVerification,
+  findingReflection,
   model,
   runtime,
   providerRoute,
@@ -7141,9 +7193,9 @@ function buildPipelineReviewDispatchReceipt({
   const coverageGaps = new Set(Array.isArray(manifest.coverage?.uncoveredPaths) ? manifest.coverage.uncoveredPaths : []).size;
   const emitted = manifestArtifact.units.filter((unit) => unit.status === 'emitted').length;
   const omitted = manifestArtifact.units.filter((unit) => unit.status === 'omitted').length;
-  const stages = stageDurationsMs || { planning: 0, investigation: 0, reflection: 0, publication: 0 };
+  const stages = stageDurationsMs || { planning: 0, investigation: 0, verification: 0, reflection: 0, publication: 0 };
   const receipt = {
-    schema: 'review-dispatch-run.v1',
+    schema: 'review-dispatch-run.v2',
     run_id: String(runtime?.runId || '').trim(),
     run_attempt: Number(runtime?.runAttempt),
     arm: String(runtime?.arm || '').trim(),
@@ -7175,10 +7227,12 @@ function buildPipelineReviewDispatchReceipt({
     stage_durations_ms: {
       planning: Number(stages.planning),
       investigation: Number(stages.investigation),
+      verification: Number(stages.verification),
       reflection: Number(stages.reflection),
       publication: Number(stages.publication),
     },
-    reflection: buildReflectionCounts(findingVerification),
+    verification: buildVerificationCounts(findingVerification),
+    reflection: buildFindingReflectionCounts(findingReflection),
     usage: collectProviderReceiptUsage(personaResults),
     latency_ms: latencyMs === undefined || latencyMs === null ? null : Number(latencyMs),
   };
@@ -7194,7 +7248,7 @@ function validateReviewDispatchRunReceipt(receipt) {
   const missing = [...REVIEW_DISPATCH_RUN_FIELDS].filter((key) => !Object.hasOwn(receipt, key));
   if (unknown.length) errors.push(`unknown receipt fields: ${unknown.join(', ')}`);
   if (missing.length) errors.push(`missing receipt fields: ${missing.join(', ')}`);
-  if (receipt.schema !== 'review-dispatch-run.v1') errors.push('schema must be review-dispatch-run.v1');
+  if (receipt.schema !== 'review-dispatch-run.v2') errors.push('schema must be review-dispatch-run.v2');
   if (typeof receipt.run_id !== 'string' || !receipt.run_id || receipt.run_id.length > 120) errors.push('run_id must be a bounded string');
   if (!Number.isSafeInteger(receipt.run_attempt) || receipt.run_attempt < 1 || receipt.run_attempt > 1000) errors.push('run_attempt must be 1-1000');
   if (!['baseline', 'candidate'].includes(receipt.arm)) errors.push('arm must be baseline or candidate');
@@ -7219,8 +7273,10 @@ function validateReviewDispatchRunReceipt(receipt) {
     const keys = Object.keys(value);
     if (keys.some((key) => !fields.includes(key)) || fields.some((key) => !Object.hasOwn(value, key))) errors.push(`${label} fields must be closed and complete`);
   };
-  exactObject(receipt.stage_durations_ms, ['planning', 'investigation', 'reflection', 'publication'], 'stage_durations_ms');
-  for (const field of ['planning', 'investigation', 'reflection', 'publication']) if (!Number.isSafeInteger(receipt.stage_durations_ms?.[field]) || receipt.stage_durations_ms[field] < 0 || receipt.stage_durations_ms[field] > 86_400_000) errors.push(`stage_durations_ms.${field} is invalid`);
+  exactObject(receipt.stage_durations_ms, ['planning', 'investigation', 'verification', 'reflection', 'publication'], 'stage_durations_ms');
+  for (const field of ['planning', 'investigation', 'verification', 'reflection', 'publication']) if (!Number.isSafeInteger(receipt.stage_durations_ms?.[field]) || receipt.stage_durations_ms[field] < 0 || receipt.stage_durations_ms[field] > 86_400_000) errors.push(`stage_durations_ms.${field} is invalid`);
+  exactObject(receipt.verification, ['candidates', 'accepted', 'rejected', 'needs_review'], 'verification');
+  for (const field of ['candidates', 'accepted', 'rejected', 'needs_review']) if (!Number.isSafeInteger(receipt.verification?.[field]) || receipt.verification[field] < 0) errors.push(`verification.${field} is invalid`);
   exactObject(receipt.reflection, ['candidates', 'kept', 'downgraded', 'dropped', 'needs_review'], 'reflection');
   for (const field of ['candidates', 'kept', 'downgraded', 'dropped', 'needs_review']) if (!Number.isSafeInteger(receipt.reflection?.[field]) || receipt.reflection[field] < 0) errors.push(`reflection.${field} is invalid`);
   exactObject(receipt.usage, ['prompt_tokens', 'completion_tokens', 'cost_usd'], 'usage');
@@ -7868,6 +7924,9 @@ async function main(options = {}) {
   let coverage;
   let reviewUnitManifest = null;
   let findingVerification = null;
+  let findingReflectionReceipt = null;
+  let findingReflectionDurationMs = 0;
+  let findingReflectionUsage = [];
   let arbitration = null;
   let expectedPersonaIds = [];
   let usageTotal;
@@ -9246,6 +9305,65 @@ async function main(options = {}) {
       return;
     }
 
+    // Independent LLM self-critique: one bounded turn per already-verified finding
+    // (KEEP/DOWNGRADE/DROP/NEEDS_REVIEW -- src/review/reviewReflection.js), run only when
+    // explicitly configured (review.finding_reflection) on top of an enabled finding verifier.
+    // See resolveFindingReflectionPolicy's doc comment for why that layering, not
+    // finding_verifier's own trusted-base-SHA gate, is the right trust boundary here. This runs
+    // once, after both the bounded and legacy investigation branches have converged on their
+    // final personaResults/findingVerification, and strictly before arbitration -- a dropped or
+    // downgraded finding must not still count toward the verdict. Any failure here (disabled,
+    // no verified candidates, provider outage) leaves every finding exactly as the earlier
+    // stages left it; reflection can only narrow the published set, never expand it or block a
+    // verdict on its own.
+    {
+      const reflectionPolicy = resolveFindingReflectionPolicy({ localConfig, findingVerifierPolicy, env: runtimeEnv });
+      if (reflectionPolicy.enabled && Array.isArray(personaResults) && personaResults.some((lane) => (lane?.findings || []).length > 0)) {
+        const reflectionStartedAt = now();
+        try {
+          const { findings: flatFindings, locations } = flattenPersonaFindings(personaResults);
+          const reflectionIdentity = findingVerifierIdentity(findingVerifierPolicy, prContext);
+          const exactBlobSnapshot = await fetchExactFindingBlobSnapshot(reflectionIdentity, shownReviewFiles, flatFindings, { commandRunner, fetchImplementation });
+          const reflectionResult = await runFindingReflection({
+            findings: flatFindings,
+            changedFiles: shownReviewFiles,
+            exactBlobSnapshot,
+            identity: reflectionIdentity,
+            limits: reflectionPolicy.limits,
+            signal: cancellation.signal,
+            reflectTurn: ({ messages, signal }) => callPersonaModelTurn({
+              persona: { id: 'finding-reflection', name: 'Finding Reflection' },
+              prContext,
+              sessionContext,
+              messages,
+              options: {
+                ...modelConfig,
+                modelClient: options.modelClient,
+                fetchImplementation,
+                reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
+                turnValidator: (content) => {
+                  const parsed = JSON.parse(content);
+                  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('finding reflection response must be a JSON object');
+                  return parsed;
+                },
+              },
+              signal,
+            }),
+          });
+          const applied = applyReflectionOutcomes(personaResults, locations, reflectionResult);
+          personaResults = applied.personaResults;
+          findingReflectionReceipt = reflectionResult.receipt;
+          if (reflectionResult.receipt.usage) findingReflectionUsage.push({ usage: reflectionResult.receipt.usage });
+          if (applied.dropped > 0 || applied.downgraded > 0) {
+            console.log(`[Reflection] ${applied.dropped} finding(s) dropped, ${applied.downgraded} downgraded after independent self-critique.`);
+          }
+        } catch (error) {
+          console.warn(`[Reflection] Unavailable (${error.message}); findings stand as reported.`);
+        }
+        findingReflectionDurationMs = Math.max(0, Number(now()) - Number(reflectionStartedAt));
+      }
+    }
+
     console.log('[Arbitration] Computing binding arbitration quorum...');
     if (!boundedMode) reviewUnitManifest = buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
@@ -9288,7 +9406,7 @@ async function main(options = {}) {
   console.log('[Formatting] Planning resolvable P0/P1 conversations and compact review output...');
   // The overview pre-pass was billed too; an unseen cost is how a review
   // panel quietly becomes expensive.
-  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : []), ...rebuttalUsage, ...confirmationUsage, ...conditionalLaneUsage]);
+  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : []), ...rebuttalUsage, ...confirmationUsage, ...conditionalLaneUsage, ...findingReflectionUsage]);
   if (usageTotal.totalTokens > 0) {
     console.log(`[Usage] ${usageTotal.totalTokens} token(s) across ${personaResults.length} reviewer(s)${usageTotal.costUSD ? ` — $${usageTotal.costUSD.toFixed(4)}` : ''}.`);
   }
@@ -9301,6 +9419,7 @@ async function main(options = {}) {
         personaResults,
         laneExecutionReceipts,
         findingVerification,
+        findingReflection: findingReflectionReceipt,
         model: modelConfig.model,
         runtime: {
           runId: runtimeEnv.GITHUB_RUN_ID,
@@ -9322,6 +9441,11 @@ async function main(options = {}) {
           tools: [...EVIDENCE_TOOLS].sort(),
           limits: investigationLimits,
         },
+        // planning/investigation/publication remain unmeasured pre-existing zeros (see the
+        // stageDurationsMs fallback in buildPipelineReviewDispatchReceipt) -- this PR only adds a
+        // real measurement for the one stage it introduces, and does not expand scope to
+        // instrument the others.
+        stageDurationsMs: { planning: 0, investigation: 0, verification: 0, reflection: findingReflectionDurationMs, publication: 0 },
         latencyMs: Math.max(0, Number(now()) - Number(startedAt)),
       });
       reviewDispatchArtifacts = writeReviewDispatchArtifacts(reviewDispatchReceipt, {
@@ -9692,6 +9816,7 @@ module.exports = {
   resolveTrustedReviewUnitsPolicy,
   resolveTrustedFindingVerifierPolicy,
   findingVerifierIdentity,
+  resolveFindingReflectionPolicy,
   fetchExactFindingBlobSnapshot,
   applyFindingVerifier,
   applyFindingVerifierGate,

@@ -389,3 +389,65 @@ describe('finding verifier pipeline policy and publication fence', () => {
     });
   });
 });
+
+describe('resolveFindingReflectionPolicy', () => {
+  const enabledVerifier = { enabled: true, mode: 'enforce', configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64) };
+
+  it('stays disabled regardless of configuration when the finding verifier itself is disabled', () => {
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: { review: { finding_reflection: true } } },
+      findingVerifierPolicy: { enabled: false },
+      env: {},
+    })).toEqual({ enabled: false, reason: 'finding_verifier_disabled' });
+  });
+
+  it('is off by default when review.finding_reflection is not set at all', () => {
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: {} },
+      findingVerifierPolicy: enabledVerifier,
+      env: {},
+    })).toEqual({ enabled: false, reason: 'not_configured' });
+  });
+
+  it('is off when explicitly set to false, with a distinct reason from never having been configured', () => {
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: { review: { finding_reflection: false } } },
+      findingVerifierPolicy: enabledVerifier,
+      env: {},
+    })).toEqual({ enabled: false, reason: 'disabled_by_config' });
+  });
+
+  it('is off when the object form sets enabled: false, and rejects a non-object non-boolean value', () => {
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: { review: { finding_reflection: { enabled: false } } } },
+      findingVerifierPolicy: enabledVerifier,
+      env: {},
+    })).toEqual({ enabled: false, reason: 'disabled_by_config' });
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: { review: { finding_reflection: 'yes' } } },
+      findingVerifierPolicy: enabledVerifier,
+      env: {},
+    })).toEqual({ enabled: false, reason: 'invalid_config' });
+  });
+
+  it('enables with review.finding_reflection: true and carries an object form\'s limits through untouched', () => {
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: { review: { finding_reflection: true } } },
+      findingVerifierPolicy: enabledVerifier,
+      env: {},
+    })).toEqual({ enabled: true, reason: 'configured' });
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: { review: { finding_reflection: { limits: { maxCandidates: 2 } } } } },
+      findingVerifierPolicy: enabledVerifier,
+      env: {},
+    })).toEqual({ enabled: true, reason: 'configured', limits: { maxCandidates: 2 } });
+  });
+
+  it('lets REVIEW_YETI_FINDING_REFLECTION=false force it off even when configured on', () => {
+    expect(pipeline.resolveFindingReflectionPolicy({
+      localConfig: { parsed: { review: { finding_reflection: true } } },
+      findingVerifierPolicy: enabledVerifier,
+      env: { REVIEW_YETI_FINDING_REFLECTION: 'false' },
+    })).toEqual({ enabled: false, reason: 'disabled_by_env' });
+  });
+});

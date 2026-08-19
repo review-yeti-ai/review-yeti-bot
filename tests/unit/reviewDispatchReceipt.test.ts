@@ -14,6 +14,7 @@ const {
   buildPipelineReviewDispatchReceipt,
   collectProviderReceiptIds,
   writeReviewDispatchArtifacts,
+  validateReviewDispatchRunReceipt,
 } = pipeline;
 const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../../src/review/reviewInvestigation.js');
 // This is intentionally a repository-local test contract, not a runtime consumer import.
@@ -220,10 +221,10 @@ describe('review dispatch receipt', () => {
       'model', 'plan_digest', 'policy_digest', 'pr_number', 'prompt_template_digest',
       'provider_receipt_digest', 'provider_route_digest', 'reflection', 'repository', 'rule_ids', 'run_attempt', 'run_id',
       'schema', 'stage_durations_ms', 'tool_policy_digest', 'units_emitted', 'units_omitted',
-      'units_total', 'usage',
+      'units_total', 'usage', 'verification',
     ].sort());
     expect(receipt).toMatchObject({
-      schema: 'review-dispatch-run.v1',
+      schema: 'review-dispatch-run.v2',
       run_id: '987654321',
       run_attempt: 2,
       arm: 'candidate',
@@ -240,13 +241,33 @@ describe('review dispatch receipt', () => {
       files_baseline_covered: 2,
       coverage_gaps: 0,
       rule_ids: [],
-      stage_durations_ms: { planning: 0, investigation: 0, reflection: 0, publication: 0 },
+      stage_durations_ms: { planning: 0, investigation: 0, verification: 0, reflection: 0, publication: 0 },
+      // The deterministic finding verifier's checks (exact-blob anchor/base-head verification) --
+      // NOT the independent LLM reflection pass, which is the separate `reflection` field below.
+      // Schema v2 gives each its own accurately named field; v1 reported the verifier's counts
+      // under `reflection`, describing a self-critique stage that had never actually run.
+      verification: { candidates: 0, accepted: 0, rejected: 0, needs_review: 0 },
+      // The independent LLM reflection pass (src/review/reviewReflection.js). Zero here because
+      // this fixture's `findingReflection` input is undefined (the stage did not run).
       reflection: { candidates: 0, kept: 0, downgraded: 0, dropped: 0, needs_review: 0 },
       usage: { prompt_tokens: 25, completion_tokens: 5, cost_usd: 0.0125 },
       latency_ms: 4821,
     });
     expect(receipt.provider_receipt_digest).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(receipt)).not.toMatch(/providerReceipts|receiptDigest|raw_prompt|tool_output|source/i);
+  });
+
+  it('reports real findingVerification and findingReflection summaries under their own accurately named fields', () => {
+    const receipt = buildPipelineReviewDispatchReceipt(pipelineReceiptInput({
+      findingVerification: { summary: { accepted: 3, rejected: 1, needsReview: 2 } },
+      findingReflection: { summary: { candidates: 3, kept: 1, downgraded: 1, dropped: 1, needsReview: 0 } },
+      stageDurationsMs: { planning: 0, investigation: 0, verification: 0, reflection: 842, publication: 0 },
+    }));
+
+    expect(receipt.verification).toEqual({ candidates: 6, accepted: 3, rejected: 1, needs_review: 2 });
+    expect(receipt.reflection).toEqual({ candidates: 3, kept: 1, downgraded: 1, dropped: 1, needs_review: 0 });
+    expect(receipt.stage_durations_ms.reflection).toBe(842);
+    expect(validateReviewDispatchRunReceipt(receipt)).toEqual({ valid: true, errors: [] });
   });
 
   it('writes exact {schema, units} manifest bytes and validates the actual receipt with the local ct-meta adapter contract', () => {

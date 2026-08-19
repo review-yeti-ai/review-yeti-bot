@@ -456,7 +456,7 @@ outputs:
     description: 'Receipt-safe reflection status: complete or needs_review.'
     value: ${{ steps.review.outputs.review-dispatch-reflection-status }}
   review-dispatch-digest:
-    description: 'Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head.'
+    description: 'Digest of the provider-owned review-dispatch-run.v2 receipt for this exact head.'
     value: ${{ steps.review.outputs.review-dispatch-digest }}
   review-dispatch-policy-digest:
     description: 'Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one.'
@@ -471,7 +471,7 @@ outputs:
     description: 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'
     value: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
   review-dispatch-receipt-path:
-    description: 'Exact local path to the provider-owned review-dispatch-run.v1 receipt artifact. Upload or attach this file for durable evidence.'
+    description: 'Exact local path to the provider-owned review-dispatch-run.v2 receipt artifact. Upload or attach this file for durable evidence.'
     value: ${{ steps.review.outputs.review-dispatch-receipt-path }}
   review-dispatch-manifest-path:
     description: 'Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence.'

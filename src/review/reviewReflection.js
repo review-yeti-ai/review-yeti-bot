@@ -310,10 +310,99 @@ async function runFindingReflection(input = {}) {
   return Object.freeze({ schemaVersion: SCHEMA_VERSION, findings: Object.freeze(findings), verification, receipt });
 }
 
+function bounded(value, max) {
+  return String(value === undefined || value === null ? '' : value).trim().slice(0, max);
+}
+
+/**
+ * Flattens every persona lane's findings into one array, parallel to a `{laneIndex, findingIndex}`
+ * locations array of the same length and order. This is the single place that defines "flat order"
+ * for reflection: pass `findings` to {@link runFindingReflection} and `locations` (together with its
+ * result) to {@link applyReflectionOutcomes} unchanged, so the two never drift out of sync with each
+ * other's notion of ordering.
+ */
+function flattenPersonaFindings(personaResults) {
+  const findings = [];
+  const locations = [];
+  (Array.isArray(personaResults) ? personaResults : []).forEach((lane, laneIndex) => {
+    (Array.isArray(lane?.findings) ? lane.findings : []).forEach((finding, findingIndex) => {
+      findings.push(finding);
+      locations.push({ laneIndex, findingIndex });
+    });
+  });
+  return { findings, locations };
+}
+
+/**
+ * Applies a completed {@link runFindingReflection} result back onto persona lanes.
+ *
+ * `locations` must be exactly the array produced alongside the `findings` array that was passed
+ * into `runFindingReflection` (see {@link flattenPersonaFindings}) -- `reflectionResult.verification
+ * .verifications` is index-parallel to that same `findings` array, which is how each location is
+ * matched back to the reflection's finding-keyed decision.
+ *
+ * This can only ever narrow the published set, matching the module's own KEEP/DOWNGRADE/DROP/
+ * NEEDS_REVIEW contract:
+ *   - KEEP, and any finding reflection never reasoned about at all (not selected as a verified
+ *     candidate, budget-exhausted overflow, or NEEDS_REVIEW for any reason) -- left untouched.
+ *   - DOWNGRADE -- severity lowered in place and the body annotated; title, path, and line untouched.
+ *   - DROP -- removed from its lane. `runFindingReflection`'s own contract already refuses to let a
+ *     P0/P1 finding resolve to DROP (see `parseReflectionResponse`'s `high_severity_disagreement`),
+ *     so this never silently deletes a gate-relevant finding.
+ */
+function applyReflectionOutcomes(personaResults, locations, reflectionResult) {
+  const results = (Array.isArray(personaResults) ? personaResults : []).map((lane) => ({
+    ...lane,
+    findings: [...(lane?.findings || [])],
+  }));
+  const verifications = reflectionResult?.verification?.verifications;
+  const reflectionByKey = new Map(
+    (reflectionResult?.receipt?.reflections || []).map((row) => [row.findingKey, row]),
+  );
+  const removeByLane = new Map();
+  let dropped = 0;
+  let downgraded = 0;
+  (Array.isArray(locations) ? locations : []).forEach((location, index) => {
+    const findingKey = verifications?.[index]?.findingKey;
+    if (!findingKey) return;
+    const row = reflectionByKey.get(findingKey);
+    if (!row) return;
+    const lane = results[location.laneIndex];
+    const finding = lane?.findings?.[location.findingIndex];
+    if (!finding) return;
+    if (row.status === 'DROP') {
+      if (!removeByLane.has(location.laneIndex)) removeByLane.set(location.laneIndex, []);
+      removeByLane.get(location.laneIndex).push(location.findingIndex);
+      return;
+    }
+    if (row.status === 'DOWNGRADE' && row.severity) {
+      lane.findings[location.findingIndex] = {
+        ...finding,
+        severity: row.severity,
+        body: `${bounded(finding.body, 1_600)}\n\n_Downgraded by independent reflection from ${bounded(finding.severity, 4)} to ${bounded(row.severity, 4)}._`,
+        reflectionDowngraded: true,
+      };
+      downgraded += 1;
+    }
+    // KEEP and NEEDS_REVIEW: leave the finding exactly as every earlier stage left it.
+  });
+  for (const [laneIndex, findingIndexes] of removeByLane) {
+    const lane = results[laneIndex];
+    // Highest index first so removing one splice does not shift the index of the next.
+    for (const findingIndex of [...findingIndexes].sort((a, b) => b - a)) {
+      lane.findings.splice(findingIndex, 1);
+      dropped += 1;
+    }
+  }
+  return { personaResults: results, dropped, downgraded };
+}
+
 module.exports = {
   SCHEMA_VERSION,
   DEFAULT_REFLECTION_LIMITS,
   HARD_REFLECTION_LIMITS,
   normalizeReflectionLimits,
   runFindingReflection,
+  flattenPersonaFindings,
+  applyReflectionOutcomes,
 };
