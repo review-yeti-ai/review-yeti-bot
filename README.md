@@ -50,8 +50,8 @@ not become the only reviewer capable of approving its repair. Consumers also rem
 their last known-good release until a new release is deliberately promoted.
 
 The initial repository creation is the one-time bootstrap exception: create `main`, publish the
-first release tag, then protect `main` and require the workflow validation checks for all later
-changes.
+first release tag, pin `self-review.yml` to the bootstrap commit, then protect `main` and require
+the workflow validation checks for all later changes.
 
 ## Release procedure
 

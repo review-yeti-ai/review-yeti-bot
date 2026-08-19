@@ -16,7 +16,7 @@ permissions:
 jobs:
   review:
     if: github.event.pull_request.draft == false
-    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@BOOTSTRAP_RELEASE_SHA
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@af0e556f3e936146f242aa7ccbc72b49660d0c3e
     with:
       repository: ${{ github.repository }}
       pr-number: ${{ github.event.pull_request.number }}
