@@ -3767,22 +3767,56 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
     // extraction so this never rejects content the lane would have accepted.
     // Observed live: cisco-cdr#4337 canary, 3/5 lanes invalid_json on the
     // primary transport with two healthy transports sitting unused.
-    if (!failed && options.rawTurn === true && transportIndex < plan.length - 1) {
+    let contractValidator = null;
+    let contractFailure = false;
+    if (!failed && options.rawTurn === true) {
       // Prefer the caller's full-contract validator (the same parse the lane will
       // run) so schema/contract violations fail over too — observed live on the
       // cisco-cdr#4337 canary: a security lane died schema_contract_violation on
       // the primary transport after its siblings recovered via failover. Fall
       // back to bare fence-tolerant JSON validity when no validator is supplied.
       const validator = typeof options.turnValidator === 'function' ? options.turnValidator : parseInvestigationJson;
+      contractValidator = validator;
       try {
         validator(result?.content);
       } catch (error) {
         failed = true;
+        contractFailure = true;
         failureLabel = typeof options.turnValidator === 'function' ? 'contract_violation_content' : 'invalid_json_content';
       }
     }
     if (!failed) return result;
     lastResult = result;
+    // The final transport has nowhere left to fail over. Give only contract-invalid raw turns one
+    // bounded repair retry on that same transport; network/provider retries already happen inside
+    // reviewWithModel and must not be duplicated here. This closes the live failure mode where all
+    // three healthy streaming transports returned bytes, the first two contract-invalid responses
+    // failed over correctly, and the final response died upstream without one chance to repair.
+    if (contractFailure && transportIndex === plan.length - 1 && !options.signal?.aborted) {
+      console.warn(
+        `[Transport] CONTRACT_RETRY persona=${persona?.id || 'unknown'}`
+        + ` transport=${transport.name} error=${failureLabel}`,
+      );
+      const retryResult = await reviewWithTransports.reviewWithModelImpl(
+        persona,
+        diffFiles,
+        prContext,
+        sessionContext,
+        transportOptions,
+      );
+      lastResult = retryResult;
+      const retryFailed = retryResult?.ok === false || retryResult?.decision === 'ERROR';
+      if (!retryFailed) {
+        try {
+          contractValidator(retryResult?.content);
+          return retryResult;
+        } catch (error) {
+          // Upstream keeps ownership of the final schema-failure classification after the single
+          // repair attempt is exhausted; return the actual last response unchanged.
+        }
+      }
+      return retryResult;
+    }
     // A flat-budget exhaustion is not a per-transport failure that failover can route around --
     // every remaining transport shares the same laneCallBudget instance and will immediately
     // report the same exhaustion (reviewWithModel's own guard makes zero further real HTTP
