@@ -99,6 +99,22 @@ jobs:
           personas: ${{ steps.policy.outputs.personas }}
           exclude: ${{ steps.policy.outputs.exclude }}
 
+      # The bot already writes per-lane telemetry (turnCount, failureClass,
+      # resolved transport) to RUNNER_TEMP and exposes run-report-path, but
+      # nothing consumed it — so the calls-per-lane distribution had to be
+      # reconstructed by hand from PR-comment "Turns:" lines. That
+      # distribution is what should size lane_call_budget; without it the
+      # budget gets hand-picked, which is how it drifted out of step with
+      # max_investigation_turns. Upload it so the number can be derived.
+      - name: Upload Review Yeti run report
+        if: always() && steps.review.outputs.run-report-path != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-yeti-run-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.review.outputs.run-report-path }}
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Enforce exact-head Review Yeti verdict
         if: always()
         env:
