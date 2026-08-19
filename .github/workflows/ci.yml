@@ -54,7 +54,7 @@ jobs:
           grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
           grep -Fq '"quantizations": ["bf16", "fp16"]' policy/review-yeti.json
-          grep -Fq '"sort": "throughput"' policy/review-yeti.json
+          grep -Fq '"sort": "latency"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
           grep -Fq '"fireworks"' policy/review-yeti.json

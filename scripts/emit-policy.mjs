@@ -44,6 +44,58 @@ for (const transport of review.transports) {
   }
 }
 
+// A lane advances through the declared transports in order, retrying the next transport only
+// after the previous one fails or times out. The worst case for one lane is therefore every
+// transport burning its full timeout_ms before the lane gives up -- if that sum exceeds the lane
+// deadline, the later transports (the OpenRouter fallback most of all) are structurally
+// unreachable in exactly the case they exist for: a slow or stalled primary. See the ct-review-
+// actions incident where 2 x 180s (360s) already exceeded a 240s lane_deadline_ms with only 2
+// transports configured; this sums over however many transports the policy declares, not a
+// hardcoded count, so it stays correct as that count changes.
+const laneDeadlineMs = Number(budget.lane_deadline_ms);
+const transportTimeoutSumMs = review.transports.reduce((sum, transport) => sum + transport.timeout_ms, 0);
+if (transportTimeoutSumMs > laneDeadlineMs) {
+  throw new Error(
+    `sum of transport timeout_ms (${transportTimeoutSumMs}ms across ${review.transports.length} transports) `
+    + `exceeds review_yeti.budget.lane_deadline_ms (${laneDeadlineMs}ms); a full sequential failover `
+    + 'could never reach the last transport',
+  );
+}
+
+// On a non-streaming call, the abort controller that "TTFT" is named for wraps the *entire*
+// fetch, not just the wait for the first byte -- headers on a buffered response do not arrive
+// until generation is done. So on that path openrouter_ttft_ms is not a time-to-first-token gate;
+// it is a hard total-generation cap. This is not hypothetical: a live run showed a Fireworks call
+// silently fall back to non-streaming and get killed mid-generation by the TTFT budget. Streaming
+// is being made unconditional in the hosted action itself (a separate fix, not in this repo); this
+// policy's job is to make sure that IF a transport is ever declared non-streaming, a tight TTFT can
+// never silently become a generation ceiling -- that must be a loud policy-load failure instead of
+// a config footgun that reappears the next time someone edits `stream`.
+const openrouterTtftMs = String(review.openrouter_ttft_ms ?? '');
+if (!/^[1-9][0-9]*$/.test(openrouterTtftMs)) {
+  throw new Error('review_yeti.openrouter_ttft_ms must be a positive integer string');
+}
+const declaredNonStreamingTransports = review.transports.filter((transport) => transport.stream !== true);
+const streamingDeclaredGlobally = review.openrouter_stream === 'true';
+if (declaredNonStreamingTransports.length > 0 || !streamingDeclaredGlobally) {
+  const maxTimeoutMs = Math.max(
+    ...review.transports.map((transport) => transport.timeout_ms),
+    Number(review.openrouter_timeout_ms),
+  );
+  if (Number(openrouterTtftMs) < maxTimeoutMs) {
+    const offenders = declaredNonStreamingTransports.map((transport) => transport.name).join(', ')
+      || '(review_yeti.openrouter_stream is not "true")';
+    throw new Error(
+      `review_yeti.openrouter_ttft_ms (${openrouterTtftMs}ms) is tighter than the largest configured `
+      + `timeout (${maxTimeoutMs}ms) while streaming is not declared on for every transport `
+      + `(non-streaming: ${offenders}); on a non-streaming fallback the "TTFT" abort wraps the entire `
+      + 'request and would silently become a tighter total-generation cap than the timeout it is '
+      + 'supposed to live inside. Either declare stream: true on every transport (and '
+      + 'openrouter_stream: "true"), or raise openrouter_ttft_ms to at least the largest timeout.',
+    );
+  }
+}
+
 const outputs = {
   repository: review.repository,
   action_ref: review.action_channel,

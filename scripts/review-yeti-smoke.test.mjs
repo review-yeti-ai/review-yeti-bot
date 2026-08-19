@@ -56,7 +56,7 @@ test('the committed OpenRouter fallback requires full-precision quants and throu
 
   assert.deepEqual(openrouter.provider_routing, EXPECTED_OPENROUTER_ROUTING);
   assert.equal(openrouter.provider_routing.allow_fallbacks, true);
-  assert.equal(openrouter.provider_routing.sort, 'throughput');
+  assert.equal(openrouter.provider_routing.sort, 'latency');
   assert.deepEqual(openrouter.provider_routing.quantizations, ['bf16', 'fp16']);
   assert.deepEqual(openrouter.provider_routing.preferred_min_throughput, { p90: 40 });
   assert.deepEqual(openrouter.provider_routing.preferred_max_latency, { p99: 3 });

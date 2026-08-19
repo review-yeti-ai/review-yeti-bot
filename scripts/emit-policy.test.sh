@@ -27,8 +27,9 @@ if [[ "$actual_action_channel" != "$expected_action_channel" ]]; then
   exit 1
 fi
 
-python3 - "$repo_root/policy/review-yeti.json" <<'PY'
+python3 - "$repo_root/policy/review-yeti.json" "$repo_root/.github/workflows/review-yeti.yml" <<'PY'
 import json
+import re
 import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
@@ -63,8 +64,8 @@ if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
 if routing.get('quantizations') != ['bf16', 'fp16']:
     raise SystemExit('openrouter-fallback must require full-precision bf16/fp16 quants')
-if routing.get('sort') != 'throughput':
-    raise SystemExit('openrouter-fallback must sort by throughput')
+if routing.get('sort') != 'latency':
+    raise SystemExit('openrouter-fallback must sort by latency for fastest overall response time')
 if (routing.get('preferred_min_throughput') or {}).get('p90') != 40:
     raise SystemExit('openrouter-fallback must require p90 throughput >= 40')
 if (routing.get('preferred_max_latency') or {}).get('p99') != 3:
@@ -80,6 +81,48 @@ for transport in review.get('transports', []):
         value = transport.get(key)
         if type(value) is not int or not 1 <= value <= 180_000:
             raise SystemExit(f"{transport.get('name', '<unnamed>')} {key} must be between 1ms and 180000ms")
+
+# Hard arithmetic invariant: a lane advances through every declared transport in order before it
+# gives up, so the worst case for one lane is every transport burning its full timeout_ms. If that
+# sum exceeds the lane deadline, the later transports -- the OpenRouter fallback most of all -- are
+# structurally unreachable in exactly the case they exist for (a slow or stalled primary). This is
+# the same invariant emit-policy.mjs enforces at policy-load time; re-checking it here against the
+# real committed policy keeps the two in lockstep. Sums over however many transports the policy
+# declares -- not hardcoded to today's count of 3 -- so it stays meaningful if that count changes.
+lane_deadline_ms = int(budget['lane_deadline_ms'])
+transport_timeout_sum_ms = sum(t['timeout_ms'] for t in transports)
+if transport_timeout_sum_ms > lane_deadline_ms:
+    raise SystemExit(
+        f'sum of transport timeout_ms ({transport_timeout_sum_ms}ms across {len(transports)} transports) '
+        f'exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); a full sequential '
+        'failover could never reach the last transport'
+    )
+
+# Second half of the same invariant: a hosted run can retry up to max_passes lanes, so the worst
+# case for one job is max_passes full lane deadlines back to back. If that exceeds the job's own
+# timeout-minutes, the job gets killed mid-lane instead of failing closed on its own terms.
+workflow_text = open(sys.argv[2]).read()
+timeout_minutes_match = re.search(r'timeout-minutes:\s*(\d+)', workflow_text)
+if not timeout_minutes_match:
+    raise SystemExit('could not find timeout-minutes in review-yeti.yml to check the job-cap invariant')
+job_cap_ms = int(timeout_minutes_match.group(1)) * 60_000
+max_passes = int(review['max_passes'])
+if max_passes * lane_deadline_ms > job_cap_ms:
+    raise SystemExit(
+        f'max_passes({max_passes}) * lane_deadline_ms({lane_deadline_ms}ms) = '
+        f'{max_passes * lane_deadline_ms}ms exceeds the job cap {job_cap_ms}ms (timeout-minutes '
+        f'in .github/workflows/review-yeti.yml)'
+    )
+
+# On a non-streaming fallback, the "TTFT" abort wraps the entire request rather than just the wait
+# for a first byte, so a tight openrouter_ttft_ms silently becomes a total-generation cap. The
+# committed policy declares stream:true on every transport (checked above) and openrouter_stream
+# is "true", so a tight TTFT is legitimate here -- it means what its name says. The invariant that
+# guards the OTHER case (some transport declared non-streaming) lives in emit-policy.mjs and is
+# exercised below by a counterfactual, not asserted unconditionally here, because "ttft tighter
+# than timeout" is exactly the healthy, expected shape when streaming is genuinely on.
+if not str(review.get('openrouter_ttft_ms', '')).isdigit() or int(review['openrouter_ttft_ms']) < 1:
+    raise SystemExit('openrouter_ttft_ms must be a positive integer string')
 print('policy budget source passed')
 PY
 
@@ -179,6 +222,92 @@ run_transport_relation_case() {
   echo "[invalid-transport-relation] passed"
 }
 
+# Counterfactual proof for the lane-deadline arithmetic guard: every transport individually stays
+# inside the per-transport 1ms-180000ms cap (so that check does not fire first), but each transport
+# is set high enough that the sum across all configured transports exceeds the committed lane
+# deadline -- derived from the deadline and transport count rather than hardcoded, so this stays
+# meaningful if a transport is added or removed again.
+write_transport_budget_overflow_policy() {
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+policy = json.load(open(source))
+transports = policy['review_yeti']['transports']
+lane_deadline_ms = int(policy['review_yeti']['budget']['lane_deadline_ms'])
+overflow_timeout_ms = min(180_000, (lane_deadline_ms // len(transports)) + 10_000)
+for transport in transports:
+    transport['timeout_ms'] = overflow_timeout_ms
+    transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), overflow_timeout_ms)
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_transport_budget_overflow_case() {
+  local output_file="$tmp_dir/transport-budget-overflow.output"
+  write_transport_budget_overflow_policy
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/transport-budget-overflow.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 1 ]]; then
+    echo "[transport-budget-overflow] expected exit 1, got $rc" >&2
+    cat "$tmp_dir/transport-budget-overflow.log" >&2
+    exit 1
+  fi
+  grep -q 'exceeds review_yeti.budget.lane_deadline_ms' "$tmp_dir/transport-budget-overflow.log"
+  echo "[transport-budget-overflow] passed"
+}
+
+# Counterfactual proof for the TTFT-as-total-generation-cap guard. The committed policy's
+# openrouter_ttft_ms (5000) is deliberately tighter than every timeout_ms (60000) -- that is
+# healthy and expected when streaming is genuinely on, and "run_case valid" below proves the
+# unmodified committed policy loads cleanly with exactly that shape. The danger is the OTHER
+# combination: a transport declared non-streaming with that same tight ttft, where a live run
+# showed the "TTFT" abort silently becomes a total-generation cap wrapping the entire request.
+# Both ways a transport can end up declared non-streaming are exercised: per-transport
+# `stream: false`, and the global `openrouter_stream` flag.
+write_ttft_unsafe_policy() {
+  local stream_scope="$1"
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" "$stream_scope" <<'PY'
+import json
+import sys
+
+source, destination, stream_scope = sys.argv[1:]
+policy = json.load(open(source))
+review = policy['review_yeti']
+if stream_scope == 'transport':
+    review['transports'][0]['stream'] = False
+elif stream_scope == 'global':
+    review['openrouter_stream'] = 'false'
+else:
+    raise SystemExit(f'unknown stream_scope {stream_scope!r}')
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_ttft_unsafe_case() {
+  local stream_scope="$1"
+  local name="ttft-unsafe-${stream_scope}"
+  local output_file="$tmp_dir/${name}.output"
+  write_ttft_unsafe_policy "$stream_scope"
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/${name}.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 1 ]]; then
+    echo "[$name] expected exit 1, got $rc" >&2
+    cat "$tmp_dir/${name}.log" >&2
+    exit 1
+  fi
+  grep -q 'is tighter than the largest configured timeout' "$tmp_dir/${name}.log"
+  grep -q 'streaming is not declared on for every transport' "$tmp_dir/${name}.log"
+  echo "[$name] passed"
+}
+
 run_case valid lane_call_budget 24 0
 grep -q '^action_ref<<' "$tmp_dir/valid.output"
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
@@ -226,6 +355,9 @@ for field in timeout_ms connect_timeout_ms; do
 done
 
 run_transport_relation_case
+run_transport_budget_overflow_case
+run_ttft_unsafe_case transport
+run_ttft_unsafe_case global
 
 echo "emit-policy lane_call_budget contract passed"
 echo "emit-policy bounded lane contract passed"

@@ -82,11 +82,27 @@ promotion.
 ## Fireworks timeout debug
 
 The hosted panel uses `openrouter-ttft-ms` across the model transports. All
-three transports set `stream: true` and `openrouter_stream=true`, so that
-the 30-second TTFT deadline measures the first SSE token, not a fully buffered
-JSON body; observed first-byte latency is typically ~1s. OpenRouter requires
-full-precision `bf16`/`fp16` quants, sorts by throughput (p90 ≥ 40 tok/s, p99
-≤ 3s), and allows eligible hosts to fall. Smoke sends `stream: true` (SSE).
+three transports *declare* `stream: true` and `openrouter_stream=true`, but a
+live run of this exact policy showed `stream=disabled` in the job log for
+several persona calls -- the declaration was not honored at runtime, because
+of a single-slot streaming gate that serializes concurrent persona lanes.
+Making streaming unconditional in the hosted action (collapsing the
+disagreeing `openRouterPolicy.stream` / `transport.stream` / `openrouter-stream`
+input into one always-on source, and deleting the non-streaming fallback from
+the real review path) is being fixed separately, in the action itself, not in
+this repo. See "TTFT is not always TTFT" below for why that live observation
+still shapes `openrouter_ttft_ms` here even though the fix lives elsewhere.
+
+A live local probe against Fireworks with the production model and a
+panel-sized (~26k char) prompt measured `ttfbMs=634` and a full streaming
+completion in `totalMs=3389`; a non-streaming call against the same prompt
+took `totalMs=4398` to return anything at all, which is the gap streaming
+exists to close -- when it actually happens. OpenRouter requires
+full-precision `bf16`/`fp16` quants, sorts by latency for the fastest overall
+response time (with a p90 ≥ 40 tok/s throughput floor and a p99 ≤ 3s latency
+preference), and allows eligible hosts to fall. Smoke sends `stream: true`
+(SSE) and accepts either an SSE or a fully buffered JSON response depending on
+the responder's `content-type`.
 
 Smoke logs `elapsed_ms` and `http` per transport. For a panel-sized probe:
 
@@ -112,15 +128,73 @@ reports server-side TTFT, and uses maximum reasoning; OpenRouter also uses maxim
 while Ollama uses `high`, its documented maximum. OpenRouter owns endpoint selection after a
 timeout without Review Yeti dynamically banning the resolved endpoint.
 
-The OpenRouter entry requires `bf16`/`fp16`, sorts by throughput, allows
-remaining hosts to fail over (`allow_fallbacks: true`), and denies provider data
-collection. Each caller must expose the named environment variables through its
-inherited GitHub Actions secrets.
+The OpenRouter entry requires `bf16`/`fp16`, sorts by `latency` (OpenRouter's rolling 5-minute
+per-provider percentiles) so the fastest-responding host is tried first, allows remaining hosts to
+fail over (`allow_fallbacks: true`), and denies provider data collection. `sort: latency`
+optimizes for lowest overall request completion time; the alternative, `sort: throughput`,
+optimizes for tokens/sec once a provider is already generating, which is the wrong axis when the
+goal is not blowing through a lane deadline. `only` and `order` are never used here: both pin
+routing to a fixed provider list, which previously froze routing and produced 404s when that list
+went stale. Each caller must expose the named environment variables through its inherited GitHub
+Actions secrets.
 
 The central budget is also fixed here: three investigation turns, one 24-request per-lane call
-budget, a four-minute lane deadline, and a 30-second time-to-first-token budget. A provider that
-does not answer within that envelope fails over or fails closed; it cannot stretch a hosted job or
-silently consume an unbounded retry budget.
+budget, a four-minute (240s) lane deadline, and a 5-second time-to-first-token budget.
+
+- **timeout_ms = 60000 per transport.** The fast local probe (3.4s end to end for a ~26k char
+  panel-sized prompt) is a lower bound, not a ceiling -- `max_diff_chars` allows prompts up to
+  2,000,000 chars, far larger than that probe's payload. 60000ms is a conservative, sizeable cut
+  from the prior 180000ms (3x) that still leaves generous room for larger real reviews.
+- **openrouter_ttft_ms = 5000ms.** The measured TTFB was 634ms for a panel-sized streaming call;
+  5000ms is ~7.9x that single sample. This is safe *because* every transport here declares
+  `stream: true` and `openrouter_stream` is `"true"` -- see "TTFT is not always TTFT" below for why
+  that declaration is load-bearing and what stops it from silently lying.
+
+A provider that does not answer within that envelope fails over or fails closed; it cannot stretch
+a hosted job or silently consume an unbounded retry budget.
+
+**Two timeout knobs, kept in lockstep.** The policy carries both a per-transport `timeout_ms`
+(embedded in the `transports` JSON blob emitted by `emit-policy.mjs`, covering all three
+transports including OpenRouter) and a separate top-level `openrouter_timeout_ms` /
+`openrouter_ttft_ms` pair, forwarded as the dedicated `openrouter-timeout-ms` / `openrouter-ttft-ms`
+action inputs. Which one the OpenRouter-compat code path in the hosted action actually honors is
+not visible from this repository. `timeout_ms` (60000 on every transport) and
+`openrouter_timeout_ms` ("60000") are kept in lockstep so that ambiguity can't leave either one
+silently carrying the old, oversized budget.
+
+**TTFT is not always TTFT.** On a non-streaming call, the abort controller `openrouter_ttft_ms`
+drives wraps the *entire* fetch, not just the wait for a first byte -- a buffered response's
+headers only arrive once generation is complete. So on that path, "TTFT" is not a
+time-to-first-token gate; it is a hard total-generation cap. This was not a hypothetical found by
+reading code: a live run of this exact policy showed a Fireworks call fall back to non-streaming
+(`stream=disabled` in the job log, despite the policy declaring `stream: true`) because of a
+single-slot streaming gate that serializes concurrent persona lanes. Making streaming unconditional
+in the hosted action is a separate fix, tracked outside this repo; what belongs here is making sure
+that if a transport is *ever* declared non-streaming again -- by that bug, by a future edit, by
+anything -- a tight `openrouter_ttft_ms` cannot silently become a generation ceiling. `emit-policy.mjs`
+enforces that: if any transport has `stream !== true`, or `openrouter_stream !== "true"`, then
+`openrouter_ttft_ms` must be `>=` the largest configured timeout (every transport's `timeout_ms` and
+`openrouter_timeout_ms`), or policy load fails loudly with the offending transport named in the
+error. When every transport genuinely declares streaming on -- the committed state today -- a tight
+TTFT is exactly the healthy, intended shape and is left alone. `scripts/emit-policy.test.sh` proves
+both halves: the committed policy (ttft 5000 < timeout 60000, streaming on) loads cleanly, and two
+counterfactuals -- flipping a transport's `stream` to `false`, and flipping the global
+`openrouter_stream` to `"false"` -- each with that same 5000ms ttft, are rejected by the guard.
+
+**Lane-deadline arithmetic invariant.** A lane advances through the declared transports in order,
+so the worst case for one lane is every transport burning its full `timeout_ms` before the lane
+gives up. `emit-policy.mjs` enforces `sum(transport.timeout_ms) <= budget.lane_deadline_ms` at
+policy-load time (both in the reusable workflow and in CI) -- summed over however many transports
+the policy declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` re-checks the same
+inequality against the committed policy plus a counterfactual fixture that violates it. Separately,
+`max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
+(`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
+of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
+60000ms each: `3 x 60000 = 180000 <= 240000` (60s of the lane deadline spare), and
+`max_passes(3) x lane_deadline_ms(240000) = 720000 <= 1200000` (the 20-minute job cap). This guards
+against a repeat of the incident that motivated this change: at `timeout_ms: 180000` per transport,
+even 2 of the 3 transports alone summed to 360s against a 240s lane deadline, so a slow or stalled
+primary made the OpenRouter fallback structurally unreachable in exactly the case it exists for.
 
 Before the model action starts, the reusable workflow runs `scripts/review-yeti-smoke.mjs` against
 each configured transport using a bounded, review-shaped JSON request. The smoke test records only
