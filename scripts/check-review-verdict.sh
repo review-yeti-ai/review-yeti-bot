@@ -11,7 +11,11 @@ set -euo pipefail
 : "${MERGE_ELIGIBLE:?MERGE_ELIGIBLE is required}"
 : "${FILES_OMITTED:?FILES_OMITTED is required}"
 : "${DISPATCH_REFLECTION_STATUS:?DISPATCH_REFLECTION_STATUS is required}"
-: "${PROVIDER_RECEIPT_DIGEST:?PROVIDER_RECEIPT_DIGEST is required}"
+# PROVIDER_RECEIPT_DIGEST is legitimately empty on a non-SHIP verdict (e.g.
+# INCOMPLETE_REVIEW/BLOCKED) -- do not `:?`-crash the whole script on it.
+# The regex check below already fails closed with a clean ::error:: BLOCK
+# message for a missing or invalid digest.
+: "${PROVIDER_RECEIPT_DIGEST:=}"
 
 metadata="$(gh api "repos/${REVIEW_REPOSITORY}/pulls/${REVIEW_PR_NUMBER}")"
 actual_base="$(jq -r '.base.sha // empty' <<<"$metadata")"

@@ -118,7 +118,7 @@ run_script() {
     [MERGE_ELIGIBLE]="${MERGE_ELIGIBLE:-true}"
     [FILES_OMITTED]="${FILES_OMITTED:-0}"
     [DISPATCH_REFLECTION_STATUS]="${DISPATCH_REFLECTION_STATUS:-complete}"
-    [PROVIDER_RECEIPT_DIGEST]="${PROVIDER_RECEIPT_DIGEST:-$digest}"
+    [PROVIDER_RECEIPT_DIGEST]="${PROVIDER_RECEIPT_DIGEST-$digest}"
   )
   local call_log
   call_log="$(mktemp)"
@@ -198,6 +198,29 @@ if [[ "$rc" -eq 0 || "$cancel_called" -eq 1 ]]; then
 fi
 grep -Fq "Review Yeti verdict is FIX_FIRST, not SHIP" <<<"$output" || { echo "[not-ship] expected the plain verdict failure message" >&2; exit 1; }
 echo "[not-ship] passed (plain exit 1, no cancel)"
+
+# 3b. An empty PROVIDER_RECEIPT_DIGEST (the real shape a self-review of a repo with all
+#     transports down produces, once the earlier SHIP/PASS/eligible/omitted/reflection gates are
+#     satisfied) must fail closed with a clean ::error:: BLOCK message, not crash on an unset
+#     `:?`-guarded variable with a raw bash parameter-expansion error that hides the verdict.
+PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")"
+if [[ "$rc" -eq 0 || "$cancel_called" -eq 1 ]]; then
+  echo "[empty-digest] expected plain exit 1 without cancellation" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if grep -Fq "PROVIDER_RECEIPT_DIGEST is required" <<<"$output"; then
+  echo "[empty-digest] expected the clean ::error:: digest message, not a raw :?-crash" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "::error::Review Yeti provider receipt digest is missing or invalid" <<<"$output" || {
+  echo "[empty-digest] expected the clean digest-missing error message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[empty-digest] passed (clean BLOCK, no crash)"
 
 # 4. Everything matches and verdict is a clean SHIP/PASS: unaffected, exits 0.
 run_script "$(pr_json "$base_sha" "$head_sha")"
