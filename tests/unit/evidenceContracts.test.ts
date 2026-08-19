@@ -54,4 +54,18 @@ describe('bounded evidence contracts', () => {
     expect(() => contracts.createEvidenceReceipt({ identity, request: { personaId: 'security', riskId: 'risk-1', tool: 'bash', args: {} }, result: { status: 'ok' } })).toThrow(/allowlisted/);
     expect(() => contracts.createLaneExecutionReceipt({ identity, personaId: 'security', plan: { planDigest: 'p'.repeat(64) }, termination: 'green' })).toThrow(/allowlisted/);
   });
+
+  it('allowlists library_docs as a fifth evidence tool and receipts it like the other four', () => {
+    expect(contracts.EVIDENCE_TOOLS.has('library_docs')).toBe(true);
+    const receipt = contracts.createEvidenceReceipt({
+      identity,
+      request: { personaId: 'security', riskId: 'risk-1', tool: 'library_docs', args: { library: 'react', topic: 'useEffect cleanup' } },
+      result: { status: 'ok', byteCount: 42 },
+    });
+    expect(receipt).toMatchObject({ tool: 'library_docs', status: 'ok' });
+    // The receipt is built from the tool's bounded result object, never from raw config/env --
+    // an argumentDigest, not the args themselves, is what's persisted.
+    expect(receipt.argumentDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(receipt)).not.toContain('CONTEXT7_API_KEY');
+  });
 });
