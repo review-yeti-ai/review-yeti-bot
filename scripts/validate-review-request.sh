@@ -63,11 +63,15 @@ path_state() {
 changed_pages="$(gh api --paginate --slurp "repos/${REVIEW_REPOSITORY}/pulls/${REVIEW_PR_NUMBER}/files?per_page=100")"
 changed_files="$(jq -r '.[][] | [.filename, .status] | @tsv' <<<"$changed_pages")"
 
+# .coderabbit.* is deliberately NOT in this list. Per README 'No
+# consumer-owned Review Yeti configuration': that file belongs to the
+# independent CodeRabbit service, Review Yeti does not read it, and it
+# cannot change the central roster, provider route, budget, or gate
+# semantics. Forbidding it contradicted the documented policy and made
+# this check fail on every PR in any repo that configures CodeRabbit.
 for path in \
   .review-yeti.yaml \
   .review-yeti.yml \
-  .coderabbit.yaml \
-  .coderabbit.yml \
   .ct-review.yaml \
   .ct-review.yml \
   .review-yeti \
