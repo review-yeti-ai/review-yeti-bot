@@ -309,6 +309,15 @@ inputs:
       github_action.transports (this input wins). Invalid plans fail the run closed.
     required: false
     default: ''
+  overview-brief:
+    description: >-
+      PR overview brief pre-pass (default enabled). One orientation model call runs before
+      persona fan-out; its artifact is injected into every persona lane as untrusted
+      orientation context and rendered as the Walkthrough section of the sticky summary.
+      Set to 'false' to disable. The brief degrades soft: any failure means personas simply
+      run without it, and it can never alter a verdict or count as evidence.
+    required: false
+    default: ''
   openrouter-provider-routing:
     description: >-
       JSON object forwarded as OpenRouter's provider routing policy. Defaults to the certified
@@ -689,6 +698,7 @@ runs:
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
         REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
+        REVIEW_YETI_OVERVIEW_BRIEF: ${{ inputs.overview-brief }}
         OPENROUTER_STRUCTURED_OUTPUT: ${{ inputs.openrouter-structured-output }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
         # The caller supplies the immutable action source SHA explicitly. Mutable refs/tags are

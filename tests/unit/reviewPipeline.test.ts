@@ -47,6 +47,9 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
         MAX_FILE_DIFF_CHARS: '5000',
         MAX_DIFF_CHARS: '20000',
         GITHUB_OUTPUT: outputPath,
+        // These cases assert exact model-fetch counts for the persona lanes;
+        // the overview pre-pass is covered by its own suites.
+        REVIEW_YETI_OVERVIEW_BRIEF: 'false',
       });
       process.env.VITEST = options.runChatPreflight ? 'false' : 'true';
       globalThis.fetch = fetchImpl as any;
