@@ -34,10 +34,10 @@ jobs:
 
 The caller supplies the repository, PR number, base SHA, head SHA, and the immutable central
 workflow SHA. The reusable workflow validates the SHA before checkout, verifies the protected
-base workflow pins both the reusable workflow and `central-sha` to that same commit, re-reads the
-PR through the caller's `GITHUB_TOKEN`, and fails closed if any coordinate changes. The central
-repository's self-review is the explicit bootstrap exception: it calls the previous released
-workflow until a new release is promoted. The workflow never checks out or executes the
+default-branch workflow pins both the reusable workflow and `central-sha` to that same commit,
+re-reads the PR through the caller's `GITHUB_TOKEN`, and fails closed if any coordinate changes.
+The central repository's self-review is the explicit bootstrap exception: it calls the previous
+released workflow until a new release is promoted. The workflow never checks out or executes the
 pull-request head.
 
 ## No consumer-owned Review Yeti configuration

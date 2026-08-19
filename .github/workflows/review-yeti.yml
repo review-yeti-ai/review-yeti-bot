@@ -58,7 +58,7 @@ jobs:
         with:
           repository: exampleorg/example-review-actions
           # The caller supplies this full SHA and the next step verifies that the protected
-          # base workflow pins the reusable workflow and input to the same commit.
+          # default-branch workflow pins the reusable workflow and input to the same commit.
           ref: ${{ inputs.central-sha }}
           path: .exampleorg-review-actions
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
@@ -69,7 +69,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_REPOSITORY: ${{ inputs.repository }}
-          EXPECTED_BASE_SHA: ${{ inputs.base-sha }}
           CENTRAL_SHA: ${{ inputs.central-sha }}
         run: .exampleorg-review-actions/scripts/validate-caller-workflow.sh
 
