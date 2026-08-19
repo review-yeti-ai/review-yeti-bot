@@ -6,6 +6,9 @@ const sha = /^[0-9a-f]{40}$/i;
 
 if (policy.schema !== 'exampleorg.review-policy.v1') throw new Error('unsupported policy schema');
 if (!sha.test(review.action_sha)) throw new Error('review_yeti.action_sha must be an immutable commit SHA');
+if (!/^[1-9][0-9]*$/.test(String(review.lane_call_budget ?? ''))) {
+  throw new Error('review_yeti.lane_call_budget must be a positive integer string');
+}
 if (!Array.isArray(review.transports) || review.transports.length === 0) throw new Error('policy must define transports');
 const transportNames = review.transports.map((transport) => transport.name);
 if (new Set(transportNames).size !== transportNames.length) throw new Error('transport names must be unique');
