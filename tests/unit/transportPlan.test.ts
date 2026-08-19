@@ -188,6 +188,7 @@ describe('reviewWithTransports', () => {
     expect(attempts[0]).toMatchObject({
       preferStream: true,
     });
+    expect(attempts[0].disableStream).toBeUndefined();
     expect(streamGate.active).toBe(0);
   });
 
