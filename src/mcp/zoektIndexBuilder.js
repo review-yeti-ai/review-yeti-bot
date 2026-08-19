@@ -4,7 +4,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-// ADR: knowledge/adr/0319-adopt-zoekt-read-only-review-time-search-pilot.md
+// ADR: knowledge/adr/0329-adopt-zoekt-as-a-bounded-review-time-search-pilot-for-review-yeti.md
 //
 // Builds a local Zoekt index over an already-checked-out working tree at the
 // review's exact head SHA. This is the entire "index-at-review-time" design:

@@ -1,6 +1,6 @@
 'use strict';
 
-// ADR: knowledge/adr/0319-adopt-zoekt-review-time-search-pilot.md
+// ADR: knowledge/adr/0329-adopt-zoekt-as-a-bounded-review-time-search-pilot-for-review-yeti.md
 //
 // Composes multiple read-only evidence tool registries (each shaped like the
 // registry returned by createReviewNavigationToolRegistry /

@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const readline = require('readline');
 
-// ADR: knowledge/adr/0319-adopt-zoekt-review-time-search-pilot.md
+// ADR: knowledge/adr/0329-adopt-zoekt-as-a-bounded-review-time-search-pilot-for-review-yeti.md
 //
 // Read-only, repo-scoped, commit-pinned full-repository substring/regex
 // search over a Zoekt index built earlier in the same review run by
