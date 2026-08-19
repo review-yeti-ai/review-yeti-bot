@@ -3162,6 +3162,23 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       }
       const requestStartedAt = Date.now();
       const requestBody = buildRequestBody(requestedModel, sessionModel);
+      // Measures the actual outgoing prompt per attempt, not enforced here. #104 raised the
+      // navigation snapshot cap 5,000 -> 400,000 chars and the evidence budget 12 -> 100 calls;
+      // #107 added Zoekt -- real detection wins, but live Fireworks measurements show latency
+      // jumping non-linearly past ~100k prompt chars (26k: ~1.5s total; 100k: ~2s; 300k: ~14.5s,
+      // a ~10x jump), and accumulated evidence compounds per investigation turn. Logged so a
+      // slow/timed-out lane can be correlated against prompt size after the fact; bounding
+      // per-turn growth (if warranted) is a policy decision, not this transport layer's call.
+      const promptChars = Array.isArray(requestBody.messages)
+        ? requestBody.messages.reduce((sum, message) => {
+          const value = message?.content;
+          if (typeof value === 'string') return sum + value.length;
+          if (Array.isArray(value)) {
+            return sum + value.reduce((partsSum, part) => partsSum + (typeof part?.text === 'string' ? part.text.length : 0), 0);
+          }
+          return sum;
+        }, 0)
+        : 0;
       // Every attempt uses the same total budget -- no x2 escalation on retry (D3).
       const attemptTimeoutMs = timeoutMs;
       try {
@@ -3171,6 +3188,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           + ` modelIndex=${modelIndex + 1}/${models.length}`
           + ` attempt=${attempt}/${maxAttempts}`
           + ` timeout_ms=${attemptTimeoutMs}`
+          + ` prompt_chars=${promptChars}`
           + ` stream=${!options.disableStream && (options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true) ? 'enabled' : 'disabled'}`,
         );
         // Prefer streaming so Auto Router's resolved provider/model are visible even on timeout.
@@ -3288,6 +3306,27 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 + ` elapsed_ms=${elapsedMs} connect_budget_ms=${connectTimeoutMs}`
                 + ` total_budget_ms=${timeoutMs}`
                 + ' — provider not banned; OpenRouter routing remains authoritative',
+              );
+            } else if (!gateway.isOpenRouter) {
+              // Quarantine (`provider.ignore`) is an OpenRouter multi-provider routing concept:
+              // it tells OpenRouter which downstream provider slug to avoid next time. A direct
+              // (non-OpenRouter) transport -- a pinned Fireworks/Ollama gateway, say -- has no
+              // "downstream provider" to avoid: `timedOutProvider` here is just
+              // `unknownRouteProvider`, the gateway's OWN identity (`gateway.isOpenRouter ?
+              // 'openrouter' : gateway.id`). Banning it would quarantine the transport itself,
+              // by construction, on every timeout. Observed live: cisco-cdr
+              // `transport=fireworks BAN` x10, quarantining the operator's own direct primary
+              // provider after a timeout on that same transport. Operator directive: "fireworks
+              // is my primary provider it must not be banned" / "I don't want to ban providers
+              // during the call — OpenRouter should give us good data." The existing
+              // transportPlan failover (reviewWithTransports) already covers a slow/dead direct
+              // transport without ever touching a ban set.
+              streamRetryRequested = true;
+              console.warn(
+                `${modelLogPrefix} RETRY reason=${phase}_timeout persona=${persona.id}`
+                + ` elapsed_ms=${elapsedMs} connect_budget_ms=${connectTimeoutMs}`
+                + ` total_budget_ms=${timeoutMs}`
+                + ' — direct transport never banned; provider.ignore is an OpenRouter-only concept',
               );
             } else if (timedOutProvider && timedOutProvider !== 'openrouter') {
               timedOutProviders.add(timedOutProvider);
@@ -3410,7 +3449,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           console.log(
             `${modelLogPrefix} RAW_OK persona=${persona.id} requested=${requestedModel}`
               + ` resolved=${formatRouteLabel(lastRoute)} elapsed_ms=${okElapsedMs}`
-              + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`,
+              + ` attempt=${attempt}/${maxAttempts} prompt_chars=${promptChars}`
+              + ` generation=${lastRoute.generationId || 'none'}`,
           );
           recordModelTelemetry({ modelIndex, attempt, outcome: 'completed', usage: usageReported ? usage : undefined, startedAt: requestStartedAt });
           return { ...responseBase, ok: true, content: typeof content === 'string' ? content : '' };
@@ -3456,6 +3496,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           `${modelLogPrefix} OK persona=${persona.id} requested=${requestedModel}`
           + ` resolved=${formatRouteLabel(lastRoute)} elapsed_ms=${okElapsedMs}`
           + ` attempt=${attempt}/${maxAttempts} findings=${findings.length}`
+          + ` prompt_chars=${promptChars}`
           + ` tokens_in=${usage.promptTokens} tokens_out=${usage.completionTokens}`
           + (result.providerTtftMs === undefined ? '' : ` provider_ttft_ms=${result.providerTtftMs}`)
           + ` generation=${lastRoute.generationId || 'none'}`,
@@ -3478,7 +3519,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
         const rawErrorMessage = String(err?.message || '');
         const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
-        if (/timeout|aborted/i.test(rawErrorMessage) && timedOutProvider && timedOutProvider !== 'openrouter') {
+        // Same construction guard as the `result.aborted` branch above: `provider.ignore` is an
+        // OpenRouter-only routing concept. On a direct (non-OpenRouter) gateway, `timedOutProvider`
+        // here is `unknownRouteProvider` -- the gateway's OWN identity, never a resolved downstream
+        // provider -- so it must never enter a ban/quarantine set (that would quarantine, e.g.,
+        // the operator's own direct Fireworks transport on every timeout).
+        if (gateway.isOpenRouter && /timeout|aborted/i.test(rawErrorMessage) && timedOutProvider && timedOutProvider !== 'openrouter') {
           timedOutProviders.add(timedOutProvider);
           addRunScopedProviderBan(runTimedOutProviders, timedOutProvider);
         }
