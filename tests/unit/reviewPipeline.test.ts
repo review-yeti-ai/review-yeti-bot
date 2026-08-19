@@ -799,7 +799,7 @@ deleted file mode 100644
     expect(comment).toContain('| 🛡️ Security | `security` | `OpenAI` | `openai/gpt-5` | `timeout` |');
     // Structured semantic failures retain their resolved route without publishing model output.
     expect(comment).toContain('| 📜 Licensing | `licensing` | `Morph` | `deepseek/deepseek-v4-flash-0731` | `semantic_invalid_response` | unknown_response_fields |');
-    expect(comment).toContain('upstream that OpenRouter');
+    expect(comment).toContain('resolved direct transport or downstream OpenRouter provider');
   });
 
   it('keeps review outcomes in a compact roster and moves telemetry into collapsible details', () => {
@@ -940,7 +940,7 @@ deleted file mode 100644
     }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
 
     expect(comment).toContain('| Security | ✅ APPROVE | None | — |');
-    expect(comment).toContain('- **Security**<br>Model: `deepseek/deepseek-v4-flash-0731` via `unresolved downstream (OpenRouter)`');
+    expect(comment).toContain('- **Security**<br>Model: `deepseek/deepseek-v4-flash-0731` via `unresolved model transport`');
     expect(comment).toContain('Usage: 0 in / 0 out');
     expect(comment).toMatch(/Turns:\s*1/);
     expect(comment).toContain('<summary><b>Model and usage details</b> (0 in / 0 out)</summary>');

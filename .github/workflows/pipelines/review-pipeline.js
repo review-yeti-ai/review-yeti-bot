@@ -534,8 +534,9 @@ const MEMORY_DOMAINS = ['processing', 'code', 'rule', 'feedback', 'decision_feed
 /**
  * Resolves LLM endpoint configuration from the environment.
  *
- * Review execution is deliberately pinned to OpenRouter. The action accepts no implicit
- * provider fallback and never turns a missing key into a heuristic green review.
+ * Legacy single-transport execution uses the OPENROUTER_* environment contract. An explicit
+ * trusted transport plan may instead select ordered OpenAI-compatible and OpenRouter gateways;
+ * neither mode turns a missing key into a heuristic green review.
  *
  * @returns {{enabled: boolean, apiKey: string, baseUrl: string, model: string, maxDiffChars: number}}
  */
@@ -1575,28 +1576,47 @@ function resolveResponseModel(payload, fallbackModel) {
       : fallbackModel;
 }
 
-function resolveResponseProvider(payload) {
+function resolveResponseProvider(payload, fallbackProvider = 'openrouter') {
   return normalizeResponseProvider(payload?.provider)
     || normalizeResponseProvider(payload?.usage?.provider)
     || normalizeResponseProvider(payload?.choices?.[0]?.provider)
     || normalizeResponseProvider(payload?.metadata?.provider)
     || normalizeResponseProvider(payload?.error?.metadata?.provider)
-    || 'openrouter';
+    || fallbackProvider;
 }
 
 /**
  * Best-effort resolved route for Auto Router / multi-provider failures.
  * Prefer fields OpenRouter puts on the completion payload (and SSE chunks).
  */
-function resolveRouteMeta(payload, fallbackModel) {
+function resolveRouteMeta(payload, fallbackModel, fallbackProvider = 'openrouter') {
   const model = resolveResponseModel(payload, fallbackModel);
-  const provider = resolveResponseProvider(payload);
+  const provider = resolveResponseProvider(payload, fallbackProvider);
   const generationId = typeof payload?.id === 'string' && payload.id.trim()
     ? payload.id.trim()
     : typeof payload?.generation_id === 'string' && payload.generation_id.trim()
       ? payload.generation_id.trim()
       : null;
   return { model, provider, generationId };
+}
+
+function formatTransportLogPrefix(transportName = 'openrouter') {
+  const safeName = String(transportName || 'openrouter').trim().replace(/[^A-Za-z0-9._-]/gu, '_').slice(0, 64) || 'openrouter';
+  return `[ModelTransport] transport=${safeName}`;
+}
+
+function resolveProviderPerformance(payload, response) {
+  const perfMetrics = payload?.perf_metrics && typeof payload.perf_metrics === 'object'
+    ? { ...payload.perf_metrics }
+    : null;
+  const headerValue = response?.headers?.get?.('fireworks-server-time-to-first-token')
+    || response?.headers?.get?.('Fireworks-Server-Time-To-First-Token');
+  const rawTtftSeconds = perfMetrics?.['server-time-to-first-token'] ?? headerValue;
+  const ttftSeconds = Number(rawTtftSeconds);
+  return {
+    perfMetrics,
+    providerTtftMs: Number.isFinite(ttftSeconds) && ttftSeconds >= 0 ? Math.round(ttftSeconds * 1000) : undefined,
+  };
 }
 
 function formatRouteLabel({ provider, model } = {}) {
@@ -1693,8 +1713,8 @@ function awaitAbortable(promise, signal) {
 }
 
 /**
- * OpenRouter chat completion with streaming preferred so a mid-flight timeout still
- * retains the Auto-Router-resolved provider + model from the first SSE event.
+ * Provider-neutral OpenAI-compatible chat completion. Streaming retains a routed provider/model
+ * when the gateway supplies them and yields a real first-token boundary for direct transports.
  * Falls back to non-stream if the proxy/body is not a ReadableStream.
  */
 async function callOpenRouterChat(fetchImpl, {
@@ -1706,6 +1726,7 @@ async function callOpenRouterChat(fetchImpl, {
   ttftMs,
   preferStream = false,
   signal,
+  transportName = 'openrouter',
 }) {
   // Total budget covers connect + body. TTFT (time-to-first-token) is the SEPARATE
   // "is the provider talking to us at all" concern: if no headers/first-byte (non-stream) or no
@@ -1727,6 +1748,8 @@ async function callOpenRouterChat(fetchImpl, {
   const totalAbort = createAbortLink({ signals: [signal], timeoutMs: totalMs });
   const execute = async () => {
   const baseHeaders = { ...headers };
+  const defaultProvider = String(transportName || 'openrouter');
+  const logPrefix = formatTransportLogPrefix(defaultProvider);
   // Default OFF. Streaming under 12-way fan-out often causes timeouts / StreamReset 502s.
   // Non-stream still returns resolved provider/model on the JSON body.
   // Opt in with OPENROUTER_STREAM=true, preferStream:true, or github_action.openrouter.stream.
@@ -1761,7 +1784,7 @@ async function callOpenRouterChat(fetchImpl, {
       // arrived within the deadline, so the provider never demonstrated it was alive.
       const phase = connectTimedOut ? 'ttft' : 'response';
       console.warn(
-        `[OpenRouter] non-stream ${phase === 'ttft' ? 'TTFT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
+        `${logPrefix} non-stream ${phase === 'ttft' ? 'TTFT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
         + ` model=${body.model} elapsed_ms=${elapsed} ttft_budget_ms=${connectMs} total_budget_ms=${totalMs}`
         + ` name=${err?.name || 'Error'}`,
       );
@@ -1773,7 +1796,7 @@ async function callOpenRouterChat(fetchImpl, {
         status: 0,
         detail: 'request_error',
         model: body.model,
-        provider: 'openrouter',
+        provider: defaultProvider,
         generationId: null,
         content: '',
         usage: null,
@@ -1786,9 +1809,9 @@ async function callOpenRouterChat(fetchImpl, {
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      let route = { model: body.model, provider: 'openrouter', generationId: null };
+      let route = { model: body.model, provider: defaultProvider, generationId: null };
       try {
-        route = resolveRouteMeta(JSON.parse(detail), body.model);
+        route = resolveRouteMeta(JSON.parse(detail), body.model, defaultProvider);
       } catch {
         /* raw */
       }
@@ -1814,7 +1837,7 @@ async function callOpenRouterChat(fetchImpl, {
       const elapsed = Math.max(0, Date.now() - t0);
       const aborted = Boolean(totalAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
       console.warn(
-        `[OpenRouter] non-stream RESPONSE_TIMEOUT body`
+        `${logPrefix} non-stream RESPONSE_TIMEOUT body`
         + ` model=${body.model} provider=${headerProvider || 'unknown'} elapsed_ms=${elapsed}`
         + ` connect_budget_ms=${connectMs} total_budget_ms=${totalMs}`
         + ` name=${err?.name || 'Error'}`,
@@ -1826,7 +1849,7 @@ async function callOpenRouterChat(fetchImpl, {
         status: response.status,
         detail: 'response_body_error',
         model: body.model,
-        provider: headerProvider || 'openrouter',
+        provider: headerProvider || defaultProvider,
         generationId: null,
         content: '',
         usage: null,
@@ -1834,17 +1857,19 @@ async function callOpenRouterChat(fetchImpl, {
         error: err,
       };
     }
-    const route = resolveRouteMeta(payload, body.model);
-    if (headerProvider && (!route.provider || route.provider === 'openrouter')) {
+    const route = resolveRouteMeta(payload, body.model, defaultProvider);
+    if (headerProvider && (!route.provider || route.provider === defaultProvider || route.provider === 'openrouter')) {
       route.provider = headerProvider;
     }
     const genHeader = response.headers?.get?.('x-generation-id') || response.headers?.get?.('X-Generation-Id');
     if (genHeader && !route.generationId) route.generationId = String(genHeader).trim();
     const content = payload?.choices?.[0]?.message?.content || '';
+    const providerPerformance = resolveProviderPerformance(payload, response);
     const ttfbMs = Math.max(0, Date.now() - t0); // approximate; body already read
     console.log(
-      `[OpenRouter] non-stream OK model=${route.model} provider=${route.provider}`
-      + ` elapsed_ms=${ttfbMs} total_budget_ms=${totalMs}`,
+      `${logPrefix} non-stream OK model=${route.model} provider=${route.provider}`
+      + ` elapsed_ms=${ttfbMs} total_budget_ms=${totalMs}`
+      + (providerPerformance.providerTtftMs === undefined ? '' : ` provider_ttft_ms=${providerPerformance.providerTtftMs}`),
     );
     return {
       ok: true,
@@ -1853,6 +1878,7 @@ async function callOpenRouterChat(fetchImpl, {
       usage: payload?.usage || null,
       streamed: false,
       payload,
+      ...providerPerformance,
     };
   };
 
@@ -1860,7 +1886,7 @@ async function callOpenRouterChat(fetchImpl, {
     return nonStreamOnce();
   }
 
-  let streamRoute = { model: body.model, provider: 'openrouter', generationId: null };
+  let streamRoute = { model: body.model, provider: defaultProvider, generationId: null };
   // TTFT: started at request dispatch (right here), cleared the moment the first SSE data chunk
   // parses. This is the fix for the core D1 bug — the stream path previously bound only to
   // totalAbort and had no connect-level budget at all, so a provider that accepted the
@@ -1895,12 +1921,12 @@ async function callOpenRouterChat(fetchImpl, {
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       if (response.status >= 500 || /StreamReset|stream_id|remote_reset|ECONNRESET/i.test(detail)) {
-        console.warn(`[OpenRouter] stream HTTP ${response.status}; falling back to non-stream`);
+        console.warn(`${logPrefix} stream HTTP ${response.status}; falling back to non-stream`);
         return nonStreamOnce();
       }
-      let route = { model: body.model, provider: 'openrouter', generationId: null };
+      let route = { model: body.model, provider: defaultProvider, generationId: null };
       try {
-        route = resolveRouteMeta(JSON.parse(detail), body.model);
+        route = resolveRouteMeta(JSON.parse(detail), body.model, defaultProvider);
       } catch {
         /* raw */
       }
@@ -1916,7 +1942,7 @@ async function callOpenRouterChat(fetchImpl, {
     }
 
     if (!(response.body && typeof response.body.getReader === 'function')) {
-      console.warn('[OpenRouter] stream body not readable; falling back to non-stream');
+      console.warn(`${logPrefix} stream body not readable; falling back to non-stream`);
       return nonStreamOnce();
     }
 
@@ -1924,10 +1950,12 @@ async function callOpenRouterChat(fetchImpl, {
     const decoder = new TextDecoder();
     let buffer = '';
     let model = body.model;
-    let provider = 'openrouter';
+    let provider = defaultProvider;
     let generationId = null;
     let content = '';
     let usage = null;
+    let perfMetrics = null;
+    let providerTtftMs;
     let sawChunk = false;
 
     try {
@@ -1955,10 +1983,10 @@ async function callOpenRouterChat(fetchImpl, {
           sawChunk = true;
           sawFirstChunk = true;
           clearTtftTimer();
-          const route = resolveRouteMeta(chunk, model);
+          const route = resolveRouteMeta(chunk, model, defaultProvider);
           if (route.generationId) generationId = route.generationId;
           if (route.model) model = route.model;
-          if (route.provider && route.provider !== 'openrouter') provider = route.provider;
+          if (route.provider && route.provider !== defaultProvider && route.provider !== 'openrouter') provider = route.provider;
           else if (normalizeResponseProvider(chunk.provider)) {
             provider = normalizeResponseProvider(chunk.provider);
           }
@@ -1968,8 +1996,11 @@ async function callOpenRouterChat(fetchImpl, {
           const msg = chunk.choices?.[0]?.message?.content;
           if (typeof msg === 'string' && msg.length > content.length) content = msg;
           if (chunk.usage) usage = chunk.usage;
+          const providerPerformance = resolveProviderPerformance(chunk);
+          if (providerPerformance.perfMetrics) perfMetrics = providerPerformance.perfMetrics;
+          if (providerPerformance.providerTtftMs !== undefined) providerTtftMs = providerPerformance.providerTtftMs;
           if (chunk.error) {
-            console.warn(`[OpenRouter] mid-stream error (${provider}/${model}); falling back to non-stream`);
+            console.warn(`${logPrefix} mid-stream error (${provider}/${model}); falling back to non-stream`);
             try { await reader.cancel(); } catch (_) {}
             return nonStreamOnce();
           }
@@ -1987,7 +2018,7 @@ async function callOpenRouterChat(fetchImpl, {
           timeoutPhase: 'ttft',
           failureClass: 'ttft_timeout',
           model,
-          provider: 'openrouter',
+          provider: defaultProvider,
           generationId,
           content,
           usage,
@@ -2001,7 +2032,7 @@ async function callOpenRouterChat(fetchImpl, {
           aborted: true,
           error: err,
           model,
-          provider: sawChunk ? provider : 'openrouter',
+          provider: sawChunk ? provider : defaultProvider,
           generationId,
           content,
           usage,
@@ -2013,7 +2044,7 @@ async function callOpenRouterChat(fetchImpl, {
       const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
       const msg = `provider_stream_failed:${errorName}`;
       if (/StreamReset|stream_id|remote_reset|ECONNRESET|aborted|timeout|network/i.test(rawErrorMessage)) {
-        console.warn(`[OpenRouter] stream read failed (${formatRouteLabel(streamRoute)}); falling back to non-stream`);
+        console.warn(`${logPrefix} stream read failed (${formatRouteLabel(streamRoute)}); falling back to non-stream`);
         if (totalAbort.signal.aborted) {
           return {
             ok: false,
@@ -2046,7 +2077,7 @@ async function callOpenRouterChat(fetchImpl, {
         aborted: true,
         error: err,
         model,
-        provider: sawChunk ? provider : 'openrouter',
+        provider: sawChunk ? provider : defaultProvider,
         generationId,
         content,
         usage,
@@ -2065,6 +2096,8 @@ async function callOpenRouterChat(fetchImpl, {
       generationId,
       content,
       usage,
+      perfMetrics,
+      providerTtftMs,
       streamed: true,
       payload: {
         id: generationId,
@@ -2072,6 +2105,7 @@ async function callOpenRouterChat(fetchImpl, {
         provider,
         choices: [{ message: { content } }],
         usage,
+        ...(perfMetrics ? { perf_metrics: perfMetrics } : {}),
       },
     };
   } catch (err) {
@@ -2093,7 +2127,7 @@ async function callOpenRouterChat(fetchImpl, {
     }
     const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
     const msg = `provider_request_failed:${errorName}`;
-    console.warn(`[OpenRouter] stream failed; falling back to non-stream (${msg.slice(0, 100)})`);
+    console.warn(`${logPrefix} stream failed; falling back to non-stream (${msg.slice(0, 100)})`);
     try {
       return await nonStreamOnce();
     } catch (err2) {
@@ -2654,6 +2688,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     return detected;
   })();
   const unknownRouteProvider = gateway.isOpenRouter ? 'openrouter' : gateway.id;
+  const modelLogPrefix = formatTransportLogPrefix(options.transportName || gateway.id);
   const promptPlan = planDiffBudget(diffFiles, maxDiffChars);
   const shownFiles = diffFiles.filter((file) => promptPlan.reviewed.includes(file.path));
 
@@ -2866,6 +2901,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ],
     temperature: 0.1,
     response_format: responseFormatForPolicy(orPolicy, { investigation: options.rawTurn === true }),
+    ...(options.reasoningEffort
+      ? (gateway.isOpenRouter
+        ? { reasoning: { effort: options.reasoningEffort } }
+        : { reasoning_effort: options.reasoningEffort })
+      : {}),
+    ...(options.perfMetricsInResponse === true ? { perf_metrics_in_response: true } : {}),
     ...(Number.isFinite(Number(options.maxTokens)) && Number(options.maxTokens) > 0
       // Operator directive 2026-08-19: no artificial completion-token ceiling;
       // a configured maxTokens passes through as-is.
@@ -2978,7 +3019,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const attemptTimeoutMs = timeoutMs;
       try {
         console.log(
-          `[OpenRouter] start persona=${persona.id}`
+          `${modelLogPrefix} start persona=${persona.id}`
           + ` model=${requestedModel}`
           + ` modelIndex=${modelIndex + 1}/${models.length}`
           + ` attempt=${attempt}/${maxAttempts}`
@@ -2999,6 +3040,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             || orPolicy.stream === true
             || streamRetryRequested
             || timedOutProviders.size > 0,
+          transportName: options.transportName || gateway.id,
           signal: options.signal,
         });
 
@@ -3027,7 +3069,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (ignoredProvider) timedOutProviders.add(ignoredProvider);
           const msg = `OpenRouter selected ignored provider ${ignoredProvider || 'unknown'} [${formatRouteLabel(lastRoute)}]`;
           lastError = msg;
-          console.warn(`[OpenRouter] POLICY_VIOLATION persona=${persona.id} ${msg}`);
+          console.warn(`[OpenRouterPolicy] transport=${gateway.id} POLICY_VIOLATION persona=${persona.id} ${msg}`);
           recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_policy_violation', startedAt: requestStartedAt });
           if (attempt < maxAttempts) continue;
           if (modelIndex < models.length - 1) break;
@@ -3050,7 +3092,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const msg = 'provider_policy_violation';
           lastError = msg;
           console.warn(
-            `[OpenRouter] POLICY_VIOLATION persona=${persona.id}`
+            `[OpenRouterPolicy] transport=${gateway.id} POLICY_VIOLATION persona=${persona.id}`
               + ` requested=${requestedModel} resolved=${formatRouteLabel(lastRoute)}`
               + ` attempt=${attempt}/${maxAttempts} reason=provider_not_in_closed_allowlist`,
           );
@@ -3087,37 +3129,37 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               // and independent of that coincidence.
               streamRetryRequested = true;
               console.warn(
-                `[OpenRouter] TTFT_TIMEOUT persona=${persona.id} elapsed_ms=${elapsedMs}`
+                `${modelLogPrefix} TTFT_TIMEOUT persona=${persona.id} elapsed_ms=${elapsedMs}`
                 + ` ttft_budget_ms=${ttftMs} — not banned (sort:latency remains routing authority)`,
               );
             } else if (timedOutProvider && timedOutProvider !== 'openrouter') {
               timedOutProviders.add(timedOutProvider);
               addRunScopedProviderBan(runTimedOutProviders, timedOutProvider);
               console.warn(
-                `[OpenRouter] BAN provider=${timedOutProvider} reason=${phase}_timeout`
+                `${modelLogPrefix} BAN provider=${timedOutProvider} reason=${phase}_timeout`
                 + ` persona=${persona.id} elapsed_ms=${elapsedMs}`
                 + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
                 + (runTimedOutProviders
                   ? ` — banned for the rest of the review run (run-scoped, cap=${RUN_SCOPED_PROVIDER_BAN_MAX})`
                   : ` — banned for the remainder of this lane call only (no run-scoped ban set was provided)`),
               );
-              console.warn(`::warning::Banned slow OpenRouter provider ${timedOutProvider} after ${phase} timeout`);
+              console.warn(`::warning::Quarantined slow model provider ${timedOutProvider} after ${phase} timeout`);
             } else {
               // Unknown provider on non-stream timeout: force SSE next so the first chunk names it.
               streamRetryRequested = true;
               console.warn(
-                `[OpenRouter] RESPONSE timeout with unresolved provider; next attempt uses stream for attribution`
+                `${modelLogPrefix} RESPONSE timeout with unresolved provider; next attempt uses stream for attribution`
                 + ` persona=${persona.id} elapsed_ms=${elapsedMs}`,
               );
             }
             console.warn(
-              `[OpenRouter] TIMEOUT phase=${phase} persona=${persona.id} requested=${requestedModel}`
+              `${modelLogPrefix} TIMEOUT phase=${phase} persona=${persona.id} requested=${requestedModel}`
               + ` resolved=${routeLabel} elapsed_ms=${elapsedMs}`
               + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
               + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`
               + ` status=${result.status || 'aborted'}`,
             );
-            console.warn(`::warning::OpenRouter ${phase} timeout persona=${persona.id} elapsed_ms=${elapsedMs} route=${routeLabel}`);
+            console.warn(`::warning::Model transport ${options.transportName || gateway.id} ${phase} timeout persona=${persona.id} elapsed_ms=${elapsedMs} route=${routeLabel}`);
             // Flattened retry (REL-271 D3/D4/D5): the attempt loop IS the retry now -- no bonus
             // attempt after a provider is identified, no escalated budget. Backoff is 0 after a
             // TTFT abort (a dead provider needs no politeness delay) and a flat 250ms otherwise.
@@ -3145,7 +3187,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const status = result.status || 0;
           const msg = `HTTP ${status} [${routeLabel}]`;
           console.warn(
-            `[OpenRouter] HTTP_FAIL persona=${persona.id} requested=${requestedModel}`
+            `${modelLogPrefix} HTTP_FAIL persona=${persona.id} requested=${requestedModel}`
             + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} status=${status}`
             + ` attempt=${attempt}/${maxAttempts}`,
           );
@@ -3200,6 +3242,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           usage,
           providerUsageReported: usageReported,
           providerCostReported: hasReportedCost,
+          ...(result.providerTtftMs === undefined ? {} : { providerTtftMs: result.providerTtftMs }),
+          ...(result.perfMetrics ? { perfMetrics: result.perfMetrics } : {}),
           ...(modelIndex > 0 ? { fallbackUsed: true, fallbackModel: requestedModel } : {}),
         };
 
@@ -3207,7 +3251,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         if (options.rawTurn === true) {
           const okElapsedMs = Math.max(0, Date.now() - requestStartedAt);
           console.log(
-            `[OpenRouter] RAW_OK persona=${persona.id} requested=${requestedModel}`
+            `${modelLogPrefix} RAW_OK persona=${persona.id} requested=${requestedModel}`
               + ` resolved=${formatRouteLabel(lastRoute)} elapsed_ms=${okElapsedMs}`
               + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`,
           );
@@ -3252,10 +3296,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         }
         const okElapsedMs = Math.max(0, Date.now() - requestStartedAt);
         console.log(
-          `[OpenRouter] OK persona=${persona.id} requested=${requestedModel}`
+          `${modelLogPrefix} OK persona=${persona.id} requested=${requestedModel}`
           + ` resolved=${formatRouteLabel(lastRoute)} elapsed_ms=${okElapsedMs}`
           + ` attempt=${attempt}/${maxAttempts} findings=${findings.length}`
           + ` tokens_in=${usage.promptTokens} tokens_out=${usage.completionTokens}`
+          + (result.providerTtftMs === undefined ? '' : ` provider_ttft_ms=${result.providerTtftMs}`)
           + ` generation=${lastRoute.generationId || 'none'}`,
         );
         recordModelTelemetry({ modelIndex, attempt, outcome: 'completed', usage: usageReported ? usage : undefined, startedAt: requestStartedAt });
@@ -3286,12 +3331,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           : `Provider request failed (${errorName}) [${routeLabel}]`;
         lastError = msg;
         console.warn(
-          `[OpenRouter] EXCEPTION persona=${persona.id} requested=${requestedModel}`
+          `${modelLogPrefix} EXCEPTION persona=${persona.id} requested=${requestedModel}`
           + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} budget_ms=${timeoutMs}`
           + ` attempt=${attempt}/${maxAttempts} name=${errorName}`,
         );
         if (/timeout|aborted/i.test(msg)) {
-          console.warn(`::warning::OpenRouter timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
+          console.warn(`::warning::Model transport ${options.transportName || gateway.id} timeout persona=${persona.id} elapsed_ms=${elapsedMs}/${timeoutMs} route=${routeLabel}`);
         }
         if (attempt < maxAttempts && /timeout|aborted|ECONNRESET|fetch failed/i.test(rawErrorMessage)) {
           recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: /timeout|aborted/i.test(rawErrorMessage) ? 'provider_timeout' : 'provider_unavailable', startedAt: requestStartedAt });
@@ -3397,6 +3442,8 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       timeoutMs: transport.timeoutMs,
       connectTimeoutMs: transport.connectTimeoutMs,
       ...(transport.stream === true ? { preferStream: true } : {}),
+      reasoningEffort: transport.reasoningEffort,
+      perfMetricsInResponse: transport.perfMetricsInResponse,
       gatewayCompat: transport.compat,
       transportName: transport.name,
     };
@@ -5450,7 +5497,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     }
     const icon = res.decision === 'APPROVE' ? '✅' : res.decision === 'ERROR' ? '❌' : '⚠️';
     const displayName = escapeMarkdownTableCell(stablePersonaName(res));
-    const provider = escapeMarkdownInlineCode(stableProviderName(res.provider || 'unresolved downstream (OpenRouter)'));
+    const provider = escapeMarkdownInlineCode(stableProviderName(res.provider || 'unresolved model transport'));
     const model = escapeMarkdownInlineCode(stableModelName(res.model || modelConfig.model || DEFAULT_MODEL));
     const formattedInputTokens = formatTableTokenCount(inputTokens);
     const formattedOutputTokens = formatTableTokenCount(outputTokens);
@@ -5515,7 +5562,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   if (failedLanes.length > 0) {
     laneFailureDetails = '\n### ⚠️ Failed persona lanes (not a clean review)\n\n';
     laneFailureDetails += 'These lanes did **not** complete successfully. The verdict is incomplete; do not treat "no findings" as approval.\n\n';
-    laneFailureDetails += '**Provider** is the upstream that OpenRouter actually routed to when known — not just `openrouter/auto-beta`. Use this to ignore/remove flaky providers.\n\n';
+    laneFailureDetails += '**Provider** is the resolved direct transport or downstream OpenRouter provider when known. Use it to distinguish Fireworks, Ollama, and OpenRouter failover behavior.\n\n';
     laneFailureDetails += '| Persona | Persona ID | Provider | Model | Error class | Reason | Attempt | Generation |\n|---|---|---|---|---|---|---:|---|\n';
     for (const lane of failedLanes) {
       const failure = lane.failure && typeof lane.failure === 'object' ? lane.failure : null;
@@ -5528,7 +5575,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
       // Prefer structured fields; fall back to provider= / model= tags embedded in the error.
       let provider = failure?.providerRoute || failure?.route?.provider || lane.provider || '';
       let model = failure?.model || failure?.route?.model || lane.model || '';
-      if (!provider || provider === 'openrouter') provider = 'unresolved downstream (OpenRouter)';
+      if (!provider || provider === 'openrouter') provider = 'unresolved OpenRouter downstream';
       const detail = stableFailureReason(lane);
       const attempt = Number.isSafeInteger(failure?.attempt) && failure.attempt > 0 ? failure.attempt : '—';
       const generation = failure?.generationId || failure?.route?.generationId || lane.generationId || 'none';
@@ -7652,7 +7699,7 @@ async function main(options = {}) {
   }
 
   console.log(
-    `[OpenRouter] policy model=${modelConfig.model}`
+    `[OpenRouterPolicy] policy model=${modelConfig.model}`
     + ` timeout_ms=${openRouterPolicy.timeoutMs}`
     + ` connect_timeout_ms=${openRouterPolicy.connectTimeoutMs}`
     + ` stream=${openRouterPolicy.stream}`
@@ -7863,7 +7910,7 @@ async function main(options = {}) {
     ? { optionalContextBlock: optionalReviewContext.block }
     : { context7Block: context7Aug?.block || '', honchoContextBlock };
   console.log(modelConfig.enabled
-    ? `[Model] OpenRouter-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
+    ? `[Model] Model-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
     : '[Model] OPENROUTER_API_KEY is not configured; refusing to produce a verdict.');
 
   // Never allow a workflow-supplied variable to disable exact-head verification on a real runner.
