@@ -33,14 +33,16 @@ import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
 transports = review.get('transports', [])
-if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrouter-fallback']:
-    raise SystemExit('policy must preserve Fireworks -> Ollama -> OpenRouter order')
-if [item.get('reasoning_effort') for item in transports] != ['max', 'high', 'max']:
-    raise SystemExit('reasoning must be Fireworks=max, Ollama=high, OpenRouter=max')
+if [item.get('name') for item in transports] != ['fireworks', 'openrouter-fallback']:
+    raise SystemExit('policy must preserve Fireworks -> OpenRouter order')
+if [item.get('reasoning_effort') for item in transports] != ['max', 'max']:
+    raise SystemExit('reasoning must be Fireworks=max, OpenRouter=max')
 if transports[0].get('perf_metrics_in_response') is not True:
     raise SystemExit('Fireworks must return performance metrics')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
+if any(item.get('name') == 'ollama' for item in review.get('transports', [])):
+    raise SystemExit('obsolete Ollama transport must not return to the central policy')
 budget = review.get('budget')
 if not isinstance(budget, dict):
     raise SystemExit('policy must keep lane limits in review_yeti.budget')
@@ -59,6 +61,8 @@ if fallback.get('quarantine_on_timeout') is not False:
 routing = fallback.get('provider_routing') or {}
 if 'fireworks' not in (routing.get('ignore') or []):
     raise SystemExit('openrouter-fallback must explicitly ignore the hard-banned Fireworks provider')
+if 'morph' not in (routing.get('ignore') or []):
+    raise SystemExit('openrouter-fallback must quarantine the observed Morph timeout provider')
 if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
 if routing.get('quantizations') != ['bf16', 'fp16']:

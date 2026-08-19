@@ -19,17 +19,6 @@
         "perf_metrics_in_response": true
       },
       {
-        "name": "ollama",
-        "base_url": "https://ollama.com/v1",
-        "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
-        "model": "deepseek-v4-flash:0731",
-        "compat": "openai",
-        "timeout_ms": 180000,
-        "connect_timeout_ms": 30000,
-        "stream": true,
-        "reasoning_effort": "high"
-      },
-      {
         "name": "openrouter-fallback",
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_PR_REVIEW_API_KEY",
@@ -48,7 +37,7 @@
           "preferred_min_throughput": {"p90": 40},
           "preferred_max_latency": {"p99": 3},
           "data_collection": "deny",
-          "ignore": ["fireworks", "open-inference", "akashml"]
+          "ignore": ["fireworks", "open-inference", "akashml", "morph"]
         }
       }
     ],

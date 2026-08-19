@@ -4,7 +4,6 @@ import { resolve } from 'node:path';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'fireworks',
-  'ollama',
   'openrouter-fallback',
 ]);
 
@@ -18,7 +17,7 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   preferred_min_throughput: { p90: 40 },
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
-  ignore: ['fireworks', 'open-inference', 'akashml'],
+  ignore: ['fireworks', 'open-inference', 'akashml', 'morph'],
 });
 
 // The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
@@ -61,7 +60,7 @@ export function validatePolicy(policy) {
   if (transports[0].reasoning_effort !== 'max' || transports[0].perf_metrics_in_response !== true) {
     throw new Error('Fireworks must use maximum reasoning with performance metrics');
   }
-  if (transports[1].reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
+  if (transports[1].reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
