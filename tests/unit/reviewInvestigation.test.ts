@@ -45,12 +45,12 @@ describe('persona investigation state machine', () => {
         ok: true,
         content: testCase.content,
         model: 'test/model',
-        provider: 'morph',
+        provider: 'examplecloud',
         generationId: `gen-${testCase.id}`,
       };
       const result = await runPersonaInvestigation({
         ...baseInput,
-        providerRouting: { only: ['morph'], allow_fallbacks: false },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false },
         modelTurn: sequence([providerResponse]),
       });
 
@@ -62,7 +62,7 @@ describe('persona investigation state machine', () => {
         expect(result.personaResult.failure?.class, testCase.id).toBe(testCase.expected);
         expect(result.personaResult.failure?.reason, testCase.id).toBe(testCase.reason);
         expect(result.personaResult.failure?.personaId, testCase.id).toBe('security');
-        expect(result.personaResult.failure?.provider, testCase.id).toBe(providerResponse.provider || 'morph');
+        expect(result.personaResult.failure?.provider, testCase.id).toBe(providerResponse.provider || 'examplecloud');
         expect(result.personaResult.failure?.model, testCase.id).toBe(providerResponse.model || 'test/model');
         expect(result.personaResult.failure?.attempt, testCase.id).toBeGreaterThan(0);
         expect(result.personaResult.failure).not.toHaveProperty('content');
@@ -228,14 +228,14 @@ describe('persona investigation state machine', () => {
     // once (cisco-cdr#4337 canary 7); extras are now stripped and never published.
     const result = await runPersonaInvestigation({
       ...baseInput,
-      providerRouting: { only: ['morph'], allow_fallbacks: false },
+      providerRouting: { only: ['examplecloud'], allow_fallbacks: false },
       modelTurn: sequence([
-        { ...needsEvidenceResponse(), model: 'deepseek/deepseek-v4-flash-0731', provider: 'Morph', generationId: 'gen-first' },
+        { ...needsEvidenceResponse(), model: 'deepseek/deepseek-v4-flash-0731', provider: 'ExampleCloud', generationId: 'gen-first' },
         {
           ok: true,
           content: JSON.stringify({ review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [], unexpected_model_field: 'do-not-publish-this' }),
           model: 'deepseek/deepseek-v4-flash-0731',
-          provider: 'Morph',
+          provider: 'ExampleCloud',
           generationId: 'gen-second',
         },
       ]),
@@ -249,14 +249,14 @@ describe('persona investigation state machine', () => {
   it('fails closed with a bounded semantic failure and resolved route when the strict evidence follow-up is invalid', async () => {
     const result = await runPersonaInvestigation({
       ...baseInput,
-      providerRouting: { only: ['morph'], allow_fallbacks: false },
+      providerRouting: { only: ['examplecloud'], allow_fallbacks: false },
       modelTurn: sequence([
-        { ...needsEvidenceResponse(), model: 'deepseek/deepseek-v4-flash-0731', provider: 'Morph', generationId: 'gen-first' },
+        { ...needsEvidenceResponse(), model: 'deepseek/deepseek-v4-flash-0731', provider: 'ExampleCloud', generationId: 'gen-first' },
         {
           ok: true,
           content: JSON.stringify({ review_status: 'NOT_A_REAL_STATUS', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }),
           model: 'deepseek/deepseek-v4-flash-0731',
-          provider: 'Morph',
+          provider: 'ExampleCloud',
           generationId: 'gen-second',
         },
       ]),
@@ -268,7 +268,7 @@ describe('persona investigation state machine', () => {
       failure: {
         class: 'semantic_invalid_response',
         reason: 'invalid_review_status',
-        route: { provider: 'Morph', model: 'deepseek/deepseek-v4-flash-0731', generationId: 'gen-second' },
+        route: { provider: 'ExampleCloud', model: 'deepseek/deepseek-v4-flash-0731', generationId: 'gen-second' },
       },
     });
     expect(result.personaResult.failure).not.toHaveProperty('content');
@@ -401,12 +401,12 @@ describe('persona investigation state machine', () => {
     const calls: Array<{ providerIgnore?: string[]; turn: number; messages: any[] }> = [];
     const modelTurn = async ({ providerIgnore, turn, messages }: { providerIgnore?: string[]; turn: number; messages: any[] }) => {
       calls.push({ providerIgnore, turn, messages });
-      return { ok: true, content: '{not valid json', model: 'test/model', provider: 'morph' };
+      return { ok: true, content: '{not valid json', model: 'test/model', provider: 'examplecloud' };
     };
 
     const result = await runPersonaInvestigation({
       ...baseInput,
-      providerRouting: { only: ['morph'], allow_fallbacks: false },
+      providerRouting: { only: ['examplecloud'], allow_fallbacks: false },
       modelTurn,
     });
 

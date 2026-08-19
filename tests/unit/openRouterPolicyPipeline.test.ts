@@ -224,7 +224,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       OPENROUTER_TIMEOUT_MS: '2500',
     }).providerRouting.preferred_max_latency).toEqual({ p99: 2.5 });
     expect(resolveOpenRouterPolicy({}, {
-      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['morph'] }),
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['examplecloud'] }),
       OPENROUTER_TTFT_MS: '12000',
     }).providerRouting.preferred_max_latency).toBe(12);
   });
@@ -245,7 +245,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
 
   it('permanently bans degraded and fallback routes while accepting additional configured bans', () => {
     expect(resolveOpenRouterPolicy({}, {}).ignoredProviders).toEqual(HARD_BANNED_PROVIDER_SLUGS);
-    expect(HARD_BANNED_PROVIDER_SLUGS).not.toContain('morph');
+    expect(HARD_BANNED_PROVIDER_SLUGS).not.toContain('examplecloud');
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { ignore_providers: ['siliconflow', 'deepinfra'] } } },
       {},
@@ -272,13 +272,13 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
   it('forwards documented provider routing fields and normalizes provider slugs', () => {
     const policy = resolveOpenRouterPolicy({}, {
       OPENROUTER_PROVIDER_ROUTING: JSON.stringify({
-        order: ['Morph', 'akash'],
+        order: ['ExampleCloud', 'akash'],
         allow_fallbacks: false,
         require_parameters: true,
         data_collection: 'deny',
         zdr: true,
         enforce_distillable_text: true,
-        only: ['morph'],
+        only: ['examplecloud'],
         quantizations: ['FP8'],
         sort: { by: 'throughput', partition: 'none' },
         preferred_min_throughput: { p90: 50 },
@@ -288,13 +288,13 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     });
 
     expect(policy.providerRouting).toEqual({
-      order: ['morph', 'akash'],
+      order: ['examplecloud', 'akash'],
       allow_fallbacks: false,
       require_parameters: true,
       data_collection: 'deny',
       zdr: true,
       enforce_distillable_text: true,
-      only: ['morph'],
+      only: ['examplecloud'],
       quantizations: ['fp8'],
       sort: { by: 'throughput', partition: 'none' },
       preferred_min_throughput: { p90: 50 },
@@ -330,13 +330,13 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       github_action: {
         openrouter: {
           provider_routing: {
-            only: ['morph'],
+            only: ['examplecloud'],
             allow_fallbacks: false,
           },
         },
       },
     }, {}).providerRouting).toEqual({
-      only: ['morph'],
+      only: ['examplecloud'],
       allow_fallbacks: false,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
       // No timeout_ms/ttft_ms configured -- ttftMs stays at its unclamped 30000 default.
@@ -349,24 +349,24 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       github_action: {
         openrouter: {
           provider_routing: {
-            only: ['morph'],
+            only: ['examplecloud'],
             allow_fallbacks: false,
           },
         },
       },
     }, { OPENROUTER_PROVIDER_ROUTING: '{}' }).providerRouting).toEqual({
-      only: ['morph'],
+      only: ['examplecloud'],
       allow_fallbacks: false,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
       preferred_max_latency: 30,
     });
   });
 
-  it('fails before lane fan-out when Luna is restricted to the Morph-only cohort', () => {
+  it('fails before lane fan-out when Luna is restricted to the ExampleCloud-only cohort', () => {
     expect(() => resolveOpenRouterPolicy({}, {
       OPENROUTER_MODEL: 'openai/gpt-5.6-luna',
-      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['morph'], allow_fallbacks: false }),
-    })).toThrow(/fixed-model compatibility check failed.*openai\/gpt-5\.6-luna.*openai or azure.*only permits only \[morph\]/i);
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['examplecloud'], allow_fallbacks: false }),
+    })).toThrow(/fixed-model compatibility check failed.*openai\/gpt-5\.6-luna.*openai or azure.*only permits only \[examplecloud\]/i);
   });
 
   it('accepts Luna only with an explicit compatible provider allowlist and preserves data policy', () => {

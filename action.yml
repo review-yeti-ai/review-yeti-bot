@@ -372,7 +372,7 @@ inputs:
       provider fallback without forcing a single provider, requires requested parameters,
       limits endpoint quantization to FP8 or BF16, sorts by throughput, and prefers p90
       throughput of at least 40 tokens per second plus p99 latency of at most three seconds.
-      Morph remains eligible when it meets those constraints. Wafer and Novita are hard-banned
+      ExampleCloud remains eligible when it meets those constraints. Wafer and Novita are hard-banned
       after repeated provider-error/timeout lanes. Supports the raw API
       fields order, allow_fallbacks, require_parameters, data_collection, zdr,
       enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,

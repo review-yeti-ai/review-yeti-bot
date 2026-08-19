@@ -85,7 +85,7 @@ function pipelineReceiptInput(overrides: Record<string, unknown> = {}) {
       arm: 'candidate',
       actionSha: 'f'.repeat(40),
     },
-    providerRoute: { model: 'openrouter/auto', only: ['morph'], allowFallbacks: false },
+    providerRoute: { model: 'openrouter/auto', only: ['examplecloud'], allowFallbacks: false },
     promptTemplateDigest: '2'.repeat(64),
     toolPolicy: { tools: ['file_read', 'diff_search'], maxCalls: 12 },
     latencyMs: 4821,
@@ -129,7 +129,7 @@ function runActualProviderPipeline(cwd: string, fileSystem: typeof fs = fs) {
         id: `risk-${index + 1}`, unit_ids: [unitId], statement: 'bounded test risk', evidence_needed: [], allowed_tools: [],
       }));
       return {
-        ok: true, model: 'model-a', provider: 'morph', generationId: 'gen_success',
+        ok: true, model: 'model-a', provider: 'examplecloud', generationId: 'gen_success',
         providerUsageReported: true, providerCostReported: false,
         usage: { promptTokens: 4, completionTokens: 2 },
         content: JSON.stringify({
@@ -346,7 +346,7 @@ describe('review dispatch receipt', () => {
       diffText: '+const safe = true;',
       evidenceRegistry: { capabilities: { enabled: false, readOnly: true, tools: [] }, call: async () => ({ status: 'unavailable' }) },
       modelTurn: async () => ({
-        ok: false, error: 'provider_failure', provider: 'morph', model: 'model-a',
+        ok: false, error: 'provider_failure', provider: 'examplecloud', model: 'model-a',
         generationId: 'gen_failed', providerUsageReported: true,
         usage: { promptTokens: 9, completionTokens: 3 },
       }),

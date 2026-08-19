@@ -61,7 +61,7 @@ function singleChunkThenSlowDoneStreamResponse(finishDelayMs: number) {
               value: Buffer.from(`data: ${JSON.stringify({
                 id: 'gen-first-chunk',
                 model: 'test/model',
-                provider: 'Morph',
+                provider: 'ExampleCloud',
                 choices: [{ delta: { content: '{"findings":[]}' } }],
               })}\n\n`),
             };
@@ -142,7 +142,7 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.provider).toBe('Morph');
+    expect(result.provider).toBe('ExampleCloud');
     expect(result.timeoutPhase).toBeUndefined();
   });
 
@@ -195,7 +195,7 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
     const policy = resolveOpenRouterPolicy({}, {
       OPENROUTER_TTFT_MS: '12000',
       OPENROUTER_CONNECT_TIMEOUT_MS: '8000',
-      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['morph'] }),
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['examplecloud'] }),
     });
     expect(policy.providerRouting.preferred_max_latency).toBe(12);
     expect(policy.connectTimeoutMs).toBe(8000);
