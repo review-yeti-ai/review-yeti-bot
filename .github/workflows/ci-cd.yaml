@@ -176,6 +176,26 @@ jobs:
       - run: npm ci --prefer-offline --no-audit --no-fund
       - run: npm run test:security && npm run test:chaos
 
+  contracts-and-evals:
+    name: Action contract and eval suites
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm run test:action-contract && npm run test:pi-adapter && npm run test:intelligence-eval && npm run test:bounded-review-eval && npm run test:dependency-eval && npm run test:intelligence-promotion
+
   build:
     name: Typecheck and build
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
