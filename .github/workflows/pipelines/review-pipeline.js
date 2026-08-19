@@ -3671,8 +3671,15 @@ function createStreamingLaneGate(limit = 1) {
 async function reviewWithTransports(persona, diffFiles, prContext, sessionContext, options = {}) {
   const plan = Array.isArray(options.transportPlan) ? options.transportPlan.filter(Boolean) : [];
   if (plan.length === 0) return reviewWithModel(persona, diffFiles, prContext, sessionContext, options);
+  // Hold one streaming slot for the whole persona turn, including failover. Releasing between
+  // transports lets sibling personas start while this lane is still retrying, recreating the
+  // concurrent SSE reset that this gate is intended to prevent.
+  const releaseStream = plan.some((transport) => transport.stream === true) && options.streamGate
+    ? await options.streamGate.acquire(options.signal)
+    : null;
   let lastResult = null;
-  for (let transportIndex = 0; transportIndex < plan.length; transportIndex++) {
+  try {
+    for (let transportIndex = 0; transportIndex < plan.length; transportIndex++) {
     const transport = plan[transportIndex];
     const transportOptions = {
       ...options,
@@ -3690,15 +3697,7 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       gatewayCompat: transport.compat,
       transportName: transport.name,
     };
-    const releaseStream = transport.stream === true && options.streamGate
-      ? await options.streamGate.acquire(options.signal)
-      : null;
-    let result;
-    try {
-      result = await reviewWithTransports.reviewWithModelImpl(persona, diffFiles, prContext, sessionContext, transportOptions);
-    } finally {
-      releaseStream?.();
-    }
+    const result = await reviewWithTransports.reviewWithModelImpl(persona, diffFiles, prContext, sessionContext, transportOptions);
     let failed = result?.ok === false || result?.decision === 'ERROR';
     let failureLabel = String(result?.error || 'provider_failure');
     // A raw investigation turn whose content is not JSON dies upstream as an
@@ -3738,8 +3737,11 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
         + ` — trying transport=${plan[transportIndex + 1].name}`,
       );
     }
+    }
+    return lastResult;
+  } finally {
+    releaseStream?.();
   }
-  return lastResult;
 }
 // Injectable seam for tests; production always uses the real implementation.
 reviewWithTransports.reviewWithModelImpl = reviewWithModel;
