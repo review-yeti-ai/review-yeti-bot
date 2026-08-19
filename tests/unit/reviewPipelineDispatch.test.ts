@@ -79,6 +79,43 @@ describe('Central runner branch pinning', () => {
   });
 });
 
+describe('Persona lane progress reporting', () => {
+  it('publishes streaming mode, active lanes, completion counts, and disposes its heartbeat timer', () => {
+    const logs: string[] = [];
+    const timers: Array<() => void> = [];
+    const cleared: unknown[] = [];
+    let now = 1_000;
+    const reporter = pipeline.createPersonaLaneProgressReporter({
+      personaIds: ['security', 'testing'],
+      model: 'openrouter/auto',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      stream: true,
+      laneDeadlineMs: 180_000,
+      intervalMs: 15_000,
+      clock: () => now,
+      log: (line: string) => logs.push(line),
+      setIntervalImpl: (callback: () => void) => {
+        timers.push(callback);
+        return { unref() {} };
+      },
+      clearIntervalImpl: (timer: unknown) => cleared.push(timer),
+    });
+
+    reporter.start('security');
+    now += 15_000;
+    timers[0]();
+    expect(logs.at(-1)).toContain('stream=enabled');
+    expect(logs.at(-1)).toContain('active=security');
+    expect(logs.at(-1)).toContain('completed=0/2');
+
+    reporter.complete('security');
+    reporter.stop();
+    expect(logs.some((line) => line.includes('lane completed'))).toBe(true);
+    expect(logs.at(-1)).toContain('completed=1/2');
+    expect(cleared).toHaveLength(1);
+  });
+});
+
 describe('Dispatch path: diff resolution never fabricates a diff', () => {
   const originalCwd = process.cwd();
 

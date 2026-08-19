@@ -1732,6 +1732,70 @@ function waitForAbortableDelay(delayMs, signal) {
   });
 }
 
+// A panel lane can spend most of its wall-clock budget inside an upstream request. Keep the
+// Action log useful during that period: operators should be able to tell whether transport is
+// streaming, which lanes are still active, and whether the deadline is approaching. The timer is
+// injected so this contract is deterministic in unit tests and always disposed when the fan-out
+// settles.
+function createPersonaLaneProgressReporter({
+  personaIds = [],
+  model = 'unknown',
+  baseUrl = 'unknown',
+  stream = false,
+  laneDeadlineMs = 0,
+  intervalMs = 15_000,
+  clock = Date.now,
+  log = console.log,
+  setIntervalImpl = setInterval,
+  clearIntervalImpl = clearInterval,
+} = {}) {
+  const ids = [...new Set((Array.isArray(personaIds) ? personaIds : []).map((id) => String(id || '').trim()).filter(Boolean))];
+  const states = new Map(ids.map((id) => [id, { status: 'queued', startedAt: null, finishedAt: null }]));
+  const startedAt = Number(clock());
+  const elapsed = () => Math.max(0, Number(clock()) - startedAt);
+  const logLine = (message) => {
+    if (typeof log === 'function') log(message);
+  };
+  const heartbeat = () => {
+    const active = [...states.entries()].filter(([, state]) => state.status === 'active').map(([id]) => id);
+    const completed = [...states.values()].filter((state) => state.status === 'completed' || state.status === 'failed').length;
+    logLine(
+      `[Parallel Evaluation] heartbeat elapsed_ms=${elapsed()}`
+      + ` active=${active.length ? active.join(',') : 'none'}`
+      + ` completed=${completed}/${ids.length}`
+      + ` transport=openrouter stream=${stream ? 'enabled' : 'disabled'}`
+      + ` model=${model} base_url=${baseUrl} lane_deadline_ms=${Number(laneDeadlineMs) || 0}`,
+    );
+  };
+  const timer = Number(intervalMs) > 0 && typeof setIntervalImpl === 'function'
+    ? setIntervalImpl(heartbeat, Number(intervalMs))
+    : null;
+  timer?.unref?.();
+  return {
+    start(personaId) {
+      const id = String(personaId || '').trim();
+      const state = states.get(id);
+      if (!state || state.status === 'active') return;
+      state.status = 'active';
+      state.startedAt = Number(clock());
+      logLine(`[Persona ${id}] lane started transport=openrouter stream=${stream ? 'enabled' : 'disabled'} lane_deadline_ms=${Number(laneDeadlineMs) || 0}`);
+    },
+    complete(personaId, status = 'completed') {
+      const id = String(personaId || '').trim();
+      const state = states.get(id);
+      if (!state || state.status === 'completed' || state.status === 'failed') return;
+      state.status = status === 'failed' ? 'failed' : 'completed';
+      state.finishedAt = Number(clock());
+      logLine(`[Persona ${id}] lane ${state.status} elapsed_ms=${Math.max(0, state.finishedAt - Number(state.startedAt || startedAt))}`);
+    },
+    heartbeat,
+    stop() {
+      if (timer !== null && typeof clearIntervalImpl === 'function') clearIntervalImpl(timer);
+      heartbeat();
+    },
+  };
+}
+
 function abortError(message = 'request aborted') {
   return Object.assign(new Error(message), { name: 'AbortError' });
 }
@@ -1785,6 +1849,7 @@ async function callOpenRouterChat(fetchImpl, {
   preferStream = false,
   signal,
   transportName = 'openrouter',
+  onStreamProgress,
 }) {
   // Total budget covers connect + body. TTFT (time-to-first-token) is the SEPARATE
   // "is the provider talking to us at all" concern: if no headers/first-byte (non-stream) or no
@@ -2039,6 +2104,7 @@ async function callOpenRouterChat(fetchImpl, {
             continue;
           }
           sawChunk = true;
+          const firstChunk = !sawFirstChunk;
           sawFirstChunk = true;
           clearTtftTimer();
           const route = resolveRouteMeta(chunk, model, defaultProvider);
@@ -2049,6 +2115,7 @@ async function callOpenRouterChat(fetchImpl, {
             provider = normalizeResponseProvider(chunk.provider);
           }
           streamRoute = { model, provider, generationId };
+          if (firstChunk) onStreamProgress?.({ elapsedMs: Math.max(0, Date.now() - t0), ...streamRoute, totalBudgetMs: totalMs });
           const delta = chunk.choices?.[0]?.delta?.content;
           if (typeof delta === 'string') content += delta;
           const msg = chunk.choices?.[0]?.message?.content;
@@ -3100,6 +3167,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             || timedOutProviders.size > 0,
           transportName: options.transportName || gateway.id,
           signal: options.signal,
+          onStreamProgress: options.onStreamProgress,
         });
 
         lastRoute = {
@@ -8470,7 +8538,18 @@ async function main(options = {}) {
         }
       }
 
-      console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
+      const laneProgress = createPersonaLaneProgressReporter({
+        personaIds: enabledPersonas.map((persona) => persona.id),
+        model: modelConfig.model,
+        baseUrl: modelConfig.baseUrl,
+        stream: modelConfig.openRouterPolicy?.stream === true,
+        laneDeadlineMs,
+      });
+      console.log(
+        `[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}`
+        + ` transport=openrouter stream=${modelConfig.openRouterPolicy?.stream === true ? 'enabled' : 'disabled'}`
+        + ` lane_deadline_ms=${laneDeadlineMs}`,
+      );
       if (boundedMode) {
         const navigationIdentity = {
           repository: prContext.repo,
@@ -8534,10 +8613,18 @@ async function main(options = {}) {
           reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
           signal: cancellation.signal,
           runTimedOutProviders,
+          onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(
+            `[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0}`
+            + ` route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`,
+          ),
         };
-        const evaluatedPersonas = await cancellation.race(Promise.all(enabledPersonas.map(async (persona) => {
-          const runs = [];
-          for (const batch of passes) {
+        let evaluatedPersonas;
+        try {
+          evaluatedPersonas = await cancellation.race(Promise.all(enabledPersonas.map(async (persona) => {
+            laneProgress.start(persona.id);
+            const runs = [];
+            try {
+              for (const batch of passes) {
             const batchPaths = new Set(batch.map((file) => file.path));
             const batchUnitIds = provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)).map((unit) => unit.id);
             // Per-lane wall-clock backstop (REL-271 D-new / lane-deadline-ms): a lane that somehow
@@ -8586,16 +8673,25 @@ async function main(options = {}) {
               laneDeadline.dispose();
               laneSignal.dispose();
             }
-            runs.push({
-              ...run.personaResult,
-              ...(Number.isSafeInteger(run.executionReceipt?.turns) && run.executionReceipt.turns >= 0
-                ? { turnCount: run.executionReceipt.turns }
-                : {}),
-            });
-            laneExecutionReceipts.push(run.executionReceipt);
-          }
-          return aggregatePersonaRuns(persona, runs, modelConfig.model);
-        })));
+                runs.push({
+                  ...run.personaResult,
+                  ...(Number.isSafeInteger(run.executionReceipt?.turns) && run.executionReceipt.turns >= 0
+                    ? { turnCount: run.executionReceipt.turns }
+                    : {}),
+                });
+                laneExecutionReceipts.push(run.executionReceipt);
+              }
+              return aggregatePersonaRuns(persona, runs, modelConfig.model);
+            } catch (error) {
+              laneProgress.complete(persona.id, 'failed');
+              throw error;
+            } finally {
+              if (runs.length > 0) laneProgress.complete(persona.id);
+            }
+          })));
+        } finally {
+          laneProgress.stop();
+        }
         if (cancellation.isCancellationResult(evaluatedPersonas)) return;
         personaResults = evaluatedPersonas;
         const completedUnitIds = new Set(laneExecutionReceipts.filter((receipt) => receipt.complete).flatMap((receipt) => receipt.completedUnitIds || []));
@@ -8791,7 +8887,7 @@ async function main(options = {}) {
                 maxChars: 12_000,
                 excludedPaths: [...skipped.map((entry) => entry.path), ...oversized.map((entry) => entry.path)],
               },
-              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders },
+              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`) },
             }));
           }
           return aggregatePersonaRuns(persona, runs, modelConfig.model);
@@ -9361,6 +9457,7 @@ module.exports = {
   postStartedComment,
   postOrOutputComment,
   createPipelineCancellation,
+  createPersonaLaneProgressReporter,
   flushReviewTelemetry,
   main,
   runReviewPipeline: main,
