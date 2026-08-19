@@ -20,4 +20,4 @@ jobs:
           bash -n scripts/validate-review-request.sh
           bash -n scripts/check-review-verdict.sh
           test -s policy/review-yeti.json
-          grep -q 'BOOTSTRAP_RELEASE_SHA' .github/workflows/self-review.yml
+          grep -Eq 'review-yeti.yml@[0-9a-f]{40}$' .github/workflows/self-review.yml
