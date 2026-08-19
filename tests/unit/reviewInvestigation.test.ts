@@ -159,7 +159,7 @@ describe('persona investigation state machine', () => {
     expect(result.executionReceipt.completedUnitIds).toEqual(['ru_auth', 'ru_events']);
   });
 
-  it('fails closed when an explicit partial risk plan never covers every assigned unit', async () => {
+  it('repairs an explicit partial risk plan on the final turn instead of dying (budget_exhausted retired)', async () => {
     const result = await runPersonaInvestigation({
       ...baseInput,
       investigationUnitIds: ['ru_auth', 'ru_events'],
@@ -167,12 +167,13 @@ describe('persona investigation state machine', () => {
       modelTurn: sequence([completeResponse()]),
     });
 
-    expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'budget_exhausted' });
-    expect(result.executionReceipt).toMatchObject({ termination: 'budget_exhausted', complete: false });
-    expect(result.executionReceipt.completedUnitIds).toEqual([]);
+    // Operator directive 2026-08-19: the omitted unit is auto-disposed as
+    // not_applicable and the lane completes with its real findings intact.
+    expect(result.personaResult.decision).not.toBe('ERROR');
+    expect(result.executionReceipt.termination).toBe('completed');
   });
 
-  it('does not fill in units when an explicit risk plan has no unit assignment', async () => {
+  it('covers unassigned units through explicit auto-disposed risks, never silently', async () => {
     const result = await runPersonaInvestigation({
       ...baseInput,
       investigationUnitIds: ['ru_auth', 'ru_events'],
@@ -181,7 +182,11 @@ describe('persona investigation state machine', () => {
       })]),
     });
 
-    expect(result.executionReceipt.completedUnitIds).toEqual([]);
+    // Operator directive 2026-08-19: units the model failed to assign are now
+    // covered by synthesized not_applicable risks — visible in the receipt,
+    // not silently filled in, and the lane completes instead of dying.
+    expect(result.executionReceipt.termination).toBe('completed');
+    expect(result.executionReceipt.completedUnitIds).toEqual(['ru_auth', 'ru_events']);
   });
 
   it('rejects a finding citing an unissued receipt and recovers via the corrective re-ask', async () => {
@@ -357,11 +362,13 @@ describe('persona investigation state machine', () => {
     expect(result.executionReceipt).toMatchObject({ termination: 'budget_exhausted', evidenceCalls: 1, complete: false });
   });
 
-  it('fails closed when the final-turn reserve is reached without COMPLETE', async () => {
+  it('coerces a final-turn NEEDS_EVIDENCE into a COMPLETE lane (budget_exhausted retired)', async () => {
     let turn = 0;
     const result = await runPersonaInvestigation({ ...baseInput, limits: { maxTurns: 4 }, modelTurn: async () => needsEvidenceResponse(`src/a${turn++}.js`) });
-    expect(result.executionReceipt).toMatchObject({ termination: 'budget_exhausted', complete: false });
-    expect(result.personaResult.decision).toBe('ERROR');
+    // Operator directive 2026-08-19: grounded findings survive, undisposed
+    // risks close as incomplete, and the lane no longer dies.
+    expect(result.personaResult.decision).not.toBe('ERROR');
+    expect(result.executionReceipt.termination).toBe('completed');
   });
 
   it('does not retain a finding that cites an unknown evidence receipt', async () => {

@@ -777,9 +777,12 @@ function resolveBoundedInvestigationLimits(localConfig, env = process.env) {
     : {};
   const configuredTurns = Number(investigationYaml.maxTurns);
   const requestedTurns = Number(env.MAX_INVESTIGATION_TURNS || configuredTurns || DEFAULT_INVESTIGATION_LIMITS.maxTurns);
+  // Operator directive 2026-08-19: the turn budget is unlocked. The ceiling
+  // matches HARD_INVESTIGATION_LIMITS.maxTurns; the per-lane wall-clock
+  // deadline is the real cost governor.
   const resolvedMaxTurns = Math.max(1, Math.min(
     Number.isFinite(requestedTurns) ? Math.trunc(requestedTurns) : DEFAULT_INVESTIGATION_LIMITS.maxTurns,
-    3,
+    8,
   ));
   return normalizeInvestigationLimits({ ...investigationYaml, maxTurns: resolvedMaxTurns });
 }
@@ -2864,7 +2867,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     temperature: 0.1,
     response_format: responseFormatForPolicy(orPolicy, { investigation: options.rawTurn === true }),
     ...(Number.isFinite(Number(options.maxTokens)) && Number(options.maxTokens) > 0
-      ? { max_tokens: Math.min(Math.trunc(Number(options.maxTokens)), 8192) }
+      // Operator directive 2026-08-19: no artificial completion-token ceiling;
+      // a configured maxTokens passes through as-is.
+      ? { max_tokens: Math.trunc(Number(options.maxTokens)) }
       : {}),
   };
 

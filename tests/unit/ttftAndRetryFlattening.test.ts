@@ -368,15 +368,15 @@ describe('REL-272: max-investigation-turns reaches bounded mode (D6)', () => {
     expect(inputBeatsYaml.maxTurns).toBe(1);
   });
 
-  it('clamp still holds at the 1 and 3 boundaries', () => {
+  it('clamp holds at the 1 and unlocked 8 boundaries', () => {
     expect(resolveBoundedInvestigationLimits({}, { MAX_INVESTIGATION_TURNS: '0' }).maxTurns).toBe(1);
     expect(resolveBoundedInvestigationLimits({}, { MAX_INVESTIGATION_TURNS: '1' }).maxTurns).toBe(1);
-    expect(resolveBoundedInvestigationLimits({}, { MAX_INVESTIGATION_TURNS: '3' }).maxTurns).toBe(3);
-    expect(resolveBoundedInvestigationLimits({}, { MAX_INVESTIGATION_TURNS: '99' }).maxTurns).toBe(3);
+    expect(resolveBoundedInvestigationLimits({}, { MAX_INVESTIGATION_TURNS: '6' }).maxTurns).toBe(6);
+    expect(resolveBoundedInvestigationLimits({}, { MAX_INVESTIGATION_TURNS: '99' }).maxTurns).toBe(8);
   });
 
-  it('default with nothing set is 2, not 4', () => {
-    expect(resolveBoundedInvestigationLimits({}, {}).maxTurns).toBe(2);
-    expect(resolveBoundedInvestigationLimits({ parsed: {} }, {}).maxTurns).toBe(2);
+  it('default with nothing set is the unlocked default of 3', () => {
+    expect(resolveBoundedInvestigationLimits({}, {}).maxTurns).toBe(3);
+    expect(resolveBoundedInvestigationLimits({ parsed: {} }, {}).maxTurns).toBe(3);
   });
 });
