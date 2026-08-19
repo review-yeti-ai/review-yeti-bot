@@ -114,7 +114,7 @@ describe('gateway-neutral request body', () => {
         ignoredProviders: [],
         fallbackModels: [],
         // A closed OpenRouter cohort left over in config must not fail Fireworks responses.
-        providerRouting: { only: ['morph'], allow_fallbacks: false },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false },
         timeoutMs: 30_000,
         stream: false,
       },
