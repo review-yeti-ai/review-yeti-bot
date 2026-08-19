@@ -79,6 +79,35 @@ function singleChunkThenSlowDoneStreamResponse(finishDelayMs: number) {
   };
 }
 
+function completedStreamWhoseSocketAbortsAfterDone() {
+  let readCount = 0;
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader: () => ({
+        read: async () => {
+          readCount += 1;
+          if (readCount === 1) {
+            return {
+              done: false,
+              value: Buffer.from(`data: ${JSON.stringify({
+                id: 'gen-complete',
+                model: 'test/model',
+                provider: 'test-provider',
+                choices: [{ delta: { content: '{"findings":[]}' } }],
+              })}\n\n`),
+            };
+          }
+          if (readCount === 2) return { done: false, value: Buffer.from('data: [DONE]\n\n') };
+          throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+        },
+        cancel: async () => {},
+      }),
+    },
+  };
+}
+
 describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
   it('D1: fires on a never-chunking stream, aborting with failure class ttft_timeout well before the total budget', async () => {
     const startedAt = Date.now();
@@ -115,6 +144,25 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
     expect(result.ok).toBe(true);
     expect(result.provider).toBe('Morph');
     expect(result.timeoutPhase).toBeUndefined();
+  });
+
+  it('treats the SSE [DONE] marker as successful completion without reading a closing socket again', async () => {
+    const result = await callOpenRouterChat(async () => completedStreamWhoseSocketAbortsAfterDone(), {
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      headers: { Authorization: 'Bearer test' },
+      body: { model: 'test/model', messages: [] },
+      timeoutMs: 5_000,
+      ttftMs: 1_000,
+      preferStream: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      streamed: true,
+      generationId: 'gen-complete',
+      provider: 'test-provider',
+      content: '{"findings":[]}',
+    });
   });
 
   it('D2: non-stream path drives its connect budget from ttft-ms when supplied', async () => {
