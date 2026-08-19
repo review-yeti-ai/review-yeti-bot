@@ -52,9 +52,11 @@ The central repository reviews its own pull requests through `self-review.yml` u
 development `main` contract. Consumer repositories use `v1`; they do not need synchronized
 per-repository edits when policy or budgets change.
 
-The initial repository creation is the one-time bootstrap exception: create `main`, publish the
-first release tag, pin `self-review.yml` to the bootstrap commit, then protect `main` and require
-the workflow validation checks for all later changes.
+The initial repository creation is the one-time bootstrap exception: create `main`, let the first
+validated promotion create the `v1` branch, remove any historical `v1` tag, then protect `main`
+and require the workflow validation checks for all later changes. After bootstrap, the promotion
+workflow is the only writer to `v1`; operators roll back by reverting `main` and allowing the
+same fast-forward promotion path to record that rollback in branch history.
 
 ## Release procedure
 
