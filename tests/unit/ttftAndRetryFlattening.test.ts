@@ -144,8 +144,12 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
 
   it('D10: preferred_max_latency in the resolved policy follows ttft-ms, not the connect timeout', () => {
     const { resolveOpenRouterPolicy } = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
-    const policy = resolveOpenRouterPolicy({}, { OPENROUTER_TTFT_MS: '12000', OPENROUTER_CONNECT_TIMEOUT_MS: '8000' });
-    expect(policy.providerRouting.preferred_max_latency).toBe(12000);
+    const policy = resolveOpenRouterPolicy({}, {
+      OPENROUTER_TTFT_MS: '12000',
+      OPENROUTER_CONNECT_TIMEOUT_MS: '8000',
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['morph'] }),
+    });
+    expect(policy.providerRouting.preferred_max_latency).toBe(12);
     expect(policy.connectTimeoutMs).toBe(8000);
   });
 });

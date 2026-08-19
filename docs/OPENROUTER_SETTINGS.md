@@ -17,7 +17,8 @@ github_action:
     cost_quality_tradeoff: 5
     ignore_providers: [deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]
     # Optional raw OpenRouter provider routing policy. This is forwarded as the
-    # `provider` request object; use snake_case API field names.
+    # `provider` request object; use snake_case API field names. Omitting it uses
+    # the production default shown in the table below.
     provider_routing:
       order: [morph]
       allow_fallbacks: false
@@ -37,7 +38,7 @@ Defaults (when section or keys are missing):
 | `fallback_models` | empty |
 | `timeout_ms` | `60000` |
 | `stream` | `false` |
-| `provider_routing` | unset, except for the enforced degraded-provider ignore policy |
+| `provider_routing` | `allow_fallbacks: true`, `require_parameters: true`, `quantizations: [fp8, bf16]`, `sort: throughput`, `preferred_min_throughput: {p90: 40}`, `preferred_max_latency: {p99: 3}`, plus the enforced degraded-provider ignore policy |
 
 Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL`).
 `openrouter/auto` and `openrouter/auto-beta` are never rewritten into each other.
@@ -55,13 +56,18 @@ Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL
 | `data_collection` | Provider data-collection header policy: `allow` or `deny` | unset |
 | `cost_quality_tradeoff` | Auto Router quality/cost band, `0..10` | unset |
 | `ignore_providers` | Provider slugs to ignore; the built-in degraded-provider blocklist is always ignored | `[deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` |
-| `provider_routing` | Validated OpenRouter provider-selection object | unset |
+| `provider_routing` | Validated OpenRouter provider-selection object | fallbacks enabled; FP8/BF16 only; throughput sorting; p90 throughput at least 40 tokens/s preferred; p99 latency at most 3 seconds preferred |
 
 Precedence is: explicit Action input/environment, trusted `github_action.openrouter` YAML, then
 defaults. Action inputs cannot select an untrusted configuration ref. `provider_routing` accepts
 `order`, `only`, `ignore`, `quantizations`, `allow_fallbacks`, `require_parameters`,
 `data_collection`, `zdr`, `enforce_distillable_text`, `sort`, throughput/latency preferences, and
 `max_price`; unknown fields fail closed. See the [canonical YAML example](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration).
+
+The throughput and latency settings are OpenRouter preferences based on endpoint percentile
+statistics, not a literal uptime guarantee. Latency values are measured in seconds. Morph remains
+eligible under the default policy and is neither added to `ignore` nor to the degraded-provider
+ban set.
 
 ## Fixed model/provider compatibility
 

@@ -4,18 +4,28 @@ import {
   HARD_BANNED_PROVIDER_SLUGS,
 } from '../../.github/workflows/pipelines/openRouterPolicy.js';
 
+const DEFAULT_PROVIDER_ROUTING = {
+  allow_fallbacks: true,
+  require_parameters: true,
+  quantizations: ['fp8', 'bf16'],
+  sort: 'throughput',
+  preferred_min_throughput: { p90: 40 },
+  preferred_max_latency: { p99: 3 },
+  ignore: HARD_BANNED_PROVIDER_SLUGS,
+};
+
 const DEFAULTS = {
   ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
   timeoutMs: 30000,
   connectTimeoutMs: 8000,
-  // REL-271: ttftMs defaults to 30000 (independent of connectTimeoutMs's 8000 default) and now
-  // drives provider.preferred_max_latency instead of connectTimeoutMs.
+  // REL-271: ttftMs defaults to 30000 independently of connectTimeoutMs. Provider routing uses
+  // a stricter p99 latency preference by default.
   ttftMs: 30000,
   maxAttempts: 2,
   stream: false,
   model: undefined,
   fallbackModels: [],
-  providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 30000 },
+  providerRouting: DEFAULT_PROVIDER_ROUTING,
 };
 
 const ENV_ALL = {
@@ -61,7 +71,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       dataCollection: 'deny',
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 8000 },
+      providerRouting: DEFAULT_PROVIDER_ROUTING,
       timeoutMs: 8000,
       connectTimeoutMs: 8000,
       // timeoutMs=8000 clamps ttftMs's 30000 default down to 8000 too, coincidentally matching
@@ -80,7 +90,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       dataCollection: 'deny',
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731', 'openai/gpt-5.6-luna'],
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 5000 },
+      providerRouting: DEFAULT_PROVIDER_ROUTING,
       timeoutMs: 5000,
       connectTimeoutMs: 5000,
       ttftMs: 5000,
@@ -149,7 +159,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
       model: undefined,
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 8000 },
+      providerRouting: DEFAULT_PROVIDER_ROUTING,
       timeoutMs: 8000,
       connectTimeoutMs: 8000,
       ttftMs: 8000,
@@ -180,7 +190,10 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       dataCollection: 'deny',
       ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
       fallbackModels: [],
-      providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS, preferred_max_latency: 2500 },
+      providerRouting: {
+        ...DEFAULT_PROVIDER_ROUTING,
+        preferred_max_latency: { p99: 2.5 },
+      },
       timeoutMs: 2500,
       connectTimeoutMs: 2500,
       ttftMs: 2500,
@@ -200,16 +213,20 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '2000', OPENROUTER_CONNECT_TIMEOUT_MS: '9000' }).connectTimeoutMs).toBe(2000);
   });
 
-  it('defaults ttft_ms to 30000, clamps it to the total budget, and drives preferred_max_latency (REL-271 D1/D2/D10)', () => {
+  it('defaults ttft_ms to 30000, clamps it to the total budget, and converts custom latency fallback to seconds (REL-271 D1/D2/D10)', () => {
     expect(resolveOpenRouterPolicy({}, {}).ttftMs).toBe(30000);
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TTFT_MS: '100' }).ttftMs).toBe(500); // floor
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '9999999', OPENROUTER_TTFT_MS: '999999999' }).ttftMs).toBe(600_000); // ceiling (bounded by timeoutMs's own ceiling)
     // ttft cannot exceed the total budget
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '2000', OPENROUTER_TTFT_MS: '9000' }).ttftMs).toBe(2000);
-    // preferred_max_latency now follows ttftMs, not connectTimeoutMs -- the two defaults differ
-    // (30000 vs 8000) so a config with neither set makes this visible.
-    expect(resolveOpenRouterPolicy({}, {}).providerRouting.preferred_max_latency).toBe(30000);
-    expect(resolveOpenRouterPolicy({}, { OPENROUTER_TTFT_MS: '12000' }).providerRouting.preferred_max_latency).toBe(12000);
+    expect(resolveOpenRouterPolicy({}, {}).providerRouting.preferred_max_latency).toEqual({ p99: 3 });
+    expect(resolveOpenRouterPolicy({}, {
+      OPENROUTER_TIMEOUT_MS: '2500',
+    }).providerRouting.preferred_max_latency).toEqual({ p99: 2.5 });
+    expect(resolveOpenRouterPolicy({}, {
+      OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['morph'] }),
+      OPENROUTER_TTFT_MS: '12000',
+    }).providerRouting.preferred_max_latency).toBe(12);
   });
 
   it('exposes max_attempts with a default of 2 and a 1-5 clamp (REL-271 D9)', () => {
@@ -228,6 +245,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
 
   it('permanently bans degraded and fallback routes while accepting additional configured bans', () => {
     expect(resolveOpenRouterPolicy({}, {}).ignoredProviders).toEqual(HARD_BANNED_PROVIDER_SLUGS);
+    expect(HARD_BANNED_PROVIDER_SLUGS).not.toContain('morph');
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { ignore_providers: ['siliconflow', 'deepinfra'] } } },
       {},
@@ -322,7 +340,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allow_fallbacks: false,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
       // No timeout_ms/ttft_ms configured -- ttftMs stays at its unclamped 30000 default.
-      preferred_max_latency: 30000,
+      preferred_max_latency: 30,
     });
   });
 
@@ -340,7 +358,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       only: ['morph'],
       allow_fallbacks: false,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
-      preferred_max_latency: 30000,
+      preferred_max_latency: 30,
     });
   });
 
@@ -366,7 +384,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       allow_fallbacks: false,
       data_collection: 'deny',
       ignore: HARD_BANNED_PROVIDER_SLUGS,
-      preferred_max_latency: 30000,
+      preferred_max_latency: 30,
     });
   });
 
