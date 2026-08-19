@@ -46,7 +46,10 @@ reviewing it are files in your repository.**
 
 ## Install
 
-Add one file to any repository you want reviewed:
+Add one file to any repository you want reviewed. Two supported ways to pin the action —
+pick one:
+
+**Recommended — floating major channel, auto-patch:**
 
 ```yaml
 # .github/workflows/review.yml
@@ -64,18 +67,74 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: review-yeti-ai/review-yeti-bot@<40-hex-action-sha>
+      # `action-sha` must currently be an exact 40-hex commit SHA (see Reference below) — this
+      # step resolves whatever `v1` points to right now, at run time, so nothing in this file
+      # ever needs a manual bump.
+      - name: Resolve Review Yeti action SHA
+        id: yeti
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(gh api repos/review-yeti-ai/review-yeti-bot/commits/v1 --jq .sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: review-yeti-ai/review-yeti-bot@v1
         with:
-          # Must match the immutable action ref above; mutable refs cannot produce a durable receipt.
-          action-sha: <40-hex-action-sha>
+          action-sha: ${{ steps.yeti.outputs.sha }}
           llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           # Optional — enables Linear issue sync when the secret exists (API key only)
           linear-api-key: ${{ secrets.LINEAR_API_KEY }}
 ```
 
-That is the whole setup — note there is no `actions/checkout` step, and none is needed. The
-action reads the pull request diff, runs the reviewers in parallel, and comments on the PR using
-your workflow's built-in `GITHUB_TOKEN`; no personal access token required.
+`@v1` is a channel tag that only ever moves forward to a release that already passed the full
+gate (see [RELEASING.md](docs/RELEASING.md)) — you get patch and minor fixes automatically, and
+a bad release is rolled back centrally in minutes without touching your workflow file. The resolve
+step re-reads the current `v1` commit on every run, so this stays true even though `action-sha`
+itself must be a real commit SHA rather than a bare tag name. This is the right default for most
+repositories: it trades a small amount of supply-chain surface (the tag, and the two-second window
+between resolving it and checking it out, can move) for zero maintenance and a fast fleet-wide fix
+when something goes wrong upstream. `calltelemetry/ct-review-actions` uses the equivalent
+resolve-then-gate pattern for the CallTelemetry fleet, plus a provenance check that the resolved
+commit is actually a released, reachable-from-main artifact — see [RELEASING.md](docs/RELEASING.md)
+for the full channel/provenance contract.
+
+> Removing the manual resolve step (making `action-sha` optional or self-resolving for external
+> callers, the way the in-repository `review-bot.yaml` self-hosted workflow already does with
+> `git rev-parse HEAD`) is tracked separately and is not yet part of `action.yml`'s contract —
+> see [`scripts/check-action-contract.mjs`](scripts/check-action-contract.mjs). Until that
+> lands, the resolve step above is required for a genuinely zero-touch `@v1` consumer.
+
+**Hardened — exact release, manual bump via Dependabot:**
+
+```yaml
+      - uses: review-yeti-ai/review-yeti-bot@v1.3.0 # pin the same value in both places
+        with:
+          action-sha: <40-hex commit SHA that v1.3.0 points to>
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          linear-api-key: ${{ secrets.LINEAR_API_KEY }}
+```
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+```
+
+Pinning to an exact `vX.Y.Z` tag or a full commit SHA is immutable — nothing changes under you
+between runs, including a `v1` rollback, until you merge a Dependabot bump PR yourself. That is
+the honest trade: you own every version decision and every rollback, and you do not benefit from
+a centrally-fixed bad release until you bump. Verify what you pinned actually came from this
+repository's release workflow with `gh attestation verify` — see
+[RELEASING.md](docs/RELEASING.md#verifying-a-release).
+
+Either way, note there is no `actions/checkout` step, and none is needed. The action reads the
+pull request diff, runs the reviewers in parallel, and comments on the PR using your workflow's
+built-in `GITHUB_TOKEN`; no personal access token required. See
+[RELEASING.md](docs/RELEASING.md) for how releases are cut, how `v1`/`v1-rc` move, and the
+versioning/rollback contract behind both options above.
 
 The explicit `opened`/`reopened` list is intentional. GitHub otherwise includes `synchronize`,
 which runs when the pull request head changes; the default examples do not start a new model
@@ -845,6 +904,10 @@ OpenRouter routing, use [YAML Configuration Examples](docs/YAML_CONFIGURATION_EX
   live-canary separation.
 - **[Adversarial Review Patterns](docs/ADVERSARIAL_REVIEW_PATTERNS.md)** — the reasoning behind
   multi-persona cross-examination.
+- **[Releasing](docs/RELEASING.md)** — how a release is cut, how `v1`/`v1-rc` move, rollback, tag
+  protection, and versioning policy.
+- **[Operations](docs/OPERATIONS.md)** — exact-head verification, termination/rollback, and the
+  bad-release incident runbook.
 
 ## Contributing
 
@@ -864,6 +927,9 @@ plain-Node Action loading, lint, and build. Provider credentials are never requi
 Live Mem0, Hindsight, Supermemory, and RetainDB checks are isolated to the manual **Memory Provider
 Canary** workflow and report `not_configured` when their Doppler-backed secrets are absent. See
 [Memory Provider Operations](docs/MEMORY_PROVIDER_OPERATIONS.md).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, commit conventions, and PR expectations, and
+[SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ---
 
