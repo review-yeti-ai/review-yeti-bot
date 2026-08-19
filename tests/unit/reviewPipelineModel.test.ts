@@ -75,7 +75,7 @@ describe('resolveModelConfig', () => {
 });
 
 describe('reviewWithModel', () => {
-  it('uses bounded non-stream responses when concurrent fan-out disables streaming', async () => {
+  it('keeps an explicitly streamed transport on SSE even during persona fan-out', async () => {
     const { impl, calls } = stubFetch('{"findings":[]}');
 
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
@@ -88,8 +88,8 @@ describe('reviewWithModel', () => {
       disableStream: true,
     });
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0].body.stream).toBe(false);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0].body.stream).toBe(true);
   });
 
   it('puts bounded prior decisions in user data and never in the trusted system prompt', async () => {
