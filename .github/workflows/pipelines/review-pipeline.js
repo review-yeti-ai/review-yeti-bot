@@ -128,6 +128,7 @@ const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = requir
 const { buildRunReport, renderRunReportLine, writeRunReport } = require('../../../src/telemetry/runReport');
 const { buildOverviewMessages, parseOverviewResponse, renderOverviewContextBlock, renderOverviewWalkthrough } = require('../../../src/review/prOverviewBrief');
 const { buildRebuttalMessages, parseRebuttalResponse, renderRebuttalReply, selectRebuttalCandidates } = require('../../../src/review/rebuttalRerun');
+const { applyConfirmationOutcomes, buildConfirmationMessages, parseConfirmationResponse, selectFindingsForConfirmation } = require('../../../src/review/crossModelConfirm');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -7816,6 +7817,8 @@ async function main(options = {}) {
   const rebuttalWithdrawnThreadIds = new Set();
   let rebuttalReceipt = { enabled: false, candidates: 0, affirmed: 0, withdrawn: 0 };
   const rebuttalUsage = [];
+  const confirmationReceipt = { enabled: false, checked: 0, demoted: 0 };
+  const confirmationUsage = [];
   const initialReconciliation = reconcileDecisionFindings([], decisionLedger);
   let carriedOpen = initialReconciliation.carriedOpen;
   let ignored = initialReconciliation.ignored;
@@ -8388,6 +8391,71 @@ async function main(options = {}) {
         )];
         const partialView = reviewViewWasPartial(coverage);
         // findingVerification (including the navigationCompletenessMatters contribution) is
+        // Cross-model confirmation: every fresh P0/P1 finding gets one second
+        // opinion from the NEXT transport (a different model build) before it
+        // can influence the gate. Disagreement demotes to a published P2
+        // advisory carrying both verdicts; agreement — and any failure to
+        // obtain a second opinion — leaves the finding untouched, so this can
+        // only reduce false blocks, never suppress a real finding by outage.
+        // Clean runs cost zero extra calls. Requires >= 2 transports.
+        {
+          const confirmSetting = String(runtimeEnv.REVIEW_YETI_CROSS_CONFIRM ?? '').trim().toLowerCase();
+          const confirmDefaultOn = runtimeEnv.GITHUB_ACTIONS === 'true' || runtimeEnv.VITEST !== 'true';
+          const confirmPlan = Array.isArray(modelConfig.transportPlan) && modelConfig.transportPlan.length >= 2
+            ? [...modelConfig.transportPlan.slice(1), modelConfig.transportPlan[0]]
+            : null;
+          confirmationReceipt.enabled = Boolean(confirmPlan)
+            && modelConfig.enabled
+            && typeof options.modelClient !== 'function'
+            && confirmSetting !== 'false'
+            && (confirmSetting === 'true' || confirmDefaultOn);
+          if (confirmationReceipt.enabled) {
+            try {
+              const candidates = selectFindingsForConfirmation(personaResults);
+              confirmationReceipt.checked = candidates.length;
+              const outcomes = [];
+              for (const candidate of candidates) {
+                if (cancellation.signal.aborted) break;
+                const diffExcerpt = diffFiles.find((file) => file.path === candidate.finding.path)?.patch || '';
+                const result = await reviewWithTransports(
+                  { id: 'cross-confirm', name: 'Cross-Model Confirmation' },
+                  [],
+                  prContext,
+                  sessionContext,
+                  {
+                    ...modelConfig,
+                    transportPlan: confirmPlan,
+                    modelClient: undefined,
+                    fetchImplementation,
+                    reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
+                    signal: cancellation.signal,
+                    rawTurn: true,
+                    investigationMessages: buildConfirmationMessages({ finding: candidate.finding, diffExcerpt }),
+                    turnValidator: parseConfirmationResponse,
+                  },
+                );
+                if (result?.ok !== true || typeof result.content !== 'string') continue;
+                let verdict;
+                try {
+                  verdict = parseConfirmationResponse(result.content);
+                } catch (_) {
+                  continue;
+                }
+                if (result.usage) confirmationUsage.push({ usage: result.usage });
+                outcomes.push({ ...candidate, ...verdict });
+                if (!verdict.supported) {
+                  console.log(`[CrossConfirm] ${candidate.finding.severity} ${candidate.finding.path} NOT supported by second model — demoting to advisory.`);
+                }
+              }
+              const applied = applyConfirmationOutcomes(personaResults, outcomes);
+              personaResults = applied.personaResults;
+              confirmationReceipt.demoted = applied.demoted;
+            } catch (error) {
+              console.warn(`[CrossConfirm] Unavailable (${error.message}); findings stand as reported.`);
+            }
+          }
+        }
+
         // deliberately computed AFTER the soundness/decision-ledger filters below, from their
         // final output -- see finalizeBoundedReviewFindings's doc comment (issue #52).
         const finalized = finalizeBoundedReviewFindings({
@@ -8564,7 +8632,7 @@ async function main(options = {}) {
   console.log('[Formatting] Planning resolvable P0/P1 conversations and compact review output...');
   // The overview pre-pass was billed too; an unseen cost is how a review
   // panel quietly becomes expensive.
-  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : []), ...rebuttalUsage]);
+  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : []), ...rebuttalUsage, ...confirmationUsage]);
   if (usageTotal.totalTokens > 0) {
     console.log(`[Usage] ${usageTotal.totalTokens} token(s) across ${personaResults.length} reviewer(s)${usageTotal.costUSD ? ` — $${usageTotal.costUSD.toFixed(4)}` : ''}.`);
   }
@@ -8881,6 +8949,7 @@ async function main(options = {}) {
     overview: overviewReceipt,
     calibration: calibrationReceipt,
     rebuttal: rebuttalReceipt,
+    crossModelConfirmation: confirmationReceipt,
     outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
     provider: memoryPolicy.provider || 'honcho',
     headSha: prContext.headSha,
