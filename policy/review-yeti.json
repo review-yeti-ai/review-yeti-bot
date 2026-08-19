@@ -2,7 +2,7 @@
   "schema": "exampleorg.review-policy.v1",
   "review_yeti": {
     "repository": "review-yeti-ai/review-yeti-bot",
-    "action_sha": "516251db57a2d3bdd6c51aea009300f82a659ba3",
+    "action_sha": "32e64e6e3ceec7a3888d80fac8536f4a4730d6f6",
     "personas": "security,performance,architecture,testing,dependencies",
     "transports": [
       {
@@ -11,8 +11,8 @@
         "api_key_env": "FIREWORKS_PR_REVIEW_API_KEY",
         "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
         "compat": "openai",
-        "timeout_ms": 180000,
-        "connect_timeout_ms": 60000
+        "timeout_ms": 120000,
+        "connect_timeout_ms": 30000
       },
       {
         "name": "ollama",
@@ -20,8 +20,8 @@
         "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
         "model": "deepseek-v4-flash:0731",
         "compat": "openai",
-        "timeout_ms": 180000,
-        "connect_timeout_ms": 60000
+        "timeout_ms": 120000,
+        "connect_timeout_ms": 30000
       },
       {
         "name": "openrouter-fallback",
@@ -29,22 +29,16 @@
         "api_key_env": "OPENROUTER_PR_REVIEW_API_KEY",
         "model": "deepseek/deepseek-v4-flash-0731",
         "compat": "openrouter",
-        "timeout_ms": 180000,
-        "connect_timeout_ms": 60000,
+        "timeout_ms": 60000,
+        "connect_timeout_ms": 10000,
+        "ignore_providers": ["open-inference"],
         "provider_routing": {
           "allow_fallbacks": true,
           "require_parameters": true,
-          "quantizations": [
-            "fp8",
-            "bf16"
-          ],
+          "quantizations": ["fp8", "bf16"],
           "sort": "throughput",
-          "preferred_min_throughput": {
-            "p90": 40
-          },
-          "preferred_max_latency": {
-            "p99": 3
-          },
+          "preferred_min_throughput": {"p90": 40},
+          "preferred_max_latency": {"p99": 3},
           "data_collection": "deny"
         }
       }
@@ -53,9 +47,11 @@
     "openrouter_timeout_ms": "120000",
     "openrouter_ttft_ms": "30000",
     "openrouter_max_attempts": "2",
-    "lane_deadline_ms": "600000",
-    "lane_call_budget": "54",
-    "max_investigation_turns": "8",
+    "budget": {
+      "lane_deadline_ms": "240000",
+      "lane_call_budget": "24",
+      "max_investigation_turns": "3"
+    },
     "max_diff_chars": "2000000",
     "max_file_diff_chars": "60000",
     "max_passes": "3",

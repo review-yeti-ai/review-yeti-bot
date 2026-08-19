@@ -2,12 +2,18 @@ import { appendFileSync, readFileSync } from 'node:fs';
 
 const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
 const review = policy.review_yeti;
+const budget = review.budget;
 const sha = /^[0-9a-f]{40}$/i;
 
 if (policy.schema !== 'exampleorg.review-policy.v1') throw new Error('unsupported policy schema');
 if (!sha.test(review.action_sha)) throw new Error('review_yeti.action_sha must be an immutable commit SHA');
-if (!/^[1-9][0-9]*$/.test(String(review.lane_call_budget ?? ''))) {
-  throw new Error('review_yeti.lane_call_budget must be a positive integer string');
+if (!budget || typeof budget !== 'object' || Array.isArray(budget)) {
+  throw new Error('review_yeti.budget must be an object');
+}
+for (const key of ['lane_deadline_ms', 'lane_call_budget', 'max_investigation_turns']) {
+  if (!/^[1-9][0-9]*$/.test(String(budget[key] ?? ''))) {
+    throw new Error(`review_yeti.budget.${key} must be a positive integer string`);
+  }
 }
 if (!Array.isArray(review.transports) || review.transports.length === 0) throw new Error('policy must define transports');
 const transportNames = review.transports.map((transport) => transport.name);
@@ -26,9 +32,9 @@ const outputs = {
   openrouter_timeout_ms: review.openrouter_timeout_ms,
   openrouter_ttft_ms: review.openrouter_ttft_ms,
   openrouter_max_attempts: review.openrouter_max_attempts,
-  lane_deadline_ms: review.lane_deadline_ms,
-  lane_call_budget: review.lane_call_budget,
-  max_investigation_turns: review.max_investigation_turns,
+  lane_deadline_ms: budget.lane_deadline_ms,
+  lane_call_budget: budget.lane_call_budget,
+  max_investigation_turns: budget.max_investigation_turns,
   max_diff_chars: review.max_diff_chars,
   max_file_diff_chars: review.max_file_diff_chars,
   max_passes: review.max_passes,
