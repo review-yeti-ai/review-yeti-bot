@@ -47,14 +47,9 @@ jobs:
       - name: Validate central workflow release SHA
         env:
           CENTRAL_SHA: ${{ inputs.central-sha }}
-          WORKFLOW_SHA: ${{ github.job_workflow_sha }}
         run: |
           if [[ ! "$CENTRAL_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::central-sha must be a full 40-character lowercase commit SHA"
-            exit 1
-          fi
-          if [[ "$CENTRAL_SHA" != "$WORKFLOW_SHA" ]]; then
-            echo "::error::central-sha must match the immutable SHA used to call this reusable workflow"
             exit 1
           fi
 
@@ -62,17 +57,21 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: exampleorg/example-review-actions
-          # github.workflow_sha resolves to the CALLER's commit when this
-          # reusable workflow runs cross-repo (observed live: a example-api
-          # merge SHA produced "upload-pack: not our ref"). job_workflow_sha
-          # is the immutable SHA of THIS workflow file's repository, which is
-          # exactly the self-checkout we want in both same-repo and
-          # cross-repo invocations.
-          ref: ${{ github.job_workflow_sha }}
+          # The caller supplies this full SHA and the next step verifies that the protected
+          # base workflow pins the reusable workflow and input to the same commit.
+          ref: ${{ inputs.central-sha }}
           path: .exampleorg-review-actions
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Validate immutable caller pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_REPOSITORY: ${{ inputs.repository }}
+          EXPECTED_BASE_SHA: ${{ inputs.base-sha }}
+          CENTRAL_SHA: ${{ inputs.central-sha }}
+        run: .exampleorg-review-actions/scripts/validate-caller-workflow.sh
 
       - name: Validate immutable review request
         env:

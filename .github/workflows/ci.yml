@@ -18,6 +18,7 @@ jobs:
           node --check scripts/emit-policy.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           bash -n scripts/validate-review-request.sh
+          bash -n scripts/validate-caller-workflow.sh
           bash -n scripts/check-review-verdict.sh
           test -s policy/review-yeti.json
           grep -Eq 'review-yeti.yml@[0-9a-f]{40}$' .github/workflows/self-review.yml

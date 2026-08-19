@@ -33,18 +33,20 @@ jobs:
 ```
 
 The caller supplies the repository, PR number, base SHA, head SHA, and the immutable central
-workflow SHA. The reusable workflow validates the central SHA before checkout, re-reads the PR
-through the caller's `GITHUB_TOKEN`, and fails closed if any coordinate changes. Every consumer
-shim must pass the same SHA used in the reusable-workflow `@` pin. The central repository's
-self-review is the explicit bootstrap exception: it calls the previous released workflow until a
-new release is promoted. The workflow never checks out or executes the pull-request head.
+workflow SHA. The reusable workflow validates the SHA before checkout, verifies the protected
+base workflow pins both the reusable workflow and `central-sha` to that same commit, re-reads the
+PR through the caller's `GITHUB_TOKEN`, and fails closed if any coordinate changes. The central
+repository's self-review is the explicit bootstrap exception: it calls the previous released
+workflow until a new release is promoted. The workflow never checks out or executes the
+pull-request head.
 
-## No consumer-owned review configuration
+## No consumer-owned Review Yeti configuration
 
 The policy is `policy/review-yeti.json` in this repository. Consumer repositories must not
-contain `.review-yeti*`, `.ct-review*`, `.coderabbit*`, or persona override files. The reusable
-workflow rejects those paths before any model request. This prevents a target repository or its
-PR from changing the review roster, provider route, budget, or gate semantics.
+contain `.review-yeti*`, `.ct-review*`, or persona override files. The reusable workflow rejects
+those paths before any model request. A `.coderabbit.*` file, when present, belongs to the
+independent CodeRabbit service; Review Yeti does not read it and it cannot change the central
+review roster, provider route, budget, or gate semantics.
 
 ## Bootstrap and recovery
 
