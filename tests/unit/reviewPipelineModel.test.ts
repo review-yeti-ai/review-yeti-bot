@@ -968,6 +968,26 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.response_format).toEqual({ type: 'json_object' });
   });
 
+  it('omits response_format when the trusted transport marks the model as unsupported', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://openrouter.example/v1', model: 'deepseek/deepseek-v4-flash-0731', fetchImpl: impl,
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: 'deny',
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        structuredOutput: 'none',
+        providerRouting: { allow_fallbacks: true, ignore: HARD_BANNED_PROVIDER_SLUGS },
+        timeoutMs: 30_000,
+        stream: true,
+      },
+    });
+
+    expect(calls[0].body).not.toHaveProperty('response_format');
+    expect(calls[0].body.stream).toBe(true);
+  });
+
   it('fails closed when the closed provider cohort rejects the strict investigation schema', async () => {
     const { impl } = stubFetch('', { ok: false, status: 400, payload: { error: { message: 'response_format unsupported' } } });
     const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
