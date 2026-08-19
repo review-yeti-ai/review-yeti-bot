@@ -309,6 +309,15 @@ inputs:
       github_action.transports (this input wins). Invalid plans fail the run closed.
     required: false
     default: ''
+  conditional-lanes:
+    description: >-
+      Optional JSON array of conditional advisory lanes, e.g.
+      [{"persona":"licensing","paths":["release/**","**/cli.sh"]}]. Each lane runs one bounded
+      evidence-free turn only when the diff touches its paths, and publishes P2 advisories only —
+      conditional lanes sit outside the coverage denominator and can neither block a verdict nor
+      satisfy quorum. Max 4 lanes.
+    required: false
+    default: ''
   overview-brief:
     description: >-
       PR overview brief pre-pass (default enabled). One orientation model call runs before
@@ -702,6 +711,7 @@ runs:
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
         REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
         REVIEW_YETI_OVERVIEW_BRIEF: ${{ inputs.overview-brief }}
+        REVIEW_YETI_CONDITIONAL_LANES: ${{ inputs.conditional-lanes }}
         OPENROUTER_STRUCTURED_OUTPUT: ${{ inputs.openrouter-structured-output }}
         REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
         # The caller supplies the immutable action source SHA explicitly. Mutable refs/tags are
