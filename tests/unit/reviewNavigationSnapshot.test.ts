@@ -32,21 +32,25 @@ describe('immutable review navigation snapshot', () => {
     await expect(fetchImmutableRepositorySnapshot({ identity, token: 'test-token', fetchImplementation })).resolves.toMatchObject({ complete: false, truncated: true });
   });
 
-  it('caps base+head monorepo trees at MAX_FILES and keeps changed paths', async () => {
+  it('caps base+head monorepo trees at the runaway backstop and keeps changed paths', async () => {
     const { boundSnapshotFiles } = require('../../src/mcp/reviewNavigationSnapshot.js');
-    // Each tree contributes MAX_FILES blobs → combined overlay would exceed the registry bound.
-    const baseTree = Array.from({ length: MAX_FILES }, (_, i) => ({
+    // The backstop is now 400,000 entries: far above any real repository, and far too large to
+    // allocate in a unit test to no purpose. The behaviour under test is what happens AT the
+    // cap, which an injected small cap exercises identically and 2,000x more cheaply.
+    const CAP = 200;
+    // Each tree contributes CAP blobs → combined overlay would exceed the registry bound.
+    const baseTree = Array.from({ length: CAP }, (_, i) => ({
       type: 'blob',
       path: `lib/base-${String(i).padStart(5, '0')}.js`,
       sha: '1'.repeat(40),
     }));
-    const headTree = Array.from({ length: MAX_FILES }, (_, i) => ({
+    const headTree = Array.from({ length: CAP }, (_, i) => ({
       type: 'blob',
       path: `lib/head-${String(i).padStart(5, '0')}.js`,
       sha: '2'.repeat(40),
     }));
     // Put the PR change outside the early alphabetical slice so only overlay can keep it.
-    headTree[MAX_FILES - 1] = { type: 'blob', path: 'zzz/important.js', sha: '3'.repeat(40) };
+    headTree[CAP - 1] = { type: 'blob', path: 'zzz/important.js', sha: '3'.repeat(40) };
 
     const fetchImplementation = vi.fn()
       .mockResolvedValueOnce(response({ truncated: false, tree: baseTree }))
@@ -57,9 +61,10 @@ describe('immutable review navigation snapshot', () => {
       changedFiles: [{ path: 'zzz/important.js', patch: '@@ -1 +1 @@\n-a\n+b', newSha: '3'.repeat(40) }],
       token: 'test-token',
       fetchImplementation,
+      maxFiles: CAP,
     });
 
-    expect(snapshot.files.length).toBeLessThanOrEqual(MAX_FILES);
+    expect(snapshot.files.length).toBeLessThanOrEqual(CAP);
     expect(snapshot.truncated).toBe(true);
     expect(snapshot.complete).toBe(false);
     expect(snapshot.files).toEqual(expect.arrayContaining([
@@ -68,12 +73,12 @@ describe('immutable review navigation snapshot', () => {
 
     // pure helper: changed path wins over filler when over budget
     const oversized = [
-      ...Array.from({ length: MAX_FILES }, (_, i) => ({ ref: 'head' as const, path: `a/${i}.js`, blobSha: '4'.repeat(40) })),
+      ...Array.from({ length: CAP }, (_, i) => ({ ref: 'head' as const, path: `a/${i}.js`, blobSha: '4'.repeat(40) })),
       { ref: 'head' as const, path: 'zzz/keep.js', blobSha: '5'.repeat(40), patch: 'p' },
     ];
-    const bounded = boundSnapshotFiles(oversized, [{ path: 'zzz/keep.js' }], MAX_FILES);
+    const bounded = boundSnapshotFiles(oversized, [{ path: 'zzz/keep.js' }], CAP);
     expect(bounded.truncated).toBe(true);
-    expect(bounded.files.length).toBe(MAX_FILES);
+    expect(bounded.files.length).toBe(CAP);
     expect(bounded.files.some((f: { path: string }) => f.path === 'zzz/keep.js')).toBe(true);
   });
 
@@ -82,7 +87,8 @@ describe('immutable review navigation snapshot', () => {
       path: `zzz/exact-${String(index).padStart(2, '0')}.js`,
       patch: `@@ -1 +1 @@\n-old-${index}\n+new-${index}`,
     }));
-    const filler = (label: string, sha: string) => Array.from({ length: MAX_FILES }, (_, index) => ({
+    const CAP = 200;
+    const filler = (label: string, sha: string) => Array.from({ length: CAP }, (_, index) => ({
       type: 'blob',
       path: `lib/${label}-${String(index).padStart(5, '0')}.js`,
       sha,
@@ -93,7 +99,7 @@ describe('immutable review navigation snapshot', () => {
       .mockResolvedValueOnce(response({ truncated: false, tree: baseTree }))
       .mockResolvedValueOnce(response({ truncated: false, tree: headTree }));
 
-    const snapshot = await fetchImmutableRepositorySnapshot({ identity, changedFiles, token: 'test-token', fetchImplementation });
+    const snapshot = await fetchImmutableRepositorySnapshot({ identity, changedFiles, token: 'test-token', fetchImplementation, maxFiles: CAP });
     const registry = createReviewNavigationToolRegistry({
       identity,
       snapshot,
@@ -106,5 +112,42 @@ describe('immutable review navigation snapshot', () => {
       status: 'ok',
       paths: changedFiles.map((file) => file.path),
     });
+  });
+
+  it('indexes a 16,000-file repository completely, within a runner-sized memory and time budget', async () => {
+    // cisco-cdr's real tracked-file count. Under the retired 5,000-entry cap this snapshot came
+    // back truncated with >84% of the repository missing, and every evidence read outside the
+    // surviving slice answered `file_not_in_snapshot` — indistinguishable, to the reviewer, from
+    // "that file does not exist". This asserts the whole tree is now reachable, and pins the two
+    // costs that made the cap look justified so a future regression has to argue with a number.
+    const TRACKED_FILES = 16_000;
+    const tree = Array.from({ length: TRACKED_FILES }, (_, index) => ({
+      type: 'blob',
+      path: `lib/cdrcisco/module_${String(index).padStart(5, '0')}/implementation.ex`,
+      sha: '8'.repeat(40),
+    }));
+    const fetchImplementation = vi.fn()
+      .mockResolvedValueOnce(response({ truncated: false, tree }))
+      .mockResolvedValueOnce(response({ truncated: false, tree }));
+
+    const before = process.memoryUsage().heapUsed;
+    const startedAt = Date.now();
+    const snapshot = await fetchImmutableRepositorySnapshot({ identity, changedFiles: [], token: 'test-token', fetchImplementation });
+    const elapsedMs = Date.now() - startedAt;
+    const heapGrowthBytes = process.memoryUsage().heapUsed - before;
+
+    expect(snapshot.files.length).toBe(TRACKED_FILES * 2);
+    expect(snapshot).toMatchObject({ complete: true, truncated: false });
+    // One `git/trees?recursive=1` request per ref, exactly as before. Removing the cap did not
+    // add a single API call: GitHub already sent every entry, the cap only discarded them.
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    // Path index only — no file contents. Generous ceilings so this pins the order of magnitude
+    // (single-digit MB, sub-second) without flaking on a loaded CI runner.
+    expect(heapGrowthBytes).toBeLessThan(96 * 1024 * 1024);
+    expect(elapsedMs).toBeLessThan(10_000);
+  });
+
+  it('keeps the runaway backstop far above any real repository', () => {
+    expect(MAX_FILES).toBeGreaterThan(100_000);
   });
 });

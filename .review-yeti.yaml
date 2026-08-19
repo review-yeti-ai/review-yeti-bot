@@ -14,6 +14,15 @@ review:
     max_candidate_findings: 5
     max_verifier_calls_per_finding: 3
     max_turns: 4
+    # Bounded read-only evidence tools (file_read / file_find / code_search / file_read_diff).
+    # These are local reads against the immutable base+head path index plus one GitHub blob GET
+    # per distinct file read. They do not spend lane-call-budget, which counts provider HTTP
+    # calls only. Action inputs evidence-max-* override these.
+    evidence:
+      max_calls: 100
+      max_scan_files: 60
+      max_result_bytes: 32000
+      max_find_results: 200
 
 mcp:
   context7:

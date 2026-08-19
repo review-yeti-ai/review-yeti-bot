@@ -123,7 +123,7 @@ const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../
 const { buildInvestigationMessages, parseInvestigationResponse, parseJson: parseInvestigationJson } = require('../../../src/review/reviewInvestigationPrompt');
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
-const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMITS } = require('../../../src/review/evidenceContracts');
+const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMITS, HARD_INVESTIGATION_LIMITS } = require('../../../src/review/evidenceContracts');
 const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 const { buildRunReport, renderRunReportLine, writeRunReport } = require('../../../src/telemetry/runReport');
 const { buildOverviewMessages, parseOverviewResponse, renderOverviewContextBlock, renderOverviewWalkthrough } = require('../../../src/review/prOverviewBrief');
@@ -336,14 +336,35 @@ Do not flag:
 - Requests to test framework behaviour or third-party libraries.
 - Missing end-to-end tests where unit coverage is proportionate to the change.
 
-Output discipline (hard rules): report at most the THREE highest-impact test
-gaps and nothing beyond them. Keep every finding body to one or two sentences.
-Never enumerate exhaustive test-case lists, per-file inventories, or style
-commentary — measured across this repo you emit ~30x the output of other
-reviewers, and that volume is the primary cause of your responses violating
-the JSON contract. Shorter is more reliable AND more useful.
+Work both of these out silently before you conclude. They are the two things a
+passing suite most reliably hides. Do not narrate the working; report only a
+finding, and only if one survives:
+- Resolve what each new or changed assertion actually pins. Follow the value to
+  the fixture, helper, factory, constant or parameter default it comes from
+  rather than trusting the argument's name. An assertion handed the system's
+  own default, or one that reduces to a sibling assertion once both sides are
+  resolved, pins nothing: delete the feature and the test still passes.
+- For each negative or absence assertion — "not in", "does not contain", "no
+  match" over a block of text — find the edit that keeps it green while
+  reintroducing what it forbids. Reordering, reindenting and requoting all do
+  this to an assertion matched against a multi-line literal. A guard must
+  anchor to the semantic token it protects, not to the shape of the text
+  around it.
 
-Severity: P1 for untested logic that can silently break, or an active exclusive marker. P2 for coverage worth adding. Reserve P0 for a change that disables an entire suite.`,
+Both checks have short answers, and the common answer is "nothing wrong". An
+assertion that resolves to a value the system does not supply on its own, or a
+guard that already anchors on the token it protects, has answered its check:
+stop there and report nothing rather than hunting for a subtler failure.
+
+Output discipline: this bounds what you report, never how far you investigate.
+Spend the turns and evidence calls you have — reading the helper an assertion
+calls is exactly what they are for — then report at most the THREE
+highest-impact test gaps, each body one or two sentences. Your reply is the
+JSON object and nothing else: no reasoning, no preamble, no per-file
+inventory, no exhaustive test-case list. Brevity is a property of your output,
+not of your reasoning.
+
+Severity: P1 for untested logic that can silently break, an assertion that pins nothing, a guard that formatting alone defeats, or an active exclusive marker. P2 for coverage worth adding. Reserve P0 for a change that disables an entire suite.`,
   },
   {
     id: 'documentation',
@@ -785,6 +806,43 @@ function resolveBoundedInvestigationLimits(localConfig, env = process.env) {
     8,
   ));
   return normalizeInvestigationLimits({ ...investigationYaml, maxTurns: resolvedMaxTurns });
+}
+
+/**
+ * Per-lane bounded-evidence tool budget.
+ *
+ * This used to be a literal `{ maxCalls: 12, maxScanFiles: 20, ... }` at the registry's only
+ * call site: below the documented contract default of 24, above nothing, and reachable by no
+ * operator without cutting a bot release. Twelve calls is roughly two file reads per risk on a
+ * three-risk plan, which is why lanes stopped investigating and reported what the diff handed
+ * them for free.
+ *
+ * Precedence matches every other limit in this file: action input / env first, then
+ * `review.investigation.evidence` from the trusted base-ref config, then the default.
+ * reviewNavigationTools clamps whatever comes out to its own hard ceilings, so a bad value
+ * degrades to a bounded one rather than to an unbounded one.
+ */
+function resolveEvidenceRegistryConfig(localConfig, env = process.env) {
+  const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object'
+    ? localConfig.parsed
+    : (localConfig && typeof localConfig === 'object' ? localConfig : {});
+  const evidenceYaml = parsed.review?.investigation?.evidence && typeof parsed.review.investigation.evidence === 'object'
+    ? parsed.review.investigation.evidence
+    : {};
+  const positive = (...candidates) => {
+    for (const candidate of candidates) {
+      const value = Number(candidate);
+      if (Number.isSafeInteger(value) && value > 0) return value;
+    }
+    return undefined;
+  };
+  return {
+    enabled: true,
+    maxCalls: positive(env.EVIDENCE_MAX_CALLS, evidenceYaml.max_calls, evidenceYaml.maxCalls, HARD_INVESTIGATION_LIMITS.maxCalls),
+    maxResultBytes: positive(env.EVIDENCE_MAX_RESULT_BYTES, evidenceYaml.max_result_bytes, evidenceYaml.maxResultBytes, 32_000),
+    maxFindResults: positive(env.EVIDENCE_MAX_FIND_RESULTS, evidenceYaml.max_find_results, evidenceYaml.maxFindResults, 200),
+    maxScanFiles: positive(env.EVIDENCE_MAX_SCAN_FILES, evidenceYaml.max_scan_files, evidenceYaml.maxScanFiles, 60),
+  };
 }
 
 function resolveReviewIntelligenceActionInputs(env = process.env) {
@@ -7401,6 +7459,9 @@ async function main(options = {}) {
   }
   const localConfig = loadLocalRepoConfig(configRoot);
   const investigationLimits = resolveBoundedInvestigationLimits(localConfig, runtimeEnv);
+  // Bounded-evidence tool budget. Local reads and blob GETs, not provider calls: see
+  // resolveEvidenceRegistryConfig for why this is generous and why it is no longer a literal.
+  const evidenceRegistryConfig = resolveEvidenceRegistryConfig(localConfig, runtimeEnv);
   // Per-lane wall-clock backstop (REL-271). Default 4m; a lane that exceeds it fails closed with
   // `lane_deadline` rather than running until the job is killed.
   const laneDeadlineMs = Math.max(1_000, Number(runtimeEnv.LANE_DEADLINE_MS) || 240_000);
@@ -8399,7 +8460,7 @@ async function main(options = {}) {
                 identity: navigationIdentity,
                 snapshot: navigationSnapshot,
                 blobClient,
-                config: { enabled: true, maxCalls: 12, maxResultBytes: 8_000, maxFindResults: 50, maxScanFiles: 20 },
+                config: evidenceRegistryConfig,
               });
             } catch (error) {
               // Monorepos used to throw "must contain a bounded file list" here and
@@ -9197,6 +9258,7 @@ module.exports = {
   resolveModelConfig,
   resolveActionReviewPolicy,
   resolveBoundedInvestigationLimits,
+  resolveEvidenceRegistryConfig,
   compactOptionalReviewContext,
   resolveTrustedContextCompactionPolicy,
   resolveTrustedReviewTelemetryPolicy,
