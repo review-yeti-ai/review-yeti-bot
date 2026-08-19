@@ -76,7 +76,8 @@ promotion.
 The hosted panel uses `openrouter-ttft-ms` even on the Fireworks transport. All
 three transports set `stream: true` and `openrouter_stream=true`, so that
 deadline is first SSE token (~1s), not a fully buffered JSON body. OpenRouter
-fallback also ignores `akashml` (60s timeouts / malformed 10k completions).
+fallback also ignores `akashml` (60s timeouts / malformed 10k completions) and
+accepts only pure `bf16`/`fp16` quants (no fp8/fp4/int4/int8).
 Transport smoke stays `stream: false` so `response.json()` health checks remain
 valid.
 

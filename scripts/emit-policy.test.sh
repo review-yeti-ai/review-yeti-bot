@@ -56,6 +56,11 @@ if 'akashml' not in fallback.get('ignore_providers', []):
     raise SystemExit('openrouter-fallback must quarantine akashml (malformed 10k completions / 60s timeouts)')
 if fallback.get('provider_routing', {}).get('sort') != 'throughput':
     raise SystemExit('openrouter-fallback must use throughput routing')
+quants = fallback.get('provider_routing', {}).get('quantizations')
+if quants != ['bf16', 'fp16']:
+    raise SystemExit('openrouter-fallback must accept only pure bf16/fp16 quants')
+if any(q in ('fp4', 'fp8', 'int4', 'int8', 'awq', 'gptq') for q in (quants or [])):
+    raise SystemExit('openrouter-fallback must not allow reduced quants')
 print('policy budget source passed')
 PY
 

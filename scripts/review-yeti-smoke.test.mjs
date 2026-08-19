@@ -157,3 +157,12 @@ test('the smoke suite rejects weakened OpenRouter routing before any network req
   delete policy.review_yeti.transports[2].provider_routing.quantizations;
   assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
 });
+
+test('the smoke suite rejects reduced OpenRouter quants before any network request', () => {
+  const policy = policyFixture();
+  policy.review_yeti.transports[2].provider_routing = {
+    ...policy.review_yeti.transports[2].provider_routing,
+    quantizations: ['fp8', 'bf16'],
+  };
+  assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
+});
