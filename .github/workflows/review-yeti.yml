@@ -91,6 +91,7 @@ jobs:
           openrouter-ttft-ms: ${{ steps.policy.outputs.openrouter_ttft_ms }}
           openrouter-max-attempts: ${{ steps.policy.outputs.openrouter_max_attempts }}
           lane-deadline-ms: ${{ steps.policy.outputs.lane_deadline_ms }}
+          lane-call-budget: ${{ steps.policy.outputs.lane_call_budget }}
           max-investigation-turns: ${{ steps.policy.outputs.max_investigation_turns }}
           max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
           max-file-diff-chars: ${{ steps.policy.outputs.max_file_diff_chars }}

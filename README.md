@@ -84,6 +84,11 @@ current transport fails. The OpenRouter entry explicitly permits gateway fallbac
 provider data collection; no other gateway is part of the central plan. Each caller must expose
 the three named environment variables through its inherited GitHub Actions secrets.
 
+The central budget is also fixed here: three investigation turns, one 24-request per-lane call
+budget, a four-minute lane deadline, and a 30-second time-to-first-token budget. A provider that
+does not answer within that envelope fails over or fails closed; it cannot stretch a hosted job or
+silently consume an unbounded retry budget.
+
 Before the model action starts, the reusable workflow runs `scripts/review-yeti-smoke.mjs` against
 each configured transport using a bounded, review-shaped JSON request. The smoke test records only
 transport names and status, never credentials or response bodies, and fails closed when no

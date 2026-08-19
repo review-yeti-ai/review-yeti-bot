@@ -24,6 +24,7 @@ const outputs = {
   openrouter_ttft_ms: review.openrouter_ttft_ms,
   openrouter_max_attempts: review.openrouter_max_attempts,
   lane_deadline_ms: review.lane_deadline_ms,
+  lane_call_budget: review.lane_call_budget,
   max_investigation_turns: review.max_investigation_turns,
   max_diff_chars: review.max_diff_chars,
   max_file_diff_chars: review.max_file_diff_chars,
