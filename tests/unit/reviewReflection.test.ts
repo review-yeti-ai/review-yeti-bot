@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { runFindingReflection } from '../../src/review/reviewReflection';
+import { applyReflectionOutcomes, flattenPersonaFindings, runFindingReflection } from '../../src/review/reviewReflection';
 
 const identity = {
   repository: 'owner/repository',
@@ -181,5 +181,98 @@ describe('shadow finding reflection', () => {
     });
     expect(incomplete.receipt.summary).toMatchObject({ candidates: 0, incomplete: true });
     expect(incomplete.verification.verifications[0]).toMatchObject({ status: 'needs_review', reasonCode: 'identity_mismatch' });
+  });
+});
+
+describe('flattenPersonaFindings', () => {
+  it('flattens findings across lanes into a parallel findings/locations pair, in lane then finding order', () => {
+    const personaResults = [
+      { personaId: 'security', findings: [finding('P0', 1, 'sec-a'), finding('P2', 2, 'sec-b')] },
+      { personaId: 'testing', findings: [] },
+      { personaId: 'correctness', findings: [finding('P2', 3, 'correct-a')] },
+    ];
+    const { findings, locations } = flattenPersonaFindings(personaResults);
+    expect(findings.map((entry) => entry.title)).toEqual(['sec-a', 'sec-b', 'correct-a']);
+    expect(locations).toEqual([
+      { laneIndex: 0, findingIndex: 0 },
+      { laneIndex: 0, findingIndex: 1 },
+      { laneIndex: 2, findingIndex: 0 },
+    ]);
+  });
+
+  it('tolerates lanes with a missing or non-array findings field', () => {
+    const { findings, locations } = flattenPersonaFindings([{ personaId: 'security' }, null, { personaId: 'testing', findings: [finding('P2', 1)] }]);
+    expect(findings).toHaveLength(1);
+    expect(locations).toEqual([{ laneIndex: 2, findingIndex: 0 }]);
+  });
+});
+
+describe('applyReflectionOutcomes', () => {
+  async function reflectAndApply(personaResults: Array<{ personaId: string; findings: unknown[] }>, reflectTurn: (input: any) => Promise<Record<string, unknown>>) {
+    const { findings, locations } = flattenPersonaFindings(personaResults);
+    const result = await runFindingReflection(baseInput(findings as Array<Record<string, unknown>>, reflectTurn));
+    return applyReflectionOutcomes(personaResults, locations, result);
+  }
+
+  it('drops a P2 finding the model does not support, leaving sibling findings in the same lane untouched', async () => {
+    const kept = finding('P2', 2, 'kept-nit');
+    const dropped = finding('P2', 7, 'unsupported-nit');
+    const personaResults = [{ personaId: 'testing', findings: [dropped, kept] }];
+
+    const applied = await reflectAndApply(personaResults, async ({ candidate }: any) => response(candidate.title === 'unsupported-nit' ? 'DROP' : 'KEEP'));
+
+    expect(applied.dropped).toBe(1);
+    expect(applied.personaResults[0].findings).toHaveLength(1);
+    expect(applied.personaResults[0].findings[0].title).toBe('kept-nit');
+  });
+
+  it('downgrades severity in place and annotates the body without touching the title or path', async () => {
+    const candidate = finding('P1', 4, 'overclaimed-major');
+    const personaResults = [{ personaId: 'security', findings: [candidate] }];
+
+    const applied = await reflectAndApply(personaResults, async () => response('DOWNGRADE', 'P2'));
+
+    expect(applied.dropped).toBe(0);
+    const [downgraded] = applied.personaResults[0].findings;
+    expect(downgraded.severity).toBe('P2');
+    expect(downgraded.title).toBe('overclaimed-major');
+    expect(downgraded.reflectionDowngraded).toBe(true);
+    expect(downgraded.body).toContain('P1');
+    expect(downgraded.body).toContain('P2');
+  });
+
+  it('leaves a finding fully untouched on KEEP, and by reference-shape on NEEDS_REVIEW', async () => {
+    const keptCandidate = finding('P0', 1, 'confirmed-critical');
+    const personaResults = [{ personaId: 'security', findings: [keptCandidate] }];
+
+    const applied = await reflectAndApply(personaResults, async () => response('KEEP'));
+
+    expect(applied.dropped).toBe(0);
+    expect(applied.personaResults[0].findings[0]).toEqual(keptCandidate);
+  });
+
+  it('never drops or downgrades a P0/P1 finding the verifier could not verify (fail-open, not fail-closed)', async () => {
+    // A finding whose line is not an exact changed anchor is rejected by the finding verifier
+    // before reflection ever runs. applyReflectionOutcomes must leave it exactly as every other
+    // stage left it -- reflection narrows only what it actually reasoned about.
+    const unverifiable = finding('P1', 99, 'bad-anchor');
+    const personaResults = [{ personaId: 'security', findings: [unverifiable] }];
+
+    const applied = await reflectAndApply(personaResults, async () => {
+      throw new Error('must not be called for a finding the verifier rejected');
+    });
+
+    expect(applied.dropped).toBe(0);
+    expect(applied.personaResults[0].findings).toEqual([unverifiable]);
+  });
+
+  it('is a pure function: it does not mutate the personaResults or findings passed in', async () => {
+    const original = finding('P2', 7, 'unsupported-nit');
+    const personaResults = [{ personaId: 'testing', findings: [original] }];
+    const snapshotBefore = JSON.stringify(personaResults);
+
+    await reflectAndApply(personaResults, async () => response('DROP'));
+
+    expect(JSON.stringify(personaResults)).toBe(snapshotBefore);
   });
 });
