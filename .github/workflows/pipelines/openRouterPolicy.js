@@ -203,11 +203,12 @@ function resolveOpenRouterPolicy(localConfig, env) {
   let structuredOutput;
 
   if (structuredOutputRaw !== undefined && structuredOutputRaw !== null && structuredOutputRaw !== '') {
-    if (String(structuredOutputRaw).trim().toLowerCase() !== 'strict') {
-      throw new Error('OpenRouter structured output must be "strict" when configured');
+    const normalizedStructuredOutput = String(structuredOutputRaw).trim().toLowerCase();
+    if (!['strict', 'none'].includes(normalizedStructuredOutput)) {
+      throw new Error('OpenRouter structured output must be "strict" or "none" when configured');
     }
 
-    structuredOutput = 'strict';
+    structuredOutput = normalizedStructuredOutput;
   }
 
   // model: action/env OPENROUTER_MODEL > yaml github_action.openrouter.model > undefined (caller default)

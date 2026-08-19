@@ -72,6 +72,19 @@ describe('resolveTransportPlan', () => {
     expect(plan!.transports[1].timeoutMs).toBe(45000);
   });
 
+  it('preserves the explicit no-response-format compatibility mode for streamed fallbacks', () => {
+    const plan = resolveTransportPlan(
+      { parsed: { github_action: { transports: [{ ...openrouterEntry, structured_output: 'none' }] } } },
+      { OPENROUTER_PR_REVIEW_API_KEY: 'or-key' },
+    );
+
+    expect(plan!.transports[0]).toMatchObject({
+      name: 'openrouter-fallback',
+      stream: true,
+      openRouterPolicy: { structuredOutput: 'none' },
+    });
+  });
+
   it('drops an entry whose api_key_env is empty and fails closed when none remain', () => {
     const plan = resolveTransportPlan(
       { parsed: { github_action: { transports: [fireworksEntry, openrouterEntry] } } },
