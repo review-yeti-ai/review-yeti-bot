@@ -14,23 +14,24 @@ const identity = createReviewIdentity({
 
 describe('bounded evidence contracts', () => {
   it('clamps trusted limits and ignores PR-controlled enablement fields', () => {
-    expect(contracts.normalizeInvestigationLimits({ maxCalls: 99, enabled: false })).toEqual({
-      maxCalls: 40,
-      maxReadLines: 400,
-      maxSearchMatches: 50,
-      maxResultBytes: 8000,
+    // Operator directive 2026-08-19: budgets unlocked — generous defaults,
+    // higher runaway backstops; the lane deadline is the cost governor.
+    expect(contracts.normalizeInvestigationLimits({ maxCalls: 999, enabled: false })).toEqual({
+      maxCalls: 100,
+      maxReadLines: 800,
+      maxSearchMatches: 100,
+      maxResultBytes: 32000,
       maxRepeatedCalls: 2,
-      maxCandidateFindings: 5,
+      maxCandidateFindings: 10,
       maxVerifierCallsPerFinding: 3,
-      // REL-272: bounded default dropped 4 -> 2.
-      maxTurns: 2,
+      maxTurns: 3,
     });
   });
 
-  it('clamps an explicit maxTurns at the hard ceiling of 3 (REL-272)', () => {
-    expect(contracts.normalizeInvestigationLimits({ maxTurns: 99 }).maxTurns).toBe(3);
+  it('clamps an explicit maxTurns at the unlocked hard ceiling of 8', () => {
+    expect(contracts.normalizeInvestigationLimits({ maxTurns: 99 }).maxTurns).toBe(8);
     expect(contracts.normalizeInvestigationLimits({ maxTurns: 1 }).maxTurns).toBe(1);
-    expect(contracts.normalizeInvestigationLimits({ maxTurns: 3 }).maxTurns).toBe(3);
+    expect(contracts.normalizeInvestigationLimits({ maxTurns: 6 }).maxTurns).toBe(6);
   });
 
   it('binds every lane receipt to the immutable review identity', () => {
