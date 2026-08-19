@@ -127,6 +127,7 @@ const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMI
 const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 const { buildRunReport, renderRunReportLine, writeRunReport } = require('../../../src/telemetry/runReport');
 const { buildOverviewMessages, parseOverviewResponse, renderOverviewContextBlock, renderOverviewWalkthrough } = require('../../../src/review/prOverviewBrief');
+const { buildRebuttalMessages, parseRebuttalResponse, renderRebuttalReply, selectRebuttalCandidates } = require('../../../src/review/rebuttalRerun');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -1209,9 +1210,12 @@ function finalizeBoundedReviewFindings({
   options,
   partialView,
   decisionLedger,
+  rebuttalWithdrawnThreadIds,
 } = {}) {
   const absencePass = withholdUnsoundAbsenceClaims(personaResults, partialView);
-  const reconciliation = reconcileDecisionFindings(absencePass.personaResults, decisionLedger);
+  const reconciliation = reconcileDecisionFindings(absencePass.personaResults, decisionLedger, {
+    withdrawnThreadIds: rebuttalWithdrawnThreadIds,
+  });
   const finalPersonaResults = reconciliation.personaResults;
 
   const navigationMatters = navigationCompletenessMatters({ personaResults: finalPersonaResults, navigationSnapshot, options });
@@ -7657,13 +7661,24 @@ async function main(options = {}) {
     ? Object.fromEntries(provisionalReviewUnitManifest.units.map((unit) => [unit.path, unit.id]))
     : {};
   const dependencyRiskHints = buildDependencyRiskHints({ files: reviewDiffFiles, unitIdsByPath });
+  // The raw thread snapshot is captured once and shared: the ledger consumes
+  // it for decision state, and the rebuttal re-run needs the reply bodies the
+  // ledger deliberately does not retain.
+  let reviewThreadSnapshot = null;
+  if (!localOnly) {
+    try {
+      reviewThreadSnapshot = readActionReviewThreads(commandRunner, prContext);
+    } catch (error) {
+      console.warn(`[Decision ledger] Could not read review threads: ${error.message || error}`);
+    }
+  }
   const decisionLedger = localOnly
     ? { available: false, entries: [], reason: 'local_publication_disabled' }
     : readDecisionLedgerSnapshot(
       commandRunner,
       prContext,
       new Set(diffFiles.map((file) => file.path)),
-      { memoryPolicy: actionPolicy.memory },
+      { memoryPolicy: actionPolicy.memory, ...(reviewThreadSnapshot ? { snapshot: reviewThreadSnapshot } : {}) },
     );
   const renderedDecisionLedger = actionPolicy.memory.samePrDecisions
     ? renderDecisionLedger(decisionLedger, actionPolicy.memory)
@@ -7798,6 +7813,9 @@ async function main(options = {}) {
   let overviewReceipt = { enabled: false, present: false };
   let calibrationNotes = new Map();
   let calibrationReceipt = { enabled: false, sweptPrs: 0, personasWithNotes: 0 };
+  const rebuttalWithdrawnThreadIds = new Set();
+  let rebuttalReceipt = { enabled: false, candidates: 0, affirmed: 0, withdrawn: 0 };
+  const rebuttalUsage = [];
   const initialReconciliation = reconcileDecisionFindings([], decisionLedger);
   let carriedOpen = initialReconciliation.carriedOpen;
   let ignored = initialReconciliation.ignored;
@@ -7934,6 +7952,105 @@ async function main(options = {}) {
         } catch (error) {
           console.warn(`[Calibration] Unavailable (${error.message}); personas run without calibration notes.`);
         }
+      }
+    }
+
+    // Rebuttal re-run: when the prior verdict was borderline and an author
+    // replied on an open P0/P1 thread, the owning persona re-evaluates that
+    // one finding against the reply and the current diff, then posts a
+    // withdraw-with-reasons or affirm-with-reasons on the thread. At most one
+    // re-run per thread per head (marker-guarded); withdrawal removes the
+    // finding from this push's carried-open verdict input. The author reply
+    // is untrusted data the model weighs, never a command it obeys.
+    {
+      const rebuttalSetting = String(runtimeEnv.REVIEW_YETI_REBUTTAL ?? '').trim().toLowerCase();
+      const rebuttalDefaultOn = runtimeEnv.GITHUB_ACTIONS === 'true' || runtimeEnv.VITEST !== 'true';
+      rebuttalReceipt.enabled = !localOnly
+        && modelConfig.enabled
+        && typeof options.modelClient !== 'function'
+        && rebuttalSetting !== 'false'
+        && (rebuttalSetting === 'true' || rebuttalDefaultOn);
+      if (rebuttalReceipt.enabled) {
+        try {
+          const priorVerdict = readPriorSummaryReview(commandRunner, prContext)?.verdict || '';
+          const candidates = selectRebuttalCandidates({
+            ledger: decisionLedger,
+            threads: reviewThreadSnapshot?.threads || [],
+            priorVerdict,
+            headSha: prContext.headSha,
+            expectedPublisherLogin: readAuthenticatedPublisherLogin(commandRunner),
+          });
+          rebuttalReceipt.candidates = candidates.length;
+          for (const candidate of candidates) {
+            if (cancellation.signal.aborted) break;
+            const label = candidate.personaLabel.toLowerCase();
+            const persona = enabledPersonas.find((entry) => (
+              String(entry.id || '').toLowerCase() === label || String(entry.name || '').toLowerCase() === label
+            ));
+            if (!persona) continue;
+            const diffExcerpt = diffFiles.find((file) => file.path === candidate.entry.path)?.patch || '';
+            const result = await reviewWithTransports(
+              persona,
+              [],
+              prContext,
+              sessionContext,
+              {
+                ...modelConfig,
+                modelClient: undefined,
+                fetchImplementation,
+                reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
+                signal: cancellation.signal,
+                rawTurn: true,
+                investigationMessages: buildRebuttalMessages({
+                  persona,
+                  entry: candidate.entry,
+                  replyAuthor: candidate.replyAuthor,
+                  replyBody: candidate.replyBody,
+                  diffExcerpt,
+                }),
+                turnValidator: parseRebuttalResponse,
+              },
+            );
+            if (result?.ok !== true || typeof result.content !== 'string') {
+              console.warn(`[Rebuttal] ${persona.id} re-run unavailable for ${candidate.entry.path} (${result?.error || 'provider_failure'}); finding stands.`);
+              continue;
+            }
+            let outcome;
+            try {
+              outcome = parseRebuttalResponse(result.content);
+            } catch (error) {
+              console.warn(`[Rebuttal] ${persona.id} response rejected (${error.message}); finding stands.`);
+              continue;
+            }
+            if (result.usage) rebuttalUsage.push({ usage: result.usage });
+            const reply = renderRebuttalReply({
+              disposition: outcome.disposition,
+              reason: outcome.reason,
+              personaLabel: persona.name || persona.id,
+              headSha: prContext.headSha,
+            });
+            const posted = ghApi(commandRunner, [
+              'api', `repos/${prContext.repo}/pulls/${prContext.prNumber}/comments/${candidate.entry.findingCommentId}/replies`,
+              '--method', 'POST', '--input', '-',
+            ], { body: reply });
+            if (!posted || posted.status !== 0) {
+              // Withdrawal without the on-thread explanation would be a silent
+              // verdict change; the finding stands unless the reply publishes.
+              console.warn(`[Rebuttal] Could not post ${outcome.disposition} reply for ${candidate.entry.path}; finding stands.`);
+              continue;
+            }
+            if (outcome.disposition === 'withdraw') {
+              rebuttalWithdrawnThreadIds.add(candidate.entry.threadId);
+              rebuttalReceipt.withdrawn += 1;
+            } else {
+              rebuttalReceipt.affirmed += 1;
+            }
+            console.log(`[Rebuttal] ${persona.id} ${outcome.disposition}ed ${candidate.entry.severity} ${candidate.entry.path} after author reply.`);
+          }
+        } catch (error) {
+          console.warn(`[Rebuttal] Unavailable (${error.message}); open findings stand.`);
+        }
+        if (cancellation.signal.aborted) return;
       }
     }
 
@@ -8282,6 +8399,7 @@ async function main(options = {}) {
           options,
           partialView,
           decisionLedger,
+          rebuttalWithdrawnThreadIds,
         });
         personaResults = finalized.personaResults;
         findingVerification = finalized.findingVerification;
@@ -8446,7 +8564,7 @@ async function main(options = {}) {
   console.log('[Formatting] Planning resolvable P0/P1 conversations and compact review output...');
   // The overview pre-pass was billed too; an unseen cost is how a review
   // panel quietly becomes expensive.
-  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : [])]);
+  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : []), ...rebuttalUsage]);
   if (usageTotal.totalTokens > 0) {
     console.log(`[Usage] ${usageTotal.totalTokens} token(s) across ${personaResults.length} reviewer(s)${usageTotal.costUSD ? ` — $${usageTotal.costUSD.toFixed(4)}` : ''}.`);
   }
@@ -8762,6 +8880,7 @@ async function main(options = {}) {
     investigation: investigationSummary || { schemaVersion: 'review-investigation-summary-v1', enabled: boundedMode, complete: false, laneCount: 0, evidenceReceipts: 0 },
     overview: overviewReceipt,
     calibration: calibrationReceipt,
+    rebuttal: rebuttalReceipt,
     outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
     provider: memoryPolicy.provider || 'honcho',
     headSha: prContext.headSha,
