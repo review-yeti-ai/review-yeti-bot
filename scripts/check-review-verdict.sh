@@ -18,7 +18,18 @@ actual_base="$(jq -r '.base.sha // empty' <<<"$metadata")"
 actual_head="$(jq -r '.head.sha // empty' <<<"$metadata")"
 
 [[ "$actual_base" == "$EXPECTED_BASE_SHA" ]] || { echo "::error::Review became stale because the PR base changed"; exit 1; }
-[[ "$actual_head" == "$EXPECTED_HEAD_SHA" ]] || { echo "::error::Review became stale because the PR head changed"; exit 1; }
+
+# See validate-review-request.sh for the full rationale: a superseded head means a newer run
+# already owns this PR, so cancel instead of failing a dead SHA. Only this branch may cancel;
+# every other check below keeps a plain exit 1, and this branch's own exit code stays non-zero
+# regardless of whether cancellation is confirmed -- a SHIP/PASS verdict must never be accepted
+# for a head that no longer matches the PR.
+if [[ "$actual_head" != "$EXPECTED_HEAD_SHA" ]]; then
+  echo "::notice::Review became stale because the PR head changed from $EXPECTED_HEAD_SHA to $actual_head. Self-cancelling instead of failing a superseded SHA that no longer blocks merge."
+  "$(dirname "${BASH_SOURCE[0]}")/self-cancel-run.sh" || true
+  exit 1
+fi
+
 [[ "$REVIEW_STATUS" == SHIP ]] || { echo "::error::Review Yeti verdict is ${REVIEW_STATUS}, not SHIP"; exit 1; }
 [[ "$GATE_DECISION" == PASS ]] || { echo "::error::Review Yeti gate decision is ${GATE_DECISION}, not PASS"; exit 1; }
 [[ "$MERGE_ELIGIBLE" == true ]] || { echo "::error::Review Yeti did not declare this exact-head review merge eligible"; exit 1; }

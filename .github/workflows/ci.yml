@@ -21,10 +21,17 @@ jobs:
           bash -n scripts/validate-caller-workflow.sh
           bash -n scripts/check-review-verdict.sh
           bash -n scripts/promote-v1.sh
+          bash -n scripts/self-cancel-run.sh
           bash -n scripts/validate-caller-workflow.test.sh
           bash -n scripts/promote-v1.test.sh
+          bash -n scripts/validate-review-request.test.sh
+          bash -n scripts/check-review-verdict.test.sh
+          bash -n scripts/self-cancel-run.test.sh
           bash scripts/validate-caller-workflow.test.sh
           bash scripts/promote-v1.test.sh
+          bash scripts/validate-review-request.test.sh
+          bash scripts/check-review-verdict.test.sh
+          bash scripts/self-cancel-run.test.sh
           node --test scripts/review-yeti-smoke.test.mjs
           test -s policy/review-yeti.json
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml

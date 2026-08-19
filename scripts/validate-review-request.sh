@@ -23,7 +23,20 @@ state="$(jq -r '.state // empty' <<<"$metadata")"
 
 [[ "$actual_repo" == "$REVIEW_REPOSITORY" ]] || { echo "::error::PR repository identity changed"; exit 1; }
 [[ "$actual_base" == "$EXPECTED_BASE_SHA" ]] || { echo "::error::PR base SHA changed: expected $EXPECTED_BASE_SHA, got $actual_base"; exit 1; }
-[[ "$actual_head" == "$EXPECTED_HEAD_SHA" ]] || { echo "::error::PR head SHA changed: expected $EXPECTED_HEAD_SHA, got $actual_head"; exit 1; }
+
+# A superseded head is not a validation failure of the PR -- it means a newer run has already
+# been dispatched for the real current head, and this run is now reviewing a dead SHA. Painting
+# that "failure" is pure noise (example-api #4396: failures at 16:04/16:06, SHIP at 16:08 on the
+# newer head). Cancel this run instead. This is the ONLY branch that may cancel; every other
+# check in this script keeps a plain exit 1, and the exit code here stays non-zero regardless of
+# whether cancellation is confirmed -- exit 0 would mint a passing review for an unreviewed
+# commit, the single worst outcome available.
+if [[ "$actual_head" != "$EXPECTED_HEAD_SHA" ]]; then
+  echo "::notice::PR head SHA moved from $EXPECTED_HEAD_SHA to $actual_head while this run was in flight. Self-cancelling instead of failing a superseded SHA that no longer blocks merge."
+  "$(dirname "${BASH_SOURCE[0]}")/self-cancel-run.sh" || true
+  exit 1
+fi
+
 [[ "$state" == open ]] || { echo "::error::PR is not open"; exit 1; }
 
 path_state() {
