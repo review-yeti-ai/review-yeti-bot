@@ -98,3 +98,7 @@ transport names and status, never credentials or response bodies, and fails clos
 transport can complete the request. Its contract tests run in the central validation workflow so
 provider order, OpenRouter routing, response validation, fallback behavior, and policy-drift
 rejection are checked before a release can advance.
+
+## Distribution
+
+The Review Yeti bot is selected by the platform release channel (`action_channel: v1` in `policy/review-yeti.json`), validated at run time by the release-provenance gate (release-tagged + reachable from bot main). Emergency freezes use `action_sha_override` (main-reachability still enforced). See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.
