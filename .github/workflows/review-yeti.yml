@@ -19,6 +19,10 @@ on:
         description: Immutable pull request head commit SHA.
         required: true
         type: string
+      central-sha:
+        description: Immutable commit in exampleorg/example-review-actions that supplies this workflow's tooling.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -40,6 +44,20 @@ jobs:
       EXPECTED_BASE_SHA: ${{ inputs.base-sha }}
       EXPECTED_HEAD_SHA: ${{ inputs.head-sha }}
     steps:
+      - name: Validate central workflow release SHA
+        env:
+          CENTRAL_SHA: ${{ inputs.central-sha }}
+          WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          if [[ ! "$CENTRAL_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::central-sha must be a full 40-character lowercase commit SHA"
+            exit 1
+          fi
+          if [[ "$CENTRAL_SHA" != "$WORKFLOW_SHA" ]]; then
+            echo "::error::central-sha must match the immutable SHA used to call this reusable workflow"
+            exit 1
+          fi
+
       - name: Checkout central workflow tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:

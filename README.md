@@ -28,12 +28,16 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       base-sha: ${{ github.event.pull_request.base.sha }}
       head-sha: ${{ github.event.pull_request.head.sha }}
+      central-sha: <same-immutable-release-sha>
     secrets: inherit
 ```
 
-The caller supplies the repository, PR number, base SHA, and head SHA. The reusable workflow
-re-reads the PR through the caller's `GITHUB_TOKEN` and fails closed if any coordinate changes.
-It never checks out or executes the pull-request head.
+The caller supplies the repository, PR number, base SHA, head SHA, and the immutable central
+workflow SHA. The reusable workflow validates the central SHA before checkout, re-reads the PR
+through the caller's `GITHUB_TOKEN`, and fails closed if any coordinate changes. Every consumer
+shim must pass the same SHA used in the reusable-workflow `@` pin. The central repository's
+self-review is the explicit bootstrap exception: it calls the previous released workflow until a
+new release is promoted. The workflow never checks out or executes the pull-request head.
 
 ## No consumer-owned review configuration
 
