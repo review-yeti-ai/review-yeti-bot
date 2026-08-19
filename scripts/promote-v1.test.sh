@@ -51,13 +51,21 @@ cat >"$tmp_dir/bin/git" <<'FAKE_GIT'
 #!/usr/bin/env bash
 set -euo pipefail
 
+printf '%s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
 case " $* " in
   *" fetch "*) exit 0 ;;
-  *" ls-remote "*) printf 'old123\trefs/heads/v1\n' ;;
+  *" push "*) printf 'pushed\n' ;;
+  *"refs/heads/v1 "*)
+    if [[ "${FAKE_TAG_ONLY:-}" == true ]]; then exit 2; fi
+    printf 'old123\trefs/heads/v1\n'
+    ;;
+  *"refs/tags/v1 "*)
+    if [[ "${FAKE_TAG_ONLY:-}" == true ]]; then printf 'old123\trefs/tags/v1\n'; else exit 2; fi
+    ;;
   *" rev-parse refs/remotes/origin/main "*) printf '%s\n' "${FAKE_MAIN_SHA:-source123}" ;;
   *" rev-parse refs/remotes/origin/v1 "*) printf 'old123\n' ;;
+  *" rev-parse refs/tags/v1-legacy^{} "*) printf 'old123\n' ;;
   *" merge-base "*) exit 0 ;;
-  *" push "*) printf 'pushed\n' ;;
   *) echo "unexpected fake git call: $*" >&2; exit 1 ;;
 esac
 FAKE_GIT
@@ -80,5 +88,21 @@ if output="$({
   exit 1
 fi
 grep -Fq 'current main tip' <<<"$output"
+
+set +e
+tag_only_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_TAG_ONLY=true FAKE_LOG="$tmp_dir/git.log" "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+tag_only_rc=$?
+set -e
+if [[ "$tag_only_rc" -ne 0 ]]; then
+  echo "$tag_only_output" >&2
+  exit 1
+fi
+printf '%s\n' "$tag_only_output"
+grep -Fq 'Promoted Review Yeti v1' <<<"$tag_only_output"
+grep -Fq 'Removed legacy Review Yeti v1 tag' <<<"$tag_only_output"
 
 echo "promote-v1 behavioral contract passed"

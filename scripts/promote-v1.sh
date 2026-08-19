@@ -66,20 +66,42 @@ require_success "$source_check_runs" validate "source ${SOURCE_SHA}"
 require_success "$pr_check_runs" 'review / Review Yeti' "PR #${pr_number} head ${pr_head}"
 
 old_v1=""
+branch_exists=false
+tag_exists=false
 if git ls-remote --exit-code origin refs/heads/v1 >/dev/null 2>&1; then
+  branch_exists=true
   git fetch --no-tags origin refs/heads/v1:refs/remotes/origin/v1
   old_v1="$(git rev-parse refs/remotes/origin/v1)"
+fi
+
+if git ls-remote --exit-code origin refs/tags/v1 >/dev/null 2>&1; then
+  tag_exists=true
+  git fetch --no-tags origin refs/tags/v1:refs/tags/v1-legacy
+  legacy_v1="$(git rev-parse refs/tags/v1-legacy^{})"
+  if [[ "$branch_exists" == true && "$legacy_v1" != "$old_v1" ]]; then
+    echo "::error::Ambiguous v1 refs: branch ${old_v1} and legacy tag ${legacy_v1} diverge; refusing promotion."
+    exit 1
+  fi
+  old_v1="${old_v1:-$legacy_v1}"
+fi
+
+if [[ -n "$old_v1" ]]; then
   git merge-base --is-ancestor "$old_v1" "$SOURCE_SHA" || {
     echo "::error::Refusing non-fast-forward v1 promotion from ${old_v1} to ${SOURCE_SHA}."
     exit 1
   }
 fi
 
-if [[ "$old_v1" == "$SOURCE_SHA" ]]; then
+if [[ "$old_v1" == "$SOURCE_SHA" && "$branch_exists" == true ]]; then
   echo "Review Yeti v1 already points to ${SOURCE_SHA}."
 else
   git push origin "${SOURCE_SHA}:refs/heads/v1"
   echo "Promoted Review Yeti v1 from ${old_v1:-<uninitialized>} to ${SOURCE_SHA} via PR #${pr_number}."
+fi
+
+if [[ "$tag_exists" == true ]]; then
+  git push origin ':refs/tags/v1'
+  echo "Removed legacy Review Yeti v1 tag after branch promotion."
 fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then

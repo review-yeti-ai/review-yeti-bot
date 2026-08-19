@@ -28,3 +28,5 @@ jobs:
           node --test scripts/review-yeti-smoke.test.mjs
           test -s policy/review-yeti.json
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
+          grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'secrets.OPENROUTER_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml

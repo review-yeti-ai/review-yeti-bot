@@ -76,6 +76,7 @@ jobs:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
         with:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
