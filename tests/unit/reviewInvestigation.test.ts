@@ -546,3 +546,29 @@ describe('persona investigation state machine', () => {
     });
   });
 });
+
+describe('REL-288 flat per-lane call budget', () => {
+  it('terminates honestly as lane_budget_exhausted when modelTurn reports the flat call budget spent, never coercing to a silent COMPLETE', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      modelTurn: async () => ({ ok: false, error: 'lane_budget_exhausted', failureClass: 'lane_budget_exhausted' }),
+    });
+    // The operator directive that retired budget_exhausted (2026-08-19) coerces an exhausted
+    // TURN budget into a silent COMPLETE. A flat CALL budget exhaustion must not follow that
+    // path -- it is a distinct, honest termination, not folded into 'provider_failure' or a
+    // manufactured approval.
+    expect(result.personaResult.decision).toBe('ERROR');
+    expect(result.personaResult.error).toBe('lane_budget_exhausted');
+    expect(result.executionReceipt.termination).toBe('lane_budget_exhausted');
+    expect(result.executionReceipt.complete).toBe(false);
+    expect(result.personaResult.failure?.reason).toBe('lane_budget_exhausted');
+  });
+
+  it('does not mistake an ordinary provider failure for a budget exhaustion', async () => {
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      modelTurn: async () => ({ ok: false, error: 'boom' }),
+    });
+    expect(result.executionReceipt.termination).toBe('provider_failure');
+  });
+});

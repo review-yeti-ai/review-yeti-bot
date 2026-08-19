@@ -36,6 +36,11 @@ const TERMINATIONS = new Set([
   // REL-271: per-lane wall-clock backstop (lane-deadline-ms), distinct from an ordinary outer
   // job cancellation so the failure table shows which ceiling actually fired.
   'lane_deadline',
+  // REL-288: flat per-lane HTTP call budget (createLaneCallBudget in review-pipeline.js),
+  // distinct from the retired turn-budget 'budget_exhausted' and from an ordinary
+  // 'provider_failure' -- the lane was deliberately stopped by the product's own hard floor on
+  // passes*turns*transports*attempts, not by a provider error or a timeout.
+  'lane_budget_exhausted',
 ]);
 const ID = /^[A-Za-z0-9_.:-]{1,100}$/u;
 
