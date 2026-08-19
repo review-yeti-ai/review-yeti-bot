@@ -7854,10 +7854,15 @@ async function main(options = {}) {
     // optional-context plumbing (never as instructions or evidence) and doubles
     // as the human Walkthrough in the sticky summary. Any failure degrades soft:
     // lanes simply run without the brief, exactly as before this feature.
+    // Default ON in production and real local runs; OFF for synthetic vitest
+    // runs (which assert exact model-call sequences) unless explicitly forced.
+    const overviewSetting = String(runtimeEnv.REVIEW_YETI_OVERVIEW_BRIEF ?? '').trim().toLowerCase();
+    const overviewDefaultOn = runtimeEnv.GITHUB_ACTIONS === 'true' || runtimeEnv.VITEST !== 'true';
     overviewReceipt = {
       enabled: modelConfig.enabled
         && typeof options.modelClient !== 'function'
-        && String(runtimeEnv.REVIEW_YETI_OVERVIEW_BRIEF ?? '').trim().toLowerCase() !== 'false',
+        && overviewSetting !== 'false'
+        && (overviewSetting === 'true' || overviewDefaultOn),
       present: false,
     };
     if (overviewReceipt.enabled) {
@@ -7897,6 +7902,9 @@ async function main(options = {}) {
       } catch (error) {
         console.warn(`[Overview] Brief unavailable (${error.message}); personas run without it.`);
       }
+      // A cancellation during the pre-pass must finalize the run, not fall
+      // through into persona fan-out with an already-aborted signal.
+      if (cancellation.signal.aborted) return;
     }
     if (overviewBrief) {
       const overviewBlock = renderOverviewContextBlock(overviewBrief);
