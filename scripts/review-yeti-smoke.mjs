@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'fireworks',
+  'ollama',
   'openrouter-fallback',
 ]);
 
@@ -12,11 +13,12 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
+  quantizations: ['bf16', 'fp16'],
   sort: 'throughput',
   preferred_min_throughput: { p90: 40 },
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
-  ignore: ['fireworks', 'open-inference', 'akashml', 'morph'],
+  ignore: ['fireworks', 'open-inference', 'akashml'],
 });
 
 // The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
@@ -59,7 +61,7 @@ export function validatePolicy(policy) {
   if (transports[0].reasoning_effort !== 'max' || transports[0].perf_metrics_in_response !== true) {
     throw new Error('Fireworks must use maximum reasoning with performance metrics');
   }
-  if (transports[1].reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
+  if (transports[1].reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
@@ -79,7 +81,7 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must remain provider-neutral with throughput floors and cheap-host failover');
+    throw new Error('OpenRouter routing must require full-precision quants, throughput floors, and fallback');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');

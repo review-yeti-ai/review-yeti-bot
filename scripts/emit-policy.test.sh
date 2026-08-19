@@ -33,16 +33,14 @@ import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
 transports = review.get('transports', [])
-if [item.get('name') for item in transports] != ['fireworks', 'openrouter-fallback']:
-    raise SystemExit('policy must preserve Fireworks -> OpenRouter order')
-if [item.get('reasoning_effort') for item in transports] != ['max', 'max']:
-    raise SystemExit('reasoning must be Fireworks=max, OpenRouter=max')
+if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrouter-fallback']:
+    raise SystemExit('policy must preserve Fireworks -> Ollama -> OpenRouter order')
+if [item.get('reasoning_effort') for item in transports] != ['max', 'high', 'max']:
+    raise SystemExit('reasoning must be Fireworks=max, Ollama=high, OpenRouter=max')
 if transports[0].get('perf_metrics_in_response') is not True:
     raise SystemExit('Fireworks must return performance metrics')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
-if any(item.get('name') == 'ollama' for item in review.get('transports', [])):
-    raise SystemExit('obsolete Ollama transport must not return to the central policy')
 budget = review.get('budget')
 if not isinstance(budget, dict):
     raise SystemExit('policy must keep lane limits in review_yeti.budget')
@@ -61,12 +59,10 @@ if fallback.get('quarantine_on_timeout') is not False:
 routing = fallback.get('provider_routing') or {}
 if 'fireworks' not in (routing.get('ignore') or []):
     raise SystemExit('openrouter-fallback must explicitly ignore the hard-banned Fireworks provider')
-if 'morph' not in (routing.get('ignore') or []):
-    raise SystemExit('openrouter-fallback must quarantine the observed Morph timeout provider')
 if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
-if 'quantizations' in routing:
-    raise SystemExit('openrouter-fallback must leave quantization selection to the gateway')
+if routing.get('quantizations') != ['bf16', 'fp16']:
+    raise SystemExit('openrouter-fallback must require full-precision bf16/fp16 quants')
 if routing.get('sort') != 'throughput':
     raise SystemExit('openrouter-fallback must sort by throughput')
 if (routing.get('preferred_min_throughput') or {}).get('p90') != 40:
@@ -186,8 +182,8 @@ run_transport_relation_case() {
 run_case valid lane_call_budget 24 0
 grep -q '^action_ref<<' "$tmp_dir/valid.output"
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
-grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml,morph'
-grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml","morph"]'
+grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml'
+grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"quantizations":["bf16","fp16"]'
 grep -qx 'v1' "$tmp_dir/valid.output"
 grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"

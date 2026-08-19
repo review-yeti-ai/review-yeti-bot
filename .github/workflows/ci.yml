@@ -50,8 +50,10 @@ jobs:
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
+          grep -Fq '"name": "ollama"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
+          grep -Fq '"quantizations": ["bf16", "fp16"]' policy/review-yeti.json
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
@@ -59,13 +61,11 @@ jobs:
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
+          grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-data-collection:' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-ignore-providers:' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-provider-routing:' .github/workflows/review-yeti.yml
-          if grep -Eq 'OLLAMA_PR_REVIEW_API_KEY|ollama' .github/workflows/review-yeti.yml policy/review-yeti.json; then
-            echo "::error::obsolete Ollama transport or credential remains in the central contract"
-            exit 1
-          fi
           if grep -Eq '"action_sha(_override)?"|central-sha:' policy/review-yeti.json .github/workflows/self-review.yml; then
             echo "::error::per-repository SHA claims are forbidden; use the central release channel"
             exit 1
