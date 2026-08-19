@@ -1863,6 +1863,7 @@ async function callOpenRouterChat(fetchImpl, {
   connectTimeoutMs,
   ttftMs,
   preferStream = false,
+  disableStream = false,
   signal,
   transportName = 'openrouter',
   onStreamProgress,
@@ -1892,7 +1893,7 @@ async function callOpenRouterChat(fetchImpl, {
   // Default OFF. Streaming under 12-way fan-out often causes timeouts / StreamReset 502s.
   // Non-stream still returns resolved provider/model on the JSON body.
   // Opt in with OPENROUTER_STREAM=true, preferStream:true, or github_action.openrouter.stream.
-  const attemptStream = preferStream === true || process.env.OPENROUTER_STREAM === 'true';
+  const attemptStream = !disableStream && (preferStream === true || process.env.OPENROUTER_STREAM === 'true');
 
   const providerFromHeaders = (response) => {
     if (!response?.headers?.get) return null;
@@ -3170,7 +3171,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           + ` modelIndex=${modelIndex + 1}/${models.length}`
           + ` attempt=${attempt}/${maxAttempts}`
           + ` timeout_ms=${attemptTimeoutMs}`
-          + ` stream=${options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true}`,
+          + ` stream=${!options.disableStream && (options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true) ? 'enabled' : 'disabled'}`,
         );
         // Prefer streaming so Auto Router's resolved provider/model are visible even on timeout.
         // Headroom / some proxies may not stream — callOpenRouterChat falls back to non-stream.
@@ -3181,11 +3182,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           timeoutMs: attemptTimeoutMs,
           connectTimeoutMs,
           ttftMs,
-          preferStream: options.preferStream === true
+          preferStream: !options.disableStream && (options.preferStream === true
             || process.env.OPENROUTER_STREAM === 'true'
             || orPolicy.stream === true
             || streamRetryRequested
-            || timedOutProviders.size > 0,
+            || timedOutProviders.size > 0),
+          disableStream: options.disableStream === true,
           transportName: options.transportName || gateway.id,
           signal: options.signal,
           onStreamProgress: options.onStreamProgress,
@@ -3584,6 +3586,10 @@ function createLaneCallBudget(limit) {
 async function reviewWithTransports(persona, diffFiles, prContext, sessionContext, options = {}) {
   const plan = Array.isArray(options.transportPlan) ? options.transportPlan.filter(Boolean) : [];
   if (plan.length === 0) return reviewWithModel(persona, diffFiles, prContext, sessionContext, options);
+  // Five persona lanes are dispatched concurrently. Streaming every lane at once has caused
+  // upstream gateways to reset otherwise healthy responses; keep the fan-out observable via the
+  // lane heartbeat, but use bounded JSON responses unless the caller explicitly opts in.
+  const disableParallelStreaming = Number(options.parallelLaneCount) > 1 && options.allowParallelStreaming !== true;
   let lastResult = null;
   for (let transportIndex = 0; transportIndex < plan.length; transportIndex++) {
     const transport = plan[transportIndex];
@@ -3596,7 +3602,8 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       openRouterPolicy: transport.openRouterPolicy,
       timeoutMs: transport.timeoutMs,
       connectTimeoutMs: transport.connectTimeoutMs,
-      ...(transport.stream === true ? { preferStream: true } : {}),
+      ...(transport.stream === true ? { preferStream: !disableParallelStreaming } : {}),
+      ...(disableParallelStreaming ? { disableStream: true } : {}),
       reasoningEffort: transport.reasoningEffort,
       perfMetricsInResponse: transport.perfMetricsInResponse,
       providerTimeoutQuarantine: transport.quarantineOnTimeout,
@@ -8606,12 +8613,12 @@ async function main(options = {}) {
         personaIds: enabledPersonas.map((persona) => persona.id),
         model: modelConfig.model,
         baseUrl: modelConfig.baseUrl,
-        stream: modelConfig.openRouterPolicy?.stream === true,
+        stream: modelConfig.openRouterPolicy?.stream === true && enabledPersonas.length <= 1,
         laneDeadlineMs,
       });
       console.log(
         `[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}`
-        + ` transport=openrouter stream=${modelConfig.openRouterPolicy?.stream === true ? 'enabled' : 'disabled'}`
+        + ` transport=openrouter stream=${modelConfig.openRouterPolicy?.stream === true && enabledPersonas.length <= 1 ? 'enabled' : 'disabled'}`
         + ` lane_deadline_ms=${laneDeadlineMs}`,
       );
       if (boundedMode) {
@@ -8725,6 +8732,7 @@ async function main(options = {}) {
           fetchImplementation,
           modelClient: options.modelClient,
           reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
+          parallelLaneCount: enabledPersonas.length,
           signal: cancellation.signal,
           runTimedOutProviders,
           onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(
@@ -9001,7 +9009,7 @@ async function main(options = {}) {
                 maxChars: 12_000,
                 excludedPaths: [...skipped.map((entry) => entry.path), ...oversized.map((entry) => entry.path)],
               },
-              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`) },
+              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, parallelLaneCount: enabledPersonas.length, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`) },
             }));
           }
           return aggregatePersonaRuns(persona, runs, modelConfig.model);

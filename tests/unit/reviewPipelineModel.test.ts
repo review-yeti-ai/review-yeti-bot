@@ -75,6 +75,23 @@ describe('resolveModelConfig', () => {
 });
 
 describe('reviewWithModel', () => {
+  it('uses bounded non-stream responses when concurrent fan-out disables streaming', async () => {
+    const { impl, calls } = stubFetch('{"findings":[]}');
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'test/model',
+      fetchImpl: impl,
+      maxAttempts: 1,
+      preferStream: true,
+      disableStream: true,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.stream).toBe(false);
+  });
+
   it('puts bounded prior decisions in user data and never in the trusted system prompt', async () => {
     const decisionLedgerText = [
       'Prior Review Yeti decisions (same pull request):',
