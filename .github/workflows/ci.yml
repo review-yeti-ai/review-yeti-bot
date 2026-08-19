@@ -63,6 +63,9 @@ jobs:
           grep -Fq 'secrets.OPENROUTER_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
+          grep -Fq 'openrouter-data-collection:' .github/workflows/review-yeti.yml
+          grep -Fq 'openrouter-ignore-providers:' .github/workflows/review-yeti.yml
+          grep -Fq 'openrouter-provider-routing:' .github/workflows/review-yeti.yml
 
       - name: Reject malformed action_channel policy
         run: |

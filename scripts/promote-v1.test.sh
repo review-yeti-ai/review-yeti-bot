@@ -31,7 +31,12 @@ case "$request" in
     printf '{"check_runs":[{"name":"validate","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:01:00Z"}]}\n'
     ;;
   *"repos/exampleorg/example-review-actions/commits/head123/check-runs?per_page=100"*)
-    printf '{"check_runs":[{"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+    if [[ "${FAKE_PENDING_ONCE:-}" == true && ! -e "${FAKE_PENDING_MARKER:?}" ]]; then
+      touch "$FAKE_PENDING_MARKER"
+      printf '{"check_runs":[{"name":"review / Review Yeti","status":"in_progress","conclusion":null,"completed_at":null}]}\n'
+    else
+      printf '{"check_runs":[{"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+    fi
     ;;
   *)
     echo "unexpected fake gh call: $request" >&2
@@ -98,5 +103,15 @@ fi
 printf '%s\n' "$tag_only_output"
 grep -Fq 'Promoted Review Yeti v1' <<<"$tag_only_output"
 grep -Fq 'Removed legacy Review Yeti v1 tag' <<<"$tag_only_output"
+
+pending_marker="$tmp_dir/pending-marker"
+pending_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    PROMOTION_WAIT_SECONDS=2 PROMOTION_POLL_SECONDS=0 \
+    FAKE_PENDING_ONCE=true FAKE_PENDING_MARKER="$pending_marker" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+grep -Fq 'Waiting for PR #42 head head123: review / Review Yeti' <<<"$pending_output"
 
 echo "promote-v1 behavioral contract passed"

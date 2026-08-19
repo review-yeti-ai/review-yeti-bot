@@ -3,6 +3,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
 const review = policy.review_yeti;
 const budget = review.budget;
+const openrouterTransport = review.transports?.find((transport) => transport.compat === 'openrouter');
 
 if (policy.schema !== 'exampleorg.review-policy.v1') throw new Error('unsupported policy schema');
 if (!budget || typeof budget !== 'object' || Array.isArray(budget)) {
@@ -26,6 +27,7 @@ for (const key of ['lane_deadline_ms', 'lane_call_budget', 'max_investigation_tu
   }
 }
 if (!Array.isArray(review.transports) || review.transports.length === 0) throw new Error('policy must define transports');
+if (!openrouterTransport) throw new Error('policy must define an OpenRouter fallback transport');
 const transportNames = review.transports.map((transport) => transport.name);
 if (new Set(transportNames).size !== transportNames.length) throw new Error('transport names must be unique');
 for (const transport of review.transports) {
@@ -47,6 +49,12 @@ const outputs = {
   action_ref: review.action_channel,
   personas: review.personas,
   transports: JSON.stringify(review.transports),
+  openrouter_data_collection: openrouterTransport.data_collection ?? openrouterTransport.provider_routing?.data_collection ?? '',
+  openrouter_ignore_providers: [
+    ...(openrouterTransport.ignore_providers ?? []),
+    ...(openrouterTransport.provider_routing?.ignore ?? []),
+  ].filter((provider, index, providers) => providers.indexOf(provider) === index).join(','),
+  openrouter_provider_routing: JSON.stringify(openrouterTransport.provider_routing ?? {}),
   openrouter_stream: review.openrouter_stream,
   openrouter_timeout_ms: review.openrouter_timeout_ms,
   openrouter_ttft_ms: review.openrouter_ttft_ms,

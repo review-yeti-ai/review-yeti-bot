@@ -11,6 +11,13 @@ default_branch="$(gh api "repos/${repository}" --jq '.default_branch // empty')"
   exit 1
 }
 
+promotion_wait_seconds="${PROMOTION_WAIT_SECONDS:-600}"
+promotion_poll_seconds="${PROMOTION_POLL_SECONDS:-10}"
+[[ "$promotion_wait_seconds" =~ ^[0-9]+$ && "$promotion_poll_seconds" =~ ^[0-9]+$ ]] || {
+  echo "::error::PROMOTION_WAIT_SECONDS and PROMOTION_POLL_SECONDS must be non-negative integers."
+  exit 1
+}
+
 source_sha="$(gh api "repos/${repository}/commits/${SOURCE_SHA}" --jq '.sha // empty')"
 [[ "$source_sha" == "$SOURCE_SHA" ]] || {
   echo "::error::Source commit ${SOURCE_SHA} is not available in ${repository}."
@@ -49,20 +56,40 @@ require_success() {
   local check_runs="$1"
   local name="$2"
   local coordinate="$3"
+  local endpoint="${4:-}"
   local latest
-  latest="$(jq -c --arg name "$name" '
-    [.check_runs[] | select(.name == $name)] |
-    sort_by(.completed_at // "") | last // {}
-  ' <<<"$check_runs")"
-  if [[ "$(jq -r '.status // empty' <<<"$latest")" != completed || "$(jq -r '.conclusion // empty' <<<"$latest")" != success ]]; then
-    echo "::error::Required central check did not pass for ${coordinate}: ${name}."
-    jq -c '{name,status,conclusion,completed_at}' <<<"$latest"
-    exit 1
-  fi
+  local status
+  local conclusion
+  local deadline=$((SECONDS + promotion_wait_seconds))
+
+  while :; do
+    latest="$(jq -c --arg name "$name" '
+      [.check_runs[] | select(.name == $name)] |
+      sort_by(.completed_at // "") | last // {}
+    ' <<<"$check_runs")"
+    status="$(jq -r '.status // empty' <<<"$latest")"
+    conclusion="$(jq -r '.conclusion // empty' <<<"$latest")"
+
+    if [[ "$status" == completed && "$conclusion" == success ]]; then
+      return 0
+    fi
+
+    if [[ "$status" != queued && "$status" != in_progress ]] || [[ -z "$endpoint" ]] || (( SECONDS >= deadline )); then
+      echo "::error::Required central check did not pass for ${coordinate}: ${name}."
+      jq -c '{name,status,conclusion,completed_at}' <<<"$latest"
+      exit 1
+    fi
+
+    echo "Waiting for ${coordinate}: ${name} (${status}); retrying in ${promotion_poll_seconds}s."
+    sleep "$promotion_poll_seconds"
+    check_runs="$(gh api "$endpoint")"
+  done
 }
 
-require_success "$source_check_runs" validate "source ${SOURCE_SHA}"
-require_success "$pr_check_runs" 'review / Review Yeti' "PR #${pr_number} head ${pr_head}"
+require_success "$source_check_runs" validate "source ${SOURCE_SHA}" \
+  "repos/${repository}/commits/${SOURCE_SHA}/check-runs?per_page=100"
+require_success "$pr_check_runs" 'review / Review Yeti' "PR #${pr_number} head ${pr_head}" \
+  "repos/${repository}/commits/${pr_head}/check-runs?per_page=100"
 
 old_v1=""
 branch_exists=false
