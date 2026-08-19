@@ -12,8 +12,7 @@
         "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
         "compat": "openai",
         "timeout_ms": 180000,
-        "connect_timeout_ms": 60000,
-        "structured_output": "strict"
+        "connect_timeout_ms": 60000
       },
       {
         "name": "ollama",
@@ -22,8 +21,7 @@
         "model": "deepseek-v4-flash:0731",
         "compat": "openai",
         "timeout_ms": 180000,
-        "connect_timeout_ms": 60000,
-        "structured_output": "strict"
+        "connect_timeout_ms": 60000
       },
       {
         "name": "openrouter-fallback",
@@ -33,14 +31,13 @@
         "compat": "openrouter",
         "timeout_ms": 180000,
         "connect_timeout_ms": 60000,
-        "structured_output": "strict",
         "provider_routing": {
           "allow_fallbacks": true,
           "data_collection": "deny"
         }
       }
     ],
-    "openrouter_stream": "true",
+    "openrouter_stream": "false",
     "openrouter_timeout_ms": "180000",
     "openrouter_ttft_ms": "60000",
     "openrouter_max_attempts": "2",

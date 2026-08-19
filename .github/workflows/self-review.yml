@@ -1,7 +1,7 @@
 name: Review Yeti
 
-# This workflow uses the platform-owned v1 contract. Review policy and budgets live in the
-# private central repository; callers do not duplicate release SHAs or PR-body claims.
+# Central self-review follows the development line. Consumer repositories use the promoted
+# v1 release line; neither path carries a caller-supplied SHA or PR-body claim.
 on:
   pull_request_target:
     branches: [main]
@@ -15,5 +15,5 @@ permissions:
 jobs:
   review:
     if: github.event.pull_request.draft == false
-    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@main
     secrets: inherit

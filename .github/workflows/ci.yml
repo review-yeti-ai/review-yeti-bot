@@ -20,8 +20,11 @@ jobs:
           bash -n scripts/validate-review-request.sh
           bash -n scripts/validate-caller-workflow.sh
           bash -n scripts/check-review-verdict.sh
+          bash -n scripts/promote-v1.sh
           bash -n scripts/validate-caller-workflow.test.sh
+          bash -n scripts/promote-v1.test.sh
           bash scripts/validate-caller-workflow.test.sh
+          bash scripts/promote-v1.test.sh
           node --test scripts/review-yeti-smoke.test.mjs
           test -s policy/review-yeti.json
-          grep -Eq 'review-yeti.yml@v1$' .github/workflows/self-review.yml
+          grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
