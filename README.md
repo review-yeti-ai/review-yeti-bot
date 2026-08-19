@@ -203,6 +203,43 @@ transport can complete the request. Its contract tests run in the central valida
 provider order, OpenRouter routing, response validation, fallback behavior, and policy-drift
 rejection are checked before a release can advance.
 
+## CLI-first local reviews
+
+The central policy can be exercised locally through the same bounded, read-only review engine used
+by the hosted action. The launcher validates `policy/review-yeti.json`, materializes it into an
+ephemeral 0600 config, and delegates to an already-installed `reviewyeti` executable. It never
+downloads code, publishes to GitHub, or writes a repository configuration file.
+
+```bash
+# Validate the policy without credentials or network access.
+./scripts/review-yeti-local check --json
+
+# Confirm the installed local engine is available.
+./scripts/review-yeti-local doctor --json
+
+# Validate an MCP server manifest without connecting to servers or calling tools.
+./scripts/review-yeti-local mcp validate --config ./mcp.json --json
+
+# Review an immutable commit range from the current checkout.
+./scripts/review-yeti-local review \
+  --base "$BASE_SHA" --head "$HEAD_SHA" \
+  --mcp-config ./mcp.json --json --output review-yeti.json
+
+# Review an exact diff or a read-only GitHub pull request instead.
+./scripts/review-yeti-local review --diff-file ./change.diff --json
+./scripts/review-yeti-local review --pr exampleorg/example-review-actions#65 --json
+```
+
+`--base` and `--head` require full commit SHAs. The launcher exits with the delegated Review Yeti
+status, preserves machine-readable stdout, and sends diagnostics to stderr. Set `REVIEW_YETI_BIN`
+or pass `--cli-bin` when the executable is installed outside the default `PATH`; the wrapper does
+not install or fetch it. Provider credentials remain in the caller's environment and are never
+printed or written to the temporary config. MCP manifests are JSON with a `servers` array; the
+launcher validates IDs, transports, endpoints, stdio commands, environment-key shape, duplicate
+servers, and the API-key-only Linear policy. `mcp validate` performs no network requests or tool
+calls. A validated manifest is passed to the installed engine through `MCP_CONFIG_JSON` for the
+review process only; local reviews remain read-only and never publish MCP results to GitHub.
+
 ## Distribution
 
 The Review Yeti bot is selected by the platform release channel (`action_channel: v1` in `policy/review-yeti.json`). The workflow resolves that channel to an exact commit, checks the tag target and main reachability, then binds the action's `action-sha` input to the resolved commit. There is no per-repository SHA override or emergency bypass; changes advance through the central channel's reviewed promotion. See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.

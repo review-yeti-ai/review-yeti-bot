@@ -21,6 +21,8 @@ jobs:
       - name: Validate policy and scripts
         run: |
           node --check scripts/emit-policy.mjs
+          node --check scripts/review-yeti-local.mjs
+          node --check scripts/review-yeti-mcp.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
           bash -n scripts/validate-review-request.sh
@@ -29,6 +31,7 @@ jobs:
           bash -n scripts/promote-v1.sh
           bash -n scripts/self-cancel-run.sh
           bash -n scripts/review-yeti-release.sh
+          bash -n scripts/review-yeti-local
           bash -n scripts/resolve-release-channel.sh
           bash -n scripts/validate-release-provenance.sh
           bash -n scripts/emit-policy.test.sh
@@ -47,6 +50,8 @@ jobs:
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output"
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
           node --test scripts/review-yeti-smoke.test.mjs
+          node --test scripts/review-yeti-local.test.mjs
+          node --test scripts/review-yeti-mcp.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
