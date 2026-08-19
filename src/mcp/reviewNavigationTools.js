@@ -1,20 +1,33 @@
 'use strict';
 
+const { MAX_FILES: MAX_SNAPSHOT_FILES } = require('./reviewNavigationSnapshot.js');
+
+// Evidence tool calls are local reads against an already-fetched path index plus, for the two
+// tools that need content, one GitHub blob GET per distinct file. They do not consume the
+// per-lane provider HTTP budget and they do not cost model tokens beyond the bytes they return,
+// which maxResultBytes already bounds. The defaults are therefore generous; the per-lane
+// wall-clock deadline remains the real cost governor.
 const DEFAULTS = Object.freeze({
   enabled: false,
-  maxCalls: 12,
+  maxCalls: 24,
   maxReadBytes: 32 * 1024,
   maxResultBytes: 8 * 1024,
   maxFindResults: 50,
-  maxScanFiles: 20,
+  maxScanFiles: 60,
   timeoutMs: 1_500,
 });
+// Runaway backstops. maxCalls matches HARD_INVESTIGATION_LIMITS.maxCalls in
+// src/review/evidenceContracts.js so the registry can never be the silently lower of the two
+// ceilings again — it was 40 there and 12 in the pipeline's call site, which meant the
+// documented contract limit of 100 was unreachable and the real limit was undocumented.
+// maxScanFiles stays comparatively tight on purpose: unlike the other limits, each scanned file
+// is a separate blob GET, so this one is the only evidence knob with real network cost.
 const MAX_LIMITS = Object.freeze({
-  maxCalls: 40,
+  maxCalls: 100,
   maxReadBytes: 64 * 1024,
   maxResultBytes: 64 * 1024,
-  maxFindResults: 50,
-  maxScanFiles: 100,
+  maxFindResults: 200,
+  maxScanFiles: 120,
   timeoutMs: 5_000,
 });
 const SHA = /^[a-f0-9]{40,64}$/iu;
@@ -33,7 +46,49 @@ function resolveConfig(config = {}) {
     maxFindResults: boundedInteger(config.maxFindResults, DEFAULTS.maxFindResults, MAX_LIMITS.maxFindResults),
     maxScanFiles: boundedInteger(config.maxScanFiles, DEFAULTS.maxScanFiles, MAX_LIMITS.maxScanFiles),
     timeoutMs: boundedInteger(config.timeoutMs, DEFAULTS.timeoutMs, MAX_LIMITS.timeoutMs),
+    // Runaway backstop on the path index, not a review budget — see MAX_FILES in
+    // reviewNavigationSnapshot.js. Overridable so the guard can be exercised at a size a test
+    // can actually allocate; nothing in production sets it.
+    maxSnapshotFiles: boundedInteger(config.maxSnapshotFiles, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILES),
   };
+}
+
+// 200 characters could not hold a realistic multi-line signature or an error string copied out
+// of a log, so searches for exactly the things worth searching for were rejected as invalid.
+const MAX_QUERY_CHARS = 1_000;
+
+/**
+ * Choose which files a code_search call will read.
+ *
+ * Either an explicit `paths` list or a `pathPrefix` is required. The prefix form is what makes
+ * the tool usable without prior knowledge of the layout ("search tests/ for this helper"), and
+ * it is bounded the same way the explicit form is: at most `limit` files are read, because each
+ * one is a separate blob GET against the GitHub API.
+ *
+ * Deliberately NOT supported: an unqualified whole-repository search. Over a blob-fetch
+ * transport that is one HTTP request per file, so on a 16,000-file repository it is 16,000
+ * requests and several minutes — the cost is in the transport, not in a policy number, and no
+ * limit tuning fixes it. Repo-wide search needs a local checkout at the immutable base/head SHAs
+ * with a real indexer behind it; that is a separate change with its own runner-cost budget.
+ *
+ * Candidates are ordered shortest-path-first so a prefix that over-matches reads the files
+ * nearest the root of the requested subtree rather than an arbitrary slice of it.
+ */
+function selectScanPaths({ files, ref, args, limit }) {
+  const explicit = Array.isArray(args?.paths)
+    ? [...new Set(args.paths.map((value) => String(value).trim()).filter(Boolean))]
+    : [];
+  if (explicit.length > 0) {
+    return { paths: explicit.slice(0, limit), candidateCount: explicit.length, truncated: explicit.length > limit };
+  }
+  const prefix = String(args?.pathPrefix || '').trim().replace(/^\/+/u, '');
+  if (!prefix) return { reason: 'paths_or_path_prefix_required' };
+  if (prefix.length > 500) return { reason: 'invalid path prefix' };
+  const candidates = [...files.values()]
+    .filter((file) => file.ref === ref && file.path.startsWith(prefix))
+    .map((file) => file.path)
+    .sort((left, right) => left.length - right.length || left.localeCompare(right));
+  return { paths: candidates.slice(0, limit), candidateCount: candidates.length, truncated: candidates.length > limit };
 }
 
 function isAbort(error) {
@@ -152,14 +207,19 @@ function validIdentity(identity) {
     && (!identity?.baseSha || SHA.test(String(identity.baseSha)));
 }
 
-function normalizeSnapshot(snapshot, identity) {
+function normalizeSnapshot(snapshot, identity, maxSnapshotFiles = MAX_SNAPSHOT_FILES) {
   if (!snapshot || snapshot.repository !== identity.repository || snapshot.headSha !== identity.headSha) {
     throw new Error('review navigation snapshot must match the immutable review identity');
   }
   if (identity.baseSha && snapshot.baseSha !== identity.baseSha) {
     throw new Error('review navigation snapshot base SHA must match the immutable review identity');
   }
-  if (!Array.isArray(snapshot.files) || snapshot.files.length > 5_000) {
+  // Same runaway backstop the producer applies, imported rather than restated so the two can
+  // never drift apart. They did: this side kept a literal 5,000 while the producer's constant
+  // moved, and a snapshot the producer considered valid was rejected here — which does not
+  // degrade to "that file is unreachable", it throws and disables evidence tooling for the whole
+  // review.
+  if (!Array.isArray(snapshot.files) || snapshot.files.length > maxSnapshotFiles) {
     throw new Error('review navigation snapshot must contain a bounded file list');
   }
   // A malformed individual record (an overlong or unusual path, an unexpected ref, a duplicate
@@ -280,7 +340,7 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
   if (!validIdentity(identity)) throw new Error('review navigation requires a valid immutable review identity');
   if (!blobClient || typeof blobClient.getBlob !== 'function') throw new Error('review navigation requires a read-only GitHub blob client');
   const effectiveConfig = resolveConfig(config);
-  const files = normalizeSnapshot(snapshot, identity);
+  const files = normalizeSnapshot(snapshot, identity, effectiveConfig.maxSnapshotFiles);
   let calls = 0;
   const receipt = (tool, extra = {}) => ({ identity: { ...identity }, tool, ...extra });
   const disabled = (tool, reason) => ({ status: 'unavailable', ...receipt(tool, { reason }) });
@@ -321,9 +381,18 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
       if (tool === 'code_search') {
         const query = String(args.query || '').trim();
         const ref = String(args.ref || 'head').toLowerCase();
-        const paths = Array.isArray(args.paths) ? [...new Set(args.paths.map((path) => String(path).trim()))].slice(0, effectiveConfig.maxScanFiles) : [];
-        if (!query || query.length > 200) return { status: 'invalid', ...receipt(tool, { reason: 'invalid code query' }) };
-        if (!['base', 'head'].includes(ref) || paths.length === 0) return { status: 'invalid', ...receipt(tool, { reason: 'paths_required' }) };
+        if (!query || query.length > MAX_QUERY_CHARS) return { status: 'invalid', ...receipt(tool, { reason: 'invalid code query' }) };
+        if (!['base', 'head'].includes(ref)) return { status: 'invalid', ...receipt(tool, { reason: 'invalid ref' }) };
+        // `paths` used to be mandatory, which is a chicken-and-egg contract: you had to already
+        // know which file held the thing you were searching for. A `pathPrefix` (or the caller's
+        // explicit list) now narrows the candidate set instead. One of the two is still required
+        // and the result is still capped at maxScanFiles, because every candidate that survives
+        // selection costs one blob GET — an unqualified search of a 16,000-file tree would be
+        // 16,000 HTTP requests, which is the one thing this tool genuinely must not do. A repo-
+        // wide grep needs a local checkout with a real indexer; see the note on selectScanPaths.
+        const selection = selectScanPaths({ files, ref, args, limit: effectiveConfig.maxScanFiles });
+        if (selection.reason) return { status: 'invalid', ...receipt(tool, { reason: selection.reason }) };
+        const paths = selection.paths;
         const matches = [];
         let usedBytes = 0;
         const requested = paths.map((path) => files.get(`${ref}:${path}`)).filter(Boolean);
@@ -340,7 +409,9 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
           }
           if (matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes) break;
         }
-        return { status: 'ok', ...receipt(tool, { ref, query, requestedFiles: paths.length, scannedFiles: requested.length, matches, truncated: requested.length < paths.length || matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes, byteCount: usedBytes }) };
+        // `truncated` now also reports a prefix that matched more candidates than the scan budget
+        // allowed, so a reviewer can tell "no match in this subtree" from "I only read part of it".
+        return { status: 'ok', ...receipt(tool, { ref, query, requestedFiles: paths.length, candidateFiles: selection.candidateCount, scannedFiles: requested.length, matches, truncated: selection.truncated || requested.length < paths.length || matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes, byteCount: usedBytes }) };
       }
       const resolved = target(tool, args);
       if (resolved.result) return resolved.result;

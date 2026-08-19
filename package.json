@@ -66,6 +66,7 @@
     "test:intelligence-promotion": "node scripts/run-review-intelligence-promotion.mjs",
     "test:live-intelligence-smoke": "node scripts/review-intelligence-live-smoke.mjs",
     "test:dependency-eval": "node scripts/evaluate-dependency-investigation.mjs --fixture tests/fixtures/dependency-evaluation.json",
+    "test:testing-charter-eval": "node scripts/evaluate-testing-charter.mjs",
     "test:dependency-live-eval": "node scripts/evaluate-dependency-investigation-live.mjs --fixture tests/fixtures/dependency-evaluation.json --repetitions 3",
     "eval": "node bin/review-yeti.mjs eval",
     "eval:tui": "node bin/review-yeti.mjs eval tui",

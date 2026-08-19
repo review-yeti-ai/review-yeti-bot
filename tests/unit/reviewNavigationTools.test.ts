@@ -208,10 +208,74 @@ describe('review navigation tools', () => {
       expect(read).toMatchObject({ status: 'ok', blobSha: '1'.repeat(40) });
     });
 
-    it('still throws for a snapshot whose file count exceeds the hard 5,000-file bound (unchanged -- not weakened by this fix)', () => {
-      const oversized = { ...snapshot, files: Array.from({ length: 5_001 }, (_, index) => ({ path: `src/f${index}.js`, blobSha: '1'.repeat(40), patch: '' })) };
-      expect(() => createReviewNavigationToolRegistry({ identity, snapshot: oversized, config: { enabled: true }, blobClient: { getBlob: vi.fn() } }))
+    it('accepts a snapshot far past the retired 5,000-file bound and can read a file beyond it', async () => {
+      // The old ceiling made >84% of a 16k-file repository return file_not_in_snapshot, so a
+      // reviewer asking for the helper a test calls was told the file does not exist. The index
+      // holds paths and blob SHAs only; content is still fetched one blob at a time on read.
+      const files = Array.from({ length: 20_000 }, (_, index) => ({ path: `src/f${index}.js`, blobSha: '1'.repeat(40), patch: '' }));
+      const blobClient = { getBlob: vi.fn(async ({ blobSha }: { blobSha: string }) => ({ sha: blobSha, content: 'const deep = true;\n' })) };
+      const tools = createReviewNavigationToolRegistry({ identity, snapshot: { ...snapshot, files }, config: { enabled: true }, blobClient });
+
+      await expect(tools.call('file_read', { path: 'src/f19999.js' })).resolves.toMatchObject({ status: 'ok', path: 'src/f19999.js' });
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it('still throws above the runaway snapshot backstop', () => {
+      // The backstop survives; only its size changed. Exercised through the overridable config
+      // because allocating the production ceiling in a unit test proves nothing but slowness.
+      const oversized = { ...snapshot, files: Array.from({ length: 11 }, (_, index) => ({ path: `src/f${index}.js`, blobSha: '1'.repeat(40), patch: '' })) };
+      expect(() => createReviewNavigationToolRegistry({ identity, snapshot: oversized, config: { enabled: true, maxSnapshotFiles: 10 }, blobClient: { getBlob: vi.fn() } }))
         .toThrow('review navigation snapshot must contain a bounded file list');
+    });
+  });
+
+  describe('code_search path selection', () => {
+    const searchSnapshot = {
+      ...snapshot,
+      files: [
+        { path: 'tests/conftest.py', blobSha: '3'.repeat(40), patch: '' },
+        { path: 'tests/unit/deep/helpers.py', blobSha: '4'.repeat(40), patch: '' },
+        { path: 'src/app.js', blobSha: '1'.repeat(40), patch: '' },
+      ],
+    };
+    const searchRegistry = (config: Record<string, unknown> = {}) => {
+      const blobClient = { getBlob: vi.fn(async ({ blobSha }: { blobSha: string }) => ({ sha: blobSha, content: 'def marker_payload(marker="review-yeti-bot:v1"):\n    return marker\n' })) };
+      return { blobClient, tools: createReviewNavigationToolRegistry({ identity, snapshot: searchSnapshot, config: { enabled: true, maxResultBytes: 4_000, ...config }, blobClient }) };
+    };
+
+    it('searches a subtree by prefix without the caller naming files first', async () => {
+      const { tools, blobClient } = searchRegistry();
+
+      const result = await tools.call('code_search', { query: 'marker_payload', pathPrefix: 'tests/' });
+
+      expect(result).toMatchObject({ status: 'ok', candidateFiles: 2, scannedFiles: 2, truncated: false });
+      expect(result.matches.map((match: { path: string }) => match.path)).toEqual(['tests/conftest.py', 'tests/unit/deep/helpers.py']);
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(2);
+    });
+
+    it('caps a prefix search at maxScanFiles and says so, rather than reading the subtree', async () => {
+      const { tools, blobClient } = searchRegistry({ maxScanFiles: 1 });
+
+      const result = await tools.call('code_search', { query: 'marker_payload', pathPrefix: 'tests/' });
+
+      expect(result).toMatchObject({ status: 'ok', candidateFiles: 2, scannedFiles: 1, truncated: true });
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a search that names neither paths nor a prefix, so it can never fan out repo-wide', async () => {
+      const { tools, blobClient } = searchRegistry();
+
+      await expect(tools.call('code_search', { query: 'marker_payload' }))
+        .resolves.toMatchObject({ status: 'invalid', reason: 'paths_or_path_prefix_required' });
+      expect(blobClient.getBlob).not.toHaveBeenCalled();
+    });
+
+    it('accepts a query longer than the retired 200-character cap', async () => {
+      const { tools } = searchRegistry();
+      const longQuery = `marker_payload${' '.repeat(300)}`.slice(0, 300);
+
+      await expect(tools.call('code_search', { query: longQuery, pathPrefix: 'tests/' })).resolves.toMatchObject({ status: 'ok' });
+      await expect(tools.call('code_search', { query: 'x'.repeat(1_001), pathPrefix: 'tests/' })).resolves.toMatchObject({ status: 'invalid', reason: 'invalid code query' });
     });
   });
 });
