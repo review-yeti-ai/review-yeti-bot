@@ -12,8 +12,13 @@ const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti
 const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
-  ignore: ['fireworks'],
+  require_parameters: true,
+  quantizations: ['bf16', 'fp16'],
+  sort: 'throughput',
+  preferred_min_throughput: { p90: 40 },
+  preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
+  ignore: ['fireworks', 'open-inference', 'akashml'],
 });
 
 // The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
@@ -70,7 +75,7 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must leave provider selection to OpenRouter');
+    throw new Error('OpenRouter routing must require full-precision quants, throughput floors, and cheap-host failover');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
@@ -94,8 +99,7 @@ export function buildRequest(transport) {
     ],
     temperature: 0,
     max_tokens: 128,
-    // Health check stays buffered JSON. The panel streams; this probe must not.
-    stream: false,
+    stream: true,
     response_format: { type: 'json_object' },
   };
 

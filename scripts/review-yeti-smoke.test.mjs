@@ -36,21 +36,24 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(buildRequest(transports[2]).provider, EXPECTED_OPENROUTER_ROUTING);
   assert.deepEqual(buildRequest(transports[0]).response_format, { type: 'json_object' });
   assert.equal(buildRequest(transports[0]).max_tokens, 128);
-  assert.equal(buildRequest(transports[0]).stream, false);
+  assert.equal(buildRequest(transports[0]).stream, true);
+  assert.equal(buildRequest(transports[1]).stream, true);
+  assert.equal(buildRequest(transports[2]).stream, true);
 });
 
-test('the committed OpenRouter fallback leaves provider selection to OpenRouter', () => {
+test('the committed OpenRouter fallback requires full-precision quants and throughput floors', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const transports = validatePolicy(policy);
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
 
   assert.deepEqual(openrouter.provider_routing, EXPECTED_OPENROUTER_ROUTING);
   assert.equal(openrouter.provider_routing.allow_fallbacks, true);
-  assert.deepEqual(openrouter.provider_routing.ignore, ['fireworks']);
+  assert.deepEqual(openrouter.provider_routing.quantizations, ['bf16', 'fp16']);
+  assert.equal(openrouter.provider_routing.sort, 'throughput');
+  assert.deepEqual(openrouter.provider_routing.preferred_min_throughput, { p90: 40 });
+  assert.deepEqual(openrouter.provider_routing.preferred_max_latency, { p99: 3 });
   assert.equal(openrouter.allow_banned_providers, undefined);
-  // The previous contract asserted `only: ['fireworks']`. That pin selected a slug the action
-  // hard-bans, so `resolveProviderRouting` threw before any persona ran and review failed for
-  // every consumer repo -- while this suite stayed green. The pin must stay gone.
+  assert.ok(openrouter.provider_routing.ignore.includes('fireworks'));
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
 });
@@ -176,13 +179,13 @@ test('the smoke suite rejects weakened OpenRouter routing before any network req
   policy.review_yeti.transports[2].provider_routing = {
     ...policy.review_yeti.transports[2].provider_routing,
   };
-  policy.review_yeti.transports[2].provider_routing.only = ['morph'];
+  policy.review_yeti.transports[2].provider_routing.only = ['together'];
   // Still rejected, now by the dedicated pin guard rather than the generic shape comparison.
   // The guard runs first precisely so this case reports which key is at fault.
   assert.throws(() => validatePolicy(policy), /pins provider routing via "only"/);
 });
 
-test('the smoke suite rejects an OpenRouter quantization filter before any network request', () => {
+test('the smoke suite rejects reduced OpenRouter quants before any network request', () => {
   const policy = policyFixture();
   policy.review_yeti.transports[2].provider_routing = {
     ...policy.review_yeti.transports[2].provider_routing,

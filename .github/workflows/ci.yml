@@ -52,7 +52,12 @@ jobs:
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
           grep -Fq '"name": "ollama"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
-          grep -Fq '"ignore": ["fireworks"]' policy/review-yeti.json
+          grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
+          grep -Fq '"quantizations": ["bf16", "fp16"]' policy/review-yeti.json
+          grep -Fq '"sort": "throughput"' policy/review-yeti.json
+          grep -Fq '"p90": 40' policy/review-yeti.json
+          grep -Fq '"p99": 3' policy/review-yeti.json
+          grep -Fq '"fireworks"' policy/review-yeti.json
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml

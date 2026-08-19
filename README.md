@@ -82,11 +82,9 @@ promotion.
 The hosted panel uses `openrouter-ttft-ms` even on the Fireworks transport. Both
 configured transports set `stream: true` and `openrouter_stream=true`, so that
 the 30-second TTFT deadline measures the first SSE token, not a fully buffered
-JSON body; observed first-byte latency is typically ~1s. OpenRouter fallback is
-restricted to the Fireworks provider, does not rotate through arbitrary gateway
-providers, and accepts only pure `bf16`/`fp16` quants.
-Transport smoke stays `stream: false` so `response.json()` health checks remain
-valid.
+JSON body; observed first-byte latency is typically ~1s. OpenRouter requires
+full-precision `bf16`/`fp16` quants, sorts by throughput (p90 ≥ 40 tok/s, p99
+≤ 3s), and allows cheap hosts to fall. Smoke sends `stream: true` (SSE).
 
 Smoke logs `elapsed_ms` and `http` per transport. For a panel-sized probe:
 
@@ -95,23 +93,22 @@ doppler run --project example-workspace --config prd -- \
   node scripts/review-yeti-fireworks-debug.mjs
 ```
 
-The script never prints the API key. Compare `ttfbMs` for `stream=true` vs
-`stream=false`. Streaming first-byte is typically under 1s; non-stream first-byte
-is the full JSON.
+The script never prints the API key. Both probes are `stream: true`. Streaming
+first-byte is typically under 1s.
 
 ## Provider order
 
 The current standard transport plan is deliberately limited and ordered:
 
 1. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`)
-2. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback, restricted
-   to the Fireworks provider
+2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
+3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
 
-The action starts each model turn at Fireworks and advances to the restricted gateway only when
-the current transport fails. The OpenRouter entry disables provider rotation, permits only the
-Fireworks provider, and denies provider data collection. This prevents a slow or malformed
-third-party gateway from consuming the lane budget. Each caller must expose the two named
-environment variables through its inherited GitHub Actions secrets.
+The action starts each model turn at Fireworks and advances when that transport
+fails. The OpenRouter entry requires `bf16`/`fp16`, sorts by throughput, allows
+remaining hosts to fail over (`allow_fallbacks: true`), and denies provider data
+collection. Each caller must expose the named environment variables through its
+inherited GitHub Actions secrets.
 
 The central budget is also fixed here: three investigation turns, one 24-request per-lane call
 budget, a four-minute lane deadline, and a 30-second time-to-first-token budget. A provider that

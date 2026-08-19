@@ -45,8 +45,21 @@ if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
 if fallback.get('allow_banned_providers') is not None:
     raise SystemExit('openrouter-fallback must not re-enable the hard-banned Fireworks provider')
-if fallback.get('provider_routing', {}).get('ignore') != ['fireworks']:
+routing = fallback.get('provider_routing') or {}
+if 'fireworks' not in (routing.get('ignore') or []):
     raise SystemExit('openrouter-fallback must explicitly ignore the hard-banned Fireworks provider')
+if routing.get('allow_fallbacks') is not True:
+    raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
+if routing.get('quantizations') != ['bf16', 'fp16']:
+    raise SystemExit('openrouter-fallback must require full-precision bf16/fp16 quants')
+if routing.get('sort') != 'throughput':
+    raise SystemExit('openrouter-fallback must sort by throughput')
+if (routing.get('preferred_min_throughput') or {}).get('p90') != 40:
+    raise SystemExit('openrouter-fallback must require p90 throughput >= 40')
+if (routing.get('preferred_max_latency') or {}).get('p99') != 3:
+    raise SystemExit('openrouter-fallback must require p99 latency <= 3s')
+if routing.get('only') or routing.get('order'):
+    raise SystemExit('openrouter-fallback must not pin provider.only or provider.order')
 if review.get('openrouter_stream') != 'true':
     raise SystemExit('global openrouter_stream must be true so configured transports use SSE TTFT')
 for transport in review.get('transports', []):
