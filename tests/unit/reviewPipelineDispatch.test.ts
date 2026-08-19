@@ -865,6 +865,69 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     expect(JSON.parse(writes.get(path.join(cwd, 'review-publication.json'))!).lineComments).toHaveLength(1);
   });
 
+  // Regression cover for review-yeti-bot#57: the panel ran cleanly, logged `[Verdict] BLOCK`
+  // internally, and still published a review whose body was empty -- twice, two seconds apart, at
+  // the same commit. An exact-head consumer cannot distinguish that from "no verdict yet", and a
+  // fail-closed gate reading it (e.g. cisco-cdr's validate_check_run_history.sh) stays red forever
+  // because the panel keeps succeeding and keeps posting nothing. Refuse outright instead.
+  describe('review-yeti-bot#57: refuses to publish an empty or whitespace-only review body', () => {
+    it('does not call the GitHub review-create API when the comment body is empty', () => {
+      const { state, commandRunner } = githubRunner();
+
+      const result = pipeline.postOrOutputComment('', context, {
+        lineComments: [], fileComments: [], advisories: [], rejected: [],
+      }, { commandRunner });
+
+      expect(result).toMatchObject({ success: false, postedViaGh: false });
+      expect(result.error).toMatch(/empty or whitespace-only review body/i);
+      expect(result.error).toContain('review-yeti-ai/review-yeti-bot#42');
+      // The real bug published an empty review successfully. The guard must be evaluated before
+      // any network call, not merely return an error after one -- otherwise the empty review
+      // still ends up on the pull request.
+      expect(state.postedPayloads.some((post) => post.endpoint.endsWith('/reviews'))).toBe(false);
+      expect(state.reviews).toHaveLength(0);
+    });
+
+    it('does not call the GitHub review-create API when the comment body is whitespace-only', () => {
+      const { state, commandRunner } = githubRunner();
+
+      const result = pipeline.postOrOutputComment('   \n\t  ', context, {
+        lineComments: [], fileComments: [], advisories: [], rejected: [],
+      }, { commandRunner });
+
+      expect(result).toMatchObject({ success: false, postedViaGh: false });
+      expect(result.error).toMatch(/empty or whitespace-only review body/i);
+      expect(state.postedPayloads.some((post) => post.endpoint.endsWith('/reviews'))).toBe(false);
+      expect(state.reviews).toHaveLength(0);
+    });
+
+    it('still refuses locally (never writes an empty review-comment.md) when there is no PR to publish to', () => {
+      const writes = new Map<string, string>();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-local-empty-'));
+
+      const result = pipeline.postOrOutputComment('', { repo: 'o/r', headSha: 'head' }, {
+        lineComments: [], fileComments: [], advisories: [], rejected: [],
+      }, {
+        cwd,
+        fileSystem: { writeFileSync: (filePath: string, body: string) => writes.set(filePath, body) },
+      });
+
+      expect(result).toMatchObject({ success: false, postedViaGh: false });
+      expect(writes.size).toBe(0);
+    });
+
+    it('still publishes normally when the body carries real verdict content', () => {
+      const { state, commandRunner } = githubRunner();
+
+      const result = pipeline.postOrOutputComment('## 🔴 **Verdict: BLOCK**\n- **Quorum Status**: `DEGRADED`', context, {
+        lineComments: [], fileComments: [], advisories: [], rejected: [],
+      }, { commandRunner });
+
+      expect(result).toMatchObject({ success: true, postedViaGh: true });
+      expect(state.reviews).toHaveLength(1);
+    });
+  });
+
   it('binds the action review to the authoritative GitHub head SHA', () => {
     const commandRunner = () => ({
       status: 0,
