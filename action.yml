@@ -443,6 +443,9 @@ outputs:
   memory-outbox-path:
     description: 'Hashed normalized memory outbox path. Upload it as an artifact for replay after runner cancellation.'
     value: ${{ steps.review.outputs.memory-outbox-path }}
+  run-report-path:
+    description: 'Path to the review-run-report.v1 JSON (per-lane outcomes, failure classes, severity counts, diff digest). Upload it as an artifact to feed scripts/run-report-summary.mjs.'
+    value: ${{ steps.review.outputs.run-report-path }}
   memory-provider:
     description: 'Selected single memory provider for this review run.'
     value: ${{ steps.review.outputs.memory-provider }}
