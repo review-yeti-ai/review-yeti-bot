@@ -123,6 +123,7 @@ const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
 const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMITS } = require('../../../src/review/evidenceContracts');
 const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
+const { buildRunReport, renderRunReportLine, writeRunReport } = require('../../../src/telemetry/runReport');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -6533,6 +6534,7 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     ...(extra.dashboardDelivery ? [`dashboard-delivery=${extra.dashboardDelivery}`] : []),
     ...(extra.dashboardReviewUrl ? [`dashboard-review-url=${extra.dashboardReviewUrl}`] : []),
     ...(extra.investigationSummary ? [`investigation-summary=${JSON.stringify(extra.investigationSummary)}`] : []),
+    ...(extra.runReportPath ? [`run-report-path=${extra.runReportPath}`] : []),
     ...(extra.investigationSummary ? [`investigation-status=${extra.investigationSummary.complete ? 'complete' : (extra.investigationSummary.laneCount > 0 ? 'partial' : 'incomplete')}`, `investigation-receipt=${JSON.stringify({ schemaVersion: extra.investigationSummary.schemaVersion, laneCount: extra.investigationSummary.laneCount, evidenceReceipts: extra.investigationSummary.evidenceReceipts, complete: extra.investigationSummary.complete, navigation: extra.investigationSummary.navigation })}`, `evidence-calls=${extra.investigationSummary.evidenceReceipts || 0}`] : []),
     ...(reviewUnitReceipt ? [
       `review-unit-identity=${JSON.stringify(reviewUnitReceipt.identity)}`,
@@ -8494,7 +8496,35 @@ async function main(options = {}) {
     }
   }
 
+  // Operator-facing reviewer-noise report: full-fidelity per-lane outcomes kept
+  // with the run (file + harvestable log line). Advisory only — no report error
+  // may alter the verdict or fail the pipeline.
+  let runReportPath = null;
+  try {
+    const runReport = buildRunReport({
+      repository: prContext.repo,
+      prNumber: prContext.prNumber,
+      baseSha: prContext.baseSha,
+      headSha: prContext.headSha,
+      diffText: prContext.diffText,
+      verdict: arbitration.verdict,
+      coverageStatus: arbitration.coverageStatus || coverage?.status,
+      personaResults,
+      transports: transportPlan?.transports,
+      investigation: investigationSummary,
+      startedAt,
+      finishedAt: now(),
+    });
+    console.log(renderRunReportLine(runReport));
+    const reportDir = runtimeEnv.RUNNER_TEMP || require('os').tmpdir();
+    runReportPath = writeRunReport(runReport, path.join(reportDir, 'review-yeti-run-report.json'));
+    console.log(`[RunReport] Written to ${runReportPath}`);
+  } catch (error) {
+    console.warn(`[RunReport] Could not emit run report: ${error.message}`);
+  }
+
   if (!localOnly) writeStepOutputs(arbitration, runtimeEnv.GITHUB_OUTPUT, coverage, usageTotal, {
+    runReportPath,
     memoryProvider: memoryPolicy.provider || 'honcho',
     memoryQueryStatus: memoryQueryResult.status,
     memoryQuerySource: memoryQueryResult.source,
