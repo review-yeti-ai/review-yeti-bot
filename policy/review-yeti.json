@@ -2,7 +2,7 @@
   "schema": "exampleorg.review-policy.v1",
   "review_yeti": {
     "repository": "review-yeti-ai/review-yeti-bot",
-    "action_sha": "efb0d6d1c737f0253037046ae6021eedae374f7a",
+    "action_sha": "762974cfa8bf2fabf80699c29c912d0a5451bd94",
     "personas": "security,performance,architecture,testing,dependencies",
     "transports": [
       {
