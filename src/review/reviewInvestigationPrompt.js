@@ -264,7 +264,7 @@ function buildInvestigationMessages({ persona = {}, dispatchAssignment, manifest
     'Before flagging a defect, establish a realistic trigger and investigate the relevant caller, guard, contract, or version evidence.',
     'Prefer an empty clean result to speculation. If evidence cannot be obtained within the limits, mark the risk incomplete.',
     evidenceEnabled
-      ? 'Use only file_read, file_find, code_search, and file_read_diff. These are the four immutable read-only evidence tools; do not request shell, writes, credentials, arbitrary URLs, or publication.'
+      ? `Use only ${[...EVIDENCE_TOOLS].join(', ')}. These are the only allowed evidence tools. file_read, file_find, code_search, and file_read_diff are immutable and read-only. library_docs looks up third-party library documentation; it takes only a library identifier and a topic string -- it never accepts, needs, or returns a URL, host, header, or credential, because the documentation service it contacts and the key used to reach it are fixed outside your control. Do not request shell, writes, credentials, arbitrary URLs, or publication.`
       : 'Bounded evidence tools are unavailable for this review; no tool call will succeed. Do not request any evidence_requests.',
     evidenceEnabled
       ? 'A finding requires a changed diff anchor and one or more evidence receipt ids emitted by this run.'
