@@ -344,11 +344,14 @@ describe('REL-271: flattened retry pyramid (D3, D4, D5, D9)', () => {
       timeoutMs: 5_000,
     });
 
-    expect(calls).toHaveLength(2);
+    // Streaming is unconditional, so each of the 2 attempts makes 2 real HTTP calls: a throwaway
+    // stream attempt that gets HTTP 503, then callOpenRouterChat's own in-flight non-stream
+    // fallback on a 5xx (both still count as ONE attempt for the retry-pyramid's own accounting).
+    expect(calls).toHaveLength(4);
     expect(result.decision).toBe('ERROR');
   });
 
-  it('D9: openrouter-max-attempts is configurable -- 1 means exactly 1 call, no retry at all', async () => {
+  it('D9: openrouter-max-attempts is configurable -- 1 means exactly 1 attempt, no retry at all', async () => {
     const calls: any[] = [];
     const fetchImpl = async (_url: string, init: any) => {
       calls.push({ body: JSON.parse(init.body) });
@@ -364,7 +367,8 @@ describe('REL-271: flattened retry pyramid (D3, D4, D5, D9)', () => {
       timeoutMs: 5_000,
     });
 
-    expect(calls).toHaveLength(1);
+    // One attempt still makes 2 real HTTP calls now that streaming is unconditional (see D4/D5).
+    expect(calls).toHaveLength(2);
     expect(result.decision).toBe('ERROR');
   });
 
