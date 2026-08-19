@@ -208,9 +208,23 @@ describe('review navigation tools', () => {
       expect(read).toMatchObject({ status: 'ok', blobSha: '1'.repeat(40) });
     });
 
-    it('still throws for a snapshot whose file count exceeds the hard 5,000-file bound (unchanged -- not weakened by this fix)', () => {
-      const oversized = { ...snapshot, files: Array.from({ length: 5_001 }, (_, index) => ({ path: `src/f${index}.js`, blobSha: '1'.repeat(40), patch: '' })) };
-      expect(() => createReviewNavigationToolRegistry({ identity, snapshot: oversized, config: { enabled: true }, blobClient: { getBlob: vi.fn() } }))
+    it('accepts a snapshot far past the retired 5,000-file bound and can read a file beyond it', async () => {
+      // The old ceiling made >84% of a 16k-file repository return file_not_in_snapshot, so a
+      // reviewer asking for the helper a test calls was told the file does not exist. The index
+      // holds paths and blob SHAs only; content is still fetched one blob at a time on read.
+      const files = Array.from({ length: 20_000 }, (_, index) => ({ path: `src/f${index}.js`, blobSha: '1'.repeat(40), patch: '' }));
+      const blobClient = { getBlob: vi.fn(async ({ blobSha }: { blobSha: string }) => ({ sha: blobSha, content: 'const deep = true;\n' })) };
+      const tools = createReviewNavigationToolRegistry({ identity, snapshot: { ...snapshot, files }, config: { enabled: true }, blobClient });
+
+      await expect(tools.call('file_read', { path: 'src/f19999.js' })).resolves.toMatchObject({ status: 'ok', path: 'src/f19999.js' });
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it('still throws above the runaway snapshot backstop', () => {
+      // The backstop survives; only its size changed. Exercised through the overridable config
+      // because allocating the production ceiling in a unit test proves nothing but slowness.
+      const oversized = { ...snapshot, files: Array.from({ length: 11 }, (_, index) => ({ path: `src/f${index}.js`, blobSha: '1'.repeat(40), patch: '' })) };
+      expect(() => createReviewNavigationToolRegistry({ identity, snapshot: oversized, config: { enabled: true, maxSnapshotFiles: 10 }, blobClient: { getBlob: vi.fn() } }))
         .toThrow('review navigation snapshot must contain a bounded file list');
     });
   });
@@ -383,6 +397,58 @@ describe('review navigation tools', () => {
     it('reports library_docs in the registry capabilities', () => {
       const { registry: tools } = registry();
       expect(tools.capabilities.tools).toContain('library_docs');
+    });
+  });
+
+  describe('code_search subtree narrowing', () => {
+    const searchSnapshot = {
+      ...snapshot,
+      files: [
+        { path: 'tests/conftest.py', blobSha: '3'.repeat(40), patch: '' },
+        { path: 'tests/unit/deep/helpers.py', blobSha: '4'.repeat(40), patch: '' },
+        { path: 'src/unrelated.js', blobSha: '5'.repeat(40), patch: '' },
+      ],
+    };
+    const searchRegistry = (config: Record<string, unknown> = {}) => {
+      const blobClient = { getBlob: vi.fn(async ({ blobSha }: { blobSha: string }) => ({ sha: blobSha, content: 'def marker_payload(marker="review-yeti-bot:v1"):\n    return marker\n' })) };
+      return { blobClient, tools: createReviewNavigationToolRegistry({ identity, snapshot: searchSnapshot, config: { enabled: true, maxResultBytes: 4_000, ...config }, blobClient }) };
+    };
+
+    it('narrows an unscoped search to a subtree instead of an alphabetical slice of the repository', async () => {
+      const { tools, blobClient } = searchRegistry();
+
+      const result = await tools.call('code_search', { query: 'marker_payload', pathPrefix: 'tests/' });
+
+      expect(result).toMatchObject({ status: 'ok', requestedFiles: 2, scannedFiles: 2 });
+      expect(result.matches.map((match: { path: string }) => match.path)).toEqual(['tests/conftest.py', 'tests/unit/deep/helpers.py']);
+      // src/unrelated.js is in the snapshot and would have been read by an unscoped search.
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(2);
+    });
+
+    it('orders a prefix search shortest-path-first and reports truncation when the subtree exceeds the scan budget', async () => {
+      const { tools, blobClient } = searchRegistry({ maxScanFiles: 1 });
+
+      const result = await tools.call('code_search', { query: 'marker_payload', pathPrefix: 'tests/' });
+
+      expect(result).toMatchObject({ status: 'ok', requestedFiles: 1, scannedFiles: 1, truncated: true });
+      expect(result.matches[0].path).toBe('tests/conftest.py');
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an unusable prefix rather than silently searching the whole snapshot', async () => {
+      const { tools, blobClient } = searchRegistry();
+
+      await expect(tools.call('code_search', { query: 'marker_payload', pathPrefix: 'x'.repeat(501) }))
+        .resolves.toMatchObject({ status: 'invalid', reason: 'invalid path prefix' });
+      expect(blobClient.getBlob).not.toHaveBeenCalled();
+    });
+
+    it('leaves an explicit paths list taking precedence over a prefix', async () => {
+      const { tools } = searchRegistry();
+
+      const result = await tools.call('code_search', { query: 'marker_payload', paths: ['src/unrelated.js'], pathPrefix: 'tests/' });
+
+      expect(result.matches.map((match: { path: string }) => match.path)).toEqual(['src/unrelated.js']);
     });
   });
 });

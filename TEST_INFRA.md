@@ -17,6 +17,35 @@ npm run test:receipts  # validates all workflow fixtures and cassette manifests
 npm run lint          # tsc --noEmit
 ```
 
+## Charter detection evaluation (live, opt-in)
+
+`npm run test:testing-charter-eval` measures whether the testing persona actually reports the
+semantic test defects it is supposed to catch, against the seeded fixtures in
+`tests/fixtures/testing-charter/evaluation-matrix.json`.
+
+It is the only test here that talks to a real provider, and it is opt-in by omission: with no
+`OPENROUTER_API_KEY` it prints `{"status":"not_run"}` and exits 0 rather than claiming evidence
+it does not have. It is deliberately outside `test:all` for that reason.
+
+Two arms run against identical fixtures — the charter frozen in
+`tests/fixtures/testing-charter/baseline-charter.txt` and the charter currently in
+`PERSONA_CHARTERS` — so a charter edit can be shown to move the number rather than asserted to.
+Grading is structural, never a model grading a model: a fixture counts as detected when a
+finding anchors to the expected path *and* names every concept in the fixture's `mustMatch`
+groups, which generic "these tests could be better" phrasing cannot satisfy.
+
+Two properties make the result trustworthy and should be kept:
+
+- **Clean controls run in the same batch.** A charter change that raises detection by making the
+  lane indiscriminate is not an improvement, so false positives are measured alongside recall.
+- **Flash-tier models are non-deterministic.** Run at least 8 repetitions and read the reported
+  Wilson interval, not a single sample. Errored runs (unparseable JSON, provider timeouts) are
+  counted as misses, because in production that is exactly what they are.
+
+```bash
+OPENROUTER_API_KEY=... npm run test:testing-charter-eval -- --repetitions 8 --concurrency 10 --out /tmp/report.json
+```
+
 ## Boundary Replay and Cassette Rules
 
 Every external boundary is injectable and deterministic:
