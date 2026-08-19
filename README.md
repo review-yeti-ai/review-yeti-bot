@@ -622,7 +622,7 @@ over collapsing two distinct defects, since the second hides one.
 | `llm-api-key` | required | The sole inference API key for OpenRouter or a direct OpenAI-compatible gateway, passed explicitly in the workflow action call. Management keys and alternate provider-key environment variables are not accepted. |
 | `action-sha` | required | Exact 40-hex commit SHA of the Review Yeti action source. It must match the immutable `uses:` ref; mutable refs and tags are rejected for durable receipts. The central workflow derives it with `git rev-parse HEAD` only after checking out the action source immutably; generic consumers must pass their checked-out source SHA explicitly because an Action mount is not guaranteed to contain `.git`. |
 | `llm-base-url` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL. Supported direct gateways, including Fireworks, automatically omit OpenRouter-only request fields. |
-| `openrouter-provider-routing` | `{"allow_fallbacks":false}` | JSON `provider` policy forwarded to OpenRouter. The default keeps fallback escape disabled without forcing a single provider; the trusted base YAML or account-level OpenRouter policy determines eligible providers. Fixed models are checked against any explicit provider cohort before persona fan-out; `openai/gpt-5.6-luna` requires `only` to include `openai` or `azure`. Wafer and Novita are hard-banned after repeated timeout/provider-error lanes. It supports provider order/allow-fallbacks, parameter requirements, data-collection/ZDR policy, provider allow/deny lists, quantizations, sorting, throughput/latency preferences, and price caps. The built-in degraded-provider blocklist remains hard-banned. |
+| `openrouter-provider-routing` | `{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp8","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}` | JSON `provider` policy forwarded to OpenRouter. By default, fallback stays enabled, requested parameters are required, endpoints are limited to FP8 or BF16, providers are sorted by throughput, and OpenRouter prefers p90 throughput of at least 40 tokens/s plus p99 latency of at most 3 seconds. Morph remains eligible; it is neither ignored nor banned. Fixed models are checked against any explicit provider cohort before persona fan-out; `openai/gpt-5.6-luna` requires `only` to include `openai` or `azure`. Wafer and Novita are hard-banned after repeated timeout/provider-error lanes. The input supports provider order/fallbacks, parameter requirements, data-collection/ZDR policy, provider allow/deny lists, quantizations, sorting, throughput/latency preferences, and price caps. |
 | `openrouter-fallback-models` | — | Comma-separated ordered model fallbacks for transient timeouts, network errors, rate limits, and 5xx responses. Empty uses `github_action.openrouter.fallback_models` from the trusted base ref. |
 | `context7-api-key` | — | Optional Context7 API key. With a non-empty key and `mcp.context7.enabled` in the target `.review-yeti.yaml` (default on when the key is set), Context7 docs are injected into every persona. |
 | `model` | `openrouter/auto-beta` | Model identifier passed to the provider. |
@@ -668,9 +668,10 @@ the fixed `openai/gpt-5.6-luna` model, OpenRouter's compatible provider cohort i
             {"only":["openai","azure"],"allow_fallbacks":false}
 ```
 
-Retain any existing `data_collection`, `zdr`, `require_parameters`, and `ignore` fields when
-making that change. If the repository must remain Morph-only, select a model served by Morph
-instead. A mismatch fails before persona requests with an actionable compatibility error.
+Retain any existing `data_collection`, `zdr`, `require_parameters`, `quantizations`, performance
+preferences, and `ignore` fields when making that change. If a repository intentionally uses an
+explicit Morph-only cohort, select a model served by Morph. A mismatch fails before persona
+requests with an actionable compatibility error.
 
 The action also reads reviewer personas and repository defaults from the target
 `.review-yeti.yaml`; configure this object as `github_action.openrouter.provider_routing` there.
