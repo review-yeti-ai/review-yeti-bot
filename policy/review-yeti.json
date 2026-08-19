@@ -17,6 +17,16 @@
         "stream": true
       },
       {
+        "name": "ollama",
+        "base_url": "https://ollama.com/v1",
+        "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
+        "model": "deepseek-v4-flash:0731",
+        "compat": "openai",
+        "timeout_ms": 180000,
+        "connect_timeout_ms": 30000,
+        "stream": true
+      },
+      {
         "name": "openrouter-fallback",
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_PR_REVIEW_API_KEY",
@@ -25,10 +35,9 @@
         "timeout_ms": 180000,
         "connect_timeout_ms": 30000,
         "stream": true,
-        "allow_banned_providers": ["fireworks"],
         "provider_routing": {
-          "allow_fallbacks": false,
-          "only": ["fireworks"],
+          "allow_fallbacks": true,
+          "ignore": ["fireworks"],
           "data_collection": "deny"
         }
       }

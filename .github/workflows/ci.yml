@@ -49,15 +49,15 @@ jobs:
           node --test scripts/review-yeti-smoke.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
-          grep -Fq '"only": ["fireworks"]' policy/review-yeti.json
-          grep -Fq '"allow_banned_providers": ["fireworks"]' policy/review-yeti.json
+          grep -Fq '"name": "fireworks"' policy/review-yeti.json
+          grep -Fq '"name": "ollama"' policy/review-yeti.json
+          grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
+          grep -Fq '"ignore": ["fireworks"]' policy/review-yeti.json
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
-          if grep -Eq 'OLLAMA_PR_REVIEW_API_KEY|ollama' .github/workflows/review-yeti.yml policy/review-yeti.json; then
-            echo "::error::obsolete Ollama transport or credential remains in the central contract"
-            exit 1
-          fi
+          grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
 
       - name: Reject malformed action_channel policy
         run: |

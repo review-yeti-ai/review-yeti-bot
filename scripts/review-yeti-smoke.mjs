@@ -4,17 +4,32 @@ import { resolve } from 'node:path';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'fireworks',
+  'ollama',
   'openrouter-fallback',
 ]);
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
-  allow_fallbacks: false,
-  only: ['fireworks'],
+  allow_fallbacks: true,
+  ignore: ['fireworks'],
   data_collection: 'deny',
 });
-export const EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS = Object.freeze(['fireworks']);
+
+// The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
+// health, and `resolveProviderRouting` throws outright — before any persona runs — if routing
+// *selects* one of them via `only`/`order`. A policy can therefore be structurally valid, pass
+// every shape assertion here, and still fatally crash the panel on the first call.
+//
+// That is not hypothetical: pinning `only: ['fireworks']` shipped green and took down review for
+// every consumer repo, because nothing in this suite exercised the selection path. Pinning is
+// also independently unwanted -- `only`/`order` freeze routing against a provider list that
+// changes underneath us, which is why routing is left to OpenRouter's own selection.
+//
+// Rejecting the keys outright is deliberately stricter than mirroring the action's ban list:
+// duplicating that list here would drift the moment the action edits it, and a stale copy would
+// re-open exactly this hole.
+const FORBIDDEN_ROUTING_SELECTORS = Object.freeze(['only', 'order']);
 
 export function validatePolicy(policy) {
   if (policy?.schema !== 'exampleorg.review-policy.v1') {
@@ -37,12 +52,28 @@ export function validatePolicy(policy) {
     }
   }
 
+  // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
+  // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
+  // says nothing about which key is at fault or why it is fatal. It also applies to every
+  // transport, not just the fallback: any transport that pins a provider can select a hard-banned
+  // slug and crash the panel before a single persona runs.
+  for (const transport of transports) {
+    for (const selector of FORBIDDEN_ROUTING_SELECTORS) {
+      if (transport.provider_routing?.[selector] !== undefined) {
+        throw new Error(
+          `transport ${transport.name} pins provider routing via "${selector}"; `
+          + 'routing must be left to OpenRouter so a hard-banned provider can never be selected',
+        );
+      }
+    }
+  }
+
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must be restricted to Fireworks with provider fallback disabled');
+    throw new Error('OpenRouter routing must leave provider selection to OpenRouter');
   }
-  if (JSON.stringify(openrouter?.allow_banned_providers) !== JSON.stringify(EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS)) {
-    throw new Error('OpenRouter must explicitly permit only the approved Fireworks provider exception');
+  if (openrouter?.allow_banned_providers !== undefined) {
+    throw new Error('OpenRouter must not re-enable a hard-banned provider');
   }
 
   return transports;

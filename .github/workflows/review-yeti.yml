@@ -55,6 +55,7 @@ jobs:
         working-directory: .exampleorg-review-actions
         env:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000
         run: |
@@ -91,6 +92,7 @@ jobs:
         uses: ./.review-yeti-bot
         env:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
         with:

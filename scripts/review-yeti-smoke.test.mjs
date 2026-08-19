@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
-  EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS,
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
@@ -17,13 +16,13 @@ function policyFixture() {
     review_yeti: {
       transports: [
         { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai' },
+        { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'ollama-model', compat: 'openai' },
         {
           name: 'openrouter-fallback',
           base_url: 'https://openrouter.test/api/v1',
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
           model: 'openrouter-model',
           compat: 'openrouter',
-          allow_banned_providers: EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
         },
       ],
@@ -34,22 +33,42 @@ function policyFixture() {
 test('the smoke contract pins the approved transport order', () => {
   const transports = validatePolicy(policyFixture());
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
-  assert.deepEqual(buildRequest(transports[1]).provider, EXPECTED_OPENROUTER_ROUTING);
+  assert.deepEqual(buildRequest(transports[2]).provider, EXPECTED_OPENROUTER_ROUTING);
   assert.deepEqual(buildRequest(transports[0]).response_format, { type: 'json_object' });
   assert.equal(buildRequest(transports[0]).max_tokens, 128);
   assert.equal(buildRequest(transports[0]).stream, false);
 });
 
-test('the committed OpenRouter fallback is restricted to Fireworks', () => {
+test('the committed OpenRouter fallback leaves provider selection to OpenRouter', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const transports = validatePolicy(policy);
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
 
   assert.deepEqual(openrouter.provider_routing, EXPECTED_OPENROUTER_ROUTING);
-  assert.equal(openrouter.provider_routing.ignore, undefined);
-  assert.equal(openrouter.provider_routing.allow_fallbacks, false);
-  assert.deepEqual(openrouter.provider_routing.only, ['fireworks']);
-  assert.deepEqual(openrouter.allow_banned_providers, EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS);
+  assert.equal(openrouter.provider_routing.allow_fallbacks, true);
+  assert.deepEqual(openrouter.provider_routing.ignore, ['fireworks']);
+  assert.equal(openrouter.allow_banned_providers, undefined);
+  // The previous contract asserted `only: ['fireworks']`. That pin selected a slug the action
+  // hard-bans, so `resolveProviderRouting` threw before any persona ran and review failed for
+  // every consumer repo -- while this suite stayed green. The pin must stay gone.
+  assert.equal(openrouter.provider_routing.only, undefined);
+  assert.equal(openrouter.provider_routing.order, undefined);
+});
+
+test('validatePolicy rejects a transport that pins provider routing', () => {
+  const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+
+  for (const selector of ['only', 'order']) {
+    const pinned = JSON.parse(JSON.stringify(policy));
+    const openrouter = pinned.review_yeti.transports.find((t) => t.name === 'openrouter-fallback');
+    openrouter.provider_routing[selector] = ['fireworks'];
+
+    assert.throws(
+      () => validatePolicy(pinned),
+      new RegExp(`pins provider routing via "${selector}"`),
+      `a policy pinning provider_routing.${selector} must be rejected, not merged green`,
+    );
+  }
 });
 
 test('the smoke suite probes every configured transport without logging credentials', async () => {
@@ -57,6 +76,7 @@ test('the smoke suite probes every configured transport without logging credenti
   const logs = [];
   const env = {
     FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+    OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
     OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
   };
   const fetchImpl = async (url, init) => {
@@ -68,6 +88,7 @@ test('the smoke suite probes every configured transport without logging credenti
 
   assert.deepEqual(calls.map((call) => call.url), [
     'https://fireworks.test/v1/chat/completions',
+    'https://ollama.test/v1/chat/completions',
     'https://openrouter.test/api/v1/chat/completions',
   ]);
   assert.deepEqual(result.healthy, EXPECTED_TRANSPORT_ORDER);
@@ -84,6 +105,7 @@ test('the smoke suite fails closed when no provider can complete the real reques
       policy: policyFixture(),
       env: {
         FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+        OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
         OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
       },
       fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({}) }),
@@ -100,6 +122,7 @@ test('the smoke suite keeps healthy transports usable when an optional fallback 
     policy: policyFixture(),
     env: {
       FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+      OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
       OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
     },
     fetchImpl: async (url) => {
@@ -109,7 +132,7 @@ test('the smoke suite keeps healthy transports usable when an optional fallback 
     log: (line) => logs.push(line),
   });
 
-  assert.deepEqual(result.healthy, ['fireworks']);
+  assert.deepEqual(result.healthy, ['fireworks', 'ollama']);
   assert.equal(logs.some((line) => line.includes('unhealthy optional transport(s): openrouter-fallback (http_401)')), true);
 });
 
@@ -122,7 +145,7 @@ test('the smoke suite treats missing keys as unavailable and still accepts a hea
   });
 
   assert.deepEqual(result.healthy, ['openrouter-fallback']);
-  assert.deepEqual(result.results.map((result) => result.status), ['missing', 'healthy']);
+  assert.deepEqual(result.results.map((result) => result.status), ['missing', 'missing', 'healthy']);
 });
 
 test('the smoke suite still accepts SSE chat completions if a transport streams', async () => {
@@ -150,17 +173,19 @@ test('the smoke suite rejects policy drift before any network request', () => {
 
 test('the smoke suite rejects weakened OpenRouter routing before any network request', () => {
   const policy = policyFixture();
-  policy.review_yeti.transports[1].provider_routing = {
-    ...policy.review_yeti.transports[1].provider_routing,
+  policy.review_yeti.transports[2].provider_routing = {
+    ...policy.review_yeti.transports[2].provider_routing,
   };
-  policy.review_yeti.transports[1].provider_routing.only = ['morph'];
-  assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
+  policy.review_yeti.transports[2].provider_routing.only = ['morph'];
+  // Still rejected, now by the dedicated pin guard rather than the generic shape comparison.
+  // The guard runs first precisely so this case reports which key is at fault.
+  assert.throws(() => validatePolicy(policy), /pins provider routing via "only"/);
 });
 
 test('the smoke suite rejects an OpenRouter quantization filter before any network request', () => {
   const policy = policyFixture();
-  policy.review_yeti.transports[1].provider_routing = {
-    ...policy.review_yeti.transports[1].provider_routing,
+  policy.review_yeti.transports[2].provider_routing = {
+    ...policy.review_yeti.transports[2].provider_routing,
     quantizations: ['fp8', 'bf16'],
   };
   assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
