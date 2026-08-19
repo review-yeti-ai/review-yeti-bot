@@ -212,6 +212,28 @@ describe('reviewWithTransports', () => {
     expect(maxActive).toBe(1);
   });
 
+  it('holds the stream slot across failover before admitting the next persona', async () => {
+    const streamGate = pipeline.createStreamingLaneGate(1);
+    const activeTransports: string[] = [];
+    let firstPersona = true;
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      activeTransports.push(options.transportName);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (firstPersona && options.transportName === 'fireworks') {
+        firstPersona = false;
+        return { decision: 'ERROR', error: 'timeout' };
+      }
+      return { ok: true, content: '{"findings":[]}' };
+    };
+
+    await Promise.all([
+      reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, { transportPlan: plannedTransports(), streamGate }),
+      reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, { transportPlan: plannedTransports(), streamGate }),
+    ]);
+
+    expect(activeTransports).toEqual(['fireworks', 'openrouter-fallback', 'fireworks']);
+  });
+
   it('returns the last failure when every transport fails', async () => {
     reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => (
       { decision: 'ERROR', error: `boom-${options.transportName}` }
