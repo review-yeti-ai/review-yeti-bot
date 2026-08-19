@@ -19,6 +19,11 @@ describe('bounded evidence registry budget', () => {
     // often needs to read in full to resolve what an assertion pins.
     expect(resolved.maxResultBytes).toBeGreaterThan(8_000);
     expect(resolved.maxScanFiles).toBeGreaterThan(20);
+    // Exact value, not just "> 20": #101 raised code_search's own default ceiling from
+    // 20 to 60, but the registry construction site here used to pin a literal 20 that
+    // silently overrode it in production (see the comment above
+    // resolveEvidenceRegistryConfig). This is the regression guard for that gap.
+    expect(resolved.maxScanFiles).toBe(60);
   });
 
   it('reads the trusted base-ref config so the budget is tunable without a bot release', () => {
@@ -62,6 +67,27 @@ describe('bounded evidence registry budget', () => {
     }
     expect(exhausted).toBeGreaterThan(0);
     expect(exhausted).toBeLessThanOrEqual(HARD_INVESTIGATION_LIMITS.maxCalls);
+  });
+});
+
+describe('zoekt review-time search pilot toggle (ADR 0329)', () => {
+  it('defaults to enabled, independent of the rest of the evidence budget', () => {
+    expect(resolveEvidenceRegistryConfig({}, {}).zoekt).toEqual({ enabled: true });
+  });
+
+  it('can be disabled from the trusted base-ref config without touching maxCalls/maxScanFiles', () => {
+    const resolved = resolveEvidenceRegistryConfig(config({ zoekt: { enabled: false } }), {});
+    expect(resolved.zoekt).toEqual({ enabled: false });
+    expect(resolved.maxScanFiles).toBe(60);
+  });
+
+  it('accepts the snake_case zoekt_enabled alias', () => {
+    expect(resolveEvidenceRegistryConfig(config({ zoekt_enabled: false }), {}).zoekt).toEqual({ enabled: false });
+  });
+
+  it('lets the action input win over the repository config, matching every other limit', () => {
+    expect(resolveEvidenceRegistryConfig(config({ zoekt: { enabled: true } }), { EVIDENCE_ZOEKT_ENABLED: 'false' }).zoekt).toEqual({ enabled: false });
+    expect(resolveEvidenceRegistryConfig(config({ zoekt: { enabled: false } }), { EVIDENCE_ZOEKT_ENABLED: 'true' }).zoekt).toEqual({ enabled: true });
   });
 });
 
