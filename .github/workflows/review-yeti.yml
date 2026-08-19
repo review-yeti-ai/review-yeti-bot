@@ -61,24 +61,29 @@ jobs:
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
           node scripts/review-yeti-smoke.mjs
 
-      - name: Fetch Review Yeti action
+      - name: Resolve Review Yeti release channel
+        id: resolved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
+          REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
+        run: .exampleorg-review-actions/scripts/resolve-release-channel.sh
+
+      - name: Fetch Review Yeti action at resolved commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          repository: review-yeti-ai/review-yeti-bot
-          ref: ${{ steps.policy.outputs.action_ref }}
+          repository: ${{ steps.policy.outputs.repository }}
+          ref: ${{ steps.resolved.outputs.sha }}
           path: .review-yeti-bot
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Resolve Review Yeti action sha
-        id: resolved
-        run: echo "sha=$(git -C .review-yeti-bot rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Validate release provenance
+      - name: Validate Review Yeti release provenance
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
+          REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
           RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
-          ACTION_REF_IS_OVERRIDE: ${{ steps.policy.outputs.action_ref_is_override }}
         run: .exampleorg-review-actions/scripts/validate-release-provenance.sh
 
       - name: Run Review Yeti review panel

@@ -3,18 +3,22 @@ import { appendFileSync, readFileSync } from 'node:fs';
 const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
 const review = policy.review_yeti;
 const budget = review.budget;
-const channelPattern = /^v[0-9]+(\.[0-9]+){0,2}$/;
-const shaPattern = /^[0-9a-f]{40}$/;
 
 if (policy.schema !== 'exampleorg.review-policy.v1') throw new Error('unsupported policy schema');
-if (!channelPattern.test(review.action_channel)) throw new Error('review_yeti.action_channel must match ^v[0-9]+(\\.[0-9]+){0,2}$');
-if (review.action_sha_override !== '' && !shaPattern.test(review.action_sha_override)) {
-  throw new Error('review_yeti.action_sha_override must be empty or an immutable commit SHA');
-}
-const actionRefIsOverride = review.action_sha_override !== '';
-const actionRef = actionRefIsOverride ? review.action_sha_override : review.action_channel;
 if (!budget || typeof budget !== 'object' || Array.isArray(budget)) {
   throw new Error('review_yeti.budget must be an object');
+}
+if (typeof review.action_channel_pattern !== 'string' || review.action_channel_pattern.length === 0) {
+  throw new Error('review_yeti.action_channel_pattern is required');
+}
+let channelPattern;
+try {
+  channelPattern = new RegExp(review.action_channel_pattern);
+} catch {
+  throw new Error('review_yeti.action_channel_pattern must be a valid regular expression');
+}
+if (!channelPattern.test(review.action_channel || '')) {
+  throw new Error('review_yeti.action_channel is not a permitted release channel');
 }
 for (const key of ['lane_deadline_ms', 'lane_call_budget', 'max_investigation_turns']) {
   if (!/^[1-9][0-9]*$/.test(String(budget[key] ?? ''))) {
@@ -39,8 +43,8 @@ for (const transport of review.transports) {
 }
 
 const outputs = {
-  action_ref: actionRef,
-  action_ref_is_override: String(actionRefIsOverride),
+  repository: review.repository,
+  action_ref: review.action_channel,
   personas: review.personas,
   transports: JSON.stringify(review.transports),
   openrouter_stream: review.openrouter_stream,

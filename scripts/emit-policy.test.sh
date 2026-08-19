@@ -9,7 +9,7 @@ tmp_dir="$(mktemp -d)"
 trap 'find "$tmp_dir" -type f -delete; find "$tmp_dir" -depth -type d -empty -delete' EXIT
 
 # Channel-distribution contract: the policy selects the bot by the platform
-# release channel (with an empty break-glass override), never a raw SHA pin.
+# release channel, never a raw SHA pin or per-repository override.
 expected_action_channel='v1'
 actual_action_channel="$(python3 - "$repo_root/policy/review-yeti.json" <<'PY'
 import json
@@ -18,7 +18,7 @@ import sys
 with open(sys.argv[1]) as handle:
     review = json.load(handle)["review_yeti"]
     assert "action_sha" not in review, "raw action_sha pin must not resurface"
-    assert review.get("action_sha_override", None) == "", "override must default to empty"
+    assert "action_sha_override" not in review, "per-repository SHA overrides must not resurface"
     print(review["action_channel"])
 PY
 )"
@@ -43,6 +43,8 @@ if not fallback:
     raise SystemExit('policy must define the openrouter-fallback transport')
 if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
+if fallback.get('allow_banned_providers') != ['fireworks']:
+    raise SystemExit('openrouter-fallback must explicitly allow only the approved Fireworks exception')
 if review.get('openrouter_stream') != 'true':
     raise SystemExit('global openrouter_stream must be true so configured transports use SSE TTFT')
 for transport in review.get('transports', []):
@@ -85,6 +87,20 @@ else:
         budget.pop(key, None)
     else:
         budget[key] = value
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+write_channel_policy() {
+  local value="$1"
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" "$value" <<'PY'
+import json
+import sys
+
+source, destination, value = sys.argv[1:]
+policy = json.load(open(source))
+policy['review_yeti']['action_channel'] = value
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
@@ -138,6 +154,10 @@ run_transport_relation_case() {
 }
 
 run_case valid lane_call_budget 24 0
+grep -q '^action_ref<<' "$tmp_dir/valid.output"
+grep -qx 'v1' "$tmp_dir/valid.output"
+grep -q '^repository<<' "$tmp_dir/valid.output"
+grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
 grep -q '^lane_call_budget<<' "$tmp_dir/valid.output"
 grep -qx '24' "$tmp_dir/valid.output"
 
@@ -180,3 +200,34 @@ run_transport_relation_case
 
 echo "emit-policy lane_call_budget contract passed"
 echo "emit-policy bounded lane contract passed"
+
+write_channel_policy main
+set +e
+(cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/invalid-channel.output" node emit-policy.mjs) >"$tmp_dir/invalid-channel.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+grep -q 'review_yeti.action_channel is not a permitted release channel' "$tmp_dir/invalid-channel.log"
+echo "[invalid-channel] passed"
+
+write_channel_policy v1.2.3
+set +e
+(cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/valid-multi-segment.output" node emit-policy.mjs) >"$tmp_dir/valid-multi-segment.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]]
+grep -qx 'v1.2.3' "$tmp_dir/valid-multi-segment.output"
+echo "[valid-multi-segment] passed"
+
+for value in v v1.2.3.4; do
+  write_channel_policy "$value"
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/invalid-channel-${value}.output" node emit-policy.mjs) >"$tmp_dir/invalid-channel-${value}.log" 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]]
+  grep -q 'review_yeti.action_channel is not a permitted release channel' "$tmp_dir/invalid-channel-${value}.log"
+done
+echo "[channel-edge-cases] passed"
+
+echo "emit-policy action channel and lane_call_budget contract passed"

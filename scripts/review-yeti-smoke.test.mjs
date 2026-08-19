@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
+  EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS,
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
@@ -22,6 +23,7 @@ function policyFixture() {
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
           model: 'openrouter-model',
           compat: 'openrouter',
+          allow_banned_providers: EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
         },
       ],
@@ -47,6 +49,7 @@ test('the committed OpenRouter fallback is restricted to Fireworks', () => {
   assert.equal(openrouter.provider_routing.ignore, undefined);
   assert.equal(openrouter.provider_routing.allow_fallbacks, false);
   assert.deepEqual(openrouter.provider_routing.only, ['fireworks']);
+  assert.deepEqual(openrouter.allow_banned_providers, EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS);
 });
 
 test('the smoke suite probes every configured transport without logging credentials', async () => {

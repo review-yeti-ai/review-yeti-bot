@@ -38,6 +38,12 @@ check. Consumer repositories never update a SHA, branch, tag, or claim when poli
 change. Promotion is fast-forward-only, so the previous `v1` tip remains in branch history as
 the rollback record; revert the corresponding change on `main` to roll back automatically.
 
+The central policy selects the Review Yeti action by the single `v1` release channel. The reusable
+workflow resolves that channel to the exact commit for each run, checks out that commit (never the
+mutable ref), and verifies that it is reachable from the bot repository's `main` and targeted by
+the exact `v1` release tag before executing it. This keeps the action self-updating at the release
+channel without per-repository SHA edits or mutable, unverified code execution.
+
 ## No consumer-owned Review Yeti configuration
 
 The policy is `policy/review-yeti.json` in this repository. Consumer repositories must not
@@ -121,4 +127,4 @@ rejection are checked before a release can advance.
 
 ## Distribution
 
-The Review Yeti bot is selected by the platform release channel (`action_channel: v1` in `policy/review-yeti.json`), validated at run time by the release-provenance gate (release-tagged + reachable from bot main). Emergency freezes use `action_sha_override` (main-reachability still enforced). See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.
+The Review Yeti bot is selected by the platform release channel (`action_channel: v1` in `policy/review-yeti.json`). The workflow resolves that channel to an exact commit, checks the tag target and main reachability, then binds the action's `action-sha` input to the resolved commit. There is no per-repository SHA override or emergency bypass; changes advance through the central channel's reviewed promotion. See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.

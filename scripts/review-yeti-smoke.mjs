@@ -15,6 +15,7 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   quantizations: ['bf16', 'fp16'],
   data_collection: 'deny',
 });
+export const EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS = Object.freeze(['fireworks']);
 
 export function validatePolicy(policy) {
   if (policy?.schema !== 'exampleorg.review-policy.v1') {
@@ -40,6 +41,9 @@ export function validatePolicy(policy) {
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
     throw new Error('OpenRouter routing must be restricted to Fireworks with provider fallback disabled');
+  }
+  if (JSON.stringify(openrouter?.allow_banned_providers) !== JSON.stringify(EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS)) {
+    throw new Error('OpenRouter must explicitly permit only the approved Fireworks provider exception');
   }
 
   return transports;
