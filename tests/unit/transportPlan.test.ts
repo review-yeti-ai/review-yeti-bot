@@ -101,7 +101,7 @@ describe('resolveTransportPlan', () => {
 
   it('rejects OpenRouter-only keys on an openai-compat transport', () => {
     expect(() => resolveTransportPlan(
-      { parsed: { github_action: { transports: [{ ...fireworksEntry, provider_routing: { only: ['morph'] } }] } } },
+      { parsed: { github_action: { transports: [{ ...fireworksEntry, provider_routing: { only: ['examplecloud'] } }] } } },
       bothKeys,
     )).toThrow(/OpenRouter-only/);
   });

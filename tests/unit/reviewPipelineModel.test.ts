@@ -328,7 +328,7 @@ describe('reviewWithModel', () => {
                   value: Buffer.from(`data: ${JSON.stringify({
                     id: 'gen-recovery',
                     model: 'test/model',
-                    provider: 'Morph',
+                    provider: 'ExampleCloud',
                     choices: [{ delta: { content: '{"findings":[]}' } }],
                   })}\n\ndata: [DONE]\n\n`),
                 };
@@ -353,7 +353,7 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.stream).toBe(false);
     expect(calls[1].body.stream).toBe(true);
     expect(result.decision).toBe('APPROVE');
-    expect(result.provider).toBe('Morph');
+    expect(result.provider).toBe('ExampleCloud');
   });
 
   // REL-271 (D3): a delay that would have succeeded under the removed x2 escalation (15ms, twice
@@ -385,7 +385,7 @@ describe('reviewWithModel', () => {
                   value: Buffer.from(`data: ${JSON.stringify({
                     id: 'gen-recovery',
                     model: 'test/model',
-                    provider: 'Morph',
+                    provider: 'ExampleCloud',
                     choices: [{ delta: { content: '{"findings":[]}' } }],
                   })}\n\ndata: [DONE]\n\n`),
                 };
@@ -419,7 +419,7 @@ describe('reviewWithModel', () => {
       return {
         ok: true,
         status: 200,
-        headers: { get: (name: string) => name.toLowerCase() === 'x-openrouter-provider' ? (firstAttempt ? 'Morph' : 'OpenAI') : null },
+        headers: { get: (name: string) => name.toLowerCase() === 'x-openrouter-provider' ? (firstAttempt ? 'ExampleCloud' : 'OpenAI') : null },
         json: async () => {
           if (firstAttempt) await new Promise((resolve) => setTimeout(resolve, 80));
           return { choices: [{ message: { content: validFindings } }] };
@@ -434,7 +434,7 @@ describe('reviewWithModel', () => {
       model: 'test/model',
       fetchImpl,
       // REL-271 (D3/D4): recovery here now requires 2 real attempts (no bonus attempt after
-      // attribution) -- attempt 1 times out during body-read and bans "morph", attempt 2 forces
+      // attribution) -- attempt 1 times out during body-read and bans "examplecloud", attempt 2 forces
       // SSE for attribution and succeeds with "OpenAI".
       maxAttempts: 2,
       timeoutMs: 20,
@@ -442,7 +442,7 @@ describe('reviewWithModel', () => {
 
     expect(result.decision).toBe('FINDINGS');
     expect(calls).toHaveLength(3);
-    expect(calls[1].body.provider.ignore).toContain('morph');
+    expect(calls[1].body.provider.ignore).toContain('examplecloud');
     expect(result.provider).toBe('OpenAI');
     expect(Date.now() - startedAt).toBeLessThan(3_000);
   });
@@ -738,7 +738,7 @@ describe('reviewWithModel', () => {
       const bans = new Set<string>();
       // None of these overlap HARD_BANNED_PROVIDER_SLUGS -- this test is purely about
       // addRunScopedProviderBan's own bound, not the separately-enforced permanent ban list.
-      const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'cerebras', 'morph', 'groq'];
+      const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'cerebras', 'examplecloud', 'groq'];
       expect(providers.length).toBeGreaterThan(RUN_SCOPED_PROVIDER_BAN_MAX);
 
       for (const provider of providers) addRunScopedProviderBan(bans, provider);
@@ -755,7 +755,7 @@ describe('reviewWithModel', () => {
 
     it('a run-scoped ban at the cap still leaves the request ignore list short of every observed provider', async () => {
       const bans = new Set<string>();
-      const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'cerebras', 'morph'];
+      const providers = ['ionstream', 'akashml', 'digitalocean', 'phala', 'cerebras', 'examplecloud'];
       for (const provider of providers) addRunScopedProviderBan(bans, provider);
       expect(bans.size).toBe(RUN_SCOPED_PROVIDER_BAN_MAX);
 
@@ -787,7 +787,7 @@ describe('reviewWithModel', () => {
       expect(ignore).not.toContain('akashml');
       // The most recent bans (within the cap) still take effect.
       expect(ignore).toContain('cerebras');
-      expect(ignore).toContain('morph');
+      expect(ignore).toContain('examplecloud');
       // The combined ignore list (hard-banned + run-scoped) never includes every provider this
       // run has ever observed -- it is strictly bounded, not a monotonically growing block-list.
       expect(ignore.length).toBe(HARD_BANNED_PROVIDER_SLUGS.length + RUN_SCOPED_PROVIDER_BAN_MAX);
@@ -866,7 +866,7 @@ describe('reviewWithModel', () => {
         dataCollection: undefined,
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: {
-        order: ['morph', 'akash'],
+        order: ['examplecloud', 'akash'],
           allow_fallbacks: false,
           require_parameters: true,
           ignore: HARD_BANNED_PROVIDER_SLUGS,
@@ -877,7 +877,7 @@ describe('reviewWithModel', () => {
     });
 
     expect(calls[0].body.provider).toEqual({
-      order: ['morph', 'akash'],
+      order: ['examplecloud', 'akash'],
       allow_fallbacks: false,
       require_parameters: true,
       ignore: HARD_BANNED_PROVIDER_SLUGS,
@@ -886,7 +886,7 @@ describe('reviewWithModel', () => {
 
   it('uses the strict investigation schema and required parameters for raw investigation turns', async () => {
     const { impl, calls } = stubFetch(validFindings, {
-      payload: { provider: 'morph', choices: [{ message: { content: validFindings } }] },
+      payload: { provider: 'examplecloud', choices: [{ message: { content: validFindings } }] },
     });
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
@@ -898,7 +898,7 @@ describe('reviewWithModel', () => {
         dataCollection: undefined,
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         structuredOutput: 'strict',
-        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
         stream: false,
       },
@@ -913,7 +913,7 @@ describe('reviewWithModel', () => {
 
   it('uses the strict investigation schema on both initial and evidence-follow-up raw turns', async () => {
     const { impl, calls } = stubFetch(validFindings, {
-      payload: { provider: 'morph', choices: [{ message: { content: validFindings } }] },
+      payload: { provider: 'examplecloud', choices: [{ message: { content: validFindings } }] },
     });
     const options = {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
@@ -924,7 +924,7 @@ describe('reviewWithModel', () => {
         dataCollection: undefined,
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         structuredOutput: 'strict',
-        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
         stream: false,
       },
@@ -959,7 +959,7 @@ describe('reviewWithModel', () => {
         dataCollection: undefined,
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         structuredOutput: 'strict',
-        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
         stream: false,
       },
@@ -980,7 +980,7 @@ describe('reviewWithModel', () => {
         dataCollection: undefined,
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         structuredOutput: 'strict',
-        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
         stream: false,
       },
@@ -1019,22 +1019,22 @@ describe('reviewWithModel', () => {
     const { impl, calls } = stubFetch(validFindings);
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
-      providerIgnore: ['Morph', 'https://not-a-provider.example/ignored'],
+      providerIgnore: ['ExampleCloud', 'https://not-a-provider.example/ignored'],
       openRouterPolicy: {
         allowedModels: [],
         costQualityTradeoff: undefined,
         dataCollection: undefined,
         ignoredProviders: ['deepinfra'],
-        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: ['deepinfra'] },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: ['deepinfra'] },
         timeoutMs: 30_000,
         stream: false,
       },
     });
 
     expect(calls[0].body.provider).toEqual({
-      only: ['morph'],
+      only: ['examplecloud'],
       allow_fallbacks: false,
-      ignore: ['deepinfra', 'morph'],
+      ignore: ['deepinfra', 'examplecloud'],
     });
   });
 
@@ -1077,7 +1077,7 @@ describe('reviewWithModel', () => {
     expect(result.error).toBeUndefined();
   });
 
-  it('does not issue a request when fixed Luna is incompatible with the Morph-only policy', async () => {
+  it('does not issue a request when fixed Luna is incompatible with the ExampleCloud-only policy', async () => {
     const { impl, calls } = stubFetch(validFindings);
     const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '10476' }, null, {
       apiKey: 'k',
@@ -1090,7 +1090,7 @@ describe('reviewWithModel', () => {
         costQualityTradeoff: undefined,
         dataCollection: undefined,
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
-        providerRouting: { only: ['morph'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS },
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
         stream: false,
       },
@@ -1098,7 +1098,7 @@ describe('reviewWithModel', () => {
 
     expect(calls).toHaveLength(0);
     expect(result.decision).toBe('ERROR');
-    expect(result.error).toMatch(/fixed-model compatibility check failed.*openai\/gpt-5\.6-luna.*openai or azure.*only permits only \[morph\]/i);
+    expect(result.error).toMatch(/fixed-model compatibility check failed.*openai\/gpt-5\.6-luna.*openai or azure.*only permits only \[examplecloud\]/i);
   });
 
   it('records the provider-selected model and provider alongside nested usage metadata', async () => {
