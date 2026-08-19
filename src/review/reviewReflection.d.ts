@@ -95,3 +95,28 @@ export function runFindingReflection(input: RunFindingReflectionInput): Promise<
   verification: ReturnType<typeof import('./findingVerifier').verifyFindings>;
   receipt: FindingReflectionReceipt;
 }>;
+
+export interface PersonaFindingLocation {
+  laneIndex: number;
+  findingIndex: number;
+}
+
+export interface PersonaLaneWithFindings {
+  findings?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export function flattenPersonaFindings(personaResults: ReadonlyArray<PersonaLaneWithFindings>): {
+  findings: Array<Record<string, unknown>>;
+  locations: PersonaFindingLocation[];
+};
+
+export function applyReflectionOutcomes(
+  personaResults: ReadonlyArray<PersonaLaneWithFindings>,
+  locations: ReadonlyArray<PersonaFindingLocation>,
+  reflectionResult: Awaited<ReturnType<typeof runFindingReflection>>,
+): {
+  personaResults: PersonaLaneWithFindings[];
+  dropped: number;
+  downgraded: number;
+};
