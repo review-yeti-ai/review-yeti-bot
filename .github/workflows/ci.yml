@@ -1,0 +1,23 @@
+name: Validate central review contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Validate policy and scripts
+        run: |
+          node --check scripts/emit-policy.mjs
+          GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
+          bash -n scripts/validate-review-request.sh
+          bash -n scripts/check-review-verdict.sh
+          test -s policy/review-yeti.json
+          grep -q 'BOOTSTRAP_RELEASE_SHA' .github/workflows/self-review.yml

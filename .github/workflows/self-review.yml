@@ -1,0 +1,25 @@
+name: Review Yeti
+
+# This workflow is intentionally pinned to the last released SHA. A proposed change to the
+# central workflow cannot replace the reviewer that evaluates the change. Promote a new release
+# only after the previous release reviews the PR and the canary checks pass.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@BOOTSTRAP_RELEASE_SHA
+    with:
+      repository: ${{ github.repository }}
+      pr-number: ${{ github.event.pull_request.number }}
+      base-sha: ${{ github.event.pull_request.base.sha }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit

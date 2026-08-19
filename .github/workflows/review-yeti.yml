@@ -1,0 +1,109 @@
+name: exampleorg Review Yeti
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: Repository that owns the pull request, as owner/name.
+        required: true
+        type: string
+      pr-number:
+        description: Pull request number to review.
+        required: true
+        type: number
+      base-sha:
+        description: Immutable pull request base commit SHA.
+        required: true
+        type: string
+      head-sha:
+        description: Immutable pull request head commit SHA.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: exampleorg-review-yeti-${{ inputs.repository }}-${{ inputs.pr-number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review Yeti
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    timeout-minutes: 15
+    env:
+      REVIEW_REPOSITORY: ${{ inputs.repository }}
+      REVIEW_PR_NUMBER: ${{ inputs.pr-number }}
+      EXPECTED_BASE_SHA: ${{ inputs.base-sha }}
+      EXPECTED_HEAD_SHA: ${{ inputs.head-sha }}
+    steps:
+      - name: Checkout central workflow tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: exampleorg/example-review-actions
+          ref: ${{ github.workflow_sha }}
+          path: .exampleorg-review-actions
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate immutable review request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .exampleorg-review-actions/scripts/validate-review-request.sh
+
+      - name: Load central Review Yeti policy
+        id: policy
+        working-directory: .exampleorg-review-actions
+        run: node scripts/emit-policy.mjs
+
+      - name: Fetch pinned Review Yeti action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: review-yeti-ai/review-yeti-bot
+          ref: ${{ steps.policy.outputs.action_sha }}
+          path: .review-yeti-bot
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Run Review Yeti review panel
+        id: review
+        uses: ./.review-yeti-bot
+        env:
+          FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ inputs.repository }}
+          pr-number: ${{ inputs.pr-number }}
+          llm-api-key: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          llm-base-url: https://api.fireworks.ai/inference/v1
+          action-sha: ${{ steps.policy.outputs.action_sha }}
+          model: accounts/fireworks/models/deepseek-v4-flash-0731
+          transports: ${{ steps.policy.outputs.transports }}
+          openrouter-stream: ${{ steps.policy.outputs.openrouter_stream }}
+          openrouter-timeout-ms: ${{ steps.policy.outputs.openrouter_timeout_ms }}
+          openrouter-ttft-ms: ${{ steps.policy.outputs.openrouter_ttft_ms }}
+          openrouter-max-attempts: ${{ steps.policy.outputs.openrouter_max_attempts }}
+          lane-deadline-ms: ${{ steps.policy.outputs.lane_deadline_ms }}
+          max-investigation-turns: ${{ steps.policy.outputs.max_investigation_turns }}
+          max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
+          max-file-diff-chars: ${{ steps.policy.outputs.max_file_diff_chars }}
+          max-passes: ${{ steps.policy.outputs.max_passes }}
+          personas: ${{ steps.policy.outputs.personas }}
+          exclude: ${{ steps.policy.outputs.exclude }}
+
+      - name: Enforce exact-head Review Yeti verdict
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
+          GATE_DECISION: ${{ steps.review.outputs.gate-decision }}
+          MERGE_ELIGIBLE: ${{ steps.review.outputs.merge-eligible }}
+          FILES_OMITTED: ${{ steps.review.outputs.files-omitted }}
+          DISPATCH_REFLECTION_STATUS: ${{ steps.review.outputs.review-dispatch-reflection-status }}
+          PROVIDER_RECEIPT_DIGEST: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
+        run: .exampleorg-review-actions/scripts/check-review-verdict.sh
