@@ -304,18 +304,35 @@ describe('reviewWithTransports', () => {
     expect(attempts).toEqual(['fireworks']);
   });
 
-  it('returns the last transport\'s non-JSON content unchanged so upstream classifies the lane failure', async () => {
+  it('retries the last transport once when a raw-turn response violates the JSON contract', async () => {
     const attempts: string[] = [];
     reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
       attempts.push(options.transportName);
+      if (attempts.length === 3) {
+        return { ok: true, content: '{"review_status":"COMPLETE","risk_plan":[],"evidence_requests":[],"risk_dispositions":[],"findings":[]}' };
+      }
       return { ok: true, content: 'still not JSON' };
     };
     const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
       rawTurn: true,
       transportPlan: plannedTransports(),
     });
-    expect(attempts).toEqual(['fireworks', 'openrouter-fallback']);
-    expect(result).toMatchObject({ ok: true, content: 'still not JSON' });
+    expect(attempts).toEqual(['fireworks', 'openrouter-fallback', 'openrouter-fallback']);
+    expect(result.content).toContain('COMPLETE');
+  });
+
+  it('returns the last transport response after the bounded contract-repair retry is exhausted', async () => {
+    const attempts: string[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      return { ok: true, content: `invalid response ${attempts.length}` };
+    };
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      rawTurn: true,
+      transportPlan: plannedTransports(),
+    });
+    expect(attempts).toEqual(['fireworks', 'openrouter-fallback', 'openrouter-fallback']);
+    expect(result).toMatchObject({ ok: true, content: 'invalid response 3' });
   });
 
   it('fails over on a caller-supplied contract validator, not just JSON validity', async () => {
@@ -337,9 +354,7 @@ describe('reviewWithTransports', () => {
       },
     });
     expect(attempts).toEqual(['fireworks', 'openrouter-fallback']);
-    // The final transport's content is deliberately NOT validated in the wrapper —
-    // upstream owns classification there — so the validator ran exactly once.
-    expect(seen).toEqual(['{"unexpected":"shape"}']);
+    expect(seen).toEqual(['{"unexpected":"shape"}', '{"review_status":"COMPLETE"}']);
     expect(result.content).toContain('COMPLETE');
   });
 
