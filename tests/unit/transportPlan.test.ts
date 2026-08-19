@@ -171,23 +171,44 @@ describe('reviewWithTransports', () => {
     expect(result).toMatchObject({ ok: true, provider: 'coreweave' });
   });
 
-  it('disables concurrent streaming for a persona fan-out unless explicitly opted in', async () => {
+  it('serializes streaming transport plans for a persona fan-out while keeping SSE enabled', async () => {
     const attempts: any[] = [];
+    const streamGate = pipeline.createStreamingLaneGate(1);
     reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
       attempts.push(options);
+      expect(streamGate.active).toBe(1);
       return { ok: true, content: '{"findings":[]}' };
     };
 
     await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
       transportPlan: plannedTransports(),
-      parallelLaneCount: 5,
+      streamGate,
     });
 
     expect(attempts[0]).toMatchObject({
-      parallelLaneCount: 5,
-      preferStream: false,
-      disableStream: true,
+      preferStream: true,
     });
+    expect(streamGate.active).toBe(0);
+  });
+
+  it('never has two streamed persona turns active at once', async () => {
+    const streamGate = pipeline.createStreamingLaneGate(1);
+    let active = 0;
+    let maxActive = 0;
+    reviewWithTransports.reviewWithModelImpl = async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { ok: true, content: '{"findings":[]}' };
+    };
+
+    await Promise.all([
+      reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, { transportPlan: plannedTransports(), streamGate }),
+      reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, { transportPlan: plannedTransports(), streamGate }),
+    ]);
+
+    expect(maxActive).toBe(1);
   });
 
   it('returns the last failure when every transport fails', async () => {

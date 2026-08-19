@@ -3583,13 +3583,48 @@ function createLaneCallBudget(limit) {
     },
   };
 }
+
+// Keep SSE enabled for every persona while preventing a gateway from having to open several
+// concurrent generations against the same model. A lane waits for the single streaming slot and
+// releases it after the full transport plan/turn completes. The heartbeat remains active while a
+// lane is queued, so operators can distinguish queueing from a provider timeout.
+function createStreamingLaneGate(limit = 1) {
+  const capacity = Math.max(1, Math.trunc(Number(limit)) || 1);
+  let active = 0;
+  const waiters = [];
+  const drain = () => {
+    while (active < capacity && waiters.length > 0) {
+      const waiter = waiters.shift();
+      if (waiter.signal?.aborted) {
+        waiter.resolve(() => {});
+        continue;
+      }
+      active += 1;
+      let released = false;
+      waiter.resolve(() => {
+        if (released) return;
+        released = true;
+        active -= 1;
+        drain();
+      });
+    }
+  };
+  return {
+    get active() { return active; },
+    get queued() { return waiters.length; },
+    acquire(signal) {
+      if (signal?.aborted) return Promise.resolve(() => {});
+      return new Promise((resolve) => {
+        waiters.push({ resolve, signal });
+        drain();
+      });
+    },
+  };
+}
+
 async function reviewWithTransports(persona, diffFiles, prContext, sessionContext, options = {}) {
   const plan = Array.isArray(options.transportPlan) ? options.transportPlan.filter(Boolean) : [];
   if (plan.length === 0) return reviewWithModel(persona, diffFiles, prContext, sessionContext, options);
-  // Five persona lanes are dispatched concurrently. Streaming every lane at once has caused
-  // upstream gateways to reset otherwise healthy responses; keep the fan-out observable via the
-  // lane heartbeat, but use bounded JSON responses unless the caller explicitly opts in.
-  const disableParallelStreaming = Number(options.parallelLaneCount) > 1 && options.allowParallelStreaming !== true;
   let lastResult = null;
   for (let transportIndex = 0; transportIndex < plan.length; transportIndex++) {
     const transport = plan[transportIndex];
@@ -3602,15 +3637,22 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       openRouterPolicy: transport.openRouterPolicy,
       timeoutMs: transport.timeoutMs,
       connectTimeoutMs: transport.connectTimeoutMs,
-      ...(transport.stream === true ? { preferStream: !disableParallelStreaming } : {}),
-      ...(disableParallelStreaming ? { disableStream: true } : {}),
+      ...(transport.stream === true ? { preferStream: true } : {}),
       reasoningEffort: transport.reasoningEffort,
       perfMetricsInResponse: transport.perfMetricsInResponse,
       providerTimeoutQuarantine: transport.quarantineOnTimeout,
       gatewayCompat: transport.compat,
       transportName: transport.name,
     };
-    const result = await reviewWithTransports.reviewWithModelImpl(persona, diffFiles, prContext, sessionContext, transportOptions);
+    const releaseStream = transport.stream === true && options.streamGate
+      ? await options.streamGate.acquire(options.signal)
+      : null;
+    let result;
+    try {
+      result = await reviewWithTransports.reviewWithModelImpl(persona, diffFiles, prContext, sessionContext, transportOptions);
+    } finally {
+      releaseStream?.();
+    }
     let failed = result?.ok === false || result?.decision === 'ERROR';
     let failureLabel = String(result?.error || 'provider_failure');
     // A raw investigation turn whose content is not JSON dies upstream as an
@@ -8613,12 +8655,15 @@ async function main(options = {}) {
         personaIds: enabledPersonas.map((persona) => persona.id),
         model: modelConfig.model,
         baseUrl: modelConfig.baseUrl,
-        stream: modelConfig.openRouterPolicy?.stream === true && enabledPersonas.length <= 1,
+        stream: modelConfig.openRouterPolicy?.stream === true,
         laneDeadlineMs,
       });
+      const streamGate = modelConfig.openRouterPolicy?.stream === true && enabledPersonas.length > 1
+        ? createStreamingLaneGate(1)
+        : null;
       console.log(
         `[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}`
-        + ` transport=openrouter stream=${modelConfig.openRouterPolicy?.stream === true && enabledPersonas.length <= 1 ? 'enabled' : 'disabled'}`
+        + ` transport=openrouter stream=${modelConfig.openRouterPolicy?.stream === true ? 'enabled' : 'disabled'}`
         + ` lane_deadline_ms=${laneDeadlineMs}`,
       );
       if (boundedMode) {
@@ -8732,7 +8777,7 @@ async function main(options = {}) {
           fetchImplementation,
           modelClient: options.modelClient,
           reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
-          parallelLaneCount: enabledPersonas.length,
+          streamGate,
           signal: cancellation.signal,
           runTimedOutProviders,
           onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(
@@ -9009,7 +9054,7 @@ async function main(options = {}) {
                 maxChars: 12_000,
                 excludedPaths: [...skipped.map((entry) => entry.path), ...oversized.map((entry) => entry.path)],
               },
-              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, parallelLaneCount: enabledPersonas.length, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`) },
+              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, streamGate, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`) },
             }));
           }
           return aggregatePersonaRuns(persona, runs, modelConfig.model);
@@ -9553,6 +9598,7 @@ module.exports = {
   reviewWithModel,
   reviewWithTransports,
   createLaneCallBudget,
+  createStreamingLaneGate,
   addRunScopedProviderBan,
   RUN_SCOPED_PROVIDER_BAN_MAX,
   runPersonaInvestigation,
