@@ -118,9 +118,9 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['action-sha'].description).toMatch(/40-hex commit SHA/i);
   });
 
-  it('does not force a single provider cohort while retaining fail-closed fallback behavior', () => {
+  it('defaults to full-quantization performance routing without forcing a provider cohort', () => {
     expect(action.inputs['openrouter-provider-routing'].default).toBe(
-      '{"allow_fallbacks":false}',
+      '{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp8","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}',
     );
   });
 

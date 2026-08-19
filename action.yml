@@ -342,10 +342,12 @@ inputs:
     default: ''
   openrouter-provider-routing:
     description: >-
-      JSON object forwarded as OpenRouter's provider routing policy. The default retains
-      fail-closed fallback behavior without forcing a single provider; the trusted base YAML
-      or account-level OpenRouter policy determines eligible providers. Wafer and Novita are
-      hard-banned after repeated provider-error/timeout lanes. Supports the raw API
+      JSON object forwarded as OpenRouter's provider routing policy. The default allows
+      provider fallback without forcing a single provider, requires requested parameters,
+      limits endpoint quantization to FP8 or BF16, sorts by throughput, and prefers p90
+      throughput of at least 40 tokens per second plus p99 latency of at most three seconds.
+      Morph remains eligible when it meets those constraints. Wafer and Novita are hard-banned
+      after repeated provider-error/timeout lanes. Supports the raw API
       fields order, allow_fallbacks, require_parameters, data_collection, zdr,
       enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,
       preferred_max_latency, and max_price. The built-in degraded-provider blocklist remains
@@ -356,7 +358,7 @@ inputs:
       an explicit only list containing openai or azure. The action fails closed when only/order
       restrictions cannot serve the selected fixed model and never broadens the provider list.
     required: false
-    default: '{"allow_fallbacks":false}'
+    default: '{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp8","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}'
   dashboard-api-key:
     description: >-
       Optional Review Yeti dashboard ingestion key (ctd_live_...). When empty, the action does

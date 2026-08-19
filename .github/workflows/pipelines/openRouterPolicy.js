@@ -1,5 +1,14 @@
 'use strict';
 
+const DEFAULT_PROVIDER_ROUTING = Object.freeze({
+  allow_fallbacks: true,
+  require_parameters: true,
+  quantizations: Object.freeze(['fp8', 'bf16']),
+  sort: 'throughput',
+  preferred_min_throughput: Object.freeze({ p90: 40 }),
+  preferred_max_latency: Object.freeze({ p99: 3 }),
+});
+
 /**
  * openRouterPolicy.js
  * Resolves the enforced OpenRouter routing + client policy for a review request.
@@ -17,8 +26,8 @@
  *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models /
  *      structured_output);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
- *      deepinfra, the openrouter fallback route, and known degraded providers
- *      ignored, timeout_ms=30000, stream=false).
+ *      full-quantization throughput routing with fallbacks, known degraded
+ *      providers ignored, timeout_ms=30000, stream=false).
  *
  * @param {object|undefined} localConfig  Parsed local config, or an object whose
  *    `parsed` field holds the parse result (as produced by the pipeline).
@@ -209,8 +218,14 @@ function resolveOpenRouterPolicy(localConfig, env) {
   // the certified trusted YAML route and silently broaden provider selection to every endpoint.
   // Any non-empty object remains an explicit action override and is validated below.
   const emptyProviderRoutingInput = isEmptyProviderRoutingObject(envProviderRouting);
+  const configuredProviderRouting = emptyProviderRoutingInput
+    ? cfgProviderRouting
+    : (envProviderRouting || cfgProviderRouting);
+  const usesDefaultProviderRouting = isEmptyProviderRoutingValue(configuredProviderRouting);
   const providerRouting = resolveProviderRouting(
-    emptyProviderRoutingInput ? cfgProviderRouting : (envProviderRouting || cfgProviderRouting),
+    usesDefaultProviderRouting
+      ? DEFAULT_PROVIDER_ROUTING
+      : configuredProviderRouting,
     envIgnored.length > 0 ? envIgnored : cfgIgnored,
     [...allowBanned],
   );
@@ -221,7 +236,12 @@ function resolveOpenRouterPolicy(localConfig, env) {
   // Callers can still override via OPENROUTER_PROVIDER_ROUTING / YAML provider_routing.
   let finalRouting = providerRouting && typeof providerRouting === 'object' ? { ...providerRouting } : { ignore: ignoredProviders };
   if (finalRouting.preferred_max_latency === undefined) {
-    finalRouting.preferred_max_latency = ttftMs;
+    finalRouting.preferred_max_latency = ttftMs / 1000;
+  } else if (usesDefaultProviderRouting && Number.isFinite(finalRouting.preferred_max_latency?.p99)) {
+    finalRouting.preferred_max_latency = {
+      ...finalRouting.preferred_max_latency,
+      p99: Math.min(finalRouting.preferred_max_latency.p99, ttftMs / 1000),
+    };
   }
   if (!Array.isArray(finalRouting.ignore)) {
     finalRouting.ignore = ignoredProviders;
@@ -261,6 +281,12 @@ function isEmptyProviderRoutingObject(raw) {
   } catch {
     return false;
   }
+}
+
+function isEmptyProviderRoutingValue(raw) {
+  if (raw === undefined || raw === null || raw === '') return true;
+  if (typeof raw === 'string') return isEmptyProviderRoutingObject(raw);
+  return typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length === 0;
 }
 
 const PROVIDER_ROUTING_KEYS = new Set([
