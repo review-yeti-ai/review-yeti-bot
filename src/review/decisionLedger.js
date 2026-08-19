@@ -283,15 +283,23 @@ function entryMatchesFinding(entry, finding) {
   ));
 }
 
-function reconcileDecisionFindings(personaResults, ledger) {
+function reconcileDecisionFindings(personaResults, ledger, options = {}) {
   const results = Array.isArray(personaResults) ? personaResults : [];
   const entries = ledger?.available === false ? [] : (ledger?.entries || []);
+  // Threads a scoped rebuttal re-run withdrew this push: excluded from the
+  // carried-open verdict input, and a lane repeating the claim is suppressed
+  // (surfaced via suppressedRepeats, never silently dropped).
+  const withdrawnThreadIds = options.withdrawnThreadIds instanceof Set
+    ? options.withdrawnThreadIds
+    : new Set(Array.isArray(options.withdrawnThreadIds) ? options.withdrawnThreadIds : []);
   const actionableEntries = entries
     .filter((entry) => entry.state !== 'obsolete')
     .sort(compareEntries);
   const carriedOpen = [];
   for (const entry of actionableEntries.filter((candidate) => (
-    candidate.state === 'open' && (candidate.severity === 'P0' || candidate.severity === 'P1')
+    candidate.state === 'open'
+    && (candidate.severity === 'P0' || candidate.severity === 'P1')
+    && !withdrawnThreadIds.has(candidate.threadId)
   ))) {
     const finding = ledgerEntryAsFinding(entry);
     if (!carriedOpen.some((prior) => entryMatchesFinding(entry, prior))) carriedOpen.push(finding);
@@ -308,6 +316,11 @@ function reconcileDecisionFindings(personaResults, ledger) {
     const findings = [];
     for (const finding of lane.findings || []) {
       const matches = actionableEntries.filter((candidate) => entryMatchesFinding(candidate, finding));
+      const withdrawnMatch = matches.find((candidate) => withdrawnThreadIds.has(candidate.threadId));
+      if (withdrawnMatch) {
+        suppressedRepeats.set(withdrawnMatch.threadId, ledgerEntryAsFinding(withdrawnMatch));
+        continue;
+      }
       const openMatch = matches.find((candidate) => candidate.state === 'open');
       if (openMatch) {
         matchedOpenRepeats.set(openMatch.threadId, ledgerEntryAsFinding(openMatch));
