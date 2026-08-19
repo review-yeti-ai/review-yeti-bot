@@ -30,10 +30,12 @@ const {
   normalizePath: normalizeDependencyPath,
 } = require('../../../src/review/dependencyEvidence');
 const {
+  buildCalibrationNotes,
   buildDecisionLedger,
   parseBotFindingComment,
   parseDecisionCommand,
   reconcileDecisionFindings,
+  renderCalibrationBlock,
   renderDecisionLedger,
 } = require('../../../src/review/decisionLedger');
 
@@ -6957,6 +6959,10 @@ function readCollaboratorPermission(commandRunner, repo, login) {
 }
 
 function readDecisionLedgerSnapshot(commandRunner, prContext, changedPaths, options = {}) {
+  // A null/undefined changedPaths means "no path authority": entries are not
+  // classified obsolete by path (used for historical-PR calibration sweeps,
+  // where the current diff has no bearing on old threads).
+  const hasChangedPathAuthority = changedPaths instanceof Set || Array.isArray(changedPaths);
   const paths = changedPaths instanceof Set ? [...changedPaths] : (Array.isArray(changedPaths) ? changedPaths : []);
   const expectedPublisherLogin = options.expectedPublisherLogin
     || readAuthenticatedPublisherLogin(commandRunner);
@@ -6965,7 +6971,7 @@ function readDecisionLedgerSnapshot(commandRunner, prContext, changedPaths, opti
     prNumber: prContext?.prNumber,
     headSha: prContext?.headSha,
     expectedPublisherLogin,
-    changedPaths: paths,
+    changedPaths: hasChangedPathAuthority ? paths : undefined,
     threads: [],
     available: false,
     complete: false,
@@ -7003,12 +7009,53 @@ function readDecisionLedgerSnapshot(commandRunner, prContext, changedPaths, opti
     prNumber: prContext.prNumber,
     headSha: prContext.headSha,
     expectedPublisherLogin,
-    changedPaths: paths,
+    changedPaths: hasChangedPathAuthority ? paths : undefined,
     threads: snapshot.threads || [],
     permissionsByLogin,
     available: true,
     complete: snapshot.complete !== false,
   }, { maintainerCommands });
+}
+
+/**
+ * Bounded sweep of recently-updated pull requests for maintainer `ignore`
+ * decisions — the raw material for per-persona calibration notes. Advisory
+ * only: any failure returns what was gathered so far; it can never block a
+ * review. Cost is bounded by maxPrs GraphQL thread reads.
+ */
+function readRecentDecisionLedgers(commandRunner, prContext, options = {}) {
+  const maxPrs = Number.isInteger(options.maxPrs) ? options.maxPrs : 10;
+  if (maxPrs <= 0 || !prContext?.repo) return [];
+  const result = ghApi(commandRunner, [
+    'api', `repos/${prContext.repo}/pulls?state=all&sort=updated&direction=desc&per_page=${Math.min(30, maxPrs + 5)}`,
+  ]);
+  if (!result || result.status !== 0) return [];
+  let pulls;
+  try {
+    pulls = JSON.parse(result.stdout || '[]');
+  } catch (_) {
+    return [];
+  }
+  const ledgers = [];
+  for (const pull of Array.isArray(pulls) ? pulls : []) {
+    if (ledgers.length >= maxPrs) break;
+    const number = Number(pull?.number);
+    if (!Number.isInteger(number) || number === Number(prContext.prNumber)) continue;
+    try {
+      const ledger = readDecisionLedgerSnapshot(
+        commandRunner,
+        { ...prContext, prNumber: number, headSha: String(pull?.head?.sha || prContext.headSha || '') },
+        null,
+        options,
+      );
+      if (ledger.available && ledger.entries.some((entry) => entry.decision?.kind === 'ignore')) {
+        ledgers.push(ledger);
+      }
+    } catch (error) {
+      console.warn(`[Calibration] Skipping PR #${number}: ${error.message || error}`);
+    }
+  }
+  return ledgers;
 }
 
 function decisionLedgerAllowsCarryForward(ledger) {
@@ -7749,6 +7796,8 @@ async function main(options = {}) {
   let overviewBrief = null;
   let overviewUsage = null;
   let overviewReceipt = { enabled: false, present: false };
+  let calibrationNotes = new Map();
+  let calibrationReceipt = { enabled: false, sweptPrs: 0, personasWithNotes: 0 };
   const initialReconciliation = reconcileDecisionFindings([], decisionLedger);
   let carriedOpen = initialReconciliation.carriedOpen;
   let ignored = initialReconciliation.ignored;
@@ -7856,6 +7905,37 @@ async function main(options = {}) {
     );
     const customCount = enabledPersonas.filter(p => !PERSONA_CHARTERS.some(b => b.id === p.id)).length;
     console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) with model ${DEFAULT_MODEL}${customCount ? ` (${customCount} repository-defined)` : ''}...`);
+
+    // Maintainer calibration notes: which of each persona's past findings an
+    // authorized maintainer explicitly ignored (taxonomy only, never raw
+    // reason text), aggregated from this PR's ledger plus a bounded sweep of
+    // recently-updated PRs. Advisory data injected per lane; any failure just
+    // means personas run without it. Same synthetic-vitest gating doctrine as
+    // the overview brief: exact-call-count tests stay deterministic.
+    {
+      const calibrationSetting = String(runtimeEnv.REVIEW_YETI_CALIBRATION ?? '').trim().toLowerCase();
+      const calibrationDefaultOn = runtimeEnv.GITHUB_ACTIONS === 'true' || runtimeEnv.VITEST !== 'true';
+      calibrationReceipt.enabled = !localOnly
+        && calibrationSetting !== 'false'
+        && (calibrationSetting === 'true' || calibrationDefaultOn);
+      if (calibrationReceipt.enabled) {
+        try {
+          const sweepDepth = Math.min(25, Math.max(0, Number(runtimeEnv.REVIEW_YETI_CALIBRATION_PRS ?? 10) || 0));
+          const recentLedgers = readRecentDecisionLedgers(commandRunner, prContext, {
+            maxPrs: sweepDepth,
+            memoryPolicy: actionPolicy.memory,
+          });
+          calibrationNotes = buildCalibrationNotes([decisionLedger, ...recentLedgers], enabledPersonas);
+          calibrationReceipt.sweptPrs = recentLedgers.length;
+          calibrationReceipt.personasWithNotes = [...calibrationNotes.values()].filter((notes) => notes.length > 0).length;
+          if (calibrationReceipt.personasWithNotes > 0) {
+            console.log(`[Calibration] Maintainer-ignore signals for ${calibrationReceipt.personasWithNotes} persona(s) from ${calibrationReceipt.sweptPrs + 1} pull request ledger(s).`);
+          }
+        } catch (error) {
+          console.warn(`[Calibration] Unavailable (${error.message}); personas run without calibration notes.`);
+        }
+      }
+    }
 
     // PR overview brief: one shared orientation pass before persona fan-out.
     // The artifact is untrusted orientation only — it is injected through the
@@ -8085,7 +8165,7 @@ async function main(options = {}) {
                 persona,
                 manifest: `${manifest.text}\n<review_units>${canonicalJson(provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)))}</review_units>`,
                 diffText: planDiffBudget(batch, modelConfig.maxDiffChars).text,
-                priorDecisionBlock: renderedDecisionLedger.text,
+                priorDecisionBlock: [renderedDecisionLedger.text, renderCalibrationBlock(calibrationNotes, persona.id)].filter(Boolean).join('\n\n'),
                 optionalContextBlock: [modelSideContext.optionalContextBlock || '', modelSideContext.overviewContextBlock || '', dependencyRiskHints.length > 0 ? `Dependency applicability hints (untrusted data):\n${canonicalJson(dependencyRiskHints)}` : ''].filter(Boolean).join('\n'),
                 limits: investigationLimits,
                 investigationUnitIds: batchUnitIds,
@@ -8681,6 +8761,7 @@ async function main(options = {}) {
     usage: usageTotal,
     investigation: investigationSummary || { schemaVersion: 'review-investigation-summary-v1', enabled: boundedMode, complete: false, laneCount: 0, evidenceReceipts: 0 },
     overview: overviewReceipt,
+    calibration: calibrationReceipt,
     outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
     provider: memoryPolicy.provider || 'honcho',
     headSha: prContext.headSha,
