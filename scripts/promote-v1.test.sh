@@ -24,14 +24,8 @@ case "$request" in
   *"repos/exampleorg/example-review-actions/commits/source123 --jq .sha"*)
     printf 'source123\n'
     ;;
-  *"repos/exampleorg/example-review-actions/commits/source123 --jq .commit.tree.sha"*)
-    printf 'tree123\n'
-    ;;
-  *"repos/exampleorg/example-review-actions/commits/head123 --jq .commit.tree.sha"*)
-    printf 'tree123\n'
-    ;;
   *"repos/exampleorg/example-review-actions/commits/source123/pulls?per_page=100"*)
-    printf '[[{"number":42,"base":{"ref":"main"},"head":{"sha":"head123"},"merged_at":"2026-08-19T15:00:00Z"}]]\n'
+    printf '[[{"number":42,"base":{"ref":"main"},"head":{"sha":"head123"},"merge_commit_sha":"source123","merged_at":"2026-08-19T15:00:00Z"}]]\n'
     ;;
   *"repos/exampleorg/example-review-actions/commits/source123/check-runs?per_page=100"*)
     printf '{"check_runs":[{"name":"validate","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:01:00Z"}]}\n'

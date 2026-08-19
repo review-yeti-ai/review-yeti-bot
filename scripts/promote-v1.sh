@@ -33,10 +33,9 @@ merged_pr="$(jq -c '[.[][] | select(.base.ref == "main" and .merged_at != null)]
 
 pr_number="$(jq -r '.number' <<<"$merged_pr")"
 pr_head="$(jq -r '.head.sha' <<<"$merged_pr")"
-source_tree="$(gh api "repos/${repository}/commits/${SOURCE_SHA}" --jq '.commit.tree.sha // empty')"
-head_tree="$(gh api "repos/${repository}/commits/${pr_head}" --jq '.commit.tree.sha // empty')"
-[[ -n "$source_tree" && "$source_tree" == "$head_tree" ]] || {
-  echo "::error::Merged main tree ${source_tree:-<missing>} does not exactly match PR #${pr_number} head tree ${head_tree:-<missing>}; refusing promotion."
+pr_merge_commit="$(jq -r '.merge_commit_sha // empty' <<<"$merged_pr")"
+[[ -n "$pr_head" && "$pr_merge_commit" == "$SOURCE_SHA" ]] || {
+  echo "::error::Source ${SOURCE_SHA} is not the merge commit for PR #${pr_number} (reported ${pr_merge_commit:-<missing>}); refusing promotion."
   exit 1
 }
 
