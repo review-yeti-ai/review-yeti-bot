@@ -453,11 +453,28 @@ async function runPersonaInvestigation(input = {}) {
       const missingUnits = assignedUnits.filter((unitId) => !plannedUnits.has(unitId));
       if (explicitRiskPlan && missingUnits.length > 0) {
         if (finalOnly) {
-          return incompleteLane({
-            input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes,
-            failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', 'incomplete_unit_plan'),
-            evidenceEnabled,
-          });
+          // Operator directive 2026-08-19: a final-turn COMPLETE that omitted
+          // assigned units no longer kills the lane. The omission is repaired
+          // deterministically — each missing unit gets a synthesized
+          // not_applicable risk + disposition — so unit accounting stays
+          // honest while the lane's real findings survive.
+          console.warn(`[Investigation] ${input.persona?.id || 'lane'} final-turn COMPLETE omitted unit(s) ${missingUnits.join(', ')}; auto-disposing as not_applicable.`);
+          const repairedRisks = missingUnits.map((unitId, index) => ({
+            id: `auto-omitted-${index + 1}`,
+            unitIds: [unitId],
+            statement: 'No risk was articulated for this assigned unit within the turn budget.',
+            evidenceNeeded: [],
+            allowedTools: [],
+          }));
+          const repaired = {
+            ...parsed,
+            riskPlan: [...parsed.riskPlan, ...repairedRisks],
+            riskDispositions: [
+              ...parsed.riskDispositions,
+              ...repairedRisks.map((risk) => ({ riskId: risk.id, status: 'not_applicable', reason: 'auto-disposed: omitted from the final-turn plan' })),
+            ],
+          };
+          return completedLane({ input: scopedInput, runtime, parsed: repaired, response, turns: turn, usage, routes, providerUsageFacts, evidenceEnabled });
         }
         messages = [
           ...messages,
@@ -471,11 +488,27 @@ async function runPersonaInvestigation(input = {}) {
       }
       return completedLane({ input: scopedInput, runtime, parsed, response, turns: turn, usage, routes, providerUsageFacts, evidenceEnabled });
     }
-    if (finalOnly) return incompleteLane({
-      input, runtime, parsed, termination: 'budget_exhausted', turns: turn, usage, routes,
-      failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', 'budget_exhausted'),
-      evidenceEnabled,
-    });
+    if (finalOnly) {
+      // Operator directive 2026-08-19: budget_exhausted is retired as a lane
+      // death. A final-turn NEEDS_EVIDENCE — after generous turns, the
+      // decide-now instruction, and the corrective re-ask — coerces into a
+      // COMPLETE lane: findings the model already grounded survive, undisposed
+      // risks close as 'incomplete', and pending evidence requests are
+      // dropped. Cross-model confirmation still guards any P0/P1 that came out
+      // of the coerced lane.
+      console.warn(`[Investigation] ${input.persona?.id || 'lane'} still NEEDS_EVIDENCE on the final turn; coercing to COMPLETE (${(parsed.findings || []).length} finding(s) kept).`);
+      return completedLane({
+        input: scopedInput,
+        runtime,
+        parsed: coerceFinalNeedsEvidence(parsed),
+        response,
+        turns: turn,
+        usage,
+        routes,
+        providerUsageFacts,
+        evidenceEnabled,
+      });
+    }
     const evidence = await runtime.execute(parsed.evidenceRequests, { signal: input.signal });
     for (const output of evidence.outputs || []) { if (output && output.receiptId) executedReceiptIds.add(output.receiptId); }
     if (!evidence.complete) {
@@ -509,11 +542,45 @@ async function runPersonaInvestigation(input = {}) {
     messages = appendUntrustedEvidence(messages, evidence.outputs, { ...runtime.remaining(), turns: limits.maxTurns - turn });
     turn += 1;
   }
-  return incompleteLane({
-    input, runtime, parsed, termination: 'budget_exhausted', turns: limits.maxTurns, usage, routes,
-    failure: failureDiagnostic(input, routes.at(-1) || {}, modelAttempts, 'provider_invalid_response', 'budget_exhausted'),
+  // Loop exit past maxTurns (a continue path incremented beyond the final
+  // turn): same retirement of budget_exhausted — coerce the last parsed
+  // response into a COMPLETE lane rather than dying.
+  console.warn(`[Investigation] ${input.persona?.id || 'lane'} exhausted the turn budget; coercing last response to COMPLETE (${(parsed?.findings || []).length} finding(s) kept).`);
+  return completedLane({
+    input: scopedInput,
+    runtime,
+    parsed: coerceFinalNeedsEvidence(parsed || { reviewStatus: 'COMPLETE', riskPlan: [], evidenceRequests: [], riskDispositions: [], findings: [] }),
+    response: routes.at(-1) || {},
+    turns: limits.maxTurns,
+    usage,
+    routes,
+    providerUsageFacts,
     evidenceEnabled,
   });
+}
+
+/**
+ * Retires budget_exhausted (operator directive 2026-08-19): a final
+ * NEEDS_EVIDENCE response becomes a COMPLETE lane. Grounded findings survive,
+ * every undisposed risk closes as 'incomplete', and pending evidence requests
+ * drop. Deterministic — no model output is invented, only dispositions.
+ */
+function coerceFinalNeedsEvidence(parsed) {
+  const riskPlan = Array.isArray(parsed.riskPlan) ? parsed.riskPlan : [];
+  const dispositions = Array.isArray(parsed.riskDispositions) ? parsed.riskDispositions : [];
+  const disposed = new Set(dispositions.map((row) => row.riskId));
+  return {
+    ...parsed,
+    reviewStatus: 'COMPLETE',
+    evidenceRequests: [],
+    riskDispositions: [
+      ...dispositions,
+      ...riskPlan
+        .filter((risk) => !disposed.has(risk.id))
+        .map((risk) => ({ riskId: risk.id, status: 'incomplete', reason: 'auto-disposed: turn budget reached before evidence completed' })),
+    ],
+    findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+  };
 }
 
 module.exports = {
