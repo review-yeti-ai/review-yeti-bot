@@ -33,15 +33,15 @@ const HARD_INVESTIGATION_LIMITS = Object.freeze({
 // src/mcp/libraryDocsTool.js for the security design (server-side URL/key, sanitized
 // model-supplied library id + topic, no generic fetch/HTTP surface, fail-soft on outage).
 //
-// REL: Zoekt review-time search pilot (knowledge/adr/0319-...). `code_search_zoekt`
-// is additive, not a replacement for `code_search` -- it is implemented in
-// src/mcp/zoektSearchTool.js, read-only, repo-scoped, commit-pinned to the
-// review's own head SHA, and grants no capability/permission/DAG/review/merge
-// authority. It is allowlisted here so a risk plan MAY request it; it is only
-// reachable in practice once the pipeline wires zoektIndexBuilder.js +
-// createZoektSearchTool into the evidence registry (see PR description for the
-// exact review-pipeline.js follow-up patch -- not applied in this PR because
-// that file is held by concurrent work).
+// REL: Zoekt review-time search pilot (knowledge/adr/0329-adopt-zoekt-as-a-bounded-review-time-search-pilot-for-review-yeti.md).
+// `code_search_zoekt` is additive, not a replacement for `code_search` -- it is
+// implemented in src/mcp/zoektSearchTool.js, read-only, repo-scoped, commit-pinned
+// to the review's own head SHA, and grants no capability/permission/DAG/review/merge
+// authority. It is allowlisted here AND wired into the live evidence registry in
+// review-pipeline.js's makeEvidenceRegistry (materialize head-SHA working tree ->
+// buildZoektIndex -> createZoektSearchTool, composed with the existing GitHub-blob
+// registry via evidenceRegistryComposer.js) -- see zoektWorkdirMaterializer.js and
+// the pipeline wiring for the fail-soft path when the index cannot be built.
 const EVIDENCE_TOOLS = new Set(['file_read', 'file_find', 'code_search', 'file_read_diff', 'library_docs', 'code_search_zoekt']);
 const EVIDENCE_STATUSES = new Set(['ok', 'unavailable', 'invalid', 'cancelled']);
 const TERMINATIONS = new Set([
