@@ -236,6 +236,20 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
   return { reviewStatus: status, riskPlan, evidenceRequests: requests, riskDispositions, findings };
 }
 
+const UNTRUSTED_BLOCK_TAGS = ['review_manifest', 'prior_decisions', 'optional_context', 'pull_request_diff'];
+
+// Untrusted content (diff, comments, prior decisions) is embedded inside named
+// delimiter blocks. A payload containing a literal closing tag such as
+// </pull_request_diff> would otherwise escape its block and masquerade as
+// prompt structure, so the exact delimiter tokens are neutralized in place.
+function neutralizeUntrustedDelimiters(value) {
+  let text = String(value || '');
+  for (const tag of UNTRUSTED_BLOCK_TAGS) {
+    text = text.split(`<${tag}>`).join(`<\\${tag}>`).split(`</${tag}>`).join(`<\\/${tag}>`);
+  }
+  return text;
+}
+
 function buildInvestigationMessages({ persona = {}, dispatchAssignment, manifest = '', diffText = '', priorDecisionBlock = '', optionalContextBlock = '', remaining = {}, evidenceEnabled = true } = {}) {
   const assignedUnitId = bounded(object(dispatchAssignment)?.id, 100);
   const system = [
@@ -259,10 +273,10 @@ function buildInvestigationMessages({ persona = {}, dispatchAssignment, manifest
     'Return JSON only in the exact schema shown in the user message. Do not return Markdown, praise, summaries, or hidden absence claims.',
   ].join('\n');
   const user = [
-    '<review_manifest>', bounded(manifest, 24_000), '</review_manifest>',
-    priorDecisionBlock ? `<prior_decisions>${bounded(priorDecisionBlock, 8_000)}</prior_decisions>` : '',
-    optionalContextBlock ? `<optional_context>${bounded(optionalContextBlock, 8_000)}</optional_context>` : '',
-    '<pull_request_diff>', bounded(diffText, 2_000_000), '</pull_request_diff>',
+    '<review_manifest>', neutralizeUntrustedDelimiters(bounded(manifest, 24_000)), '</review_manifest>',
+    priorDecisionBlock ? `<prior_decisions>${neutralizeUntrustedDelimiters(bounded(priorDecisionBlock, 8_000))}</prior_decisions>` : '',
+    optionalContextBlock ? `<optional_context>${neutralizeUntrustedDelimiters(bounded(optionalContextBlock, 8_000))}</optional_context>` : '',
+    '<pull_request_diff>', neutralizeUntrustedDelimiters(bounded(diffText, 2_000_000)), '</pull_request_diff>',
     '',
     'Return exactly this JSON shape:',
     '{"review_status":"NEEDS_EVIDENCE|COMPLETE","risk_plan":[{"id":"risk-1","unit_ids":["ru_..."],"statement":"falsifiable risk","evidence_needed":["what to inspect"],"allowed_tools":["file_read"]}],"evidence_requests":[{"risk_id":"risk-1","unit_id":"ru_...","tool":"file_read","args":{"path":"src/example.js","startLine":1,"endLine":40},"reason":"why this evidence resolves the risk"}],"risk_dispositions":[{"risk_id":"risk-1","status":"confirmed|rejected|not_applicable|incomplete","reason":"bounded reason"}],"findings":[{"severity":"P0|P1|P2","path":"src/example.js","line":12,"side":"RIGHT","title":"short defect","body":"realistic trigger and impact","suggestion":"concrete correction","risk_id":"risk-1","unit_id":"ru_...","evidence_receipt_ids":["er_..."]}]}',
@@ -270,4 +284,4 @@ function buildInvestigationMessages({ persona = {}, dispatchAssignment, manifest
   return [{ role: 'system', content: system }, { role: 'user', content: user }];
 }
 
-module.exports = { buildInvestigationMessages, parseInvestigationResponse, parseJson, RESPONSE_STATUSES, DISPOSITIONS };
+module.exports = { buildInvestigationMessages, parseInvestigationResponse, parseJson, neutralizeUntrustedDelimiters, RESPONSE_STATUSES, DISPOSITIONS };
