@@ -790,7 +790,7 @@ deleted file mode 100644
         failure: {
           class: 'semantic_invalid_response',
           reason: 'unknown_response_fields',
-          route: { provider: 'Morph', model: 'deepseek/deepseek-v4-flash-0731' },
+          route: { provider: 'ExampleCloud', model: 'deepseek/deepseek-v4-flash-0731' },
         },
       },
     ], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, { enabled: true, model: 'deepseek/deepseek-v4-flash-0731' });
@@ -798,7 +798,7 @@ deleted file mode 100644
     expect(comment).toContain('| Persona | Persona ID | Provider | Model | Error class | Reason | Attempt | Generation |');
     expect(comment).toContain('| 🛡️ Security | `security` | `OpenAI` | `openai/gpt-5` | `timeout` |');
     // Structured semantic failures retain their resolved route without publishing model output.
-    expect(comment).toContain('| 📜 Licensing | `licensing` | `Morph` | `deepseek/deepseek-v4-flash-0731` | `semantic_invalid_response` | unknown_response_fields |');
+    expect(comment).toContain('| 📜 Licensing | `licensing` | `ExampleCloud` | `deepseek/deepseek-v4-flash-0731` | `semantic_invalid_response` | unknown_response_fields |');
     expect(comment).toContain('resolved direct transport or downstream OpenRouter provider');
   });
 
