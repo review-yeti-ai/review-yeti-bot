@@ -45,6 +45,9 @@ if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
 if fallback.get('allow_banned_providers') != ['fireworks']:
     raise SystemExit('openrouter-fallback must explicitly allow only the approved Fireworks exception')
+provider_routing = fallback.get('provider_routing') or {}
+if 'quantizations' in provider_routing:
+    raise SystemExit('openrouter-fallback must not require a quantization unavailable on the approved endpoint')
 if review.get('openrouter_stream') != 'true':
     raise SystemExit('global openrouter_stream must be true so configured transports use SSE TTFT')
 for transport in review.get('transports', []):

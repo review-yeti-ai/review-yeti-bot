@@ -157,7 +157,7 @@ test('the smoke suite rejects weakened OpenRouter routing before any network req
   assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
 });
 
-test('the smoke suite rejects reduced OpenRouter quants before any network request', () => {
+test('the smoke suite rejects an OpenRouter quantization filter before any network request', () => {
   const policy = policyFixture();
   policy.review_yeti.transports[1].provider_routing = {
     ...policy.review_yeti.transports[1].provider_routing,

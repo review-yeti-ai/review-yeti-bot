@@ -12,7 +12,6 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: false,
   only: ['fireworks'],
-  quantizations: ['bf16', 'fp16'],
   data_collection: 'deny',
 });
 export const EXPECTED_OPENROUTER_ALLOWED_BANNED_PROVIDERS = Object.freeze(['fireworks']);

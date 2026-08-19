@@ -29,7 +29,6 @@
         "provider_routing": {
           "allow_fallbacks": false,
           "only": ["fireworks"],
-          "quantizations": ["bf16", "fp16"],
           "data_collection": "deny"
         }
       }
