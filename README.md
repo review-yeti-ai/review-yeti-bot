@@ -80,9 +80,12 @@ The current standard transport plan is deliberately limited and ordered:
 3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
 
 The action starts each model turn at Fireworks and advances through the plan only when the
-current transport fails. The OpenRouter entry explicitly permits gateway fallbacks while denying
-provider data collection; no other gateway is part of the central plan. Each caller must expose
-the three named environment variables through its inherited GitHub Actions secrets.
+current transport fails. The OpenRouter entry permits gateway fallbacks, requires every requested
+parameter, limits endpoints to FP8 or BF16, and prefers providers whose p90 throughput is at least
+40 tokens per second and whose p99 latency is at most three seconds. Providers are sorted by
+throughput; Morph remains eligible when its endpoint satisfies those constraints. Provider data
+collection remains denied. Each caller must expose the three named environment variables through
+its inherited GitHub Actions secrets.
 
 The central budget is also fixed here: three investigation turns, one 24-request per-lane call
 budget, a four-minute lane deadline, and a 30-second time-to-first-token budget. A provider that

@@ -10,6 +10,15 @@ export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 30_000;
+export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
+  allow_fallbacks: true,
+  require_parameters: true,
+  quantizations: ['fp8', 'bf16'],
+  sort: 'throughput',
+  preferred_min_throughput: { p90: 40 },
+  preferred_max_latency: { p99: 3 },
+  data_collection: 'deny',
+});
 
 export function validatePolicy(policy) {
   if (policy?.schema !== 'exampleorg.review-policy.v1') {
@@ -30,6 +39,11 @@ export function validatePolicy(policy) {
     if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !['openai', 'openrouter'].includes(transport.compat)) {
       throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
     }
+  }
+
+  const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
+  if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
+    throw new Error('OpenRouter routing must enforce the approved full-quantization performance policy');
   }
 
   return transports;

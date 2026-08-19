@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
+  EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
   runSmoke,
@@ -21,7 +23,7 @@ function policyFixture() {
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
           model: 'openrouter-model',
           compat: 'openrouter',
-          provider_routing: { allow_fallbacks: true, data_collection: 'deny' },
+          provider_routing: EXPECTED_OPENROUTER_ROUTING,
         },
       ],
     },
@@ -31,9 +33,19 @@ function policyFixture() {
 test('the smoke contract pins the approved transport order', () => {
   const transports = validatePolicy(policyFixture());
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
-  assert.deepEqual(buildRequest(transports[2]).provider, { allow_fallbacks: true, data_collection: 'deny' });
+  assert.deepEqual(buildRequest(transports[2]).provider, EXPECTED_OPENROUTER_ROUTING);
   assert.deepEqual(buildRequest(transports[0]).response_format, { type: 'json_object' });
   assert.equal(buildRequest(transports[0]).max_tokens, 128);
+});
+
+test('the committed OpenRouter fallback enforces full quantization and performance preferences', () => {
+  const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+  const transports = validatePolicy(policy);
+  const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
+
+  assert.deepEqual(openrouter.provider_routing, EXPECTED_OPENROUTER_ROUTING);
+  assert.equal(openrouter.provider_routing.ignore, undefined);
+  assert.equal(openrouter.provider_routing.only, undefined);
 });
 
 test('the smoke suite probes every configured transport without logging credentials', async () => {
@@ -115,4 +127,13 @@ test('the smoke suite rejects policy drift before any network request', () => {
   const policy = policyFixture();
   policy.review_yeti.transports.reverse();
   assert.throws(() => validatePolicy(policy), /transport order/);
+});
+
+test('the smoke suite rejects weakened OpenRouter routing before any network request', () => {
+  const policy = policyFixture();
+  policy.review_yeti.transports[2].provider_routing = {
+    ...policy.review_yeti.transports[2].provider_routing,
+  };
+  delete policy.review_yeti.transports[2].provider_routing.quantizations;
+  assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
 });

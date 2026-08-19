@@ -18,7 +18,7 @@ with open(sys.argv[1]) as handle:
 PY
 )"
 if [[ "$actual_action_sha" != "$expected_action_sha" ]]; then
-  echo "policy must pin the Morph-only routing fix ${expected_action_sha}; got ${actual_action_sha}" >&2
+  echo "policy must pin the approved immutable action SHA ${expected_action_sha}; got ${actual_action_sha}" >&2
   exit 1
 fi
 
