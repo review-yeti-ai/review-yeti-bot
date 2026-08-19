@@ -32,6 +32,7 @@
         "compat": "openrouter",
         "timeout_ms": 60000,
         "connect_timeout_ms": 10000,
+        "stream": true,
         "ignore_providers": ["open-inference"],
         "provider_routing": {
           "allow_fallbacks": true,

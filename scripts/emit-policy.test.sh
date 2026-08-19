@@ -43,6 +43,8 @@ if not fallback:
     raise SystemExit('policy must define the openrouter-fallback transport')
 if int(fallback.get('timeout_ms', 0)) > 60_000:
     raise SystemExit('openrouter-fallback timeout must be <= 60000ms')
+if fallback.get('stream') is not True:
+    raise SystemExit('openrouter-fallback must use streaming for provider attribution')
 if 'open-inference' not in fallback.get('ignore_providers', []):
     raise SystemExit('openrouter-fallback must quarantine open-inference')
 if fallback.get('provider_routing', {}).get('sort') != 'throughput':
