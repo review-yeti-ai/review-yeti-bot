@@ -8856,7 +8856,14 @@ async function main(options = {}) {
                 identity: navigationIdentity,
                 persona,
                 manifest: `${manifest.text}\n<review_units>${canonicalJson(provisionalReviewUnitManifest.units.filter((unit) => batchPaths.has(unit.path)))}</review_units>`,
-                diffText: planDiffBudget(batch, modelConfig.maxDiffChars).text,
+                // Structured per-file input lets buildInvestigationMessages (reviewInvestigationPrompt.js)
+                // apply its own relevance-ranked, whole-file selection bounded to MAX_PROMPT_DIFF_CHARS
+                // (~100k) -- independent of, and much tighter than, this pass's multi-pass budget
+                // (modelConfig.maxDiffChars, default 2,000,000) below. That budget still governs which
+                // files enter THIS pass (coverage.reviewed/truncated/omitted, computed separately via
+                // planDiffBudget above, is unaffected by this); this only governs how much of an
+                // already-selected pass is inlined into one persona's prompt text.
+                diffFiles: batch,
                 priorDecisionBlock: [renderedDecisionLedger.text, renderCalibrationBlock(calibrationNotes, persona.id)].filter(Boolean).join('\n\n'),
                 optionalContextBlock: [modelSideContext.optionalContextBlock || '', modelSideContext.overviewContextBlock || '', dependencyRiskHints.length > 0 ? `Dependency applicability hints (untrusted data):\n${canonicalJson(dependencyRiskHints)}` : ''].filter(Boolean).join('\n'),
                 limits: investigationLimits,
