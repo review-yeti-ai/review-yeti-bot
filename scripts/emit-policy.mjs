@@ -7,6 +7,8 @@ const sha = /^[0-9a-f]{40}$/i;
 if (policy.schema !== 'exampleorg.review-policy.v1') throw new Error('unsupported policy schema');
 if (!sha.test(review.action_sha)) throw new Error('review_yeti.action_sha must be an immutable commit SHA');
 if (!Array.isArray(review.transports) || review.transports.length === 0) throw new Error('policy must define transports');
+const transportNames = review.transports.map((transport) => transport.name);
+if (new Set(transportNames).size !== transportNames.length) throw new Error('transport names must be unique');
 for (const transport of review.transports) {
   if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !transport.compat) {
     throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
