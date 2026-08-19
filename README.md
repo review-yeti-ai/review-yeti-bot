@@ -82,9 +82,10 @@ promotion.
 The hosted panel uses `openrouter-ttft-ms` across the model transports. All
 three transports set `stream: true` and `openrouter_stream=true`, so that
 the 30-second TTFT deadline measures the first SSE token, not a fully buffered
-JSON body; observed first-byte latency is typically ~1s. OpenRouter requires
-full-precision `bf16`/`fp16` quants, sorts by throughput (p90 ≥ 40 tok/s, p99
-≤ 3s), and allows cheap hosts to fall. Smoke sends `stream: true` (SSE).
+JSON body; observed first-byte latency is typically ~1s. OpenRouter leaves
+provider and quantization selection to the gateway, sorts by throughput (p90 ≥
+40 tok/s, p99 ≤ 3s), and allows eligible hosts to fall. Smoke sends `stream:
+true` (SSE).
 
 Smoke logs `elapsed_ms` and `http` per transport. For a panel-sized probe:
 
@@ -104,8 +105,8 @@ The current standard transport plan is deliberately limited and ordered:
 2. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
 
 The action starts each model turn at Fireworks and advances to OpenRouter only when that transport
-fails. The OpenRouter entry leaves provider selection to the gateway, requires full-precision
-`bf16`/`fp16` quants, sorts by throughput, permits compatible hosts to fail over, and denies provider
+fails. The OpenRouter entry leaves provider and quantization selection to the gateway, requires
+compatible request parameters, sorts by throughput, permits eligible hosts to fail over, and denies provider
 data collection. Each caller must expose the two named environment variables through its inherited
 GitHub Actions secrets. Fireworks stays on the default serverless tier and uses maximum reasoning;
 OpenRouter also uses maximum reasoning. Each transport gets one retry, and OpenRouter owns endpoint

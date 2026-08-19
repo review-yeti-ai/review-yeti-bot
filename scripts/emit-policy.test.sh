@@ -65,8 +65,8 @@ if 'morph' not in (routing.get('ignore') or []):
     raise SystemExit('openrouter-fallback must quarantine the observed Morph timeout provider')
 if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
-if routing.get('quantizations') != ['bf16', 'fp16']:
-    raise SystemExit('openrouter-fallback must require full-precision bf16/fp16 quants')
+if 'quantizations' in routing:
+    raise SystemExit('openrouter-fallback must leave quantization selection to the gateway')
 if routing.get('sort') != 'throughput':
     raise SystemExit('openrouter-fallback must sort by throughput')
 if (routing.get('preferred_min_throughput') or {}).get('p90') != 40:
@@ -186,8 +186,8 @@ run_transport_relation_case() {
 run_case valid lane_call_budget 24 0
 grep -q '^action_ref<<' "$tmp_dir/valid.output"
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
-grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml'
-grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml"]'
+grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml,morph'
+grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml","morph"]'
 grep -qx 'v1' "$tmp_dir/valid.output"
 grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"

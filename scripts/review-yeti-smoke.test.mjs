@@ -46,14 +46,13 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(buildRequest(transports[1]).reasoning, { effort: 'max' });
 });
 
-test('the committed OpenRouter fallback requires full-precision quants and throughput floors', () => {
+test('the committed OpenRouter fallback is provider-neutral with throughput floors', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const transports = validatePolicy(policy);
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
 
   assert.deepEqual(openrouter.provider_routing, EXPECTED_OPENROUTER_ROUTING);
   assert.equal(openrouter.provider_routing.allow_fallbacks, true);
-  assert.deepEqual(openrouter.provider_routing.quantizations, ['bf16', 'fp16']);
   assert.equal(openrouter.provider_routing.sort, 'throughput');
   assert.deepEqual(openrouter.provider_routing.preferred_min_throughput, { p90: 40 });
   assert.deepEqual(openrouter.provider_routing.preferred_max_latency, { p99: 3 });
@@ -187,11 +186,11 @@ test('the smoke suite rejects weakened OpenRouter routing before any network req
   assert.throws(() => validatePolicy(policy), /pins provider routing via "only"/);
 });
 
-test('the smoke suite rejects reduced OpenRouter quants before any network request', () => {
+test('the smoke suite rejects provider-specific OpenRouter quantization filters before any network request', () => {
   const policy = policyFixture();
   policy.review_yeti.transports[1].provider_routing = {
     ...policy.review_yeti.transports[1].provider_routing,
-    quantizations: ['fp8', 'bf16'],
+    quantizations: ['fp8'],
   };
   assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
 });

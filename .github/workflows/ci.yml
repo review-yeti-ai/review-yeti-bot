@@ -52,7 +52,6 @@ jobs:
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
-          grep -Fq '"quantizations": ["bf16", "fp16"]' policy/review-yeti.json
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
@@ -65,6 +64,14 @@ jobs:
           grep -Fq 'openrouter-provider-routing:' .github/workflows/review-yeti.yml
           if grep -Eq 'OLLAMA_PR_REVIEW_API_KEY|ollama' .github/workflows/review-yeti.yml policy/review-yeti.json; then
             echo "::error::obsolete Ollama transport or credential remains in the central contract"
+            exit 1
+          fi
+          if grep -Eq '"action_sha(_override)?"|central-sha:' policy/review-yeti.json .github/workflows/self-review.yml; then
+            echo "::error::per-repository SHA claims are forbidden; use the central release channel"
+            exit 1
+          fi
+          if grep -Eq '"quantizations"[[:space:]]*:' policy/review-yeti.json; then
+            echo "::error::provider-specific quantization filters are forbidden; use gateway selection"
             exit 1
           fi
 

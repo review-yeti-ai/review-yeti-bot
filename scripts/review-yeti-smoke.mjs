@@ -12,7 +12,6 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
-  quantizations: ['bf16', 'fp16'],
   sort: 'throughput',
   preferred_min_throughput: { p90: 40 },
   preferred_max_latency: { p99: 3 },
@@ -80,7 +79,7 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must require full-precision quants, throughput floors, and cheap-host failover');
+    throw new Error('OpenRouter routing must remain provider-neutral with throughput floors and cheap-host failover');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
