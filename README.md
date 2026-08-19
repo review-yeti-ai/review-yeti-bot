@@ -66,3 +66,16 @@ the workflow validation checks for all later changes.
 The central policy is intentionally boring: changes are reviewed at the previous release, then
 promoted as a new immutable release after validation. This line is the bootstrap canary: the
 central PR must be reviewed by the pinned previous release, not by the proposed workflow.
+
+## Provider order
+
+The current standard transport plan is deliberately limited and ordered:
+
+1. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`)
+2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
+3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
+
+The action starts each model turn at Fireworks and advances through the plan only when the
+current transport fails. The OpenRouter entry explicitly permits gateway fallbacks while denying
+provider data collection; no other gateway is part of the central plan. Each caller must expose
+the three named environment variables through its inherited GitHub Actions secrets.
