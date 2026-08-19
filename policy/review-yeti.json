@@ -43,7 +43,7 @@
     "openrouter_max_attempts": "2",
     "lane_deadline_ms": "240000",
     "lane_call_budget": "24",
-    "max_investigation_turns": "3",
+    "max_investigation_turns": "30",
     "max_diff_chars": "2000000",
     "max_file_diff_chars": "60000",
     "max_passes": "3",
