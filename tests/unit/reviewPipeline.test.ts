@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
+import { sseBody } from '../support/streamableFetchStub';
 
 // Resolve path to root repository .github/workflows/pipelines/review-pipeline.js
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -18,15 +19,21 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     const originalEnv = { ...process.env };
     const tempDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'review-yeti-terminal-'));
     const outputPath = path.join(tempDir, 'github-output.txt');
+    // Streaming is unconditional on the real review path (operator directive), so this needs a
+    // readable `body` (a single-chunk SSE stream) or every persona-lane fetch would legitimately
+    // (and audibly) retry once non-stream within the same attempt, doubling `expectedFetches` for
+    // every test that counts model-fetch calls.
+    const chatPayload = {
+      model: 'test-model',
+      provider: 'test-provider',
+      choices: [{ message: { content: '{"findings":[]}' } }],
+    };
     const fetchImpl = vi.fn(async () => ({
       ok: true,
       status: 200,
       headers: { get: () => null },
-      json: async () => ({
-        model: 'test-model',
-        provider: 'test-provider',
-        choices: [{ message: { content: '{"findings":[]}' } }],
-      }),
+      json: async () => chatPayload,
+      body: sseBody(chatPayload),
     }));
 
     try {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
+import { sseBody } from '../support/streamableFetchStub';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -13,7 +14,11 @@ const { resolveGatewayIdentity } = policy;
 const persona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
 const diffFiles = [{ path: 'src/a.ts', patch: '+x', addedLines: [], deletedLines: [] }];
 
-/** Fetch stub that records every request and answers with a clean completion. */
+/**
+ * Fetch stub that records every request and answers the (unconditional, per operator directive)
+ * streaming request directly with a clean completion -- no `.body.getReader` would otherwise
+ * cause a legitimate second non-stream fallback call, doubling `record.length`.
+ */
 function capturingFetch(record: any[], extra: Record<string, unknown> = {}) {
   return async (url: string, init: any) => {
     record.push({ url, body: JSON.parse(init.body) });
@@ -22,6 +27,7 @@ function capturingFetch(record: any[], extra: Record<string, unknown> = {}) {
       status: 200,
       text: async () => '',
       json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }], ...extra }),
+      body: sseBody({ choices: [{ message: { content: '{"findings":[]}' } }], ...extra }),
     };
   };
 }

@@ -1862,7 +1862,16 @@ async function callOpenRouterChat(fetchImpl, {
   timeoutMs,
   connectTimeoutMs,
   ttftMs,
-  preferStream = false,
+  // Streaming is unconditional on the real review path (operator directive: "streaming MUST be
+  // true. It is not a tunable, not a fallback, not a per-transport preference"). `preferStream`
+  // defaults true and is only ever passed `false` by a unit test exercising `nonStreamOnce`'s own
+  // budget behavior in isolation -- reviewWithModel, the only production caller, never threads a
+  // way to turn it off. There used to be a second, independent `disableStream` override (wired to
+  // a since-removed "disable streaming under concurrent fan-out" mechanism); it is deleted rather
+  // than kept as a defensive no-op, because a second flag that CAN disagree with the first is
+  // exactly how a buffered request went unnoticed in production (see reviewWithModel and the
+  // streaming-lane gate in main() for the corresponding fixes).
+  preferStream = true,
   signal,
   transportName = 'openrouter',
   onStreamProgress,
@@ -1889,10 +1898,11 @@ async function callOpenRouterChat(fetchImpl, {
   const baseHeaders = { ...headers };
   const defaultProvider = String(transportName || 'openrouter');
   const logPrefix = formatTransportLogPrefix(defaultProvider);
-  // Default OFF. Streaming under 12-way fan-out often causes timeouts / StreamReset 502s.
-  // Non-stream still returns resolved provider/model on the JSON body.
-  // Opt in with OPENROUTER_STREAM=true, preferStream:true, or github_action.openrouter.stream.
-  const attemptStream = preferStream === true || process.env.OPENROUTER_STREAM === 'true';
+  // Unconditional: `preferStream` defaults true (see the parameter doc above). Concurrent
+  // fan-out under N personas is handled by serializing streaming lanes (createStreamingLaneGate
+  // in main()), never by silently falling back to a buffered request -- a buffered request turns
+  // the TTFT budget into a hidden total-generation cap (see nonStreamOnce's own comment).
+  const attemptStream = preferStream !== false;
 
   const providerFromHeaders = (response) => {
     if (!response?.headers?.get) return null;
@@ -2021,10 +2031,23 @@ async function callOpenRouterChat(fetchImpl, {
     };
   };
 
+  // Not reachable from the real review path: reviewWithModel (the only production caller) never
+  // passes `preferStream: false`. `nonStreamOnce` itself remains reachable as an in-flight
+  // RESILIENCE fallback further below (a stream that HTTP-errors, resets, or fails mid-read) --
+  // that is a recovery for an already-attempted stream, not a silent default, and it still runs
+  // against the same total budget rather than treating a connect-phase wait as a hidden
+  // total-generation cap.
   if (!attemptStream) {
     return nonStreamOnce();
   }
 
+  // Streaming is now unconditional, so this branch runs on every real review-path request --
+  // previously it only ran when explicitly opted in, and no test happened to supply
+  // `onStreamProgress` while doing so, so this scope's own missing `t0` (declared only inside
+  // nonStreamOnce, never here) went uncaught: the first-chunk progress callback threw
+  // `ReferenceError: t0 is not defined` on every real run once main() (which always supplies
+  // onStreamProgress) exercised this path.
+  const t0 = Date.now();
   let streamRoute = { model: body.model, provider: defaultProvider, generationId: null };
   // TTFT: started at request dispatch (right here), cleared the moment the first SSE data chunk
   // parses. This is the fix for the core D1 bug — the stream path previously bound only to
@@ -3188,10 +3211,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           + ` attempt=${attempt}/${maxAttempts}`
           + ` timeout_ms=${attemptTimeoutMs}`
           + ` prompt_chars=${promptChars}`
-          + ` stream=${options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true ? 'enabled' : 'disabled'}`,
+          + ` stream=enabled`,
         );
-        // Prefer streaming so Auto Router's resolved provider/model are visible even on timeout.
-        // Headroom / some proxies may not stream — callOpenRouterChat falls back to non-stream.
+        // Streaming is unconditional (operator directive: not a tunable, not a fallback, not a
+        // per-transport preference). callOpenRouterChat's `preferStream` already defaults true;
+        // passed explicitly here so the request body is never left to an implicit default. A
+        // buffered request turns the TTFT budget into a hidden total-generation cap -- that is
+        // exactly the defect this closes (a production run logged `stream=disabled` and then hit
+        // `TTFT_TIMEOUT` at the full 30s budget on what should have been a first-SSE-chunk check).
         const result = await callOpenRouterChat(fetchImpl, {
           url: `${cfg.baseUrl}/chat/completions`,
           headers: requestHeaders,
@@ -3199,11 +3226,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           timeoutMs: attemptTimeoutMs,
           connectTimeoutMs,
           ttftMs,
-          preferStream: options.preferStream === true
-            || process.env.OPENROUTER_STREAM === 'true'
-            || orPolicy.stream === true
-            || streamRetryRequested
-            || timedOutProviders.size > 0,
+          preferStream: true,
           transportName: options.transportName || gateway.id,
           signal: options.signal,
           onStreamProgress: options.onStreamProgress,
@@ -3671,8 +3694,11 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
   if (plan.length === 0) return reviewWithModel(persona, diffFiles, prContext, sessionContext, options);
   // Hold one streaming slot for the whole persona turn, including failover. Releasing between
   // transports lets sibling personas start while this lane is still retrying, recreating the
-  // concurrent SSE reset that this gate is intended to prevent.
-  const releaseStream = plan.some((transport) => transport.stream === true) && options.streamGate
+  // concurrent SSE reset that this gate is intended to prevent. No `transport.stream === true`
+  // condition: streaming is unconditional on every transport regardless of that per-transport
+  // config field (reviewWithModel always passes `preferStream: true`), so every transport plan
+  // contends for the gate whenever the caller supplies one.
+  const releaseStream = options.streamGate
     ? await options.streamGate.acquire(options.signal)
     : null;
   let lastResult = null;
@@ -3688,7 +3714,10 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       openRouterPolicy: transport.openRouterPolicy,
       timeoutMs: transport.timeoutMs,
       connectTimeoutMs: transport.connectTimeoutMs,
-      ...(transport.stream === true ? { preferStream: true } : {}),
+      // No `transport.stream === true` conditional: streaming is unconditional on every
+      // transport (reviewWithModel always passes `preferStream: true` to callOpenRouterChat
+      // regardless of what this options object carries). A per-transport `stream` config field
+      // that could suppress it would be exactly the second, disagreeing flag this fix removes.
       reasoningEffort: transport.reasoningEffort,
       perfMetricsInResponse: transport.perfMetricsInResponse,
       providerTimeoutQuarantine: transport.quarantineOnTimeout,
@@ -8697,19 +8726,47 @@ async function main(options = {}) {
         }
       }
 
+      // Streaming is unconditional on the real review path (operator directive) -- there is no
+      // longer a policy flag to read here at all. `modelConfig.openRouterPolicy.stream` used to
+      // be echoed into this log line and into the streamGate-creation condition below, but that
+      // field is the LEGACY single-transport policy: once an explicit transport plan is active it
+      // is not what actually governs the request (each transport resolves, and
+      // reviewWithModel/callOpenRouterChat now always honor, its own unconditional stream). A
+      // production run logged `stream=disabled` from exactly that stale field while a different
+      // flag decided the real request -- the fix is not a smarter reconciliation, it is removing
+      // the second flag so there is nothing left to disagree with.
       const laneProgress = createPersonaLaneProgressReporter({
         personaIds: enabledPersonas.map((persona) => persona.id),
         model: modelConfig.model,
         baseUrl: modelConfig.baseUrl,
-        stream: modelConfig.openRouterPolicy?.stream === true,
+        stream: true,
         laneDeadlineMs,
       });
-      const streamGate = modelConfig.openRouterPolicy?.stream === true && enabledPersonas.length > 1
-        ? createStreamingLaneGate(1)
+      // Serializing every lane behind ONE streaming slot (#115, same-day) was itself a fix for a
+      // real, evidenced incident: streaming all 5 persona lanes concurrently caused upstream
+      // gateways to reset otherwise-healthy responses. Removing the gate entirely would reopen
+      // that regression with no new evidence that it is safe. But a hard-coded 1 also means a
+      // 5-persona panel is fully serialized -- queued lanes wait behind every other lane's full
+      // generation while their own 240s lane deadline keeps counting down, which reads as a
+      // mystery timeout and directly fights the "I need them FAST" directive. Scale the slot
+      // count with the panel size instead of a fixed 1: halving the worst-case queue depth (2
+      // concurrent generations against the model instead of 1 or 5) is a conservative middle
+      // ground given the only two data points on file are "5 concurrent causes resets" and "1
+      // concurrent does not" -- there is no measurement yet for exactly where the safe ceiling
+      // sits between them. Decoupling queued wait time from the lane-deadline clock itself (so
+      // queueing never counts against the 240s budget) needs a deeper timing change to
+      // laneDeadline's construction point and was not attempted here: it touches the same signal
+      // the REL-271 lane-deadline-ms vs cancelled termination tests assert on, and a rushed change
+      // there risks silently reclassifying a real stuck lane as a queueing delay. Flagged as a
+      // follow-up rather than guessed at under time pressure.
+      const streamLaneLimit = Math.max(1, Math.floor(enabledPersonas.length / 2));
+      const streamGate = enabledPersonas.length > 1
+        ? createStreamingLaneGate(streamLaneLimit)
         : null;
       console.log(
         `[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}`
-        + ` transport=openrouter stream=${modelConfig.openRouterPolicy?.stream === true ? 'enabled' : 'disabled'}`
+        + ` transport=openrouter stream=enabled`
+        + (streamGate ? ` stream_lane_limit=${streamLaneLimit}` : '')
         + ` lane_deadline_ms=${laneDeadlineMs}`,
       );
       if (boundedMode) {
