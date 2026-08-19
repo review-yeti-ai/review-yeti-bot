@@ -119,6 +119,10 @@ const { createReviewTelemetry } = require('../../../src/telemetry/reviewTelemetr
 const { createReviewUnitManifest } = require('../../../src/review/reviewUnitManifest');
 const { fetchImmutableRepositorySnapshot } = require('../../../src/mcp/reviewNavigationSnapshot');
 const { createGitHubBlobClient, createReviewNavigationToolRegistry } = require('../../../src/mcp/reviewNavigationTools');
+const { materializeReviewWorkdir } = require('../../../src/mcp/zoektWorkdirMaterializer');
+const { buildZoektIndex } = require('../../../src/mcp/zoektIndexBuilder');
+const { createZoektSearchTool } = require('../../../src/mcp/zoektSearchTool');
+const { composeEvidenceRegistries } = require('../../../src/mcp/evidenceRegistryComposer');
 const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../../../src/review/reviewInvestigation');
 const { buildInvestigationMessages, parseInvestigationResponse, parseJson: parseInvestigationJson } = require('../../../src/review/reviewInvestigationPrompt');
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
@@ -837,12 +841,24 @@ function resolveEvidenceRegistryConfig(localConfig, env = process.env) {
     }
     return undefined;
   };
+  // REL: Zoekt review-time search pilot (ADR 0329). Adopted (not opt-in by
+  // default) but kept independently switchable from the rest of the evidence
+  // registry: a broken/unprovisioned zoekt toolchain on a given runner should
+  // never require touching maxCalls/maxScanFiles policy to work around it,
+  // and the ADR's "pull this pilot" revisit clause needs a single flag, not a
+  // code change, to act on.
+  const zoektYaml = evidenceYaml.zoekt && typeof evidenceYaml.zoekt === 'object' ? evidenceYaml.zoekt : {};
+  const zoektEnabledOverride = env.EVIDENCE_ZOEKT_ENABLED;
+  const zoektEnabled = zoektEnabledOverride !== undefined
+    ? String(zoektEnabledOverride).trim().toLowerCase() !== 'false'
+    : (zoektYaml.enabled ?? evidenceYaml.zoekt_enabled ?? true) !== false;
   return {
     enabled: true,
     maxCalls: positive(env.EVIDENCE_MAX_CALLS, evidenceYaml.max_calls, evidenceYaml.maxCalls, HARD_INVESTIGATION_LIMITS.maxCalls),
     maxResultBytes: positive(env.EVIDENCE_MAX_RESULT_BYTES, evidenceYaml.max_result_bytes, evidenceYaml.maxResultBytes, 32_000),
     maxFindResults: positive(env.EVIDENCE_MAX_FIND_RESULTS, evidenceYaml.max_find_results, evidenceYaml.maxFindResults, 200),
     maxScanFiles: positive(env.EVIDENCE_MAX_SCAN_FILES, evidenceYaml.max_scan_files, evidenceYaml.maxScanFiles, 60),
+    zoekt: { enabled: zoektEnabled },
   };
 }
 
@@ -8498,17 +8514,67 @@ async function main(options = {}) {
         const blobClient = navigationSnapshot && navigationToken
           ? createGitHubBlobClient({ token: navigationToken, fetchImplementation })
           : null;
+        // Zoekt review-time search pilot (ADR 0329, code_search_zoekt). Built once per
+        // review run -- not once per persona -- and shared by reference across every
+        // persona lane below, mirroring runTimedOutProviders further down. Best-effort:
+        // any failure (workdir materialization, missing zoekt/zoekt-index binaries,
+        // index build) leaves zoektRegistry null, and makeEvidenceRegistry below simply
+        // omits code_search_zoekt from the composed registry. The pre-existing
+        // GitHub-blob-backed tools (file_read, file_find, code_search, file_read_diff,
+        // library_docs) are entirely unaffected by a Zoekt failure -- a review must
+        // never fail because search failed.
+        let zoektRegistry = null;
+        if (typeof options.zoektRegistryFactory === 'function') {
+          // Test/operator injection point, same shape as evidenceRegistryFactory below:
+          // lets a caller substitute a fake-but-real registry (built by the real
+          // createZoektSearchTool against a real, fixture-built index, for example)
+          // without depending on the zoekt/zoekt-index binaries or live GitHub network
+          // access being present in the calling environment.
+          try {
+            zoektRegistry = await options.zoektRegistryFactory({ identity: navigationIdentity });
+          } catch (error) {
+            console.warn(`[Evidence] Zoekt registry factory failed: ${error.message || error}`);
+          }
+        } else if (evidenceRegistryConfig.zoekt?.enabled && navigationToken && navigationIdentity.repository && navigationIdentity.headSha) {
+          try {
+            const zoektScratchRoot = runtimeEnv.RUNNER_TEMP || require('os').tmpdir();
+            const zoektWorkdir = path.join(zoektScratchRoot, `zoekt-src-${navigationIdentity.headSha}`);
+            const materialized = await materializeReviewWorkdir({
+              repository: navigationIdentity.repository,
+              headSha: navigationIdentity.headSha,
+              token: navigationToken,
+              destDir: zoektWorkdir,
+              fetchImplementation,
+              signal: cancellation.signal,
+            });
+            if (materialized.status === 'ok') {
+              const zoektIndexDir = path.join(zoektScratchRoot, `zoekt-index-${navigationIdentity.headSha}`);
+              const built = await buildZoektIndex({ workdir: materialized.workdir, indexDir: zoektIndexDir });
+              if (built.status === 'ok') {
+                zoektRegistry = createZoektSearchTool({ identity: navigationIdentity, indexDir: zoektIndexDir, config: { enabled: true } });
+                console.log(`[Evidence] Zoekt index ready: ${built.shardCount ?? 0} shard(s) in ${built.elapsedMs}ms.`);
+              } else {
+                console.warn(`[Evidence] Zoekt index build unavailable: ${built.reason}`);
+              }
+            } else {
+              console.warn(`[Evidence] Zoekt workdir materialization unavailable: ${materialized.reason}`);
+            }
+          } catch (error) {
+            console.warn(`[Evidence] Zoekt review-time search unavailable: ${error.message || error}`);
+          }
+        }
         const makeEvidenceRegistry = (persona) => {
           if (typeof options.evidenceRegistryFactory === 'function') return options.evidenceRegistryFactory({ identity: navigationIdentity, snapshot: navigationSnapshot, persona });
           if (options.evidenceRegistry && typeof options.evidenceRegistry.call === 'function') return options.evidenceRegistry;
           if (navigationSnapshot && blobClient) {
             try {
-              return createReviewNavigationToolRegistry({
+              const navRegistry = createReviewNavigationToolRegistry({
                 identity: navigationIdentity,
                 snapshot: navigationSnapshot,
                 blobClient,
                 config: evidenceRegistryConfig,
               });
+              return zoektRegistry ? composeEvidenceRegistries([navRegistry, zoektRegistry]) : navRegistry;
             } catch (error) {
               // Monorepos used to throw "must contain a bounded file list" here and
               // kill the entire review before any persona completed. Degrade soft.

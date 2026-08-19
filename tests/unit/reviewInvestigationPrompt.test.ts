@@ -41,6 +41,37 @@ describe('bounded investigation prompt', () => {
     expect(messages[0].content).toMatch(/library_docs .*never accepts, needs, or returns a URL, host, header, or credential/);
   });
 
+  it('teaches every persona a shared tool-composition strategy naming search, read, and docs tools by name', () => {
+    const messages = buildInvestigationMessages({ persona: { id: 'security', charter: 'review auth' }, manifest: 'src/a.js', diffText: '+guard()', remaining: { calls: 12, turns: 4 } });
+    const system = messages[0].content;
+    expect(system).toContain('Tool strategy');
+    expect(system).toContain('code_search_zoekt');
+    expect(system).toContain('code_search');
+    expect(system).toContain('file_read');
+    expect(system).toContain('file_read_diff');
+    expect(system).toContain('file_find');
+    expect(system).toContain('library_docs');
+    // The composition instruction itself must name the two failure modes it exists to
+    // prevent: inferring a claim from the diff instead of resolving it, and asserting
+    // cross-file impact without a search that actually enumerated the callers.
+    expect(system).toMatch(/never infer that from the diff alone/);
+    expect(system).toMatch(/must be backed by a search that actually enumerated the callers/);
+  });
+
+  it('omits the tool-composition strategy when evidence tools are disabled for the review', () => {
+    const messages = buildInvestigationMessages({ persona: { id: 'security', charter: 'review auth' }, manifest: 'src/a.js', diffText: '+guard()', remaining: { calls: 0, turns: 0 }, evidenceEnabled: false });
+    expect(messages[0].content).not.toContain('Tool strategy');
+  });
+
+  it('keeps the shared composition instruction bounded -- a handful of lines, not a second charter', () => {
+    const messages = buildInvestigationMessages({ persona: { id: 'security', charter: 'review auth' }, manifest: 'src/a.js', diffText: '+guard()', remaining: { calls: 12, turns: 4 } });
+    const strategyLine = messages[0].content.split('\n').find((line: string) => line.startsWith('Tool strategy'));
+    expect(strategyLine).toBeTruthy();
+    // Wrapped at a normal terminal width, this should read as well under 15 lines --
+    // asserted here as a hard character budget so the ceiling cannot silently drift.
+    expect((strategyLine as string).length).toBeLessThan(1_100);
+  });
+
   it('parses an evidence request and preserves the normalized boundary', () => {
     const parsed = parseInvestigationResponse(JSON.stringify(baseResponse), limits, { personaId: 'security' });
     expect(parsed).toMatchObject({ reviewStatus: 'NEEDS_EVIDENCE', riskPlan: [{ id: 'risk-1' }], evidenceRequests: [{ personaId: 'security', riskId: 'risk-1', tool: 'file_read' }] });
