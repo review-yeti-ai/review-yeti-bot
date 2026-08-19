@@ -57,6 +57,7 @@ validated promotion create the `v1` branch, remove any historical `v1` tag, then
 and require the workflow validation checks for all later changes. After bootstrap, the promotion
 workflow is the only writer to `v1`; operators roll back by reverting `main` and allowing the
 same fast-forward promotion path to record that rollback in branch history.
+The migration is complete once `refs/heads/v1` exists; the legacy tag must not be recreated.
 
 ## Release procedure
 
