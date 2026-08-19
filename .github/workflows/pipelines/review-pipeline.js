@@ -211,6 +211,10 @@ const STRICT_INVESTIGATION_RESPONSE_SCHEMA = Object.freeze({
 });
 
 function responseFormatForPolicy(policy, { investigation = false } = {}) {
+  // Some OpenRouter model families (including DeepSeek V4 Flash 0731) do not accept
+  // response_format at all. The trusted transport may explicitly opt out while retaining
+  // SSE and the prompt-level JSON contract; the parser still validates the returned envelope.
+  if (policy?.structuredOutput === 'none') return undefined;
   if (investigation && policy?.structuredOutput === 'strict') {
     return {
       type: 'json_schema',
@@ -3047,7 +3051,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       { role: 'user', content: userPrompt },
     ],
     temperature: 0.1,
-    response_format: responseFormatForPolicy(orPolicy, { investigation: options.rawTurn === true }),
+    ...(() => {
+      const responseFormat = responseFormatForPolicy(orPolicy, { investigation: options.rawTurn === true });
+      return responseFormat ? { response_format: responseFormat } : {};
+    })(),
     ...(options.reasoningEffort
       ? (gateway.isOpenRouter
         ? { reasoning: { effort: options.reasoningEffort } }
