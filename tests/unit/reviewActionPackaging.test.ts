@@ -118,9 +118,9 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['action-sha'].description).toMatch(/40-hex commit SHA/i);
   });
 
-  it('defaults OpenRouter routing to the certified provider cohort without fallback escape', () => {
+  it('does not force a single provider cohort while retaining fail-closed fallback behavior', () => {
     expect(action.inputs['openrouter-provider-routing'].default).toBe(
-      '{"only":["morph"],"allow_fallbacks":false}',
+      '{"allow_fallbacks":false}',
     );
   });
 
