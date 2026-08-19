@@ -6848,11 +6848,19 @@ function writeReviewDispatchArtifacts(receipt, { cwd = process.cwd(), fileSystem
 }
 
 /**
- * Reads local repository .review-yeti.yaml or .coderabbit.yaml if present in checked-out repo.
+ * Reads local repository .review-yeti.yaml if present in checked-out repo.
  * Allows local repository overrides for active personas, path filters, model overrides, and effort levels.
+ *
+ * .coderabbit.yaml/.yml were deliberately REMOVED from the candidate list:
+ * that fallback silently parsed another product's config file as Review Yeti
+ * policy. Observed live twice — a consumer repo's .coderabbit.yaml was read
+ * from the base ref with zero model policy during the routing incident, and
+ * central-workflow validation later had to forbid the file entirely to keep
+ * it from shadowing explicit inputs. Review Yeti config lives only in files
+ * named for Review Yeti.
  */
 function loadLocalRepoConfig(configRoot = resolveConfigRoot()) {
-  const candidates = ['.review-yeti.yaml', '.review-yeti.yml', '.coderabbit.yaml', '.coderabbit.yml'];
+  const candidates = ['.review-yeti.yaml', '.review-yeti.yml'];
   let parseFailure = null;
   for (const file of candidates) {
     const fullPath = path.resolve(configRoot, file);

@@ -628,7 +628,10 @@ runs:
 
         echo "Reading reviewer configuration from $REPO@$REF"
 
-        for f in .review-yeti.yaml .review-yeti.yml .coderabbit.yaml .coderabbit.yml; do
+        # .coderabbit.yaml/.yml deliberately excluded: another product's config
+        # must never be silently parsed as Review Yeti policy (see
+        # loadLocalRepoConfig in review-pipeline.js for the incident history).
+        for f in .review-yeti.yaml .review-yeti.yml; do
           if gh api "repos/$REPO/contents/$f?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/$f" 2>/dev/null; then
             echo "  found $f"
             break
