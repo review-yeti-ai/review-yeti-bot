@@ -11,6 +11,8 @@
         "api_key_env": "FIREWORKS_PR_REVIEW_API_KEY",
         "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
         "compat": "openai",
+        "timeout_ms": 180000,
+        "connect_timeout_ms": 60000,
         "structured_output": "strict"
       },
       {
@@ -19,14 +21,16 @@
         "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
         "model": "deepseek-v4-flash:0731",
         "compat": "openai",
+        "timeout_ms": 180000,
+        "connect_timeout_ms": 60000,
         "structured_output": "strict"
       }
     ],
     "openrouter_stream": "true",
-    "openrouter_timeout_ms": "120000",
-    "openrouter_ttft_ms": "30000",
-    "openrouter_max_attempts": "1",
-    "lane_deadline_ms": "420000",
+    "openrouter_timeout_ms": "180000",
+    "openrouter_ttft_ms": "60000",
+    "openrouter_max_attempts": "2",
+    "lane_deadline_ms": "600000",
     "max_investigation_turns": "3",
     "max_diff_chars": "2000000",
     "max_file_diff_chars": "60000",

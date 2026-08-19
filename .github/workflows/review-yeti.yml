@@ -37,7 +37,7 @@ jobs:
   review:
     name: Review Yeti
     runs-on: blacksmith-2vcpu-ubuntu-2404-arm
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       REVIEW_REPOSITORY: ${{ inputs.repository }}
       REVIEW_PR_NUMBER: ${{ inputs.pr-number }}
