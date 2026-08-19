@@ -1,7 +1,26 @@
 'use strict';
 
 const SHA = /^[a-f0-9]{40,64}$/iu;
-const MAX_FILES = 5_000;
+
+// The snapshot is a path index, not a content cache: every entry is
+// { path, blobSha, ref } plus, for changed files only, the patch text already
+// held elsewhere in the run. File contents are fetched lazily per read, one
+// GitHub blob request at a time, and are never materialised here.
+//
+// The old 5,000-entry cap was therefore not protecting memory or API calls in
+// any meaningful sense — it was protecting nothing and blinding the reviewer.
+// A 16,000-file repository indexes base+head as ~32,000 entries at roughly
+// 200 bytes each: ~6-7 MB, against a runner with gigabytes. What the cap
+// actually did was make >84% of that repository return `file_not_in_snapshot`
+// on every evidence read, so a reviewer asking to see the helper a test calls
+// was told the file does not exist.
+//
+// The ceiling that remains is a runaway backstop against a pathological tree
+// (or a hostile one), not a review budget. It is deliberately far above any
+// real repository. Both trees come from ONE `git/trees?recursive=1` request
+// per ref regardless of this number, so raising it costs zero extra API calls
+// and only the JSON parse and Map memory for entries GitHub already sent.
+const MAX_FILES = 400_000;
 
 function validPath(value) {
   return typeof value === 'string'
@@ -35,18 +54,18 @@ function changedFilePaths(changedFiles) {
   return paths;
 }
 
-function capTreeEntries(entries, priorityPaths) {
-  if (entries.length <= MAX_FILES) return entries;
+function capTreeEntries(entries, priorityPaths, maxFiles = MAX_FILES) {
+  if (entries.length <= maxFiles) return entries;
   const preferred = [];
   const rest = [];
   for (const entry of entries) {
     if (priorityPaths?.has(entry.path)) preferred.push(entry);
     else rest.push(entry);
   }
-  return [...preferred, ...rest].slice(0, MAX_FILES);
+  return [...preferred, ...rest].slice(0, maxFiles);
 }
 
-async function fetchTree({ repository, ref, label, token, fetchImplementation, apiBaseUrl, signal, priorityPaths }) {
+async function fetchTree({ repository, ref, label, token, fetchImplementation, apiBaseUrl, signal, priorityPaths, maxFiles = MAX_FILES }) {
   const response = await fetchImplementation(`${apiOrigin(apiBaseUrl)}/repos/${repository}/git/trees/${ref}?recursive=1`, {
     method: 'GET',
     headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
@@ -58,7 +77,7 @@ async function fetchTree({ repository, ref, label, token, fetchImplementation, a
   const allEntries = payload.tree
     .filter((entry) => entry?.type === 'blob' && validPath(entry.path) && SHA.test(String(entry.sha || '')))
     .map((entry) => ({ path: entry.path, blobSha: String(entry.sha).toLowerCase(), ref: label }));
-  return { entries: capTreeEntries(allEntries, priorityPaths), truncated: payload.truncated === true || allEntries.length > MAX_FILES };
+  return { entries: capTreeEntries(allEntries, priorityPaths, maxFiles), truncated: payload.truncated === true || allEntries.length > maxFiles };
 }
 
 function overlayChangedFiles(entries, changedFiles, ref) {
@@ -119,16 +138,16 @@ function boundSnapshotFiles(files, changedFiles, maxFiles = MAX_FILES) {
   return { files: selected, truncated: true };
 }
 
-async function fetchImmutableRepositorySnapshot({ identity, changedFiles = [], token, fetchImplementation = globalThis.fetch, apiBaseUrl = 'https://api.github.com', signal } = {}) {
+async function fetchImmutableRepositorySnapshot({ identity, changedFiles = [], token, fetchImplementation = globalThis.fetch, apiBaseUrl = 'https://api.github.com', signal, maxFiles = MAX_FILES } = {}) {
   if (!identity || !validRepository(identity.repository) || !SHA.test(String(identity.baseSha || '')) || !SHA.test(String(identity.headSha || ''))) throw new Error('immutable navigation identity is invalid');
   if (!token || typeof token !== 'string' || typeof fetchImplementation !== 'function') throw new Error('immutable navigation snapshot requires token and fetch');
   const priorityPaths = changedFilePaths(changedFiles);
   const [base, head] = await Promise.all([
-    fetchTree({ repository: identity.repository, ref: identity.baseSha, label: 'base', token, fetchImplementation, apiBaseUrl, signal, priorityPaths }),
-    fetchTree({ repository: identity.repository, ref: identity.headSha, label: 'head', token, fetchImplementation, apiBaseUrl, signal, priorityPaths }),
+    fetchTree({ repository: identity.repository, ref: identity.baseSha, label: 'base', token, fetchImplementation, apiBaseUrl, signal, priorityPaths, maxFiles }),
+    fetchTree({ repository: identity.repository, ref: identity.headSha, label: 'head', token, fetchImplementation, apiBaseUrl, signal, priorityPaths, maxFiles }),
   ]);
   const combined = overlayChangedFiles([...base.entries, ...head.entries], changedFiles, 'head');
-  const bounded = boundSnapshotFiles(combined, changedFiles, MAX_FILES);
+  const bounded = boundSnapshotFiles(combined, changedFiles, maxFiles);
   const truncated = base.truncated || head.truncated || bounded.truncated;
   return Object.freeze({
     schemaVersion: 'review-navigation-snapshot-v1',

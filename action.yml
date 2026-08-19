@@ -198,6 +198,32 @@ inputs:
       INCOMPLETE_REVIEW and blocks merge approval; it is never treated as a clean approval.
     required: false
     default: '2'
+  evidence-max-calls:
+    description: >-
+      Bounded read-only evidence tool calls one persona lane may make (default 100, the hard
+      ceiling in src/review/evidenceContracts.js). These are file_read / file_find / code_search
+      / file_read_diff against the immutable base and head trees. They are NOT provider HTTP
+      calls: they do not spend lane-call-budget and they do not cost model tokens beyond the
+      bytes they return, which evidence-max-result-bytes bounds. This was hardcoded to 12 --
+      below the contract's own default of 24 -- which is about two file reads per risk on a
+      three-risk plan, and lanes stopped investigating rather than run out. Leave empty to use
+      review.investigation.evidence.max_calls from .review-yeti.yaml.
+    required: false
+    default: ''
+  evidence-max-scan-files:
+    description: >-
+      Files one code_search call may read (default 60). This is the only evidence limit with
+      real network cost: each scanned file is a separate GitHub blob request, so raising it
+      raises latency and API spend roughly linearly. A whole-repository search is deliberately
+      not offered over this transport at any setting.
+    required: false
+    default: ''
+  evidence-max-result-bytes:
+    description: >-
+      Bytes one evidence tool result may return to the model (default 32000). Bounds prompt
+      growth, which is the token cost of investigation.
+    required: false
+    default: ''
   exclude:
     description: >-
       Extra comma-separated path globs to skip, on top of the built-in generated-content list
@@ -755,6 +781,9 @@ runs:
         OPENROUTER_MAX_ATTEMPTS: ${{ inputs.openrouter-max-attempts }}
         LANE_DEADLINE_MS: ${{ inputs.lane-deadline-ms }}
         LANE_CALL_BUDGET: ${{ inputs.lane-call-budget }}
+        EVIDENCE_MAX_CALLS: ${{ inputs.evidence-max-calls }}
+        EVIDENCE_MAX_SCAN_FILES: ${{ inputs.evidence-max-scan-files }}
+        EVIDENCE_MAX_RESULT_BYTES: ${{ inputs.evidence-max-result-bytes }}
         # Ensure bare requires (js-yaml) resolve from the action install even if
         # Node's walk-up from pipelines/ is disrupted on some runners.
         NODE_PATH: ${{ github.action_path }}/node_modules

@@ -1,10 +1,16 @@
 'use strict';
 
 const { createLibraryDocsClient } = require('./libraryDocsTool');
+const { MAX_FILES: MAX_SNAPSHOT_FILES } = require('./reviewNavigationSnapshot.js');
 
+// Evidence tool calls are local reads against an already-fetched path index plus, for the two
+// tools that need content, one GitHub blob GET per distinct file. They do not consume the
+// per-lane provider HTTP budget and they do not cost model tokens beyond the bytes they return,
+// which maxResultBytes already bounds. The defaults are therefore generous; the per-lane
+// wall-clock deadline remains the real cost governor.
 const DEFAULTS = Object.freeze({
   enabled: false,
-  maxCalls: 12,
+  maxCalls: 24,
   maxReadBytes: 32 * 1024,
   maxResultBytes: 8 * 1024,
   maxFindResults: 50,
@@ -28,11 +34,15 @@ const DEFAULTS = Object.freeze({
   context7MaxResultBytes: 4_000,
   context7MaxSnippets: 3,
 });
+// maxCalls matches HARD_INVESTIGATION_LIMITS.maxCalls in src/review/evidenceContracts.js so the
+// registry can never silently be the lower of the two ceilings again — it was 40 here and 12 at
+// the pipeline's call site, which made the documented contract limit of 100 unreachable and the
+// real limit undocumented.
 const MAX_LIMITS = Object.freeze({
-  maxCalls: 40,
+  maxCalls: 100,
   maxReadBytes: 64 * 1024,
   maxResultBytes: 64 * 1024,
-  maxFindResults: 50,
+  maxFindResults: 200,
   maxScanFiles: 200,
   timeoutMs: 5_000,
   codeSearchWallClockMs: 4_000,
@@ -56,6 +66,10 @@ function resolveConfig(config = {}) {
     maxFindResults: boundedInteger(config.maxFindResults, DEFAULTS.maxFindResults, MAX_LIMITS.maxFindResults),
     maxScanFiles: boundedInteger(config.maxScanFiles, DEFAULTS.maxScanFiles, MAX_LIMITS.maxScanFiles),
     timeoutMs: boundedInteger(config.timeoutMs, DEFAULTS.timeoutMs, MAX_LIMITS.timeoutMs),
+    // Runaway backstop on the path index, not a review budget — see MAX_FILES in
+    // reviewNavigationSnapshot.js. Overridable so the guard can be exercised at a size a test
+    // can actually allocate; nothing in production sets it.
+    maxSnapshotFiles: boundedInteger(config.maxSnapshotFiles, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILES),
     codeSearchWallClockMs: boundedInteger(config.codeSearchWallClockMs, DEFAULTS.codeSearchWallClockMs, MAX_LIMITS.codeSearchWallClockMs),
     context7TimeoutMs: boundedInteger(config.context7TimeoutMs, DEFAULTS.context7TimeoutMs, MAX_LIMITS.context7TimeoutMs),
     context7MaxResultBytes: boundedInteger(config.context7MaxResultBytes, DEFAULTS.context7MaxResultBytes, MAX_LIMITS.context7MaxResultBytes),
@@ -179,14 +193,18 @@ function validIdentity(identity) {
     && (!identity?.baseSha || SHA.test(String(identity.baseSha)));
 }
 
-function normalizeSnapshot(snapshot, identity) {
+function normalizeSnapshot(snapshot, identity, maxSnapshotFiles = MAX_SNAPSHOT_FILES) {
   if (!snapshot || snapshot.repository !== identity.repository || snapshot.headSha !== identity.headSha) {
     throw new Error('review navigation snapshot must match the immutable review identity');
   }
   if (identity.baseSha && snapshot.baseSha !== identity.baseSha) {
     throw new Error('review navigation snapshot base SHA must match the immutable review identity');
   }
-  if (!Array.isArray(snapshot.files) || snapshot.files.length > 5_000) {
+  // Same runaway backstop the producer applies, imported rather than restated so the two cannot
+  // drift apart. They did: this side kept a literal 5,000 of its own, and a snapshot the producer
+  // considered valid was rejected here — which does not degrade to "that file is unreachable", it
+  // throws and disables evidence tooling for the whole review.
+  if (!Array.isArray(snapshot.files) || snapshot.files.length > maxSnapshotFiles) {
     throw new Error('review navigation snapshot must contain a bounded file list');
   }
   // A malformed individual record (an overlong or unusual path, an unexpected ref, a duplicate
@@ -377,7 +395,7 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
   if (!validIdentity(identity)) throw new Error('review navigation requires a valid immutable review identity');
   if (!blobClient || typeof blobClient.getBlob !== 'function') throw new Error('review navigation requires a read-only GitHub blob client');
   const effectiveConfig = resolveConfig(config);
-  const files = normalizeSnapshot(snapshot, identity);
+  const files = normalizeSnapshot(snapshot, identity, effectiveConfig.maxSnapshotFiles);
   // library_docs (Context7). Unlike blobClient, this is optional and fails soft: with no
   // CONTEXT7_API_KEY configured (the common case -- most repos/runs never set it), docsClient
   // is simply disabled and every library_docs call returns 'unavailable' / 'context7_disabled',
@@ -461,7 +479,18 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
         // for the given ref, bounded by maxScanFiles below, so a repo-wide query works without
         // the caller first having to discover exact paths via file_find.
         const explicitPaths = Array.isArray(args.paths) ? [...new Set(args.paths.map((path) => String(path).trim()))] : null;
-        const candidatePaths = explicitPaths ?? [...files.values()].filter((file) => file.ref === ref).map((file) => file.path).sort();
+        // An unscoped search reads the first maxScanFiles paths in sort order, which on a large
+        // repository is an arbitrary alphabetical slice rather than the subtree the reviewer
+        // meant. pathPrefix narrows the candidate set to the part of the tree being asked about
+        // before that slice is taken, and orders shortest-path-first so an over-matching prefix
+        // reads the files nearest the root of the requested subtree. Still bounded by
+        // maxScanFiles and the wall clock: each candidate that survives is one blob GET.
+        const prefix = String(args.pathPrefix || '').trim().replace(/^\/+/u, '');
+        if (prefix.length > 500) return { status: 'invalid', ...receipt(tool, { reason: 'invalid path prefix' }) };
+        const candidatePaths = explicitPaths ?? [...files.values()]
+          .filter((file) => file.ref === ref && (!prefix || file.path.startsWith(prefix)))
+          .map((file) => file.path)
+          .sort(prefix ? (left, right) => left.length - right.length || left.localeCompare(right) : undefined);
         const paths = candidatePaths.slice(0, effectiveConfig.maxScanFiles);
         const matches = [];
         let usedBytes = 0;
