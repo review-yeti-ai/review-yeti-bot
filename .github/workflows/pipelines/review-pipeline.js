@@ -3013,6 +3013,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   // caller reviewing a single lane in isolation) -- fail open to local-only banning rather than
   // require this everywhere.
   const runTimedOutProviders = options.runTimedOutProviders instanceof Set ? options.runTimedOutProviders : null;
+  const quarantineProviderTimeouts = options.providerTimeoutQuarantine !== false;
   const explicitIgnoredProviders = [...new Set(
     (Array.isArray(options.providerIgnore) ? options.providerIgnore : [])
       .map(normalizeProviderSlug)
@@ -3080,7 +3081,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       // OpenAI-compatible gateways reject unknown fields (Fireworks: HTTP 400
       // "Extra inputs are not permitted, field: 'provider'"), so neither is
       // attached off-OpenRouter.
-      ...(gateway.isOpenRouter && sessionSticky && timedOutProviders.size === 0 ? { session_id: sessionModel } : {}),
+      ...(gateway.isOpenRouter && sessionSticky && timedOutProviders.size === 0 && !streamRetryRequested ? { session_id: sessionModel } : {}),
       ...requestBodyBase,
       ...(gateway.isOpenRouter && providerRouting ? { provider: providerRouting } : {}),
     };
@@ -3273,6 +3274,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               console.warn(
                 `${modelLogPrefix} TTFT_TIMEOUT persona=${persona.id} elapsed_ms=${elapsedMs}`
                 + ` ttft_budget_ms=${ttftMs} — not banned (sort:latency remains routing authority)`,
+              );
+            } else if (!quarantineProviderTimeouts) {
+              streamRetryRequested = true;
+              console.warn(
+                `${modelLogPrefix} RETRY reason=${phase}_timeout persona=${persona.id}`
+                + ` elapsed_ms=${elapsedMs} connect_budget_ms=${connectTimeoutMs}`
+                + ` total_budget_ms=${timeoutMs}`
+                + ' — provider not banned; OpenRouter routing remains authoritative',
               );
             } else if (timedOutProvider && timedOutProvider !== 'openrouter') {
               timedOutProviders.add(timedOutProvider);
@@ -3586,6 +3595,7 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       ...(transport.stream === true ? { preferStream: true } : {}),
       reasoningEffort: transport.reasoningEffort,
       perfMetricsInResponse: transport.perfMetricsInResponse,
+      providerTimeoutQuarantine: transport.quarantineOnTimeout,
       gatewayCompat: transport.compat,
       transportName: transport.name,
     };

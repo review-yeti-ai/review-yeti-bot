@@ -29,6 +29,7 @@ const openrouterEntry = {
   model: 'deepseek/deepseek-v4-flash-0731',
   stream: true,
   reasoning_effort: 'max',
+  quarantine_on_timeout: false,
   provider_routing: { order: ['coreweave', 'phala'], allow_fallbacks: false, data_collection: 'deny' },
 };
 const bothKeys = { FIREWORKS_PR_REVIEW_API_KEY: 'fw-key', OPENROUTER_PR_REVIEW_API_KEY: 'or-key' };
@@ -47,7 +48,7 @@ describe('resolveTransportPlan', () => {
     expect(plan!.transports.map((t: any) => t.name)).toEqual(['fireworks', 'openrouter-fallback']);
     expect(plan!.transports[0]).toMatchObject({ compat: 'openai', apiKey: 'fw-key', baseUrl: 'https://api.fireworks.ai/inference/v1' });
     expect(plan!.transports[0]).toMatchObject({ stream: true, reasoningEffort: 'max', perfMetricsInResponse: true });
-    expect(plan!.transports[1]).toMatchObject({ compat: 'openrouter', apiKey: 'or-key', stream: true, reasoningEffort: 'max' });
+    expect(plan!.transports[1]).toMatchObject({ compat: 'openrouter', apiKey: 'or-key', stream: true, reasoningEffort: 'max', quarantineOnTimeout: false });
     // OpenRouter entries get the full normalized policy: hard bans + declared routing.
     expect(plan!.transports[1].openRouterPolicy.providerRouting).toMatchObject({ order: ['coreweave', 'phala'], allow_fallbacks: false });
     expect(plan!.transports[1].openRouterPolicy.ignoredProviders).toContain('deepinfra');
@@ -122,6 +123,10 @@ describe('resolveTransportPlan', () => {
       { parsed: { github_action: { transports: [{ ...fireworksEntry, perf_metrics_in_response: 'yes' }] } } },
       bothKeys,
     )).toThrow(/perf_metrics_in_response/);
+    expect(() => resolveTransportPlan(
+      { parsed: { github_action: { transports: [{ ...openrouterEntry, quarantine_on_timeout: 'no' }] } } },
+      bothKeys,
+    )).toThrow(/quarantine_on_timeout/);
   });
 });
 
@@ -161,7 +166,7 @@ describe('reviewWithTransports', () => {
     expect(attempts.map((a) => a.transportName)).toEqual(['fireworks', 'openrouter-fallback']);
     expect(attempts[0]).toMatchObject({ apiKey: 'fw-key', baseUrl: 'https://api.fireworks.ai/inference/v1', gatewayCompat: 'openai' });
     expect(attempts[0]).toMatchObject({ preferStream: true, reasoningEffort: 'max', perfMetricsInResponse: true });
-    expect(attempts[1]).toMatchObject({ apiKey: 'or-key', baseUrl: 'https://openrouter.ai/api/v1', gatewayCompat: 'openrouter', preferStream: true, reasoningEffort: 'max' });
+    expect(attempts[1]).toMatchObject({ apiKey: 'or-key', baseUrl: 'https://openrouter.ai/api/v1', gatewayCompat: 'openrouter', preferStream: true, reasoningEffort: 'max', providerTimeoutQuarantine: false });
     expect(attempts[1].transportPlan).toBeUndefined();
     expect(result).toMatchObject({ ok: true, provider: 'coreweave' });
   });
