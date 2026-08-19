@@ -132,6 +132,13 @@ export async function runSmoke({ policy, policyPath, env = process.env, fetchImp
     throw new Error('no healthy Review Yeti transport; refusing to run the review panel');
   }
 
+  const unhealthy = results
+    .filter((result) => result.status === 'unhealthy')
+    .map((result) => `${result.name}${result.code ? ` (${result.code})` : ''}`);
+  if (unhealthy.length > 0) {
+    throw new Error(`configured Review Yeti transport smoke failed: ${unhealthy.join(', ')}`);
+  }
+
   if (env.GITHUB_STEP_SUMMARY) {
     appendFileSync(env.GITHUB_STEP_SUMMARY, [
       '## Review Yeti transport smoke test',

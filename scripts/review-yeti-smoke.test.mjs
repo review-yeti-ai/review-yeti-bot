@@ -79,6 +79,25 @@ test('the smoke suite fails closed when no provider can complete the real reques
   assert.equal(JSON.stringify(logs).includes('secret'), false);
 });
 
+test('the smoke suite blocks the panel when a configured fallback is unhealthy', async () => {
+  await assert.rejects(
+    runSmoke({
+      policy: policyFixture(),
+      env: {
+        FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+        OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
+        OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
+      },
+      fetchImpl: async (url) => {
+        if (url.startsWith('https://openrouter.test/')) return { ok: false, status: 401, json: async () => ({}) };
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }) };
+      },
+      log: () => {},
+    }),
+    /configured Review Yeti transport smoke failed: openrouter-fallback \(http_401\)/,
+  );
+});
+
 test('the smoke suite treats missing keys as unavailable and still accepts a healthy fallback', async () => {
   const result = await runSmoke({
     policy: policyFixture(),
