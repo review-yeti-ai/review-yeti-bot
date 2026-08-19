@@ -214,4 +214,175 @@ describe('review navigation tools', () => {
         .toThrow('review navigation snapshot must contain a bounded file list');
     });
   });
+
+  describe('code_search: repo-wide search (paths_required removed)', () => {
+    it('searches every file for the ref when no paths are supplied', async () => {
+      const { registry: tools, blobClient } = registry();
+
+      const result = await tools.call('code_search', { query: 'matched' });
+
+      expect(result).toMatchObject({ status: 'ok', tool: 'code_search', regex: false, requestedFiles: 2 });
+      expect(result.matches).toEqual([{ path: 'src/app.js', line: 1, text: 'const matched = true;' }]);
+      // Both snapshot files for `ref: head` were candidates; only the matching one needed a blob fetch call
+      // for its content to be scanned -- but the README was scanned too and simply had no match.
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(2);
+    });
+
+    it('still honors an explicit paths list exactly as before (no regression)', async () => {
+      const { registry: tools, blobClient } = registry();
+
+      const result = await tools.call('code_search', { query: 'matched', paths: ['src/app.js'] });
+
+      expect(result).toMatchObject({ status: 'ok', requestedFiles: 1, scannedFiles: 1 });
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds a repo-wide scan to maxScanFiles', async () => {
+      const manyFiles = Array.from({ length: 5 }, (_, i) => ({ path: `src/f${i}.js`, blobSha: `${i}`.repeat(40), patch: '' }));
+      const wideSnapshot = { ...snapshot, files: [...snapshot.files, ...manyFiles] };
+      const blobClient = { getBlob: vi.fn(async ({ blobSha }: { blobSha: string }) => ({ sha: blobSha, content: 'no match here\n' })) };
+      const tools = createReviewNavigationToolRegistry({
+        identity,
+        snapshot: wideSnapshot,
+        config: { enabled: true, maxCalls: 4, maxReadBytes: 128, maxResultBytes: 256, maxFindResults: 50, maxScanFiles: 3, timeoutMs: 1000 },
+        blobClient,
+      });
+
+      const result = await tools.call('code_search', { query: 'nothing-will-match' });
+
+      expect(result.requestedFiles).toBe(3);
+      expect(result.truncated).toBe(true);
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('code_search: bounded regex mode', () => {
+    it('matches a safe regex pattern across the whole ref', async () => {
+      const { registry: tools } = registry();
+
+      const result = await tools.call('code_search', { query: 'match(ed)?', regex: true });
+
+      expect(result).toMatchObject({ status: 'ok', regex: true });
+      expect(result.matches).toEqual([{ path: 'src/app.js', line: 1, text: 'const matched = true;' }]);
+    });
+
+    it('rejects an overlong regex pattern', async () => {
+      const { registry: tools } = registry();
+
+      const result = await tools.call('code_search', { query: `a${'*b'.repeat(150)}`, regex: true });
+
+      expect(result).toMatchObject({ status: 'invalid', reason: 'invalid code query' });
+    });
+
+    it('rejects a syntactically invalid regex without throwing', async () => {
+      const { registry: tools } = registry();
+
+      const result = await tools.call('code_search', { query: '(unterminated', regex: true });
+
+      expect(result).toMatchObject({ status: 'invalid', reason: 'invalid code query' });
+    });
+
+    // Negative security case (required): classic catastrophic-backtracking shapes are rejected
+    // before a RegExp is ever constructed or executed against untrusted repository text.
+    it('rejects classic catastrophic-backtracking (ReDoS) patterns', async () => {
+      const { registry: tools } = registry({ config: { enabled: true, maxCalls: 20, maxReadBytes: 128, maxResultBytes: 256, maxFindResults: 2, timeoutMs: 1000 } });
+      const evilPatterns = ['(a+)+', '(a|a)*', '(a|ab)*', '(.*)+', '([a-zA-Z]+)*'];
+
+      for (const query of evilPatterns) {
+        const result = await tools.call('code_search', { query, regex: true });
+        expect(result, `pattern ${query} should be rejected`).toMatchObject({ status: 'invalid', reason: 'invalid code query' });
+      }
+    });
+
+    it('rejects backreferences and lookaround', async () => {
+      const { registry: tools } = registry();
+
+      await expect(tools.call('code_search', { query: '(a)\\1', regex: true })).resolves.toMatchObject({ status: 'invalid', reason: 'invalid code query' });
+      await expect(tools.call('code_search', { query: '(?=abc)', regex: true })).resolves.toMatchObject({ status: 'invalid', reason: 'invalid code query' });
+      await expect(tools.call('code_search', { query: '(?<!abc)x', regex: true })).resolves.toMatchObject({ status: 'invalid', reason: 'invalid code query' });
+    });
+  });
+
+  describe('library_docs', () => {
+    function contextResult(overrides: Record<string, unknown> = {}) {
+      return { status: 'ok', library: 'react', topic: 'hooks', snippets: [{ title: 't', content: 'c' }], truncated: false, byteCount: 10, ...overrides };
+    }
+
+    it('is unavailable with context7_disabled when no Context7 client/key is configured', async () => {
+      const fetchDocs = vi.fn(async () => ({ status: 'unavailable', reason: 'context7_disabled' }));
+      const { registry: tools } = registry({ context7Client: { enabled: false, fetchDocs } });
+
+      const result = await tools.call('library_docs', { library: 'react', topic: 'hooks' });
+
+      expect(result).toMatchObject({ status: 'unavailable', reason: 'context7_disabled', tool: 'library_docs', identity });
+    });
+
+    it('delegates library and topic to the injected Context7 client and returns bounded snippets', async () => {
+      const fetchDocs = vi.fn(async () => contextResult());
+      const { registry: tools } = registry({ context7Client: { enabled: true, fetchDocs } });
+
+      const result = await tools.call('library_docs', { library: 'react', topic: 'hooks' });
+
+      expect(fetchDocs).toHaveBeenCalledWith(expect.objectContaining({ library: 'react', topic: 'hooks' }));
+      expect(result).toMatchObject({ status: 'ok', tool: 'library_docs', library: 'react', topic: 'hooks', identity });
+      expect(result.snippets).toEqual([{ title: 't', content: 'c' }]);
+    });
+
+    // Negative security case (required): the model-supplied args are the ONLY thing that
+    // crosses into the client -- no URL/host/header field is ever accepted or forwarded.
+    it('never forwards a model-supplied url/host/header field to the Context7 client', async () => {
+      const fetchDocs = vi.fn(async () => contextResult());
+      const { registry: tools } = registry({ context7Client: { enabled: true, fetchDocs } });
+
+      await tools.call('library_docs', {
+        library: 'react',
+        topic: 'hooks',
+        url: 'https://attacker.example/exfil',
+        host: 'attacker.example',
+        headers: { Authorization: 'Bearer stolen' },
+        baseUrl: 'https://attacker.example',
+      });
+
+      const passedArgs = fetchDocs.mock.calls[0][0];
+      expect(Object.keys(passedArgs).sort()).toEqual(['library', 'signal', 'topic'].sort());
+      expect(passedArgs.url).toBeUndefined();
+      expect(passedArgs.host).toBeUndefined();
+      expect(passedArgs.headers).toBeUndefined();
+      expect(passedArgs.baseUrl).toBeUndefined();
+    });
+
+    // Negative security case (required): a Context7 timeout degrades this call to unavailable,
+    // never throws, and the whole registry keeps serving other tool calls afterward.
+    it('degrades a Context7 timeout to unavailable and keeps the registry usable', async () => {
+      const fetchDocs = vi.fn(async () => ({ status: 'unavailable', reason: 'context7_timeout' }));
+      const { registry: tools, blobClient } = registry({ context7Client: { enabled: true, fetchDocs } });
+
+      const docsResult = await tools.call('library_docs', { library: 'react', topic: 'hooks' });
+      expect(docsResult).toMatchObject({ status: 'unavailable', reason: 'context7_timeout' });
+
+      // The rest of the registry (a completely different tool) is unaffected.
+      const readResult = await tools.call('file_read', { path: 'src/app.js', startLine: 1, endLine: 1 });
+      expect(readResult).toMatchObject({ status: 'ok' });
+      expect(blobClient.getBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it('honors the shared call budget like every other tool', async () => {
+      const fetchDocs = vi.fn(async () => contextResult());
+      const { registry: tools } = registry({
+        config: { enabled: true, maxCalls: 1, maxReadBytes: 128, maxResultBytes: 256, timeoutMs: 1000 },
+        context7Client: { enabled: true, fetchDocs },
+      });
+
+      await tools.call('library_docs', { library: 'react', topic: 'hooks' });
+      const second = await tools.call('library_docs', { library: 'react', topic: 'hooks' });
+
+      expect(second).toMatchObject({ status: 'unavailable', reason: 'call_budget_exhausted' });
+      expect(fetchDocs).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports library_docs in the registry capabilities', () => {
+      const { registry: tools } = registry();
+      expect(tools.capabilities.tools).toContain('library_docs');
+    });
+  });
 });

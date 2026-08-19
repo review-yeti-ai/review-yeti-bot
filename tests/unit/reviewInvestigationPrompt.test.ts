@@ -31,8 +31,14 @@ describe('bounded investigation prompt', () => {
     });
 
     expect(messages[0].content).toContain(`immutable dispatch assignment is ${assignedUnitId}`);
-    expect(messages[0].content).toContain('file_read, file_find, code_search, and file_read_diff');
+    expect(messages[0].content).toContain('file_read, file_find, code_search, file_read_diff, library_docs');
     expect(messages[1].content).toContain('"unit_id":"ru_..."');
+  });
+
+  it('tells the model library_docs takes only a library id and topic -- never a URL, host, header, or credential', () => {
+    const messages = buildInvestigationMessages({ persona: { id: 'security', charter: 'review auth' }, manifest: 'src/a.js', diffText: '+guard()', remaining: { calls: 12, turns: 4 } });
+    expect(messages[0].content).toContain('library_docs');
+    expect(messages[0].content).toMatch(/library_docs .*never accepts, needs, or returns a URL, host, header, or credential/);
   });
 
   it('parses an evidence request and preserves the normalized boundary', () => {
