@@ -12,6 +12,7 @@ export function runPersonaInvestigation(input: {
   persona: { id: string; name?: string; charter?: string };
   manifest?: string;
   diffText?: string;
+  diffFiles?: Array<{ path?: string; patch?: string }> | null;
   priorDecisionBlock?: string;
   optionalContextBlock?: string;
   limits?: Partial<InvestigationLimits>;
