@@ -711,7 +711,8 @@ const TRANSPORT_OPENROUTER_ONLY_KEYS = Object.freeze([
  *                 must end in _API_KEY or _KEY and may not name a CI credential
  *   model         required, gateway-native model id
  *   compat        'openai' | 'openrouter' (default: detected from base_url)
- *   fallback_models, timeout_ms, connect_timeout_ms, stream, structured_output
+ *   fallback_models, timeout_ms, connect_timeout_ms, stream, structured_output,
+ *   reasoning_effort, perf_metrics_in_response
  *                 optional; unset values inherit the global env/action inputs
  *   provider_routing, ignore_providers, data_collection, allowed_models,
  *   cost_quality_tradeoff, allow_banned_providers
@@ -807,6 +808,18 @@ function resolveTransportPlan(localConfig, env) {
       continue;
     }
 
+    const configuredReasoningEffort = raw.reasoning_effort ?? raw.reasoningEffort;
+    const reasoningEffort = configuredReasoningEffort === undefined || configuredReasoningEffort === null
+      ? undefined
+      : String(configuredReasoningEffort).trim().toLowerCase();
+    if (reasoningEffort !== undefined && !['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(reasoningEffort)) {
+      throw new Error(`transports[${index}] (${name}): reasoning_effort must be none, low, medium, high, xhigh, or max`);
+    }
+    const configuredPerfMetrics = raw.perf_metrics_in_response ?? raw.perfMetricsInResponse;
+    if (configuredPerfMetrics !== undefined && typeof configuredPerfMetrics !== 'boolean') {
+      throw new Error(`transports[${index}] (${name}): perf_metrics_in_response must be boolean`);
+    }
+
     // Reuse resolveOpenRouterPolicy for normalization/validation/clamping by
     // synthesizing a per-transport env. Unset per-transport values inherit the
     // caller's global inputs so one shared timeout/stream setting applies.
@@ -852,6 +865,8 @@ function resolveTransportPlan(localConfig, env) {
       timeoutMs: openRouterPolicy.timeoutMs,
       connectTimeoutMs: openRouterPolicy.connectTimeoutMs,
       stream: openRouterPolicy.stream,
+      reasoningEffort,
+      perfMetricsInResponse: configuredPerfMetrics === true,
       openRouterPolicy,
     }));
   }
