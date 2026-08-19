@@ -262,6 +262,71 @@ describe('REL-271: operator directive -- a TTFT abort adds nothing to any ban se
   });
 });
 
+describe('fireworks BAN must be impossible by construction: a direct-gateway timeout never bans the transport itself', () => {
+  // Evidence: calltelemetry/cisco-cdr review-yeti-actions runs showed `transport=fireworks BAN`
+  // x10 -- the bot quarantining the operator's own direct, subscription-backed primary transport
+  // after a timeout on that same transport. `provider.ignore`/quarantine is an OpenRouter
+  // multi-provider routing concept: it tells OpenRouter which downstream provider slug to avoid.
+  // A direct (non-OpenRouter) gateway has no "downstream provider" -- `unknownRouteProvider`
+  // resolves to the gateway's OWN id (`gateway.isOpenRouter ? 'openrouter' : gateway.id`), so a
+  // timeout on a direct gateway used to ban that same gateway by construction. Operator directive:
+  // "fireworks is my primary provider it must not be banned" / "I don't want to ban providers
+  // during the call -- OpenRouter should give us good data."
+  it('a direct (non-OpenRouter) gateway timeout never populates the run-scoped ban set with its own identity', async () => {
+    const runTimedOutProviders = new Set<string>();
+    const fetchImpl = async () => neverChunkingStreamResponse();
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.fireworks.ai/inference/v1',
+      model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+      fetchImpl,
+      maxAttempts: 1,
+      // Total budget expires quickly; ttftMs is deliberately far larger so the TOTAL-budget timer
+      // (not the TTFT timer) is what fires -- this reproduces `phase=response`, the branch that
+      // used to reach the BAN call, not the already-guarded TTFT path.
+      timeoutMs: 200,
+      ttftMs: 100_000,
+      preferStream: true,
+      gatewayCompat: 'openai',
+      transportName: 'fireworks',
+      runTimedOutProviders,
+    });
+
+    expect(result.decision).toBe('ERROR');
+    expect(result.provider).toBe('fireworks');
+    // The core assertion: the operator's own direct transport identity must never enter the
+    // ban/quarantine set, regardless of how many times it times out.
+    expect(runTimedOutProviders.size).toBe(0);
+  });
+
+  it('a direct-gateway connect-phase abort (non-stream) also never bans', async () => {
+    const runTimedOutProviders = new Set<string>();
+    // callOpenRouterChat catches this internally and returns a normal `{ok:false, aborted:true}`
+    // result (it never rethrows for network failures), so this exercises the SAME `result.aborted`
+    // ban guard as the first test above, via the non-stream connect phase instead of the stream
+    // read loop -- both call sites in review-pipeline.js share the identical `gateway.isOpenRouter`
+    // construction guard, so covering both call shapes locks in that neither regresses alone.
+    const fetchImpl = async () => {
+      throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'AbortError' });
+    };
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.fireworks.ai/inference/v1',
+      model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+      fetchImpl,
+      maxAttempts: 1,
+      timeoutMs: 5_000,
+      gatewayCompat: 'openai',
+      transportName: 'fireworks',
+      runTimedOutProviders,
+    });
+
+    expect(runTimedOutProviders.size).toBe(0);
+  });
+});
+
 describe('REL-271: flattened retry pyramid (D3, D4, D5, D9)', () => {
   it('D4/D5: no third attempt is ever made, even when every attempt fails', async () => {
     const calls: any[] = [];
