@@ -94,6 +94,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # GITHUB_TOKEN cannot update a tag when the target commit changes a workflow file.
+          # A short-lived admin release token may be supplied for those releases; ordinary
+          # releases continue to use the least-privilege built-in token.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
           persist-credentials: true
 
       - name: Setup Node
@@ -123,7 +127,7 @@ jobs:
 
       - name: Create GitHub release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           VERSION: ${{ inputs.version }}
         run: |
           gh release create "$VERSION" \
