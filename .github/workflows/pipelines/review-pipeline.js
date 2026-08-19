@@ -2951,6 +2951,27 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     // budget escalation and no bonus attempt after a provider is identified/quarantined. The
     // attempt loop IS the retry now.
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // REL-288 flat per-lane call budget: reserve the unit BEFORE dispatching, so a lane that
+      // is already out of budget makes zero further real HTTP requests -- no half-sent attempt,
+      // no consuming budget for a call this check refused to make. See createLaneCallBudget's
+      // doc comment for the arithmetic this replaces.
+      if (options.laneCallBudget && !options.laneCallBudget.spend()) {
+        console.warn(
+          `[Budget] persona=${persona.id} lane call budget exhausted before`
+          + ` model=${requestedModel} modelIndex=${modelIndex + 1}/${models.length}`
+          + ` attempt=${attempt}/${maxAttempts} — refusing further provider requests.`,
+        );
+        recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'lane_budget_exhausted' });
+        return {
+          ...base,
+          ...lastRoute,
+          decision: 'ERROR',
+          findings: [],
+          error: 'lane_budget_exhausted',
+          failureClass: 'lane_budget_exhausted',
+          generationId: lastRoute.generationId,
+        };
+      }
       const requestStartedAt = Date.now();
       const requestBody = buildRequestBody(requestedModel, sessionModel);
       // Every attempt uses the same total budget -- no x2 escalation on retry (D3).
@@ -3330,6 +3351,36 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
  * Without a plan this is a pass-through: legacy single-transport behavior is
  * byte-identical.
  */
+
+/**
+ * REL-288: flat per-lane HTTP call budget. Passes, investigation turns, transport failover, and
+ * per-model attempts are each individually defensible knobs, but nobody multiplied them --
+ * review-pipeline.js's own worst case is passes x turns x transports x attempts, which the
+ * default policy at the time of this fix already put at 3 x 6 x 3 x 2 = 108 HTTP calls for a
+ * single persona's single pass, worse than the 36 REL-271 removed as an emergent, undocumented
+ * number. This is that ceiling reinstated on purpose: one shared counter, spent once per actual
+ * provider HTTP attempt (the innermost real network call site in reviewWithModel), regardless of
+ * which combination of passes/turns/transports/attempts produced it. A lane that spends the last
+ * unit terminates honestly as `lane_budget_exhausted` -- never a silent pass, never folded into a
+ * generic timeout or provider_failure.
+ *
+ * A fresh instance must be created per lane (see the `for (const batch of passes)` loop in
+ * main()); sharing one instance across lanes would make one persona's retries starve another's.
+ */
+function createLaneCallBudget(limit) {
+  let remaining = Math.max(0, Math.trunc(Number(limit)) || 0);
+  return {
+    get remaining() { return remaining; },
+    // Returns true and spends one unit when budget remains; returns false (spending nothing)
+    // once exhausted. The caller must check the return value BEFORE issuing the HTTP request it
+    // guards -- this reserves the unit, it does not report after the fact.
+    spend() {
+      if (remaining <= 0) return false;
+      remaining -= 1;
+      return true;
+    },
+  };
+}
 async function reviewWithTransports(persona, diffFiles, prContext, sessionContext, options = {}) {
   const plan = Array.isArray(options.transportPlan) ? options.transportPlan.filter(Boolean) : [];
   if (plan.length === 0) return reviewWithModel(persona, diffFiles, prContext, sessionContext, options);
@@ -3375,7 +3426,12 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
     }
     if (!failed) return result;
     lastResult = result;
-    if (String(result?.error || '') === 'cancelled' || options.signal?.aborted) return result;
+    // A flat-budget exhaustion is not a per-transport failure that failover can route around --
+    // every remaining transport shares the same laneCallBudget instance and will immediately
+    // report the same exhaustion (reviewWithModel's own guard makes zero further real HTTP
+    // calls either way), so stop here instead of walking the rest of the plan for nothing.
+    const budgetExhausted = result?.error === 'lane_budget_exhausted' || result?.failureClass === 'lane_budget_exhausted';
+    if (String(result?.error || '') === 'cancelled' || budgetExhausted || options.signal?.aborted) return result;
     if (transportIndex < plan.length - 1) {
       console.warn(
         `[Transport] FAILOVER persona=${persona?.id || 'unknown'}`
@@ -7348,6 +7404,10 @@ async function main(options = {}) {
   // Per-lane wall-clock backstop (REL-271). Default 4m; a lane that exceeds it fails closed with
   // `lane_deadline` rather than running until the job is killed.
   const laneDeadlineMs = Math.max(1_000, Number(runtimeEnv.LANE_DEADLINE_MS) || 240_000);
+  // REL-288: flat per-lane HTTP call budget (see createLaneCallBudget's doc comment). Default 36
+  // matches the historical ceiling REL-271 removed as an emergent, undocumented number -- this
+  // reinstates it as an explicit, product-level hard floor immune to future knob drift.
+  const laneCallBudgetLimit = Math.max(1, Number(runtimeEnv.LANE_CALL_BUDGET) || 36);
   if (shouldResolveTrustedReviewPolicy(localConfig)) {
     prContext = resolveTrustedPolicyPrContext(prContext, { commandRunner });
     const reviewIntelligencePolicy = resolveTrustedReviewPolicy({
@@ -8379,6 +8439,11 @@ async function main(options = {}) {
             // cancellation would (turn loop check + every in-flight HTTP request).
             const laneDeadline = createAbortLink({ signals: [], timeoutMs: laneDeadlineMs });
             const laneSignal = createAbortLink({ signals: [cancellation.signal, laneDeadline.signal] });
+            // REL-288 flat per-lane call budget: fresh per pass, mirroring laneDeadline above --
+            // shared by reference across every turn/transport/attempt this ONE pass makes, never
+            // across passes or personas (a persona's later pass, or a sibling persona, must not
+            // starve on an earlier pass's spend).
+            const laneCallBudget = createLaneCallBudget(laneCallBudgetLimit);
             let run;
             try {
               run = await runBoundedPersonaInvestigation({
@@ -8403,7 +8468,7 @@ async function main(options = {}) {
                   signal,
                   // turnValidator lets the transport layer fail over on content that
                   // would die upstream as an unrecoverable contract violation.
-                  options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore, turnValidator: validate },
+                  options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore, turnValidator: validate, laneCallBudget },
                 }),
                 signal: laneSignal.signal,
                 laneDeadlineSignal: laneDeadline.signal,
@@ -9160,6 +9225,7 @@ module.exports = {
   callOpenRouterChat,
   reviewWithModel,
   reviewWithTransports,
+  createLaneCallBudget,
   addRunScopedProviderBan,
   RUN_SCOPED_PROVIDER_BAN_MAX,
   runPersonaInvestigation,

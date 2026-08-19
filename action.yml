@@ -139,6 +139,19 @@ inputs:
       of running until the job is killed.
     required: false
     default: '240000'
+  lane-call-budget:
+    description: >-
+      REL-288: flat per-lane HTTP call budget (default 36). Passes, investigation turns,
+      transport failover, and per-model attempts each multiply the number of real provider HTTP
+      requests one persona lane can make; nobody multiplies them on purpose, but the product
+      does. This is a single shared counter spent on every real provider HTTP attempt in one
+      pass's investigation, independent of which knob combination produced the request -- a hard
+      floor immune to future knob drift, not another knob to tune alongside the others. A lane
+      that spends the last unit terminates honestly as lane_budget_exhausted; it is never folded
+      into a silent pass or a generic timeout. The default matches the historical ceiling
+      REL-271 removed as an emergent, undocumented number.
+    required: false
+    default: '36'
   model:
     description: 'Model identifier passed to the provider.'
     required: false
@@ -738,6 +751,7 @@ runs:
         OPENROUTER_TTFT_MS: ${{ inputs.openrouter-ttft-ms }}
         OPENROUTER_MAX_ATTEMPTS: ${{ inputs.openrouter-max-attempts }}
         LANE_DEADLINE_MS: ${{ inputs.lane-deadline-ms }}
+        LANE_CALL_BUDGET: ${{ inputs.lane-call-budget }}
         # Ensure bare requires (js-yaml) resolve from the action install even if
         # Node's walk-up from pipelines/ is disrupted on some runners.
         NODE_PATH: ${{ github.action_path }}/node_modules
