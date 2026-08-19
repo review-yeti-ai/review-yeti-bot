@@ -287,6 +287,40 @@ non-merge-eligible result; it can never produce `SHIP`. Immediately before any G
 operation, the Action re-reads the PR head and aborts all writes if it no longer equals the head
 that was reviewed.
 
+### Independent finding reflection
+
+`review.finding_reflection` runs one bounded, independent LLM self-critique turn per already
+finding-verifier-verified finding, judging it `KEEP`, `DOWNGRADE`, `DROP`, or `NEEDS_REVIEW`.
+It requires `review.finding_verifier` to be enabled (reflection re-verifies through the same
+exact-blob machinery and has nothing to reflect on without it) and is otherwise opt-in and off by
+default.
+
+```yaml
+review:
+  finding_verifier:
+    mode: enforce
+  finding_reflection: true
+```
+
+Reflection can only narrow the published set, never expand it:
+
+- `KEEP` and `NEEDS_REVIEW` (including any finding that was never selected as a verified
+  candidate, was cut by the bounded per-run candidate cap, or failed to get a model response)
+  leave the finding untouched.
+- `DOWNGRADE` lowers severity in place and annotates the body; title, path, and line are
+  untouched. The module refuses a downgrade to a severity that is not strictly lower.
+- `DROP` removes the finding from the published review. A `P0`/`P1` finding can never resolve to
+  `DROP` — the module itself forces `NEEDS_REVIEW` (`high_severity_disagreement`) instead, so
+  reflection can never silently delete a gate-relevant finding.
+
+Set `REVIEW_YETI_FINDING_REFLECTION=false` to force it off regardless of config. The
+`review-dispatch-run.v2` receipt (see `review-dispatch-digest`/`review-dispatch-receipt-path`
+above) reports this stage's outcome under its own `reflection` field
+(`candidates`/`kept`/`downgraded`/`dropped`/`needs_review`), separate from the deterministic
+finding verifier's checks, which are the `verification` field. `v1` conflated the two under one
+`reflection` field that actually reported the verifier's counts — describing a self-critique stage
+that had never run in production.
+
 ### Deterministic review units
 
 `review.units` creates an exact-head manifest for changed files. The production engine always
@@ -487,12 +521,12 @@ from a model-backed review.
 | `coverage-status` | Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible. |
 | `gate-decision` | Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED. |
 | `merge-eligible` | Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings. |
-| `review-dispatch-digest` | Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head. |
+| `review-dispatch-digest` | Digest of the provider-owned review-dispatch-run.v2 receipt for this exact head. |
 | `review-dispatch-policy-digest` | Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one. |
 | `review-dispatch-manifest-digest` | Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt. |
 | `review-dispatch-manifest-artifact-digest` | Digest of the exact complete manifest artifact bytes written by the provider run. |
 | `review-dispatch-provider-receipt-digest` | Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs. |
-| `review-dispatch-receipt-path` | Exact local path to the provider-owned review-dispatch-run.v1 receipt artifact. Upload or attach this file for durable evidence. |
+| `review-dispatch-receipt-path` | Exact local path to the provider-owned review-dispatch-run.v2 receipt artifact. Upload or attach this file for durable evidence. |
 | `review-dispatch-manifest-path` | Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence. |
 | `files-skipped-generated` | Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap. |
 | `files-oversized` | Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW. |

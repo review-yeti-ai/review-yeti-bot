@@ -291,13 +291,14 @@ export function validateReviewYetiRunReceipt(receipt, expectedIdentity) {
     "coverage_gaps",
     "rule_ids",
     "stage_durations_ms",
+    "verification",
     "reflection",
     "usage",
     "latency_ms",
   ]), "", errors);
 
-  if (receipt.schema !== "review-dispatch-run.v1") {
-    errors.push("receipt schema must be review-dispatch-run.v1");
+  if (receipt.schema !== "review-dispatch-run.v2") {
+    errors.push("receipt schema must be review-dispatch-run.v2");
   }
   boundedString(receipt.run_id, "receipt.run_id", errors, { maxLength: 120 });
   if (!Number.isInteger(receipt.run_attempt) || receipt.run_attempt < 1 || receipt.run_attempt > 1000) {
@@ -351,9 +352,28 @@ export function validateReviewYetiRunReceipt(receipt, expectedIdentity) {
     receipt.rule_ids.forEach((ruleId, index) => boundedString(ruleId, `receipt.rule_ids[${index}]`, errors, { maxLength: 120 }));
   }
 
-  requireNoUnknownFields(receipt.stage_durations_ms, new Set(["planning", "investigation", "reflection", "publication"]), "stage_durations_ms", errors);
-  for (const field of ["planning", "investigation", "reflection", "publication"]) {
+  requireNoUnknownFields(receipt.stage_durations_ms, new Set(["planning", "investigation", "verification", "reflection", "publication"]), "stage_durations_ms", errors);
+  for (const field of ["planning", "investigation", "verification", "reflection", "publication"]) {
     nonNegativeInteger(receipt.stage_durations_ms?.[field], `stage_durations_ms.${field}`, errors, { max: 86_400_000 });
+  }
+
+  // The deterministic finding verifier's exact-blob anchor/base-head checks -- distinct from the
+  // independent LLM reflection pass below. Schema v2 gives each an accurately named field; v1
+  // reported the verifier's counts under `reflection`, describing a self-critique stage that had
+  // never actually run in production.
+  requireNoUnknownFields(receipt.verification, new Set(["candidates", "accepted", "rejected", "needs_review"]), "verification", errors);
+  for (const field of ["candidates", "accepted", "rejected", "needs_review"]) {
+    nonNegativeInteger(receipt.verification?.[field], `verification.${field}`, errors);
+  }
+  if (Number.isInteger(receipt.verification?.candidates)) {
+    const tallied = ["accepted", "rejected", "needs_review"]
+      .map((field) => receipt.verification?.[field])
+      .every(Number.isInteger)
+      ? receipt.verification.accepted + receipt.verification.rejected + receipt.verification.needs_review
+      : null;
+    if (tallied !== null && tallied > receipt.verification.candidates) {
+      errors.push("verification tallies must not exceed verification.candidates");
+    }
   }
 
   requireNoUnknownFields(receipt.reflection, new Set(["candidates", "kept", "downgraded", "dropped", "needs_review"]), "reflection", errors);
@@ -385,7 +405,7 @@ export function validateReviewYetiRunReceipt(receipt, expectedIdentity) {
 export function adaptReviewYetiRunReceipt(receipt) {
   const validation = validateReviewYetiRunReceipt(receipt);
   if (!validation.valid) {
-    throw new TypeError(`invalid review-dispatch-run.v1 receipt: ${validation.errors.join("; ")}`);
+    throw new TypeError(`invalid review-dispatch-run.v2 receipt: ${validation.errors.join("; ")}`);
   }
 
   const receiptDigest = reviewYetiRunReceiptDigest(receipt);
@@ -423,6 +443,7 @@ export function adaptReviewYetiRunReceipt(receipt) {
       rule_ids: [...receipt.rule_ids],
     },
     stage_durations_ms: { ...receipt.stage_durations_ms },
+    verification: { ...receipt.verification },
     reflection: { ...receipt.reflection },
     usage: { ...receipt.usage },
     latency_ms: receipt.latency_ms,
