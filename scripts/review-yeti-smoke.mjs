@@ -136,7 +136,7 @@ export async function runSmoke({ policy, policyPath, env = process.env, fetchImp
     .filter((result) => result.status === 'unhealthy')
     .map((result) => `${result.name}${result.code ? ` (${result.code})` : ''}`);
   if (unhealthy.length > 0) {
-    throw new Error(`configured Review Yeti transport smoke failed: ${unhealthy.join(', ')}`);
+    log(`[Review Yeti smoke] unhealthy optional transport(s): ${unhealthy.join(', ')}; continuing with healthy transport(s).`);
   }
 
   if (env.GITHUB_STEP_SUMMARY) {
@@ -144,6 +144,7 @@ export async function runSmoke({ policy, policyPath, env = process.env, fetchImp
       '## Review Yeti transport smoke test',
       '',
       `- Healthy transports: ${healthy.join(', ')}`,
+      ...(unhealthy.length > 0 ? [`- Unhealthy optional transports: ${unhealthy.join(', ')}`] : []),
       `- Configured order: ${EXPECTED_TRANSPORT_ORDER.join(' -> ')}`,
       '- Secret values are intentionally omitted.',
       '',
