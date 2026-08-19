@@ -53,6 +53,7 @@ jobs:
         run: node scripts/emit-policy.mjs
 
       - name: Smoke-test Review Yeti transports
+        id: smoke
         working-directory: .exampleorg-review-actions
         env:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
@@ -88,6 +89,18 @@ jobs:
           RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
         run: .exampleorg-review-actions/scripts/validate-release-provenance.sh
 
+      # Resolved transport failover (QA-380): the smoke step above already proves which
+      # transport(s) are healthy before any persona runs. Previously that result was logged and
+      # then ignored -- this step always called the panel against a hardcoded Fireworks
+      # base-url/key/model, so a Fireworks-only outage still took the whole required check down
+      # even when the smoke probe had just shown OpenRouter healthy one step earlier. Now the
+      # resolved transport (fireworks if healthy, else openrouter-fallback) drives the actual
+      # call. Selection is whole-run, not per-persona: exactly one transport is ever live for a
+      # given run, so Fireworks routed *through* OpenRouter (the banned, double-billing path) is
+      # structurally unreachable, not merely policed by the routing-selector guard in
+      # review-yeti-smoke.mjs. Zero healthy transports still hard-fails -- review-yeti-smoke.mjs
+      # throws before writing any `resolved_*` output, so this step never runs on a fully-down
+      # policy.
       - name: Run Review Yeti review panel
         id: review
         uses: ./.review-yeti-bot
@@ -95,15 +108,15 @@ jobs:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
+          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
         with:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
           pr-number: ${{ github.event.pull_request.number }}
-          llm-api-key: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
-          llm-base-url: https://api.fireworks.ai/inference/v1
+          llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
-          model: accounts/fireworks/models/deepseek-v4-flash-0731
+          model: ${{ steps.smoke.outputs.resolved_model }}
           transports: ${{ steps.policy.outputs.transports }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           openrouter-ignore-providers: ${{ steps.policy.outputs.openrouter_ignore_providers }}
@@ -127,6 +140,16 @@ jobs:
           # server-side. Absent secret degrades the tool to unavailable
           # rather than failing the review.
           context7-api-key: ${{ secrets.CONTEXT7_API_KEY }}
+
+      # Loud, not silent: a degraded run must be visibly degraded on the PR, not just in Action
+      # logs an operator has to go dig for.
+      - name: Annotate degraded transport
+        if: steps.smoke.outputs.resolved_degraded == 'true'
+        run: |
+          echo "::warning::Review Yeti ran this review on the fallback transport (${{ steps.smoke.outputs.resolved_transport }}); the primary transport was unhealthy."
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "> ⚠️ Review Yeti ran on fallback transport **${{ steps.smoke.outputs.resolved_transport }}** this run (primary unhealthy)." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # The bot already writes per-lane telemetry (turnCount, failureClass,
       # resolved transport) to RUNNER_TEMP and exposes run-report-path, but

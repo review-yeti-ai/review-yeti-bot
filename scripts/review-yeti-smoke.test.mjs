@@ -6,6 +6,7 @@ import {
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
+  resolveTransport,
   runSmoke,
   validatePolicy,
 } from './review-yeti-smoke.mjs';
@@ -201,4 +202,75 @@ test('the smoke suite rejects reduced OpenRouter quantizations before any networ
     quantizations: ['fp8'],
   };
   assert.throws(() => validatePolicy(policy), /OpenRouter routing/);
+});
+
+// --- QA-380: whole-run transport failover -----------------------------------------------------
+//
+// Regression coverage for the reported outage shape: the smoke probe already proved which
+// transport(s) were healthy, but the caller workflow ignored that result and always pointed the
+// review panel at a hardcoded Fireworks base-url/key/model. resolveTransport() is what the
+// workflow now uses to pick the transport it actually calls, so these tests pin the three
+// outcomes that mattered in QA-380: healthy primary (no-op), primary down / fallback up
+// (real failover, and it must be honest that this happened), and both down (still a hard fail --
+// this suite never silently green-lights a run with zero working transports).
+
+test('resolveTransport prefers the primary transport when it is healthy', () => {
+  const transports = policyFixture().review_yeti.transports;
+  const resolved = resolveTransport(transports, ['fireworks', 'openrouter-fallback']);
+  assert.equal(resolved.name, 'fireworks');
+});
+
+test('resolveTransport fails over to openrouter-fallback when Fireworks is unhealthy', () => {
+  const transports = policyFixture().review_yeti.transports;
+  const resolved = resolveTransport(transports, ['openrouter-fallback']);
+  assert.equal(resolved.name, 'openrouter-fallback');
+});
+
+test('resolveTransport never selects Fireworks through the OpenRouter fallback', () => {
+  // The banned path (Fireworks double-billed via OpenRouter routing) has no name of its own --
+  // it can only be reached by resolveTransport returning the openrouter-fallback transport
+  // while Fireworks is the one it is meant to stand in for. Assert the transport it returns is
+  // never openrouter-fallback while fireworks is reported healthy, and that its own provider
+  // routing still bans fireworks regardless of which branch is taken.
+  const transports = policyFixture().review_yeti.transports;
+  for (const healthy of [['fireworks'], ['fireworks', 'openrouter-fallback']]) {
+    assert.equal(resolveTransport(transports, healthy).name, 'fireworks');
+  }
+  const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
+  assert.ok(openrouter.provider_routing.ignore.includes('fireworks'));
+});
+
+test('resolveTransport returns null when nothing is healthy (caller must hard-fail, not run)', () => {
+  const transports = policyFixture().review_yeti.transports;
+  assert.equal(resolveTransport(transports, []), null);
+});
+
+test('runSmoke + resolveTransport: zero healthy transports still throws before any output is produced', async () => {
+  // Mutation check (red -> green -> red), scripted: force every transport to fail, confirm the
+  // hard failure, then confirm a healthy run resolves cleanly again. This exercises the same
+  // runSmoke() entry point main() calls, so it is not a hand-wave -- it is the real fail-closed
+  // path a fully-down policy takes in CI.
+  await assert.rejects(
+    runSmoke({
+      policy: policyFixture(),
+      env: { FIREWORKS_PR_REVIEW_API_KEY: 'a', OPENROUTER_PR_REVIEW_API_KEY: 'b' },
+      fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+      log: () => {},
+    }),
+    /no healthy Review Yeti transport/,
+  );
+
+  // Restore: only the fallback is healthy now -- this is the exact QA-380 shape (primary down,
+  // fallback up) and must resolve to a real transport, not repeat the hard failure above.
+  const { healthy } = await runSmoke({
+    policy: policyFixture(),
+    env: { FIREWORKS_PR_REVIEW_API_KEY: 'a', OPENROUTER_PR_REVIEW_API_KEY: 'b' },
+    fetchImpl: async (url) => {
+      if (url.startsWith('https://fireworks.test/')) return { ok: false, status: 504, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }) };
+    },
+    log: () => {},
+  });
+  const resolved = resolveTransport(policyFixture().review_yeti.transports, healthy);
+  assert.equal(resolved.name, 'openrouter-fallback');
 });

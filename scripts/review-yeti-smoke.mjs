@@ -278,8 +278,64 @@ export async function runSmoke({ policy, policyPath, env = process.env, fetchImp
   return { results, healthy };
 }
 
+// Picking the failover target here, not just logging it, is the point: before this, the smoke
+// probe already *detected* an unhealthy primary but the caller workflow still hardcoded Fireworks
+// into the review panel step regardless, so a Fireworks outage still took the run down even
+// though OpenRouter was proven healthy one step earlier. The selection stays a whole-run decision
+// (one transport for every persona, chosen before any persona runs) rather than per-persona
+// mid-run switching -- that keeps the Fireworks/OpenRouter-ban boundary trivial to reason about:
+// exactly one of "direct Fireworks" or "OpenRouter with Fireworks on its ignore list" is ever
+// live for a given run, so the double-billing case (Fireworks selected *through* OpenRouter) is
+// structurally unreachable, not just policed by the routing-selector guard above.
+export function resolveTransport(transports, healthy, order = EXPECTED_TRANSPORT_ORDER) {
+  const healthySet = new Set(healthy);
+  for (const name of order) {
+    if (healthySet.has(name)) {
+      const transport = transports.find((candidate) => candidate.name === name);
+      if (transport) return transport;
+    }
+  }
+  return null;
+}
+
 async function main() {
-  await runSmoke({ timeoutMs: Number(process.env.REVIEW_YETI_SMOKE_TIMEOUT_MS || DEFAULT_TIMEOUT_MS) });
+  const { results, healthy } = await runSmoke({
+    timeoutMs: Number(process.env.REVIEW_YETI_SMOKE_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
+  });
+  // runSmoke() already throws when `healthy` is empty, so reaching here guarantees at least one
+  // resolvable transport -- this never silently degrades to "no transport, run anyway".
+  const policy = loadPolicy();
+  const resolved = resolveTransport(policy.review_yeti.transports, healthy);
+  if (!resolved) throw new Error('no healthy transport could be resolved from a validated policy');
+
+  const degraded = resolved.name !== EXPECTED_TRANSPORT_ORDER[0];
+  console.log(
+    `[Review Yeti smoke] resolved_transport=${resolved.name}${degraded ? ' (DEGRADED: primary transport unhealthy, running the full panel on the fallback transport)' : ''}`,
+  );
+
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (outputPath) {
+    const outputs = {
+      resolved_transport: resolved.name,
+      resolved_base_url: resolved.base_url,
+      resolved_model: resolved.model,
+      resolved_api_key_env: resolved.api_key_env,
+      resolved_degraded: String(degraded),
+    };
+    for (const [name, value] of Object.entries(outputs)) {
+      appendFileSync(outputPath, `${name}=${value}\n`);
+    }
+  }
+
+  if (process.env.GITHUB_STEP_SUMMARY && degraded) {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
+      '',
+      `> ⚠️ **Degraded**: primary transport (${EXPECTED_TRANSPORT_ORDER[0]}) unhealthy this run; the full review panel ran on **${resolved.name}** instead.`,
+      '',
+    ].join('\n'));
+  }
+
+  void results;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
