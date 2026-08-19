@@ -20,7 +20,7 @@ github_action:
     # `provider` request object; use snake_case API field names. Omitting it uses
     # the production default shown in the table below.
     provider_routing:
-      order: [morph]
+      order: [examplecloud]
       allow_fallbacks: false
       require_parameters: true
       sort:
@@ -65,7 +65,7 @@ defaults. Action inputs cannot select an untrusted configuration ref. `provider_
 `max_price`; unknown fields fail closed. See the [canonical YAML example](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration).
 
 The throughput and latency settings are OpenRouter preferences based on endpoint percentile
-statistics, not a literal uptime guarantee. Latency values are measured in seconds. Morph remains
+statistics, not a literal uptime guarantee. Latency values are measured in seconds. ExampleCloud remains
 eligible under the default policy and is neither added to `ignore` nor to the degraded-provider
 ban set.
 
@@ -73,7 +73,7 @@ ban set.
 
 The action keeps fixed-model compatibility explicit and validates it before persona fan-out. The
 current registry includes `openai/gpt-5.6-luna`, which is approved for the `openai` and `azure`
-provider slugs. A policy such as `only: [morph]` therefore fails early for Luna with an actionable
+provider slugs. A policy such as `only: [examplecloud]` therefore fails early for Luna with an actionable
 error; it is not treated as evidence that the model was retired. The validator never removes an
 `ignore`, `data_collection`, `zdr`, or `require_parameters` restriction and never enables a
 fallback to make an incompatible policy work.
@@ -100,7 +100,7 @@ github_action:
       # Keep the repository's existing data-policy and ignore settings here.
 ```
 
-If the consumer must remain Morph-only, choose a model that the Morph provider serves instead.
+If the consumer must remain ExampleCloud-only, choose a model that the ExampleCloud provider serves instead.
 
 Docs: https://openrouter.ai/docs/guides/routing/routers/auto-router
 
