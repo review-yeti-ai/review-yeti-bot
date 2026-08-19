@@ -60,3 +60,7 @@ the workflow validation checks for all later changes.
 3. Create an immutable release tag, for example `v1` or `v1.1.0`.
 4. Update consumers in separate PRs to the new release SHA.
 5. Keep the previous SHA documented as the rollback pin until the canary and consumer checks pass.
+
+The central policy is intentionally boring: changes are reviewed at the previous release, then
+promoted as a new immutable release after validation. This line is the bootstrap canary: the
+central PR must be reviewed by the pinned previous release, not by the proposed workflow.
