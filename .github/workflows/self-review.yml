@@ -16,11 +16,11 @@ permissions:
 jobs:
   review:
     if: github.event.pull_request.draft == false
-    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@681a1cd4f6452f3ce933f7e6a89ddf2e7e58d7e0
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@efa0564dc6f67e60e9f0edf0d243b70749e44e33
     with:
       repository: ${{ github.repository }}
       pr-number: ${{ github.event.pull_request.number }}
       base-sha: ${{ github.event.pull_request.base.sha }}
       head-sha: ${{ github.event.pull_request.head.sha }}
-      central-sha: 681a1cd4f6452f3ce933f7e6a89ddf2e7e58d7e0
+      central-sha: efa0564dc6f67e60e9f0edf0d243b70749e44e33
     secrets: inherit

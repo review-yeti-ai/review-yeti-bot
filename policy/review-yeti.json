@@ -2,7 +2,7 @@
   "schema": "exampleorg.review-policy.v1",
   "review_yeti": {
     "repository": "review-yeti-ai/review-yeti-bot",
-    "action_sha": "015fedddd4d2116063e07e1b9374a11976914605",
+    "action_sha": "a24bbac395b5e4c7c557955424b54ed0dba7d40d",
     "personas": "security,performance,architecture,testing,dependencies",
     "transports": [
       {
@@ -36,8 +36,6 @@
   "forbidden_target_paths": [
     ".review-yeti.yaml",
     ".review-yeti.yml",
-    ".coderabbit.yaml",
-    ".coderabbit.yml",
     ".ct-review.yaml",
     ".ct-review.yml",
     ".review-yeti",
