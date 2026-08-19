@@ -36,5 +36,75 @@ fi
 [[ "$FILES_OMITTED" == 0 ]] || { echo "::error::Review Yeti omitted ${FILES_OMITTED} changed files"; exit 1; }
 [[ "$DISPATCH_REFLECTION_STATUS" == complete ]] || { echo "::error::Review Yeti dispatch reflection is ${DISPATCH_REFLECTION_STATUS}, not complete"; exit 1; }
 [[ "$PROVIDER_RECEIPT_DIGEST" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "::error::Review Yeti provider receipt digest is missing or invalid"; exit 1; }
+[[ -n "${RUN_REPORT_PATH:-}" ]] || { echo "::error::Review Yeti run report path is missing"; exit 1; }
+
+[[ -f "$RUN_REPORT_PATH" ]] || { echo "::error::Review Yeti run report is missing: ${RUN_REPORT_PATH}"; exit 1; }
+
+report_summary="$({
+  jq -er \
+    --arg expected_repository "$REVIEW_REPOSITORY" \
+    --arg expected_pr "$REVIEW_PR_NUMBER" \
+    --arg expected_base "$EXPECTED_BASE_SHA" \
+    --arg expected_head "$EXPECTED_HEAD_SHA" \
+    --arg expected_status "$REVIEW_STATUS" \
+    '
+      def nonnegative_integer:
+        type == "number" and floor == . and . >= 0;
+      def valid_pr_number:
+        if (.prNumber | type) != "number" then
+          false
+        elif (.prNumber | floor) != .prNumber then
+          false
+        else
+          .prNumber == ($expected_pr | tonumber)
+        end;
+      def valid_lane:
+        type == "object"
+        and (.decision | type == "string")
+        and (.findings | type == "array")
+        and (.severity | type == "object")
+        and ((.severity) as $severity
+          | (["P0", "P1", "P2"] | all(.[]; . as $key | ($severity[$key] | nonnegative_integer))));
+      def valid_finding:
+        type == "object"
+        and (.severity == "P0" or .severity == "P1" or .severity == "P2");
+
+      if .schemaVersion != "review-run-report-v1" then
+        error("unsupported run-report schema")
+      elif (.repository | type) != "string" or .repository != $expected_repository then
+        error("run-report repository does not match the reviewed repository")
+      elif (valid_pr_number | not) then
+        error("run-report PR number does not match the reviewed PR")
+      elif .baseSha != $expected_base or .headSha != $expected_head then
+        error("run-report base/head does not match the exact reviewed head")
+      elif .verdict != $expected_status then
+        error("run-report verdict does not match the action output")
+      elif (.lanes | type) != "array" or (.lanes | length) == 0 then
+        error("run-report lanes are missing")
+      elif any(.lanes[]; valid_lane | not) then
+        error("run-report contains an invalid lane")
+      elif any(.lanes[]?.findings[]?; valid_finding | not) then
+        error("run-report contains an invalid finding")
+      else
+        ([.lanes[]?.findings[]? | select(.severity == "P2")] | length) as $finding_p2
+        | ([.lanes[]?.severity.P2] | add // 0) as $summary_p2
+        | if $finding_p2 != $summary_p2 then
+            error("run-report P2 count is inconsistent")
+          else
+            { p2_count: $finding_p2 }
+          end
+      end
+    ' \
+    "$RUN_REPORT_PATH"
+} 2>&1)" || {
+  echo "::error::Review Yeti run report failed closed: ${report_summary}";
+  exit 1;
+}
+
+p2_count="$(jq -er '.p2_count' <<<"$report_summary")"
+[[ "$p2_count" == 0 ]] || {
+  echo "::error::Review Yeti found ${p2_count} unresolved P2 advisory finding(s); SHIP/PASS is blocked";
+  exit 1;
+}
 
 echo "Review Yeti SHIP/PASS accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."

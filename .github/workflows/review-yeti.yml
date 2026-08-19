@@ -109,4 +109,5 @@ jobs:
           FILES_OMITTED: ${{ steps.review.outputs.files-omitted }}
           DISPATCH_REFLECTION_STATUS: ${{ steps.review.outputs.review-dispatch-reflection-status }}
           PROVIDER_RECEIPT_DIGEST: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
+          RUN_REPORT_PATH: ${{ steps.review.outputs.run-report-path }}
         run: .exampleorg-review-actions/scripts/check-review-verdict.sh

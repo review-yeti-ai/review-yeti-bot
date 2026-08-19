@@ -58,12 +58,57 @@ head_sha="0123456789012345678901234567890123456789"
 newer_head_sha="abcdefabcdefabcdefabcdefabcdefabcdefabcd"
 digest="$(printf '0123456789abcdef%.0s' {1..4})"
 
+zero_p2_report="$tmp_dir/zero-p2.json"
+nonzero_p2_report="$tmp_dir/nonzero-p2.json"
+string_pr_report="$tmp_dir/string-pr.json"
+base_mismatch_report="$tmp_dir/base-mismatch.json"
+verdict_mismatch_report="$tmp_dir/verdict-mismatch.json"
+inconsistent_p2_report="$tmp_dir/inconsistent-p2.json"
+
+cat >"$zero_p2_report" <<EOF
+{
+  "schemaVersion": "review-run-report-v1",
+  "repository": "exampleorg/example",
+  "prNumber": 7,
+  "baseSha": "$base_sha",
+  "headSha": "$head_sha",
+  "verdict": "SHIP",
+  "lanes": [{
+    "decision": "APPROVE",
+    "severity": {"P0": 0, "P1": 0, "P2": 0},
+    "findings": []
+  }]
+}
+EOF
+
+jq '.prNumber = "7"' "$zero_p2_report" >"$string_pr_report"
+jq '.baseSha = "ffffffffffffffffffffffffffffffffffffffff"' "$zero_p2_report" >"$base_mismatch_report"
+jq '.verdict = "FIX_FIRST"' "$zero_p2_report" >"$verdict_mismatch_report"
+
+cat >"$nonzero_p2_report" <<EOF
+{
+  "schemaVersion": "review-run-report-v1",
+  "repository": "exampleorg/example",
+  "prNumber": 7,
+  "baseSha": "$base_sha",
+  "headSha": "$head_sha",
+  "verdict": "SHIP",
+  "lanes": [{
+    "decision": "FINDINGS",
+    "severity": {"P0": 0, "P1": 0, "P2": 1},
+    "findings": [{"severity": "P2", "file": "lib/example.ex", "title": "Advisory"}]
+  }]
+}
+EOF
+
+jq '.lanes[0].severity.P2 = 0' "$nonzero_p2_report" >"$inconsistent_p2_report"
+
 pr_json() {
   printf '{"base":{"sha":"%s"},"head":{"sha":"%s"}}' "$1" "$2"
 }
 
 run_script() {
-  local pr_json="$1" run_view_json="${2-}"
+  local pr_json="$1" run_view_json="${2-}" report_path="${3:-$zero_p2_report}"
   if [[ -z "$run_view_json" ]]; then
     run_view_json='{"status":"in_progress","conclusion":null}'
   fi
@@ -88,6 +133,7 @@ run_script() {
       MERGE_ELIGIBLE="${extra[MERGE_ELIGIBLE]}" FILES_OMITTED="${extra[FILES_OMITTED]}" \
       DISPATCH_REFLECTION_STATUS="${extra[DISPATCH_REFLECTION_STATUS]}" \
       PROVIDER_RECEIPT_DIGEST="${extra[PROVIDER_RECEIPT_DIGEST]}" \
+      RUN_REPORT_PATH="$report_path" \
       PR_METADATA_JSON="$pr_json" RUN_VIEW_JSON="$run_view_json" CALL_LOG="$call_log" \
       "$repo_root/scripts/check-review-verdict.sh" 2>&1
   )"
@@ -162,5 +208,71 @@ if [[ "$rc" -ne 0 ]]; then
 fi
 grep -Fq "accepted" <<<"$output" || { echo "[exact-match] expected the acceptance message" >&2; exit 1; }
 echo "[exact-match] passed"
+
+# 5. A syntactically valid SHIP/PASS report with an unresolved P2 advisory must block.
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$nonzero_p2_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[p2-advisory] expected unresolved P2 advisory to block" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "unresolved P2 advisory finding(s)" <<<"$output" || {
+  echo "[p2-advisory] expected the required-advisory failure message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[p2-advisory] passed (unresolved advisory blocks)"
+
+# 6. Report identity fields must retain their schema types; a string PR number is invalid.
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$string_pr_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[report-schema] expected string PR number to fail closed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "run-report PR number does not match" <<<"$output" || {
+  echo "[report-schema] expected the PR-number schema failure message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[report-schema] passed (string PR number rejected)"
+
+# 7. The report's exact identity and summary counts are independently validated, even when
+# the action-level environment says SHIP/PASS.
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$base_mismatch_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[report-base] expected report base mismatch to fail closed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "run-report base/head does not match" <<<"$output" || {
+  echo "[report-base] expected exact identity failure message" >&2
+  exit 1
+}
+echo "[report-base] passed (base mismatch rejected)"
+
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$verdict_mismatch_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[report-verdict] expected report verdict mismatch to fail closed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "run-report verdict does not match" <<<"$output" || {
+  echo "[report-verdict] expected verdict identity failure message" >&2
+  exit 1
+}
+echo "[report-verdict] passed (verdict mismatch rejected)"
+
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$inconsistent_p2_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[report-p2-count] expected inconsistent P2 count to fail closed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "run-report P2 count is inconsistent" <<<"$output" || {
+  echo "[report-p2-count] expected P2 consistency failure message" >&2
+  exit 1
+}
+echo "[report-p2-count] passed (summary mismatch rejected)"
 
 echo "check-review-verdict self-cancel contract passed"
