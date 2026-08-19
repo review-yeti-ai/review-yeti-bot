@@ -12,6 +12,12 @@ const REASON_CODES = new Set([
   'invalid ref', 'paths_required', 'cancelled', 'blob_fetch_failed', 'blob_sha_mismatch',
   'blob_response_too_large', 'request_timeout', 'tool_not_registered', 'result_too_large',
   'invalid line range', 'invalid path query', 'invalid code query', 'navigation_snapshot_unavailable',
+  // library_docs (src/mcp/libraryDocsTool.js): context7_disabled means no CONTEXT7_API_KEY was
+  // configured for this run; the other three are outage/validation modes for the one outbound
+  // call this tool can make. All four are fail-soft -- they degrade this single evidence call,
+  // never the lane.
+  'context7_disabled', 'context7_timeout', 'context7_unavailable', 'context7_response_too_large',
+  'invalid_library', 'invalid_topic',
 ]);
 
 function safeObject(value) {
