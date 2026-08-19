@@ -139,6 +139,15 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     )).toThrow(/structured output/i);
   });
 
+  it('allows a trusted transport to omit response_format for models that reject it', () => {
+    const policy = resolveOpenRouterPolicy(
+      { github_action: { openrouter: { structured_output: 'none' } } },
+      {},
+    );
+
+    expect(policy.structuredOutput).toBe('none');
+  });
+
   it('coerces a text allowlist from config and ignores an invalid tradeoff number', () => {
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { allowed_models: 'a/b, c/d', cost_quality_tradeoff: 'not-a-number' } } },
