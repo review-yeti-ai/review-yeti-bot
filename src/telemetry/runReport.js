@@ -82,6 +82,7 @@ function buildRunReport({
   personaResults,
   transports,
   investigation,
+  overview,
   startedAt,
   finishedAt,
 } = {}) {
@@ -113,6 +114,10 @@ function buildRunReport({
     investigation: {
       enabled: Boolean(investigation?.enabled),
       complete: Boolean(investigation?.complete),
+    },
+    overview: {
+      enabled: Boolean(overview?.enabled),
+      present: Boolean(overview?.present),
     },
     ...(startedAtMs === undefined || finishedAtMs === undefined
       ? {}

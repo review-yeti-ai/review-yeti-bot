@@ -242,9 +242,9 @@ const UNTRUSTED_BLOCK_TAGS = ['review_manifest', 'prior_decisions', 'optional_co
 // delimiter blocks. A payload containing a literal closing tag such as
 // </pull_request_diff> would otherwise escape its block and masquerade as
 // prompt structure, so the exact delimiter tokens are neutralized in place.
-function neutralizeUntrustedDelimiters(value) {
+function neutralizeUntrustedDelimiters(value, tags = UNTRUSTED_BLOCK_TAGS) {
   let text = String(value || '');
-  for (const tag of UNTRUSTED_BLOCK_TAGS) {
+  for (const tag of tags) {
     text = text.split(`<${tag}>`).join(`<\\${tag}>`).split(`</${tag}>`).join(`<\\/${tag}>`);
   }
   return text;
