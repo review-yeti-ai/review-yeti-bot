@@ -492,6 +492,76 @@ describe('reviewWithModel', () => {
     expect(result.decision).toBe('APPROVE');
   });
 
+  it('lets OpenRouter reroute a timed-out provider when timeout quarantine is disabled', async () => {
+    const calls: any[] = [];
+    const runTimedOutProviders = new Set<string>();
+    let firstRead = true;
+    const fetchImpl = async (_url: string, init: any) => {
+      calls.push(JSON.parse(init.body));
+      if (calls.length === 1) {
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader: () => ({
+              read: async () => {
+                if (firstRead) {
+                  firstRead = false;
+                  return {
+                    done: false,
+                    value: Buffer.from('data: {"id":"gen-slow","model":"test/model","provider":"ExampleCloud","choices":[{"delta":{"content":"{\\"findings\\":[]}"}}]}\n\n'),
+                  };
+                }
+                await new Promise((resolve) => setTimeout(resolve, 25));
+                throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+              },
+              cancel: async () => {},
+            }),
+          },
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          getReader: () => {
+            let sent = false;
+            return {
+              read: async () => {
+                if (sent) return { done: true, value: undefined };
+                sent = true;
+                return {
+                  done: false,
+                  value: Buffer.from('data: {"id":"gen-rerouted","model":"test/model","provider":"AnotherCloud","choices":[{"delta":{"content":"{\\"findings\\":[]}"}}]}\n\ndata: [DONE]\n\n'),
+                };
+              },
+              cancel: async () => {},
+            };
+          },
+        },
+      };
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      gatewayCompat: 'openrouter',
+      model: 'test/model',
+      fetchImpl,
+      maxAttempts: 2,
+      timeoutMs: 10,
+      preferStream: true,
+      providerTimeoutQuarantine: false,
+      runTimedOutProviders,
+    });
+
+    expect(result.decision).toBe('APPROVE');
+    expect(calls).toHaveLength(2);
+    expect(calls[1].provider?.ignore || []).not.toContain('examplecloud');
+    expect(calls[1].session_id).toBeUndefined();
+    expect(runTimedOutProviders.size).toBe(0);
+  });
+
   // Regression coverage for the "false advertising" ban-scope defect (2026-08-12, evidence:
   // calltelemetry/cisco-cdr run 31601485579). Proof from that run: DigitalOcean was banned by the
   // security lane at 14:41:47 and served the architecture lane again at 14:47:51 -- six minutes

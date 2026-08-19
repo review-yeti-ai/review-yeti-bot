@@ -692,6 +692,7 @@ const TRANSPORT_KEY_ENV_DENY_PREFIXES = Object.freeze(['GITHUB_', 'ACTIONS_', 'R
 const MAX_TRANSPORTS = 6;
 const TRANSPORT_OPENROUTER_ONLY_KEYS = Object.freeze([
   'provider_routing', 'providerRouting', 'ignore_providers', 'ignoreProviders',
+  'quarantine_on_timeout', 'quarantineOnTimeout',
   'allow_banned_providers', 'allowBannedProviders', 'data_collection', 'dataCollection',
   'allowed_models', 'allowedModels', 'cost_quality_tradeoff', 'costQualityTradeoff',
 ]);
@@ -714,8 +715,8 @@ const TRANSPORT_OPENROUTER_ONLY_KEYS = Object.freeze([
  *   fallback_models, timeout_ms, connect_timeout_ms, stream, structured_output,
  *   reasoning_effort, perf_metrics_in_response
  *                 optional; unset values inherit the global env/action inputs
- *   provider_routing, ignore_providers, data_collection, allowed_models,
- *   cost_quality_tradeoff, allow_banned_providers
+ *   provider_routing, ignore_providers, quarantine_on_timeout, data_collection,
+ *   allowed_models, cost_quality_tradeoff, allow_banned_providers
  *                 OpenRouter-only; rejected on compat 'openai'
  *
  * An entry whose api_key_env is empty at runtime is DROPPED with a warning so
@@ -819,6 +820,10 @@ function resolveTransportPlan(localConfig, env) {
     if (configuredPerfMetrics !== undefined && typeof configuredPerfMetrics !== 'boolean') {
       throw new Error(`transports[${index}] (${name}): perf_metrics_in_response must be boolean`);
     }
+    const configuredQuarantineOnTimeout = raw.quarantine_on_timeout ?? raw.quarantineOnTimeout;
+    if (configuredQuarantineOnTimeout !== undefined && typeof configuredQuarantineOnTimeout !== 'boolean') {
+      throw new Error(`transports[${index}] (${name}): quarantine_on_timeout must be boolean`);
+    }
 
     // Reuse resolveOpenRouterPolicy for normalization/validation/clamping by
     // synthesizing a per-transport env. Unset per-transport values inherit the
@@ -867,6 +872,7 @@ function resolveTransportPlan(localConfig, env) {
       stream: openRouterPolicy.stream,
       reasoningEffort,
       perfMetricsInResponse: configuredPerfMetrics === true,
+      quarantineOnTimeout: configuredQuarantineOnTimeout !== false,
       openRouterPolicy,
     }));
   }
