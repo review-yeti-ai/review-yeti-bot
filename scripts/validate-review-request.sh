@@ -47,8 +47,8 @@ path_state() {
   printf '%s\n' absent
 }
 
-changed_files="$(gh api --paginate --slurp "repos/${REVIEW_REPOSITORY}/pulls/${REVIEW_PR_NUMBER}/files?per_page=100" \
-  --jq '.[][] | [.filename, .status] | @tsv')"
+changed_pages="$(gh api --paginate --slurp "repos/${REVIEW_REPOSITORY}/pulls/${REVIEW_PR_NUMBER}/files?per_page=100")"
+changed_files="$(jq -r '.[][] | [.filename, .status] | @tsv' <<<"$changed_pages")"
 
 for path in \
   .review-yeti.yaml \
