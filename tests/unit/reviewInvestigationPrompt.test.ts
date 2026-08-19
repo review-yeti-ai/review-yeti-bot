@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-const { buildInvestigationMessages, parseInvestigationResponse } = require('../../src/review/reviewInvestigationPrompt.js');
+const { buildInvestigationMessages, parseInvestigationResponse, selectDiffFilesForPrompt } = require('../../src/review/reviewInvestigationPrompt.js');
 const limits = { maxCalls: 12, maxCandidateFindings: 5, maxRiskItems: 12 };
 const assignedUnitId = `ru_${'1'.repeat(64)}`;
 const outsideUnitId = `ru_${'2'.repeat(64)}`;
@@ -131,5 +131,185 @@ describe('bounded investigation prompt', () => {
     expect(parsed.reviewStatus).toBeTruthy();
     expect(JSON.stringify(parsed)).not.toContain('unknown');
     expect(() => parseInvestigationResponse('not json', limits)).toThrow(/valid JSON/);
+  });
+});
+
+describe('bounded diff selection (structured diffFiles input)', () => {
+  const makeFiles = (count: number, size: number) => Array.from({ length: count }, (_, i) => ({
+    path: `src/file-${String(i).padStart(3, '0')}.js`,
+    patch: `@@ -1,1 +1,1 @@\n${'x'.repeat(size)}`,
+  }));
+
+  it('keeps a large diff out of the prompt instead of embedding it whole', () => {
+    // 200 files * 4,000 chars each = 800,000 chars of raw patch content -- comfortably past
+    // the measured Fireworks latency cliff (300k chars -> ~14.5s TTFB) this change exists to
+    // avoid. The old behavior (bounded(diffText, 2_000_000)) would have embedded almost all of
+    // it verbatim.
+    const files = makeFiles(200, 4_000);
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'PULL REQUEST FILE MANIFEST',
+      diffFiles: files,
+      remaining: { calls: 12, turns: 4 },
+    });
+    const user = messages[1].content;
+    const open = user.indexOf('<pull_request_diff>');
+    const close = user.indexOf('</pull_request_diff>');
+    const diffBlock = user.slice(open, close);
+    // Generous headroom over the ~100k target for per-file "--- FILE: ... ---" headers.
+    expect(diffBlock.length).toBeLessThan(120_000);
+    // Must be a real, non-trivial selection -- not an empty/ignored diffFiles input, and not
+    // the whole 800k characters of input either.
+    expect(diffBlock.length).toBeGreaterThan(20_000);
+    const fullPatch = `@@ -1,1 +1,1 @@\n${'x'.repeat(4_000)}`;
+    expect(diffBlock).toContain(fullPatch);
+  });
+
+  it('never slices a file mid-hunk -- a deferred file is fully absent, not partially shown', () => {
+    const files = makeFiles(200, 4_000);
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'PULL REQUEST FILE MANIFEST',
+      diffFiles: files,
+      remaining: { calls: 12, turns: 4 },
+    });
+    const user = messages[1].content;
+    const fullPatch = `@@ -1,1 +1,1 @@\n${'x'.repeat(4_000)}`;
+    let includedCount = 0;
+    for (const file of files) {
+      const isFullyPresent = user.includes(`--- FILE: ${file.path} ---\n${fullPatch}`);
+      const pathMentionedButNotInlined = user.includes(file.path) && !isFullyPresent;
+      if (isFullyPresent) includedCount += 1;
+      // Every file is either wholly inlined (full path + full patch present, immediately
+      // adjacent) or its patch text never appears in the prompt at all -- there is no
+      // partial/sliced middle state. A path may still be *named* (in the deferred list)
+      // without its patch being inlined.
+      expect(isFullyPresent || pathMentionedButNotInlined || !user.includes(file.path)).toBe(true);
+    }
+    // At least some files must actually make it into the prompt -- this is a selection, not
+    // a total blackout.
+    expect(includedCount).toBeGreaterThan(0);
+    expect(includedCount).toBeLessThan(files.length);
+  });
+
+  it('names every deferred file and tells the model how to retrieve it, instead of silently dropping it', () => {
+    const files = makeFiles(200, 4_000);
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'PULL REQUEST FILE MANIFEST',
+      diffFiles: files,
+      identity: { repository: 'calltelemetry/cisco-cdr', headSha: 'deadbeefcafe' },
+      remaining: { calls: 12, turns: 4 },
+    });
+    const user = messages[1].content;
+    // At least one deferred file's path must be named explicitly.
+    expect(user).toMatch(/src\/file-\d{3}\.js/);
+    expect(user).toMatch(/file_read_diff/);
+    expect(user).toMatch(/code_search_zoekt/);
+    // A silently truncated diff is more dangerous than a large one (the persona would
+    // conclude "no issues" about code it never saw) -- the notice must say the files are
+    // real, not missing.
+    expect(user).toMatch(/not missing/i);
+    expect(user).toContain('calltelemetry/cisco-cdr');
+    expect(user).toContain('deadbeefcafe');
+  });
+
+  it('states the repository and head SHA even when nothing was deferred', () => {
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'src/a.js',
+      diffFiles: [{ path: 'src/a.js', patch: '+guard()' }],
+      identity: { repository: 'calltelemetry/cisco-cdr', headSha: 'deadbeefcafe' },
+      remaining: { calls: 12, turns: 4 },
+    });
+    const system = messages[0].content;
+    expect(system).toContain('calltelemetry/cisco-cdr');
+    expect(system).toContain('deadbeefcafe');
+  });
+
+  it('adds no truncation notice and stays byte-identical in shape for a small diff', () => {
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'src/a.js',
+      diffFiles: [{ path: 'src/a.js', patch: '+guard()' }],
+      remaining: { calls: 12, turns: 4 },
+    });
+    const user = messages[1].content;
+    expect(user).toContain('+guard()');
+    expect(user).not.toMatch(/not inlined|NOT missing/i);
+  });
+
+  it('falls back to plain diffText (legacy string input) unchanged for small diffs', () => {
+    // tests/unit/promptInjectionContainment.test.ts and the tests above in this file depend on
+    // diffText continuing to work exactly as before for callers that have not migrated to the
+    // structured diffFiles input.
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'src/a.js',
+      diffText: '+guard()',
+      remaining: { calls: 12, turns: 4 },
+    });
+    expect(messages[1].content).toContain('+guard()');
+  });
+
+  it('prefers source over lockfiles/vendor/fixtures even when the low-relevance file is smaller', () => {
+    // Operator directive 2026-08-19: "review the PR, not is every file covered" -- selection is
+    // relevance-ranked, not positional or purely size-based. A SMALLER lockfile/vendor/fixture
+    // file must still lose to a LARGER real source file -- if this were plain size-based
+    // selection, the small irrelevant files would win the budget and this test would fail.
+    // Sized so src/auth.js alone consumes almost the entire 100k prompt budget
+    // (MAX_PROMPT_DIFF_CHARS), leaving less headroom than any single low-relevance file needs --
+    // none of the three can fit alongside it regardless of budget rounding.
+    const files = [
+      { path: 'package-lock.json', patch: `@@ -1,1 +1,1 @@\n${'x'.repeat(3_000)}` },
+      { path: 'vendor/thirdparty/big.js', patch: `@@ -1,1 +1,1 @@\n${'x'.repeat(3_000)}` },
+      { path: '__fixtures__/large.json', patch: `@@ -1,1 +1,1 @@\n${'x'.repeat(3_000)}` },
+      { path: 'src/auth.js', patch: `@@ -1,1 +1,1 @@\n${'y'.repeat(97_000)}` },
+    ];
+    const selection = selectDiffFilesForPrompt(files, 100_000);
+    expect(selection.includedPaths).toContain('src/auth.js');
+    expect(selection.deferredPaths).toEqual(expect.arrayContaining([
+      'package-lock.json', 'vendor/thirdparty/big.js', '__fixtures__/large.json',
+    ]));
+
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'PULL REQUEST FILE MANIFEST',
+      diffFiles: files,
+      remaining: { calls: 12, turns: 4 },
+    });
+    const user = messages[1].content;
+    expect(user).toContain('src/auth.js');
+    expect(user).toContain('y'.repeat(97_000));
+    // The low-relevance files did not fit alongside the source file and must still be named as
+    // deferred, never silently dropped.
+    expect(user).toMatch(/package-lock\.json/);
+    expect(user).toMatch(/vendor\/thirdparty\/big\.js/);
+    expect(user).toMatch(/__fixtures__\/large\.json/);
+  });
+
+  it('prefers larger, more substantial diffs over trivial one-line changes within the same tier', () => {
+    const files = [
+      { path: 'src/trivial.js', patch: '@@ -1,1 +1,1 @@\n-const x = 1;\n+const x = 2;' },
+      { path: 'src/substantial.js', patch: `@@ -1,1 +1,1 @@\n${'z'.repeat(50_000)}` },
+    ];
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'PULL REQUEST FILE MANIFEST',
+      diffFiles: files,
+      remaining: { calls: 12, turns: 4 },
+    });
+    const selection = selectDiffFilesForPrompt(files, 60_000);
+    expect(selection.includedPaths).toContain('src/substantial.js');
+    void messages;
+  });
+
+  it('does not deprioritize ordinary test/spec source files -- vacuous-test detection needs them', () => {
+    const files = [
+      { path: 'src/feature.test.js', patch: `@@ -1,1 +1,1 @@\n${'t'.repeat(30_000)}` },
+      { path: 'src/other.js', patch: `@@ -1,1 +1,1 @@\n${'o'.repeat(5_000)}` },
+    ];
+    const selection = selectDiffFilesForPrompt(files, 60_000);
+    expect(selection.includedPaths).toContain('src/feature.test.js');
   });
 });
