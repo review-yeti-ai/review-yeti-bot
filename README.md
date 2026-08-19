@@ -71,6 +71,26 @@ then promoted only after validation. The model may identify recurring failures a
 but it never writes directly to `main` or `v1`, changes release policy, or self-approves a
 promotion.
 
+## Fireworks timeout debug
+
+The hosted panel uses `openrouter-ttft-ms` even on the Fireworks transport. All
+three transports set `stream: true` and `openrouter_stream=true`, so that
+deadline is first SSE token (~1s), not a fully buffered JSON body. OpenRouter
+fallback also ignores `akashml` (60s timeouts / malformed 10k completions).
+Transport smoke stays `stream: false` so `response.json()` health checks remain
+valid.
+
+Smoke logs `elapsed_ms` and `http` per transport. For a panel-sized probe:
+
+```bash
+doppler run --project example-workspace --config prd -- \
+  node scripts/review-yeti-fireworks-debug.mjs
+```
+
+The script never prints the API key. Compare `ttfbMs` for `stream=true` vs
+`stream=false`. Streaming first-byte is typically under 1s; non-stream first-byte
+is the full JSON.
+
 ## Provider order
 
 The current standard transport plan is deliberately limited and ordered:

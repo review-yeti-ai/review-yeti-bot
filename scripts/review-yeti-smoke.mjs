@@ -64,6 +64,8 @@ export function buildRequest(transport) {
     ],
     temperature: 0,
     max_tokens: 128,
+    // Health check stays buffered JSON. The panel streams; this probe must not.
+    stream: false,
     response_format: { type: 'json_object' },
   };
 
@@ -94,11 +96,44 @@ function responseContent(payload) {
   return content;
 }
 
+async function readChatCompletion(response) {
+  const contentType = typeof response.headers?.get === 'function'
+    ? (response.headers.get('content-type') || '')
+    : '';
+  if (!contentType.includes('event-stream')) {
+    return response.json();
+  }
+
+  const text = typeof response.text === 'function' ? await response.text() : '';
+  const pieces = [];
+  let last = null;
+  for (const line of String(text).split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const data = trimmed.slice(5).trim();
+    if (!data || data === '[DONE]') continue;
+    try {
+      last = JSON.parse(data);
+      const delta = last?.choices?.[0]?.delta?.content;
+      if (typeof delta === 'string') pieces.push(delta);
+    } catch {
+      // ignore a truncated SSE chunk
+    }
+  }
+  if (typeof last?.choices?.[0]?.message?.content === 'string') return last;
+  if (pieces.length > 0) {
+    return { choices: [{ message: { content: pieces.join('') } }] };
+  }
+  throw new Error('empty_sse');
+}
+
 export async function probeTransport(transport, apiKey, fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS) {
   if (!apiKey) return { name: transport.name, status: 'missing' };
 
+  const started = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const elapsed = () => Date.now() - started;
   try {
     const response = await fetchImpl(`${transport.base_url.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -110,20 +145,40 @@ export async function probeTransport(transport, apiKey, fetchImpl = globalThis.f
       signal: controller.signal,
     });
 
-    if (!response.ok) return { name: transport.name, status: 'unhealthy', code: `http_${response.status}` };
-
-    const payload = await response.json();
-    const result = extractJsonObject(responseContent(payload));
-    if (result?.ok !== true || result.review !== 'SMOKE_OK') {
-      return { name: transport.name, status: 'unhealthy', code: 'invalid_response' };
+    if (!response.ok) {
+      return {
+        name: transport.name,
+        status: 'unhealthy',
+        code: `http_${response.status}`,
+        http: response.status,
+        elapsed_ms: elapsed(),
+      };
     }
 
-    return { name: transport.name, status: 'healthy' };
+    const payload = await readChatCompletion(response);
+    const result = extractJsonObject(responseContent(payload));
+    if (result?.ok !== true || result.review !== 'SMOKE_OK') {
+      return {
+        name: transport.name,
+        status: 'unhealthy',
+        code: 'invalid_response',
+        http: response.status,
+        elapsed_ms: elapsed(),
+      };
+    }
+
+    return {
+      name: transport.name,
+      status: 'healthy',
+      http: response.status,
+      elapsed_ms: elapsed(),
+    };
   } catch (error) {
     return {
       name: transport.name,
       status: 'unhealthy',
       code: error?.name === 'AbortError' ? 'timeout' : 'request_error',
+      elapsed_ms: elapsed(),
     };
   } finally {
     clearTimeout(timeout);
@@ -134,11 +189,18 @@ export async function runSmoke({ policy, policyPath, env = process.env, fetchImp
   const loadedPolicy = policy || loadPolicy(policyPath);
   const transports = validatePolicy(loadedPolicy);
   const results = [];
+  const review = loadedPolicy.review_yeti || {};
+  log(
+    `[Review Yeti smoke] policy stream=${review.openrouter_stream ?? 'unset'} ` +
+      `ttft_ms=${review.openrouter_ttft_ms ?? 'unset'} timeout_ms=${timeoutMs}`,
+  );
 
   for (const transport of transports) {
     const result = await probeTransport(transport, env[transport.api_key_env], fetchImpl, timeoutMs);
     results.push(result);
-    log(`[Review Yeti smoke] ${result.name}: ${result.status}${result.code ? ` (${result.code})` : ''}`);
+    const timing = result.elapsed_ms != null ? ` elapsed_ms=${result.elapsed_ms}` : '';
+    const http = result.http != null ? ` http=${result.http}` : '';
+    log(`[Review Yeti smoke] ${result.name}: ${result.status}${timing}${http}${result.code ? ` (${result.code})` : ''}`);
   }
 
   const healthy = results.filter((result) => result.status === 'healthy').map((result) => result.name);

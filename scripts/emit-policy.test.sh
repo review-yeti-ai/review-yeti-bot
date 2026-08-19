@@ -45,8 +45,15 @@ if int(fallback.get('timeout_ms', 0)) > 60_000:
     raise SystemExit('openrouter-fallback timeout must be <= 60000ms')
 if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
+if review.get('openrouter_stream') != 'true':
+    raise SystemExit('global openrouter_stream must be true so Fireworks/Ollama use SSE TTFT')
+for transport in review.get('transports', []):
+    if transport.get('stream') is not True:
+        raise SystemExit(f'{transport.get("name")} must stream')
 if 'open-inference' not in fallback.get('ignore_providers', []):
     raise SystemExit('openrouter-fallback must quarantine open-inference')
+if 'akashml' not in fallback.get('ignore_providers', []):
+    raise SystemExit('openrouter-fallback must quarantine akashml (malformed 10k completions / 60s timeouts)')
 if fallback.get('provider_routing', {}).get('sort') != 'throughput':
     raise SystemExit('openrouter-fallback must use throughput routing')
 print('policy budget source passed')

@@ -36,6 +36,7 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(buildRequest(transports[2]).provider, EXPECTED_OPENROUTER_ROUTING);
   assert.deepEqual(buildRequest(transports[0]).response_format, { type: 'json_object' });
   assert.equal(buildRequest(transports[0]).max_tokens, 128);
+  assert.equal(buildRequest(transports[0]).stream, false);
 });
 
 test('the committed OpenRouter fallback enforces full quantization and performance preferences', () => {
@@ -71,6 +72,8 @@ test('the smoke suite probes every configured transport without logging credenti
   assert.deepEqual(result.healthy, EXPECTED_TRANSPORT_ORDER);
   assert.equal(logs.some((line) => line.includes('secret')), false);
   assert.equal(JSON.stringify(logs).includes('fireworks-secret'), false);
+  assert.match(logs.join('\n'), /fireworks: healthy elapsed_ms=\d+ http=200/);
+  assert.match(logs.join('\n'), /policy stream=/);
 });
 
 test('the smoke suite fails closed when no provider can complete the real request shape', async () => {
@@ -121,6 +124,23 @@ test('the smoke suite treats missing keys as unavailable and still accepts a hea
 
   assert.deepEqual(result.healthy, ['openrouter-fallback']);
   assert.deepEqual(result.results.map((result) => result.status), ['missing', 'missing', 'healthy']);
+});
+
+test('the smoke suite still accepts SSE chat completions if a transport streams', async () => {
+  const logs = [];
+  const result = await runSmoke({
+    policy: policyFixture(),
+    env: { FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret' },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-type' ? 'text/event-stream' : null) },
+      text: async () => 'data: {"choices":[{"delta":{"content":"{\\"ok\\":true,\\"review\\":\\"SMOKE_OK\\"}"}}]}\n\ndata: [DONE]\n',
+    }),
+    log: (line) => logs.push(line),
+  });
+  assert.deepEqual(result.healthy, ['fireworks']);
+  assert.equal(JSON.stringify(logs).includes('secret'), false);
 });
 
 test('the smoke suite rejects policy drift before any network request', () => {

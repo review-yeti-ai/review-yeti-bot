@@ -58,7 +58,9 @@ jobs:
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000
-        run: node scripts/review-yeti-smoke.mjs
+        run: |
+          echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
+          node scripts/review-yeti-smoke.mjs
 
       - name: Fetch Review Yeti action
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
