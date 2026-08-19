@@ -1,0 +1,75 @@
+name: Bug report
+description: Something in a review run, the CLI, or the Pi/MCP adapter didn't behave as documented.
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: check whether this is a supply-chain/security issue (report those
+        privately — see [SECURITY.md](../../SECURITY.md)) rather than here.
+
+  - type: input
+    id: run-url
+    attributes:
+      label: Review run URL
+      description: >-
+        The GitHub Actions run URL for the review that misbehaved (Actions tab → the run →
+        copy the browser URL). If this is a CLI-only issue, put the command you ran instead.
+      placeholder: https://github.com/<owner>/<repo>/actions/runs/<id>
+    validations:
+      required: true
+
+  - type: input
+    id: posted-verdict
+    attributes:
+      label: Posted verdict
+      description: The verdict Review Yeti posted (or "none — never published").
+      placeholder: "e.g. FIX_FIRST, SHIP, INCOMPLETE_REVIEW, or none"
+    validations:
+      required: true
+
+  - type: textarea
+    id: run-report-line
+    attributes:
+      label: Run-report failure line
+      description: >-
+        The failure-class line from the run report / receipt, if there is one (e.g. an
+        `INCOMPLETE_REVIEW`/`PARTIAL_REVIEW` reason, an Action-contract error, or a
+        CLI/Action-equivalence mismatch). Paste it verbatim — do not summarize.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: pin
+    attributes:
+      label: How you pin the action
+      description: e.g. `@v1`, `@v1.3.0`, or a full commit SHA — see the two options in README.md#install.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        A small PR/diff that reproduces it, or steps to reproduce with the local CLI
+        (`reviewyeti review --diff-file ...`). Redact any secrets, customer names, or
+        proprietary code before pasting.
+    validations:
+      required: false
