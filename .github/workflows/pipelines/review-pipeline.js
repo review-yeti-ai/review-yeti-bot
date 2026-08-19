@@ -6515,11 +6515,36 @@ function postApiJson(commandRunner, endpoint, payload) {
 }
 
 /**
+ * A published review whose body is empty or whitespace-only is a worse outcome than no
+ * publication at all: it satisfies an exact-head consumer's lookup while carrying zero verdict
+ * information, so a fail-closed gate reading it cannot distinguish "no verdict yet" from "ship."
+ * The panel can run entirely cleanly -- every persona lane `RAW_OK`, a verdict logged internally
+ * via `[Verdict] ...` -- and still lose that verdict on the way to GitHub if a future change to
+ * comment assembly regresses. Returns an error string naming what was about to be dropped when the
+ * body fails this check, or `null` when it is safe to publish. See review-yeti-bot#57.
+ */
+function emptyReviewBodyGuardError(body, prContext) {
+  if (typeof body === 'string' && body.trim().length > 0) return null;
+  const where = prContext?.repo && prContext?.prNumber
+    ? `${prContext.repo}#${prContext.prNumber}${prContext.headSha ? `@${String(prContext.headSha).slice(0, 7)}` : ''}`
+    : 'an unidentified pull request';
+  return `Refusing to publish an empty or whitespace-only review body for ${where}. A verdict was `
+    + 'computed internally (see the preceding [Verdict] log line) but no verdict text survived '
+    + 'into the body about to be sent to GitHub. Publishing it would be indistinguishable from '
+    + '"no verdict yet" to an exact-head consumer, which is worse than failing this run outright.';
+}
+
+/**
  * Publishes one compact COMMENT review, with every P0/P1 finding represented by a resolvable line
  * or file-level conversation. Existing exact-head finding markers are verified through GraphQL
  * and skipped, so a retry repairs partial publication without duplicating successful threads.
  */
 function postOrOutputComment(commentBody, prContext, publicationPlan = {}, options = {}) {
+  const emptyBodyError = emptyReviewBodyGuardError(commentBody, prContext);
+  if (emptyBodyError) {
+    console.error(`[Publish] ${emptyBodyError}`);
+    return { success: false, postedViaGh: false, error: emptyBodyError };
+  }
   const prNumber = prContext.prNumber;
   const fileSystem = options.fileSystem || fs;
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
@@ -6558,6 +6583,15 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       resultMarker,
       publicationAttemptId: options.publicationAttemptId,
     });
+    const compactBodyError = emptyReviewBodyGuardError(compactReview, prContext);
+    if (compactBodyError) {
+      // Defense in depth: `compactReviewBody()` always falls back to non-empty placeholder text
+      // today, so this should be unreachable. Guarding it anyway means a future regression there
+      // fails this run loudly instead of quietly publishing an unreadable gate signal. Returned
+      // before the try block below, so no network call is ever made on this path.
+      console.error(`[Publish] ${compactBodyError}`);
+      return { success: false, postedViaGh: false, error: compactBodyError };
+    }
     try {
       // This is intentionally the first publication operation.  Reading prior reviews before a
       // fresh exact-head fence leaves a TOCTOU gap in which stale work can reach a write path.
