@@ -17,12 +17,14 @@ jobs:
         run: |
           node --check scripts/emit-policy.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
+          grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
           bash -n scripts/validate-review-request.sh
           bash -n scripts/validate-caller-workflow.sh
           bash -n scripts/check-review-verdict.sh
           bash -n scripts/promote-v1.sh
           bash -n scripts/self-cancel-run.sh
           bash -n scripts/emit-policy.test.sh
+          bash -n scripts/validate-release-provenance.sh
           bash -n scripts/validate-caller-workflow.test.sh
           bash -n scripts/promote-v1.test.sh
           bash -n scripts/validate-review-request.test.sh
@@ -39,3 +41,15 @@ jobs:
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
+
+      - name: Reject malformed action_channel policy
+        run: |
+          tmp_negative="$(mktemp -d)"
+          mkdir -p "$tmp_negative/scripts" "$tmp_negative/policy"
+          cp scripts/emit-policy.mjs "$tmp_negative/scripts/emit-policy.mjs"
+          jq '.review_yeti.action_channel = "main"' policy/review-yeti.json > "$tmp_negative/policy/review-yeti.json"
+          if GITHUB_OUTPUT="$RUNNER_TEMP/policy-output-negative" node "$tmp_negative/scripts/emit-policy.mjs"; then
+            echo "::error::emit-policy.mjs accepted a malformed action_channel (expected non-zero exit)"
+            exit 1
+          fi
+          echo "Negative test passed: malformed action_channel was rejected."

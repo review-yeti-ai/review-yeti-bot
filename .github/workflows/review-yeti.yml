@@ -60,14 +60,25 @@ jobs:
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000
         run: node scripts/review-yeti-smoke.mjs
 
-      - name: Fetch pinned Review Yeti action
+      - name: Fetch Review Yeti action
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: review-yeti-ai/review-yeti-bot
-          ref: ${{ steps.policy.outputs.action_sha }}
+          ref: ${{ steps.policy.outputs.action_ref }}
           path: .review-yeti-bot
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Resolve Review Yeti action sha
+        id: resolved
+        run: echo "sha=$(git -C .review-yeti-bot rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
+          ACTION_REF_IS_OVERRIDE: ${{ steps.policy.outputs.action_ref_is_override }}
+        run: .exampleorg-review-actions/scripts/validate-release-provenance.sh
 
       - name: Run Review Yeti review panel
         id: review
@@ -83,7 +94,7 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           llm-api-key: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           llm-base-url: https://api.fireworks.ai/inference/v1
-          action-sha: ${{ steps.policy.outputs.action_sha }}
+          action-sha: ${{ steps.resolved.outputs.sha }}
           model: accounts/fireworks/models/deepseek-v4-flash-0731
           transports: ${{ steps.policy.outputs.transports }}
           openrouter-stream: ${{ steps.policy.outputs.openrouter_stream }}

@@ -8,17 +8,22 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
 trap 'find "$tmp_dir" -type f -delete; find "$tmp_dir" -depth -type d -empty -delete' EXIT
 
-expected_action_sha='32e64e6e3ceec7a3888d80fac8536f4a4730d6f6'
-actual_action_sha="$(python3 - "$repo_root/policy/review-yeti.json" <<'PY'
+# Channel-distribution contract: the policy selects the bot by the platform
+# release channel (with an empty break-glass override), never a raw SHA pin.
+expected_action_channel='v1'
+actual_action_channel="$(python3 - "$repo_root/policy/review-yeti.json" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1]) as handle:
-    print(json.load(handle)["review_yeti"]["action_sha"])
+    review = json.load(handle)["review_yeti"]
+    assert "action_sha" not in review, "raw action_sha pin must not resurface"
+    assert review.get("action_sha_override", None) == "", "override must default to empty"
+    print(review["action_channel"])
 PY
 )"
-if [[ "$actual_action_sha" != "$expected_action_sha" ]]; then
-  echo "policy must pin the approved immutable action SHA ${expected_action_sha}; got ${actual_action_sha}" >&2
+if [[ "$actual_action_channel" != "$expected_action_channel" ]]; then
+  echo "policy must select the platform release channel ${expected_action_channel}; got ${actual_action_channel}" >&2
   exit 1
 fi
 
