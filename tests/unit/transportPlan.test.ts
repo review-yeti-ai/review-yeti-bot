@@ -165,8 +165,13 @@ describe('reviewWithTransports', () => {
     });
     expect(attempts.map((a) => a.transportName)).toEqual(['fireworks', 'openrouter-fallback']);
     expect(attempts[0]).toMatchObject({ apiKey: 'fw-key', baseUrl: 'https://api.fireworks.ai/inference/v1', gatewayCompat: 'openai' });
-    expect(attempts[0]).toMatchObject({ preferStream: true, reasoningEffort: 'max', perfMetricsInResponse: true });
-    expect(attempts[1]).toMatchObject({ apiKey: 'or-key', baseUrl: 'https://openrouter.ai/api/v1', gatewayCompat: 'openrouter', preferStream: true, reasoningEffort: 'max', providerTimeoutQuarantine: false });
+    // Streaming is unconditional (operator directive): reviewWithModel always passes
+    // `preferStream: true` to callOpenRouterChat itself, so reviewWithTransports no longer
+    // threads a per-transport `preferStream` through this options bag at all -- there is nothing
+    // left to assert here about it, which is the point (one authoritative source, not a value
+    // that could disagree across layers).
+    expect(attempts[0]).toMatchObject({ reasoningEffort: 'max', perfMetricsInResponse: true });
+    expect(attempts[1]).toMatchObject({ apiKey: 'or-key', baseUrl: 'https://openrouter.ai/api/v1', gatewayCompat: 'openrouter', reasoningEffort: 'max', providerTimeoutQuarantine: false });
     expect(attempts[1].transportPlan).toBeUndefined();
     expect(result).toMatchObject({ ok: true, provider: 'coreweave' });
   });
@@ -185,10 +190,11 @@ describe('reviewWithTransports', () => {
       streamGate,
     });
 
-    expect(attempts[0]).toMatchObject({
-      preferStream: true,
-    });
+    // Streaming is unconditional (operator directive): every transport contends for the shared
+    // gate regardless of any per-transport `stream` config field (see reviewWithTransports'
+    // `options.streamGate ? ... : null` -- no `transport.stream === true` conditional anymore).
     expect(attempts[0].disableStream).toBeUndefined();
+    expect(attempts[0].preferStream).toBeUndefined();
     expect(streamGate.active).toBe(0);
   });
 
