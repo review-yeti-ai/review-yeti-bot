@@ -19,6 +19,10 @@ const {
   canonicalJson,
   sanitizeFindings: sanitizeCanonicalFindings,
   sha256,
+  // Provider/infra failure reasons eligible for the bounded single-retry + INCOMPLETE_INFRA
+  // split (API-2902) -- shared by name so the retry gate here and the status classification in
+  // reviewCore.js can never drift on what counts as "infra" vs. a real review defect.
+  INFRA_FAILURE_REASONS: INFRA_RETRY_FAILURE_REASONS,
 } = require('../../../src/review/reviewCore');
 const { normalizeCoveragePolicy } = require('../../../src/review/coveragePolicy');
 const { planFindingPublication } = require('../../../src/review/findingPublication');
@@ -6152,7 +6156,7 @@ function reviewRequiresResultRepublish(review) {
   // A generic exact-head marker identifies the review *target*, not its result. Retain a later
   // durable result whenever the prior result can block/partially gate the pull request. Unknown
   // legacy bodies remain idempotent to avoid review spam, but are never used as a SHIP claim.
-  const retryable = '(?:BLOCK|FIX_FIRST|PARTIAL(?:_REVIEW)?|INCOMPLETE_REVIEW|DEGRADED|ERROR)';
+  const retryable = '(?:BLOCK|FIX_FIRST|PARTIAL(?:_REVIEW)?|INCOMPLETE_REVIEW|INCOMPLETE_INFRA|DEGRADED|ERROR)';
   return new RegExp('\\*\\*Verdict:\\s*(?:`)?' + retryable + '(?:`)?\\*\\*', 'iu').test(body)
     || new RegExp('\\*\\*(?:Review Status|Quorum Status)\\*\\*:\\s*`' + retryable + '`', 'iu').test(body);
 }
@@ -8988,9 +8992,11 @@ async function main(options = {}) {
             + ` route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`,
           ),
         };
-        let evaluatedPersonas;
-        try {
-          evaluatedPersonas = await cancellation.race(Promise.all(enabledPersonas.map(async (persona) => {
+        // Named (not an inline arrow passed straight to .map) so the bounded infra-retry step
+        // below (API-2902) can re-invoke the exact same single-lane execution path for just the
+        // failed persona(s) instead of re-running the whole panel. Zero behavior change for the
+        // first pass: this is the same closure body, only given a name.
+        const runPersonaLane = async (persona) => {
             laneProgress.start(persona.id);
             const runs = [];
             try {
@@ -9065,12 +9071,64 @@ async function main(options = {}) {
             } finally {
               if (runs.length > 0) laneProgress.complete(persona.id);
             }
-          })));
+        };
+        let evaluatedPersonas;
+        try {
+          evaluatedPersonas = await cancellation.race(Promise.all(enabledPersonas.map(runPersonaLane)));
         } finally {
           laneProgress.stop();
         }
         if (cancellation.isCancellationResult(evaluatedPersonas)) return;
         personaResults = evaluatedPersonas;
+
+        // Bounded infra-failure retry (API-2902): a single persona lane that failed for a
+        // provider/infra reason (timeout, ttft_timeout, schema_contract_violation) must not
+        // force a hard BLOCK indistinguishable from a real findings-based verdict when the rest
+        // of the panel cleared cleanly. Evidenced live: cisco-cdr #4411/#4413 blocked twice with
+        // 4/5 personas approving and 0 P0/P1/P2 findings because one lane errored once. Retry
+        // ONLY the failed lane(s), ONLY once, and ONLY when every other expected lane already
+        // completed trustworthily (N-1 quorum) with zero blocking findings -- a real defect
+        // finding must never be masked by a retry, and a second, different failure reason on the
+        // same lane is never retried again. If the retry still fails, the lane stays failed and
+        // computeArbitration (src/review/reviewCore.js) reports the distinct INCOMPLETE_INFRA
+        // status instead of a generic BLOCK/INCOMPLETE_REVIEW so on-call can tell infra apart
+        // from a real review verdict at a glance -- still fail-closed, never an auto-pass.
+        {
+          const infraFailedLane = (lane) => lane?.decision === 'ERROR'
+            && INFRA_RETRY_FAILURE_REASONS.has(String(lane?.failure?.reason || ''));
+          const infraFailedPersonas = personaResults.filter(infraFailedLane);
+          const otherFailedPersonas = personaResults.filter((lane) => lane?.decision === 'ERROR' && !infraFailedLane(lane));
+          const trustworthyResults = personaResults.filter((lane) => lane?.decision !== 'ERROR');
+          const hasBlockingFindings = trustworthyResults.some((lane) => (Array.isArray(lane.findings) ? lane.findings : [])
+            .some((finding) => finding?.severity === 'P0' || finding?.severity === 'P1'));
+          const nMinusOneSatisfied = enabledPersonas.length > 0 && trustworthyResults.length >= enabledPersonas.length - 1;
+          if (infraFailedPersonas.length > 0 && otherFailedPersonas.length === 0 && nMinusOneSatisfied && !hasBlockingFindings) {
+            const retryIds = infraFailedPersonas.map((lane) => stablePersonaId(lane));
+            console.warn(`[Persona] Retrying ${infraFailedPersonas.length} infra-failed lane(s) once (N-1 quorum satisfied, 0 blocking findings): ${retryIds.join(', ')}`);
+            const retryPersonas = infraFailedPersonas
+              .map((lane) => enabledPersonas.find((persona) => persona.id === (lane.personaId || lane.id)))
+              .filter(Boolean);
+            let retried = null;
+            try {
+              retried = await cancellation.race(Promise.all(retryPersonas.map(runPersonaLane)));
+            } catch (error) {
+              console.warn(`[Persona] Infra retry raised unexpectedly (${error?.message || error}); keeping the original failure(s).`);
+            }
+            if (retried && !cancellation.isCancellationResult(retried)) {
+              const retriedById = new Map(retryPersonas.map((persona, index) => [persona.id, retried[index]]));
+              personaResults = personaResults.map((lane) => {
+                const replacement = retriedById.get(lane.personaId || lane.id);
+                if (!replacement) return lane;
+                if (replacement.decision === 'ERROR') {
+                  console.warn(`[Persona] Infra retry did not recover lane ${stablePersonaId(replacement)} (${stableFailureReason(replacement)}).`);
+                  return { ...replacement, infraRetryAttempted: true };
+                }
+                console.log(`[Persona] Infra retry recovered lane ${stablePersonaId(replacement)}.`);
+                return { ...replacement, infraRetryAttempted: true, infraRetryRecovered: true };
+              });
+            }
+          }
+        }
         const completedUnitIds = new Set(laneExecutionReceipts.filter((receipt) => receipt.complete).flatMap((receipt) => receipt.completedUnitIds || []));
         const materializedFiles = reviewDiffFiles.map((file, index) => {
           const unit = provisionalReviewUnitManifest.units[index];
