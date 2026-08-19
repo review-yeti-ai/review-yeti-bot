@@ -79,8 +79,8 @@ promotion.
 
 ## Fireworks timeout debug
 
-The hosted panel uses `openrouter-ttft-ms` even on the Fireworks transport. Both
-configured transports set `stream: true` and `openrouter_stream=true`, so that
+The hosted panel uses `openrouter-ttft-ms` across the model transports. All
+three transports set `stream: true` and `openrouter_stream=true`, so that
 the 30-second TTFT deadline measures the first SSE token, not a fully buffered
 JSON body; observed first-byte latency is typically ~1s. OpenRouter requires
 full-precision `bf16`/`fp16` quants, sorts by throughput (p90 ≥ 40 tok/s, p99
@@ -104,8 +104,13 @@ The current standard transport plan is deliberately limited and ordered:
 2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
 3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
 
-The action starts each model turn at Fireworks and advances when that transport
-fails. The OpenRouter entry requires `bf16`/`fp16`, sorts by throughput, allows
+The action starts each model turn at Fireworks and advances through the declared order when a
+transport fails. Each transport gets one retry. Fireworks stays on the default serverless tier,
+reports server-side TTFT, and uses maximum reasoning; OpenRouter also uses maximum reasoning,
+while Ollama uses `high`, its documented maximum. OpenRouter owns endpoint selection after a
+timeout without Review Yeti dynamically banning the resolved endpoint.
+
+The OpenRouter entry requires `bf16`/`fp16`, sorts by throughput, allows
 remaining hosts to fail over (`allow_fallbacks: true`), and denies provider data
 collection. Each caller must expose the named environment variables through its
 inherited GitHub Actions secrets.

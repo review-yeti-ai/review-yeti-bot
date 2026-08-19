@@ -32,6 +32,15 @@ import json
 import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
+transports = review.get('transports', [])
+if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrouter-fallback']:
+    raise SystemExit('policy must preserve Fireworks -> Ollama -> OpenRouter order')
+if [item.get('reasoning_effort') for item in transports] != ['max', 'high', 'max']:
+    raise SystemExit('reasoning must be Fireworks=max, Ollama=high, OpenRouter=max')
+if transports[0].get('perf_metrics_in_response') is not True:
+    raise SystemExit('Fireworks must return performance metrics')
+if review.get('openrouter_max_attempts') != '2':
+    raise SystemExit('each transport must retain one retry')
 budget = review.get('budget')
 if not isinstance(budget, dict):
     raise SystemExit('policy must keep lane limits in review_yeti.budget')
@@ -45,6 +54,8 @@ if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
 if fallback.get('allow_banned_providers') is not None:
     raise SystemExit('openrouter-fallback must not re-enable the hard-banned Fireworks provider')
+if fallback.get('quarantine_on_timeout') is not False:
+    raise SystemExit('OpenRouter must own timeout rerouting without dynamic provider bans')
 routing = fallback.get('provider_routing') or {}
 if 'fireworks' not in (routing.get('ignore') or []):
     raise SystemExit('openrouter-fallback must explicitly ignore the hard-banned Fireworks provider')

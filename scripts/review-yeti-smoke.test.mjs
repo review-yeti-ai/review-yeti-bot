@@ -14,15 +14,19 @@ function policyFixture() {
   return {
     schema: 'exampleorg.review-policy.v1',
     review_yeti: {
+      openrouter_max_attempts: '2',
       transports: [
-        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai' },
-        { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'ollama-model', compat: 'openai' },
+        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', stream: true, reasoning_effort: 'max', perf_metrics_in_response: true },
+        { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'ollama-model', compat: 'openai', stream: true, reasoning_effort: 'high' },
         {
           name: 'openrouter-fallback',
           base_url: 'https://openrouter.test/api/v1',
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
           model: 'openrouter-model',
           compat: 'openrouter',
+          stream: true,
+          reasoning_effort: 'max',
+          quarantine_on_timeout: false,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
         },
       ],
@@ -39,6 +43,10 @@ test('the smoke contract pins the approved transport order', () => {
   assert.equal(buildRequest(transports[0]).stream, true);
   assert.equal(buildRequest(transports[1]).stream, true);
   assert.equal(buildRequest(transports[2]).stream, true);
+  assert.equal(buildRequest(transports[0]).reasoning_effort, 'max');
+  assert.equal(buildRequest(transports[0]).perf_metrics_in_response, true);
+  assert.equal(buildRequest(transports[1]).reasoning_effort, 'high');
+  assert.deepEqual(buildRequest(transports[2]).reasoning, { effort: 'max' });
 });
 
 test('the committed OpenRouter fallback requires full-precision quants and throughput floors', () => {
@@ -56,6 +64,7 @@ test('the committed OpenRouter fallback requires full-precision quants and throu
   assert.ok(openrouter.provider_routing.ignore.includes('fireworks'));
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
+  assert.equal(openrouter.quarantine_on_timeout, false);
 });
 
 test('validatePolicy rejects a transport that pins provider routing', () => {

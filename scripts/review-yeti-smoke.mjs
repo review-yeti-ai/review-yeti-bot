@@ -55,7 +55,13 @@ export function validatePolicy(policy) {
     if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !['openai', 'openrouter'].includes(transport.compat)) {
       throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
     }
+    if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
+
+  if (transports[0].reasoning_effort !== 'max' || transports[0].perf_metrics_in_response !== true) {
+    throw new Error('Fireworks must use maximum reasoning with performance metrics');
+  }
+  if (transports[1].reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
@@ -80,6 +86,9 @@ export function validatePolicy(policy) {
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
   }
+  if (openrouter?.reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
+  if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
+  if (policy.review_yeti?.openrouter_max_attempts !== '2') throw new Error('each transport must retain one retry');
 
   return transports;
 }
@@ -106,6 +115,11 @@ export function buildRequest(transport) {
   if (transport.provider_routing) {
     request.provider = transport.provider_routing;
   }
+  if (transport.reasoning_effort) {
+    if (transport.compat === 'openrouter') request.reasoning = { effort: transport.reasoning_effort };
+    else request.reasoning_effort = transport.reasoning_effort;
+  }
+  if (transport.perf_metrics_in_response === true) request.perf_metrics_in_response = true;
 
   return request;
 }
