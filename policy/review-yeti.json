@@ -2,7 +2,7 @@
   "schema": "exampleorg.review-policy.v1",
   "review_yeti": {
     "repository": "review-yeti-ai/review-yeti-bot",
-    "action_sha": "762974cfa8bf2fabf80699c29c912d0a5451bd94",
+    "action_sha": "f6116f9499b92d09718498813155b812329dd504",
     "personas": "security,performance,architecture,testing,dependencies",
     "transports": [
       {
@@ -45,7 +45,7 @@
     "openrouter_ttft_ms": "60000",
     "openrouter_max_attempts": "2",
     "lane_deadline_ms": "600000",
-    "max_investigation_turns": "3",
+    "max_investigation_turns": "6",
     "max_diff_chars": "2000000",
     "max_file_diff_chars": "60000",
     "max_passes": "3",
