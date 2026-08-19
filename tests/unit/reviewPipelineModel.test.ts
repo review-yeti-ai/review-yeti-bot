@@ -1234,3 +1234,58 @@ describe('reviewWithModel', () => {
     expect(user).not.toContain('PREVIOUS TURN');
   });
 });
+
+describe('REL-288 flat per-lane call budget', () => {
+  const { createLaneCallBudget } = pipeline;
+
+  it('spends one unit per real dispatch and never goes negative', () => {
+    const budget = createLaneCallBudget(2);
+    expect(budget.remaining).toBe(2);
+    expect(budget.spend()).toBe(true);
+    expect(budget.remaining).toBe(1);
+    expect(budget.spend()).toBe(true);
+    expect(budget.remaining).toBe(0);
+    expect(budget.spend()).toBe(false);
+    expect(budget.remaining).toBe(0);
+  });
+
+  it('refuses to dispatch any real HTTP request once the flat lane call budget is exhausted', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    const laneCallBudget = createLaneCallBudget(0);
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'test/model', fetchImpl: impl,
+      maxAttempts: 2, laneCallBudget,
+    });
+    expect(calls.length).toBe(0);
+    expect(result.decision).toBe('ERROR');
+    expect(result.error).toBe('lane_budget_exhausted');
+    expect(result.failureClass).toBe('lane_budget_exhausted');
+  });
+
+  it('spends exactly one budget unit per dispatched attempt and stops mid-retry once exhausted -- never a generic timeout in its place', async () => {
+    const { impl, calls } = stubFetch('', { ok: false, status: 500 });
+    const laneCallBudget = createLaneCallBudget(1);
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'test/model', fetchImpl: impl,
+      maxAttempts: 3, laneCallBudget,
+    });
+    // maxAttempts=3 would normally retry three times on a 500; only the first attempt is a real
+    // dispatch (it spends the only budget unit and fails with HTTP 500). The second attempt must
+    // be refused BEFORE any further network call or retry delay, distinctly as
+    // lane_budget_exhausted -- not a third HTTP 500, not a generic timeout.
+    expect(calls.length).toBe(1);
+    expect(laneCallBudget.remaining).toBe(0);
+    expect(result.decision).toBe('ERROR');
+    expect(result.error).toBe('lane_budget_exhausted');
+  });
+
+  it('a lane with no budget object attached is unaffected (backward compatible passthrough)', async () => {
+    const { impl, calls } = stubFetch(validFindings);
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'test/model', fetchImpl: impl,
+      maxAttempts: 2,
+    });
+    expect(calls.length).toBe(1);
+    expect(result.decision).not.toBe('ERROR');
+  });
+});

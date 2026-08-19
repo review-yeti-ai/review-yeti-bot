@@ -397,11 +397,17 @@ async function runPersonaInvestigation(input = {}) {
     const route = boundedRoute(response);
     if (Object.keys(route).length > 0) routes.push(route);
     if (!response?.ok) {
+      // REL-288: a flat per-lane call budget exhausted mid-turn (see createLaneCallBudget in
+      // review-pipeline.js) is its own honest termination, distinct from an ordinary
+      // provider_failure or a generic timeout -- the lane did not fail, it was deliberately
+      // stopped by the product's own hard floor, and that must stay visible in the receipt.
       const termination = response?.error === 'cancelled'
         ? 'cancelled'
         : response?.error === 'unresolved_evidence'
           ? 'unresolved_evidence'
-          : 'provider_failure';
+          : response?.error === 'lane_budget_exhausted'
+            ? 'lane_budget_exhausted'
+            : 'provider_failure';
       return incompleteLane({
         input, runtime, parsed, termination, turns: turn, usage, routes,
         failure: failureDiagnostic(input, response, modelAttempts, 'provider_invalid_response', safeFailureReason(response)),
