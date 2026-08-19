@@ -1,8 +1,7 @@
 name: Review Yeti
 
-# This workflow is pinned to the current immutable release. A proposed change to the central
-# workflow is still evaluated by the default branch's previous pin; after promotion, this caller
-# advances together with the release so future PRs validate the same central SHA explicitly.
+# This workflow uses the platform-owned v1 contract. Review policy and budgets live in the
+# private central repository; callers do not duplicate release SHAs or PR-body claims.
 on:
   pull_request_target:
     branches: [main]
@@ -16,11 +15,5 @@ permissions:
 jobs:
   review:
     if: github.event.pull_request.draft == false
-    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@721a866c40ec546c1611aec9b4c7d51d8dfacea7
-    with:
-      repository: ${{ github.repository }}
-      pr-number: ${{ github.event.pull_request.number }}
-      base-sha: ${{ github.event.pull_request.base.sha }}
-      head-sha: ${{ github.event.pull_request.head.sha }}
-      central-sha: 721a866c40ec546c1611aec9b4c7d51d8dfacea7
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
     secrets: inherit

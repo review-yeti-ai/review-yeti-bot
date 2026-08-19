@@ -3,7 +3,7 @@
 This private repository owns the organization-wide Review Yeti workflow contract.
 Consumer repositories contain only a small, identical `pull_request_target` shim. The
 review policy, provider routing, exact-head validation, verdict gate, and recovery contract
-live here and are released by immutable commit SHA.
+live here and are released through the platform-owned `v1` contract.
 
 ## Consumer contract
 
@@ -22,23 +22,20 @@ permissions:
 
 jobs:
   review:
-    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@<immutable-release-sha>
-    with:
-      repository: ${{ github.repository }}
-      pr-number: ${{ github.event.pull_request.number }}
-      base-sha: ${{ github.event.pull_request.base.sha }}
-      head-sha: ${{ github.event.pull_request.head.sha }}
-      central-sha: <same-immutable-release-sha>
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
     secrets: inherit
 ```
 
-The caller supplies the repository, PR number, base SHA, head SHA, and the immutable central
-workflow SHA. The reusable workflow validates the SHA before checkout, verifies the protected
-default-branch workflow pins both the reusable workflow and `central-sha` to that same commit,
-re-reads the PR through the caller's `GITHUB_TOKEN`, and fails closed if any coordinate changes.
-The central repository's self-review is the explicit bootstrap exception: it calls the previous
-released workflow until a new release is promoted. The workflow never checks out or executes the
-pull-request head.
+The reusable workflow derives the repository, PR number, base SHA, and head SHA from the trusted
+GitHub event, re-reads the PR through the caller's `GITHUB_TOKEN`, and fails closed if any
+coordinate changes. Consumers do not carry a second `central-sha` input, PR-body evidence block,
+or rotating claim. The workflow never checks out or executes the pull-request head.
+
+`v1` is a privileged central release ref, intentionally advanced only after a reviewed merge in
+this repository. That central release operation is the single integrity boundary; consumer
+repositories never update a SHA, tag, or claim when policy or budgets change. Keep the ref
+protected in repository administration and retain the previous central commit as the rollback
+record.
 
 ## No consumer-owned Review Yeti configuration
 
@@ -50,10 +47,10 @@ review roster, provider route, budget, or gate semantics.
 
 ## Bootstrap and recovery
 
-The central repository reviews its own pull requests through `self-review.yml`, which calls the
-last released immutable SHA rather than the proposed workflow. A broken release therefore does
-not become the only reviewer capable of approving its repair. Consumers also remain pinned to
-their last known-good release until a new release is deliberately promoted.
+The central repository reviews its own pull requests through `self-review.yml` using the same
+platform-owned `v1` contract. The tag is advanced only by the central repository's protected
+release process; consumers do not need synchronized per-repository edits when budgets or policy
+change.
 
 The initial repository creation is the one-time bootstrap exception: create `main`, publish the
 first release tag, pin `self-review.yml` to the bootstrap commit, then protect `main` and require
@@ -61,11 +58,10 @@ the workflow validation checks for all later changes.
 
 ## Release procedure
 
-1. Merge a change through the central repository's self-review using the previous release.
+1. Merge a change through the central repository's self-review.
 2. Verify the central validation workflow and a canary PR in a consumer repository.
-3. Create an immutable release tag, for example `v1` or `v1.1.0`.
-4. Update consumers in separate PRs to the new release SHA.
-5. Keep the previous SHA documented as the rollback pin until the canary and consumer checks pass.
+3. Advance the protected `v1` release ref to the merged central commit.
+4. Verify the consumer Review Yeti check; no consumer PR or body stamp is required for policy-only changes.
 
 The central policy is intentionally boring: changes are reviewed at the previous release, then
 promoted as a new immutable release after validation. This line is the bootstrap canary: the
