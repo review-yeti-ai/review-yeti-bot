@@ -13,7 +13,7 @@ function fixturePath(id: string): string {
   return path.join(fixtureRoot, `${id}.json`);
 }
 
-function commandRunnerFactory(repository: string, prNumber: number, headSha: string) {
+function commandRunnerFactory(repository: string, prNumber: number, headSha: string, publishedBodies: string[] = []) {
   const reviewEndpoint = `repos/${repository}/pulls/${prNumber}/reviews`;
   const commentsEndpoint = `repos/${repository}/issues/${prNumber}/comments`;
   let createdReview: Record<string, unknown> | null = null;
@@ -42,10 +42,15 @@ function commandRunnerFactory(repository: string, prNumber: number, headSha: str
         user: { login: 'review-yeti-bot' },
         body: payload.body || '',
       };
+      publishedBodies.push(String(payload.body || ''));
       return { status: 0, stdout: JSON.stringify(createdReview), stderr: '' };
     }
     if (joined.includes(reviewEndpoint) && !args.includes('--method')) return { status: 0, stdout: JSON.stringify(createdReview ? [createdReview] : []), stderr: '' };
-    if (args[0] === 'pr' && args[1] === 'comment') return { status: 0, stdout: '', stderr: '' };
+    if (args[0] === 'pr' && args[1] === 'comment') {
+      const bodyFlag = args.indexOf('--body');
+      if (bodyFlag !== -1 && args[bodyFlag + 1] !== undefined) publishedBodies.push(String(args[bodyFlag + 1]));
+      return { status: 0, stdout: '', stderr: '' };
+    }
     if (args.includes('compare')) return { status: 0, stdout: JSON.stringify({ files: [] }), stderr: '' };
     return { status: 0, stdout: '{}', stderr: '' };
   };
@@ -80,7 +85,7 @@ function fixtureConfig(fixture: ReviewWorkflowFixture, options: { reviewIntellig
   return `memory:\n  enabled: true\n  provider: ${config.memory.provider}\n  mode: single\n  transport: rest\n  context: true\n  write: true\n  recall:\n    decision_feedback: true\n    session_recap: true\n  persist:\n    processing: true\n    decision_feedback: true\n    session_recap: true\n  providers:\n    mem0:\n      enabled: true\n      endpoint_env: MEM0_URL\n      credential_env: MEM0_API_KEY\npersonas:\n  - id: security\n  - id: testing\n${options.reviewIntelligence ? 'review_intelligence:\n  version: 1\n  enabled: true\n  limits:\n    max_diff_chars: 5000\n' : ''}`;
 }
 
-export async function runReviewWorkflowFixture(id: string, options: { memoryAvailable?: boolean; reviewIntelligence?: boolean; repositoryDispatch?: boolean; conflictingDispatchPayload?: boolean; dashboardStatus?: number } = {}) {
+export async function runReviewWorkflowFixture(id: string, options: { memoryAvailable?: boolean; reviewIntelligence?: boolean; repositoryDispatch?: boolean; conflictingDispatchPayload?: boolean; dashboardStatus?: number; diffOverride?: string } = {}) {
   const fixture = loadReviewWorkflowFixture(fixturePath(id));
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `review-yeti-workflow-${id}-`));
   const configRoot = path.join(tempRoot, 'config');
@@ -92,6 +97,7 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
   const previousEnv = { ...process.env };
   const dashboardEvents: unknown[] = [];
   const pipelineOrder: string[] = [];
+  const publishedBodies: string[] = [];
   const fetchImplementation = options.dashboardStatus === undefined
     ? memoryFetchFactory({ available: options.memoryAvailable !== false })
     : async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -111,7 +117,8 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
       prNumber: fixture.event.prNumber,
       ...(options.repositoryDispatch ? {} : { headSha: fixture.event.headSha }),
       title: 'Fixture review',
-      diff: 'diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n+const safe = true;\n',
+      diff: options.diffOverride
+        ?? 'diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1 +1 @@\n+const safe = true;\n',
     }),
     PR_REPO: fixture.event.repository,
     PR_NUMBER: String(fixture.event.prNumber),
@@ -157,7 +164,7 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
       publicationMode: 'github',
       cwd: tempRoot,
       now: () => 1_754_752_800_000,
-      commandRunner: commandRunnerFactory(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha),
+      commandRunner: commandRunnerFactory(fixture.event.repository, fixture.event.prNumber, fixture.event.headSha, publishedBodies),
       fetchImplementation,
       modelClient,
     });
@@ -166,6 +173,7 @@ export async function runReviewWorkflowFixture(id: string, options: { memoryAvai
       actionOutputs: fs.readFileSync(outputPath, 'utf8'),
       dashboardEvents,
       pipelineOrder,
+      publishedBodies,
       outboxPayload: receipt.outbox.path ? JSON.parse(fs.readFileSync(receipt.outbox.path, 'utf8')) : null,
     };
   } finally {
