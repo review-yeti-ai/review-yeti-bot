@@ -111,6 +111,13 @@ jobs:
           max-passes: ${{ steps.policy.outputs.max_passes }}
           personas: ${{ steps.policy.outputs.personas }}
           exclude: ${{ steps.policy.outputs.exclude }}
+          # Library-documentation evidence tool (review-yeti-bot#101). The
+          # action forwards this to CONTEXT7_API_KEY in the panel env; the
+          # model never sees the key and cannot control the request target —
+          # it supplies only a library name and topic, and the URL is built
+          # server-side. Absent secret degrades the tool to unavailable
+          # rather than failing the review.
+          context7-api-key: ${{ secrets.CONTEXT7_API_KEY }}
 
       # The bot already writes per-lane telemetry (turnCount, failureClass,
       # resolved transport) to RUNNER_TEMP and exposes run-report-path, but
