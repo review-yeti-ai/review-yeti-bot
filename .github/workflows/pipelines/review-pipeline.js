@@ -2098,7 +2098,7 @@ async function callOpenRouterChat(fetchImpl, {
     let sawChunk = false;
 
     try {
-      while (true) {
+      streamRead: while (true) {
         const { done, value } = await awaitAbortable(reader.read(), requestAbort.signal);
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -2112,7 +2112,11 @@ async function callOpenRouterChat(fetchImpl, {
           if (line.startsWith(':')) continue; // ": OPENROUTER PROCESSING"
           if (!line.startsWith('data:')) continue;
           const data = line.startsWith('data: ') ? line.slice(6).trim() : line.slice(5).trim();
-          if (!data || data === '[DONE]') continue;
+          if (!data) continue;
+          // OpenAI-compatible SSE streams are complete at [DONE]. Do not read the underlying
+          // socket again: some gateways close/reset it after the terminator, which used to turn
+          // an already-complete response into a false response_timeout and trigger failover.
+          if (data === '[DONE]') break streamRead;
           let chunk;
           try {
             chunk = JSON.parse(data);
