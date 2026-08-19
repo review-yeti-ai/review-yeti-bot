@@ -120,7 +120,7 @@ const { createReviewUnitManifest } = require('../../../src/review/reviewUnitMani
 const { fetchImmutableRepositorySnapshot } = require('../../../src/mcp/reviewNavigationSnapshot');
 const { createGitHubBlobClient, createReviewNavigationToolRegistry } = require('../../../src/mcp/reviewNavigationTools');
 const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require('../../../src/review/reviewInvestigation');
-const { buildInvestigationMessages, parseJson: parseInvestigationJson } = require('../../../src/review/reviewInvestigationPrompt');
+const { buildInvestigationMessages, parseInvestigationResponse, parseJson: parseInvestigationJson } = require('../../../src/review/reviewInvestigationPrompt');
 const { deriveReceiptOutcome } = require('../../../src/review/reviewOutcome');
 const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk');
 const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMITS } = require('../../../src/review/evidenceContracts');
@@ -129,6 +129,7 @@ const { buildRunReport, renderRunReportLine, writeRunReport } = require('../../.
 const { buildOverviewMessages, parseOverviewResponse, renderOverviewContextBlock, renderOverviewWalkthrough } = require('../../../src/review/prOverviewBrief');
 const { buildRebuttalMessages, parseRebuttalResponse, renderRebuttalReply, selectRebuttalCandidates } = require('../../../src/review/rebuttalRerun');
 const { applyConfirmationOutcomes, buildConfirmationMessages, parseConfirmationResponse, selectFindingsForConfirmation } = require('../../../src/review/crossModelConfirm');
+const { demoteToAdvisories, matchConditionalLanes, resolveConditionalLanes } = require('../../../src/review/conditionalLanes');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -7819,6 +7820,9 @@ async function main(options = {}) {
   const rebuttalUsage = [];
   const confirmationReceipt = { enabled: false, checked: 0, demoted: 0 };
   const confirmationUsage = [];
+  const conditionalAdvisories = [];
+  const conditionalLaneReceipt = { enabled: false, triggered: [], advisories: 0 };
+  const conditionalLaneUsage = [];
   const initialReconciliation = reconcileDecisionFindings([], decisionLedger);
   let carriedOpen = initialReconciliation.carriedOpen;
   let ignored = initialReconciliation.ignored;
@@ -8052,6 +8056,91 @@ async function main(options = {}) {
           }
         } catch (error) {
           console.warn(`[Rebuttal] Unavailable (${error.message}); open findings stand.`);
+        }
+        if (cancellation.signal.aborted) return;
+      }
+    }
+
+    // Conditional secondary lanes (advisory-only, outside the coverage
+    // denominator): extra personas that run one bounded evidence-free turn
+    // only when the diff touches configured paths. Their findings publish as
+    // P2 advisories regardless of assessed severity — they can neither block
+    // a verdict nor satisfy quorum. Promotion to gating is a later, explicit
+    // policy decision.
+    {
+      const lanesSetting = runtimeEnv.REVIEW_YETI_CONDITIONAL_LANES;
+      const lanesDefaultOn = runtimeEnv.GITHUB_ACTIONS === 'true' || runtimeEnv.VITEST !== 'true';
+      const resolved = resolveConditionalLanes(lanesSetting);
+      for (const problem of resolved.problems) console.warn(`[ConditionalLane] ${problem}`);
+      conditionalLaneReceipt.enabled = resolved.lanes.length > 0
+        && modelConfig.enabled
+        && typeof options.modelClient !== 'function'
+        && lanesDefaultOn;
+      if (conditionalLaneReceipt.enabled) {
+        try {
+          const triggered = matchConditionalLanes(resolved.lanes, diffFiles.map((file) => file.path));
+          for (const lane of triggered) {
+            if (cancellation.signal.aborted) break;
+            const charter = PERSONA_CHARTERS.find((persona) => persona.id === lane.persona)
+              || enabledPersonas.find((persona) => persona.id === lane.persona);
+            if (!charter) {
+              console.warn(`[ConditionalLane] Unknown persona '${lane.persona}'; lane skipped.`);
+              continue;
+            }
+            const matchedSet = new Set(lane.matchedPaths);
+            const laneFiles = diffFiles.filter((file) => matchedSet.has(file.path));
+            const laneDiff = planDiffBudget(laneFiles, Math.min(modelConfig.maxDiffChars, 200_000)).text;
+            const result = await reviewWithTransports(
+              charter,
+              [],
+              prContext,
+              sessionContext,
+              {
+                ...modelConfig,
+                modelClient: undefined,
+                fetchImplementation,
+                reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
+                signal: cancellation.signal,
+                rawTurn: true,
+                investigationMessages: buildInvestigationMessages({
+                  persona: charter,
+                  manifest: buildFileManifest(laneFiles, []).text,
+                  diffText: laneDiff,
+                  remaining: { calls: 0, turns: 1 },
+                  evidenceEnabled: false,
+                }),
+                turnValidator: (content) => parseInvestigationResponse(content, investigationLimits || {}),
+              },
+            );
+            conditionalLaneReceipt.triggered.push({ persona: lane.persona, matchedPaths: lane.matchedPaths.length });
+            if (result?.ok !== true || typeof result.content !== 'string') {
+              // Advisory lanes fail soft by design: an outage here must never
+              // block the review it is not even part of.
+              console.warn(`[ConditionalLane] ${lane.persona} unavailable (${result?.error || 'provider_failure'}); advisory lane skipped.`);
+              continue;
+            }
+            let parsedLane;
+            try {
+              parsedLane = parseInvestigationResponse(result.content, investigationLimits || {});
+            } catch (error) {
+              console.warn(`[ConditionalLane] ${lane.persona} response rejected (${error.message}); advisory lane skipped.`);
+              continue;
+            }
+            if (result.usage) conditionalLaneUsage.push({ usage: result.usage });
+            const advisories = demoteToAdvisories(lane.persona, (parsedLane.findings || []).map((finding) => ({
+              severity: finding.severity,
+              path: finding.path,
+              line: finding.line,
+              side: finding.side,
+              title: finding.title,
+              body: finding.body,
+            })));
+            conditionalAdvisories.push(...advisories);
+            console.log(`[ConditionalLane] ${lane.persona}: ${advisories.length} advisory finding(s) over ${lane.matchedPaths.length} matched path(s).`);
+          }
+          conditionalLaneReceipt.advisories = conditionalAdvisories.length;
+        } catch (error) {
+          console.warn(`[ConditionalLane] Unavailable (${error.message}); advisory lanes skipped.`);
         }
         if (cancellation.signal.aborted) return;
       }
@@ -8632,7 +8721,7 @@ async function main(options = {}) {
   console.log('[Formatting] Planning resolvable P0/P1 conversations and compact review output...');
   // The overview pre-pass was billed too; an unseen cost is how a review
   // panel quietly becomes expensive.
-  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : []), ...rebuttalUsage, ...confirmationUsage]);
+  usageTotal = sumUsage([...personaResults, ...(overviewUsage ? [{ usage: overviewUsage }] : []), ...rebuttalUsage, ...confirmationUsage, ...conditionalLaneUsage]);
   if (usageTotal.totalTokens > 0) {
     console.log(`[Usage] ${usageTotal.totalTokens} token(s) across ${personaResults.length} reviewer(s)${usageTotal.costUSD ? ` — $${usageTotal.costUSD.toFixed(4)}` : ''}.`);
   }
@@ -8681,6 +8770,11 @@ async function main(options = {}) {
   }
 
   const publicationPlan = planFindingPublication(personaResults, shownReviewFiles);
+  if (conditionalAdvisories.length > 0) {
+    // Conditional-lane advisories join the P2 advisory section only — never
+    // line conversations, never the verdict.
+    publicationPlan.advisories = [...(publicationPlan.advisories || []), ...conditionalAdvisories];
+  }
   const rejectedFindingKeys = new Set(publicationPlan.rejected.map((item) => JSON.stringify([
     item.path, item.side || '', item.line || '', item.title, item.severity || '', item.reason,
   ])));
@@ -8950,6 +9044,7 @@ async function main(options = {}) {
     calibration: calibrationReceipt,
     rebuttal: rebuttalReceipt,
     crossModelConfirmation: confirmationReceipt,
+    conditionalLanes: conditionalLaneReceipt,
     outbox: { path: memoryOutboxRecord?.filePath || null, state: memoryOutboxState },
     provider: memoryPolicy.provider || 'honcho',
     headSha: prContext.headSha,
