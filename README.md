@@ -73,11 +73,12 @@ promotion.
 
 ## Fireworks timeout debug
 
-The hosted panel uses `openrouter-ttft-ms` even on the Fireworks transport. All
-three transports set `stream: true` and `openrouter_stream=true`, so that
-deadline is first SSE token (~1s), not a fully buffered JSON body. OpenRouter
-fallback also ignores `akashml` (60s timeouts / malformed 10k completions) and
-accepts only pure `bf16`/`fp16` quants (no fp8/fp4/int4/int8).
+The hosted panel uses `openrouter-ttft-ms` even on the Fireworks transport. Both
+configured transports set `stream: true` and `openrouter_stream=true`, so that
+the 30-second TTFT deadline measures the first SSE token, not a fully buffered
+JSON body; observed first-byte latency is typically ~1s. OpenRouter fallback is
+restricted to the Fireworks provider, does not rotate through arbitrary gateway
+providers, and accepts only pure `bf16`/`fp16` quants.
 Transport smoke stays `stream: false` so `response.json()` health checks remain
 valid.
 
@@ -97,16 +98,14 @@ is the full JSON.
 The current standard transport plan is deliberately limited and ordered:
 
 1. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`)
-2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
-3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
+2. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback, restricted
+   to the Fireworks provider
 
-The action starts each model turn at Fireworks and advances through the plan only when the
-current transport fails. The OpenRouter entry permits gateway fallbacks, requires every requested
-parameter, limits endpoints to FP8 or BF16, and prefers providers whose p90 throughput is at least
-40 tokens per second and whose p99 latency is at most three seconds. Providers are sorted by
-throughput; Morph remains eligible when its endpoint satisfies those constraints. Provider data
-collection remains denied. Each caller must expose the three named environment variables through
-its inherited GitHub Actions secrets.
+The action starts each model turn at Fireworks and advances to the restricted gateway only when
+the current transport fails. The OpenRouter entry disables provider rotation, permits only the
+Fireworks provider, and denies provider data collection. This prevents a slow or malformed
+third-party gateway from consuming the lane budget. Each caller must expose the two named
+environment variables through its inherited GitHub Actions secrets.
 
 The central budget is also fixed here: three investigation turns, one 24-request per-lane call
 budget, a four-minute lane deadline, and a 30-second time-to-first-token budget. A provider that

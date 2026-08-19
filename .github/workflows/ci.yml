@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: review-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -41,6 +46,10 @@ jobs:
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
+          if grep -Eq 'OLLAMA_PR_REVIEW_API_KEY|ollama' .github/workflows/review-yeti.yml policy/review-yeti.json; then
+            echo "::error::obsolete Ollama transport or credential remains in the central contract"
+            exit 1
+          fi
 
       - name: Reject malformed action_channel policy
         run: |

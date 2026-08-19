@@ -4,19 +4,15 @@ import { resolve } from 'node:path';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'fireworks',
-  'ollama',
   'openrouter-fallback',
 ]);
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
-  allow_fallbacks: true,
-  require_parameters: true,
+  allow_fallbacks: false,
+  only: ['fireworks'],
   quantizations: ['bf16', 'fp16'],
-  sort: 'throughput',
-  preferred_min_throughput: { p90: 40 },
-  preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
 });
 
@@ -43,7 +39,7 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must enforce the approved full-quantization performance policy');
+    throw new Error('OpenRouter routing must be restricted to Fireworks with provider fallback disabled');
   }
 
   return transports;

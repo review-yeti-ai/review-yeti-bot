@@ -28,6 +28,14 @@ for (const transport of review.transports) {
   if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !transport.compat) {
     throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
   }
+  for (const key of ['timeout_ms', 'connect_timeout_ms']) {
+    if (!Number.isInteger(transport[key]) || transport[key] < 1 || transport[key] > 180000) {
+      throw new Error(`transport ${transport.name}.${key} must be an integer between 1ms and 180000ms`);
+    }
+  }
+  if (transport.connect_timeout_ms > transport.timeout_ms) {
+    throw new Error(`transport ${transport.name}.connect_timeout_ms must not exceed timeout_ms`);
+  }
 }
 
 const outputs = {

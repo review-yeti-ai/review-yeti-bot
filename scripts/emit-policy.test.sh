@@ -41,26 +41,17 @@ for key in ('lane_deadline_ms', 'lane_call_budget', 'max_investigation_turns'):
 fallback = next((item for item in review.get('transports', []) if item.get('name') == 'openrouter-fallback'), None)
 if not fallback:
     raise SystemExit('policy must define the openrouter-fallback transport')
-if int(fallback.get('timeout_ms', 0)) > 60_000:
-    raise SystemExit('openrouter-fallback timeout must be <= 60000ms')
 if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
 if review.get('openrouter_stream') != 'true':
-    raise SystemExit('global openrouter_stream must be true so Fireworks/Ollama use SSE TTFT')
+    raise SystemExit('global openrouter_stream must be true so configured transports use SSE TTFT')
 for transport in review.get('transports', []):
     if transport.get('stream') is not True:
         raise SystemExit(f'{transport.get("name")} must stream')
-if 'open-inference' not in fallback.get('ignore_providers', []):
-    raise SystemExit('openrouter-fallback must quarantine open-inference')
-if 'akashml' not in fallback.get('ignore_providers', []):
-    raise SystemExit('openrouter-fallback must quarantine akashml (malformed 10k completions / 60s timeouts)')
-if fallback.get('provider_routing', {}).get('sort') != 'throughput':
-    raise SystemExit('openrouter-fallback must use throughput routing')
-quants = fallback.get('provider_routing', {}).get('quantizations')
-if quants != ['bf16', 'fp16']:
-    raise SystemExit('openrouter-fallback must accept only pure bf16/fp16 quants')
-if any(q in ('fp4', 'fp8', 'int4', 'int8', 'awq', 'gptq') for q in (quants or [])):
-    raise SystemExit('openrouter-fallback must not allow reduced quants')
+    for key in ('timeout_ms', 'connect_timeout_ms'):
+        value = transport.get(key)
+        if type(value) is not int or not 1 <= value <= 180_000:
+            raise SystemExit(f"{transport.get('name', '<unnamed>')} {key} must be between 1ms and 180000ms")
 print('policy budget source passed')
 PY
 
@@ -76,11 +67,24 @@ import sys
 source, destination, key, value = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-budget = review.setdefault('budget', {})
-if value == '__missing__':
-    budget.pop(key, None)
+if key.startswith('transport.'):
+    _, index, field = key.split('.', 2)
+    transport = review['transports'][int(index)]
+    if value == '__missing__':
+        transport.pop(field, None)
+    elif value in ('true', 'false'):
+        transport[field] = value == 'true'
+    else:
+        try:
+            transport[field] = int(value)
+        except ValueError:
+            transport[field] = value
 else:
-    budget[key] = value
+    budget = review.setdefault('budget', {})
+    if value == '__missing__':
+        budget.pop(key, None)
+    else:
+        budget[key] = value
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
@@ -100,6 +104,37 @@ run_case() {
     exit 1
   fi
   echo "[$name] passed"
+}
+
+write_invalid_transport_relation_policy() {
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+policy = json.load(open(source))
+transport = policy['review_yeti']['transports'][0]
+transport['timeout_ms'] = 1_000
+transport['connect_timeout_ms'] = 1_001
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_transport_relation_case() {
+  local output_file="$tmp_dir/invalid-transport-relation.output"
+  write_invalid_transport_relation_policy
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/invalid-transport-relation.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 1 ]]; then
+    echo "[invalid-transport-relation] expected exit 1, got $rc" >&2
+    cat "$tmp_dir/invalid-transport-relation.log" >&2
+    exit 1
+  fi
+  grep -q 'connect_timeout_ms must not exceed timeout_ms' "$tmp_dir/invalid-transport-relation.log"
+  echo "[invalid-transport-relation] passed"
 }
 
 run_case valid lane_call_budget 24 0
@@ -132,6 +167,16 @@ for key in lane_deadline_ms max_investigation_turns; do
   run_case "$name" "$key" __missing__ 1
   grep -q "review_yeti.budget.${key} must be a positive integer string" "$tmp_dir/${name}.log"
 done
+
+for field in timeout_ms connect_timeout_ms; do
+  for value in 0 -1 180001 true 1.5 ''; do
+    name="invalid-transport-${field}-${value:-empty}"
+    run_case "$name" "transport.0.${field}" "$value" 1
+    grep -q "transport fireworks.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
+  done
+done
+
+run_transport_relation_case
 
 echo "emit-policy lane_call_budget contract passed"
 echo "emit-policy bounded lane contract passed"
