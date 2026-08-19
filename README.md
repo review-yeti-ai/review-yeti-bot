@@ -690,12 +690,12 @@ for the complete field semantics.
 | `coverage-status` | Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible. |
 | `gate-decision` | Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED. |
 | `merge-eligible` | Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings. |
-| `review-dispatch-digest` | Digest of the provider-owned review-dispatch-run.v1 receipt for this exact head. |
+| `review-dispatch-digest` | Digest of the provider-owned review-dispatch-run.v2 receipt for this exact head. |
 | `review-dispatch-policy-digest` | Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one. |
 | `review-dispatch-manifest-digest` | Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt. |
 | `review-dispatch-manifest-artifact-digest` | Digest of the exact complete manifest artifact bytes written by the provider run. |
 | `review-dispatch-provider-receipt-digest` | Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs. |
-| `review-dispatch-receipt-path` | Exact local path to the provider-owned review-dispatch-run.v1 receipt artifact. Upload or attach this file for durable evidence. |
+| `review-dispatch-receipt-path` | Exact local path to the provider-owned review-dispatch-run.v2 receipt artifact. Upload or attach this file for durable evidence. |
 | `review-dispatch-manifest-path` | Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence. |
 | `findings-count` | Total findings across all personas. |
 | `p0-count` | Count of P0 (exploitable or data-losing) findings. |
