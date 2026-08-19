@@ -271,4 +271,28 @@ describe('reviewWithTransports', () => {
     expect(requests[0].body.model).toBe('accounts/fireworks/models/deepseek-v4-flash-0731');
     expect(result.provider).toBe('fireworks');
   });
+
+  it('REL-288: stops trying further transports once the flat lane call budget is exhausted mid-failover', async () => {
+    const { createLaneCallBudget } = pipeline;
+    const attempts: string[] = [];
+    const laneCallBudget = createLaneCallBudget(1);
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options.transportName);
+      // Mirrors reviewWithModel's own guard: spend before dispatching, refuse once exhausted.
+      if (options.laneCallBudget && !options.laneCallBudget.spend()) {
+        return { decision: 'ERROR', error: 'lane_budget_exhausted', failureClass: 'lane_budget_exhausted' };
+      }
+      return { decision: 'ERROR', error: 'timeout' };
+    };
+    const result = await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      transportPlan: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
+      laneCallBudget,
+    });
+    // Transport 'a' spends the only budget unit and fails with an ordinary timeout -- normal
+    // failover would try 'b' next regardless. Transport 'b' discovers the shared budget is
+    // exhausted; the short-circuit must stop there and never reach transport 'c'.
+    expect(attempts).toEqual(['a', 'b']);
+    expect(result.error).toBe('lane_budget_exhausted');
+    expect(laneCallBudget.remaining).toBe(0);
+  });
 });
