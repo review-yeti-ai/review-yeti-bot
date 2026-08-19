@@ -8,6 +8,20 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
 trap 'find "$tmp_dir" -type f -delete; find "$tmp_dir" -depth -type d -empty -delete' EXIT
 
+expected_action_sha='516251db57a2d3bdd6c51aea009300f82a659ba3'
+actual_action_sha="$(python3 - "$repo_root/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    print(json.load(handle)["review_yeti"]["action_sha"])
+PY
+)"
+if [[ "$actual_action_sha" != "$expected_action_sha" ]]; then
+  echo "policy must pin the Morph-only routing fix ${expected_action_sha}; got ${actual_action_sha}" >&2
+  exit 1
+fi
+
 mkdir -p "$tmp_dir/scripts" "$tmp_dir/policy"
 cp "$repo_root/scripts/emit-policy.mjs" "$tmp_dir/scripts/emit-policy.mjs"
 
