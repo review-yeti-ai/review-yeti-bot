@@ -171,6 +171,25 @@ describe('reviewWithTransports', () => {
     expect(result).toMatchObject({ ok: true, provider: 'coreweave' });
   });
 
+  it('disables concurrent streaming for a persona fan-out unless explicitly opted in', async () => {
+    const attempts: any[] = [];
+    reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => {
+      attempts.push(options);
+      return { ok: true, content: '{"findings":[]}' };
+    };
+
+    await reviewWithTransports(persona, diffFiles, { repo: 'o/r' }, null, {
+      transportPlan: plannedTransports(),
+      parallelLaneCount: 5,
+    });
+
+    expect(attempts[0]).toMatchObject({
+      parallelLaneCount: 5,
+      preferStream: false,
+      disableStream: true,
+    });
+  });
+
   it('returns the last failure when every transport fails', async () => {
     reviewWithTransports.reviewWithModelImpl = async (_p: any, _d: any, _pr: any, _s: any, options: any) => (
       { decision: 'ERROR', error: `boom-${options.transportName}` }
