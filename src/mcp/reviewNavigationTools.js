@@ -1,21 +1,44 @@
 'use strict';
 
+const { createLibraryDocsClient } = require('./libraryDocsTool');
+
 const DEFAULTS = Object.freeze({
   enabled: false,
   maxCalls: 12,
   maxReadBytes: 32 * 1024,
   maxResultBytes: 8 * 1024,
   maxFindResults: 50,
-  maxScanFiles: 20,
+  // REL: repo-wide code_search no longer requires the caller to name explicit paths (see
+  // resolveCandidatePaths below), so this ceiling now bounds how many files a single unscoped
+  // search may fan out to, not just how many an already-narrowed caller could name. Raised well
+  // above the old 20-file requirement. The production caller (review-pipeline.js
+  // makeEvidenceRegistry) currently pins this at 20 via an explicit config override; see the PR
+  // description for the one-line follow-up to raise it there too.
+  maxScanFiles: 60,
   timeoutMs: 1_500,
+  // Coarse wall-clock circuit breaker for a single code_search call's file-scan loop (blob
+  // fetch + line scan per file). Independent of the per-blob-fetch timeoutMs above; this bounds
+  // the *whole* fan-out, so raising maxScanFiles or accepting a regex query cannot turn one tool
+  // call into an unbounded stall.
+  codeSearchWallClockMs: 2_000,
+  // library_docs (Context7) tuning. Deliberately smaller/shorter than the file-tool defaults:
+  // this is one outbound network call per invocation, must fail soft fast, and only needs to
+  // return a handful of short doc snippets.
+  context7TimeoutMs: 3_000,
+  context7MaxResultBytes: 4_000,
+  context7MaxSnippets: 3,
 });
 const MAX_LIMITS = Object.freeze({
   maxCalls: 40,
   maxReadBytes: 64 * 1024,
   maxResultBytes: 64 * 1024,
   maxFindResults: 50,
-  maxScanFiles: 100,
+  maxScanFiles: 200,
   timeoutMs: 5_000,
+  codeSearchWallClockMs: 4_000,
+  context7TimeoutMs: 5_000,
+  context7MaxResultBytes: 16 * 1024,
+  context7MaxSnippets: 5,
 });
 const SHA = /^[a-f0-9]{40,64}$/iu;
 
@@ -33,6 +56,10 @@ function resolveConfig(config = {}) {
     maxFindResults: boundedInteger(config.maxFindResults, DEFAULTS.maxFindResults, MAX_LIMITS.maxFindResults),
     maxScanFiles: boundedInteger(config.maxScanFiles, DEFAULTS.maxScanFiles, MAX_LIMITS.maxScanFiles),
     timeoutMs: boundedInteger(config.timeoutMs, DEFAULTS.timeoutMs, MAX_LIMITS.timeoutMs),
+    codeSearchWallClockMs: boundedInteger(config.codeSearchWallClockMs, DEFAULTS.codeSearchWallClockMs, MAX_LIMITS.codeSearchWallClockMs),
+    context7TimeoutMs: boundedInteger(config.context7TimeoutMs, DEFAULTS.context7TimeoutMs, MAX_LIMITS.context7TimeoutMs),
+    context7MaxResultBytes: boundedInteger(config.context7MaxResultBytes, DEFAULTS.context7MaxResultBytes, MAX_LIMITS.context7MaxResultBytes),
+    context7MaxSnippets: boundedInteger(config.context7MaxSnippets, DEFAULTS.context7MaxSnippets, MAX_LIMITS.context7MaxSnippets),
   };
 }
 
@@ -206,6 +233,76 @@ function lineRange(content, startLine, endLine) {
   return lines.slice(start - 1, end).join('');
 }
 
+// --- code_search regex safety -------------------------------------------------------------
+//
+// code_search accepts an optional regex mode (args.regex === true). The pattern is
+// model-authored, therefore attacker-influenced, and is run against untrusted repository text
+// -- the classic setup for a ReDoS denial of service against the reviewer process itself. There
+// is no linear-time regex engine in this codebase's dependency tree (no RE2; adding a native
+// dependency is out of scope for this change), so instead of a formal guarantee this applies
+// layered, conservative mitigations:
+//   1. A hard pattern-length cap (matches the existing 200-char query cap).
+//   2. Static rejection of backreferences and lookaround, and of the classic nested-quantifier
+//      shape ((a+)+, (a|a)*, (.*)+, ...) that causes catastrophic exponential backtracking.
+//   3. A cap on the total number of quantifiers in one pattern, bounding worst-case polynomial
+//      blowup for patterns the nested-quantifier check does not flag (e.g. long chains of
+//      unrelated `.*`).
+//   4. Each tested line is truncated before matching, bounding the input size a pattern that
+//      slips past the above can ever run against.
+//   5. A coarse wall-clock circuit breaker around the whole multi-file scan (see
+//      codeSearchWallClockMs) stops the fan-out between files/lines; it cannot interrupt a
+//      single pathological regex().test() call already in flight (JS regex execution cannot be
+//      preempted without a worker thread), which is why 1-4 exist first.
+const MAX_REGEX_PATTERN_LENGTH = 200;
+const MAX_REGEX_LINE_CHARS = 4_000;
+const MAX_REGEX_QUANTIFIERS = 10;
+const REGEX_BACKREFERENCE_PATTERN = /\\[1-9]/u;
+const REGEX_LOOKAROUND_PATTERN = /\(\?[=!<]/u;
+const REGEX_QUANTIFIER_COUNT_PATTERN = /(?<!\\)[*+]|(?<!\\)\{\d+(?:,\d*)?\}/gu;
+
+// Rejects a repetition quantifier applied to a group whose own body also contains a repetition
+// quantifier or alternation -- the shape behind (a+)+, (a|a)*, (.*)+, and similar catastrophic
+// patterns. This is a conservative static heuristic: it can reject some pathological-looking
+// but actually-safe patterns (acceptable -- code_search has a substring mode for those), and it
+// is not a formal proof of linear-time behavior, which is why it is paired with 1, 3, and 4
+// above rather than trusted alone.
+function hasNestedQuantifier(source) {
+  const stack = [];
+  const groups = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '\\') { index += 1; continue; }
+    if (char === '(') { stack.push(index); continue; }
+    if (char === ')') {
+      const start = stack.pop();
+      if (start === undefined) continue;
+      groups.push([start, index]);
+    }
+  }
+  if (stack.length > 0) return true; // unbalanced parens -- treat conservatively as unsafe
+  for (const [start, end] of groups) {
+    const body = source.slice(start + 1, end);
+    const bodyHasQuantifier = /(?<!\\)[*+]/u.test(body) || /(?<!\\)\{\d/u.test(body) || /(?<!\\)\|/u.test(body);
+    const groupIsQuantified = end + 1 < source.length && /[*+?{]/u.test(source[end + 1]);
+    if (groupIsQuantified && bodyHasQuantifier) return true;
+  }
+  return false;
+}
+
+function validateSafeRegexSource(source) {
+  const text = String(source || '');
+  if (!text || text.length > MAX_REGEX_PATTERN_LENGTH) return { ok: false };
+  if (REGEX_BACKREFERENCE_PATTERN.test(text)) return { ok: false };
+  if (REGEX_LOOKAROUND_PATTERN.test(text)) return { ok: false };
+  if ((text.match(REGEX_QUANTIFIER_COUNT_PATTERN) || []).length > MAX_REGEX_QUANTIFIERS) return { ok: false };
+  if (hasNestedQuantifier(text)) return { ok: false };
+  return { ok: true, value: text };
+}
+
+function regexSafeSlice(line) {
+  return line.length > MAX_REGEX_LINE_CHARS ? line.slice(0, MAX_REGEX_LINE_CHARS) : line;
+}
+
 function createAbortSignal(signal, timeoutMs) {
   const controller = new AbortController();
   let timedOut = false;
@@ -276,11 +373,25 @@ function createGitHubBlobClient({ token, fetchImplementation = globalThis.fetch,
   };
 }
 
-function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, config = {} } = {}) {
+function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, config = {}, context7Client, fetchImplementation } = {}) {
   if (!validIdentity(identity)) throw new Error('review navigation requires a valid immutable review identity');
   if (!blobClient || typeof blobClient.getBlob !== 'function') throw new Error('review navigation requires a read-only GitHub blob client');
   const effectiveConfig = resolveConfig(config);
   const files = normalizeSnapshot(snapshot, identity);
+  // library_docs (Context7). Unlike blobClient, this is optional and fails soft: with no
+  // CONTEXT7_API_KEY configured (the common case -- most repos/runs never set it), docsClient
+  // is simply disabled and every library_docs call returns 'unavailable' / 'context7_disabled',
+  // exactly like the other tools do when the whole registry is disabled. Constructed once, at
+  // registry build time, from operator-controlled configuration only -- the model never reaches
+  // this constructor and cannot influence the key, base URL, or transport.
+  const docsClient = context7Client || createLibraryDocsClient({
+    apiKey: process.env.CONTEXT7_API_KEY,
+    baseUrl: process.env.CONTEXT7_BASE_URL,
+    fetchImplementation: fetchImplementation || globalThis.fetch,
+    timeoutMs: effectiveConfig.context7TimeoutMs,
+    maxResultBytes: effectiveConfig.context7MaxResultBytes,
+    maxSnippets: effectiveConfig.context7MaxSnippets,
+  });
   let calls = 0;
   const receipt = (tool, extra = {}) => ({ identity: { ...identity }, tool, ...extra });
   const disabled = (tool, reason) => ({ status: 'unavailable', ...receipt(tool, { reason }) });
@@ -306,7 +417,7 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
     return boundedText(response.content, effectiveConfig.maxReadBytes);
   };
   const call = async (tool, args = {}, options = {}) => {
-    if (!['file_read', 'file_find', 'code_search', 'file_read_diff'].includes(tool)) return { status: 'unavailable', ...receipt(tool, { reason: 'tool_not_registered' }) };
+    if (!['file_read', 'file_find', 'code_search', 'file_read_diff', 'library_docs'].includes(tool)) return { status: 'unavailable', ...receipt(tool, { reason: 'tool_not_registered' }) };
     const guard = takeCall(tool, options);
     if (guard) return guard;
     try {
@@ -318,20 +429,51 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
         const paths = [...files.values()].filter((file) => file.ref === ref && file.path.toLowerCase().includes(query)).map((file) => file.path).slice(0, effectiveConfig.maxFindResults);
         return { status: 'ok', ...receipt(tool, { ref, paths, truncated: paths.length === effectiveConfig.maxFindResults }) };
       }
+      if (tool === 'library_docs') {
+        const result = await docsClient.fetchDocs({ library: args.library, topic: args.topic, signal: options?.signal });
+        if (result.status === 'ok') {
+          return { status: 'ok', ...receipt(tool, { library: result.library, topic: result.topic, snippets: result.snippets, truncated: result.truncated, byteCount: result.byteCount }) };
+        }
+        return { status: result.status, ...receipt(tool, { reason: result.reason, ...(result.httpStatus ? { httpStatus: result.httpStatus } : {}) }) };
+      }
       if (tool === 'code_search') {
-        const query = String(args.query || '').trim();
         const ref = String(args.ref || 'head').toLowerCase();
-        const paths = Array.isArray(args.paths) ? [...new Set(args.paths.map((path) => String(path).trim()))].slice(0, effectiveConfig.maxScanFiles) : [];
-        if (!query || query.length > 200) return { status: 'invalid', ...receipt(tool, { reason: 'invalid code query' }) };
-        if (!['base', 'head'].includes(ref) || paths.length === 0) return { status: 'invalid', ...receipt(tool, { reason: 'paths_required' }) };
+        if (!['base', 'head'].includes(ref)) return { status: 'invalid', ...receipt(tool, { reason: 'invalid ref' }) };
+        const useRegex = args.regex === true;
+        const rawQuery = String(args.query || '').trim();
+        let matchesLine;
+        if (useRegex) {
+          const validated = validateSafeRegexSource(rawQuery);
+          if (!validated.ok) return { status: 'invalid', ...receipt(tool, { reason: 'invalid code query' }) };
+          let compiled;
+          try {
+            compiled = new RegExp(validated.value, args.caseInsensitive === true ? 'iu' : 'u');
+          } catch (_) {
+            return { status: 'invalid', ...receipt(tool, { reason: 'invalid code query' }) };
+          }
+          matchesLine = (line) => compiled.test(regexSafeSlice(line));
+        } else {
+          if (!rawQuery || rawQuery.length > 200) return { status: 'invalid', ...receipt(tool, { reason: 'invalid code query' }) };
+          matchesLine = (line) => line.includes(rawQuery);
+        }
+        // REL: an explicit `paths` list still narrows the search exactly as before. Omitting it
+        // no longer fails with 'paths_required' -- it now searches every file in the snapshot
+        // for the given ref, bounded by maxScanFiles below, so a repo-wide query works without
+        // the caller first having to discover exact paths via file_find.
+        const explicitPaths = Array.isArray(args.paths) ? [...new Set(args.paths.map((path) => String(path).trim()))] : null;
+        const candidatePaths = explicitPaths ?? [...files.values()].filter((file) => file.ref === ref).map((file) => file.path).sort();
+        const paths = candidatePaths.slice(0, effectiveConfig.maxScanFiles);
         const matches = [];
         let usedBytes = 0;
+        let timedOut = false;
         const requested = paths.map((path) => files.get(`${ref}:${path}`)).filter(Boolean);
+        const scanDeadline = Date.now() + effectiveConfig.codeSearchWallClockMs;
         for (const file of requested) {
+          if (Date.now() >= scanDeadline) { timedOut = true; break; }
           const loaded = await fetchFile(file, options);
           const lines = loaded.text.split(/\r?\n/u);
           for (let index = 0; index < lines.length; index += 1) {
-            if (!lines[index].includes(query)) continue;
+            if (!matchesLine(lines[index])) continue;
             const text = boundedText(lines[index], Math.min(500, effectiveConfig.maxResultBytes - usedBytes));
             if (!text.text) break;
             matches.push({ path: file.path, line: index + 1, text: text.text });
@@ -340,7 +482,8 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
           }
           if (matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes) break;
         }
-        return { status: 'ok', ...receipt(tool, { ref, query, requestedFiles: paths.length, scannedFiles: requested.length, matches, truncated: requested.length < paths.length || matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes, byteCount: usedBytes }) };
+        const truncated = timedOut || requested.length < candidatePaths.length || matches.length >= effectiveConfig.maxFindResults || usedBytes >= effectiveConfig.maxResultBytes;
+        return { status: 'ok', ...receipt(tool, { ref, query: rawQuery, regex: useRegex, requestedFiles: paths.length, scannedFiles: requested.length, matches, truncated, byteCount: usedBytes }) };
       }
       const resolved = target(tool, args);
       if (resolved.result) return resolved.result;
@@ -364,7 +507,7 @@ function createReviewNavigationToolRegistry({ identity, snapshot, blobClient, co
     }
   };
   return Object.freeze({
-    capabilities: Object.freeze({ enabled: effectiveConfig.enabled, readOnly: true, transport: 'github-rest-immutable-blob', tools: ['file_read', 'file_find', 'code_search', 'file_read_diff'] }),
+    capabilities: Object.freeze({ enabled: effectiveConfig.enabled, readOnly: true, transport: 'github-rest-immutable-blob', tools: ['file_read', 'file_find', 'code_search', 'file_read_diff', 'library_docs'] }),
     call,
   });
 }

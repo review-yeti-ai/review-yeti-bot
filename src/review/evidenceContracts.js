@@ -28,7 +28,11 @@ const HARD_INVESTIGATION_LIMITS = Object.freeze({
   maxVerifierCallsPerFinding: 5,
   maxTurns: 8,
 });
-const EVIDENCE_TOOLS = new Set(['file_read', 'file_find', 'code_search', 'file_read_diff']);
+// library_docs (REL: Context7 library-documentation lookup) is the fifth allowlisted evidence
+// tool. Unlike the other four, it makes an outbound network call -- see
+// src/mcp/libraryDocsTool.js for the security design (server-side URL/key, sanitized
+// model-supplied library id + topic, no generic fetch/HTTP surface, fail-soft on outage).
+const EVIDENCE_TOOLS = new Set(['file_read', 'file_find', 'code_search', 'file_read_diff', 'library_docs']);
 const EVIDENCE_STATUSES = new Set(['ok', 'unavailable', 'invalid', 'cancelled']);
 const TERMINATIONS = new Set([
   'completed', 'reused', 'budget_exhausted', 'provider_failure', 'timeout', 'cancelled',
