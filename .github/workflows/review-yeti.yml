@@ -44,7 +44,13 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: exampleorg/example-review-actions
-          ref: ${{ github.workflow_sha }}
+          # github.workflow_sha resolves to the CALLER's commit when this
+          # reusable workflow runs cross-repo (observed live: a example-api
+          # merge SHA produced "upload-pack: not our ref"). job_workflow_sha
+          # is the immutable SHA of THIS workflow file's repository, which is
+          # exactly the self-checkout we want in both same-repo and
+          # cross-repo invocations.
+          ref: ${{ github.job_workflow_sha }}
           path: .exampleorg-review-actions
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false
