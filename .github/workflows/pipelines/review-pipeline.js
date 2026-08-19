@@ -1863,7 +1863,6 @@ async function callOpenRouterChat(fetchImpl, {
   connectTimeoutMs,
   ttftMs,
   preferStream = false,
-  disableStream = false,
   signal,
   transportName = 'openrouter',
   onStreamProgress,
@@ -1893,7 +1892,7 @@ async function callOpenRouterChat(fetchImpl, {
   // Default OFF. Streaming under 12-way fan-out often causes timeouts / StreamReset 502s.
   // Non-stream still returns resolved provider/model on the JSON body.
   // Opt in with OPENROUTER_STREAM=true, preferStream:true, or github_action.openrouter.stream.
-  const attemptStream = !disableStream && (preferStream === true || process.env.OPENROUTER_STREAM === 'true');
+  const attemptStream = preferStream === true || process.env.OPENROUTER_STREAM === 'true';
 
   const providerFromHeaders = (response) => {
     if (!response?.headers?.get) return null;
@@ -3189,7 +3188,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           + ` attempt=${attempt}/${maxAttempts}`
           + ` timeout_ms=${attemptTimeoutMs}`
           + ` prompt_chars=${promptChars}`
-          + ` stream=${!options.disableStream && (options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true) ? 'enabled' : 'disabled'}`,
+          + ` stream=${options.preferStream === true || process.env.OPENROUTER_STREAM === 'true' || orPolicy.stream === true ? 'enabled' : 'disabled'}`,
         );
         // Prefer streaming so Auto Router's resolved provider/model are visible even on timeout.
         // Headroom / some proxies may not stream — callOpenRouterChat falls back to non-stream.
@@ -3200,12 +3199,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           timeoutMs: attemptTimeoutMs,
           connectTimeoutMs,
           ttftMs,
-          preferStream: !options.disableStream && (options.preferStream === true
+          preferStream: options.preferStream === true
             || process.env.OPENROUTER_STREAM === 'true'
             || orPolicy.stream === true
             || streamRetryRequested
-            || timedOutProviders.size > 0),
-          disableStream: options.disableStream === true,
+            || timedOutProviders.size > 0,
           transportName: options.transportName || gateway.id,
           signal: options.signal,
           onStreamProgress: options.onStreamProgress,
