@@ -7988,13 +7988,18 @@ async function main(options = {}) {
             expectedPublisherLogin: readAuthenticatedPublisherLogin(commandRunner),
           });
           rebuttalReceipt.candidates = candidates.length;
-          for (const candidate of candidates) {
-            if (cancellation.signal.aborted) break;
+          // Candidates target distinct threads with no shared state, so their
+          // model calls run concurrently (bounded by the ≤3 candidate cap).
+          await Promise.all(candidates.map(async (candidate) => {
+            if (cancellation.signal.aborted) return;
             const label = candidate.personaLabel.toLowerCase();
             const persona = enabledPersonas.find((entry) => (
               String(entry.id || '').toLowerCase() === label || String(entry.name || '').toLowerCase() === label
             ));
-            if (!persona) continue;
+            if (!persona) {
+              console.warn(`[Rebuttal] No roster persona matches label '${candidate.personaLabel}'; candidate skipped.`);
+              return;
+            }
             const diffExcerpt = diffFiles.find((file) => file.path === candidate.entry.path)?.patch || '';
             const result = await reviewWithTransports(
               persona,
@@ -8020,14 +8025,14 @@ async function main(options = {}) {
             );
             if (result?.ok !== true || typeof result.content !== 'string') {
               console.warn(`[Rebuttal] ${persona.id} re-run unavailable for ${candidate.entry.path} (${result?.error || 'provider_failure'}); finding stands.`);
-              continue;
+              return;
             }
             let outcome;
             try {
               outcome = parseRebuttalResponse(result.content);
             } catch (error) {
               console.warn(`[Rebuttal] ${persona.id} response rejected (${error.message}); finding stands.`);
-              continue;
+              return;
             }
             if (result.usage) rebuttalUsage.push({ usage: result.usage });
             const reply = renderRebuttalReply({
@@ -8044,7 +8049,7 @@ async function main(options = {}) {
               // Withdrawal without the on-thread explanation would be a silent
               // verdict change; the finding stands unless the reply publishes.
               console.warn(`[Rebuttal] Could not post ${outcome.disposition} reply for ${candidate.entry.path}; finding stands.`);
-              continue;
+              return;
             }
             if (outcome.disposition === 'withdraw') {
               rebuttalWithdrawnThreadIds.add(candidate.entry.threadId);
@@ -8053,7 +8058,7 @@ async function main(options = {}) {
               rebuttalReceipt.affirmed += 1;
             }
             console.log(`[Rebuttal] ${persona.id} ${outcome.disposition}ed ${candidate.entry.severity} ${candidate.entry.path} after author reply.`);
-          }
+          }));
         } catch (error) {
           console.warn(`[Rebuttal] Unavailable (${error.message}); open findings stand.`);
         }
@@ -8079,13 +8084,15 @@ async function main(options = {}) {
       if (conditionalLaneReceipt.enabled) {
         try {
           const triggered = matchConditionalLanes(resolved.lanes, diffFiles.map((file) => file.path));
-          for (const lane of triggered) {
-            if (cancellation.signal.aborted) break;
+          // Triggered lanes are independent; run them concurrently
+          // (bounded by the MAX_LANES=4 cap).
+          await Promise.all(triggered.map(async (lane) => {
+            if (cancellation.signal.aborted) return;
             const charter = PERSONA_CHARTERS.find((persona) => persona.id === lane.persona)
               || enabledPersonas.find((persona) => persona.id === lane.persona);
             if (!charter) {
               console.warn(`[ConditionalLane] Unknown persona '${lane.persona}'; lane skipped.`);
-              continue;
+              return;
             }
             const matchedSet = new Set(lane.matchedPaths);
             const laneFiles = diffFiles.filter((file) => matchedSet.has(file.path));
@@ -8117,14 +8124,14 @@ async function main(options = {}) {
               // Advisory lanes fail soft by design: an outage here must never
               // block the review it is not even part of.
               console.warn(`[ConditionalLane] ${lane.persona} unavailable (${result?.error || 'provider_failure'}); advisory lane skipped.`);
-              continue;
+              return;
             }
             let parsedLane;
             try {
               parsedLane = parseInvestigationResponse(result.content, investigationLimits || {});
             } catch (error) {
               console.warn(`[ConditionalLane] ${lane.persona} response rejected (${error.message}); advisory lane skipped.`);
-              continue;
+              return;
             }
             if (result.usage) conditionalLaneUsage.push({ usage: result.usage });
             const advisories = demoteToAdvisories(lane.persona, (parsedLane.findings || []).map((finding) => ({
@@ -8137,7 +8144,7 @@ async function main(options = {}) {
             })));
             conditionalAdvisories.push(...advisories);
             console.log(`[ConditionalLane] ${lane.persona}: ${advisories.length} advisory finding(s) over ${lane.matchedPaths.length} matched path(s).`);
-          }
+          }));
           conditionalLaneReceipt.advisories = conditionalAdvisories.length;
         } catch (error) {
           console.warn(`[ConditionalLane] Unavailable (${error.message}); advisory lanes skipped.`);
@@ -8502,9 +8509,11 @@ async function main(options = {}) {
             try {
               const candidates = selectFindingsForConfirmation(personaResults);
               confirmationReceipt.checked = candidates.length;
-              const outcomes = [];
-              for (const candidate of candidates) {
-                if (cancellation.signal.aborted) break;
+              // Confirmations are independent judgments on distinct findings;
+              // run them concurrently (bounded by the ≤6 selection cap). Each
+              // failure resolves to null and leaves that finding untouched.
+              const outcomes = (await Promise.all(candidates.map(async (candidate) => {
+                if (cancellation.signal.aborted) return null;
                 const diffExcerpt = diffFiles.find((file) => file.path === candidate.finding.path)?.patch || '';
                 const result = await reviewWithTransports(
                   { id: 'cross-confirm', name: 'Cross-Model Confirmation' },
@@ -8523,19 +8532,19 @@ async function main(options = {}) {
                     turnValidator: parseConfirmationResponse,
                   },
                 );
-                if (result?.ok !== true || typeof result.content !== 'string') continue;
+                if (result?.ok !== true || typeof result.content !== 'string') return null;
                 let verdict;
                 try {
                   verdict = parseConfirmationResponse(result.content);
                 } catch (_) {
-                  continue;
+                  return null;
                 }
                 if (result.usage) confirmationUsage.push({ usage: result.usage });
-                outcomes.push({ ...candidate, ...verdict });
                 if (!verdict.supported) {
                   console.log(`[CrossConfirm] ${candidate.finding.severity} ${candidate.finding.path} NOT supported by second model — demoting to advisory.`);
                 }
-              }
+                return { ...candidate, ...verdict };
+              }))).filter(Boolean);
               const applied = applyConfirmationOutcomes(personaResults, outcomes);
               personaResults = applied.personaResults;
               confirmationReceipt.demoted = applied.demoted;
