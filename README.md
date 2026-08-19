@@ -30,7 +30,9 @@ jobs:
 The reusable workflow derives the repository, PR number, base SHA, and head SHA from the trusted
 GitHub event, re-reads the PR through the caller's `GITHUB_TOKEN`, and fails closed if any
 coordinate changes. Consumers do not carry a second `central-sha` input, PR-body evidence block,
-or rotating claim. The workflow never checks out or executes the pull-request head.
+or rotating claim. Consumer runs never check out or execute the pull-request head. The central
+same-repository self-review is the deliberate exception: it checks out the immutable PR head so
+policy and workflow changes are actually exercised; fork PRs remain on trusted `main`.
 
 `v1` is a privileged central release branch, advanced only by the promotion workflow after the
 development line passes validation and the originating central PR has a successful Review Yeti
@@ -54,9 +56,9 @@ review roster, provider route, budget, or gate semantics.
 
 ## Bootstrap and recovery
 
-The central repository reviews its own pull requests through `self-review.yml` using the trusted
-development `main` contract. Consumer repositories use `v1`; they do not need synchronized
-per-repository edits when policy or budgets change.
+The central repository reviews same-repository pull requests through `self-review.yml` using the
+immutable PR-head contract, while fork PRs use trusted development `main`. Consumer repositories
+use `v1`; they do not need synchronized per-repository edits when policy or budgets change.
 
 The initial repository creation is the one-time bootstrap exception: create `main`, let the first
 validated promotion create the `v1` branch, remove any historical `v1` tag, then protect `main`

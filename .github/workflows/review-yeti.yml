@@ -22,15 +22,16 @@ jobs:
       REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
       EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      # Central self-review runs the trusted development line. Consumer repositories
-      # always run the promoted v1 release line.
+      # Same-repository central PRs run the immutable PR-head policy so a policy change is
+      # actually exercised. Fork PRs stay on trusted main to avoid executing fork code with
+      # inherited provider secrets. Consumer repositories always run the promoted v1 line.
       CENTRAL_REF: ${{ github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
     steps:
       - name: Checkout central workflow tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: exampleorg/example-review-actions
-          ref: ${{ github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
+          ref: ${{ github.repository == 'exampleorg/example-review-actions' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
           path: .exampleorg-review-actions
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false

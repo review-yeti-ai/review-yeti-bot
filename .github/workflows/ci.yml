@@ -66,6 +66,8 @@ jobs:
           grep -Fq 'openrouter-data-collection:' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-ignore-providers:' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-provider-routing:' .github/workflows/review-yeti.yml
+          grep -Fq 'github.event.pull_request.head.sha' .github/workflows/review-yeti.yml
+          grep -Fq 'github.event.pull_request.head.repo.full_name' .github/workflows/review-yeti.yml
           if grep -Eq '"action_sha(_override)?"|central-sha:' policy/review-yeti.json .github/workflows/self-review.yml; then
             echo "::error::per-repository SHA claims are forbidden; use the central release channel"
             exit 1
