@@ -1051,6 +1051,7 @@ describe('reviewWithModel', () => {
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
       rawTurn: true,
+      investigationSchema: true,
       investigationMessages: [{ role: 'user', content: 'Return the investigation envelope.' }],
       openRouterPolicy: {
         allowedModels: [],
@@ -1077,6 +1078,7 @@ describe('reviewWithModel', () => {
     const options = {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
       rawTurn: true,
+      investigationSchema: true,
       openRouterPolicy: {
         allowedModels: [],
         costQualityTradeoff: undefined,
@@ -1105,6 +1107,38 @@ describe('reviewWithModel', () => {
       });
       expect(call.body.provider.require_parameters).toBe(true);
     }
+  });
+
+  // Regression for the 2026-08-20 overview-lane cascade: the PR overview brief (and rebuttal /
+  // cross-confirmation) turns are `rawTurn: true` -- they bypass the buffered multi-turn
+  // investigation loop just like a real investigation call does -- but their JSON contract is
+  // NOT the risk_plan/findings investigation envelope. Forcing STRICT_INVESTIGATION_RESPONSE_SCHEMA
+  // onto them under `structuredOutput: 'strict'` made a schema-enforcing provider (Fireworks,
+  // Ollama) emit a spec-conformant investigation envelope for a prompt that asked for
+  // intent_summary/change_map/etc, which parseOverviewResponse then correctly rejected as
+  // contract_violation_content -- on a stream the provider returned successfully. Only a turn
+  // that explicitly opts in via `investigationSchema: true` may receive the strict schema.
+  it('does not force the investigation schema onto a non-investigation raw turn (e.g. the overview brief)', async () => {
+    const { impl, calls } = stubFetch(validFindings, {
+      payload: { provider: 'examplecloud', choices: [{ message: { content: validFindings } }] },
+    });
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+      rawTurn: true,
+      investigationMessages: [{ role: 'user', content: 'Return the overview brief envelope.' }],
+      openRouterPolicy: {
+        allowedModels: [],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        structuredOutput: 'strict',
+        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
+        timeoutMs: 30_000,
+      },
+    });
+
+    expect(calls[0].body.response_format).toEqual({ type: 'json_object' });
+    expect(calls[0].body.response_format).not.toMatchObject({ type: 'json_schema' });
   });
 
   it('does not apply the investigation schema to a legacy review turn', async () => {

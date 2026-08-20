@@ -221,6 +221,14 @@ function responseFormatForPolicy(policy, { investigation = false } = {}) {
   // response_format at all. The trusted transport may explicitly opt out while retaining
   // SSE and the prompt-level JSON contract; the parser still validates the returned envelope.
   if (policy?.structuredOutput === 'none') return undefined;
+  // `investigation` here means "this turn's contract IS the risk_plan/findings investigation
+  // envelope (STRICT_INVESTIGATION_RESPONSE_SCHEMA)", never "this is a rawTurn-style ad hoc
+  // call". Overview/rebuttal/confirmation turns are also rawTurn (they bypass the buffered
+  // multi-turn investigation loop) but return a DIFFERENT JSON shape each -- forcing this
+  // schema onto them makes a schema-enforcing provider (Fireworks, Ollama) emit a
+  // spec-conformant investigation envelope for a prompt that asked for something else
+  // entirely, which the real parser then rejects as contract_violation_content even though
+  // the stream itself was healthy (2026-08-20 overview-lane cascade RCA).
   if (investigation && policy?.structuredOutput === 'strict') {
     return {
       type: 'json_schema',
@@ -3158,7 +3166,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ],
     temperature: 0.1,
     ...(() => {
-      const responseFormat = responseFormatForPolicy(orPolicy, { investigation: options.rawTurn === true });
+      const responseFormat = responseFormatForPolicy(orPolicy, { investigation: options.investigationSchema === true });
       return responseFormat ? { response_format: responseFormat } : {};
     })(),
     ...(options.reasoningEffort
@@ -3982,7 +3990,7 @@ async function callPersonaModelTurn({ persona, prContext, sessionContext, messag
     [],
     prContext,
     sessionContext,
-    { ...options, modelClient: undefined, investigationMessages: messages, rawTurn: true, signal },
+    { ...options, modelClient: undefined, investigationMessages: messages, rawTurn: true, investigationSchema: true, signal },
   );
   if (result?.ok === true) return result;
   return {
@@ -8725,6 +8733,7 @@ async function main(options = {}) {
                 reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
                 signal: cancellation.signal,
                 rawTurn: true,
+                investigationSchema: true,
                 investigationMessages: buildInvestigationMessages({
                   persona: charter,
                   manifest: buildFileManifest(laneFiles, []).text,
