@@ -98,19 +98,33 @@ function deriveReceiptOutcome({
   }
 
   const partial = completedCount > 0;
+  // API-2902: computeArbitration (reviewCore.js) already distinguishes an infra-only outage
+  // (N-1 quorum, zero blocking findings, every failed lane a provider/infra reason) with the
+  // INCOMPLETE_INFRA status -- but this receipt-derived gate used to unconditionally downgrade
+  // that back to a generic PARTIAL_REVIEW/INCOMPLETE_REVIEW, because `somePersonaIncomplete`
+  // (the same known failed lane, seen again from the receipt side) is expected and not new
+  // information. Preserve INCOMPLETE_INFRA here too, so on-call reading the final output/check-run
+  // still sees the distinct label -- but ONLY when nothing ELSE independent is wrong: a stale
+  // head (`headCurrent !== true`) or a real finding-verification gap
+  // (`findingVerification.summary.incomplete`) are genuine, unrelated problems that must still
+  // downgrade to the generic status, never be masked by the infra label. Still fails closed
+  // either way: verdict stays BLOCK, mergeEligible stays false.
+  const infraOnlyIncomplete = arbitration.infraFailure === true && headCurrent === true && !verificationIncomplete;
   return {
     ...arbitration,
     verdict: 'BLOCK',
-    status: partial ? 'PARTIAL_REVIEW' : 'INCOMPLETE_REVIEW',
+    status: infraOnlyIncomplete ? 'INCOMPLETE_INFRA' : (partial ? 'PARTIAL_REVIEW' : 'INCOMPLETE_REVIEW'),
     coverageComplete: false,
-    coverageStatus: partial ? 'partial' : 'incomplete',
+    coverageStatus: infraOnlyIncomplete ? (arbitration.coverageStatus || 'partial') : (partial ? 'partial' : 'incomplete'),
     coverageQuorumSatisfied: false,
     evidenceEnabled: evidenceEnabled !== false,
     gateDecision: 'BLOCKED',
     mergeEligible: false,
     promotionReady: false,
     executionTerminationReasons: terminationReasons,
-    rationale: `${arbitration.rationale || 'Review did not complete.'} Evidence execution was not complete; merge approval remains blocked.`,
+    rationale: infraOnlyIncomplete
+      ? (arbitration.rationale || 'Review did not complete.')
+      : `${arbitration.rationale || 'Review did not complete.'} Evidence execution was not complete; merge approval remains blocked.`,
   };
 }
 
