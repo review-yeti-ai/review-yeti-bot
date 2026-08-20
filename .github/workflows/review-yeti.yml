@@ -65,7 +65,7 @@ jobs:
         env:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY || secrets.OPENROUTER_PR_REVIEW_API_KEY }}
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000
         run: |
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
@@ -108,13 +108,13 @@ jobs:
         env:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY || secrets.OPENROUTER_PR_REVIEW_API_KEY }}
-          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && (secrets.OPENROUTER_REVIEW_FLEET_KEY || secrets.OPENROUTER_PR_REVIEW_API_KEY) || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_REVIEW_FLEET_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
         with:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
           pr-number: ${{ github.event.pull_request.number }}
-          llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && (secrets.OPENROUTER_REVIEW_FLEET_KEY || secrets.OPENROUTER_PR_REVIEW_API_KEY) || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_REVIEW_FLEET_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
           target-config: 'none'

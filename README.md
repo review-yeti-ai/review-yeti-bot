@@ -104,7 +104,7 @@ The current standard transport plan is deliberately limited and ordered:
 
 1. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`)
 2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
-3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
+3. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`) as the final fallback
 
 `OLLAMA_PR_REVIEW_API_KEY` is sourced from the masked Doppler secret in
 `example-workspace/prd` and synchronized to the repository's GitHub Actions secret of the same name.
