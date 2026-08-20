@@ -149,8 +149,6 @@ jobs:
           # Context7: org/repo secret. Enabled for personas when key is set and
           # target .review-yeti.yaml has mcp.context7.enabled (this repo defaults true).
           context7-api-key: ${{ secrets.CONTEXT7_API_KEY }}
-          # vars is valid in the workflow; action.yml must receive this as an input (no vars in composites).
-          openrouter-stream: ${{ vars.OPENROUTER_STREAM || 'false' }}
           # Per-request model timeout (default 30s). Override with vars.OPENROUTER_TIMEOUT_MS or .review-yeti.yaml.
           openrouter-timeout-ms: ${{ vars.OPENROUTER_TIMEOUT_MS || '30000' }}
           llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}

@@ -19,11 +19,11 @@ const DEFAULT_PROVIDER_ROUTING = Object.freeze({
  *   1. Explicit action inputs (env OPENROUTER_ALLOWED_MODELS /
  *      OPENROUTER_COST_QUALITY_TRADEOFF / OPENROUTER_DATA_COLLECTION /
  *      OPENROUTER_IGNORE_PROVIDERS / OPENROUTER_PROVIDER_ROUTING /
- *      OPENROUTER_TIMEOUT_MS / OPENROUTER_STREAM / OPENROUTER_FALLBACK_MODELS /
+ *      OPENROUTER_TIMEOUT_MS / OPENROUTER_FALLBACK_MODELS /
  *      OPENROUTER_STRUCTURED_OUTPUT);
  *   2. The base-owned `.review-yeti.yaml` github_action.openrouter block
  *      (allowed_models / cost_quality_tradeoff / data_collection /
- *      ignore_providers / provider_routing / timeout_ms / stream / fallback_models /
+ *      ignore_providers / provider_routing / timeout_ms / fallback_models /
  *      structured_output);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
  *      full-quantization throughput routing with fallbacks, known degraded
@@ -38,7 +38,6 @@ const DEFAULT_PROVIDER_ROUTING = Object.freeze({
  *   dataCollection: ('allow'|'deny'|undefined),
  *   ignoredProviders: string[],
  *   timeoutMs: number,
- *   connectTimeoutMs: number,
  *   ttftMs: number,
  *   stream: boolean,
  *   fallbackModels: string[],
@@ -71,7 +70,6 @@ function resolveOpenRouterPolicy(localConfig, env) {
   const envTimeout = env.OPENROUTER_TIMEOUT_MS;
   const envTtft = env.OPENROUTER_TTFT_MS;
   const envMaxAttempts = env.OPENROUTER_MAX_ATTEMPTS;
-  const envStream = env.OPENROUTER_STREAM;
   const envFallbackModels = splitCsv(env.OPENROUTER_FALLBACK_MODELS);
   // Providers the OPERATOR has explicitly re-permitted. The hard-ban list below is a safety
   // default for callers that pass no policy of their own; it must not silently override an
@@ -92,7 +90,6 @@ function resolveOpenRouterPolicy(localConfig, env) {
     : splitCsv(cfgOr.ignore_providers ?? cfgOr.ignoreProviders);
   const cfgTimeout = cfgOr.timeout_ms ?? cfgOr.timeoutMs ?? cfgOr.timeout_ms;
   const cfgMaxAttempts = cfgOr.max_attempts ?? cfgOr.maxAttempts;
-  const cfgStream = cfgOr.stream;
   const cfgModel = typeof cfgOr.model === 'string' ? cfgOr.model.trim() : '';
   const cfgFallbackModels = Array.isArray(cfgOr.fallback_models)
     ? cfgOr.fallback_models
@@ -135,26 +132,9 @@ function resolveOpenRouterPolicy(localConfig, env) {
   }
   timeoutMs = Math.max(500, Math.min(600_000, Math.round(timeoutMs)));
 
-  // connect_timeout_ms: max wait for HTTP headers / first byte. Separate from the total
-  // response budget so a hung TCP handshake cannot burn the whole review window.
-  // Default 8s; clamped 500ms..timeoutMs. Env OPENROUTER_CONNECT_TIMEOUT_MS wins.
-  const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
-  let connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS;
-  const envConnect = env.OPENROUTER_CONNECT_TIMEOUT_MS;
-  const cfgConnect = cfgOr.connect_timeout_ms ?? cfgOr.connectTimeoutMs;
-  if (envConnect !== undefined && envConnect !== '') {
-    const n = Number(envConnect);
-    if (Number.isFinite(n)) connectTimeoutMs = n;
-  } else if (cfgConnect !== undefined && cfgConnect !== '') {
-    const n = Number(cfgConnect);
-    if (Number.isFinite(n)) connectTimeoutMs = n;
-  }
-  connectTimeoutMs = Math.max(500, Math.min(timeoutMs, Math.round(connectTimeoutMs)));
-
   // ttft_ms: time-to-first-token deadline. This is now the authoritative "is the provider
-  // talking to us" budget -- it drives the stream path's connect timer (which previously had
-  // none at all) AND the non-stream path's connect budget (superseding connect_timeout_ms there
-  // so the semantic is explicit). Default 30s; clamped 500ms..timeoutMs.
+  // talking to us" budget and drives the stream path's connect timer. Default 30s; clamped
+  // 500ms..timeoutMs.
   // Env OPENROUTER_TTFT_MS wins over github_action.openrouter.ttft_ms.
   const DEFAULT_TTFT_MS = 30_000;
   const cfgTtft = cfgOr.ttft_ms ?? cfgOr.ttftMs;
@@ -182,19 +162,10 @@ function resolveOpenRouterPolicy(localConfig, env) {
   }
   maxAttempts = Math.max(1, Math.min(5, Math.trunc(maxAttempts)));
 
-  // Streaming is a review-path invariant. Preserve the legacy inputs for config compatibility,
-  // but never let an old `stream: false` value silently turn a review into a buffered request.
-  // The transport implementation and the policy validator both require SSE streaming.
-  const requestedStream = envStream !== undefined && envStream !== ''
-    ? !['0', 'false', 'no', 'off'].includes(String(envStream).trim().toLowerCase())
-    : (cfgStream !== undefined && cfgStream !== null && cfgStream !== ''
-      ? (typeof cfgStream === 'boolean'
-        ? cfgStream
-        : !['0', 'false', 'no', 'off'].includes(String(cfgStream).trim().toLowerCase()))
-      : true);
-  if (!requestedStream && typeof console !== 'undefined' && typeof console.warn === 'function') {
-    console.warn('[OpenRouter policy] stream=false is deprecated and ignored; review streaming is required');
-  }
+  // Streaming is a review-path invariant. It is not configurable: every provider request uses
+  // the SSE transport implemented by review-pipeline.js.
+  // The `stream` property remains in the returned policy as a positive capability marker for
+  // callers and receipts; it is always true and is never read from legacy configuration.
   const stream = true;
 
   if (!Array.isArray(allowedModels)) allowedModels = [];
@@ -269,7 +240,6 @@ function resolveOpenRouterPolicy(localConfig, env) {
     dataCollection,
     ignoredProviders,
     timeoutMs,
-    connectTimeoutMs,
     ttftMs,
     maxAttempts,
     stream,
@@ -720,7 +690,7 @@ const TRANSPORT_OPENROUTER_ONLY_KEYS = Object.freeze([
  *                 must end in _API_KEY or _KEY and may not name a CI credential
  *   model         required, gateway-native model id
  *   compat        'openai' | 'openrouter' (default: detected from base_url)
- *   fallback_models, timeout_ms, connect_timeout_ms, stream, structured_output,
+ *   fallback_models, timeout_ms, structured_output,
  *   reasoning_effort, perf_metrics_in_response
  *                 optional; unset values inherit the global env/action inputs
  *   provider_routing, ignore_providers, quarantine_on_timeout, data_collection,
@@ -852,8 +822,6 @@ function resolveTransportPlan(localConfig, env) {
         ? toCsv(raw.fallback_models ?? raw.fallbackModels)
         : '',
       OPENROUTER_TIMEOUT_MS: raw.timeout_ms !== undefined ? String(raw.timeout_ms) : String(env.OPENROUTER_TIMEOUT_MS || ''),
-      OPENROUTER_CONNECT_TIMEOUT_MS: raw.connect_timeout_ms !== undefined ? String(raw.connect_timeout_ms) : String(env.OPENROUTER_CONNECT_TIMEOUT_MS || ''),
-      OPENROUTER_STREAM: raw.stream !== undefined ? String(raw.stream) : String(env.OPENROUTER_STREAM || ''),
       OPENROUTER_STRUCTURED_OUTPUT: raw.structured_output !== undefined ? String(raw.structured_output) : String(env.OPENROUTER_STRUCTURED_OUTPUT || ''),
       ...(compat === 'openrouter' ? {
         OPENROUTER_PROVIDER_ROUTING: raw.provider_routing !== undefined || raw.providerRouting !== undefined
@@ -886,8 +854,6 @@ function resolveTransportPlan(localConfig, env) {
       apiKeyEnv,
       fallbackModels: openRouterPolicy.fallbackModels,
       timeoutMs: openRouterPolicy.timeoutMs,
-      connectTimeoutMs: openRouterPolicy.connectTimeoutMs,
-      stream: openRouterPolicy.stream,
       reasoningEffort,
       perfMetricsInResponse: configuredPerfMetrics === true,
       quarantineOnTimeout: configuredQuarantineOnTimeout !== false,

@@ -1,14 +1,12 @@
 // Streaming is unconditional on the real review path (operator directive: "streaming MUST be
 // true. It is not a tunable, not a fallback, not a per-transport preference"). Every fetch mock
 // handed to reviewWithModel/callOpenRouterChat must therefore answer the STREAM request, or the
-// code legitimately (and audibly, via a `stream body not readable; falling back to non-stream`
-// warning) retries once non-stream within the same attempt -- doubling the recorded call count
-// for any test whose mock only implements `.json()`/`.text()`.
+// code fails closed with a streamed transport error for any test whose mock only implements
+// `.json()`/`.text()`.
 //
 // `sseBody` wraps a single JSON chat-completion payload into a one-chunk SSE body so existing
-// non-stream-shaped mocks keep working with minimal changes: put the JSON payload you would have
-// returned from `.json()` into a `message.content` (or `choices[0].message`) shape and hand the
-// result to `getReader`.
+// Put the JSON payload you would have returned from `.json()` into a `message.content` (or
+// `choices[0].message`) shape and hand the result to `getReader`.
 
 /** A ReadableStream-shaped single-chunk SSE body carrying one JSON chat-completion payload. */
 export function sseBody(payload: Record<string, unknown>): { getReader: () => any } {
@@ -29,8 +27,7 @@ export function sseBody(payload: Record<string, unknown>): { getReader: () => an
 /**
  * Builds a fetch stub that answers the streaming request directly (no fallback), returning a
  * single-chunk SSE body equivalent to the given JSON chat-completion payload. `text`/`json` are
- * still provided so a code path that reads them (HTTP-error branches, non-stream test helpers)
- * keeps working.
+ * still provided so HTTP-error branches and compatibility fixtures can inspect the payload.
  */
 export function streamableChatFetch(payload: Record<string, unknown>, opts: { ok?: boolean; status?: number } = {}) {
   return {

@@ -1920,7 +1920,6 @@ function createPersonaLaneProgressReporter({
   personaIds = [],
   model = 'unknown',
   baseUrl = 'unknown',
-  stream = false,
   laneDeadlineMs = 0,
   intervalMs = 15_000,
   clock = Date.now,
@@ -1942,7 +1941,7 @@ function createPersonaLaneProgressReporter({
       `[Parallel Evaluation] heartbeat elapsed_ms=${elapsed()}`
       + ` active=${active.length ? active.join(',') : 'none'}`
       + ` completed=${completed}/${ids.length}`
-      + ` transport=openrouter stream=${stream ? 'enabled' : 'disabled'}`
+      + ' transport=openrouter stream=enabled'
       + ` model=${model} base_url=${baseUrl} lane_deadline_ms=${Number(laneDeadlineMs) || 0}`,
     );
   };
@@ -1957,7 +1956,7 @@ function createPersonaLaneProgressReporter({
       if (!state || state.status === 'active') return;
       state.status = 'active';
       state.startedAt = Number(clock());
-      logLine(`[Persona ${id}] lane started transport=openrouter stream=${stream ? 'enabled' : 'disabled'} lane_deadline_ms=${Number(laneDeadlineMs) || 0}`);
+      logLine(`[Persona ${id}] lane started transport=openrouter stream=enabled lane_deadline_ms=${Number(laneDeadlineMs) || 0}`);
     },
     complete(personaId, status = 'completed') {
       const id = String(personaId || '').trim();
@@ -2016,25 +2015,17 @@ function awaitAbortable(promise, signal) {
 /**
  * Provider-neutral OpenAI-compatible chat completion. Streaming retains a routed provider/model
  * when the gateway supplies them and yields a real first-token boundary for direct transports.
- * Falls back to non-stream if the proxy/body is not a ReadableStream.
+ * Every provider request is SSE streaming; a transport failure is returned to the caller so the
+ * normal routed retry/failover policy can decide what happens next. There is deliberately no
+ * buffered compatibility request because it would violate the review lane's streaming
+ * contract and hide provider transport failures.
  */
 async function callOpenRouterChat(fetchImpl, {
   url,
   headers,
   body,
   timeoutMs,
-  connectTimeoutMs,
   ttftMs,
-  // Streaming is unconditional on the real review path (operator directive: "streaming MUST be
-  // true. It is not a tunable, not a fallback, not a per-transport preference"). `preferStream`
-  // defaults true and is only ever passed `false` by a unit test exercising `nonStreamOnce`'s own
-  // budget behavior in isolation -- reviewWithModel, the only production caller, never threads a
-  // way to turn it off. There used to be a second, independent `disableStream` override (wired to
-  // a since-removed "disable streaming under concurrent fan-out" mechanism); it is deleted rather
-  // than kept as a defensive no-op, because a second flag that CAN disagree with the first is
-  // exactly how a buffered request went unnoticed in production (see reviewWithModel and the
-  // streaming-lane gate in main() for the corresponding fixes).
-  preferStream = true,
   signal,
   // Optional: the per-lane wall-clock backstop's OWN signal (review-pipeline.js's
   // `laneDeadline.signal`, ~240s default), threaded through separately from the generic `signal`
@@ -2052,183 +2043,26 @@ async function callOpenRouterChat(fetchImpl, {
   onStreamProgress,
 }) {
   // Total budget covers connect + body. TTFT (time-to-first-token) is the SEPARATE
-  // "is the provider talking to us at all" concern: if no headers/first-byte (non-stream) or no
-  // first SSE chunk (stream) arrive within the TTFT budget, we refuse the attempt as
+  // "is the provider talking to us at all" concern: if no first SSE chunk arrives within the
+  // TTFT budget, we refuse the attempt as
   // TTFT_TIMEOUT — we do NOT raise timeoutMs, and (operator directive, REL-271) we do NOT add
   // the provider to any ignore/quarantine/ban set on this path; sort:latency stays the routing
   // authority and the caller simply re-asks.
   const totalMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30_000;
   const resolvedTtftMs = Number.isFinite(ttftMs) && ttftMs > 0 ? ttftMs : undefined;
-  // The stream path previously had NO connect/TTFT budget at all (bound only to totalAbort) —
-  // that is the core bug this fixes, so it always gets a budget (30s fallback when the caller
-  // supplies none). The non-stream path already had an approximate connect budget; drive it
-  // explicitly from ttftMs when the caller supplies one, and preserve the legacy
-  // connectTimeoutMs/8s behavior for callers that have not been updated to pass ttftMs.
+  // Streaming always gets an explicit connect/TTFT budget (30s fallback when the caller supplies
+  // none), so a provider that accepts a connection and then queues silently cannot consume the
+  // entire generation budget without being classified.
   const ttftBudgetMs = Math.max(500, Math.min(totalMs, resolvedTtftMs !== undefined ? Math.round(resolvedTtftMs) : 30_000));
-  const connectMs = resolvedTtftMs !== undefined
-    ? ttftBudgetMs
-    : Math.max(500, Math.min(totalMs, Number.isFinite(connectTimeoutMs) && connectTimeoutMs > 0 ? connectTimeoutMs : 8_000));
   const totalAbort = createAbortLink({ signals: [signal], timeoutMs: totalMs });
   const execute = async () => {
   const baseHeaders = { ...headers };
   const defaultProvider = String(transportName || 'openrouter');
   const logPrefix = formatTransportLogPrefix(defaultProvider);
-  // Unconditional: `preferStream` defaults true (see the parameter doc above). Concurrent
-  // fan-out under N personas is handled by serializing streaming lanes (createStreamingLaneGate
-  // in main()), never by silently falling back to a buffered request -- a buffered request turns
-  // the TTFT budget into a hidden total-generation cap (see nonStreamOnce's own comment).
-  const attemptStream = preferStream !== false;
 
-  const providerFromHeaders = (response) => {
-    if (!response?.headers?.get) return null;
-    for (const key of ['x-openrouter-provider', 'x-provider', 'x-or-provider']) {
-      const v = response.headers.get(key);
-      if (v && String(v).trim()) return String(v).trim();
-    }
-    return null;
-  };
-
-  const nonStreamOnce = async () => {
-    const t0 = Date.now();
-    let response;
-    // Phase 1 — CONNECT: headers only. Fail fast if the upstream never answers.
-    const connectAbort = createAbortLink({ signals: [signal, totalAbort.signal], timeoutMs: connectMs });
-    try {
-      response = await fetchImpl(url, {
-        method: 'POST',
-        headers: baseHeaders,
-        body: JSON.stringify({ ...body, stream: false }),
-        signal: connectAbort.signal,
-      });
-    } catch (err) {
-      const elapsed = Math.max(0, Date.now() - t0);
-      const connectTimedOut = Boolean(connectAbort.signal?.aborted && elapsed <= connectMs + 250);
-      const aborted = Boolean(totalAbort.signal?.aborted || connectAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
-      // 'ttft' here is the non-stream analogue of the stream path's TTFT timer: no headers
-      // arrived within the deadline, so the provider never demonstrated it was alive.
-      // Same distinction as the stream path above: a laneDeadlineSignal firing (the outer per-lane
-      // wall-clock backstop) while this connect attempt was in flight is not this call's own
-      // ttft/total budget being exceeded. Checked before totalAbort/response because
-      // totalAbort.signal.aborted is ambiguous (it relays the outer signal too); laneDeadlineSignal
-      // is not.
-      const phase = connectTimedOut
-        ? 'ttft'
-        : (laneDeadlineSignal?.aborted ? 'lane_deadline' : 'response');
-      console.warn(
-        `${logPrefix} non-stream ${phase === 'ttft' ? 'TTFT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
-        + ` model=${body.model} elapsed_ms=${elapsed} ttft_budget_ms=${connectMs} total_budget_ms=${totalMs}`
-        + ` name=${err?.name || 'Error'}`,
-      );
-      return {
-        ok: false,
-        aborted,
-        timeoutPhase: aborted ? phase : undefined,
-        ...(aborted && phase === 'ttft' ? { failureClass: 'ttft_timeout' } : {}),
-        status: 0,
-        detail: 'request_error',
-        model: body.model,
-        provider: defaultProvider,
-        generationId: null,
-        content: '',
-        usage: null,
-        streamed: false,
-        error: err,
-      };
-    } finally {
-      connectAbort.dispose();
-    }
-
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      let route = { model: body.model, provider: defaultProvider, generationId: null };
-      try {
-        route = resolveRouteMeta(JSON.parse(detail), body.model, defaultProvider);
-      } catch {
-        /* raw */
-      }
-      const genHeader = response.headers?.get?.('x-generation-id') || response.headers?.get?.('X-Generation-Id');
-      if (genHeader && !route.generationId) route.generationId = String(genHeader).trim();
-      return {
-        ok: false,
-        status: response.status,
-        detail: 'http_error',
-        ...route,
-        content: '',
-        usage: null,
-        streamed: false,
-      };
-    }
-
-    let payload;
-    // Attach provider from headers as soon as connect succeeds (before body parse).
-    const headerProvider = providerFromHeaders(response);
-    try {
-      payload = await awaitAbortable(response.json(), totalAbort.signal);
-    } catch (err) {
-      const elapsed = Math.max(0, Date.now() - t0);
-      const aborted = Boolean(totalAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
-      console.warn(
-        `${logPrefix} non-stream RESPONSE_TIMEOUT body`
-        + ` model=${body.model} provider=${headerProvider || 'unknown'} elapsed_ms=${elapsed}`
-        + ` connect_budget_ms=${connectMs} total_budget_ms=${totalMs}`
-        + ` name=${err?.name || 'Error'}`,
-      );
-      return {
-        ok: false,
-        aborted,
-        timeoutPhase: aborted ? 'response' : undefined,
-        status: response.status,
-        detail: 'response_body_error',
-        model: body.model,
-        provider: headerProvider || defaultProvider,
-        generationId: null,
-        content: '',
-        usage: null,
-        streamed: false,
-        error: err,
-      };
-    }
-    const route = resolveRouteMeta(payload, body.model, defaultProvider);
-    if (headerProvider && (!route.provider || route.provider === defaultProvider || route.provider === 'openrouter')) {
-      route.provider = headerProvider;
-    }
-    const genHeader = response.headers?.get?.('x-generation-id') || response.headers?.get?.('X-Generation-Id');
-    if (genHeader && !route.generationId) route.generationId = String(genHeader).trim();
-    const content = payload?.choices?.[0]?.message?.content || '';
-    const providerPerformance = resolveProviderPerformance(payload, response);
-    const ttfbMs = Math.max(0, Date.now() - t0); // approximate; body already read
-    console.log(
-      `${logPrefix} non-stream OK model=${route.model} provider=${route.provider}`
-      + ` elapsed_ms=${ttfbMs} total_budget_ms=${totalMs}`
-      + (providerPerformance.providerTtftMs === undefined ? '' : ` provider_ttft_ms=${providerPerformance.providerTtftMs}`),
-    );
-    return {
-      ok: true,
-      ...route,
-      content: typeof content === 'string' ? content : '',
-      usage: payload?.usage || null,
-      streamed: false,
-      payload,
-      ...providerPerformance,
-    };
-  };
-
-  // Not reachable from the real review path: reviewWithModel (the only production caller) never
-  // passes `preferStream: false`. `nonStreamOnce` itself remains reachable as an in-flight
-  // RESILIENCE fallback further below (a stream that HTTP-errors, resets, or fails mid-read) --
-  // that is a recovery for an already-attempted stream, not a silent default, and it still runs
-  // against the same total budget rather than treating a connect-phase wait as a hidden
-  // total-generation cap.
-  if (!attemptStream) {
-    return nonStreamOnce();
-  }
-
-  // Streaming is now unconditional, so this branch runs on every real review-path request --
-  // previously it only ran when explicitly opted in, and no test happened to supply
-  // `onStreamProgress` while doing so, so this scope's own missing `t0` (declared only inside
-  // nonStreamOnce, never here) went uncaught: the first-chunk progress callback threw
-  // `ReferenceError: t0 is not defined` on every real run once main() (which always supplies
-  // onStreamProgress) exercised this path.
+  // Streaming is unconditional, so this branch runs on every review-path request. Keeping the
+  // request path single-mode also makes the first-chunk progress boundary impossible to bypass:
+  // there is no buffered branch that can omit it.
   const t0 = Date.now();
   let streamRoute = { model: body.model, provider: defaultProvider, generationId: null };
   // TTFT: started at request dispatch (right here), cleared the moment the first SSE data chunk
@@ -2264,10 +2098,6 @@ async function callOpenRouterChat(fetchImpl, {
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      if (response.status >= 500 || /StreamReset|stream_id|remote_reset|ECONNRESET/i.test(detail)) {
-        console.warn(`${logPrefix} stream HTTP ${response.status}; falling back to non-stream`);
-        return nonStreamOnce();
-      }
       let route = { model: body.model, provider: defaultProvider, generationId: null };
       try {
         route = resolveRouteMeta(JSON.parse(detail), body.model, defaultProvider);
@@ -2286,8 +2116,16 @@ async function callOpenRouterChat(fetchImpl, {
     }
 
     if (!(response.body && typeof response.body.getReader === 'function')) {
-      console.warn(`${logPrefix} stream body not readable; falling back to non-stream`);
-      return nonStreamOnce();
+      console.warn(`${logPrefix} stream body is not readable; refusing buffered compatibility request`);
+      return {
+        ok: false,
+        detail: 'stream_body_not_readable',
+        ...streamRoute,
+        content: '',
+        usage: null,
+        streamed: true,
+        partial: false,
+      };
     }
 
     const reader = response.body.getReader();
@@ -2379,9 +2217,20 @@ async function callOpenRouterChat(fetchImpl, {
           if (providerPerformance.perfMetrics) perfMetrics = providerPerformance.perfMetrics;
           if (providerPerformance.providerTtftMs !== undefined) providerTtftMs = providerPerformance.providerTtftMs;
           if (chunk.error) {
-            console.warn(`${logPrefix} mid-stream error (${provider}/${model}); falling back to non-stream`);
+            console.warn(`${logPrefix} mid-stream error (${provider}/${model}); refusing buffered compatibility request`);
             try { await reader.cancel(); } catch (_) {}
-            return nonStreamOnce();
+            return {
+              ok: false,
+              detail: 'stream_error',
+              error: chunk.error,
+              model,
+              provider,
+              generationId,
+              content,
+              usage,
+              streamed: true,
+              partial: sawChunk,
+            };
           }
         }
       }
@@ -2448,34 +2297,7 @@ async function callOpenRouterChat(fetchImpl, {
       const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
       const msg = `provider_stream_failed:${errorName}`;
       if (/StreamReset|stream_id|remote_reset|ECONNRESET|aborted|timeout|network/i.test(rawErrorMessage)) {
-        console.warn(`${logPrefix} stream read failed (${formatRouteLabel(streamRoute)}); falling back to non-stream`);
-        if (totalAbort.signal.aborted) {
-          return {
-            ok: false,
-            aborted: true,
-            error: err,
-            timeoutPhase: laneDeadlineSignal?.aborted ? 'lane_deadline' : 'response',
-            ...streamRoute,
-            content,
-            usage,
-            streamed: true,
-            partial: sawChunk,
-          };
-        }
-        try {
-          return await nonStreamOnce();
-        } catch (fallbackError) {
-          return {
-            ok: false,
-            aborted: true,
-            error: fallbackError,
-            ...streamRoute,
-            content,
-            usage,
-            streamed: true,
-            partial: sawChunk,
-          };
-        }
+        console.warn(`${logPrefix} stream read failed (${formatRouteLabel(streamRoute)}); refusing buffered compatibility request`);
       }
       return {
         ok: false,
@@ -2540,21 +2362,17 @@ async function callOpenRouterChat(fetchImpl, {
     }
     const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
     const msg = `provider_request_failed:${errorName}`;
-    console.warn(`${logPrefix} stream failed; falling back to non-stream (${msg.slice(0, 100)})`);
-    try {
-      return await nonStreamOnce();
-    } catch (err2) {
-      return {
-        ok: false,
-        aborted: true,
-        error: err2,
-        ...streamRoute,
-        content: '',
-        usage: null,
-        streamed: true,
-        partial: false,
-      };
-    }
+    console.warn(`${logPrefix} stream failed; refusing buffered compatibility request (${msg.slice(0, 100)})`);
+    return {
+      ok: false,
+      aborted: true,
+      error: err,
+      ...streamRoute,
+      content: '',
+      usage: null,
+      streamed: true,
+      partial: false,
+    };
   } finally {
     clearTtftTimer();
     requestAbort.dispose();
@@ -2563,12 +2381,8 @@ async function callOpenRouterChat(fetchImpl, {
   return execute().finally(() => totalAbort.dispose());
 }
 
-// Streamed-completion smoke (API-2902). The pre-existing chat preflight below performs a
-// non-stream HTTP-200 ping that authenticates the credential/model but is invisible to an SSE
-// stream-termination regression -- exactly the bug class that shipped 2026-08-19: persona lanes
-// streamed tokens from Fireworks (billed), never saw the [DONE] marker, and hung to the lane
-// deadline while that ping kept logging "healthy http=200". This performs ONE minimal real
-// streamed completion (tiny prompt, low max_tokens) against the SAME target through the SAME
+// Streamed-completion smoke (API-2902). This performs ONE minimal real streamed completion (tiny
+// prompt, low max_tokens) against the SAME target through the SAME
 // `callOpenRouterChat` streaming path the persona lanes use, and requires the stream to actually
 // terminate (`ok: true, streamed: true`) within the smoke budget. `stream_incomplete` is reported
 // when chunks were received but the completion never terminated -- the precise shape of today's
@@ -2588,9 +2402,7 @@ async function runStreamedChatPreflight(fetchImplementation, preflightTarget, { 
       max_tokens: 4,
     },
     timeoutMs,
-    connectTimeoutMs: timeoutMs,
     ttftMs: timeoutMs,
-    preferStream: true,
     signal,
     transportName: `${preflightTarget.label || 'preflight'} (stream smoke)`,
   });
@@ -3276,13 +3088,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     || Number(process.env.OPENROUTER_TIMEOUT_MS)
     || Number(orPolicy.timeoutMs)
     || 30_000;
-  const connectTimeoutMs = options.connectTimeoutMs
-    || Number(process.env.OPENROUTER_CONNECT_TIMEOUT_MS)
-    || Number(orPolicy.connectTimeoutMs)
-    || 8_000;
-  // Time-to-first-token deadline (REL-271 D1/D2/D10). Threaded into callOpenRouterChat, which
-  // uses it to bound the stream path's connect timer (previously unbounded) and drive the
-  // non-stream connect budget explicitly.
+  // Time-to-first-token deadline (REL-271 D1/D2/D10). Threaded into callOpenRouterChat to bound
+  // the streaming path's connect timer.
   const ttftMs = options.ttftMs
     || Number(process.env.OPENROUTER_TTFT_MS)
     || Number(orPolicy.ttftMs)
@@ -3313,10 +3120,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       };
     }
   }
-  // A non-streaming timeout cannot identify the upstream OpenRouter endpoint. The next attempt
-  // therefore enables SSE so the first route chunk can identify it, then carries that provider
-  // into `provider.ignore` for subsequent retries/fallbacks. This keeps the normal path stable
-  // while making a stalled endpoint self-quarantine instead of retrying the same sticky route.
+  // A streamed timeout cannot identify the upstream OpenRouter endpoint until a route chunk has
+  // arrived. Keep it un-attributed and let the normal routed retry policy re-ask.
   const timedOutProviders = new Set();
   // Run-scoped ban set shared by reference across every persona lane in the current review run
   // (see addRunScopedProviderBan above). Absent when the caller does not opt in (tests, or a
@@ -3499,20 +3304,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           + ` prompt_chars=${promptChars}`
           + ` stream=enabled`,
         );
-        // Streaming is unconditional (operator directive: not a tunable, not a fallback, not a
-        // per-transport preference). callOpenRouterChat's `preferStream` already defaults true;
-        // passed explicitly here so the request body is never left to an implicit default. A
-        // buffered request turns the TTFT budget into a hidden total-generation cap -- that is
-        // exactly the defect this closes (a production run logged `stream=disabled` and then hit
-        // `TTFT_TIMEOUT` at the full 30s budget on what should have been a first-SSE-chunk check).
+        // Streaming is unconditional (operator directive: not a tunable, fallback, or
+        // per-transport preference). The request body is built by the single streaming transport
+        // path below, so a buffered request cannot silently bypass the TTFT boundary.
         const result = await callOpenRouterChat(fetchImpl, {
           url: `${cfg.baseUrl}/chat/completions`,
           headers: requestHeaders,
           body: requestBody,
           timeoutMs: attemptTimeoutMs,
-          connectTimeoutMs,
           ttftMs,
-          preferStream: true,
           transportName: options.transportName || gateway.id,
           signal: options.signal,
           // Threaded separately from `signal` (which by this point may already be laneSignal, a
@@ -3638,7 +3438,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               streamRetryRequested = true;
               console.warn(
                 `${modelLogPrefix} RETRY reason=${phase}_timeout persona=${persona.id}`
-                + ` elapsed_ms=${elapsedMs} connect_budget_ms=${connectTimeoutMs}`
+                + ` elapsed_ms=${elapsedMs} ttft_budget_ms=${ttftMs}`
                 + ` total_budget_ms=${timeoutMs}`
                 + ' — provider not banned; OpenRouter routing remains authoritative',
               );
@@ -3659,7 +3459,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               streamRetryRequested = true;
               console.warn(
                 `${modelLogPrefix} RETRY reason=${phase}_timeout persona=${persona.id}`
-                + ` elapsed_ms=${elapsedMs} connect_budget_ms=${connectTimeoutMs}`
+                + ` elapsed_ms=${elapsedMs} ttft_budget_ms=${ttftMs}`
                 + ` total_budget_ms=${timeoutMs}`
                 + ' — direct transport never banned; provider.ignore is an OpenRouter-only concept',
               );
@@ -3669,14 +3469,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               console.warn(
                 `${modelLogPrefix} BAN provider=${timedOutProvider} reason=${phase}_timeout`
                 + ` persona=${persona.id} elapsed_ms=${elapsedMs}`
-                + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
+                + ` ttft_budget_ms=${ttftMs} total_budget_ms=${timeoutMs}`
                 + (runTimedOutProviders
                   ? ` — banned for the rest of the review run (run-scoped, cap=${RUN_SCOPED_PROVIDER_BAN_MAX})`
                   : ` — banned for the remainder of this lane call only (no run-scoped ban set was provided)`),
               );
               console.warn(`::warning::Quarantined slow model provider ${timedOutProvider} after ${phase} timeout`);
             } else {
-              // Unknown provider on non-stream timeout: force SSE next so the first chunk names it.
+              // Unknown provider on a pre-first-chunk timeout: retry without attributing a route.
               streamRetryRequested = true;
               console.warn(
                 `${modelLogPrefix} RESPONSE timeout with unresolved provider; next attempt uses stream for attribution`
@@ -3686,7 +3486,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             console.warn(
               `${modelLogPrefix} TIMEOUT phase=${phase} persona=${persona.id} requested=${requestedModel}`
               + ` resolved=${routeLabel} elapsed_ms=${elapsedMs}`
-              + ` connect_budget_ms=${connectTimeoutMs} total_budget_ms=${timeoutMs}`
+              + ` ttft_budget_ms=${ttftMs} total_budget_ms=${timeoutMs}`
               + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`
               + ` status=${result.status || 'aborted'}`,
             );
@@ -4008,10 +3808,9 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
   if (plan.length === 0) return reviewWithModel(persona, diffFiles, prContext, sessionContext, options);
   // Hold one streaming slot for the whole persona turn, including failover. Releasing between
   // transports lets sibling personas start while this lane is still retrying, recreating the
-  // concurrent SSE reset that this gate is intended to prevent. No `transport.stream === true`
-  // condition: streaming is unconditional on every transport regardless of that per-transport
-  // config field (reviewWithModel always passes `preferStream: true`), so every transport plan
-  // contends for the gate whenever the caller supplies one.
+  // concurrent SSE reset that this gate is intended to prevent. Streaming is unconditional on
+  // every transport, so every transport plan contends for the gate whenever the caller supplies
+  // one.
   // Instrumentation (2026-08-19 lane-budget investigation): queue-wait for this shared slot was
   // previously invisible -- a lane queued behind a slow/stalled sibling burned lane_deadline_ms
   // budget with zero log evidence of why. queue_wait_ms plus the acquired/queued gate depth turns
@@ -4045,11 +3844,7 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       model: transport.model,
       openRouterPolicy: transport.openRouterPolicy,
       timeoutMs: transport.timeoutMs,
-      connectTimeoutMs: transport.connectTimeoutMs,
-      // No `transport.stream === true` conditional: streaming is unconditional on every
-      // transport (reviewWithModel always passes `preferStream: true` to callOpenRouterChat
-      // regardless of what this options object carries). A per-transport `stream` config field
-      // that could suppress it would be exactly the second, disagreeing flag this fix removes.
+      // Streaming is unconditional on every transport; transport configuration cannot suppress it.
       reasoningEffort: transport.reasoningEffort,
       perfMetricsInResponse: transport.perfMetricsInResponse,
       providerTimeoutQuarantine: transport.quarantineOnTimeout,
@@ -8417,7 +8212,6 @@ async function main(options = {}) {
   console.log(
     `[OpenRouterPolicy] policy model=${modelConfig.model}`
     + ` timeout_ms=${openRouterPolicy.timeoutMs}`
-    + ` connect_timeout_ms=${openRouterPolicy.connectTimeoutMs}`
     + ` stream=${openRouterPolicy.stream}`
     + ` ignore_providers=${JSON.stringify(openRouterPolicy.ignoredProviders || [])}`
     + ` fallback_models=${JSON.stringify(openRouterPolicy.fallbackModels || [])}`
@@ -9108,20 +8902,12 @@ async function main(options = {}) {
         }
       }
 
-      // Streaming is unconditional on the real review path (operator directive) -- there is no
-      // longer a policy flag to read here at all. `modelConfig.openRouterPolicy.stream` used to
-      // be echoed into this log line and into the streamGate-creation condition below, but that
-      // field is the LEGACY single-transport policy: once an explicit transport plan is active it
-      // is not what actually governs the request (each transport resolves, and
-      // reviewWithModel/callOpenRouterChat now always honor, its own unconditional stream). A
-      // production run logged `stream=disabled` from exactly that stale field while a different
-      // flag decided the real request -- the fix is not a smarter reconciliation, it is removing
-      // the second flag so there is nothing left to disagree with.
+      // Streaming is unconditional on the real review path. Emit the same explicit state in the
+      // lane progress receipt so operators can correlate queueing and provider failures.
       const laneProgress = createPersonaLaneProgressReporter({
         personaIds: enabledPersonas.map((persona) => persona.id),
         model: modelConfig.model,
         baseUrl: modelConfig.baseUrl,
-        stream: true,
         laneDeadlineMs,
       });
       // Serializing every lane behind ONE streaming slot (#115, same-day) was itself a fix for a
