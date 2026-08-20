@@ -23,6 +23,18 @@ describe('e2e review gate classification (API-2902)', () => {
     })).toEqual({ timeoutMs: 45_000, ttftMs: 45_000 });
   });
 
+  it('clamps gate budgets at their exact lower and upper boundaries', () => {
+    expect(resolveGateTransportBudget({
+      E2E_REVIEW_GATE_TIMEOUT_MS: '1',
+      E2E_REVIEW_GATE_TTFT_MS: '1',
+    })).toEqual({ timeoutMs: 500, ttftMs: 500 });
+
+    expect(resolveGateTransportBudget({
+      E2E_REVIEW_GATE_TIMEOUT_MS: '999999',
+      E2E_REVIEW_GATE_TTFT_MS: '999999',
+    })).toEqual({ timeoutMs: 600_000, ttftMs: 600_000 });
+  });
+
   it('uses defaults for empty or invalid optional environment values', () => {
     expect(resolveGateTransportBudget({
       E2E_REVIEW_GATE_TIMEOUT_MS: '  ',
