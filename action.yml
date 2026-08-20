@@ -351,6 +351,14 @@ inputs:
       github_action.transports (this input wins). Invalid plans fail the run closed.
     required: false
     default: ''
+  transport-plan-b64:
+    description: >-
+      Optional base64-encoded JSON transport plan. This is an output-safe equivalent of
+      `transports` for callers whose workflow output scanner rejects JSON containing credential
+      environment names. When present it takes precedence over `transports` and trusted YAML.
+      Each entry still requires `stream: true` on the real review path.
+    required: false
+    default: ''
   conditional-lanes:
     description: >-
       Optional JSON array of conditional advisory lanes, e.g.
@@ -766,6 +774,7 @@ runs:
         OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
         OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
         REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
+        REVIEW_YETI_TRANSPORT_PLAN_B64: ${{ inputs.transport-plan-b64 }}
         REVIEW_YETI_OVERVIEW_BRIEF: ${{ inputs.overview-brief }}
         REVIEW_YETI_CONDITIONAL_LANES: ${{ inputs.conditional-lanes }}
         OPENROUTER_STRUCTURED_OUTPUT: ${{ inputs.openrouter-structured-output }}
