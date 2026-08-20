@@ -108,6 +108,152 @@ function completedStreamWhoseSocketAbortsAfterDone() {
   };
 }
 
+// Reasoning models (deepseek-v4-flash-0731 at reasoning_effort:max/high) stream reasoning tokens
+// in a delta field SEPARATE from `delta.content` -- verified empirically against live Fireworks
+// (`delta.reasoning_content`) and OpenRouter (`delta.reasoning`) endpoints during the 2026-08-19
+// reasoning-stall investigation (see review-pipeline.js's reasoningDeltaField doc comment). This
+// fixture simulates a reasoning-heavy lane: several reasoning-only chunks (no delta.content at
+// all) spaced out so their CUMULATIVE duration exceeds a deliberately tight ttftMs, followed by
+// the real JSON content and [DONE]. If firstChunk detection were gated on `delta.content`
+// specifically (the literal shape of the hypothesis under test), this stream would spuriously
+// ttft_timeout even though the provider was demonstrably alive and generating the whole time.
+function reasoningThenContentStreamResponse(reasoningField: string, reasoningChunkDelayMs: number, reasoningChunkCount: number) {
+  let reasoningSent = 0;
+  let contentSent = false;
+  let doneSent = false;
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (reasoningSent < reasoningChunkCount) {
+            reasoningSent += 1;
+            if (reasoningSent > 1) await new Promise((resolve) => setTimeout(resolve, reasoningChunkDelayMs));
+            return {
+              done: false,
+              value: Buffer.from(`data: ${JSON.stringify({
+                id: 'gen-reasoning',
+                model: 'test/model',
+                provider: 'ReasoningCloud',
+                choices: [{ delta: { [reasoningField]: `token${reasoningSent} ` } }],
+              })}\n\n`),
+            };
+          }
+          if (!contentSent) {
+            contentSent = true;
+            return {
+              done: false,
+              value: Buffer.from(`data: ${JSON.stringify({
+                id: 'gen-reasoning',
+                model: 'test/model',
+                provider: 'ReasoningCloud',
+                choices: [{ delta: { content: '{"findings":[]}' } }],
+              })}\n\n`),
+            };
+          }
+          if (!doneSent) {
+            doneSent = true;
+            return { done: false, value: Buffer.from('data: [DONE]\n\n') };
+          }
+          return { done: true, value: undefined };
+        },
+        cancel: async () => {},
+      }),
+    },
+  };
+}
+
+describe('reasoning-stall investigation: reasoning-only SSE deltas count as TTFT/liveness evidence', () => {
+  it.each([
+    ['reasoning_content', 'Fireworks/DeepSeek-native field'],
+    ['reasoning', 'OpenRouter field'],
+    ['thinking', 'Ollama-style field'],
+  ])('a %s-only chunk train (%s) clears TTFT and never ttft_timeouts, even though its cumulative duration exceeds ttftMs', async (reasoningField) => {
+    const progressEvents: any[] = [];
+    const result = await callOpenRouterChat(async () => reasoningThenContentStreamResponse(reasoningField, 12, 4), {
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      headers: { Authorization: 'Bearer test' },
+      body: { model: 'test/model', messages: [] },
+      timeoutMs: 5_000,
+      // The FIRST reasoning chunk arrives immediately (well under 8ms); three more follow at 12ms
+      // apiece (36ms total reasoning phase) before real content ever appears. If liveness were
+      // gated on delta.content, this would spuriously ttft_timeout at the 8ms mark despite the
+      // provider demonstrably talking to us the entire time.
+      ttftMs: 8,
+      preferStream: true,
+      onStreamProgress: (event: any) => progressEvents.push(event),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.timeoutPhase).toBeUndefined();
+    expect(result.failureClass).not.toBe('ttft_timeout');
+    // The reasoning tokens are liveness evidence only -- they must never leak into the
+    // accumulated response body that the JSON parser downstream will consume.
+    expect(result.content).toBe('{"findings":[]}');
+    expect(result.content).not.toContain('token');
+    // onStreamProgress fires exactly once, on the first (reasoning) chunk, and reports it as such.
+    expect(progressEvents).toHaveLength(1);
+    expect(progressEvents[0].firstChunkKind).toBe('reasoning');
+  });
+
+  it('a chunk carrying both role and reasoning (no content) still counts as the first-chunk liveness signal', async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => {
+          let step = 0;
+          return {
+            read: async () => {
+              step += 1;
+              if (step === 1) {
+                return {
+                  done: false,
+                  value: Buffer.from(`data: ${JSON.stringify({
+                    id: 'gen-role-only',
+                    model: 'test/model',
+                    provider: 'ReasoningCloud',
+                    choices: [{ delta: { role: 'assistant' } }],
+                  })}\n\n`),
+                };
+              }
+              if (step === 2) {
+                return {
+                  done: false,
+                  value: Buffer.from(`data: ${JSON.stringify({
+                    id: 'gen-role-only',
+                    model: 'test/model',
+                    provider: 'ReasoningCloud',
+                    choices: [{ delta: { content: '{"findings":[]}' } }],
+                  })}\n\ndata: [DONE]\n\n`),
+                };
+              }
+              return { done: true, value: undefined };
+            },
+            cancel: async () => {},
+          };
+        },
+      },
+    });
+
+    const progressEvents: any[] = [];
+    const result = await callOpenRouterChat(fetchImpl, {
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      headers: { Authorization: 'Bearer test' },
+      body: { model: 'test/model', messages: [] },
+      timeoutMs: 5_000,
+      ttftMs: 15,
+      preferStream: true,
+      onStreamProgress: (event: any) => progressEvents.push(event),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(progressEvents).toHaveLength(1);
+    expect(progressEvents[0].firstChunkKind).toBe('other');
+  });
+});
+
 describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
   it('D1: fires on a never-chunking stream, aborting with failure class ttft_timeout well before the total budget', async () => {
     const startedAt = Date.now();
