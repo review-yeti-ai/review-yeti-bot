@@ -6,15 +6,28 @@ set -euo pipefail
 : "${REVIEW_PR_NUMBER:?REVIEW_PR_NUMBER is required}"
 : "${EXPECTED_BASE_SHA:?EXPECTED_BASE_SHA is required}"
 : "${EXPECTED_HEAD_SHA:?EXPECTED_HEAD_SHA is required}"
+# REVIEW_STATUS/GATE_DECISION/MERGE_ELIGIBLE/FILES_OMITTED default to empty
+# (rather than `:?`-crashing) so a failure in an earlier workflow step -- which
+# leaves every review-action output empty -- is reported as the clean
+# "did not produce a verdict" error below instead of a raw parameter-expansion
+# crash that obscures the actual failed setup step.
 : "${REVIEW_STATUS:=}"
 : "${GATE_DECISION:=}"
 : "${MERGE_ELIGIBLE:=}"
 : "${FILES_OMITTED:=}"
+# DISPATCH_REFLECTION_STATUS and PROVIDER_RECEIPT_DIGEST are legitimately empty
+# on a verdict where zero review lanes ran -- either a non-SHIP verdict (e.g.
+# INCOMPLETE_REVIEW/BLOCKED) or the "no reviewable files remained after policy
+# exclusion(s)" trivial SHIP (example-api #4386: a PR touching only an excluded
+# generated file). The upstream review-yeti-bot action never emits these two
+# outputs for a zero-lane run, so a bare `:?` here crashes AFTER a verdict was
+# already published, turning a legitimate SHIP into a red gate.
+#
+# Do not `:?`-crash the whole script on either one. Once the run report is
+# parsed below, the lane-count-gated checks decide whether their absence is
+# expected (lane_count == 0) or a fail-closed BLOCK (lane_count > 0, i.e. a
+# real review ran and MUST have produced both).
 : "${DISPATCH_REFLECTION_STATUS:=}"
-# PROVIDER_RECEIPT_DIGEST is legitimately empty on a non-SHIP verdict (e.g.
-# INCOMPLETE_REVIEW/BLOCKED) -- do not `:?`-crash the whole script on it.
-# The regex check below already fails closed with a clean ::error:: BLOCK
-# message for a missing or invalid digest.
 : "${PROVIDER_RECEIPT_DIGEST:=}"
 
 metadata="$(gh api "repos/${REVIEW_REPOSITORY}/pulls/${REVIEW_PR_NUMBER}")"
@@ -43,8 +56,6 @@ fi
 [[ "$GATE_DECISION" == PASS ]] || { echo "::error::Review Yeti gate decision is ${GATE_DECISION}, not PASS"; exit 1; }
 [[ "$MERGE_ELIGIBLE" == true ]] || { echo "::error::Review Yeti did not declare this exact-head review merge eligible"; exit 1; }
 [[ "$FILES_OMITTED" == 0 ]] || { echo "::error::Review Yeti omitted ${FILES_OMITTED} changed files"; exit 1; }
-[[ "$DISPATCH_REFLECTION_STATUS" == complete ]] || { echo "::error::Review Yeti dispatch reflection is ${DISPATCH_REFLECTION_STATUS}, not complete"; exit 1; }
-[[ "$PROVIDER_RECEIPT_DIGEST" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "::error::Review Yeti provider receipt digest is missing or invalid"; exit 1; }
 [[ -n "${RUN_REPORT_PATH:-}" ]] || { echo "::error::Review Yeti run report path is missing"; exit 1; }
 
 [[ -f "$RUN_REPORT_PATH" ]] || { echo "::error::Review Yeti run report is missing: ${RUN_REPORT_PATH}"; exit 1; }
@@ -88,7 +99,7 @@ report_summary="$({
         error("run-report base/head does not match the exact reviewed head")
       elif .verdict != $expected_status then
         error("run-report verdict does not match the action output")
-      elif (.lanes | type) != "array" or (.lanes | length) == 0 then
+      elif (.lanes | type) != "array" then
         error("run-report lanes are missing")
       elif any(.lanes[]; valid_lane | not) then
         error("run-report contains an invalid lane")
@@ -100,7 +111,7 @@ report_summary="$({
         | if $finding_p2 != $summary_p2 then
             error("run-report P2 count is inconsistent")
           else
-            { p2_count: $finding_p2 }
+            { p2_count: $finding_p2, lane_count: (.lanes | length) }
           end
       end
     ' \
@@ -115,5 +126,37 @@ p2_count="$(jq -er '.p2_count' <<<"$report_summary")"
   echo "::error::Review Yeti found ${p2_count} unresolved P2 advisory finding(s); SHIP/PASS is blocked";
   exit 1;
 }
+
+lane_count="$(jq -er '.lane_count' <<<"$report_summary")"
+if [[ "$lane_count" -eq 0 ]]; then
+  # Zero review lanes ran (e.g. "no reviewable files remained after policy
+  # exclusion(s)"). The upstream action never emits dispatch-reflection-status
+  # or a provider-receipt-digest for a run that dispatched no lanes, so their
+  # absence here is the *expected* shape, not a defect. But if either field IS
+  # present, it must be internally consistent -- a zero-lane run claiming a
+  # non-"complete" reflection status, or a receipt digest for a review that
+  # never called a model, is a contradiction and fails closed rather than
+  # being silently accepted.
+  [[ -z "$DISPATCH_REFLECTION_STATUS" || "$DISPATCH_REFLECTION_STATUS" == complete ]] || {
+    echo "::error::Review Yeti dispatch reflection is ${DISPATCH_REFLECTION_STATUS} on a zero-lane run, which is inconsistent";
+    exit 1;
+  }
+  [[ -z "$PROVIDER_RECEIPT_DIGEST" || "$PROVIDER_RECEIPT_DIGEST" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    echo "::error::Review Yeti provider receipt digest is invalid";
+    exit 1;
+  }
+else
+  # A real review ran at least one lane: both fields are mandatory and must
+  # hold their normal, strict values. This branch is unchanged from before --
+  # nothing about the zero-lane accommodation above loosens this gate.
+  [[ "$DISPATCH_REFLECTION_STATUS" == complete ]] || {
+    echo "::error::Review Yeti dispatch reflection is ${DISPATCH_REFLECTION_STATUS}, not complete";
+    exit 1;
+  }
+  [[ "$PROVIDER_RECEIPT_DIGEST" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    echo "::error::Review Yeti provider receipt digest is missing or invalid";
+    exit 1;
+  }
+fi
 
 echo "Review Yeti SHIP/PASS accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."

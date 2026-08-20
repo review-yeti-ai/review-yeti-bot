@@ -103,6 +103,21 @@ EOF
 
 jq '.lanes[0].severity.P2 = 0' "$nonzero_p2_report" >"$inconsistent_p2_report"
 
+# example-api #4386 shape: "no reviewable files remained after 1 expected policy
+# exclusion(s)" -- SHIP verdict, zero lanes, no digest, no reflection status.
+zero_lane_report="$tmp_dir/zero-lane.json"
+cat >"$zero_lane_report" <<EOF
+{
+  "schemaVersion": "review-run-report-v1",
+  "repository": "exampleorg/example",
+  "prNumber": 7,
+  "baseSha": "$base_sha",
+  "headSha": "$head_sha",
+  "verdict": "SHIP",
+  "lanes": []
+}
+EOF
+
 pr_json() {
   printf '{"base":{"sha":"%s"},"head":{"sha":"%s"}}' "$1" "$2"
 }
@@ -117,7 +132,7 @@ run_script() {
     [GATE_DECISION]="${GATE_DECISION:-PASS}"
     [MERGE_ELIGIBLE]="${MERGE_ELIGIBLE:-true}"
     [FILES_OMITTED]="${FILES_OMITTED:-0}"
-    [DISPATCH_REFLECTION_STATUS]="${DISPATCH_REFLECTION_STATUS:-complete}"
+    [DISPATCH_REFLECTION_STATUS]="${DISPATCH_REFLECTION_STATUS-complete}"
     [PROVIDER_RECEIPT_DIGEST]="${PROVIDER_RECEIPT_DIGEST-$digest}"
   )
   local call_log
@@ -252,6 +267,66 @@ grep -Fq "::error::Review Yeti provider receipt digest is missing or invalid" <<
   exit 1
 }
 echo "[empty-digest] passed (clean BLOCK, no crash)"
+
+# 3c. example-api #4386 reproduction: a legitimate zero-lane SHIP verdict ("no
+#     reviewable files remained after policy exclusion(s)") where upstream
+#     never emitted DISPATCH_REFLECTION_STATUS or PROVIDER_RECEIPT_DIGEST.
+#     Before the fix this crashed on the `:?`-guarded DISPATCH_REFLECTION_STATUS
+#     with a raw bash parameter-expansion error, AFTER the verdict was already
+#     published -- turning a passing SHIP into a red required check. The fix
+#     must honor the published SHIP, not crash and not fail closed.
+DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[zero-lane-ship] expected the published SHIP to be honored with exit 0, got $rc" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if grep -Fq "DISPATCH_REFLECTION_STATUS is required" <<<"$output"; then
+  echo "[zero-lane-ship] expected no raw :?-crash on DISPATCH_REFLECTION_STATUS" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "accepted" <<<"$output" || { echo "[zero-lane-ship] expected the acceptance message" >&2; echo "$output" >&2; exit 1; }
+echo "[zero-lane-ship] passed (published SHIP honored, no crash)"
+
+# 3d. A zero-lane run is not a blanket amnesty: if DISPATCH_REFLECTION_STATUS
+#     is present but contradicts the zero-lane shape (anything other than
+#     empty or "complete"), that is an inconsistent report and must still
+#     block -- a missing verdict, or a self-contradictory one, is never
+#     silently accepted as SHIP.
+DISPATCH_REFLECTION_STATUS="pending" PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[zero-lane-inconsistent] expected a contradictory zero-lane reflection status to block" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "inconsistent" <<<"$output" || {
+  echo "[zero-lane-inconsistent] expected the inconsistency failure message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[zero-lane-inconsistent] passed (contradictory zero-lane state blocked)"
+
+# 3e. A genuinely missing/unparseable verdict (malformed run report) must
+#     still fail closed as BLOCKED -- the fix must not turn a crash into a
+#     fail-open for reports the checker cannot actually understand.
+malformed_report="$tmp_dir/malformed.json"
+printf 'not json' >"$malformed_report"
+DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")" '' "$malformed_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[malformed-report] expected an unparseable run report to fail closed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "::error::Review Yeti run report failed closed" <<<"$output" || {
+  echo "[malformed-report] expected the fail-closed run-report error message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[malformed-report] passed (unparseable report blocked, not fail-open)"
 
 # 4. Everything matches and verdict is a clean SHIP/PASS: unaffected, exits 0.
 run_script "$(pr_json "$base_sha" "$head_sha")"
