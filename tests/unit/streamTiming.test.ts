@@ -89,6 +89,38 @@ describe('withStreamTiming', () => {
     expect(firstContent!.elapsedMs).toBeGreaterThan(firstChunk!.elapsedMs);
   });
 
+  it('accumulates reasoningChars/reasoningChunks over every reasoning delta seen before first content', async () => {
+    const events: Array<{ type: string; elapsedMs: number; reasoningChars?: number; reasoningChunks?: number }> = [];
+    const fetchImpl = withStreamTiming(
+      fakeStreamingFetch([
+        { text: sseChunk({ reasoning: 'abcde' }), delayMs: 0 }, // 5 chars
+        { text: sseChunk({ reasoning: 'ab' }), delayMs: 0 }, // 2 chars
+        { text: sseChunk({ content: 'the answer' }), delayMs: 0 },
+      ]),
+      { onTiming: (event: any) => events.push(event) },
+    );
+    const response = await fetchImpl('https://openrouter.test/v1/chat/completions', {});
+    await drain(response);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const firstContent = events.find((event) => event.type === 'firstContent');
+    expect(firstContent).toMatchObject({ reasoningChars: 7, reasoningChunks: 2 });
+  });
+
+  it('reports reasoningChars/reasoningChunks as 0 when content arrives with no preceding reasoning delta', async () => {
+    const events: Array<{ type: string; reasoningChars?: number; reasoningChunks?: number }> = [];
+    const fetchImpl = withStreamTiming(
+      fakeStreamingFetch([{ text: sseChunk({ content: 'hi' }), delayMs: 0 }]),
+      { onTiming: (event: any) => events.push(event) },
+    );
+    const response = await fetchImpl('https://openrouter.test/v1/chat/completions', {});
+    await drain(response);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const firstContent = events.find((event) => event.type === 'firstContent');
+    expect(firstContent).toMatchObject({ reasoningChars: 0, reasoningChunks: 0 });
+  });
+
   it('never alters what the caller receives -- same bytes, same status, tap is read-only', async () => {
     const events: unknown[] = [];
     const parts = [
