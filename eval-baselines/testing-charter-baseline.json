@@ -1,0 +1,4050 @@
+{
+  "schemaVersion": "testing-charter-eval-report-v1",
+  "fixture": "tests/fixtures/testing-charter/evaluation-matrix.json",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "path": "bounded",
+  "maxTokens": null,
+  "repetitions": 8,
+  "arms": [
+    {
+      "arm": "baseline",
+      "runs": 72,
+      "erroredRuns": 6,
+      "failureClasses": {
+        "provider_failure": 6
+      },
+      "defectRuns": 40,
+      "detected": 21,
+      "detectionRate": 0.525,
+      "detectionRate95": [
+        0.375,
+        0.6706
+      ],
+      "anchoredRate": 0.6,
+      "cleanRuns": 32,
+      "falsePositives": 1,
+      "falsePositiveRate": 0.0313,
+      "findingsPerRun": 0.528,
+      "outputContractBreaches": 0,
+      "hits": 21,
+      "validSuggestions": 10,
+      "noise": 7,
+      "precision": 0.75,
+      "snr": 4.429,
+      "snrUnbounded": false,
+      "promptTokens": 94913,
+      "completionTokens": 50421,
+      "costUSD": 0.024073,
+      "latencyMsMedian": 27062,
+      "latencyMsP95": 180254,
+      "firstChunkMsMedian": 1106,
+      "firstChunkMsP95": 4154,
+      "firstContentMsMedian": 14418,
+      "firstContentMsP95": 79659,
+      "firstChunkMeasured": 72,
+      "firstContentMeasured": 70,
+      "firstChunkKindCounts": {
+        "reasoning": 62,
+        "content": 10,
+        "other": 0
+      }
+    },
+    {
+      "arm": "candidate",
+      "runs": 72,
+      "erroredRuns": 16,
+      "failureClasses": {
+        "provider_failure": 11,
+        "malformed_response": 5
+      },
+      "defectRuns": 40,
+      "detected": 24,
+      "detectionRate": 0.6,
+      "detectionRate95": [
+        0.446,
+        0.7365
+      ],
+      "anchoredRate": 0.675,
+      "cleanRuns": 32,
+      "falsePositives": 9,
+      "falsePositiveRate": 0.2813,
+      "findingsPerRun": 0.597,
+      "outputContractBreaches": 0,
+      "hits": 24,
+      "validSuggestions": 8,
+      "noise": 11,
+      "precision": 0.6857,
+      "snr": 2.909,
+      "snrUnbounded": false,
+      "promptTokens": 115347,
+      "completionTokens": 70029,
+      "costUSD": 0.028894,
+      "latencyMsMedian": 53143,
+      "latencyMsP95": 180255,
+      "firstChunkMsMedian": 1561,
+      "firstChunkMsP95": 6642,
+      "firstContentMsMedian": 17789,
+      "firstContentMsP95": 82054,
+      "firstChunkMeasured": 72,
+      "firstContentMeasured": 63,
+      "firstChunkKindCounts": {
+        "reasoning": 59,
+        "content": 13,
+        "other": 0
+      }
+    }
+  ],
+  "perFixture": [
+    {
+      "id": "vacuous-default-value-test",
+      "category": "defect",
+      "baseline": {
+        "hits": 1,
+        "runs": 8,
+        "rate": 0.125,
+        "interval": [
+          0.0224,
+          0.4709
+        ]
+      },
+      "candidate": {
+        "hits": 2,
+        "runs": 8,
+        "rate": 0.25,
+        "interval": [
+          0.0715,
+          0.5907
+        ]
+      }
+    },
+    {
+      "id": "format-evadable-absence-guard",
+      "category": "defect",
+      "baseline": {
+        "hits": 1,
+        "runs": 8,
+        "rate": 0.125,
+        "interval": [
+          0.0224,
+          0.4709
+        ]
+      },
+      "candidate": {
+        "hits": 2,
+        "runs": 8,
+        "rate": 0.25,
+        "interval": [
+          0.0715,
+          0.5907
+        ]
+      }
+    },
+    {
+      "id": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "baseline": {
+        "hits": 4,
+        "runs": 8,
+        "rate": 0.5,
+        "interval": [
+          0.2152,
+          0.7848
+        ]
+      },
+      "candidate": {
+        "hits": 7,
+        "runs": 8,
+        "rate": 0.875,
+        "interval": [
+          0.5291,
+          0.9776
+        ]
+      }
+    },
+    {
+      "id": "clean-behavioural-guard",
+      "category": "clean",
+      "baseline": {
+        "hits": 0,
+        "runs": 8,
+        "rate": 0,
+        "interval": [
+          0,
+          0.3244
+        ]
+      },
+      "candidate": {
+        "hits": 4,
+        "runs": 8,
+        "rate": 0.5,
+        "interval": [
+          0.2152,
+          0.7848
+        ]
+      }
+    },
+    {
+      "id": "clean-rename-only",
+      "category": "clean",
+      "baseline": {
+        "hits": 0,
+        "runs": 8,
+        "rate": 0,
+        "interval": [
+          0,
+          0.3244
+        ]
+      },
+      "candidate": {
+        "hits": 0,
+        "runs": 8,
+        "rate": 0,
+        "interval": [
+          0,
+          0.3244
+        ]
+      }
+    },
+    {
+      "id": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "baseline": {
+        "hits": 7,
+        "runs": 8,
+        "rate": 0.875,
+        "interval": [
+          0.5291,
+          0.9776
+        ]
+      },
+      "candidate": {
+        "hits": 8,
+        "runs": 8,
+        "rate": 1,
+        "interval": [
+          0.6756,
+          1
+        ]
+      }
+    },
+    {
+      "id": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "baseline": {
+        "hits": 8,
+        "runs": 8,
+        "rate": 1,
+        "interval": [
+          0.6756,
+          1
+        ]
+      },
+      "candidate": {
+        "hits": 5,
+        "runs": 8,
+        "rate": 0.625,
+        "interval": [
+          0.3057,
+          0.8632
+        ]
+      }
+    },
+    {
+      "id": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "baseline": {
+        "hits": 0,
+        "runs": 8,
+        "rate": 0,
+        "interval": [
+          0,
+          0.3244
+        ]
+      },
+      "candidate": {
+        "hits": 0,
+        "runs": 8,
+        "rate": 0,
+        "interval": [
+          0,
+          0.3244
+        ]
+      }
+    },
+    {
+      "id": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "baseline": {
+        "hits": 1,
+        "runs": 8,
+        "rate": 0.125,
+        "interval": [
+          0.0224,
+          0.4709
+        ]
+      },
+      "candidate": {
+        "hits": 5,
+        "runs": 8,
+        "rate": 0.625,
+        "interval": [
+          0.3057,
+          0.8632
+        ]
+      }
+    }
+  ],
+  "rows": [
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 91303,
+      "firstChunkMs": 2775,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 79840,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 15344,
+      "firstChunkMs": 1631,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 9886,
+      "usage": {
+        "promptTokens": 1697,
+        "completionTokens": 805,
+        "totalTokens": 2502,
+        "costUSD": 0.00046298
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": true,
+      "findings": 2,
+      "hits": 0,
+      "validSuggestions": 1,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:8 login_is_recognized has no test",
+        "tests/test_marker_policy.py:8 Retired marker rejection path untested"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 149645,
+      "firstChunkMs": 919,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 41225,
+      "usage": {
+        "promptTokens": 4086,
+        "completionTokens": 2910,
+        "totalTokens": 6996,
+        "costUSD": 0.000947961448
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:6 No test for new login validation logic",
+        "tests/test_marker_policy.py:8 New marker test is redundant with default test"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 26055,
+      "firstChunkMs": 744,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 24503,
+      "usage": {
+        "promptTokens": 1777,
+        "completionTokens": 3456,
+        "totalTokens": 5233,
+        "costUSD": 0.001520575
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:8 login_is_recognized has no test coverage"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 6111,
+      "firstChunkMs": 1628,
+      "firstChunkKind": "content",
+      "firstContentMs": 1628,
+      "usage": {
+        "promptTokens": 1719,
+        "completionTokens": 213,
+        "totalTokens": 1932,
+        "costUSD": 0.000298155
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:6 login_is_recognized has no test"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 19217,
+      "firstChunkMs": 1094,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 16835,
+      "usage": {
+        "promptTokens": 1797,
+        "completionTokens": 2100,
+        "totalTokens": 3897,
+        "costUSD": 0.001049475
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:6 login_is_recognized has no test coverage"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 75766,
+      "firstChunkMs": 3595,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 33047,
+      "usage": {
+        "promptTokens": 1697,
+        "completionTokens": 916,
+        "totalTokens": 2613,
+        "costUSD": 0.000238545
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:8 Untested new function login_is_recognized"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 9264,
+      "firstChunkMs": 3047,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 6815,
+      "usage": {
+        "promptTokens": 1697,
+        "completionTokens": 80,
+        "totalTokens": 1777,
+        "costUSD": 0.000121505
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 111698,
+      "firstChunkMs": 914,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 17641,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 980,
+        "totalTokens": 2394,
+        "costUSD": 0.00031876
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/test_workflow_guard.py:18 Guard test is brittle to YAML reformatting"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 92035,
+      "firstChunkMs": 2626,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 87509,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 40,
+        "totalTokens": 1454,
+        "costUSD": 0.0001324
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 110135,
+      "firstChunkMs": 2627,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 17162,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 204,
+        "totalTokens": 1618,
+        "costUSD": 0.000094383464
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 91513,
+      "firstChunkMs": 753,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 446,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 40,
+        "totalTokens": 1454,
+        "costUSD": 0.00023224
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 91827,
+      "firstChunkMs": 5483,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 718,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 40,
+        "totalTokens": 1454,
+        "costUSD": 0.0001324
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 91356,
+      "firstChunkMs": 824,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 79659,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 40,
+        "totalTokens": 1454,
+        "costUSD": 0.0001324
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 6150,
+      "firstChunkMs": 898,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 5812,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 374,
+        "totalTokens": 1788,
+        "costUSD": 0.00024124
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 32103,
+      "firstChunkMs": 524,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 30051,
+      "usage": {
+        "promptTokens": 1414,
+        "completionTokens": 487,
+        "totalTokens": 1901,
+        "costUSD": 0.000235838344
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 25379,
+      "firstChunkMs": 2211,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 19107,
+      "usage": {
+        "promptTokens": 1460,
+        "completionTokens": 1632,
+        "totalTokens": 3092,
+        "costUSD": 0.00066136
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:13 Non-matching marker branch untested"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 24401,
+      "firstChunkMs": 554,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 23283,
+      "usage": {
+        "promptTokens": 1540,
+        "completionTokens": 4137,
+        "totalTokens": 5677,
+        "costUSD": 0.00171745
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:12 Non-matching marker branch has no test"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 171641,
+      "firstChunkMs": 2819,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 57911,
+      "usage": {
+        "promptTokens": 1460,
+        "completionTokens": 1331,
+        "totalTokens": 2791,
+        "costUSD": 0.00038206728
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:9 Untested non-matching-body branch throws misleading error"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 180254,
+      "firstChunkMs": 547,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 62455,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 5664,
+      "firstChunkMs": 763,
+      "firstChunkKind": "content",
+      "firstContentMs": 763,
+      "usage": {
+        "promptTokens": 1460,
+        "completionTokens": 284,
+        "totalTokens": 1744,
+        "costUSD": 0.0004056
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": true,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:13 Non-matching body throws misleading 'empty body' error"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 24431,
+      "firstChunkMs": 3611,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 21951,
+      "usage": {
+        "promptTokens": 1460,
+        "completionTokens": 265,
+        "totalTokens": 1725,
+        "costUSD": 0.000132
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 125938,
+      "firstChunkMs": 933,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 31535,
+      "usage": {
+        "promptTokens": 1560,
+        "completionTokens": 4301,
+        "totalTokens": 5861,
+        "costUSD": 0.00177835
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:13 Malformed non-empty body branch is untested and misreports as empty",
+        "src/resolve_marker.js:5 Retired marker rejection is documented but untested"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 180255,
+      "firstChunkMs": 2318,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 1124,
+      "firstChunkMs": 1106,
+      "firstChunkKind": "content",
+      "firstContentMs": 1106,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 1202,
+      "firstChunkMs": 446,
+      "firstChunkKind": "content",
+      "firstContentMs": 446,
+      "usage": {
+        "promptTokens": 1329,
+        "completionTokens": 40,
+        "totalTokens": 1369,
+        "costUSD": 0.00021524
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 20592,
+      "firstChunkMs": 7107,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 20361,
+      "usage": {
+        "promptTokens": 1329,
+        "completionTokens": 1007,
+        "totalTokens": 2336,
+        "costUSD": 0.000585025
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 10723,
+      "firstChunkMs": 686,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 10382,
+      "usage": {
+        "promptTokens": 1329,
+        "completionTokens": 785,
+        "totalTokens": 2114,
+        "costUSD": 0.00034442
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 16492,
+      "firstChunkMs": 607,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 15967,
+      "usage": {
+        "promptTokens": 1329,
+        "completionTokens": 1168,
+        "totalTokens": 2497,
+        "costUSD": 0.0003595
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 150178,
+      "firstChunkMs": 2507,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 57936,
+      "usage": {
+        "promptTokens": 1329,
+        "completionTokens": 1028,
+        "totalTokens": 2357,
+        "costUSD": 0.000295231804
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 180253,
+      "firstChunkMs": 682,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 17569,
+      "firstChunkMs": 2877,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 15081,
+      "usage": {
+        "promptTokens": 1329,
+        "completionTokens": 185,
+        "totalTokens": 1514,
+        "costUSD": 0.000112285
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 4744,
+      "firstChunkMs": 907,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 2761,
+      "usage": {
+        "promptTokens": 2725,
+        "completionTokens": 248,
+        "totalTokens": 2973,
+        "costUSD": 0.000420315
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 55702,
+      "firstChunkMs": 2162,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 49637,
+      "usage": {
+        "promptTokens": 1330,
+        "completionTokens": 630,
+        "totalTokens": 1960,
+        "costUSD": 0.00017465
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 17666,
+      "firstChunkMs": 2472,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 14418,
+      "usage": {
+        "promptTokens": 1330,
+        "completionTokens": 183,
+        "totalTokens": 1513,
+        "costUSD": 0.00011207
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 27062,
+      "firstChunkMs": 3490,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 23906,
+      "usage": {
+        "promptTokens": 1330,
+        "completionTokens": 289,
+        "totalTokens": 1619,
+        "costUSD": 0.00012691
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 2452,
+      "firstChunkMs": 778,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 1914,
+      "usage": {
+        "promptTokens": 1330,
+        "completionTokens": 94,
+        "totalTokens": 1424,
+        "costUSD": 0.00021252
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 1895,
+      "firstChunkMs": 776,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 1430,
+      "usage": {
+        "promptTokens": 1330,
+        "completionTokens": 90,
+        "totalTokens": 1420,
+        "costUSD": 0.00014996
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 13456,
+      "firstChunkMs": 717,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 11248,
+      "usage": {
+        "promptTokens": 1330,
+        "completionTokens": 181,
+        "totalTokens": 1511,
+        "costUSD": 0.000123951128
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 2409,
+      "firstChunkMs": 531,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 2020,
+      "usage": {
+        "promptTokens": 1330,
+        "completionTokens": 128,
+        "totalTokens": 1458,
+        "costUSD": 0.0001606
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 54214,
+      "firstChunkMs": 4154,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 10508,
+      "usage": {
+        "promptTokens": 1209,
+        "completionTokens": 641,
+        "totalTokens": 1850,
+        "costUSD": 0.000168325
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": true,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Test suite disabled by `it.only`"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 181924,
+      "firstChunkMs": 3841,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 54425,
+      "usage": {
+        "promptTokens": 2863,
+        "completionTokens": 1378,
+        "totalTokens": 4241,
+        "costUSD": 0.000568245
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:12 Exclusive test marker left active"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 55551,
+      "firstChunkMs": 776,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 42783,
+      "usage": {
+        "promptTokens": 1209,
+        "completionTokens": 900,
+        "totalTokens": 2109,
+        "costUSD": 0.000295459612
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Active 'it.only' silently disables rest of suite"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 49619,
+      "firstChunkMs": 3334,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 6215,
+      "usage": {
+        "promptTokens": 1209,
+        "completionTokens": 571,
+        "totalTokens": 1780,
+        "costUSD": 0.000158525
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:11 it.only disables other tests in the suite"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 9747,
+      "firstChunkMs": 464,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 7552,
+      "usage": {
+        "promptTokens": 1209,
+        "completionTokens": 586,
+        "totalTokens": 1795,
+        "costUSD": 0.0002719
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Active it.only silently disables the rest of the suite"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 52616,
+      "firstChunkMs": 490,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 32971,
+      "usage": {
+        "promptTokens": 1209,
+        "completionTokens": 925,
+        "totalTokens": 2134,
+        "costUSD": 0.00027370406
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Active it.only silently disables the other marker-routing tests"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 94408,
+      "firstChunkMs": 3948,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 431,
+      "usage": {
+        "promptTokens": 1209,
+        "completionTokens": 224,
+        "totalTokens": 1433,
+        "costUSD": 0.00026484
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:12 Active exclusive marker disables rest of suite"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 6124,
+      "firstChunkMs": 1052,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 4435,
+      "usage": {
+        "promptTokens": 1309,
+        "completionTokens": 660,
+        "totalTokens": 1969,
+        "costUSD": 0.000460075
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Active it.only silently disables the rest of the suite"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 96123,
+      "firstChunkMs": 3163,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 994,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 256,
+        "totalTokens": 1481,
+        "costUSD": 0.00021428
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:1 Tests share mutable state and depend on execution order"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 116314,
+      "firstChunkMs": 457,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 14545,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 1379,
+        "totalTokens": 2604,
+        "costUSD": 0.00049618
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:3 Tests share mutable state and depend on execution order",
+        "tests/unit/rateLimiter.test.ts:18 Assertion on incidental detail (events array)"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 8063,
+      "firstChunkMs": 600,
+      "firstChunkKind": "content",
+      "firstContentMs": 600,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 445,
+        "totalTokens": 1670,
+        "costUSD": 0.00035644
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:1 Tests share mutable state and depend on execution order",
+        "tests/unit/rateLimiter.test.ts:19 No test for rate limiter reset or window expiry"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 100796,
+      "firstChunkMs": 9247,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 432,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 458,
+        "totalTokens": 1683,
+        "costUSD": 0.00029508
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:1 Tests share mutable state and depend on execution order",
+        "tests/unit/rateLimiter.test.ts:19 No test for rate limiter reset or different keys"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 96293,
+      "firstChunkMs": 3509,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 77012,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 265,
+        "totalTokens": 1490,
+        "costUSD": 0.00021788
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:1 Tests share mutable state and depend on execution order"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 81115,
+      "firstChunkMs": 482,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 50543,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 1333,
+        "totalTokens": 2558,
+        "costUSD": 0.000377799996
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:3 Shared mutable state makes tests order-dependent",
+        "tests/unit/rateLimiter.test.ts:17 Assertion on incidental scaffolding"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 112618,
+      "firstChunkMs": 2841,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 13583,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 1458,
+        "totalTokens": 2683,
+        "costUSD": 0.00045686
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:3 Tests share mutable state and depend on execution order",
+        "tests/unit/rateLimiter.test.ts:17 Assertion on incidental bookkeeping"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 17007,
+      "firstChunkMs": 587,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 10278,
+      "usage": {
+        "promptTokens": 1225,
+        "completionTokens": 1305,
+        "totalTokens": 2530,
+        "costUSD": 0.00047546
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:1 Tests share module-level state and depend on execution order",
+        "tests/unit/rateLimiter.test.ts:17 Assertion targets test bookkeeping, not limiter behavior"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 1355,
+      "firstChunkMs": 649,
+      "firstChunkKind": "content",
+      "firstContentMs": 649,
+      "usage": {
+        "promptTokens": 1261,
+        "completionTokens": 32,
+        "totalTokens": 1293,
+        "costUSD": 0.00019844
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 9904,
+      "firstChunkMs": 1767,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 7320,
+      "usage": {
+        "promptTokens": 1261,
+        "completionTokens": 100,
+        "totalTokens": 1361,
+        "costUSD": 0.000095965
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 972,
+      "firstChunkMs": 544,
+      "firstChunkKind": "content",
+      "firstContentMs": 544,
+      "usage": {
+        "promptTokens": 1261,
+        "completionTokens": 32,
+        "totalTokens": 1293,
+        "costUSD": 0.00013188
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 2077,
+      "firstChunkMs": 1278,
+      "firstChunkKind": "content",
+      "firstContentMs": 1278,
+      "usage": {
+        "promptTokens": 1283,
+        "completionTokens": 40,
+        "totalTokens": 1323,
+        "costUSD": 0.000154129
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 2265,
+      "firstChunkMs": 1152,
+      "firstChunkKind": "content",
+      "firstContentMs": 1152,
+      "usage": {
+        "promptTokens": 1283,
+        "completionTokens": 40,
+        "totalTokens": 1323,
+        "costUSD": 0.000154129
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 3471,
+      "firstChunkMs": 609,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 2943,
+      "usage": {
+        "promptTokens": 1261,
+        "completionTokens": 139,
+        "totalTokens": 1400,
+        "costUSD": 0.00015402
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 28191,
+      "firstChunkMs": 3668,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 25744,
+      "usage": {
+        "promptTokens": 1261,
+        "completionTokens": 314,
+        "totalTokens": 1575,
+        "costUSD": 0.000125925
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 9861,
+      "firstChunkMs": 3044,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 7295,
+      "usage": {
+        "promptTokens": 1261,
+        "completionTokens": 84,
+        "totalTokens": 1345,
+        "costUSD": 0.000093725
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 5558,
+      "firstChunkMs": 735,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 4924,
+      "usage": {
+        "promptTokens": 1229,
+        "completionTokens": 343,
+        "totalTokens": 1572,
+        "costUSD": 0.00020666
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 109941,
+      "firstChunkMs": 1689,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 17345,
+      "usage": {
+        "promptTokens": 1329,
+        "completionTokens": 2302,
+        "totalTokens": 3631,
+        "costUSD": 0.001038275
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:15 Second-call behavior untested due to beforeEach reset"
+      ]
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 108949,
+      "firstChunkMs": 2619,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 18029,
+      "usage": {
+        "promptTokens": 1328,
+        "completionTokens": 1565,
+        "totalTokens": 2893,
+        "costUSD": 0.0008916
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 29091,
+      "firstChunkMs": 990,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 27612,
+      "usage": {
+        "promptTokens": 1229,
+        "completionTokens": 470,
+        "totalTokens": 1699,
+        "costUSD": 0.00016064398
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 1839,
+      "firstChunkMs": 1252,
+      "firstChunkKind": "content",
+      "firstContentMs": 1252,
+      "usage": {
+        "promptTokens": 1251,
+        "completionTokens": 32,
+        "totalTokens": 1283,
+        "costUSD": 0.000182785
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 17255,
+      "firstChunkMs": 665,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 16868,
+      "usage": {
+        "promptTokens": 1229,
+        "completionTokens": 889,
+        "totalTokens": 2118,
+        "costUSD": 0.0002981
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 100678,
+      "firstChunkMs": 2138,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 9985,
+      "usage": {
+        "promptTokens": 1229,
+        "completionTokens": 564,
+        "totalTokens": 1793,
+        "costUSD": 0.0002071
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "baseline",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 180255,
+      "firstChunkMs": 631,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 80046,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 114306,
+      "firstChunkMs": 4287,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 14017,
+      "usage": {
+        "promptTokens": 2009,
+        "completionTokens": 1599,
+        "totalTokens": 3608,
+        "costUSD": 0.00063682
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 3,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:8 login_is_recognized has no test",
+        "tests/test_marker_policy.py:10 test_review_yeti_bot_marker_is_also_recognized pins nothing",
+        "tests/test_marker_policy.py:10 No rejection test for retired marker"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 3903,
+      "firstChunkMs": 1017,
+      "firstChunkKind": "content",
+      "firstContentMs": 1017,
+      "usage": {
+        "promptTokens": 2031,
+        "completionTokens": 300,
+        "totalTokens": 2331,
+        "costUSD": 0.000330381
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/test_marker_policy.py:10 New login validation has no test coverage",
+        "tests/test_marker_policy.py:8 New test duplicates existing coverage"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 53143,
+      "firstChunkMs": 444,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 50824,
+      "usage": {
+        "promptTokens": 2089,
+        "completionTokens": 11346,
+        "totalTokens": 13435,
+        "costUSD": 0.004336675
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": true,
+      "findings": 2,
+      "hits": 0,
+      "validSuggestions": 1,
+      "noise": 1,
+      "findingTitles": [
+        "src/marker_policy.py:8 New login_is_recognized function is untested",
+        "tests/test_marker_policy.py:9 New marker test duplicates the default-marker test"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 180253,
+      "firstChunkMs": 844,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 183711,
+      "firstChunkMs": 5435,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 42048,
+      "usage": {
+        "promptTokens": 4100,
+        "completionTokens": 3153,
+        "totalTokens": 7253,
+        "costUSD": 0.000926150736
+      },
+      "error": "malformed_response",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 246581,
+      "firstChunkMs": 829,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 54134,
+      "usage": {
+        "promptTokens": 2009,
+        "completionTokens": 1301,
+        "totalTokens": 3310
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 92908,
+      "firstChunkMs": 3943,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 724,
+      "usage": {
+        "promptTokens": 2031,
+        "completionTokens": 210,
+        "totalTokens": 2241,
+        "costUSD": 0.000217041
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": true,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/test_marker_policy.py:10 New login validation has no test coverage"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "vacuous-default-value-test",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 10449,
+      "firstChunkMs": 1870,
+      "firstChunkKind": "content",
+      "firstContentMs": 1870,
+      "usage": {
+        "promptTokens": 2031,
+        "completionTokens": 378,
+        "totalTokens": 2409,
+        "costUSD": 0.000334401
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": true,
+      "findings": 2,
+      "hits": 0,
+      "validSuggestions": 2,
+      "noise": 0,
+      "findingTitles": [
+        "tests/test_marker_policy.py:8 New login validation has no test coverage",
+        "tests/test_marker_policy.py:8 Retired marker rejection is untested"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 180254,
+      "firstChunkMs": 5438,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 47500,
+      "firstChunkMs": 3703,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 44148,
+      "usage": {
+        "promptTokens": 1726,
+        "completionTokens": 533,
+        "totalTokens": 2259,
+        "costUSD": 0.00018681
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 119682,
+      "firstChunkMs": 751,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 74926,
+      "usage": {
+        "promptTokens": 3818,
+        "completionTokens": 3055,
+        "totalTokens": 6873,
+        "costUSD": 0.000949034744
+      },
+      "error": "malformed_response",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 23518,
+      "firstChunkMs": 815,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 19655,
+      "usage": {
+        "promptTokens": 1726,
+        "completionTokens": 1316,
+        "totalTokens": 3042,
+        "costUSD": 0.00061012
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/test_workflow_guard.py:15 Guard defeated by formatting of the forbidden checkout"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 171632,
+      "firstChunkMs": 4607,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 60621,
+      "usage": {
+        "promptTokens": 3972,
+        "completionTokens": 2888,
+        "totalTokens": 6860,
+        "costUSD": 0.00100021644
+      },
+      "error": "malformed_response",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 180255,
+      "firstChunkMs": 3276,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 167576,
+      "firstChunkMs": 500,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 70268,
+      "usage": {
+        "promptTokens": 1726,
+        "completionTokens": 4919,
+        "totalTokens": 6645,
+        "costUSD": 0.00143464
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/test_workflow_guard.py:16 Guard against base-sha checkout is defeated by reindentation"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "format-evadable-absence-guard",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 180255,
+      "firstChunkMs": 717,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 180255,
+      "firstChunkMs": 492,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 116008,
+      "firstChunkMs": 2559,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 17959,
+      "usage": {
+        "promptTokens": 1772,
+        "completionTokens": 1685,
+        "totalTokens": 3457,
+        "costUSD": 0.00062772
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:13 Non-matching body throws misleading 'empty body' error and is untested"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 18166,
+      "firstChunkMs": 512,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 17031,
+      "usage": {
+        "promptTokens": 1852,
+        "completionTokens": 2873,
+        "totalTokens": 4725,
+        "costUSD": 0.00132965
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/resolveMarker.test.js:9 Non-matching marker branch is untested"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 113332,
+      "firstChunkMs": 3926,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 19173,
+      "usage": {
+        "promptTokens": 1772,
+        "completionTokens": 1466,
+        "totalTokens": 3238,
+        "costUSD": 0.00047424
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/resolveMarker.test.js:9 Non-matching non-empty body branch is untested"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 4459,
+      "firstChunkMs": 863,
+      "firstChunkKind": "content",
+      "firstContentMs": 863,
+      "usage": {
+        "promptTokens": 1772,
+        "completionTokens": 241,
+        "totalTokens": 2013,
+        "costUSD": 0.00035096
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:13 Non-matching body throws the same misleading 'empty body' error"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 40638,
+      "firstChunkMs": 582,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 29925,
+      "usage": {
+        "promptTokens": 1772,
+        "completionTokens": 2331,
+        "totalTokens": 4103,
+        "costUSD": 0.00090076
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:12 Non-matching-body branch has no test and shares a misleading error message"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 115687,
+      "firstChunkMs": 9411,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 17789,
+      "usage": {
+        "promptTokens": 1772,
+        "completionTokens": 1758,
+        "totalTokens": 3530,
+        "costUSD": 0.000556
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "src/resolve_marker.js:13 Non-matching marker branch untested and misreported"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 111550,
+      "firstChunkMs": 4486,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 15545,
+      "usage": {
+        "promptTokens": 1772,
+        "completionTokens": 1552,
+        "totalTokens": 3324,
+        "costUSD": 0.00059048
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/resolveMarker.test.js:3 Non-matching body branch untested"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 4466,
+      "firstChunkMs": 847,
+      "firstChunkKind": "content",
+      "firstContentMs": 847,
+      "usage": {
+        "promptTokens": 1641,
+        "completionTokens": 229,
+        "totalTokens": 1870,
+        "costUSD": 0.00031996
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/test_workflow_guard.py:29 Guard is defeated by formatting alone"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 98494,
+      "firstChunkMs": 527,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 5694,
+      "usage": {
+        "promptTokens": 1641,
+        "completionTokens": 72,
+        "totalTokens": 1713,
+        "costUSD": 0.000116745
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 180254,
+      "firstChunkMs": 556,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 143300,
+      "firstChunkMs": 3857,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 49568,
+      "usage": {
+        "promptTokens": 1641,
+        "completionTokens": 3753,
+        "totalTokens": 5394,
+        "costUSD": 0.00118842
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/test_workflow_guard.py:28 Guard bypassable by aliasing the base ref through an env var or step output"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 3857,
+      "firstChunkMs": 1587,
+      "firstChunkKind": "content",
+      "firstContentMs": 1587,
+      "usage": {
+        "promptTokens": 1663,
+        "completionTokens": 217,
+        "totalTokens": 1880,
+        "costUSD": 0.000256155
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/test_workflow_guard.py:25 Guard is defeated by ref formatting variations"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 180253,
+      "firstChunkMs": 390,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 4277,
+      "firstChunkMs": 1561,
+      "firstChunkKind": "content",
+      "firstContentMs": 1561,
+      "usage": {
+        "promptTokens": 1663,
+        "completionTokens": 353,
+        "totalTokens": 2016,
+        "costUSD": 0.000293963
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/test_workflow_guard.py:20 Guard defeated by ref formatting"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-behavioural-guard",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 180255,
+      "firstChunkMs": 2454,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 1615,
+      "firstChunkMs": 889,
+      "firstChunkKind": "content",
+      "firstContentMs": 889,
+      "usage": {
+        "promptTokens": 1642,
+        "completionTokens": 32,
+        "totalTokens": 1674,
+        "costUSD": 0.00024136
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 27977,
+      "firstChunkMs": 3044,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 25271,
+      "usage": {
+        "promptTokens": 1642,
+        "completionTokens": 307,
+        "totalTokens": 1949,
+        "costUSD": 0.00014971
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 1177,
+      "firstChunkMs": 921,
+      "firstChunkKind": "content",
+      "firstContentMs": 921,
+      "usage": {
+        "promptTokens": 1664,
+        "completionTokens": 40,
+        "totalTokens": 1704,
+        "costUSD": 0.000207088
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 24936,
+      "firstChunkMs": 2958,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 21863,
+      "usage": {
+        "promptTokens": 1642,
+        "completionTokens": 282,
+        "totalTokens": 1924,
+        "costUSD": 0.00014621
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 2567,
+      "firstChunkMs": 1256,
+      "firstChunkKind": "content",
+      "firstContentMs": 1256,
+      "usage": {
+        "promptTokens": 3398,
+        "completionTokens": 39,
+        "totalTokens": 3437,
+        "costUSD": 0.000412508
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 1563,
+      "firstChunkMs": 539,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 1174,
+      "usage": {
+        "promptTokens": 1642,
+        "completionTokens": 86,
+        "totalTokens": 1728,
+        "costUSD": 0.0001618
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 29563,
+      "firstChunkMs": 2398,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 26379,
+      "usage": {
+        "promptTokens": 1642,
+        "completionTokens": 341,
+        "totalTokens": 1983,
+        "costUSD": 0.00015447
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "clean-rename-only",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 19954,
+      "firstChunkMs": 2386,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 17448,
+      "usage": {
+        "promptTokens": 1642,
+        "completionTokens": 224,
+        "totalTokens": 1866,
+        "costUSD": 0.00013809
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 98181,
+      "firstChunkMs": 2674,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 87019,
+      "usage": {
+        "promptTokens": 1521,
+        "completionTokens": 257,
+        "totalTokens": 1778,
+        "costUSD": 0.000116299036
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:11 Active exclusive marker disables two tests"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 15257,
+      "firstChunkMs": 581,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 9060,
+      "usage": {
+        "promptTokens": 1521,
+        "completionTokens": 406,
+        "totalTokens": 1927,
+        "costUSD": 0.000153847036
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:17 Active it.only silently disables the rest of the suite"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 3769,
+      "firstChunkMs": 755,
+      "firstChunkKind": "content",
+      "firstContentMs": 755,
+      "usage": {
+        "promptTokens": 1521,
+        "completionTokens": 158,
+        "totalTokens": 1679,
+        "costUSD": 0.00026756
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:12 Active exclusive marker disables the rest of the suite"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 20123,
+      "firstChunkMs": 378,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 14523,
+      "usage": {
+        "promptTokens": 1521,
+        "completionTokens": 593,
+        "totalTokens": 2114,
+        "costUSD": 0.000200971036
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:11 Active exclusive `it.only` silently disables suite"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 9798,
+      "firstChunkMs": 803,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 7137,
+      "usage": {
+        "promptTokens": 1521,
+        "completionTokens": 686,
+        "totalTokens": 2207,
+        "costUSD": 0.00031286
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Active exclusive marker disables the rest of the suite"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 3879,
+      "firstChunkMs": 444,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 2601,
+      "usage": {
+        "promptTokens": 1601,
+        "completionTokens": 699,
+        "totalTokens": 2300,
+        "costUSD": 0.000524825
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Active exclusive marker disables rest of suite"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 168597,
+      "firstChunkMs": 2190,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 36333,
+      "usage": {
+        "promptTokens": 1521,
+        "completionTokens": 488,
+        "totalTokens": 2009,
+        "costUSD": 0.000174511036
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:13 Exclusive it.only silently disables the rest of the suite"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 97741,
+      "firstChunkMs": 5011,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 1257,
+      "usage": {
+        "promptTokens": 1521,
+        "completionTokens": 243,
+        "totalTokens": 1764,
+        "costUSD": 0.000112771036
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/markerRouting.test.ts:9 Exclusive it.only marker left active disables the rest of the suite"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 1,
+      "latencyMs": 27325,
+      "firstChunkMs": 598,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 23025,
+      "usage": {
+        "promptTokens": 1537,
+        "completionTokens": 1689,
+        "totalTokens": 3226,
+        "costUSD": 0.000860125
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:4 Tests share one RateLimiter and depend on execution order",
+        "tests/unit/rateLimiter.test.ts:17 events assertion pins incidental harness detail, not behavior"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 2,
+      "latencyMs": 122217,
+      "firstChunkMs": 719,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 52762,
+      "usage": {
+        "promptTokens": 3481,
+        "completionTokens": 3332,
+        "totalTokens": 6813,
+        "costUSD": 0.0009497967639999999
+      },
+      "error": "malformed_response",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 3,
+      "latencyMs": 111504,
+      "firstChunkMs": 2452,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 16994,
+      "usage": {
+        "promptTokens": 1537,
+        "completionTokens": 945,
+        "totalTokens": 2482,
+        "costUSD": 0.00038762
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:15 Tests share mutable limiter state and depend on execution order"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 4,
+      "latencyMs": 180254,
+      "firstChunkMs": 397,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": null,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 5,
+      "latencyMs": 100824,
+      "firstChunkMs": 2393,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 85996,
+      "usage": {
+        "promptTokens": 1537,
+        "completionTokens": 347,
+        "totalTokens": 1884,
+        "costUSD": 0.00034636
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 2,
+      "hits": 1,
+      "validSuggestions": 1,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:18 Test suite depends on shared mutable state and execution order",
+        "tests/unit/rateLimiter.test.ts:18 Assertion pins incidental detail, not behavior"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 6,
+      "latencyMs": 113565,
+      "firstChunkMs": 552,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 47344,
+      "usage": {
+        "promptTokens": 3537,
+        "completionTokens": 3024,
+        "totalTokens": 6561,
+        "costUSD": 0.00087666054
+      },
+      "error": "malformed_response",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 7,
+      "latencyMs": 109405,
+      "firstChunkMs": 4739,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 11514,
+      "usage": {
+        "promptTokens": 1537,
+        "completionTokens": 1016,
+        "totalTokens": 2553,
+        "costUSD": 0.00031534
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:1 Tests share mutable state and depend on execution order"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "repetition": 8,
+      "latencyMs": 107452,
+      "firstChunkMs": 2584,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 81541,
+      "usage": {
+        "promptTokens": 1537,
+        "completionTokens": 919,
+        "totalTokens": 2456,
+        "costUSD": 0.00038034
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": true,
+      "anchored": true,
+      "findings": 1,
+      "hits": 1,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:18 Tests share mutable limiter state and assert on execution order"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 37093,
+      "firstChunkMs": 6762,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 33900,
+      "usage": {
+        "promptTokens": 1573,
+        "completionTokens": 364,
+        "totalTokens": 1937,
+        "costUSD": 0.000153205
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 28989,
+      "firstChunkMs": 6642,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 25915,
+      "usage": {
+        "promptTokens": 1573,
+        "completionTokens": 284,
+        "totalTokens": 1857,
+        "costUSD": 0.000142005
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 47948,
+      "firstChunkMs": 5805,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 44885,
+      "usage": {
+        "promptTokens": 1573,
+        "completionTokens": 539,
+        "totalTokens": 2112,
+        "costUSD": 0.000177705
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 1643,
+      "firstChunkMs": 1175,
+      "firstChunkKind": "content",
+      "firstContentMs": 1175,
+      "usage": {
+        "promptTokens": 1595,
+        "completionTokens": 40,
+        "totalTokens": 1635,
+        "costUSD": 0.000197497
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 37106,
+      "firstChunkMs": 4277,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 34640,
+      "usage": {
+        "promptTokens": 1573,
+        "completionTokens": 418,
+        "totalTokens": 1991,
+        "costUSD": 0.000160765
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 27625,
+      "firstChunkMs": 2542,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 24438,
+      "usage": {
+        "promptTokens": 1573,
+        "completionTokens": 304,
+        "totalTokens": 1877,
+        "costUSD": 0.000144805
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 3738,
+      "firstChunkMs": 714,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 2658,
+      "usage": {
+        "promptTokens": 1573,
+        "completionTokens": 88,
+        "totalTokens": 1661,
+        "costUSD": 0.000063843052
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 48038,
+      "firstChunkMs": 7395,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 44912,
+      "usage": {
+        "promptTokens": 1573,
+        "completionTokens": 512,
+        "totalTokens": 2085,
+        "costUSD": 0.000173925
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 1,
+      "latencyMs": 180256,
+      "firstChunkMs": 641,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 87445,
+      "usage": {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0
+      },
+      "error": "provider_failure",
+      "errored": true,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 2,
+      "latencyMs": 92618,
+      "firstChunkMs": 693,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 1053,
+      "usage": {
+        "promptTokens": 1563,
+        "completionTokens": 172,
+        "totalTokens": 1735,
+        "costUSD": 0.000229745
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:15 Second test does not pin behavior"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 3,
+      "latencyMs": 3145,
+      "firstChunkMs": 1161,
+      "firstChunkKind": "content",
+      "firstContentMs": 1161,
+      "usage": {
+        "promptTokens": 1563,
+        "completionTokens": 282,
+        "totalTokens": 1845,
+        "costUSD": 0.000260325
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:14 Test 'allows the second call' pins nothing"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 4,
+      "latencyMs": 85111,
+      "firstChunkMs": 5729,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 82054,
+      "usage": {
+        "promptTokens": 1541,
+        "completionTokens": 1017,
+        "totalTokens": 2558,
+        "costUSD": 0.000242545
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 5,
+      "latencyMs": 3661,
+      "firstChunkMs": 1249,
+      "firstChunkKind": "content",
+      "firstContentMs": 1249,
+      "usage": {
+        "promptTokens": 1563,
+        "completionTokens": 261,
+        "totalTokens": 1824,
+        "costUSD": 0.000254487
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:13 Test 'allows the second call' does not exercise the limiter"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 6,
+      "latencyMs": 93032,
+      "firstChunkMs": 2284,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 1049,
+      "usage": {
+        "promptTokens": 1563,
+        "completionTokens": 275,
+        "totalTokens": 1838,
+        "costUSD": 0.000258379
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:14 Test 'allows the second call' does not exercise the limiter"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 7,
+      "latencyMs": 17523,
+      "firstChunkMs": 1656,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 13297,
+      "usage": {
+        "promptTokens": 1541,
+        "completionTokens": 1218,
+        "totalTokens": 2759,
+        "costUSD": 0.000695975
+      },
+      "errored": false,
+      "falsePositive": true,
+      "detected": false,
+      "anchored": false,
+      "findings": 1,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 1,
+      "findingTitles": [
+        "tests/unit/rateLimiter.test.ts:12 Duplicate test pins nothing about the second call"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "fixtureId": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "repetition": 8,
+      "latencyMs": 47188,
+      "firstChunkMs": 1419,
+      "firstChunkKind": "reasoning",
+      "firstContentMs": 44498,
+      "usage": {
+        "promptTokens": 1541,
+        "completionTokens": 574,
+        "totalTokens": 2115,
+        "costUSD": 0.000180525
+      },
+      "errored": false,
+      "falsePositive": false,
+      "detected": false,
+      "anchored": false,
+      "findings": 0,
+      "hits": 0,
+      "validSuggestions": 0,
+      "noise": 0,
+      "findingTitles": []
+    }
+  ]
+}
