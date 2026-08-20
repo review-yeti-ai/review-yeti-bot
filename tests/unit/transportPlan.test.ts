@@ -47,9 +47,9 @@ describe('resolveTransportPlan', () => {
     expect(plan!.transports[0]).toMatchObject({ compat: 'openai', apiKey: 'fw-key', baseUrl: 'https://api.fireworks.ai/inference/v1' });
     expect(plan!.transports[0]).toMatchObject({ reasoningEffort: 'max', perfMetricsInResponse: true });
     expect(plan!.transports[1]).toMatchObject({ compat: 'openrouter', apiKey: 'or-key', reasoningEffort: 'max', quarantineOnTimeout: false });
-    // OpenRouter entries get the full normalized policy: hard bans + declared routing.
+    // OpenRouter entries get declared routing without injected endpoint exclusions.
     expect(plan!.transports[1].openRouterPolicy.providerRouting).toMatchObject({ order: ['coreweave', 'phala'], allow_fallbacks: false });
-    expect(plan!.transports[1].openRouterPolicy.ignoredProviders).toContain('deepinfra');
+    expect(plan!.transports[1].openRouterPolicy.ignoredProviders).toEqual([]);
   });
 
   it('lets env REVIEW_YETI_TRANSPORTS win over the YAML block', () => {
