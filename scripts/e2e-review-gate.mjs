@@ -71,6 +71,39 @@ async function runFixture({ name, file, persona, model, apiKey, baseUrl, openRou
   return summarizeFixtureResult(result, name);
 }
 
+
+// OpenRouter intermittently returns HTTP 401 on a VALID key. Measured 2026-08-20: four
+// `workflow_dispatch` runs on main, same secret, minutes apart --
+//   32398756344 pass | 32398626082 401 | 32397648895 pass | 32397393026 401
+// -- roughly 50/50. A release gate that inherits that flake blocks half of all releases
+// regardless of build quality, which is a false-alarm generator rather than a safety control.
+//
+// Retrying preserves what the gate is actually for: proving a real review completes. It does
+// NOT weaken it -- if every attempt fails, the gate still fails closed and the release is still
+// blocked. It only removes the single-sample coin flip.
+const TRANSIENT_ATTEMPTS = 3;
+const TRANSIENT_BACKOFF_MS = 2000;
+
+function isTransientAuthFailure(error) {
+  const text = String(error?.message || error || '');
+  return /HTTP (401|429|500|502|503|504)\b/.test(text);
+}
+
+async function runFixtureWithRetry(options) {
+  let lastError;
+  for (let attempt = 1; attempt <= TRANSIENT_ATTEMPTS; attempt += 1) {
+    try {
+      return await runFixture(options);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientAuthFailure(error) || attempt === TRANSIENT_ATTEMPTS) throw error;
+      console.error(`[e2e-gate] ${options.name} attempt ${attempt}/${TRANSIENT_ATTEMPTS} hit a transient provider failure (${String(error?.message || error).slice(0, 80)}); retrying`);
+      await new Promise((resolve) => { setTimeout(resolve, TRANSIENT_BACKOFF_MS * attempt); });
+    }
+  }
+  throw lastError;
+}
+
 async function main() {
   const apiKey = String(process.env.OPENROUTER_API_KEY || '').trim();
   const model = String(process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731').trim();
@@ -98,10 +131,10 @@ async function main() {
   let red;
   let green;
   try {
-    red = await runFixture({
+    red = await runFixtureWithRetry({
       name: 'red-known-bug', file: 'red-known-bug.diff', persona: securityPersona, model, apiKey, baseUrl, openRouterPolicy,
     });
-    green = await runFixture({
+    green = await runFixtureWithRetry({
       name: 'green-clean', file: 'green-clean.diff', persona: securityPersona, model, apiKey, baseUrl, openRouterPolicy,
     });
   } catch (error) {
