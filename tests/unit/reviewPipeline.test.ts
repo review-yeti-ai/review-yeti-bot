@@ -173,14 +173,8 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
   }, 15_000);
 
   it('ships intentional exclusions without model requests', async () => {
-    // Built-in lockfile/generated-file detection only -- a repo-configured `exclude:` glob is
-    // deliberately NOT included here. See the KNOWN GAP test below: found while auditing the
-    // legacy path for removal, boundedMode's review-unit-manifest selection (now the only
-    // selection path -- previously skipped for any non-bounded run) does not thread a repo's
-    // plain `.review-yeti.yaml` `exclude:` list into its trusted-default policy, so a
-    // repo-configured exclusion is silently ignored unless `review.units.enabled` is also
-    // configured with full trusted-config bootstrapping. That is a pre-existing production gap,
-    // not something this PR introduces or fixes -- flagged, not silently absorbed into this test.
+    // Built-in lockfile/generated-file detection only. A repo-configured plain `exclude:` glob
+    // is covered separately below (issue #136's fix).
     const diff = diffWithFiles([
       'diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n-old\n+new',
       'diff --git a/generated/schema.generated.json b/generated/schema.generated.json\n--- a/generated/schema.generated.json\n+++ b/generated/schema.generated.json\n@@ -1 +1 @@\n-old\n+new',
@@ -194,32 +188,29 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     expect(result.comment).toMatch(/expected policy exclusion|does not block/i);
   });
 
-  // KNOWN GAP (pre-existing, not introduced by the legacy-path removal): a repo's plain
-  // `.review-yeti.yaml` `exclude:` list is honored by the legacy/general-purpose
-  // `filterReviewableFiles` selection, but boundedMode's review-unit-manifest override
-  // (main()'s `authoritativeUnitPolicy` trusted-default fallback, review-pipeline.js) hard-codes
-  // `rules.exclude: []` whenever `review.units.enabled` isn't ALSO configured with full trusted-
-  // config bootstrapping (REVIEW_YETI_CONFIG_DIR/TRUSTED_CONFIG_DIR/TRUSTED_CONFIG_BASE_SHA + a
-  // live `gh pr view` base-SHA match). Since boundedMode is unconditional now (previously this
-  // was reachable only when a real PR identity happened to select it -- i.e. always in real
-  // production, per the operator's own framing that bounded is "the production default"), this
-  // is a real, live gap for any repo that has NOT done that trusted-config bootstrap: a plain
-  // `exclude:` entry in `.review-yeti.yaml` does not exclude anything. This test documents the
-  // CURRENT (buggy) behavior rather than silently asserting the feature works -- it must fail
-  // loudly, not pass vacuously, once someone fixes the underlying gap.
-  it('KNOWN GAP: a plain .review-yeti.yaml exclude: entry is not honored by the bounded review-unit-manifest path', async () => {
+  // Issue #136 (fixed): a repo's plain `.review-yeti.yaml` `exclude:` list is honored by the
+  // legacy/general-purpose `filterReviewableFiles` selection, but boundedMode's review-unit-
+  // manifest override (main()'s `authoritativeUnitPolicy` trusted-default fallback,
+  // review-pipeline.js) used to hard-code `rules.exclude: []` whenever `review.units.enabled`
+  // wasn't ALSO configured with full trusted-config bootstrapping (REVIEW_YETI_CONFIG_DIR/
+  // TRUSTED_CONFIG_DIR/TRUSTED_CONFIG_BASE_SHA + a live `gh pr view` base-SHA match). Since
+  // boundedMode is unconditional now, that was a real, live gap for any repo that had NOT done
+  // that trusted-config bootstrap: a plain `exclude:` entry in `.review-yeti.yaml` did not
+  // exclude anything. The trusted-default fallback now inherits `parsed.exclude` instead of
+  // hard-coding it empty -- this test pins the fixed behavior; it previously documented the bug
+  // (`files-reviewed=1`) and was written to fail loudly, not pass vacuously, once fixed.
+  it('honors a plain .review-yeti.yaml exclude: entry on the bounded review-unit-manifest path', async () => {
     const diff = diffWithFiles([
       'diff --git a/configured/fixture.txt b/configured/fixture.txt\n--- a/configured/fixture.txt\n+++ b/configured/fixture.txt\n@@ -1 +1 @@\n-old\n+new',
     ]);
 
     const result = await runMainInTempDir(diff, {
-      expectedFetches: 1,
+      expectedFetches: 0,
       config: 'exclude:\n  - configured/**\n',
     });
 
-    // If this ever becomes 0 (the CORRECT behavior), the fix landed -- update this test to
-    // assert the fix instead of deleting it, and drop this comment block.
-    expect(result.output).toContain('files-reviewed=1');
+    expect(result.output).toContain('files-reviewed=0');
+    expect(result.output).toContain('verdict=SHIP');
   });
 
   it('does not run chat preflight before the all-skipped terminal decision', async () => {
