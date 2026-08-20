@@ -1458,6 +1458,9 @@ function finalizeBoundedReviewFindings({
     carriedOpen: reconciliation.carriedOpen,
     ignored: reconciliation.ignored,
     recurrentResolved: reconciliation.recurrentResolved,
+    // A rebuttal-withdrawn thread's repeat is surfaced here (sticky summary's "Suppressed
+    // repeats" section), never silently dropped -- see reconcileDecisionFindings.
+    suppressedRepeats: reconciliation.suppressedRepeats,
   };
 }
 
@@ -9584,6 +9587,7 @@ async function main(options = {}) {
         carriedOpen = finalized.carriedOpen;
         ignored = finalized.ignored;
         recurrentResolved = finalized.recurrentResolved;
+        suppressedRepeats = finalized.suppressedRepeats;
         // Evidence tooling counts as enabled only if a real registry (or an explicit test
         // double) was actually constructed for personas to call -- not merely attempted. A
         // snapshot fetch failure, a snapshot too large for the bounded registry, or any other

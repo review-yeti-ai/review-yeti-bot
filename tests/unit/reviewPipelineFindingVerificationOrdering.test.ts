@@ -244,4 +244,51 @@ describe('bounded review findingVerification ordering (issue #52)', () => {
       expect(result.mergeEligible).toBe(false);
     });
   });
+
+  // Regression coverage found auditing the legacy single-shot review path for removal: the
+  // legacy dispatch branch in main() called `reconcileDecisionFindings` inline and assigned its
+  // `suppressedRepeats` output directly, so a rebuttal-withdrawn thread's repeat was surfaced in
+  // the sticky summary's "Suppressed repeats" section. `finalizeBoundedReviewFindings` -- the
+  // helper the production bounded branch actually uses -- called the same
+  // `reconcileDecisionFindings` but never returned `suppressedRepeats` from its result, so on the
+  // only path that ever runs in production, a suppressed repeat vanished with no trace instead of
+  // being surfaced. Deleting the legacy branch would have deleted the only code that ever
+  // surfaced this field.
+  it('surfaces a rebuttal-withdrawn repeat via suppressedRepeats instead of dropping it silently', () => {
+    const ledgerEntry = {
+      threadId: 't1',
+      findingCommentId: 100,
+      state: 'open',
+      severity: 'P1',
+      path: 'lib/auth.ex',
+      line: 12,
+      side: 'RIGHT',
+      title: 'Token check bypass',
+      claimBody: 'The guard can be skipped.',
+      claimKey: 'k1',
+      humanReplyCount: 1,
+      reportedBy: ['Security Reviewer'],
+    };
+    const lane = {
+      personaId: 'security',
+      decision: 'FINDINGS',
+      findings: [{ severity: 'P1', path: 'lib/auth.ex', line: 12, side: 'RIGHT', title: 'Token check bypass', body: 'The guard can be skipped.' }],
+    };
+    const finalized = pipeline.finalizeBoundedReviewFindings({
+      personaResults: [lane],
+      findingVerifierPolicy: { enabled: false },
+      verifierSummary: null,
+      evidenceOwnershipIncomplete: false,
+      navigationSnapshot: null,
+      options: {},
+      partialView: false,
+      decisionLedger: { available: true, entries: [ledgerEntry] },
+      rebuttalWithdrawnThreadIds: new Set(['t1']),
+    });
+
+    expect(finalized.suppressedRepeats).toHaveLength(1);
+    expect(finalized.suppressedRepeats[0].path).toBe('lib/auth.ex');
+    // The repeated finding itself must not still count toward the verdict.
+    expect(finalized.personaResults[0].findings).toHaveLength(0);
+  });
 });
