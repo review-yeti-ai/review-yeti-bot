@@ -15,6 +15,8 @@ const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(rootRepoDir, '.github/w
 const {
   callOpenRouterChat,
   reviewWithModel,
+  reviewWithTransports,
+  createStreamingLaneGate,
   callPersonaModelTurn,
   resolveBoundedInvestigationLimits,
   PERSONA_CHARTERS,
@@ -645,5 +647,177 @@ describe('REL-272: max-investigation-turns reaches bounded mode (D6)', () => {
   it('default with nothing set is the unlocked default of 3', () => {
     expect(resolveBoundedInvestigationLimits({}, {}).maxTurns).toBe(3);
     expect(resolveBoundedInvestigationLimits({ parsed: {} }, {}).maxTurns).toBe(3);
+  });
+});
+
+// 2026-08-19 lane-budget investigation: production logs showed `transport=... TIMEOUT
+// phase=response total_budget_ms=30000` on lanes whose real, isolated model-call latency measured
+// 1.7-2.8s -- nowhere near 30s. Root cause, confirmed with a real end-to-end repro against
+// createStreamingLaneGate + reviewWithTransports + reviewWithModel + callOpenRouterChat: the
+// per-lane wall-clock backstop (laneDeadline, ~240s default) is exposed to streaming-lane-gate
+// queue-wait (2 slots for a 5-persona panel), and when laneDeadline fires while a request is in
+// flight or still queued, callOpenRouterChat's classification previously had no way to tell that
+// apart from a genuine per-request total-budget (30-45s) timeout -- both defaulted to
+// `timeoutPhase: 'response'`. A call that would have succeeded in ~90ms got logged identically to
+// a real, slow-provider timeout.
+describe('reasoning-stall/lane-budget investigation: lane_deadline is classified separately from a genuine total-budget timeout', () => {
+  function fetchThatWouldSucceedButNeverGetsTheChance() {
+    // Honors its abort signal like a real fetch() -- rejects when the signal fires, exactly like
+    // an in-flight HTTP request cut off by an AbortController, whether that's totalAbort's own
+    // timer or an externally-merged signal (laneDeadline) relayed through it.
+    return (_url: string, init: any) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+      }, { once: true });
+    });
+  }
+
+  it('callOpenRouterChat: an abort via laneDeadlineSignal is classified lane_deadline, not response', async () => {
+    const laneDeadline = new AbortController();
+    setTimeout(() => laneDeadline.abort(), 20);
+
+    const result = await callOpenRouterChat(fetchThatWouldSucceedButNeverGetsTheChance(), {
+      url: 'https://api.fireworks.ai/inference/v1/chat/completions',
+      headers: { Authorization: 'Bearer test' },
+      body: { model: 'test/model', messages: [] },
+      timeoutMs: 5_000, // this call's OWN total budget -- deliberately large, never exhausted
+      ttftMs: 5_000,
+      preferStream: true,
+      signal: laneDeadline.signal, // production wires laneSignal (merge of laneDeadline+cancellation) here
+      laneDeadlineSignal: laneDeadline.signal, // the NEW, separately-threaded signal this fix adds
+      transportName: 'fireworks',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.aborted).toBe(true);
+    // The core assertion: NOT 'response' (which would claim this call's own 5000ms budget
+    // genuinely elapsed -- it did not; the abort fired at ~20ms).
+    expect(result.timeoutPhase).toBe('lane_deadline');
+  });
+
+  it('callOpenRouterChat: a plain outer cancellation without laneDeadlineSignal stays classified response (unchanged, backward compatible)', async () => {
+    // A caller that does not thread laneDeadlineSignal (e.g. an older call site, or a genuine
+    // outer job cancellation with no lane-deadline concept) gets the SAME outcome reviewWithModel
+    // has always produced for this case (`result.timeoutPhase || 'response'` downstream) -- this
+    // fix makes that explicit inside callOpenRouterChat itself rather than leaving it to the
+    // caller's own default, but the observable classification for a caller that omits
+    // laneDeadlineSignal is unchanged. This locks in that the new parameter is additive: omitting
+    // it does not change behavior, only omits the one new (correct) distinction.
+    const outerCancel = new AbortController();
+    setTimeout(() => outerCancel.abort(), 20);
+
+    const result = await callOpenRouterChat(fetchThatWouldSucceedButNeverGetsTheChance(), {
+      url: 'https://api.fireworks.ai/inference/v1/chat/completions',
+      headers: { Authorization: 'Bearer test' },
+      body: { model: 'test/model', messages: [] },
+      timeoutMs: 5_000,
+      ttftMs: 5_000,
+      preferStream: true,
+      signal: outerCancel.signal,
+      transportName: 'fireworks',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.timeoutPhase).toBe('response');
+  });
+
+  it('ordering regression: laneDeadlineSignal is checked even though totalAbort.signal.aborted is ALSO true (totalAbort relays the outer signal)', async () => {
+    // totalAbort is itself `createAbortLink({ signals: [signal], timeoutMs })` -- it relays ANY
+    // abort of the outer `signal` into its own controller, on top of its own independent timer.
+    // So totalAbort.signal.aborted becomes true BOTH when totalMs genuinely elapses AND when the
+    // outer signal (laneDeadline, here) fires first. A classifier that checks
+    // `totalAbort.signal.aborted` before laneDeadlineSignal would misattribute this case as
+    // 'response' even with laneDeadlineSignal wired up -- this test pins the correct order.
+    const laneDeadline = new AbortController();
+    setTimeout(() => laneDeadline.abort(), 10);
+
+    const result = await callOpenRouterChat(fetchThatWouldSucceedButNeverGetsTheChance(), {
+      url: 'https://api.fireworks.ai/inference/v1/chat/completions',
+      headers: { Authorization: 'Bearer test' },
+      body: { model: 'test/model', messages: [] },
+      // Deliberately close to the laneDeadline's own fire time so totalAbort's relay of the outer
+      // signal and its own timer are both plausible causes -- the point is laneDeadlineSignal must
+      // win the classification regardless.
+      timeoutMs: 5_000,
+      ttftMs: 5_000,
+      preferStream: true,
+      signal: laneDeadline.signal,
+      laneDeadlineSignal: laneDeadline.signal,
+      transportName: 'fireworks',
+    });
+
+    expect(result.timeoutPhase).toBe('lane_deadline');
+  });
+
+  it('reviewWithModel: a lane_deadline abort is never banned/quarantined and logs LANE_DEADLINE, not a generic RESPONSE timeout', async () => {
+    const runTimedOutProviders = new Set<string>();
+    const laneDeadline = new AbortController();
+    setTimeout(() => laneDeadline.abort(), 20);
+    const fetchImpl = async () => neverChunkingStreamResponse();
+
+    const warnLines: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: any[]) => { warnLines.push(args.join(' ')); };
+    let result: any;
+    try {
+      result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k',
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        fetchImpl,
+        maxAttempts: 1,
+        timeoutMs: 5_000,
+        ttftMs: 5_000,
+        preferStream: true,
+        gatewayCompat: 'openai',
+        transportName: 'fireworks',
+        signal: laneDeadline.signal,
+        laneDeadlineSignal: laneDeadline.signal,
+        runTimedOutProviders,
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(result.decision).toBe('ERROR');
+    // The operator directive that already applies to ttft (REL-271) applies identically here: a
+    // lane-deadline abort proves nothing about the provider's health.
+    expect(runTimedOutProviders.size).toBe(0);
+    expect(warnLines.some((l) => l.includes('LANE_DEADLINE'))).toBe(true);
+    expect(warnLines.some((l) => /\bBAN\b/.test(l))).toBe(false);
+    // The generic TIMEOUT summary line must say phase=lane_deadline, not phase=response --
+    // an operator grepping logs for "phase=response" must not find this case.
+    expect(warnLines.some((l) => l.includes('TIMEOUT phase=lane_deadline'))).toBe(true);
+    expect(warnLines.some((l) => l.includes('TIMEOUT phase=response'))).toBe(false);
+  });
+
+  it('reviewWithTransports: streaming-lane-gate queue-wait is logged with queue_wait_ms', async () => {
+    const logLines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: any[]) => { logLines.push(args.join(' ')); };
+    let streamGate: any;
+    try {
+      streamGate = createStreamingLaneGate(1);
+      const releaseFirst = await streamGate.acquire();
+      const secondAcquire = reviewWithTransports(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k',
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        model: 'test/model',
+        fetchImpl: async () => neverChunkingStreamResponse(),
+        maxAttempts: 1,
+        timeoutMs: 50,
+        ttftMs: 50,
+        preferStream: true,
+        transportName: 'fireworks',
+        streamGate,
+        transportPlan: [{ name: 'fireworks', apiKey: 'k', baseUrl: 'https://api.fireworks.ai/inference/v1', model: 'test/model', timeoutMs: 50 }],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      releaseFirst();
+      await secondAcquire;
+    } finally {
+      console.log = originalLog;
+    }
+    expect(logLines.some((l) => l.includes('[StreamGate]') && /queue_wait_ms=\d+/.test(l))).toBe(true);
   });
 });
