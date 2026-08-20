@@ -121,6 +121,34 @@ function flag(name) {
   return process.argv.includes(name);
 }
 
+/**
+ * Resolves the maxTokens value to pass into modelOptions for one eval run.
+ *
+ * Production's bounded engine (review-pipeline.js's resolveModelConfig) never sets an explicit
+ * max_tokens at all -- callOpenRouterChat only includes it in the request body when the caller
+ * supplies one, otherwise the provider's own (much larger) default output cap applies. This
+ * script's --max-tokens flag defaults to 4,096 for operator convenience (bounding eval cost on
+ * the legacy arm, whose response contract is comparatively small), but applying that same flat
+ * ceiling to a --bounded run is not "measuring what ships" -- it is measuring the bounded engine
+ * under an artificial constraint production never imposes. The bounded contract's response
+ * (risk_plan + evidence_requests + risk_dispositions + findings, each carrying its own text
+ * fields) is unavoidably larger than the legacy contract's, so a shared ceiling starves it
+ * specifically. Found live: eval-expand's PR #132 baseline measured a bounded detectionRate of
+ * 0.20 vs legacy's 0.73 with over double the malformed_response rate, on identical fixtures,
+ * model, and modelOptions -- an eval-harness artifact this function removes, not evidence about
+ * the engine itself.
+ *
+ * An explicit --max-tokens is always honored on both paths -- this only removes the *default*,
+ * never a deliberate operator choice (e.g. a cost-bounded experiment).
+ */
+export function resolveEvalMaxTokens({ argv = process.argv, bounded = false, fallback = 4_096 } = {}) {
+  const index = argv.indexOf('--max-tokens');
+  const explicit = index >= 0 && argv[index + 1] !== undefined;
+  if (bounded && !explicit) return undefined;
+  const parsed = explicit ? Number(argv[index + 1]) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 /** Findings text a concept group is matched against. Lower-cased; suggestion included. */
 function findingText(finding = {}) {
   return [finding.title, finding.body, finding.suggestion].filter(Boolean).join('\n').toLowerCase();
@@ -317,6 +345,7 @@ async function main() {
   // single-shot reviewWithModel this script always used before. See
   // reviewWithBoundedInvestigation's doc comment for why that distinction is the whole point.
   const bounded = flag('--bounded');
+  const maxTokens = resolveEvalMaxTokens({ argv: process.argv, bounded, fallback: 4_096 });
   const { rows, fixtures } = await evaluateTestingCharter(matrix, {
     repetitions,
     concurrency,
@@ -327,7 +356,10 @@ async function main() {
       model,
       maxAttempts: Number(argument('--max-attempts', 2)),
       timeoutMs: Number(argument('--timeout-ms', 90_000)),
-      maxTokens: Number(argument('--max-tokens', 4_096)),
+      // Omitted entirely (not 0, not null) on a bounded run with no explicit --max-tokens -- see
+      // resolveEvalMaxTokens's doc comment. Spreading conditionally keeps modelOptions identical
+      // to before this fix whenever a cap does apply.
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
       openRouterPolicy: { allowedModels: [], fallbackModels: [], ignoredProviders: ['deepinfra'], providerRouting: { ignore: ['deepinfra'] }, timeoutMs: 90_000, stream: false },
     },
   });
@@ -337,6 +369,10 @@ async function main() {
     fixture: path.relative(root, fixturePath),
     model,
     path: bounded ? 'bounded' : 'legacy',
+    // null means "no explicit ceiling" -- the same uncapped behavior production's bounded engine
+    // actually runs with. Recorded so a report is self-documenting about which mode produced it,
+    // rather than requiring the reader to know this flag's default changed by path.
+    maxTokens: maxTokens ?? null,
     repetitions,
     arms: arms.map((arm) => summarizeArm(rows, arm.id)),
     perFixture: summarizePerFixture(rows, fixtures),

@@ -73,15 +73,34 @@ describe('restoreWarmZoektIndex', () => {
   });
 
   it('fails soft and fast when no GitHub Actions cache service is configured for this runtime', async () => {
-    // Outside a real GitHub Actions runner (local dev, this test suite, `node bin/reviewyeti.js`)
-    // @actions/cache IS installed (it's a real dependency) but ACTIONS_CACHE_URL/
-    // ACTIONS_RESULTS_URL are absent. isFeatureAvailable() must short-circuit this synchronously
-    // -- never fall through to a real network retry/backoff, which is what silently made this
-    // exact test hang for 5s before the precondition check was added.
-    const startedAt = Date.now();
-    const result = await restoreWarmZoektIndex({ repository: REPO, indexDir: '/tmp/whatever' });
-    expect(Date.now() - startedAt).toBeLessThan(500);
-    expect(result).toMatchObject({ status: 'unavailable', reason: 'cache_service_unavailable' });
+    // Outside a real GitHub Actions runner (local dev, `node bin/reviewyeti.js`) @actions/cache IS
+    // installed (it's a real dependency) but ACTIONS_CACHE_URL/ACTIONS_RESULTS_URL are absent.
+    // isFeatureAvailable() must short-circuit this synchronously -- never fall through to a real
+    // network retry/backoff, which is what silently made this exact test hang for 5s before the
+    // precondition check was added.
+    //
+    // This must hold regardless of the ambient environment this test itself runs in -- a real
+    // GitHub Actions runner (this repo's own CI) DOES have these set for every job by default, and
+    // some other test-running environment could too, either of which would otherwise route this
+    // test through @actions/cache's real (network-backed) isFeatureAvailable() check instead of
+    // the "unset" case this test exists to prove. Clear all three env vars @actions/cache's own
+    // getCacheServiceVersion()/isFeatureAvailable() read (ACTIONS_CACHE_SERVICE_V2 selects v1 vs
+    // v2; the URL var is version-dependent) and restore them exactly afterward, so this test's
+    // result never depends on what happens to be exported around it.
+    const ENV_KEYS = ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL'] as const;
+    const saved = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+    for (const key of ENV_KEYS) delete process.env[key];
+    try {
+      const startedAt = Date.now();
+      const result = await restoreWarmZoektIndex({ repository: REPO, indexDir: '/tmp/whatever' });
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(result).toMatchObject({ status: 'unavailable', reason: 'cache_service_unavailable' });
+    } finally {
+      for (const key of ENV_KEYS) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
   });
 });
 
