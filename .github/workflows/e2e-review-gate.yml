@@ -12,7 +12,18 @@ name: E2E Review Gate
 # calls this workflow directly (`workflow_call`, below) as a hard `needs:` dependency for
 # `channel=v1` releases -- see release.yml's `e2e_gate` job. `workflow_dispatch` remains for
 # ad hoc manual checks against an arbitrary ref outside a release.
+#
+# The `schedule` trigger is a credential canary, not a release event. Without it, a dead
+# OPENROUTER_API_KEY is only ever discovered at release time, freezing `channel=v1` exactly when
+# a release is wanted: measured 2026-08-20, run 32383353332 -- battery green, this gate 401'd,
+# "Tag, release, and move channel" skipped, with release-please cutting releases all day against
+# a key that had been dead since at least 04:18 UTC (run 32331379188). A twice-weekly scheduled
+# run bounds that discovery latency to ~3.5 days and costs two trivial model calls per run.
+# Scheduled runs execute against the default branch; a scheduled failure means "rotate the
+# secret", never "the release already failed".
 on:
+  schedule:
+    - cron: "17 12 * * 1,4" # Mon/Thu 12:17 UTC; offset avoids the top-of-hour Actions surge
   workflow_dispatch:
     inputs:
       ref:
