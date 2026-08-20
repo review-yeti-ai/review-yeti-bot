@@ -12,7 +12,7 @@ const pipeline = require(pipelinePath);
 const { createReviewUnitManifest } = require(path.join(rootRepoDir, 'src/review/reviewUnitManifest.js'));
 
 describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/review-pipeline.js)', () => {
-  const runMainInTempDir = async (diff: string, options: { expectedFetches: number; config?: string; runChatPreflight?: boolean }) => {
+  const runMainInTempDir = async (diff: string, options: { expectedFetches?: number; config?: string; runChatPreflight?: boolean }) => {
     const originalCwd = process.cwd();
     const originalFetch = globalThis.fetch;
     const originalExitCode = process.exitCode;
@@ -63,7 +63,7 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
 
       await pipeline.main();
 
-      expect(fetchImpl).toHaveBeenCalledTimes(options.expectedFetches);
+      if (options.expectedFetches !== undefined) expect(fetchImpl).toHaveBeenCalledTimes(options.expectedFetches);
       return {
         output: fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf-8') : '',
         comment: fs.existsSync(path.join(tempDir, 'review-comment.md'))
@@ -131,6 +131,16 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     });
 
     expect(result.output).toContain('verdict=SHIP');
+  });
+
+  it('uses an SSE request for the authentication preflight instead of a buffered ping', async () => {
+    const result = await runMainInTempDir(
+      'diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -0,0 +1 @@\n+const safe = true;\n',
+      { runChatPreflight: true },
+    );
+
+    expect(result.fetchImpl.mock.calls.length).toBeGreaterThan(0);
+    expect(result.fetchImpl.mock.calls.every(([, options]: any[]) => JSON.parse(options.body).stream === true)).toBe(true);
   });
 
   it('renders policy-only exclusions as SHIP while keeping real coverage gaps blocked', () => {

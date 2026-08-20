@@ -22,7 +22,7 @@ const DEFAULTS = {
   // a stricter p99 latency preference by default.
   ttftMs: 30000,
   maxAttempts: 2,
-  stream: false,
+  stream: true,
   model: undefined,
   fallbackModels: [],
   providerRouting: DEFAULT_PROVIDER_ROUTING,
@@ -55,7 +55,7 @@ const CFG_ALL = {
 };
 
 describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter config > defaults)', () => {
-  it('absent config and absent inputs yields empty defaults + 30s timeout / stream off', () => {
+  it('absent config and absent inputs yields empty defaults + 30s timeout / streaming on', () => {
     expect(resolveOpenRouterPolicy({}, {})).toEqual({
       allowedModels: [],
       costQualityTradeoff: undefined,
@@ -207,7 +207,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       connectTimeoutMs: 2500,
       ttftMs: 2500,
       maxAttempts: 2,
-      stream: false,
+      stream: true,
       model: undefined,
     });
   });
@@ -412,12 +412,12 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     })).toThrow(/incompatible or ignored member.*unverified-gateway/i);
   });
 
-  it('parses stream truthy/falsey from env and yaml', () => {
+  it('keeps streaming enabled even when legacy falsey settings are present', () => {
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: 'true' }).stream).toBe(true);
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: '1' }).stream).toBe(true);
-    expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: 'false' }).stream).toBe(false);
+    expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: 'false' }).stream).toBe(true);
     expect(resolveOpenRouterPolicy({ github_action: { openrouter: { stream: true } } }, {}).stream).toBe(true);
-    expect(resolveOpenRouterPolicy({ github_action: { openrouter: { stream: 'off' } } }, {}).stream).toBe(false);
+    expect(resolveOpenRouterPolicy({ github_action: { openrouter: { stream: 'off' } } }, {}).stream).toBe(true);
   });
 
   it('env OPENROUTER_MODEL beats yaml model', () => {
@@ -435,6 +435,6 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     expect(resolveOpenRouterPolicy(
       { github_action: { openrouter: { timeout_ms: 9000, stream: true } } },
       { OPENROUTER_TIMEOUT_MS: '1200', OPENROUTER_STREAM: 'false' },
-    )).toEqual(expect.objectContaining({ timeoutMs: 1200, stream: false }));
+    )).toEqual(expect.objectContaining({ timeoutMs: 1200, stream: true }));
   });
 });

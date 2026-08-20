@@ -211,7 +211,7 @@ if (process.argv[1]?.endsWith('evaluate-dependency-investigation-live.mjs')) {
           ignoredProviders: ['deepinfra'],
           providerRouting: { ignore: ['deepinfra'] },
           timeoutMs: Number(process.env.OPENROUTER_TIMEOUT_MS || 30_000),
-          stream: false,
+          stream: true,
         },
       },
     });

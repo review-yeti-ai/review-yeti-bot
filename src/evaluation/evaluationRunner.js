@@ -129,7 +129,7 @@ async function defaultLiveEvaluator(matrix, request, options = {}) {
         ignoredProviders: ['deepinfra'],
         providerRouting: { ignore: ['deepinfra'] },
         timeoutMs: options.timeoutMs || Number(process.env.OPENROUTER_TIMEOUT_MS || 30_000),
-        stream: false,
+        stream: true,
       },
     },
   });

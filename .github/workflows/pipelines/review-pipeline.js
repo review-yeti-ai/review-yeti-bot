@@ -3153,7 +3153,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     fallbackModels: [],
     providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
     timeoutMs: 30_000,
-    stream: false,
+    stream: true,
   };
   const plugins = [];
   // The auto-router plugin is an OpenRouter feature; never send it to a direct gateway.
@@ -8689,49 +8689,20 @@ async function main(options = {}) {
       let preflightPassed = false;
       for (const preflightTarget of preflightTargets) {
         if (cancellation.signal.aborted) return;
-        const preflightAbort = createAbortLink({ signals: [cancellation.signal], timeoutMs });
         try {
-          const res = await cancellation.race(Promise.resolve().then(() => fetchImplementation(`${preflightTarget.baseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              Accept: 'application/json',
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${preflightTarget.apiKey}`,
-            },
-            body: JSON.stringify({
-              model: preflightTarget.model,
-              messages: [{ role: 'user', content: 'reply with the single word ok' }],
-              max_tokens: 4,
-              stream: false,
-            }),
-            signal: preflightAbort.signal,
-          })));
-          if (cancellation.isCancellationResult(res)) return;
-          if (!res.ok) {
-            const bodyText = await cancellation.race(res.text());
-            if (cancellation.isCancellationResult(bodyText)) return;
-            console.warn(`[Model] Chat preflight failed for ${preflightTarget.label} (HTTP ${res.status}); trying the next transport if one remains.`);
-          } else {
-            console.log(`[Model] Chat preflight ok (${preflightTarget.label})`);
-            preflightPassed = true;
-          }
-        } catch (err) {
-          if (cancellation.signal.aborted) return;
-          console.warn(`[Model] Chat preflight error for ${preflightTarget.label}: ${err && err.message ? err.message : err}; trying the next transport if one remains.`);
-        } finally {
-          preflightAbort.dispose();
-        }
-        if (preflightPassed) {
           const streamCheck = await cancellation.race(
             runStreamedChatPreflight(fetchImplementation, preflightTarget, { timeoutMs, signal: cancellation.signal }),
           );
           if (cancellation.isCancellationResult(streamCheck)) return;
           if (streamCheck.ok) {
             console.log(`[Model] Streamed chat preflight ok (${preflightTarget.label})`);
+            preflightPassed = true;
           } else {
-            preflightPassed = false;
             console.warn(`[Model] Streamed chat preflight failed for ${preflightTarget.label} (reason=${streamCheck.reason}); trying the next transport if one remains.`);
           }
+        } catch (err) {
+          if (cancellation.signal.aborted) return;
+          console.warn(`[Model] Streamed chat preflight error for ${preflightTarget.label}: ${err && err.message ? err.message : err}; trying the next transport if one remains.`);
         }
         if (preflightPassed) break;
       }
