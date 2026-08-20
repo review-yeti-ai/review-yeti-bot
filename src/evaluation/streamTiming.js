@@ -56,7 +56,21 @@ function classifyChunkKind(chunk) {
  * Wraps a fetch implementation so every call it makes is timed for TTFT (`firstChunk`) and
  * time-to-first-content (`firstContent`). Non-streaming or non-ok responses pass through
  * unmodified (nothing to tap). `onTiming` is called at most once per event type per HTTP call,
- * with `{ type: 'firstChunk', elapsedMs, kind }` or `{ type: 'firstContent', elapsedMs }`.
+ * with `{ type: 'firstChunk', elapsedMs, kind }` or
+ * `{ type: 'firstContent', elapsedMs, reasoningChars, reasoningChunks }`.
+ *
+ * `reasoningChars`/`reasoningChunks` (added for the cap/reasoning-budget ablations, REL: operator
+ * ask 2026-08-20 "reasoning-token count is not measurable") accumulate the character length and
+ * chunk count of every `reasoning`-kind delta seen strictly BEFORE the first `content` chunk --
+ * i.e. the up-front reasoning phase this module's own doc comment already describes ("the model
+ * can spend many seconds to tens of seconds reasoning before the first delta.content byte
+ * arrives"). This is a character-length proxy, not a provider-reported token count: no transport
+ * in this codebase surfaces `completion_tokens_details.reasoning_tokens` or equivalent (checked
+ * review-pipeline.js's usage accounting -- promptTokens/completionTokens/totalTokens/costUSD
+ * only), so an operator reading `reasoningChars` must apply their own chars-per-token estimate
+ * and treat it as approximate. Reasoning that continues interleaved AFTER content starts (rare on
+ * observed providers, which front-load reasoning) is not counted -- the tap still stops at
+ * first-content, unchanged from before this addition.
  *
  * Never throws on tap failure -- a parse error or unexpected chunk shape in the observer branch
  * must never surface as a request failure the pipeline (or its retry/failover logic) can see.
@@ -82,6 +96,8 @@ function withStreamTiming(fetchImpl, { onTiming } = {}) {
       let buffer = '';
       let sawFirstChunk = false;
       let sawFirstContent = false;
+      let reasoningChars = 0;
+      let reasoningChunks = 0;
       try {
         readLoop: for (;;) {
           const { done, value } = await reader.read();
@@ -103,13 +119,23 @@ function withStreamTiming(fetchImpl, { onTiming } = {}) {
             }
             const elapsedMs = Math.max(0, Date.now() - startedAt);
             const kind = classifyChunkKind(chunk);
+            if (kind === 'reasoning') {
+              const delta = chunk?.choices?.[0]?.delta || {};
+              const field = reasoningDeltaField(delta);
+              const rawValue = field ? delta[field] : '';
+              const text = typeof rawValue === 'string'
+                ? rawValue
+                : (rawValue && typeof rawValue.text === 'string' ? rawValue.text : '');
+              reasoningChars += text.length;
+              reasoningChunks += 1;
+            }
             if (!sawFirstChunk) {
               sawFirstChunk = true;
               onTiming?.({ type: 'firstChunk', elapsedMs, kind });
             }
             if (!sawFirstContent && kind === 'content') {
               sawFirstContent = true;
-              onTiming?.({ type: 'firstContent', elapsedMs });
+              onTiming?.({ type: 'firstContent', elapsedMs, reasoningChars, reasoningChunks });
             }
             if (sawFirstChunk && sawFirstContent) break readLoop;
           }
