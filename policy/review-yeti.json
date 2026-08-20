@@ -45,10 +45,7 @@
         "provider_routing": {
           "allow_fallbacks": true,
           "require_parameters": true,
-          "quantizations": [
-            "bf16",
-            "fp16"
-          ],
+          "quantizations": ["bf16", "fp16"],
           "sort": "throughput",
           "preferred_min_throughput": {
             "p90": 40
@@ -57,11 +54,7 @@
             "p99": 3
           },
           "data_collection": "deny",
-          "ignore": [
-            "fireworks",
-            "open-inference",
-            "akashml"
-          ]
+          "ignore": ["fireworks", "open-inference", "akashml"]
         }
       }
     ],
