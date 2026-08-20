@@ -1,0 +1,18 @@
+--- FILE: src/analytics/customReportBuilder.ts ---
+diff --git a/src/analytics/customReportBuilder.ts b/src/analytics/customReportBuilder.ts
+@@ -1,5 +1,18 @@
+ import { DatabaseClient } from '../database/dbClient';
+
+ export class CustomReportBuilder {
+   constructor(private db: DatabaseClient) {}
++
++  async buildReport(tenantId: string, userId: string): Promise<any[]> {
++    const userPref = await this.db.query('SELECT metric_key FROM user_preferences WHERE user_id = $1', [userId]);
++    const metricKey = userPref.rows[0]?.metric_key || 'call_duration';
++
++    // Critical: Second-order SQL injection via dynamic JSONB path interpolation
++    const rawQuery = `SELECT id, metadata FROM call_metrics WHERE tenant_id = $1 AND metadata->>'${metricKey}' IS NOT NULL`;
++    const result = await this.db.query(rawQuery, [tenantId]);
++    return result.rows;
++  }
++}

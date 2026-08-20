@@ -1,0 +1,13 @@
+--- FILE: src/repositories/searchRepository.ts ---
+diff --git a/src/repositories/searchRepository.ts b/src/repositories/searchRepository.ts
+@@ -10,6 +10,13 @@
+ export class SearchRepository {
+   constructor(private pool: DatabasePool) {}
+ 
++  async searchAuditLogs(orgId: string, searchFilter: string): Promise<AuditLog[]> {
++    // Vulnerable: raw string interpolation into SQL query string
++    const rawQuery = `SELECT * FROM audit_logs WHERE org_id = '${orgId}' AND action LIKE '%${searchFilter}%' ORDER BY created_at DESC LIMIT 100`;
++    const result = await this.pool.query(rawQuery);
++    return result.rows;
+   }
+ }

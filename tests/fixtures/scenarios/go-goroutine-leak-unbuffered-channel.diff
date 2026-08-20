@@ -1,0 +1,17 @@
+--- FILE: pkg/stream/collector.go ---
+diff --git a/pkg/stream/collector.go b/pkg/stream/collector.go
+@@ -10,5 +10,18 @@
+ func CollectMetrics(ctx context.Context, endpoint string) (*MetricReport, error) {
++	ch := make(chan *MetricReport) // Bug: unbuffered channel leaks goroutine on timeout
++	go func() {
++		report := fetchReport(endpoint)
++		ch <- report
++	}()
++
++	select {
++	case res := <-ch:
++		return res, nil
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	}
+ }

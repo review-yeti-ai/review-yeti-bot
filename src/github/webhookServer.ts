@@ -46,16 +46,25 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
   const primaryPath = options.path || '/webhook';
 
   // Middleware 1: Parse JSON and retain raw body buffer
-  router.use(
+  router.use((req: RequestWithRawBody, res: Response, next: NextFunction) => {
+    if (req.body !== undefined && req.rawBody !== undefined) {
+      return next();
+    }
     express.json({
-      verify: (req: RequestWithRawBody, _res: Response, buf: Buffer) => {
-        req.rawBody = buf;
+      verify: (r: RequestWithRawBody, _res: Response, buf: Buffer) => {
+        r.rawBody = buf;
       },
-    })
-  );
+    })(req, res, next);
+  });
 
   // Middleware 2: Security & JSON Body Parsing Error Handler
   router.use((err: any, req: RequestWithRawBody, res: Response, next: NextFunction) => {
+    const p = req.path || '';
+    const orig = req.originalUrl || '';
+    const isWebhookPath = p === primaryPath || p === '/webhook' || p === '/api/webhook/github' || p === '/api/webhooks/github' || p.includes('/webhook') || orig.includes('/webhook');
+    if (!isWebhookPath) {
+      return next(err);
+    }
     if (err && (err instanceof SyntaxError || err.type === 'entity.parse.failed' || err.status === 400)) {
       const sigHeader = req.headers['x-hub-signature-256'] as string | undefined;
       if (sigHeader && req.rawBody) {

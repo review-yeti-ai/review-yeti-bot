@@ -716,10 +716,64 @@ function normalizeCost(cost) {
 }
 
 function formatCost(cost) {
+  if (typeof cost === 'string' && cost.toLowerCase().trim() === 'subscription') {
+    return 'Subscription';
+  }
   const numeric = normalizeCost(cost);
   if (numeric === null) return '—';
   const formatted = numeric.toFixed(3);
   return /e/i.test(formatted) ? '—' : `$${formatted}`;
+}
+
+/**
+ * Detects whether a provider or transport string corresponds to an unmetered/flat-rate subscription.
+ *
+ * @param {string|object} [provider] Provider identifier, name, or object
+ * @param {string|object} [transport] Transport type, identifier, or object
+ * @returns {boolean}
+ */
+function isSubscriptionTransport(provider, transport = '') {
+  const providerStr = typeof provider === 'string'
+    ? provider
+    : (provider?.id || provider?.name || provider?.transport || '');
+  const transportStr = typeof transport === 'string'
+    ? transport
+    : (transport?.id || transport?.name || transport?.type || '');
+  const text = `${providerStr} ${transportStr}`.toLowerCase().trim();
+  if (!text) return false;
+  if (/subscription/i.test(text)) return true;
+  return /^(fireworks|direct[-_]?fireworks|ollama|ollama[-_]?cloud|ollama[-_]?local)\b/i.test(providerStr.trim()) ||
+         /^(fireworks|direct[-_]?fireworks|ollama|ollama[-_]?cloud|ollama[-_]?local)\b/i.test(transportStr.trim()) ||
+         /^(fireworks|direct[-_]?fireworks|ollama|ollama[-_]?cloud|ollama[-_]?local)/i.test(text);
+}
+
+/**
+ * Determines whether a persona evaluation result ran on an unmetered or subscription transport.
+ *
+ * @param {object} res Persona result object
+ * @returns {boolean}
+ */
+function isSubscriptionLane(res) {
+  if (!res || typeof res !== 'object') return false;
+  if (res.isSubscription === true || String(res.isSubscription).toLowerCase() === 'true') return true;
+  if (typeof res.billing === 'string' && res.billing.toLowerCase().trim() === 'subscription') return true;
+  if (typeof res.pricingType === 'string' && res.pricingType.toLowerCase().trim() === 'subscription') return true;
+  if (typeof res.transport === 'string' && res.transport.toLowerCase().trim() === 'subscription') return true;
+  if (typeof res.cost === 'string' && res.cost.toLowerCase().trim() === 'subscription') return true;
+
+  const numCost = normalizeCost(res.cost);
+  if (numCost === null || numCost === 0) {
+    const providerStr = typeof res.provider === 'string'
+      ? res.provider
+      : (res.provider?.id || res.provider?.name || '');
+    const transportStr = typeof res.transport === 'string'
+      ? res.transport
+      : (res.transport?.id || res.transport?.name || res.transport?.type || '');
+    if (isSubscriptionTransport(providerStr, transportStr)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function formatTokenCount(tokens) {
@@ -1769,8 +1823,10 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
 
   // Build Persona Breakdown Table
   const rosterTotals = { P0: 0, P1: 0, P2: 0 };
-  let knownCostTotal = 0;
-  let knownCostCount = 0;
+  let meteredCostTotal = 0;
+  let meteredCostCount = 0;
+  let subscriptionCount = 0;
+  let unknownCostCount = 0;
   let inputTokenTotal = 0;
   let inputTokenCount = 0;
   let outputTokenTotal = 0;
@@ -1781,11 +1837,23 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     rosterTotals.P0 += counts.P0;
     rosterTotals.P1 += counts.P1;
     rosterTotals.P2 += counts.P2;
-    const cost = normalizeCost(res.cost);
-    if (cost !== null) {
-      knownCostTotal += cost;
-      knownCostCount += 1;
+
+    let costDisplay = '—';
+    if (isSubscriptionLane(res)) {
+      costDisplay = 'Subscription';
+      subscriptionCount += 1;
+    } else {
+      const cost = normalizeCost(res.cost);
+      if (cost !== null) {
+        meteredCostTotal += cost;
+        meteredCostCount += 1;
+        costDisplay = formatCost(cost);
+      } else {
+        unknownCostCount += 1;
+        costDisplay = '—';
+      }
     }
+
     const icon = res.decision === 'APPROVE' ? '✅' : '⚠️';
     const provider = escapeMarkdownTableCell(res.provider || 'openrouter');
     const model = escapeMarkdownTableCell(res.model || modelConfig.model || DEFAULT_MODEL);
@@ -1799,11 +1867,21 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
       outputTokenTotal += outputTokens;
       outputTokenCount += 1;
     }
-    breakdownRows += `| ${escapeMarkdownTableCell(res.displayName)} | \`${provider}\` | \`${model}\` | ${icon} ${res.decision} | 🔴 ${counts.P0} | 🟠 ${counts.P1} | 🟡 ${counts.P2} | ${formatTokenCount(inputTokens)} | ${formatTokenCount(outputTokens)} | ${formatCost(cost)} |\n`;
+    breakdownRows += `| ${escapeMarkdownTableCell(res.displayName)} | \`${provider}\` | \`${model}\` | ${icon} ${res.decision} | 🔴 ${counts.P0} | 🟠 ${counts.P1} | 🟡 ${counts.P2} | ${formatTokenCount(inputTokens)} | ${formatTokenCount(outputTokens)} | ${costDisplay} |\n`;
   });
-  const totalCost = knownCostCount === personaResults.length && personaResults.length > 0
-    ? formatCost(knownCostTotal)
-    : '—';
+
+  let totalCost = '—';
+  const totalLanes = personaResults.length;
+  if (totalLanes > 0 && unknownCostCount === 0) {
+    if (meteredCostCount > 0 && subscriptionCount > 0) {
+      totalCost = `${formatCost(meteredCostTotal)} + Subscription`;
+    } else if (meteredCostCount > 0) {
+      totalCost = formatCost(meteredCostTotal);
+    } else if (subscriptionCount > 0) {
+      totalCost = 'Subscription';
+    }
+  }
+
   const totalInputTokens = inputTokenCount > 0 ? `**${formatTokenCount(inputTokenTotal)}**` : '—';
   const totalOutputTokens = outputTokenCount > 0 ? `**${formatTokenCount(outputTokenTotal)}**` : '—';
   const totalCostCell = totalCost === '—' ? totalCost : `**${totalCost}**`;
@@ -2255,5 +2333,8 @@ module.exports = {
   computeArbitrationQuorum,
   formatPRComment,
   postOrOutputComment,
+  isSubscriptionTransport,
+  isSubscriptionLane,
+  formatCost,
   main,
 };

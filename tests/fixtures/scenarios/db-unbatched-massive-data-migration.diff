@@ -1,0 +1,9 @@
+--- FILE: migrations/20260820_backfill_account_uuid.sql ---
+diff --git a/migrations/20260820_backfill_account_uuid.sql b/migrations/20260820_backfill_account_uuid.sql
+@@ -1,2 +1,6 @@
+ -- Audit logs backfill migration
+
++-- Backfill uuid_v7 on large audit_logs table (50M+ rows)
++-- Defect: Unbatched single-statement mass update causes table bloat, extreme WAL generation, and replica lag
++UPDATE audit_logs SET uuid_v7 = gen_random_uuid() WHERE uuid_v7 IS NULL;
++

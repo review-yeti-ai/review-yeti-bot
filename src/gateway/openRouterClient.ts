@@ -86,6 +86,8 @@ export function normalizeOpenRouterModel(model: string): string {
     'synthetic/glm-5.2': 'z-ai/glm-5.2',
     'synthetic-new/glm-5.2-high': 'z-ai/glm-5.2',
     'glm-5.2': 'z-ai/glm-5.2',
+    'openrouter/5.6-luna-high': 'openai/gpt-5.6-luna',
+    '5.6-luna-high': 'openai/gpt-5.6-luna',
   };
   if (aliases[normalized]) return aliases[normalized];
   if (normalized.startsWith('synthetic/')) return 'z-ai/glm-5.2';
@@ -103,6 +105,9 @@ function estimateTokenCost(model: string, promptTokens: number, completionTokens
   if (lower.includes('claude') || lower.includes('opus')) {
     promptRate = 0.003;
     completionRate = 0.015;
+  } else if (lower.includes('luna')) {
+    promptRate = 0.002;
+    completionRate = 0.006;
   } else if (lower.includes('gpt') || lower.includes('codex')) {
     promptRate = 0.0025;
     completionRate = 0.01;

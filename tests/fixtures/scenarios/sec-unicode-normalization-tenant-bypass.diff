@@ -1,0 +1,17 @@
+--- FILE: src/auth/tenantAuthorizer.ts ---
+diff --git a/src/auth/tenantAuthorizer.ts b/src/auth/tenantAuthorizer.ts
+@@ -1,5 +1,16 @@
+ import { Request, Response, NextFunction } from 'express';
+
+ export function authorizeTenantSlug(req: Request, res: Response, next: NextFunction): void {
++  const requestedSlug = req.params.tenantSlug;
++  const userTenantSlug = req.user?.tenantSlug;
++
++  // Security defect: Raw equality check without Unicode NFKC normalization
++  // allows homoglyph spoofing (e.g. Cyrillic 'а' U+0430 vs Latin 'a' U+0061) to bypass tenant checks
++  if (!userTenantSlug || userTenantSlug !== requestedSlug) {
++    res.status(403).json({ error: 'Unauthorized tenant access' });
++    return;
++  }
++  next();
++}

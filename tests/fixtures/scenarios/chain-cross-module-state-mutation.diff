@@ -1,0 +1,44 @@
+--- FILE: src/context/tenantContextStore.ts ---
+diff --git a/src/context/tenantContextStore.ts b/src/context/tenantContextStore.ts
+@@ -1,5 +1,11 @@
+ export class TenantContextStore {
+   private cache = new Map<string, any>();
+
+   getTenantConfig(tenantId: string): any {
++    if (!this.cache.has(tenantId)) {
++      this.cache.set(tenantId, { tenantId, defaultDiscount: 0, customRules: {} });
++    }
++    return this.cache.get(tenantId); // Returns direct mutable reference
+   }
+ }
+
+--- FILE: src/services/pricingEngine.ts ---
+diff --git a/src/services/pricingEngine.ts b/src/services/pricingEngine.ts
+@@ -1,5 +1,13 @@
+ import { TenantContextStore } from '../context/tenantContextStore';
+
+ export class PricingEngine {
+   constructor(private store: TenantContextStore) {}
++
++  calculatePrice(tenantId: string, promoCode?: string): number {
++    const config = this.store.getTenantConfig(tenantId);
++    if (promoCode === 'SUPER_PROMO') {
++      // Critical defect: Mutates shared cached config reference in-place, bleeding discount to other tenants!
++      config.defaultDiscount = 0.5;
++    }
++    return 100 * (1 - config.defaultDiscount);
++  }
+ }
+
+--- FILE: src/controllers/pricingController.ts ---
+diff --git a/src/controllers/pricingController.ts b/src/controllers/pricingController.ts
+@@ -1,5 +1,9 @@
+ import { PricingEngine } from '../services/pricingEngine';
+
+ export class PricingController {
+   constructor(private engine: PricingEngine) {}
++
++  getPrice(req: any, res: any) {
++    res.json({ price: this.engine.calculatePrice(req.params.tenantId, req.query.promo) });
++  }
+ }
