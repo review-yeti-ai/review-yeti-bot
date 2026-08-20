@@ -146,6 +146,37 @@ run_script() {
 
 unset REVIEW_STATUS GATE_DECISION MERGE_ELIGIBLE FILES_OMITTED DISPATCH_REFLECTION_STATUS PROVIDER_RECEIPT_DIGEST
 
+# 0. A failure before the review action runs leaves every action output empty. The final
+#    always() gate must explain that upstream failure cleanly instead of crashing on bash's
+#    parameter-expansion guard and obscuring the actual failed setup step.
+set +e
+output="$(
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example REVIEW_PR_NUMBER=7 \
+    EXPECTED_BASE_SHA="$base_sha" EXPECTED_HEAD_SHA="$head_sha" \
+    REVIEW_STATUS='' GATE_DECISION='' MERGE_ELIGIBLE='' FILES_OMITTED='' \
+    DISPATCH_REFLECTION_STATUS='' PROVIDER_RECEIPT_DIGEST='' RUN_REPORT_PATH='' \
+    PR_METADATA_JSON="$(pr_json "$base_sha" "$head_sha")" RUN_VIEW_JSON='' CALL_LOG=/dev/null \
+    "$repo_root/scripts/check-review-verdict.sh" 2>&1
+)"
+rc=$?
+set -e
+if [[ "$rc" -eq 0 ]]; then
+  echo "[missing-review-outputs] expected fail-closed non-zero exit" >&2
+  exit 1
+fi
+if grep -Fq "REVIEW_STATUS is required" <<<"$output"; then
+  echo "[missing-review-outputs] raw parameter-expansion error obscured the upstream failure" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "::error::Review Yeti did not produce a verdict; an earlier workflow step failed" <<<"$output" || {
+  echo "[missing-review-outputs] expected the clean missing-verdict error" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[missing-review-outputs] passed (clean upstream-failure message)"
+
 # 1. Head changed while the run was in flight, verdict otherwise a clean SHIP/PASS: must
 #    self-cancel rather than mint (or fail-loudly-paint) a verdict for a SHA that no longer
 #    matches the PR, and must never exit 0.

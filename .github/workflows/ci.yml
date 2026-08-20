@@ -21,6 +21,7 @@ jobs:
       - name: Validate policy and scripts
         run: |
           node --check scripts/emit-policy.mjs
+          node --check scripts/validate-transport-handoff.mjs
           node --check scripts/review-yeti-local.mjs
           node --check scripts/review-yeti-mcp.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
@@ -50,6 +51,7 @@ jobs:
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output"
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
           node --test scripts/review-yeti-smoke.test.mjs
+          node --test scripts/validate-transport-handoff.test.mjs
           node --test scripts/review-yeti-local.test.mjs
           node --test scripts/review-yeti-mcp.test.mjs
           test -s policy/review-yeti.json

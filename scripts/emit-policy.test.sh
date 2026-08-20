@@ -47,7 +47,7 @@ if review.get('openrouter_max_attempts') != '2':
 budget = review.get('budget')
 if not isinstance(budget, dict):
     raise SystemExit('policy must keep lane limits in review_yeti.budget')
-for key in ('lane_deadline_ms', 'lane_call_budget', 'max_investigation_turns'):
+for key in ('lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_investigation_turns'):
     if key not in budget:
         raise SystemExit(f'policy budget is missing {key}')
 fallback = next((item for item in review.get('transports', []) if item.get('name') == 'openrouter-fallback'), None)
@@ -96,16 +96,19 @@ for transport in review.get('transports', []):
 # committed policy keeps the two in lockstep. Sums over however many transports the policy declares
 # -- not hardcoded to today's count -- so it stays meaningful if that count changes.
 lane_deadline_ms = int(budget['lane_deadline_ms'])
+lane_overhead_ms = int(budget['lane_overhead_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
 max_investigation_turns = int(budget['max_investigation_turns'])
 transport_timeout_sum_ms = sum(t['timeout_ms'] for t in transports)
 worst_case_transport_ms = transport_timeout_sum_ms * max_attempts * max_investigation_turns
-if worst_case_transport_ms > lane_deadline_ms:
+required_lane_budget_ms = worst_case_transport_ms + lane_overhead_ms
+if required_lane_budget_ms > lane_deadline_ms:
     raise SystemExit(
         f'worst-case transport budget ({worst_case_transport_ms}ms = {transport_timeout_sum_ms}ms across '
         f'{len(transports)} transports x {max_attempts} attempts x {max_investigation_turns} turns) '
-        f'exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); a full sequential '
-        'failover could never reach the last transport'
+        f'plus lane overhead reserve ({lane_overhead_ms}ms) exceeds '
+        f'review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); a full sequential '
+        'failover could never finish the last transport'
     )
 
 # Second half of the same invariant: a hosted run can retry up to max_passes lanes, so the worst
@@ -314,6 +317,48 @@ run_transport_retry_budget_overflow_case() {
   echo "[transport-retry-budget-overflow] passed"
 }
 
+# A lane also spends time outside provider generation: acquiring the streaming gate, validating
+# structured output, dispatching a failover, and recording evidence. The production incident in
+# run 32326867604 reached the final transport with only 23s left and was cancelled by the lane
+# deadline even though that transport was actively streaming. Prove the raw timeout product is not
+# sufficient unless the declared overhead reserve also fits.
+write_transport_overhead_overflow_policy() {
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+policy = json.load(open(source))
+review = policy['review_yeti']
+budget = review['budget']
+budget['lane_overhead_ms'] = '120000'
+raw_transport_budget = (
+    sum(item['timeout_ms'] for item in review['transports'])
+    * int(review['openrouter_max_attempts'])
+    * int(budget['max_investigation_turns'])
+)
+budget['lane_deadline_ms'] = str(raw_transport_budget)
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_transport_overhead_overflow_case() {
+  local output_file="$tmp_dir/transport-overhead-overflow.output"
+  write_transport_overhead_overflow_policy
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/transport-overhead-overflow.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 1 ]]; then
+    echo "[transport-overhead-overflow] expected exit 1, got $rc" >&2
+    cat "$tmp_dir/transport-overhead-overflow.log" >&2
+    exit 1
+  fi
+  grep -q 'plus lane overhead reserve' "$tmp_dir/transport-overhead-overflow.log"
+  echo "[transport-overhead-overflow] passed"
+}
+
 # Counterfactual proof for the TTFT-as-total-generation-cap guard. The committed policy's
 # The committed policy streams on every transport and keeps a first-token budget below the total
 # timeout. The danger is the OTHER combination: a transport declared non-streaming with a tighter
@@ -383,9 +428,9 @@ grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
 grep -q '^lane_call_budget<<' "$tmp_dir/valid.output"
 grep -qx '24' "$tmp_dir/valid.output"
 
-run_case valid-lane-deadline lane_deadline_ms 600000 0
+run_case valid-lane-deadline lane_deadline_ms 720000 0
 grep -q '^lane_deadline_ms<<' "$tmp_dir/valid-lane-deadline.output"
-grep -qx '600000' "$tmp_dir/valid-lane-deadline.output"
+grep -qx '720000' "$tmp_dir/valid-lane-deadline.output"
 
 run_case valid-investigation-turns max_investigation_turns 2 0
 grep -q '^max_investigation_turns<<' "$tmp_dir/valid-investigation-turns.output"
@@ -399,7 +444,7 @@ done
 run_case missing lane_call_budget __missing__ 1
 grep -q 'lane_call_budget must be a positive integer string' "$tmp_dir/missing.log"
 
-for key in lane_deadline_ms max_investigation_turns; do
+for key in lane_deadline_ms lane_overhead_ms max_investigation_turns; do
   for value in 0 -1 abc ''; do
     name="invalid-${key}-${value:-empty}"
     run_case "$name" "$key" "$value" 1
@@ -481,6 +526,7 @@ run_short_lane_deadline_case() {
 
 run_openrouter_timeout_mismatch_case
 run_short_lane_deadline_case
+run_transport_overhead_overflow_case
 
 echo "emit-policy lane_call_budget contract passed"
 echo "emit-policy bounded lane contract passed"

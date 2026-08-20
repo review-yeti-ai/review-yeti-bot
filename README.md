@@ -106,6 +106,11 @@ The current standard transport plan is deliberately limited and ordered:
 2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
 3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
 
+`OLLAMA_PR_REVIEW_API_KEY` is sourced from the masked Doppler secret in
+`example-workspace/prd` and synchronized to the repository's GitHub Actions secret of the same name.
+The workflow references only the GitHub secret; neither policy nor workflow files contain the
+credential value.
+
 The action starts each model turn at Fireworks and advances through the declared order when a
 transport fails. The OpenRouter entry requires compatible request parameters, full-precision
 quantizations, strict investigation output, and throughput-ranked routing while leaving provider
@@ -115,7 +120,8 @@ OpenRouter use maximum reasoning, while Ollama uses its documented `high` settin
 gets one retry, and OpenRouter owns endpoint selection after a timeout.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
-budget, a ten-minute (600s) lane deadline, and a 30-second OpenRouter first-token budget.
+budget, a twelve-minute (720s) lane deadline with a two-minute non-generation reserve, and a
+30-second OpenRouter first-token budget.
 
 - **timeout_ms = 30000 for Fireworks and Ollama, 90000 for the OpenRouter fallback.** The fast local probe (3.4s end to end for a ~26k char
   panel-sized prompt) is a lower bound, not a ceiling -- `max_diff_chars` allows prompts up to
@@ -148,7 +154,7 @@ SSE to hide upstream failures.
 **Lane-deadline arithmetic invariant.** A lane advances through the declared transports in order,
 so the worst case for one lane is every transport burning its full `timeout_ms` on every bounded
 attempt across every investigation turn before the lane gives up. `emit-policy.mjs` enforces
-`sum(transport.timeout_ms) * openrouter_max_attempts * max_investigation_turns <= budget.lane_deadline_ms`
+`sum(transport.timeout_ms) * openrouter_max_attempts * max_investigation_turns + budget.lane_overhead_ms <= budget.lane_deadline_ms`
 at policy-load time (both in the reusable workflow and in CI) -- summed over however many
 transports the policy declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` re-checks
 the same inequality against the committed policy plus counterfactual fixtures that violate it.
@@ -157,9 +163,11 @@ Separately,
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
 of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
 `30000 + 30000 + 90000 = 150000` per attempt,
-`150000 x 2 attempts x 2 turns = 600000 <= 600000`, and
-`max_passes(2) x lane_deadline_ms(600000) = 1200000 <= 1500000` (the 25-minute job cap, leaving
-300s for workflow setup, publishing, and verdict enforcement). This guards
+`150000 x 2 attempts x 2 turns + 120000 overhead = 720000 <= 720000`, and
+`max_passes(2) x lane_deadline_ms(720000) = 1440000 <= 1800000` (the 30-minute job cap, leaving
+360s for workflow setup, publishing, and verdict enforcement). The explicit overhead reserve
+covers streaming-gate wait, validation, failover dispatch, and evidence work that provider timeout
+arithmetic alone cannot represent. This guards
 against a repeat of the incident that motivated this change: at `timeout_ms: 180000` per transport,
 two transports alone summed to 360s against a 240s lane deadline, so a slow or stalled
 primary made the OpenRouter fallback structurally unreachable in exactly the case it exists for.
@@ -168,8 +176,8 @@ Before the model action starts, the reusable workflow runs `scripts/review-yeti-
 each configured transport using a bounded, review-shaped JSON request. The smoke test records only
 transport names and status, never credentials or response bodies, and fails closed when no
 transport can complete the request. Before smoke runs, the workflow decodes the base64 transport
-handoff and verifies the exact Fireworks -> Ollama -> OpenRouter order plus streaming on every
-entry. Its contract tests run in the central validation workflow so
+handoff and verifies that it exactly matches the checked-out policy, has unique names, and streams
+every entry. Its contract tests run in the central validation workflow so
 provider order, OpenRouter routing, response validation, fallback behavior, and policy-drift
 rejection are checked before a release can advance. The smoke result is also an admission filter:
 the action receives only transports that passed preflight, in configured order. A known-unhealthy

@@ -6,11 +6,11 @@ set -euo pipefail
 : "${REVIEW_PR_NUMBER:?REVIEW_PR_NUMBER is required}"
 : "${EXPECTED_BASE_SHA:?EXPECTED_BASE_SHA is required}"
 : "${EXPECTED_HEAD_SHA:?EXPECTED_HEAD_SHA is required}"
-: "${REVIEW_STATUS:?REVIEW_STATUS is required}"
-: "${GATE_DECISION:?GATE_DECISION is required}"
-: "${MERGE_ELIGIBLE:?MERGE_ELIGIBLE is required}"
-: "${FILES_OMITTED:?FILES_OMITTED is required}"
-: "${DISPATCH_REFLECTION_STATUS:?DISPATCH_REFLECTION_STATUS is required}"
+: "${REVIEW_STATUS:=}"
+: "${GATE_DECISION:=}"
+: "${MERGE_ELIGIBLE:=}"
+: "${FILES_OMITTED:=}"
+: "${DISPATCH_REFLECTION_STATUS:=}"
 # PROVIDER_RECEIPT_DIGEST is legitimately empty on a non-SHIP verdict (e.g.
 # INCOMPLETE_REVIEW/BLOCKED) -- do not `:?`-crash the whole script on it.
 # The regex check below already fails closed with a clean ::error:: BLOCK
@@ -33,6 +33,11 @@ if [[ "$actual_head" != "$EXPECTED_HEAD_SHA" ]]; then
   "$(dirname "${BASH_SOURCE[0]}")/self-cancel-run.sh" || true
   exit 1
 fi
+
+[[ -n "$REVIEW_STATUS" ]] || {
+  echo "::error::Review Yeti did not produce a verdict; an earlier workflow step failed"
+  exit 1
+}
 
 [[ "$REVIEW_STATUS" == SHIP ]] || { echo "::error::Review Yeti verdict is ${REVIEW_STATUS}, not SHIP"; exit 1; }
 [[ "$GATE_DECISION" == PASS ]] || { echo "::error::Review Yeti gate decision is ${GATE_DECISION}, not PASS"; exit 1; }

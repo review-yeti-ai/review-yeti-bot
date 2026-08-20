@@ -16,7 +16,7 @@ jobs:
   review:
     name: Review Yeti
     runs-on: blacksmith-2vcpu-ubuntu-2404-arm
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       REVIEW_REPOSITORY: ${{ github.repository }}
       REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -54,19 +54,10 @@ jobs:
 
       - name: Validate encoded transport handoff
         id: transport_handoff
+        working-directory: .exampleorg-review-actions
         env:
           TRANSPORT_PLAN_B64: ${{ steps.policy.outputs.transport_plan_b64 }}
-        run: |
-          test -n "$TRANSPORT_PLAN_B64"
-          node - <<'NODE'
-          const plan = JSON.parse(Buffer.from(process.env.TRANSPORT_PLAN_B64, 'base64').toString('utf8'));
-          if (!Array.isArray(plan) || plan.length !== 3) throw new Error('expected three ordered transports');
-          if (plan.map((entry) => entry.name).join(' -> ') !== 'fireworks -> ollama -> openrouter-fallback') {
-            throw new Error('unexpected transport order');
-          }
-          if (plan.some((entry) => entry.stream !== true)) throw new Error('all transports must stream');
-          console.log(`transport_plan_entries=${plan.length} stream=true`);
-          NODE
+        run: node scripts/validate-transport-handoff.mjs
 
       - name: Smoke-test Review Yeti transports
         id: smoke
@@ -132,7 +123,6 @@ jobs:
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           openrouter-ignore-providers: ${{ steps.policy.outputs.openrouter_ignore_providers }}
           openrouter-provider-routing: ${{ steps.policy.outputs.openrouter_provider_routing }}
-          openrouter-stream: ${{ steps.policy.outputs.openrouter_stream }}
           openrouter-timeout-ms: ${{ steps.policy.outputs.openrouter_timeout_ms }}
           openrouter-ttft-ms: ${{ steps.policy.outputs.openrouter_ttft_ms }}
           openrouter-max-attempts: ${{ steps.policy.outputs.openrouter_max_attempts }}

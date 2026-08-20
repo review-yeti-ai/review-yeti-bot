@@ -21,7 +21,7 @@ try {
 if (!channelPattern.test(review.action_channel || '')) {
   throw new Error('review_yeti.action_channel is not a permitted release channel');
 }
-for (const key of ['lane_deadline_ms', 'lane_call_budget', 'max_investigation_turns']) {
+for (const key of ['lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_investigation_turns']) {
   if (!/^[1-9][0-9]*$/.test(String(budget[key] ?? ''))) {
     throw new Error(`review_yeti.budget.${key} must be a positive integer string`);
   }
@@ -70,6 +70,7 @@ if (Number(budget.lane_deadline_ms) < openrouterTimeoutMs * openrouterMaxAttempt
 // sums over however many transports the policy declares, not a hardcoded count, so it stays
 // correct as that count changes.
 const laneDeadlineMs = Number(budget.lane_deadline_ms);
+const laneOverheadMs = Number(budget.lane_overhead_ms);
 const maxAttempts = Number(review.openrouter_max_attempts);
 if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
   throw new Error('review_yeti.openrouter_max_attempts must be a positive integer string');
@@ -77,14 +78,18 @@ if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
 if (!Number.isSafeInteger(maxInvestigationTurns) || maxInvestigationTurns < 1) {
   throw new Error('review_yeti.budget.max_investigation_turns must be a positive integer string');
 }
+if (!Number.isSafeInteger(laneOverheadMs) || laneOverheadMs < 1) {
+  throw new Error('review_yeti.budget.lane_overhead_ms must be a positive integer string');
+}
 const transportTimeoutSumMs = review.transports.reduce((sum, transport) => sum + transport.timeout_ms, 0);
 const worstCaseTransportMs = transportTimeoutSumMs * maxAttempts * maxInvestigationTurns;
-if (worstCaseTransportMs > laneDeadlineMs) {
+const requiredLaneBudgetMs = worstCaseTransportMs + laneOverheadMs;
+if (requiredLaneBudgetMs > laneDeadlineMs) {
   throw new Error(
     `worst-case transport budget (${worstCaseTransportMs}ms = ${transportTimeoutSumMs}ms across `
     + `${review.transports.length} transports x ${maxAttempts} attempts x ${maxInvestigationTurns} turns) `
-    + `exceeds review_yeti.budget.lane_deadline_ms (${laneDeadlineMs}ms); a full sequential failover `
-    + 'could never reach the last transport',
+    + `plus lane overhead reserve (${laneOverheadMs}ms) exceeds review_yeti.budget.lane_deadline_ms `
+    + `(${laneDeadlineMs}ms); a full sequential failover could never finish the last transport`,
   );
 }
 

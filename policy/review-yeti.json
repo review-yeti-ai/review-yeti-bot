@@ -12,7 +12,7 @@
         "api_key_env": "FIREWORKS_PR_REVIEW_API_KEY",
         "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
         "compat": "openai",
-        "timeout_ms": 60000,
+        "timeout_ms": 30000,
         "connect_timeout_ms": 15000,
         "stream": true,
         "reasoning_effort": "max",
@@ -36,7 +36,7 @@
         "api_key_env": "OPENROUTER_PR_REVIEW_API_KEY",
         "model": "deepseek/deepseek-v4-flash-0731",
         "compat": "openrouter",
-        "timeout_ms": 45000,
+        "timeout_ms": 90000,
         "connect_timeout_ms": 30000,
         "stream": true,
         "reasoning_effort": "max",
@@ -59,11 +59,12 @@
       }
     ],
     "openrouter_stream": "true",
-    "openrouter_timeout_ms": "45000",
+    "openrouter_timeout_ms": "90000",
     "openrouter_ttft_ms": "30000",
     "openrouter_max_attempts": "2",
     "budget": {
-      "lane_deadline_ms": "600000",
+      "lane_deadline_ms": "720000",
+      "lane_overhead_ms": "120000",
       "lane_call_budget": "24",
       "max_investigation_turns": "2"
     },
