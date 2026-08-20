@@ -7768,6 +7768,15 @@ async function main(options = {}) {
     env: runtimeEnv,
     commandRunner,
   });
+  // Issue #136: the trusted-default fallback below used to hard-code `rules.exclude: []`,
+  // silently ignoring a repo's plain `.review-yeti.yaml` `exclude:` list unless the heavier
+  // `review.units.enabled` trusted-config bootstrap was ALSO configured. `review.units` is about
+  // a stronger, verified-config guarantee (generatedPatterns/vendorPatterns, which have no plain
+  // top-level config key and so stay empty here by design); it was never meant to gate whether a
+  // repo's own plain exclude list is honored at all. Inherit `parsed.exclude` the same way
+  // `resolveTrustedReviewUnitsPolicy` already does for the trusted-config path (above).
+  const fallbackParsed = localConfig?.parsed && typeof localConfig.parsed === 'object' ? localConfig.parsed : {};
+  const fallbackExclude = Array.isArray(fallbackParsed.exclude) ? [...fallbackParsed.exclude] : [];
   const authoritativeUnitPolicy = reviewUnitsPolicy.enabled
     ? reviewUnitsPolicy
     : Object.freeze({
@@ -7775,8 +7784,8 @@ async function main(options = {}) {
       enabled: true,
       trustedBaseRef: prContext.baseSha,
       configDigest: sha256(''),
-      policyDigest: sha256(canonicalJson({ schemaVersion: 'review-unit-policy-v2', trustedBaseRef: prContext.baseSha, rules: {} })),
-      rules: Object.freeze({ exclude: [], generatedPatterns: [], vendorPatterns: [], maxFileDiffChars: actionPolicy?.maxFileDiffChars }),
+      policyDigest: sha256(canonicalJson({ schemaVersion: 'review-unit-policy-v2', trustedBaseRef: prContext.baseSha, rules: { exclude: fallbackExclude } })),
+      rules: Object.freeze({ exclude: fallbackExclude, generatedPatterns: [], vendorPatterns: [], maxFileDiffChars: actionPolicy?.maxFileDiffChars }),
     });
   if (reviewUnitsPolicy.enabled) console.log(`[Review units] Trusted manifest coverage enabled (policy=${reviewUnitsPolicy.policyDigest.slice(0, 12)}).`);
   const findingVerifierPolicy = resolveTrustedFindingVerifierPolicy({
