@@ -1,0 +1,10 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -85,14 +85,22 @@ export class BatchSqlLogger {
++  public formatCopyStreamData(records: CallDetailRecord[]): string {
++    // Efficient TSV format for PostgreSQL COPY FROM STDIN
++    return records
++      .map(r => `${r.id}\t${r.tenantId}\t${r.duration}\t${r.cost}\t${r.startTime.toISOString()}`)
++      .join('\n') + '\n';
++  }
+ }

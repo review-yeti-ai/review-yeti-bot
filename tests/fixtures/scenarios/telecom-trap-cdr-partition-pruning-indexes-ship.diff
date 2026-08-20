@@ -1,0 +1,10 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -40,14 +40,21 @@ export class BatchSqlLogger {
++  public getPartitionIndexDdl(tableName: string): string {
++    return `
++      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${tableName}_pruning
++      ON ${tableName} (created_at, tenant_id);
++    `;
++  }
+ }

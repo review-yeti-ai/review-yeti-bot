@@ -1,0 +1,19 @@
+--- FILE: pbx_device_manager/src/trunkAllocator.ts ---
+diff --git a/pbx_device_manager/src/trunkAllocator.ts b/pbx_device_manager/src/trunkAllocator.ts
+@@ -138,12 +138,9 @@
+   public async allocateTrunkWithLock(trunkId: string): Promise<boolean> {
+     const lock = await this.redisLock.acquire(`lock:${trunkId}`, 1000); // 1s TTL
+     if (!lock) return false;
+-    const heartbeat = this.startLockHeartbeat(lock);
+-    try {
+-      return await this.provisionTrunkResources(trunkId);
+-    } finally {
+-      heartbeat.stop();
+-      await lock.release();
+-    }
++    // Bug: Removed background heartbeat renewal during slow provisioning
++    const result = await this.slowProvisionTrunkResources(trunkId);
++    await lock.release();
++    return result;
+   }
+ }

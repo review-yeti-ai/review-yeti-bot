@@ -1,0 +1,18 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -108,11 +108,7 @@
+   public async flush(): Promise<void> {
+-    if (this.isFlushing || this.queue.length === 0) return;
+-    this.isFlushing = true;
+-    const batch = this.queue.splice(0, this.batchSize);
+-    try {
+-      await this.writeToDb(batch);
+-    } finally {
+-      this.isFlushing = false;
+-    }
++    // Bug: Removed isFlushing re-entrancy guard: concurrent flushes read same queue
++    const batch = [...this.queue];
++    await this.writeToDb(batch);
++    this.queue = [];
+   }
+ }

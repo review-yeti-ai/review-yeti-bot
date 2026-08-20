@@ -9,9 +9,12 @@ import { dashboardStore } from '../../src/persistence/dashboardStore';
 
 describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
   let app: any;
+  let server: any;
   let bus: LiveStreamBus;
+  let token: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    process.env.ADMIN_PASSWORD = 'admin123';
     process.env.WEBHOOK_SECRET = 'test_webhook_secret';
     process.env.GITHUB_APP_ID = '12345';
     process.env.GITHUB_APP_PRIVATE_KEY = 'test_key';
@@ -20,58 +23,57 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
     bus = LiveStreamBus.getInstance();
     bus.clearHistory();
     app = createApp();
+    server = app.listen(0);
+
+    const loginRes = await request(server)
+      .post('/api/auth/login')
+      .send({ username: 'admin', password: 'admin123' });
+    token = loginRes.body?.token || '';
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     bus.clearHistory();
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   describe('Tier 1: Core Feature Coverage (R1 - R4)', () => {
     describe('R1: Real-Time Live Job Streaming Dashboard', () => {
       it('TEST_R1_T1_01 — SSE Unauthenticated Public Stream Connection', async () => {
-        const server = app.listen(0);
         const port = (server.address() as any).port;
-        try {
-          const res = await new Promise<{ statusCode: number; contentType: string }>((resolve, reject) => {
-            const req = http.get(`http://127.0.0.1:${port}/api/live/stream?jobId=test-job-1`, (res) => {
-              resolve({
-                statusCode: res.statusCode || 0,
-                contentType: String(res.headers['content-type'] || ''),
-              });
-              req.destroy();
+        const res = await new Promise<{ statusCode: number; contentType: string }>((resolve, reject) => {
+          const req = http.get(`http://127.0.0.1:${port}/api/live/stream?jobId=test-job-1`, (res) => {
+            resolve({
+              statusCode: res.statusCode || 0,
+              contentType: String(res.headers['content-type'] || ''),
             });
-            req.on('error', (err) => reject(err));
+            req.destroy();
           });
-          expect(res.statusCode).toBe(200);
-          expect(res.contentType).toMatch(/text\/event-stream/);
-        } finally {
-          server.close();
-        }
+          req.on('error', (err) => reject(err));
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.contentType).toMatch(/text\/event-stream/);
       });
 
       it('TEST_R1_T1_02 — Authenticated SSE Stream Connection', async () => {
-        const server = app.listen(0);
         const port = (server.address() as any).port;
-        try {
-          const res = await new Promise<{ statusCode: number; contentType: string }>((resolve, reject) => {
-            const req = http.get(`http://127.0.0.1:${port}/api/live/stream?jobId=test-job-1&token=valid_token`, (res) => {
-              resolve({
-                statusCode: res.statusCode || 0,
-                contentType: String(res.headers['content-type'] || ''),
-              });
-              req.destroy();
+        const res = await new Promise<{ statusCode: number; contentType: string }>((resolve, reject) => {
+          const req = http.get(`http://127.0.0.1:${port}/api/live/stream?jobId=test-job-1&token=valid_token`, (res) => {
+            resolve({
+              statusCode: res.statusCode || 0,
+              contentType: String(res.headers['content-type'] || ''),
             });
-            req.on('error', (err) => reject(err));
+            req.destroy();
           });
-          expect(res.statusCode).toBe(200);
-          expect(res.contentType).toMatch(/text\/event-stream/);
-        } finally {
-          server.close();
-        }
+          req.on('error', (err) => reject(err));
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.contentType).toMatch(/text\/event-stream/);
       });
 
       it('TEST_R1_T1_03 — Active Jobs List API Retrieval', async () => {
-        const res = await request(app).get('/api/live/jobs');
+        const res = await request(server).get('/api/live/jobs');
         expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
         expect(Array.isArray(res.body.jobs)).toBe(true);
@@ -87,14 +89,14 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
           data: { message: 'Security scan started' },
         });
 
-        const res = await request(app).get(`/api/live/history?jobId=${jobId}`);
+        const res = await request(server).get(`/api/live/history?jobId=${jobId}`);
         expect(res.status).toBe(200);
         expect(res.body.jobId).toBe(jobId);
         expect(res.body.count).toBeGreaterThanOrEqual(1);
       });
 
       it('TEST_R1_T1_05 — Live Terminal Route Accessibility', async () => {
-        const res = await request(app).get('/live');
+        const res = await request(server).get('/live');
         expect(res.status).toBe(200);
         expect(res.header['content-type']).toMatch(/html/);
       });
@@ -102,12 +104,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
 
     describe('R2: Interactive Persona System Prompt & Settings Editor', () => {
       it('TEST_R2_T1_01 — Persona Roster Endpoint Retrieval', async () => {
-        const loginRes = await request(app)
-          .post('/api/auth/login')
-          .send({ username: 'admin', password: 'admin123' });
-        const token = loginRes.body.token;
-
-        const res = await request(app)
+        const res = await request(server)
           .get('/api/dashboard/personas')
           .set('Authorization', `Bearer ${token}`);
         expect(res.status).toBe(200);
@@ -116,12 +113,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
       });
 
       it('TEST_R2_T1_02 — Persona Custom System Prompt & Model Update', async () => {
-        const loginRes = await request(app)
-          .post('/api/auth/login')
-          .send({ username: 'admin', password: 'admin123' });
-        const token = loginRes.body.token;
-
-        const updateRes = await request(app)
+        const updateRes = await request(server)
           .put('/api/dashboard/personas/security')
           .set('Authorization', `Bearer ${token}`)
           .send({
@@ -143,12 +135,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
       });
 
       it('TEST_R2_T1_04 — Model Override Enforcement Validation', async () => {
-        const loginRes = await request(app)
-          .post('/api/auth/login')
-          .send({ username: 'admin', password: 'admin123' });
-        const token = loginRes.body.token;
-
-        const res = await request(app)
+        const res = await request(server)
           .put('/api/dashboard/personas/architecture')
           .set('Authorization', `Bearer ${token}`)
           .send({ model: 'gpt-4o' });
@@ -158,7 +145,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
       });
 
       it('TEST_R2_T1_05 — Settings Control Route Delivery', async () => {
-        const res = await request(app).get('/settings');
+        const res = await request(server).get('/settings');
         expect(res.status).toBe(200);
         expect(res.text).toContain('Platform &amp; Persona Control Panel');
       });
@@ -166,25 +153,20 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
 
     describe('R3: Linear-Grade Dark Aesthetic & UI Components', () => {
       it('TEST_R3_T1_01 — Obsidian Dark Theme Background CSS Rules', async () => {
-        const res = await request(app).get('/css/theme.css');
+        const res = await request(server).get('/css/theme.css');
         expect(res.status).toBe(200);
         expect(res.text).toContain('--bg-app');
       });
 
       it('TEST_R3_T1_02 — Sidebar Component Scripting & Navigation Links', async () => {
-        const res = await request(app).get('/live');
+        const res = await request(server).get('/live');
         expect(res.status).toBe(200);
         expect(res.text).toContain('Overview');
         expect(res.text).toContain('Persona Editor');
       });
 
       it('TEST_R3_T1_03 — Overview Dashboard Metrics Endpoint', async () => {
-        const loginRes = await request(app)
-          .post('/api/auth/login')
-          .send({ username: 'admin', password: 'admin123' });
-        const token = loginRes.body.token;
-
-        const res = await request(app)
+        const res = await request(server)
           .get('/api/dashboard/overview')
           .set('Authorization', `Bearer ${token}`);
         expect(res.status).toBe(200);
@@ -192,12 +174,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
       });
 
       it('TEST_R3_T1_04 — Integrations Roster Retrieval', async () => {
-        const loginRes = await request(app)
-          .post('/api/auth/login')
-          .send({ username: 'admin', password: 'admin123' });
-        const token = loginRes.body.token;
-
-        const res = await request(app)
+        const res = await request(server)
           .get('/api/dashboard/integrations')
           .set('Authorization', `Bearer ${token}`);
         expect(res.status).toBe(200);
@@ -220,29 +197,29 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
       });
 
       it('TEST_R4_T1_02 — Express Clean Route Delivery', async () => {
-        const res = await request(app).get('/live');
+        const res = await request(server).get('/live');
         expect(res.status).toBe(200);
         expect(res.header['cache-control']).toBe('no-cache, no-store, must-revalidate');
       });
 
       it('TEST_R4_T1_03 — Express SPA Wildcard Route Delivery', async () => {
-        const res = await request(app).get('/dashboard/unknown-page');
+        const res = await request(server).get('/dashboard/unknown-page');
         expect(res.status).toBe(200);
         expect(res.text).toContain('CT-Review-Bot');
       });
 
       it('TEST_R4_T1_04 — Legacy Route Aliasing (/dashboard/live -> live.html)', async () => {
-        const res = await request(app).get('/dashboard/live');
+        const res = await request(server).get('/dashboard/live');
         expect(res.status).toBe(200);
         expect(res.text).toContain('Live Agent Review Terminal');
       });
 
       it('TEST_R4_T1_05 — Health & Version API Endpoints', async () => {
-        const healthRes = await request(app).get('/health');
+        const healthRes = await request(server).get('/health');
         expect(healthRes.status).toBe(200);
         expect(healthRes.body.status).toBe('ok');
 
-        const versionRes = await request(app).get('/api/version');
+        const versionRes = await request(server).get('/api/version');
         expect(versionRes.status).toBe(200);
         expect(versionRes.body.success).toBe(true);
       });
@@ -266,12 +243,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
     });
 
     it('TEST_R2_T2_01 — Out-of-Bounds Confidence Threshold Validation', async () => {
-      const loginRes = await request(app)
-        .post('/api/auth/login')
-        .send({ username: 'admin', password: 'admin123' });
-      const token = loginRes.body.token;
-
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/dashboard/personas/security')
         .set('Authorization', `Bearer ${token}`)
         .send({ confidenceThreshold: 150 });
@@ -281,12 +253,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
     });
 
     it('TEST_R2_T2_02 — Disallowed Model Override Rejection', async () => {
-      const loginRes = await request(app)
-        .post('/api/auth/login')
-        .send({ username: 'admin', password: 'admin123' });
-      const token = loginRes.body.token;
-
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/dashboard/personas/architecture')
         .set('Authorization', `Bearer ${token}`)
         .send({ model: 'untrusted-local-model' });
@@ -296,12 +263,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
     });
 
     it('TEST_R2_T2_03 — Non-Existent Persona ID Target', async () => {
-      const loginRes = await request(app)
-        .post('/api/auth/login')
-        .send({ username: 'admin', password: 'admin123' });
-      const token = loginRes.body.token;
-
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/dashboard/personas/unknown_persona_xyz')
         .set('Authorization', `Bearer ${token}`)
         .send({ enabled: false });
@@ -311,7 +273,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
     });
 
     it('TEST_R4_T2_01 — Wildcard SPA Routing Fallback', async () => {
-      const res = await request(app).get('/non-existent-client-route-path');
+      const res = await request(server).get('/non-existent-client-route-path');
       expect(res.status).toBe(200);
       expect(res.text).toContain('CT-Review-Bot');
     });
@@ -338,51 +300,42 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
     });
 
     it('SCENARIO_3.3 — R2 x R4: Statically Served Frontend Calls Settings REST API', async () => {
-      const loginRes = await request(app)
-        .post('/api/auth/login')
-        .send({ username: 'admin', password: 'admin123' });
-      const token = loginRes.body.token;
-
-      const pageRes = await request(app).get('/settings');
+      const pageRes = await request(server).get('/settings');
       expect(pageRes.status).toBe(200);
 
-      const apiRes = await request(app)
+      const apiRes = await request(server)
         .put('/api/dashboard/personas/reliability')
         .set('Authorization', `Bearer ${token}`)
         .send({ effort: 'max' });
+
+      if (apiRes.status !== 200) {
+        console.log('DEBUG 3.3:', apiRes.status, apiRes.body, apiRes.text);
+      }
 
       expect(apiRes.status).toBe(200);
       expect(apiRes.body.persona.effort).toBe('max');
     });
 
     it('SCENARIO_3.4 — R1 x R3: Public Unauthenticated SSE Stream & Protected Admin Routes', async () => {
-      const server = app.listen(0);
       const port = (server.address() as any).port;
 
       const statusCode = await new Promise<number>((resolve) => {
         const req = http.get(`http://127.0.0.1:${port}/api/live/stream?jobId=public-pr-1`, (res) => {
           const code = res.statusCode || 500;
           req.destroy();
-          server.close();
           resolve(code);
         });
       });
       expect(statusCode).toBe(200);
 
-      const protectedRes = await request(app).get('/api/dashboard/settings');
+      const protectedRes = await request(server).get('/api/dashboard/settings');
       expect(protectedRes.status).toBe(401);
     });
   });
 
   describe('Tier 4: Real-World Application Workflows', () => {
     it('Workflow 4.2 — Administrator Persona Customization & Test Verification Flow', async () => {
-      const loginRes = await request(app)
-        .post('/api/auth/login')
-        .send({ username: 'admin', password: 'admin123' });
-      const token = loginRes.body.token;
-      expect(token).toBeDefined();
-
-      const updateRes = await request(app)
+      const updateRes = await request(server)
         .put('/api/dashboard/personas/security')
         .set('Authorization', `Bearer ${token}`)
         .send({

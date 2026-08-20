@@ -65,11 +65,11 @@ describe('Empirical Challenger Suite — Live Terminal & 9-Event SSE Streaming',
     });
 
     it('serves static assets referenced by dashboard UI (css/theme.css, css/components.css)', async () => {
-      const resTheme = await request(app).get('/css/theme.css');
+      const resTheme = await request(server || app).get('/css/theme.css');
       expect(resTheme.status).toBe(200);
       expect(resTheme.headers['content-type']).toContain('css');
 
-      const resComp = await request(app).get('/css/components.css');
+      const resComp = await request(server || app).get('/css/components.css');
       expect(resComp.status).toBe(200);
       expect(resComp.headers['content-type']).toContain('css');
     });
@@ -325,7 +325,7 @@ describe('Empirical Challenger Suite — Live Terminal & 9-Event SSE Streaming',
       });
 
       // Verify history API with Bearer token
-      const historyRes = await request(app)
+      const historyRes = await request(server || app)
         .get(`/api/live/history?jobId=${jobId}`)
         .set('Authorization', `Bearer ${validToken}`);
 
@@ -376,7 +376,7 @@ describe('Empirical Challenger Suite — Live Terminal & 9-Event SSE Streaming',
         });
       }
 
-      const historyRes = await request(app)
+      const historyRes = await request(server || app)
         .get(`/api/live/history?jobId=${jobId}`)
         .set('Authorization', `Bearer ${validToken}`);
 

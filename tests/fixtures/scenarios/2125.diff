@@ -1,0 +1,13 @@
+--- FILE: sip_signaling_service/src/sipServer.ts ---
+diff --git a/sip_signaling_service/src/sipServer.ts b/sip_signaling_service/src/sipServer.ts
+@@ -30,8 +30,9 @@
+   public emitCallEvent(eventName: string, callId: string, state: string): void {
+     this.eventBus.emit('call_event', {
+-      callId,
++      // Breaking contract change: renamed callId to sipCallId without updating cdr_pipeline
++      sipCallId: callId,
+       state,
+       timestamp: Date.now(),
+     });
+   }
+ }

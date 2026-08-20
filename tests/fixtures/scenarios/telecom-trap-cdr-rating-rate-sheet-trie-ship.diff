@@ -1,0 +1,14 @@
+--- FILE: cdr_pipeline/src/tariffRatingEngine.ts ---
+diff --git a/cdr_pipeline/src/tariffRatingEngine.ts b/cdr_pipeline/src/tariffRatingEngine.ts
+@@ -100,14 +100,24 @@ export class TariffRatingEngine {
++  public lookupLongestPrefix(e164: string): RateEntry | null {
++    let node = this.root;
++    let bestMatch: RateEntry | null = null;
++    for (const char of e164) {
++      if (!node.children.has(char)) break;
++      node = node.children.get(char)!;
++      if (node.rateEntry) bestMatch = node.rateEntry;
++    }
++    return bestMatch;
++  }
+ }
