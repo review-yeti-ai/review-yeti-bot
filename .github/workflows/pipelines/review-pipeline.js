@@ -2348,6 +2348,44 @@ async function callOpenRouterChat(fetchImpl, {
   return execute().finally(() => totalAbort.dispose());
 }
 
+// Streamed-completion smoke (API-2902). The pre-existing chat preflight below performs a
+// non-stream HTTP-200 ping that authenticates the credential/model but is invisible to an SSE
+// stream-termination regression -- exactly the bug class that shipped 2026-08-19: persona lanes
+// streamed tokens from Fireworks (billed), never saw the [DONE] marker, and hung to the lane
+// deadline while that ping kept logging "healthy http=200". This performs ONE minimal real
+// streamed completion (tiny prompt, low max_tokens) against the SAME target through the SAME
+// `callOpenRouterChat` streaming path the persona lanes use, and requires the stream to actually
+// terminate (`ok: true, streamed: true`) within the smoke budget. `stream_incomplete` is reported
+// when chunks were received but the completion never terminated -- the precise shape of today's
+// incident -- so the run can fail closed as an infra outage before any of the (up to 5) persona
+// lanes spends a single token on it.
+async function runStreamedChatPreflight(fetchImplementation, preflightTarget, { timeoutMs, signal } = {}) {
+  const result = await callOpenRouterChat(fetchImplementation, {
+    url: `${preflightTarget.baseUrl}/chat/completions`,
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${preflightTarget.apiKey}`,
+    },
+    body: {
+      model: preflightTarget.model,
+      messages: [{ role: 'user', content: 'reply with the single word ok' }],
+      max_tokens: 4,
+    },
+    timeoutMs,
+    connectTimeoutMs: timeoutMs,
+    ttftMs: timeoutMs,
+    preferStream: true,
+    signal,
+    transportName: `${preflightTarget.label || 'preflight'} (stream smoke)`,
+  });
+  if (result.ok === true && result.streamed === true) return { ok: true, reason: null, result };
+  const streamIncomplete = result.streamed === true && result.partial === true;
+  const reason = streamIncomplete
+    ? 'stream_incomplete'
+    : (result.failureClass || (result.streamed === true ? 'stream_preflight_failed' : 'stream_not_attempted'));
+  return { ok: false, reason, result };
+}
 
 function normalizeTokenCount(value) {
   if (value === null || value === undefined || String(value).trim() === '') return null;
@@ -8422,6 +8460,18 @@ async function main(options = {}) {
         } finally {
           preflightAbort.dispose();
         }
+        if (preflightPassed) {
+          const streamCheck = await cancellation.race(
+            runStreamedChatPreflight(fetchImplementation, preflightTarget, { timeoutMs, signal: cancellation.signal }),
+          );
+          if (cancellation.isCancellationResult(streamCheck)) return;
+          if (streamCheck.ok) {
+            console.log(`[Model] Streamed chat preflight ok (${preflightTarget.label})`);
+          } else {
+            preflightPassed = false;
+            console.warn(`[Model] Streamed chat preflight failed for ${preflightTarget.label} (reason=${streamCheck.reason}); trying the next transport if one remains.`);
+          }
+        }
         if (preflightPassed) break;
       }
       if (!preflightPassed) {
@@ -9871,6 +9921,7 @@ module.exports = {
   resolveRouteMeta,
   formatRouteLabel,
   callOpenRouterChat,
+  runStreamedChatPreflight,
   reviewWithModel,
   reviewWithTransports,
   createLaneCallBudget,
