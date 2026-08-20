@@ -1,0 +1,248 @@
+{
+  "schemaVersion": "testing-charter-eval-v1",
+  "personaId": "database",
+  "repetitions": 8,
+  "notes": [
+    "Seeded detection corpus for the database persona (2026-08-19 corpus-expansion). Same",
+    "self-contained-diff, AND-of-OR mustMatch grading evaluate-testing-charter.mjs already uses",
+    "for the testing, security, architecture and performance corpora -- no code changes needed,",
+    "only this fixture file.",
+    "One defect fixture per Flag rule in the database charter (destructive migration on a column",
+    "still referenced by deployed code, a locking NOT NULL DEFAULT migration on a large table, a",
+    "migration with no path backwards once partially applied, an unindexed filter on an unbounded",
+    "table, string-interpolated SQL), each paired with a near-miss clean control drawn from the",
+    "charter's own Do-not-flag list: the identical NOT NULL DEFAULT shape on a table the same",
+    "migration creates (no existing rows, no lock), an interpolated identifier that is allowlist-",
+    "validated rather than raw user text, and a missing index on a report query that is explicitly",
+    "off the request path.",
+    "Run candidate-only (no charter rewrite here to A/B against a baseline snapshot):",
+    "  node scripts/evaluate-testing-charter.mjs --fixture tests/fixtures/database-charter/evaluation-matrix.json --candidate-only"
+  ],
+  "fixtures": [
+    {
+      "id": "destructive-migration-drops-column-still-referenced",
+      "category": "defect",
+      "title": "Drop the legacy name columns now that display_name exists",
+      "summary": "Migration 0057 drops customers.first_name and customers.last_name, but getCustomerCard.js -- shown in the same diff with an unrelated added field -- still selects both columns, so the query will start failing (or the deploy must be perfectly sequenced) the moment this migration runs.",
+      "expectedPaths": [
+        "db/migrations/0057_drop_legacy_name_columns.sql"
+      ],
+      "mustMatch": [
+        [
+          "drop column",
+          "dropped",
+          "drops",
+          "still referenc",
+          "still select",
+          "still uses",
+          "still read"
+        ],
+        [
+          "first_name",
+          "last_name",
+          "getCustomerCard",
+          "deployed code",
+          "existing code",
+          "breaks"
+        ]
+      ],
+      "files": [
+        {
+          "path": "db/migrations/0057_drop_legacy_name_columns.sql",
+          "patch": "@@ -0,0 +1,3 @@\n+-- Migration 0057: drop the legacy name columns now that display_name exists.\n+ALTER TABLE customers DROP COLUMN first_name;\n+ALTER TABLE customers DROP COLUMN last_name;\n"
+        },
+        {
+          "path": "src/customers/getCustomerCard.js",
+          "patch": "@@ -1,5 +1,9 @@\n async function getCustomerCard(db, customerId) {\n-  const row = await db.query('SELECT first_name, last_name, display_name FROM customers WHERE id = $1', [customerId]);\n+  // Also return the customer's loyalty tier for the card badge.\n+  const row = await db.query(\n+    'SELECT first_name, last_name, display_name, loyalty_tier FROM customers WHERE id = $1',\n+    [customerId],\n+  );\n   return row.rows[0];\n }\n \n"
+        }
+      ]
+    },
+    {
+      "id": "locking-migration-notnull-default-on-large-table",
+      "category": "defect",
+      "title": "Add preferred_locale to orders, defaulting to en-US",
+      "summary": "The new orders.preferred_locale column is changed from a plain nullable ADD COLUMN to NOT NULL DEFAULT 'en-US' -- on a table this write-heavy, that rewrites/locks every existing row instead of backfilling in a separate, non-blocking step.",
+      "expectedPaths": [
+        "db/migrations/0058_add_preferred_locale.sql"
+      ],
+      "mustMatch": [
+        [
+          "lock",
+          "locking",
+          "locks the table",
+          "table lock",
+          "rewrite the table",
+          "full table rewrite",
+          "blocks writes",
+          "blocking"
+        ],
+        [
+          "not null",
+          "default",
+          "notnull"
+        ]
+      ],
+      "files": [
+        {
+          "path": "db/migrations/0058_add_preferred_locale.sql",
+          "patch": "@@ -1,2 +1,3 @@\n--- Migration 0058: add a nullable `preferred_locale` column to orders.\n-ALTER TABLE orders ADD COLUMN preferred_locale TEXT;\n+-- Migration 0058: add `preferred_locale` to orders, defaulting to en-US so\n+-- every existing row is populated immediately.\n+ALTER TABLE orders ADD COLUMN preferred_locale TEXT NOT NULL DEFAULT 'en-US';\n"
+        }
+      ]
+    },
+    {
+      "id": "migration-no-rollback-path-once-partially-applied",
+      "category": "defect",
+      "title": "Rename orders.total to orders.total_cents",
+      "summary": "A single migration adds total_cents, backfills it, drops the original total column, then renames total_cents back to total -- all as one non-atomic sequence. If it fails after the DROP but before the RENAME, the orders table is left with no total column and no defined way back; the safe two-migration add-then-backfill-then-drop-later sequence this file replaced is gone.",
+      "expectedPaths": [
+        "db/migrations/0059_rename_total_to_cents.sql"
+      ],
+      "mustMatch": [
+        [
+          "rollback",
+          "roll back",
+          "no way back",
+          "no path back",
+          "partially applied",
+          "partial failure",
+          "fails partway",
+          "fails midway",
+          "no viable path backwards"
+        ],
+        [
+          "drop",
+          "rename",
+          "single migration",
+          "one migration",
+          "same migration",
+          "non-atomic"
+        ]
+      ],
+      "files": [
+        {
+          "path": "db/migrations/0059_rename_total_to_cents.sql",
+          "patch": "@@ -1,4 +1,5 @@\n--- Migration 0059: rename orders.total to orders.total_cents in two safe steps.\n--- Step 1 (this migration): add the new column and backfill it.\n+-- Migration 0059: rename orders.total to orders.total_cents.\n ALTER TABLE orders ADD COLUMN total_cents BIGINT;\n UPDATE orders SET total_cents = ROUND(total * 100);\n+ALTER TABLE orders DROP COLUMN total;\n+ALTER TABLE orders RENAME COLUMN total_cents TO total;\n"
+        }
+      ]
+    },
+    {
+      "id": "unbounded-query-filter-with-no-supporting-index",
+      "category": "defect",
+      "title": "Filter customer orders by fulfillment status",
+      "summary": "The query gains a filter predicate on orders.fulfillment_status, but the migration in the same diff adds that column with no index -- on a table growing ~40k rows/day, this filter will do a full table scan that gets slower every day.",
+      "expectedPaths": [
+        "src/reports/getOrdersForCustomer.js",
+        "db/migrations/0060_add_fulfillment_status.sql"
+      ],
+      "mustMatch": [
+        [
+          "index",
+          "no index",
+          "unindexed",
+          "missing index",
+          "supporting index",
+          "full scan",
+          "full table scan",
+          "sequential scan",
+          "seq scan"
+        ],
+        [
+          "fulfillment_status",
+          "grows",
+          "growing",
+          "unbounded",
+          "40k",
+          "scale"
+        ]
+      ],
+      "files": [
+        {
+          "path": "src/reports/getOrdersForCustomer.js",
+          "patch": "@@ -1,5 +1,9 @@\n-async function getOrdersForCustomer(db, customerId) {\n-  return db.query('SELECT * FROM orders WHERE customer_id = $1 ORDER BY placed_at DESC', [customerId]);\n+async function getOrdersForCustomer(db, customerId, fulfillmentStatus) {\n+  // New filter: let callers narrow to a specific fulfillment status.\n+  return db.query(\n+    'SELECT * FROM orders WHERE customer_id = $1 AND fulfillment_status = $2 ORDER BY placed_at DESC',\n+    [customerId, fulfillmentStatus],\n+  );\n }\n \n module.exports = { getOrdersForCustomer };\n"
+        },
+        {
+          "path": "db/migrations/0060_add_fulfillment_status.sql",
+          "patch": "@@ -0,0 +1,3 @@\n+-- Migration 0060: add fulfillment_status to orders for the new filter UI.\n+-- orders grows by roughly 40k rows/day in production.\n+ALTER TABLE orders ADD COLUMN fulfillment_status TEXT;\n"
+        }
+      ]
+    },
+    {
+      "id": "string-interpolated-sql-order-by",
+      "category": "defect",
+      "title": "Let the admin orders table sort by a caller-chosen column",
+      "summary": "The query moves from a fully parameterised statement to a template literal that interpolates both the status value and the caller-supplied sortColumn directly into the SQL text, with no allowlist or validation on either -- a classic SQL-injection sink through the new sort parameter.",
+      "expectedPaths": [
+        "src/admin/getOrdersByStatus.js"
+      ],
+      "mustMatch": [
+        [
+          "string-interpolat",
+          "interpolat",
+          "template literal",
+          "concatenat",
+          "not parameteriz",
+          "unparameteriz",
+          "raw sql",
+          "sql injection",
+          "injection"
+        ],
+        [
+          "sortcolumn",
+          "sort column",
+          "caller-supplied",
+          "user-controlled",
+          "user input",
+          "untrusted"
+        ]
+      ],
+      "files": [
+        {
+          "path": "src/admin/getOrdersByStatus.js",
+          "patch": "@@ -1,5 +1,8 @@\n-async function getOrdersByStatus(db, status) {\n-  return db.query('SELECT id, total_cents FROM orders WHERE status = $1', [status]);\n+async function getOrdersByStatus(db, status, sortColumn) {\n+  // Allow the caller to choose the sort column for the admin orders table.\n+  return db.query(\n+    `SELECT id, total_cents FROM orders WHERE status = '${status}' ORDER BY ${sortColumn}`,\n+  );\n }\n \n module.exports = { getOrdersByStatus };\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-notnull-default-on-brand-new-table",
+      "category": "clean",
+      "title": "Add a rollout_percent column while creating feature_flags",
+      "summary": "Control: NOT NULL DEFAULT is added to a column on a table this same migration is creating with CREATE TABLE -- the surface pattern from the locking-migration defect (NOT NULL DEFAULT) is present, but there are zero existing rows to rewrite and no lock risk, because the table does not exist yet.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "db/migrations/0061_create_feature_flags.sql",
+          "patch": "@@ -1,6 +1,7 @@\n--- Migration 0061: create the feature_flags table.\n+-- Migration 0061: create feature_flags and seed the initial rollout gate.\n CREATE TABLE feature_flags (\n   id SERIAL PRIMARY KEY,\n   key TEXT NOT NULL,\n-  enabled BOOLEAN NOT NULL DEFAULT false\n+  enabled BOOLEAN NOT NULL DEFAULT false,\n+  rollout_percent INTEGER NOT NULL DEFAULT 0\n );\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-dynamic-order-by-validated-against-allowlist",
+      "category": "clean",
+      "title": "Restrict the admin sort column to a fixed allowlist",
+      "summary": "Control: sortColumn is still spliced into a template literal for ORDER BY, but only after being checked against a fixed Set of known-safe column names -- an attacker cannot supply arbitrary SQL text through it, and the actual user-controlled value (status) stays fully parameterised via $1. Surface pattern matches the SQL-injection defect fixture; the rule (unvalidated untrusted input reaching SQL) does not.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/admin/getOrdersByStatus.js",
+          "patch": "@@ -1,5 +1,15 @@\n-async function getOrdersByStatus(db, status) {\n-  return db.query('SELECT id, total_cents FROM orders WHERE status = $1', [status]);\n+const SORTABLE_COLUMNS = new Set(['placed_at', 'total_cents', 'status']);\n+\n+async function getOrdersByStatus(db, status, sortColumn) {\n+  // Allow the caller to choose the sort column for the admin orders table,\n+  // restricted to a fixed allowlist so the identifier is never user-supplied text.\n+  if (!SORTABLE_COLUMNS.has(sortColumn)) {\n+    throw new Error(`unsupported sort column: ${sortColumn}`);\n+  }\n+  return db.query(\n+    `SELECT id, total_cents FROM orders WHERE status = $1 ORDER BY ${sortColumn}`,\n+    [status],\n+  );\n }\n \n module.exports = { getOrdersByStatus };\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-missing-index-on-rarely-run-off-path-query",
+      "category": "clean",
+      "title": "Narrow the quarterly compliance report to a date range",
+      "summary": "Control: this query filters orders with no supporting composite index, the same surface shape as the missing-index defect fixture, but the function is explicitly a manually-triggered admin cron job that runs once per quarter, never on a request path -- exactly the case the charter's own do-not-flag list carves out ('queries that run rarely or off the request path').",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/compliance/generateQuarterlyComplianceReport.js",
+          "patch": "@@ -1,5 +1,10 @@\n-async function generateQuarterlyComplianceReport(db) {\n-  return db.query('SELECT * FROM orders WHERE flagged_for_review = true');\n+// Runs once per quarter from a manually-triggered admin cron job, never on\n+// a user-facing request path. Reads the full flagged set for compliance sign-off.\n+async function generateQuarterlyComplianceReport(db, quarterStart, quarterEnd) {\n+  return db.query(\n+    'SELECT * FROM orders WHERE flagged_for_review = true AND placed_at BETWEEN $1 AND $2',\n+    [quarterStart, quarterEnd],\n+  );\n }\n \n module.exports = { generateQuarterlyComplianceReport };\n"
+        }
+      ]
+    }
+  ]
+}
