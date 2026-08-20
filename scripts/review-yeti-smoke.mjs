@@ -74,8 +74,21 @@ export function validatePolicy(policy) {
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
 
-  if (transports[0].reasoning_effort !== 'max' || transports[0].perf_metrics_in_response !== true) {
-    throw new Error('Fireworks must use maximum reasoning with performance metrics');
+  // Fireworks must NOT pin reasoning_effort. Measured ablation 2026-08-20, live,
+  // deepseek-v4-flash-0731, N=8 reps x 9 fixtures x 3 arms, errored runs counted as failures:
+  //   arm       recall               errors      median latency
+  //   none      0.275 [0.16-0.43]     3/72 (4%)     6.6s
+  //   unset     0.750 [0.60-0.86]     7/72 (10%)   43.1s   <- best, and what this asserts
+  //   max       0.425 [0.29-0.58]    25/72 (35%)   83.3s
+  // `max` lost on detection with non-overlapping CIs against unset AND carried 3.5x the failure
+  // rate. Its median reasoning output was *lower* than unset's (837 vs 2,902 chars) -- consistent
+  // with blowing past the per-attempt budget mid-thought rather than reasoning further. The
+  // previous rule required exactly the worst-performing arm.
+  if (transports[0].reasoning_effort !== undefined) {
+    throw new Error('Fireworks must not pin reasoning_effort; measured ablation favours the provider default');
+  }
+  if (transports[0].perf_metrics_in_response !== true) {
+    throw new Error('Fireworks must report performance metrics');
   }
   if (transports[0].structured_output !== 'strict') throw new Error('Fireworks must use strict investigation output');
   if (transports[1].reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
@@ -103,7 +116,13 @@ export function validatePolicy(policy) {
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
   }
-  if (openrouter?.reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
+  // Same measured ablation as the fireworks rule above (2026-08-20, live, N=8x9x3, errored runs
+  // counted as failures): `max` scored recall 0.425 [0.29-0.58] with 25/72 errors, versus unset at
+  // 0.750 [0.60-0.86] with 7/72. Non-overlapping CIs, 3.5x the failure rate. Pinning `max` here
+  // required exactly the worst-measured arm.
+  if (openrouter?.reasoning_effort !== undefined) {
+    throw new Error('OpenRouter must not pin reasoning_effort; measured ablation favours the provider default');
+  }
   if (openrouter?.model !== 'deepseek/deepseek-v4-flash-0731') throw new Error('OpenRouter must use the approved structured-output fallback model');
   if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
   if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
