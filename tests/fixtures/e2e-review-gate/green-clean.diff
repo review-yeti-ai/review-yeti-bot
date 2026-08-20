@@ -1,0 +1,19 @@
+diff --git a/src/utils/formatDuration.js b/src/utils/formatDuration.js
+index 1111111..2222222 100644
+--- a/src/utils/formatDuration.js
++++ b/src/utils/formatDuration.js
+@@ -1,5 +1,10 @@
++/**
++ * Formats a duration in milliseconds as a compact "Xm Ys" string.
++ * @param {number} ms non-negative duration in milliseconds
++ * @returns {string}
++ */
+ function formatDuration(ms) {
+-  return `${Math.floor(ms / 60000)}m`;
++  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
++  const minutes = Math.floor(totalSeconds / 60);
++  const seconds = totalSeconds % 60;
++  return `${minutes}m ${seconds}s`;
+ }
+
+ module.exports = { formatDuration };
