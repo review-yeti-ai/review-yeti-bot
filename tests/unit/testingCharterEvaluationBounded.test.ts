@@ -13,7 +13,7 @@ const pipeline = require('../../.github/workflows/pipelines/review-pipeline.js')
 // (1) the harness is actually wired to the bounded engine, not silently still hitting the legacy
 // one, and (2) the grading plumbing (evaluateTestingCharter -> gradeRun -> findingMatchesFixture)
 // correctly detects a real bounded-contract finding and stays quiet on a clean control.
-const { evaluateTestingCharter, reviewWithBoundedInvestigation } = await import('../../scripts/evaluate-testing-charter.mjs');
+const { evaluateTestingCharter, reviewWithBoundedInvestigation, resolveEvalMaxTokens } = await import('../../scripts/evaluate-testing-charter.mjs');
 
 const matrix = JSON.parse(fs.readFileSync(path.resolve('tests/fixtures/testing-charter/evaluation-matrix.json'), 'utf8'));
 const persona = pipeline.PERSONA_CHARTERS.find((entry: { id: string }) => entry.id === matrix.personaId);
@@ -53,6 +53,47 @@ describe('evaluate-testing-charter.mjs bounded-path harness (offline)', () => {
     // the legacy reviewWithModel prompt says "one reviewer on a code review panel" instead.
     expect(capturedSystemPrompts.every((prompt) => prompt.includes('bounded code-review panel'))).toBe(true);
     expect(capturedSystemPrompts.some((prompt) => prompt.includes('one reviewer on a code review panel'))).toBe(false);
+  });
+
+  // Found live by legacy-cutover's repro (3/3 original defect fixtures failed on the first turn):
+  // a bare `{path}` manifest with no `id` field let the model echo a path-shaped string back as a
+  // finding's unit_id ("ru_tests/test_workflow_guard.py"), which requiredId()'s format check (no
+  // `/` allowed) hard-rejects as malformed_response -- a harness artifact, not a production defect,
+  // since real manifests always carry real ru_<sha256> ids.
+  it('gives the model real ru_<sha256> unit ids in the manifest, matching production\'s reviewUnitManifest.js shape exactly', async () => {
+    const capturedUserPrompts: string[] = [];
+    const modelClient = async ({ messages }: { messages: Array<{ role: string; content: string }> }) => {
+      const user = messages.find((message) => message.role === 'user');
+      if (user) capturedUserPrompts.push(user.content);
+      return {
+        ok: true,
+        content: JSON.stringify({
+          review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [],
+        }),
+      };
+    };
+
+    await evaluateTestingCharter(matrix, {
+      repetitions: 1,
+      concurrency: 1,
+      arms: [{ id: 'offline', persona, charter: persona.charter }],
+      reviewWithModel: reviewWithBoundedInvestigation,
+      modelOptions: { modelClient },
+    });
+
+    expect(capturedUserPrompts.length).toBeGreaterThan(0);
+    const fullPrompt = capturedUserPrompts.find((prompt) => prompt.includes('<review_units>'));
+    expect(fullPrompt, 'a <review_units> block must be present in some user turn').toBeTruthy();
+    const manifestBlock = (fullPrompt as string).slice(
+      (fullPrompt as string).indexOf('<review_units>'),
+      (fullPrompt as string).indexOf('</review_units>'),
+    );
+    const idMatches = [...manifestBlock.matchAll(/"id":"([^"]*)"/g)].map((match) => match[1]);
+    // Every changed fixture file must produce exactly one manifest unit.
+    expect(idMatches.length).toBeGreaterThan(0);
+    // Every unit id must be real-shaped (ru_<64-hex-sha256>) -- never a bare path, which is what
+    // requiredId() rejects on the model's echoed unit_id.
+    expect(idMatches.every((id) => /^ru_[a-f0-9]{64}$/.test(id))).toBe(true);
   });
 
   it('detects a seeded defect through the real bounded contract and stays quiet on a clean control', async () => {
@@ -121,5 +162,37 @@ describe('evaluate-testing-charter.mjs bounded-path harness (offline)', () => {
 
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row: { errored: boolean }) => row.errored === true)).toBe(true);
+  });
+});
+
+// Found live by eval-expand's PR #132 baseline: on the same fixtures/model/modelOptions, the
+// --bounded arm detected less than a third as often as the legacy arm, with over double the
+// malformed_response error rate. Root cause: this script's --max-tokens defaults to 4,096 and
+// applied that ceiling identically to both arms -- but production's bounded engine
+// (review-pipeline.js's resolveModelConfig) never sets an explicit max_tokens at all, letting the
+// provider's own (much larger) default apply. The bounded contract's response
+// (risk_plan + evidence_requests + risk_dispositions + findings, each with its own text fields)
+// is unavoidably larger than the legacy contract's, so a shared 4,096-token ceiling starves the
+// bounded arm specifically -- an eval-harness artifact, not evidence about the engine it measures.
+describe('resolveEvalMaxTokens (the bounded-vs-legacy token-ceiling parity fix)', () => {
+  it('omits maxTokens entirely for a bounded run when the caller did not explicitly ask for one, matching production\'s own uncapped behaviour', () => {
+    expect(resolveEvalMaxTokens({ argv: ['node', 'script.mjs', '--bounded'], bounded: true, fallback: 4_096 })).toBeUndefined();
+  });
+
+  it('still applies the flat default for a legacy run -- only the bounded path is production-uncapped', () => {
+    expect(resolveEvalMaxTokens({ argv: ['node', 'script.mjs'], bounded: false, fallback: 4_096 })).toBe(4_096);
+  });
+
+  it('honors an explicit --max-tokens on a bounded run -- a deliberate operator choice is never silently discarded', () => {
+    expect(resolveEvalMaxTokens({ argv: ['node', 'script.mjs', '--bounded', '--max-tokens', '2048'], bounded: true, fallback: 4_096 })).toBe(2_048);
+  });
+
+  it('honors an explicit --max-tokens on a legacy run too', () => {
+    expect(resolveEvalMaxTokens({ argv: ['node', 'script.mjs', '--max-tokens', '8192'], bounded: false, fallback: 4_096 })).toBe(8_192);
+  });
+
+  it('falls back to the flat default on a non-numeric or missing explicit value, on either path', () => {
+    expect(resolveEvalMaxTokens({ argv: ['node', 'script.mjs', '--max-tokens', 'not-a-number'], bounded: false, fallback: 4_096 })).toBe(4_096);
+    expect(resolveEvalMaxTokens({ argv: ['node', 'script.mjs', '--bounded', '--max-tokens', 'not-a-number'], bounded: true, fallback: 4_096 })).toBe(4_096);
   });
 });
