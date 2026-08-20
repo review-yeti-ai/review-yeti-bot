@@ -9,10 +9,26 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const policy = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
 
-const { reviewWithModel, PERSONA_CHARTERS } = pipeline;
+const { reviewWithModel: reviewWithModelRaw, PERSONA_CHARTERS } = pipeline;
 const { resolveGatewayIdentity } = policy;
 const persona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
 const diffFiles = [{ path: 'src/a.ts', patch: '+x', addedLines: [], deletedLines: [] }];
+
+// reviewWithModel now requires a caller-supplied options.investigationMessages (the legacy
+// single-shot prompt-building/parsing path it used to fall back to is gone). These tests are
+// about gateway/transport routing, not message content, so every call gets the same bounded
+// stand-in messages unless it supplies its own.
+const DEFAULT_INVESTIGATION_MESSAGES = [
+  { role: 'system', content: 'You are a bounded code-review panel reviewer.' },
+  { role: 'user', content: '<review_manifest></review_manifest><pull_request_diff></pull_request_diff>' },
+];
+function reviewWithModel(persona: any, diffFiles: any, prContext: any, sessionContext: any, options: any = {}) {
+  return reviewWithModelRaw(persona, diffFiles, prContext, sessionContext, {
+    rawTurn: true,
+    investigationMessages: DEFAULT_INVESTIGATION_MESSAGES,
+    ...options,
+  });
+}
 
 /**
  * Fetch stub that records every request and answers the (unconditional, per operator directive)
@@ -79,7 +95,7 @@ describe('gateway-neutral request body', () => {
     expect(requests[0].body).not.toHaveProperty('provider');
     expect(requests[0].body).not.toHaveProperty('session_id');
     expect(requests[0].body).not.toHaveProperty('plugins');
-    expect(res.decision).not.toBe('ERROR');
+    expect(res.ok).toBe(true);
   });
 
   it('still attaches provider routing and session_id on OpenRouter', async () => {
@@ -123,7 +139,7 @@ describe('gateway-neutral request body', () => {
         timeoutMs: 30_000,
       },
     });
-    expect(res.decision).not.toBe('ERROR');
+    expect(res.ok).toBe(true);
     expect(res.error).toBeUndefined();
   });
 });

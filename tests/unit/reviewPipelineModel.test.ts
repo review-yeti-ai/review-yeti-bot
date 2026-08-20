@@ -9,9 +9,26 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
 
-const { reviewWithModel, resolveModelConfig, PERSONA_CHARTERS, addRunScopedProviderBan, RUN_SCOPED_PROVIDER_BAN_MAX } = pipeline;
+const { reviewWithModel: reviewWithModelRaw, resolveModelConfig, PERSONA_CHARTERS, addRunScopedProviderBan, RUN_SCOPED_PROVIDER_BAN_MAX } = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
 const dependencyPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'dependencies');
+
+// reviewWithModel now requires a caller-supplied options.investigationMessages (the legacy
+// single-shot prompt-building/parsing path it used to fall back to is gone -- see the deletion
+// this test file's own "reviewWithModel" tests were rewritten for). Transport-behavior tests
+// (retries, fallback, provider routing, telemetry, lane budget) don't care about message content,
+// so they get the same bounded stand-in messages by default unless they supply their own.
+const DEFAULT_INVESTIGATION_MESSAGES = [
+  { role: 'system', content: 'You are a bounded code-review panel reviewer.' },
+  { role: 'user', content: '<review_manifest></review_manifest><pull_request_diff></pull_request_diff>' },
+];
+function reviewWithModel(persona: any, diffFiles: any, prContext: any, sessionContext: any, options: any = {}) {
+  return reviewWithModelRaw(persona, diffFiles, prContext, sessionContext, {
+    rawTurn: true,
+    investigationMessages: DEFAULT_INVESTIGATION_MESSAGES,
+    ...options,
+  });
+}
 
 const diffFiles = [
   {
@@ -105,70 +122,6 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.stream).toBe(true);
   });
 
-  it('puts bounded prior decisions in user data and never in the trusted system prompt', async () => {
-    const decisionLedgerText = [
-      'Prior Review Yeti decisions (same pull request):',
-      '- [P1] src/api/user.ts:42 — Tenant predicate is missing',
-    ].join('\n');
-    const { impl, calls } = stubFetch('{"findings":[]}');
-
-    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, {
-      augmentedHeader: 'accepted until API-1234',
-    }, {
-      apiKey: 'k',
-      baseUrl: 'https://api.example.com/v1',
-      model: 'test/model',
-      fetchImpl: impl,
-      maxAttempts: 1,
-      fileManifest: 'Complete pull request file manifest:\n- src/api/user.ts',
-      decisionLedgerText,
-    });
-
-    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
-    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
-    expect(system).toContain('A prior-decisions section may appear');
-    expect(system).not.toContain('Tenant predicate is missing');
-    expect(system).not.toContain('accepted until API-1234');
-    expect(user.indexOf('Complete pull request file manifest')).toBeLessThan(user.indexOf('Prior Review Yeti decisions'));
-    expect(user).toContain('[P1] src/api/user.ts:42');
-    expect(user).not.toContain('accepted until API-1234');
-  });
-
-  it('adds no prior-decision user block when the ledger is empty', async () => {
-    const { impl, calls } = stubFetch('{"findings":[]}');
-    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
-      apiKey: 'k',
-      baseUrl: 'https://api.example.com/v1',
-      model: 'test/model',
-      fetchImpl: impl,
-      maxAttempts: 1,
-      decisionLedgerText: '',
-    });
-
-    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
-    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
-    expect(system).toContain('A prior-decisions section may appear');
-    expect(user).not.toContain('Prior Review Yeti decisions');
-  });
-
-  it('adds the bounded Honcho advisory block to user data, never the trusted system prompt', async () => {
-    const { impl, calls } = stubFetch('{"findings":[]}');
-    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
-      apiKey: 'k',
-      baseUrl: 'https://api.example.com/v1',
-      model: 'test/model',
-      fetchImpl: impl,
-      maxAttempts: 1,
-      honchoContextBlock: 'Honcho advisory memory (untrusted):\n- prior P1 on tenant scoping',
-    });
-
-    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
-    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
-    expect(system).not.toContain('prior P1 on tenant scoping');
-    expect(user).toContain('Honcho advisory memory (untrusted):');
-    expect(user).toContain('prior P1 on tenant scoping');
-  });
-
   it('uses the configured DeepSeek fallback after the primary model has a transient failure', async () => {
     const calls: any[] = [];
     const fetchImpl = async (url: string, init: any) => {
@@ -222,7 +175,8 @@ describe('reviewWithModel', () => {
     expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(result.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(result.fallbackUsed).toBe(true);
-    expect(result.findings).toHaveLength(1);
+    expect(result.ok).toBe(true);
+    expect(result.content).toBe(validFindings);
   });
 
   it('retries the primary model before moving to the configured fallback', async () => {
@@ -318,7 +272,7 @@ describe('reviewWithModel', () => {
     expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(calls[1].body.stream).toBe(true);
     expect(result.fallbackUsed).toBe(true);
-    expect(result.decision).toBe('FINDINGS');
+    expect(result.ok).toBe(true);
   });
 
   // REL-271 (D3): attempt 2 no longer gets a doubled response budget -- every attempt uses the
@@ -362,7 +316,7 @@ describe('reviewWithModel', () => {
     // Both the initial attempt and retry remain streamed.
     expect(calls[0].body.stream).toBe(true);
     expect(calls[1].body.stream).toBe(true);
-    expect(result.decision).toBe('APPROVE');
+    expect(result.ok).toBe(true);
     expect(result.provider).toBe('ExampleCloud');
   });
 
@@ -424,7 +378,7 @@ describe('reviewWithModel', () => {
     expect(calls[1].body.session_id).toBeUndefined();
     expect(calls[1].body.provider.ignore).toEqual(HARD_BANNED_PROVIDER_SLUGS);
     expect(calls[1].body.provider.ignore).not.toContain('examplecloud');
-    expect(result.decision).toBe('APPROVE');
+    expect(result.ok).toBe(true);
     expect(result.provider).toBe('RecoveredCloud');
   });
 
@@ -496,7 +450,7 @@ describe('reviewWithModel', () => {
     expect(calls[2].body.session_id).toBeTruthy();
     expect(calls[2].body.provider.ignore).toEqual(HARD_BANNED_PROVIDER_SLUGS);
     expect(calls[2].body.provider.ignore).not.toContain('examplecloud');
-    expect(result.decision).toBe('APPROVE');
+    expect(result.ok).toBe(true);
     expect(result.fallbackUsed).toBe(true);
     expect(result.provider).toBe('FallbackCloud');
   });
@@ -606,7 +560,7 @@ describe('reviewWithModel', () => {
       timeoutMs: 20,
     });
 
-    expect(result.decision).toBe('FINDINGS');
+    expect(result.ok).toBe(true);
     expect(calls).toHaveLength(2);
     expect(calls[1].body.provider.ignore).toContain('examplecloud');
     expect(result.provider).toBe('OpenAI');
@@ -672,7 +626,7 @@ describe('reviewWithModel', () => {
     expect(calls[1].body.provider.ignore).toContain('cerebras');
     expect(calls[1].body.session_id).toBeUndefined();
     expect(result.provider).toBe('OpenAI');
-    expect(result.decision).toBe('APPROVE');
+    expect(result.ok).toBe(true);
   });
 
   it('lets OpenRouter reroute a timed-out provider when timeout quarantine is disabled', async () => {
@@ -738,7 +692,7 @@ describe('reviewWithModel', () => {
       runTimedOutProviders,
     });
 
-    expect(result.decision).toBe('APPROVE');
+    expect(result.ok).toBe(true);
     expect(calls).toHaveLength(2);
     expect(calls[1].provider?.ignore || []).not.toContain('examplecloud');
     expect(calls[1].session_id).toBeUndefined();
@@ -837,7 +791,7 @@ describe('reviewWithModel', () => {
         runTimedOutProviders,
       });
 
-      expect(laneOne.decision).toBe('APPROVE');
+      expect(laneOne.ok).toBe(true);
       expect(runTimedOutProviders.has('digitalocean')).toBe(true);
 
       // A second, structurally fresh lane call (a different persona lane in the same review run)
@@ -971,63 +925,6 @@ describe('reviewWithModel', () => {
     });
   });
 
-  it('treats empty streamed output as retryable before using the fallback', async () => {
-    const calls: any[] = [];
-    const fetchImpl = async (url: string, init: any) => {
-      const body = JSON.parse(init.body);
-      calls.push({ url, init, body });
-      const isPrimary = body.model === 'openrouter/auto-beta';
-      const payload = isPrimary
-        ? { choices: [{ delta: { content: '' } }] }
-        : { choices: [{ delta: { content: validFindings } }] };
-      return {
-        ok: true,
-        status: 200,
-        text: async () => '',
-        json: async () => payload,
-        body: sseBody(payload),
-      };
-    };
-
-    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
-      apiKey: 'k',
-      baseUrl: 'https://api.example.com/v1',
-      model: 'openrouter/auto-beta',
-      fetchImpl,
-      maxAttempts: 1,
-      openRouterPolicy: {
-        allowedModels: [],
-        fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
-        costQualityTradeoff: undefined,
-        dataCollection: undefined,
-        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
-        providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
-        timeoutMs: 30_000,
-      },
-    });
-
-    expect(calls).toHaveLength(2);
-    expect(calls[0].body.model).toBe('openrouter/auto-beta');
-    expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(result.fallbackUsed).toBe(true);
-    expect(result.decision).toBe('FINDINGS');
-  });
-
-  it('posts the persona charter as the system prompt to the chat completions endpoint', async () => {
-    const { impl, calls } = stubFetch(validFindings);
-    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
-      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
-    });
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('https://api.example.com/v1/chat/completions');
-    expect(calls[0].init.headers.Authorization).toBe('Bearer k');
-    expect(calls[0].body.model).toBe('m');
-    expect(calls[0].body.provider).toEqual({ ignore: HARD_BANNED_PROVIDER_SLUGS });
-    const system = calls[0].body.messages.find((m: any) => m.role === 'system').content;
-    expect(system).toContain(securityPersona.charter);
-  });
-
   it('passes the configured provider routing override through unchanged', async () => {
     const { impl, calls } = stubFetch(validFindings);
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
@@ -1152,24 +1049,6 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.response_format).not.toMatchObject({ type: 'json_schema' });
   });
 
-  it('does not apply the investigation schema to a legacy review turn', async () => {
-    const { impl, calls } = stubFetch(validFindings);
-    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
-      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
-      openRouterPolicy: {
-        allowedModels: [],
-        costQualityTradeoff: undefined,
-        dataCollection: undefined,
-        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
-        structuredOutput: 'strict',
-        providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
-        timeoutMs: 30_000,
-      },
-    });
-
-    expect(calls[0].body.response_format).toEqual({ type: 'json_object' });
-  });
-
   it('omits response_format when the trusted transport marks the model as unsupported', async () => {
     const { impl, calls } = stubFetch(validFindings);
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
@@ -1292,7 +1171,7 @@ describe('reviewWithModel', () => {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl, maxAttempts: 1,
     });
 
-    expect(result).toMatchObject({ decision: 'FINDINGS' });
+    expect(result).toMatchObject({ ok: true });
     expect(result.error).toBeUndefined();
   });
 
@@ -1341,168 +1220,6 @@ describe('reviewWithModel', () => {
     expect(res.usage).toEqual({ promptTokens: 100, completionTokens: 20, costUSD: 0.0074 });
   });
 
-  it('uses the canonical fetchImplementation boundary and fails closed on malformed provider JSON', async () => {
-    const fetchImplementation = async () => new Response('{not-json', {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
-      apiKey: 'k',
-      baseUrl: 'https://llm.test/v1',
-      model: 'synthetic-reviewer',
-      fetchImplementation,
-    });
-
-    expect(res.decision).toBe('ERROR');
-    expect(res.findings).toEqual([]);
-    expect(res.error).toBeTruthy();
-  });
-
-  it('returns structured findings parsed from the model response', async () => {
-    const { impl } = stubFetch(validFindings);
-    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
-      apiKey: 'k', fetchImpl: impl,
-    });
-    expect(res.findings).toHaveLength(1);
-    expect(res.findings[0].severity).toBe('P1');
-    expect(res.findings[0].path).toBe('src/api/user.ts');
-    expect(res.decision).toBe('FINDINGS');
-  });
-
-  it('normalizes a dependency evidence request without treating it as a clean approval', async () => {
-    const { impl } = stubFetch(JSON.stringify({
-      review_status: 'NEEDS_EVIDENCE',
-      evidence_requests: [{ path: 'package-lock.json', kind: 'lockfile', reason: 'verify the resolved integrity entry' }],
-      findings: [],
-    }));
-    const res = await reviewWithModel(dependencyPersona, [{
-      path: 'package.json',
-      patch: '@@ -1 +1 @@\n+{"dependencies":{"example":"1.0.0"}}',
-    }], { repo: 'o/r' }, null, {
-      apiKey: 'k', fetchImpl: impl,
-    });
-
-    expect(res.reviewStatus).toBe('NEEDS_EVIDENCE');
-    expect(res.evidenceRequests).toEqual([{
-      path: 'package-lock.json',
-      kind: 'lockfile',
-      reason: 'verify the resolved integrity entry',
-    }]);
-    expect(res.decision).toBe('NEEDS_EVIDENCE');
-    expect(res.findings).toEqual([]);
-  });
-
-  it('bounds string and unsafe evidence requests before they reach the follow-up loop', async () => {
-    const { impl } = stubFetch(JSON.stringify({
-      review_status: 'NEEDS_EVIDENCE',
-      evidence_requests: [
-        'package-lock.json',
-        { path: '../secrets.txt', kind: 'lockfile' },
-        { path: '/absolute.txt', kind: 'lockfile' },
-        { path: 'package.json', kind: 'manifest', reason: 'r'.repeat(500) },
-      ],
-      findings: [],
-    }));
-    const res = await reviewWithModel(dependencyPersona, [{
-      path: 'package-lock.json',
-      patch: '@@ -1 +1 @@\n+"lockfileVersion": 3',
-    }], { repo: 'o/r' }, null, { apiKey: 'k', fetchImpl: impl });
-
-    expect(res.evidenceRequests).toEqual([
-      { path: 'package-lock.json', kind: 'other', reason: 'requested by the reviewer' },
-      { path: 'package.json', kind: 'manifest', reason: 'r'.repeat(400) },
-    ]);
-  });
-
-  it('includes bounded evidence and turn state in an investigation follow-up prompt', async () => {
-    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
-    const res = await reviewWithModel(dependencyPersona, [{
-      path: 'package-lock.json',
-      patch: '@@ -1 +1 @@\n+"integrity":"sha512-example"',
-    }], { repo: 'o/r' }, {
-      investigationContext: 'DEPENDENCY EVIDENCE\n- package-lock.json: integrity=sha512-example',
-    }, {
-      apiKey: 'k', fetchImpl: impl, turn: 2, maxInvestigationTurns: 2,
-    });
-
-    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
-    const user = calls[0].body.messages.find((message: any) => message.role === 'user').content;
-    expect(system).toContain('evidence follow-up');
-    expect(system).toContain('kind must match the path');
-    expect(user).toContain('Dependency evidence follow-up turn 2 of 2');
-    expect(user).toContain('sha512-example');
-    expect(res.turn).toBe(2);
-    expect(res.reviewStatus).toBe('APPROVE');
-  });
-
-  it('runs one bounded dependency evidence follow-up and marks unresolved evidence incomplete', async () => {
-    const calls: any[] = [];
-    const result = await pipeline.runPersonaInvestigation({
-      persona: dependencyPersona,
-      diffFiles: [{ path: 'package.json', patch: '@@ -1 +1 @@\n+"example":"1.0.0"' }],
-      allDiffFiles: [{ path: 'package.json', patch: '@@ -1 +1 @@\n+"example":"1.0.0"' }],
-      prContext: { repo: 'o/r', prNumber: '1' },
-      maxInvestigationTurns: 2,
-      modelOptions: {
-        modelClient: ({ options }: any) => {
-          calls.push(options);
-          return calls.length === 1
-            ? { personaId: 'dependencies', displayName: 'Dependencies', provider: 'test', model: 'test', decision: 'NEEDS_EVIDENCE', reviewStatus: 'NEEDS_EVIDENCE', evidenceRequests: [{ path: 'package-lock.json', kind: 'lockfile', reason: 'check the resolved version' }], findings: [], usage: { promptTokens: 1, completionTokens: 1 } }
-            : { personaId: 'dependencies', displayName: 'Dependencies', provider: 'test', model: 'test', decision: 'APPROVE', reviewStatus: 'APPROVE', evidenceRequests: [], findings: [], usage: { promptTokens: 1, completionTokens: 1 } };
-        },
-      },
-    });
-
-    expect(calls).toHaveLength(2);
-    expect(calls[1].turn).toBe(2);
-    expect(result.reviewStatus).toBe('INCOMPLETE_REVIEW');
-    expect(result.decision).toBe('INCOMPLETE_REVIEW');
-    expect(result.incomplete).toBe(true);
-    expect(result.investigationTurns).toBe(2);
-  });
-
-  it('parses findings wrapped in a markdown code fence', async () => {
-    const { impl } = stubFetch('Sure!\n```json\n' + validFindings + '\n```\n');
-    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
-      apiKey: 'k', fetchImpl: impl,
-    });
-    expect(res.findings).toHaveLength(1);
-  });
-
-  it('discards findings for files absent from the diff', async () => {
-    const hallucinated = JSON.stringify({
-      findings: [
-        { severity: 'P0', path: 'src/does-not-exist.ts', line: 1, title: 'Ghost', body: 'b' },
-        { severity: 'P1', path: 'src/api/user.ts', line: 1, title: 'Real', body: 'b' },
-      ],
-    });
-    const { impl } = stubFetch(hallucinated);
-    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
-      apiKey: 'k', fetchImpl: impl,
-    });
-    expect(res.findings).toHaveLength(1);
-    expect(res.findings[0].title).toBe('Real');
-  });
-
-  it('normalizes unknown severities to P2', async () => {
-    const { impl } = stubFetch(JSON.stringify({
-      findings: [{ severity: 'CRITICAL', path: 'src/api/user.ts', line: 1, title: 't', body: 'b' }],
-    }));
-    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
-      apiKey: 'k', fetchImpl: impl,
-    });
-    expect(res.findings[0].severity).toBe('P2');
-  });
-
-  it('returns no findings rather than throwing on unparseable output', async () => {
-    const { impl } = stubFetch('I could not analyze this diff, sorry.');
-    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
-      apiKey: 'k', fetchImpl: impl,
-    });
-    expect(res.findings).toEqual([]);
-    expect(res.error).toBeTruthy();
-  });
-
   it('surfaces an error instead of throwing when the endpoint rejects the request', async () => {
     const { impl } = stubFetch('', { ok: false, status: 429 });
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
@@ -1510,22 +1227,6 @@ describe('reviewWithModel', () => {
     });
     expect(res.findings).toEqual([]);
     expect(res.error).toContain('429');
-  });
-
-  it('truncates oversized diffs to the configured character budget', async () => {
-    const huge = [{
-      path: 'src/api/user.ts',
-      patch: 'x'.repeat(50_000),
-      addedLines: [],
-      deletedLines: [],
-    }];
-    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
-    await reviewWithModel(securityPersona, huge, { repo: 'o/r' }, null, {
-      apiKey: 'k', maxDiffChars: 1_000, fetchImpl: impl,
-    });
-    const user = calls[0].body.messages.find((m: any) => m.role === 'user').content;
-    expect(user.length).toBeLessThan(3_000);
-    expect(user).toContain('truncated');
   });
 
   it('does not trust runner-local prior-turn text as reviewer instructions', async () => {
@@ -1590,6 +1291,6 @@ describe('REL-288 flat per-lane call budget', () => {
       maxAttempts: 2,
     });
     expect(calls.length).toBe(1);
-    expect(result.decision).not.toBe('ERROR');
+    expect(result.ok).toBe(true);
   });
 });
