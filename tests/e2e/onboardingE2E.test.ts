@@ -7,6 +7,7 @@ describe('Milestone 32: Onboarding & Session Learning E2E Suite', () => {
   let token: string;
 
   beforeEach(async () => {
+    process.env.ADMIN_PASSWORD = 'admin123';
     process.env.WEBHOOK_SECRET = 'test-secret';
     process.env.GITHUB_APP_ID = '12345';
     process.env.GITHUB_APP_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\n-----END PRIVATE KEY-----';

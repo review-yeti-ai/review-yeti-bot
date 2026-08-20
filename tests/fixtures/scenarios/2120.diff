@@ -1,0 +1,14 @@
+--- FILE: rtp_media_gateway/src/jitterBuffer.ts ---
+diff --git a/rtp_media_gateway/src/jitterBuffer.ts b/rtp_media_gateway/src/jitterBuffer.ts
+@@ -230,8 +230,10 @@
+   public generateConcealmentFrames(lostCount: number): Buffer[] {
+     const frames: Buffer[] = [];
+     for (let i = 0; i < lostCount; i++) {
+-      frames.push(this.staticSilenceFrame);
++      // Bug: Fresh 160-byte buffer allocation per lost packet in high-rate loop
++      const frame = Buffer.alloc(160, 0xFF);
++      frames.push(frame);
+     }
+     return frames;
+   }
+ }

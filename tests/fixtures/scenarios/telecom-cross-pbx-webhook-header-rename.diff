@@ -1,0 +1,12 @@
+--- FILE: pbx_device_manager/src/ctiWebhookDispatcher.ts ---
+diff --git a/pbx_device_manager/src/ctiWebhookDispatcher.ts b/pbx_device_manager/src/ctiWebhookDispatcher.ts
+@@ -26,7 +26,8 @@
+   public buildHeaders(signature: string): Record<string, string> {
+     return {
+       'Content-Type': 'application/json',
+-      'X-Telecom-Sig': signature,
++      // Breaking contract change: renamed public header
++      'X-Sig-256': signature,
+     };
+   }
+ }

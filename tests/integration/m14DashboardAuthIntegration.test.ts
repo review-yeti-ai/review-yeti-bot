@@ -11,8 +11,6 @@ describe('M14 Integration: Dashboard REST API & Auth Portal', () => {
 
   beforeEach(() => {
     process.env.WEBHOOK_SECRET = 'test_webhook_secret';
-    process.env.CT_DASHBOARD_STORE = './fixtures/tmp/dashboard_m14_test.json';
-    process.env.CT_REVIEW_RUN_STORE = './fixtures/tmp/review_runs_m14_test.json';
     app = createApp();
   });
 

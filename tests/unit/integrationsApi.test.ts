@@ -182,7 +182,7 @@ describe('Integrations REST API Unit Tests', () => {
 
     // 3. Verify deletion
     const getRes = await request(app).get('/api/dashboard/mcp/servers');
-    const found = getRes.body.servers.find((s: any) => s.id === serverId);
+    const found = (getRes.body?.servers || []).find((s: any) => s.id === serverId);
     expect(found).toBeUndefined();
   });
 

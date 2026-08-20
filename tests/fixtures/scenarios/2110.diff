@@ -1,0 +1,17 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -91,6 +91,12 @@
+   public async flushBatch(records: CallDetailRecord[]): Promise<void> {
+     if (records.length === 0) return;
+-    const query = this.buildMultiRowInsertQuery(records);
+-    await this.db.query(query.text, query.values);
++    // Bug: Replaced multi-row batch insert with sequential single-row transaction loop
++    for (const record of records) {
++      await this.db.query('INSERT INTO tenant_cdrs (id, tenant_id, duration) VALUES ($1, $2, $3)', [
++        record.id,
++        record.tenantId,
++        record.duration,
++      ]);
++    }
+   }
+ }

@@ -1,0 +1,11 @@
+--- FILE: pbx_device_manager/src/ctiWebhookDispatcher.ts ---
+diff --git a/pbx_device_manager/src/ctiWebhookDispatcher.ts b/pbx_device_manager/src/ctiWebhookDispatcher.ts
+@@ -84,6 +84,7 @@
+   public signPayload(payload: string, secret: string): string {
+     const hmac = crypto.createHmac('sha256', secret);
+     hmac.update(payload);
+-    return hmac.digest('hex');
++    // Bug: Truncating HMAC-SHA256 to 8 hex characters reduces entropy to 32 bits
++    return hmac.digest('hex').slice(0, 8);
+   }
+ }

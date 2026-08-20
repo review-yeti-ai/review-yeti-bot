@@ -1,0 +1,9 @@
+--- FILE: rtp_media_gateway/src/mediaBridge.ts ---
+diff --git a/rtp_media_gateway/src/mediaBridge.ts b/rtp_media_gateway/src/mediaBridge.ts
+@@ -128,4 +128,5 @@
+   public handleRtcpBye(): void {
+-    this.scheduleDelayedTeardown(500); // Allow in-flight RTP packets to flush
++    // Bug: Immediate teardown closes socket while RTP buffer is still playing
++    this.close();
+   }
+ }

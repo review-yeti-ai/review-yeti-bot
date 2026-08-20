@@ -1,0 +1,12 @@
+--- FILE: cdr_pipeline/src/tenantQuotaTracker.ts ---
+diff --git a/cdr_pipeline/src/tenantQuotaTracker.ts b/cdr_pipeline/src/tenantQuotaTracker.ts
+@@ -48,7 +48,7 @@
+   public canInitiateCall(tenantId: string): boolean {
+     const quota = this.quotas.get(tenantId);
+     if (!quota) return true;
+-    const available = quota.allocatedMinutes - quota.usedMinutes - quota.reservedMinutes;
+-    return available > 0;
++    // Bug: Ignores active reserved minutes allowing unbounded overdraft
++    return quota.allocatedMinutes > quota.usedMinutes;
+   }
+ }

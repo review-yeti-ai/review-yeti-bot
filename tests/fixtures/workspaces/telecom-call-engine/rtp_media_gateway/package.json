@@ -1,0 +1,8 @@
+{
+  "name": "@telecom/rtp-media-gateway",
+  "version": "1.0.0",
+  "description": "RFC 3550 RTP/RTCP Media Plane, Jitter Buffer & Codec Gateway",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true
+}

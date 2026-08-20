@@ -1,0 +1,9 @@
+--- FILE: pbx_device_manager/src/deviceRegistry.ts ---
+diff --git a/pbx_device_manager/src/deviceRegistry.ts b/pbx_device_manager/src/deviceRegistry.ts
+@@ -148,4 +148,5 @@
+   public async handleMassDisconnect(endpointIds: string[]): Promise<void> {
+-    await this.batchDeregisterWithConcurrency(endpointIds, 50);
++    // Bug: Unbounded Promise.all triggers thousands of parallel DB connections
++    await Promise.all(endpointIds.map(id => this.db.deleteEndpoint(id)));
+   }
+ }

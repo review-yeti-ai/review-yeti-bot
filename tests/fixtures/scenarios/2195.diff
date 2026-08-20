@@ -1,0 +1,13 @@
+--- FILE: pbx_device_manager/src/ctiWebhookDispatcher.ts ---
+diff --git a/pbx_device_manager/src/ctiWebhookDispatcher.ts b/pbx_device_manager/src/ctiWebhookDispatcher.ts
+@@ -140,14 +140,24 @@ export class CtiWebhookDispatcher {
++  public isDuplicateEvent(eventId: string): boolean {
++    const now = Date.now();
++    const cached = this.lruCache.get(eventId);
++    if (cached && now - cached < 60000) {
++      return true;
++    }
++    this.lruCache.set(eventId, now);
++    return false;
++  }
+ }

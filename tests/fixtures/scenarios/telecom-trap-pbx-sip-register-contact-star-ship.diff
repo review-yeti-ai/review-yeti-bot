@@ -1,0 +1,10 @@
+--- FILE: pbx_device_manager/src/deviceRegistry.ts ---
+diff --git a/pbx_device_manager/src/deviceRegistry.ts b/pbx_device_manager/src/deviceRegistry.ts
+@@ -65,14 +65,22 @@ export class DeviceRegistry {
++  public handleWildcardDeregistration(account: string, contactHeader: string, expires: number): void {
++    // RFC 3261 Section 10.2.2: Contact: * with Expires: 0 clears all bindings
++    if (contactHeader === '*' && expires === 0) {
++      this.contacts.delete(account);
++    }
++  }
+ }

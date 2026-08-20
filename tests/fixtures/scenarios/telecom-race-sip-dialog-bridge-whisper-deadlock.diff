@@ -1,0 +1,12 @@
+--- FILE: sip_signaling_service/src/dialogManager.ts ---
+diff --git a/sip_signaling_service/src/dialogManager.ts b/sip_signaling_service/src/dialogManager.ts
+@@ -208,6 +208,6 @@
+   public bridgeWhisperChannel(supervisorDialogId: string, agentDialogId: string): void {
+-    const [first, second] = [supervisorDialogId, agentDialogId].sort();
+-    this.locks.get(first)?.lock();
+-    this.locks.get(second)?.lock();
++    // Bug: Arbitrary lock acquisition order violates lock hierarchy
++    this.locks.get(supervisorDialogId)?.lock();
++    this.locks.get(agentDialogId)?.lock();
+   }
+ }

@@ -1,0 +1,10 @@
+--- FILE: pbx_device_manager/src/digestAuth.ts ---
+diff --git a/pbx_device_manager/src/digestAuth.ts b/pbx_device_manager/src/digestAuth.ts
+@@ -76,5 +76,5 @@
+   public verifyResponse(expectedDigest: string, clientDigest: string): boolean {
+-    if (expectedDigest.length !== clientDigest.length) return false;
+-    return crypto.timingSafeEqual(Buffer.from(expectedDigest), Buffer.from(clientDigest));
++    // Bug: Direct string comparison vulnerable to timing side-channels
++    return expectedDigest === clientDigest;
+   }
+ }

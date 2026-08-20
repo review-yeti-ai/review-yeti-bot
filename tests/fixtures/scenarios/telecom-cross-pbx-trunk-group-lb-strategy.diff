@@ -1,0 +1,9 @@
+--- FILE: pbx_device_manager/src/trunkAllocator.ts ---
+diff --git a/pbx_device_manager/src/trunkAllocator.ts b/pbx_device_manager/src/trunkAllocator.ts
+@@ -54,4 +54,5 @@
+   public selectTrunk(trunks: TrunkGroup[]): TrunkGroup {
+-    return this.weightedRoundRobin(trunks);
++    // Breaking performance change: strict priority selection overloads trunk 0
++    return trunks[0];
+   }
+ }

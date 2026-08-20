@@ -20,6 +20,17 @@ process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
 process.env.GITHUB_APP_ID = process.env.GITHUB_APP_ID || '123456';
 process.env.GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY || '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3\n-----END RSA PRIVATE KEY-----';
 process.env.OMNIROUTE_BASE_URL = process.env.OMNIROUTE_BASE_URL || 'http://localhost:8080';
+process.env.ADMIN_PASSWORD = 'admin123';
+
+// Disable proxy environment variables during unit/e2e testing
+delete process.env.http_proxy;
+delete process.env.HTTP_PROXY;
+delete process.env.https_proxy;
+delete process.env.HTTPS_PROXY;
+delete process.env.all_proxy;
+delete process.env.ALL_PROXY;
+process.env.NO_PROXY = '*';
+process.env.no_proxy = '*';
 
 // Capture baseline process.env after initializing test environment variables
 const initialEnv = { ...process.env };
@@ -33,7 +44,16 @@ function resetAllGlobalState() {
   }
   Object.assign(process.env, initialEnv);
 
-  // 1.5. Clean test store file if in /tmp
+  delete process.env.http_proxy;
+  delete process.env.HTTP_PROXY;
+  delete process.env.https_proxy;
+  delete process.env.HTTPS_PROXY;
+  delete process.env.all_proxy;
+  delete process.env.ALL_PROXY;
+  process.env.NO_PROXY = '*';
+  process.env.no_proxy = '*';
+
+  // 1.5. Clean and assign fresh test store file if in /tmp
   if (process.env.CT_DASHBOARD_STORE && process.env.CT_DASHBOARD_STORE.startsWith('/tmp/')) {
     try {
       if (fs.existsSync(process.env.CT_DASHBOARD_STORE)) {
@@ -41,6 +61,8 @@ function resetAllGlobalState() {
       }
     } catch {}
   }
+  const testStoreId = `${process.pid}_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+  process.env.CT_DASHBOARD_STORE = `/tmp/ct-review-bot/test_store_${testStoreId}.json`;
 
   // 2. Reset Singleton Stores
   if (typeof dashboardStore.reset === 'function') {

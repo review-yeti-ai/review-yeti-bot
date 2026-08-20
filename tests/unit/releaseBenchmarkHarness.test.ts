@@ -17,6 +17,8 @@ describe('Release Benchmark Harness Engine (scripts/evaluate-release-benchmark.m
   const v2BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v2.json');
   const v3BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v3.json');
   const v3MdPath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v3.md');
+  const v4BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v4.json');
+  const v4MdPath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v4.md');
 
   // =========================================================================
   // 1. CLI ARGUMENT PARSING
@@ -83,32 +85,32 @@ describe('Release Benchmark Harness Engine (scripts/evaluate-release-benchmark.m
   // 2. SCENARIO RESOLUTION
   // =========================================================================
   describe('resolveScenarios()', () => {
-    it('resolves all 94 scenarios when no filter is specified', () => {
+    it('resolves all scenarios when no filter is specified', () => {
       const scenarios = resolveScenarios({ category: null, scenarios: null });
-      expect(scenarios.length).toBe(94);
+      expect(scenarios.length).toBe(190);
     });
 
-    it('filters scenarios by category across expanded 94-scenario suite', () => {
+    it('filters scenarios by category across expanded scenario suite', () => {
       const secScenarios = resolveScenarios({ category: 'security', scenarios: null });
-      expect(secScenarios.length).toBe(23);
+      expect(secScenarios.length).toBe(38);
       for (const s of secScenarios) {
         expect(s.category).toBe('security');
       }
 
       const dbScenarios = resolveScenarios({ category: 'database', scenarios: null });
-      expect(dbScenarios.length).toBe(8);
+      expect(dbScenarios.length).toBe(16);
 
       const perfScenarios = resolveScenarios({ category: 'performance', scenarios: null });
-      expect(perfScenarios.length).toBe(16);
+      expect(perfScenarios.length).toBe(41);
 
       const archScenarios = resolveScenarios({ category: 'architecture', scenarios: null });
-      expect(archScenarios.length).toBe(17);
+      expect(archScenarios.length).toBe(64);
 
       const evidenceScenarios = resolveScenarios({ category: 'evidence', scenarios: null });
       expect(evidenceScenarios.length).toBe(7);
 
       const multiFileScenarios = resolveScenarios({ category: 'multi_file', scenarios: null });
-      expect(multiFileScenarios.length).toBe(11);
+      expect(multiFileScenarios.length).toBe(12);
     });
 
     it('filters scenarios by scenario IDs or partial slugs', () => {
@@ -309,6 +311,43 @@ describe('Release Benchmark Harness Engine (scripts/evaluate-release-benchmark.m
       const content = fs.readFileSync(v3MdPath, 'utf8');
       expect(content).toContain('# Model Comparative Evaluation & Benchmark Report');
       expect(content).toContain('**Total Scenarios**: 94');
+      expect(content).toContain('`deepseek/deepseek-v4-flash-0731:high`');
+      expect(content).toContain('`openrouter/5.6-luna-high`');
+      expect(content).toContain('`qwen/qwen-3.8-27b:high`');
+      expect(content).toContain('`google/gemini-3.7-flash:high`');
+    });
+
+    it('confirms canonical model-benchmark-matrix-v4.json exists with 190 scenarios and 4 models', () => {
+      expect(fs.existsSync(v4BaselinePath)).toBe(true);
+      const v4 = JSON.parse(fs.readFileSync(v4BaselinePath, 'utf8'));
+
+      expect(v4.version).toBe('v4');
+      expect(v4.models).toEqual(DEFAULT_MODELS);
+      expect(v4.scenarios.length).toBe(190);
+      expect(v4.detailedResults.length).toBe(760); // 4 models * 190 scenarios
+
+      for (const model of DEFAULT_MODELS) {
+        const s = v4.summary[model];
+        expect(s).toBeDefined();
+        expect(s.totalScenarios).toBe(190);
+        expect(s.verdictAccuracy).toBeGreaterThanOrEqual(95);
+        expect(s.precision).toBeGreaterThanOrEqual(0.94);
+        expect(s.recall).toBeGreaterThanOrEqual(0.94);
+        expect(s.f1Score).toBeGreaterThanOrEqual(0.95);
+        expect(s.avgSnrDb).toBeGreaterThan(10);
+        expect(s.avgTtftMs).toBeGreaterThan(0);
+        expect(s.totalTokens).toBeGreaterThan(140_000);
+        expect(s.totalCostUSD).toBeGreaterThan(0);
+        expect(s.costEfficiency).toBeGreaterThan(0);
+      }
+    });
+
+    it('confirms canonical model-benchmark-matrix-v4.md exists and contains executive summary matrix', () => {
+      expect(fs.existsSync(v4MdPath)).toBe(true);
+
+      const content = fs.readFileSync(v4MdPath, 'utf8');
+      expect(content).toContain('# Model Comparative Evaluation & Benchmark Report');
+      expect(content).toContain('**Total Scenarios**: 190');
       expect(content).toContain('`deepseek/deepseek-v4-flash-0731:high`');
       expect(content).toContain('`openrouter/5.6-luna-high`');
       expect(content).toContain('`qwen/qwen-3.8-27b:high`');

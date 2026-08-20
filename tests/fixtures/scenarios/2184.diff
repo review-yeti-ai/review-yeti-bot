@@ -1,0 +1,11 @@
+--- FILE: pbx_device_manager/src/digestAuth.ts ---
+diff --git a/pbx_device_manager/src/digestAuth.ts b/pbx_device_manager/src/digestAuth.ts
+@@ -50,14 +50,24 @@ export class DigestAuthenticator {
++  public computeExpectedResponse(ha1: string, nonce: string, nc: string, cnonce: string, qop: string, ha2: string): string {
++    if (qop === 'auth') {
++      const raw = `${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`;
++      return crypto.createHash('md5').update(raw).digest('hex');
++    }
++    return crypto.createHash('md5').update(`${ha1}:${nonce}:${ha2}`).digest('hex');
++  }
+ }

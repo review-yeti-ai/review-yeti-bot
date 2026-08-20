@@ -1,0 +1,12 @@
+--- FILE: sip_signaling_service/src/sipStateMachine.ts ---
+diff --git a/sip_signaling_service/src/sipStateMachine.ts b/sip_signaling_service/src/sipStateMachine.ts
+@@ -186,6 +186,6 @@
+   public handleFinalResponse(res: SipResponse): void {
+-    if (this.isDestroyed) return;
+-    this.isDestroyed = true;
+-    this.destroyTransaction();
++    // Bug: Removed isDestroyed guard: concurrent Timer B timeout destroys null socket
++    this.socket.close();
++    this.socket = null as any;
+   }
+ }

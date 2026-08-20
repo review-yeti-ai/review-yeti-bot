@@ -1,0 +1,9 @@
+--- FILE: pbx_device_manager/src/models/sipEndpoint.ts ---
+diff --git a/pbx_device_manager/src/models/sipEndpoint.ts b/pbx_device_manager/src/models/sipEndpoint.ts
+@@ -11,4 +11,5 @@
+   AVAILABLE = 'AVAILABLE',
+   BUSY = 'BUSY',
+-  OFFLINE = 'OFFLINE',
++  // Breaking enum change: renamed OFFLINE to UNREGISTERED
++  UNREGISTERED = 'UNREGISTERED',
+ }

@@ -1,0 +1,16 @@
+--- FILE: cdr_pipeline/src/tariffRatingEngine.ts ---
+diff --git a/cdr_pipeline/src/tariffRatingEngine.ts b/cdr_pipeline/src/tariffRatingEngine.ts
+@@ -128,10 +128,11 @@
+   public calculateBillableDuration(rawDurationSeconds: number, initialPulse: number, incrementPulse: number): number {
+     if (rawDurationSeconds <= 0) return 0;
+     if (rawDurationSeconds <= initialPulse) {
+       return initialPulse;
+     }
+     const remainingSeconds = rawDurationSeconds - initialPulse;
+-    const billedIncrements = Math.ceil(remainingSeconds / incrementPulse);
+-    return initialPulse + (billedIncrements * incrementPulse);
++    // Refactored pulse increment math: divides with Math.floor instead of Math.ceil
++    const billedIncrements = Math.floor(remainingSeconds / incrementPulse);
++    return initialPulse + (billedIncrements * incrementPulse);
+   }
+ }

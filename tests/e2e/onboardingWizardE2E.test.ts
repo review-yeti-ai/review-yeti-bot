@@ -9,6 +9,7 @@ import { dashboardStore } from '../../src/persistence/dashboardStore';
 
 describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)', () => {
   let app: any;
+  let server: any;
   let token: string;
   let realPrivateKey: string;
 
@@ -20,6 +21,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     });
     realPrivateKey = keyPair.privateKey;
 
+    process.env.ADMIN_PASSWORD = 'admin123';
     process.env.WEBHOOK_SECRET = 'test_webhook_secret';
     process.env.GITHUB_WEBHOOK_SECRET = 'test_webhook_secret';
     process.env.GITHUB_APP_ID = '12345';
@@ -35,25 +37,32 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     });
 
     app = createApp();
+    server = app.listen(0);
 
-    const loginRes = await request(app)
+    const loginRes = await request(server)
       .post('/api/auth/login')
       .send({ username: 'admin', password: 'admin123' });
     token = loginRes.body.token || '';
+  });
+
+  afterEach(async () => {
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it(
     'Scenario 1: Complete Onboarding Workflow from Step 1 (App Connection) -> Step 2 (Repo Pick) -> Step 3 (Providers & Keys) -> Step 4 (Persona Ensemble) -> Step 5 (Diagnostic Scan SHIP verdict)',
     async () => {
       // Step 1: App Connection
-      const appConfigGet = await request(app)
+      const appConfigGet = await request(server)
         .get('/api/github/app-config')
         .set('Authorization', `Bearer ${token}`);
       expect(appConfigGet.status).toBe(200);
       expect(appConfigGet.body.success).toBe(true);
       expect(appConfigGet.body.appConfig).toBeDefined();
 
-      const appVerify = await request(app)
+      const appVerify = await request(server)
         .post('/api/github/app-config/verify')
         .set('Authorization', `Bearer ${token}`)
         .send({
@@ -67,14 +76,14 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(appVerify.body.jwtGenerated).toBe(true);
 
       // Step 2: Repo Pick
-      const scanRes = await request(app)
+      const scanRes = await request(server)
         .post('/api/onboarding/wizard/scan')
         .send({ repoPath: process.cwd() });
       expect(scanRes.status).toBe(200);
       expect(scanRes.body.success).toBe(true);
       expect(scanRes.body.scanResult).toBeDefined();
 
-      const repoPick = await request(app)
+      const repoPick = await request(server)
         .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
         .set('Authorization', `Bearer ${token}`)
         .send({ automationEnabled: true, customProfile: 'assertive' });
@@ -83,14 +92,14 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(repoPick.body.repository.automationEnabled).toBe(true);
 
       // Step 3: Providers & Keys
-      const providersGet = await request(app)
+      const providersGet = await request(server)
         .get('/api/dashboard/providers')
         .set('Authorization', `Bearer ${token}`);
       expect(providersGet.status).toBe(200);
       expect(providersGet.body.success).toBe(true);
       expect(providersGet.body.providers).toBeDefined();
 
-      const providerUpdate = await request(app)
+      const providerUpdate = await request(server)
         .put('/api/dashboard/providers/openai')
         .set('Authorization', `Bearer ${token}`)
         .send({ enabled: true, subscriptionTier: 'enterprise' });
@@ -98,7 +107,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(providerUpdate.body.success).toBe(true);
 
       // Step 4: Persona Ensemble
-      const genConfig = await request(app)
+      const genConfig = await request(server)
         .post('/api/onboarding/wizard/generate')
         .send({
           scanResult: scanRes.body.scanResult,
@@ -109,7 +118,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(genConfig.body.success).toBe(true);
       expect(genConfig.body.yamlText).toBeDefined();
 
-      const personaUpdate = await request(app)
+      const personaUpdate = await request(server)
         .put('/api/dashboard/personas/security')
         .set('Authorization', `Bearer ${token}`)
         .send({ confidenceThreshold: 90, effort: 'max', enabled: true });
@@ -118,7 +127,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(personaUpdate.body.persona.confidenceThreshold).toBe(90);
 
       // Step 5: Diagnostic Scan SHIP verdict
-      const testReview = await request(app)
+      const testReview = await request(server)
         .post('/api/dashboard/trigger-test-review')
         .send({ repo: 'calltelemetry/cisco-cdr', verdict: 'SHIP' });
       expect(testReview.status).toBe(200);
@@ -132,7 +141,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
 
   it('Scenario 2: Add Custom OpenAI-compatible Provider with Enterprise Subscription Tier and custom model llama3-70b-finetuned, assign to Security Persona, run test ping', async () => {
     // 1. Register custom provider in provider pool via router endpoint
-    const regRes = await request(app)
+    const regRes = await request(server)
       .post('/api/router/providers')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -148,7 +157,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(regRes.body.provider.models).toContain('llama3-70b-finetuned');
 
     // Update dashboard store config to sync models into getDynamicActiveModels()
-    const dashboardProvider = await request(app)
+    const dashboardProvider = await request(server)
       .put('/api/dashboard/providers/custom-openai-ent')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -163,7 +172,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(dashboardProvider.body.success).toBe(true);
 
     // Verify in provider list
-    const listRes = await request(app)
+    const listRes = await request(server)
       .get('/api/router/providers')
       .set('Authorization', `Bearer ${token}`);
     expect(listRes.status).toBe(200);
@@ -171,7 +180,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(found).toBeDefined();
 
     // 2. Assign custom model to Security Persona
-    const personaUpdate = await request(app)
+    const personaUpdate = await request(server)
       .put('/api/dashboard/personas/security')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -183,15 +192,15 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(personaUpdate.body.persona.model).toBe('llama3-70b-finetuned');
 
     // 3. Run test ping using local mock server
-    const server = http.createServer((_req, res) => {
+    const mockServer = http.createServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', models: ['llama3-70b-finetuned'] }));
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const mockPort = (server.address() as any).port;
+    await new Promise<void>((resolve) => mockServer.listen(0, '127.0.0.1', resolve));
+    const mockPort = (mockServer.address() as any).port;
 
     try {
-      const testPing = await request(app)
+      const testPing = await request(server)
         .post('/api/dashboard/providers/custom-openai-ent/test')
         .set('Authorization', `Bearer ${token}`)
         .send({ baseUrl: `http://127.0.0.1:${mockPort}` });
@@ -200,13 +209,13 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(testPing.body.status).toBe('connected');
       expect(testPing.body.latencyMs).toBeGreaterThanOrEqual(1);
     } finally {
-      server.close();
+      mockServer.close();
     }
   });
 
   it('Scenario 3: Monitored Repo Strictness Profile Change from Chill to Assertive, toggle automation off and back on, verify enforcement policy persistence', async () => {
     // 1. Set customProfile to 'chill'
-    const chillRes = await request(app)
+    const chillRes = await request(server)
       .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
       .set('Authorization', `Bearer ${token}`)
       .send({ customProfile: 'chill' });
@@ -215,7 +224,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(chillRes.body.repository.customProfile).toBe('chill');
 
     // Change to 'assertive'
-    const assertiveRes = await request(app)
+    const assertiveRes = await request(server)
       .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
       .set('Authorization', `Bearer ${token}`)
       .send({ customProfile: 'assertive' });
@@ -223,7 +232,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(assertiveRes.body.repository.customProfile).toBe('assertive');
 
     // 2. Toggle automation off
-    const toggleOff = await request(app)
+    const toggleOff = await request(server)
       .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
       .set('Authorization', `Bearer ${token}`)
       .send({ automationEnabled: false });
@@ -231,7 +240,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(toggleOff.body.repository.automationEnabled).toBe(false);
 
     // Verify in monitored-repos listing
-    const listRepos = await request(app)
+    const listRepos = await request(server)
       .get('/api/github/app-config/monitored-repos')
       .set('Authorization', `Bearer ${token}`);
     expect(listRepos.status).toBe(200);
@@ -241,7 +250,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(cdrRepo.automationEnabled).toBe(false);
 
     // Toggle automation back on
-    const toggleOn = await request(app)
+    const toggleOn = await request(server)
       .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
       .set('Authorization', `Bearer ${token}`)
       .send({ automationEnabled: true });
@@ -249,7 +258,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(toggleOn.body.repository.automationEnabled).toBe(true);
 
     // 3. Update & Verify Enforcement Policy Persistence
-    const policyUpdate = await request(app)
+    const policyUpdate = await request(server)
       .put('/api/github/enforcement-policy')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -262,7 +271,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(policyUpdate.body.policy.require_ticket_link).toBe(true);
     expect(policyUpdate.body.policy.failure_action).toBe('fail_closed');
 
-    const policyGet = await request(app)
+    const policyGet = await request(server)
       .get('/api/github/enforcement-policy')
       .set('Authorization', `Bearer ${token}`);
     expect(policyGet.status).toBe(200);
@@ -272,14 +281,14 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
 
   it('Scenario 4: GitHub App Manifest JSON Copy, drawer opening, webhook secret re-verification, and RSA key update', async () => {
     // 1. Initial Drawer Config Inspection
-    const initialConfig = await request(app)
+    const initialConfig = await request(server)
       .get('/api/github/app-config')
       .set('Authorization', `Bearer ${token}`);
     expect(initialConfig.status).toBe(200);
     expect(initialConfig.body.success).toBe(true);
 
     // 2. Update credentials via Manifest flow POST
-    const updateRes = await request(app)
+    const updateRes = await request(server)
       .post('/api/github/app-config')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -296,7 +305,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     );
 
     // 3. Webhook secret re-verification & RSA key update test
-    const verifyRes = await request(app)
+    const verifyRes = await request(server)
       .post('/api/github/app-config/verify')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -310,7 +319,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(verifyRes.body.jwtGenerated).toBe(true);
 
     // 4. Persisted Credentials Validation
-    const verifiedConfig = await request(app)
+    const verifiedConfig = await request(server)
       .get('/api/github/app-config')
       .set('Authorization', `Bearer ${token}`);
     expect(verifiedConfig.status).toBe(200);
@@ -335,7 +344,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     };
     const signature = computeGitHubSignature(payloadObj, secret);
 
-    const webhookRes = await request(app)
+    const webhookRes = await request(server)
       .post('/webhook')
       .set('x-github-event', 'pull_request')
       .set('x-github-delivery', deliveryId)
@@ -350,7 +359,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     const pingDeliveryId = `delivery-ping-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const pingObj = { zen: 'Keep it simple' };
     const pingSig = computeGitHubSignature(pingObj, secret);
-    const pingRes = await request(app)
+    const pingRes = await request(server)
       .post('/webhook')
       .set('x-github-event', 'ping')
       .set('x-github-delivery', pingDeliveryId)
@@ -360,7 +369,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(pingRes.status).toBe(200);
     expect(pingRes.body.status).toBe('pong');
 
-    const integrationTest = await request(app)
+    const integrationTest = await request(server)
       .post('/api/dashboard/integrations/linear/test')
       .set('Authorization', `Bearer ${token}`)
       .send({ apiKey: 'lin_api_test_key_123' });
@@ -369,7 +378,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(integrationTest.body.latencyMs).toBeGreaterThanOrEqual(1);
 
     // 3. 11-Persona Binding Arbitration Quorum Check
-    const personasRes = await request(app)
+    const personasRes = await request(server)
       .get('/api/dashboard/personas')
       .set('Authorization', `Bearer ${token}`);
     expect(personasRes.status).toBe(200);
@@ -379,7 +388,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(personaIds).toContain('architecture');
     expect(personaIds).toContain('red_team');
 
-    const diagRun = await request(app)
+    const diagRun = await request(server)
       .post('/api/dashboard/trigger-test-review')
       .send({
         repo: 'calltelemetry/cisco-cdr',
@@ -396,7 +405,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
 
   it('Scenario 6: Full multi-step error recovery: invalid RSA key -> fix key -> failing provider -> update provider key -> successful diagnostic scan', async () => {
     // Step 1: Invalid RSA key handling
-    const invalidKeyRes = await request(app)
+    const invalidKeyRes = await request(server)
       .post('/api/github/app-config/verify')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -409,7 +418,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(invalidKeyRes.body.error).toBeDefined();
 
     // Step 2: Fix key
-    const fixedKeyRes = await request(app)
+    const fixedKeyRes = await request(server)
       .post('/api/github/app-config/verify')
       .set('Authorization', `Bearer ${token}`)
       .send({
@@ -422,7 +431,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(fixedKeyRes.body.verified).toBe(true);
 
     // Step 3: Failing provider check
-    const failingPing = await request(app)
+    const failingPing = await request(server)
       .post('/api/dashboard/providers/openai/test')
       .set('Authorization', `Bearer ${token}`)
       .send({ baseUrl: 'http://127.0.0.1:1/invalid' });
@@ -430,15 +439,15 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     expect(failingPing.body.status).toMatch(/disconnected|error/);
 
     // Step 4: Update provider key & endpoint
-    const server = http.createServer((_req, res) => {
+    const mockServer = http.createServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'healthy' }));
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const mockPort = (server.address() as any).port;
+    await new Promise<void>((resolve) => mockServer.listen(0, '127.0.0.1', resolve));
+    const mockPort = (mockServer.address() as any).port;
 
     try {
-      const providerUpdate = await request(app)
+      const providerUpdate = await request(server)
         .put('/api/dashboard/providers/openai')
         .set('Authorization', `Bearer ${token}`)
         .send({
@@ -448,7 +457,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
         });
       expect(providerUpdate.status).toBe(200);
 
-      const fixedPing = await request(app)
+      const fixedPing = await request(server)
         .post('/api/dashboard/providers/openai/test')
         .set('Authorization', `Bearer ${token}`)
         .send({ baseUrl: `http://127.0.0.1:${mockPort}` });
@@ -456,11 +465,11 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(fixedPing.body.success).toBe(true);
       expect(fixedPing.body.status).toBe('connected');
     } finally {
-      server.close();
+      mockServer.close();
     }
 
     // Step 5: Successful diagnostic scan after error recovery
-    const finalScan = await request(app)
+    const finalScan = await request(server)
       .post('/api/dashboard/trigger-test-review')
       .send({
         repo: 'calltelemetry/cisco-cdr',

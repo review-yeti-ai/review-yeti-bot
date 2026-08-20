@@ -234,13 +234,14 @@ describe('Empirical Verification: Latency Stat Reporting Accuracy in POST /api/o
     const originalConfigs = dashboardStore.getProviderConfigs();
 
     try {
-      dashboardStore.updateProviderConfig('openai', { latencyMs: 120, displayName: 'OpenAI Test', status: 'connected', apiKeyRaw: 'sk-proj-validapiKeyFormatString9988' });
-      dashboardStore.updateProviderConfig('anthropic', { latencyMs: 240, displayName: 'Anthropic Test', status: 'connected', apiKeyRaw: 'sk-ant-api03-validapiKeyFormatString9988' });
-      dashboardStore.updateProviderConfig('grok', { latencyMs: 60, displayName: 'Grok Test', status: 'connected', apiKeyRaw: 'xai-validapiKeyFormatString9988' });
+      dashboardStore.updateProviderConfig('openai', { latencyMs: 120, displayName: 'OpenAI Test', status: 'connected', enabled: true, active: true, apiKeyRaw: 'sk-proj-validapiKeyFormatString9988' });
+      dashboardStore.updateProviderConfig('anthropic', { latencyMs: 240, displayName: 'Anthropic Test', status: 'connected', enabled: true, active: true, apiKeyRaw: 'sk-ant-api03-validapiKeyFormatString9988' });
+      dashboardStore.updateProviderConfig('grok', { latencyMs: 60, displayName: 'Grok Test', status: 'connected', enabled: true, active: true, apiKeyRaw: 'xai-validapiKeyFormatString9988' });
 
       const res = await request(app)
         .post('/api/onboarding/diagnostic')
         .send({
+          appId: '12345',
           providerIds: ['openai', 'anthropic', 'grok'],
         });
 
