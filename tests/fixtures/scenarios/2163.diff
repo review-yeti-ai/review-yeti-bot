@@ -1,0 +1,15 @@
+--- FILE: rtp_media_gateway/src/portAllocator.ts ---
+diff --git a/rtp_media_gateway/src/portAllocator.ts b/rtp_media_gateway/src/portAllocator.ts
+@@ -94,10 +94,10 @@
+   public allocatePort(): number | null {
+     for (let port = 16384; port < 32768; port += 2) {
+       if (!this.allocatedPorts.has(port)) {
+-        this.allocatedPorts.add(port);
+-        return port;
++        // Bug: Yields or delays before setting allocatedPorts, opening collision window
++        return port;
+       }
+     }
+     return null;
+   }
+ }

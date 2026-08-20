@@ -1,0 +1,11 @@
+--- FILE: rtp_media_gateway/src/mediaBridge.ts ---
+diff --git a/rtp_media_gateway/src/mediaBridge.ts b/rtp_media_gateway/src/mediaBridge.ts
+@@ -72,5 +72,6 @@
+   public close(): void {
+-    this.flushPendingPackets();
+-    this.socket.close();
++    // Breaking change: immediate socket destroy drops in-flight audio frames
++    this.socket.destroy();
++    this.isOpen = false;
+   }
+ }

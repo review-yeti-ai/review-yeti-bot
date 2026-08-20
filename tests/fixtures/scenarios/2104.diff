@@ -1,0 +1,15 @@
+--- FILE: pbx_device_manager/src/ctiWebhookDispatcher.ts ---
+diff --git a/pbx_device_manager/src/ctiWebhookDispatcher.ts b/pbx_device_manager/src/ctiWebhookDispatcher.ts
+@@ -63,10 +63,7 @@
+   private retryQueue: WebhookPayload[] = [];
+ 
+   public enqueueFailedDelivery(payload: WebhookPayload): void {
+-    if (this.retryQueue.length >= 10000) {
+-      this.logger.warn('Retry queue full, dropping oldest event');
+-      this.retryQueue.shift();
+-    }
+-    this.retryQueue.push(payload);
++    // Bug: Removed queue capacity check and buffer bounds
++    this.retryQueue.push(payload);
+   }
+ }

@@ -3,8 +3,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 import {
   EvaluationRunner,
+  WorkspaceToolExecutor,
+  parseToolCall,
   calculateMetrics,
   estimateCost,
+  getSimulatedProfile,
+  deterministicScore,
   formatMarkdownReport,
   formatJSONReport,
   MODEL_PRICING_TABLE,
@@ -12,7 +16,7 @@ import {
   EvaluationMetrics,
   ScenarioEvaluationResult,
   ComparativeBenchmarkReport,
-} from '../../src/evaluation/evaluationRunner.ts';
+} from '../../src/evaluation/evaluationRunner';
 import {
   getAllScenarios,
   getScenarioById,
@@ -24,6 +28,7 @@ import { createCassetteFetch } from '../support/cassetteFetch';
 
 describe('Evaluation Runner & Comparative Metrics Engine', () => {
   const rootRepoDir = path.resolve(__dirname, '../..');
+  const telecomWorkspaceRoot = path.resolve(rootRepoDir, 'tests/fixtures/workspaces/telecom-call-engine');
 
   // =========================================================================
   // 1. METRICS CALCULATION (SNR, ACCURACY, PRECISION, RECALL, F1)
@@ -223,31 +228,26 @@ describe('Evaluation Runner & Comparative Metrics Engine', () => {
   describe('estimateCost()', () => {
     it('estimates cost accurately for OpenRouter 5.6 Luna High', () => {
       const cost = estimateCost('openai/gpt-5.6-luna', 10_000, 2_000);
-      // (10,000 / 1,000,000) * 2.0 + (2,000 / 1,000,000) * 6.0 = 0.02 + 0.012 = 0.032
       expect(cost).toBe(0.032);
     });
 
     it('estimates cost accurately for DeepSeek v4 Flash', () => {
       const cost = estimateCost('deepseek/deepseek-v4-flash-0731:high', 10_000, 10_000);
-      // (10,000 / 1M) * 0.14 + (10,000 / 1M) * 0.28 = 0.0014 + 0.0028 = 0.0042
       expect(cost).toBe(0.0042);
     });
 
     it('estimates cost accurately for Gemini 3.7 Flash', () => {
       const cost = estimateCost('google/gemini-3.7-flash:high', 10_000, 1_000);
-      // (10,000 / 1M) * 0.15 + (1,000 / 1M) * 0.60 = 0.0015 + 0.0006 = 0.0021
       expect(cost).toBe(0.0021);
     });
 
     it('estimates cost accurately for Qwen 3.8 27B', () => {
       const cost = estimateCost('qwen/qwen-3.8-27b:high', 10_000, 2_000);
-      // (10,000 / 1M) * 0.35 + (2,000 / 1M) * 0.80 = 0.0035 + 0.0016 = 0.0051
       expect(cost).toBe(0.0051);
     });
 
     it('estimates cost with default fallback for unlisted models', () => {
       const cost = estimateCost('anthropic/claude-3.7-sonnet', 10_000, 1_000);
-      // Fallback ($0.50 / $1.50): (10,000 / 1M) * 0.50 + (1,000 / 1M) * 1.50 = 0.005 + 0.0015 = 0.0065
       expect(cost).toBe(0.0065);
     });
 
@@ -517,20 +517,330 @@ describe('Evaluation Runner & Comparative Metrics Engine', () => {
       expect(runner.formatJSONReport(report)).toBe(formatJSONReport(report));
     });
 
-    it('successfully executes benchmark suite across all 94 registered scenarios', async () => {
+    it('successfully executes benchmark suite across all registered scenarios', async () => {
       const models = ['openai/gpt-5.6-luna', 'anthropic/claude-3.7-sonnet'];
       const allScenarios = getAllScenarios();
-      expect(allScenarios.length).toBe(94);
+      expect(allScenarios.length).toBeGreaterThanOrEqual(94);
 
       const report = await runner.runBenchmarkSuite(models, allScenarios);
-      expect(report.scenarios.length).toBe(94);
-      expect(report.detailedResults.length).toBe(188); // 2 models * 94 scenarios
-      expect(report.summary['openai/gpt-5.6-luna'].totalScenarios).toBe(94);
-      expect(report.summary['anthropic/claude-3.7-sonnet'].totalScenarios).toBe(94);
+      expect(report.scenarios.length).toBe(allScenarios.length);
+      expect(report.detailedResults.length).toBe(2 * allScenarios.length);
+      expect(report.summary['openai/gpt-5.6-luna'].totalScenarios).toBe(allScenarios.length);
+      expect(report.summary['anthropic/claude-3.7-sonnet'].totalScenarios).toBe(allScenarios.length);
 
       const md = formatMarkdownReport(report);
-      expect(md).toContain('94');
+      expect(md).toContain(String(allScenarios.length));
+    });
+  });
+
+  // =========================================================================
+  // 6. WORKSPACE TOOL EXECUTOR & TELECOM WORKSPACE MOUNTING
+  // =========================================================================
+  describe('WorkspaceToolExecutor (telecom-call-engine mounting)', () => {
+    const executor = new WorkspaceToolExecutor(telecomWorkspaceRoot);
+
+    it('correctly reads full file with line numbers', async () => {
+      const content = await executor.fileRead('README.md');
+      expect(content).toContain('1: # Generic Telecom Call Engine');
+      expect(content).toContain('sip_signaling_service');
+    });
+
+    it('correctly slices line ranges in fileRead', async () => {
+      const content = await executor.fileRead('README.md', 1, 3);
+      const lines = content.split('\n');
+      expect(lines.length).toBe(3);
+      expect(lines[0]).toBe('1: # Generic Telecom Call Engine');
+      expect(lines[1]).toBe('2: ');
+      expect(lines[2]).toContain('3: A standard-compliant');
+    });
+
+    it('returns error message for non-existent workspace files', async () => {
+      const result = await executor.fileRead('sip_signaling_service/src/missing_file.ts');
+      expect(result).toContain('Error: File not found in workspace: sip_signaling_service/src/missing_file.ts');
+    });
+
+    it('returns error message when path is a directory', async () => {
+      const result = await executor.fileRead('sip_signaling_service');
+      expect(result).toContain('Error: Path is a directory, not a file: sip_signaling_service');
+    });
+
+    it('strictly enforces path traversal prevention and throws error on ../ attempts', async () => {
+      await expect(executor.fileRead('../../package.json')).rejects.toThrow('Access denied: path traversal outside workspace root');
+      await expect(executor.fileRead('/etc/passwd')).rejects.toThrow('Access denied: path traversal outside workspace root');
+      await expect(executor.fileRead('sip_signaling_service/../../../../outside.txt')).rejects.toThrow('Access denied');
+    });
+
+    it('searches code patterns across workspace via codeSearch', async () => {
+      const results = await executor.codeSearch('RFC 3261');
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].path).toBeDefined();
+      expect(results[0].line).toBeGreaterThan(0);
+      expect(results[0].match).toContain('RFC 3261');
+    });
+
+    it('searches code with file glob filtering', async () => {
+      const tsResults = await executor.codeSearch('DialogManager', '*.ts');
+      expect(tsResults.length).toBeGreaterThan(0);
+      for (const res of tsResults) {
+        expect(res.path.endsWith('.ts')).toBe(true);
+      }
+    });
+
+    it('locates class and interface symbols via symbolLookup', async () => {
+      const dialogSyms = await executor.symbolLookup('DialogManager');
+      expect(dialogSyms.length).toBeGreaterThan(0);
+      expect(dialogSyms[0].path).toContain('dialogManager.ts');
+      expect(dialogSyms[0].kind).toBe('class');
+
+      const portSyms = await executor.symbolLookup('PortAllocator');
+      expect(portSyms.length).toBeGreaterThan(0);
+      expect(portSyms[0].path).toContain('portAllocator.ts');
+      expect(portSyms[0].kind).toBe('class');
+
+      const ratingSyms = await executor.symbolLookup('TariffRatingEngine');
+      expect(ratingSyms.length).toBeGreaterThan(0);
+      expect(ratingSyms[0].path).toContain('tariffRatingEngine.ts');
+      expect(ratingSyms[0].kind).toBe('class');
+
+      const devSyms = await executor.symbolLookup('DeviceRegistry');
+      expect(devSyms.length).toBeGreaterThan(0);
+      expect(devSyms[0].path).toContain('deviceRegistry.ts');
+      expect(devSyms[0].kind).toBe('class');
+    });
+
+    it('dispatches tool calls seamlessly via executeTool', async () => {
+      // 1. file_read
+      const readOutput = await executor.executeTool('file_read', {
+        path: 'sip_signaling_service/src/dialogManager.ts',
+        startLine: 1,
+        endLine: 5,
+      });
+      expect(readOutput).toContain('1: /**');
+      expect(readOutput).toContain('Dialog Manager');
+
+      // 2. code_search
+      const searchOutput = await executor.executeTool('code_search', {
+        pattern: 'PortAllocator',
+        fileGlob: '*.ts',
+        maxResults: 5,
+      });
+      expect(searchOutput).toContain('portAllocator.ts');
+
+      // 3. symbol_lookup
+      const symbolOutput = await executor.executeTool('symbol_lookup', {
+        symbolName: 'JitterBuffer',
+      });
+      expect(symbolOutput).toContain('jitterBuffer.ts');
+      expect(symbolOutput).toContain('[class]');
+
+      // 4. Unknown tool handling
+      const unknownOutput = await executor.executeTool('invalid_tool', {});
+      expect(unknownOutput).toContain('Error: Unknown tool "invalid_tool"');
+    });
+
+    it('resolves workspaceRoot automatically in EvaluationRunner', () => {
+      const runner = new EvaluationRunner();
+      const defaultRoot = runner.resolveWorkspaceRoot();
+      expect(fs.existsSync(defaultRoot)).toBe(true);
+
+      const customRunner = new EvaluationRunner({ workspaceRoot: telecomWorkspaceRoot });
+      expect(customRunner.resolveWorkspaceRoot()).toBe(telecomWorkspaceRoot);
+      const customExec = customRunner.getWorkspaceExecutor();
+      expect(customExec.getWorkspaceRoot()).toBe(telecomWorkspaceRoot);
+    });
+  });
+
+  // =========================================================================
+  // 7. PARSE TOOL CALL LLM OUTPUT PARSER
+  // =========================================================================
+  describe('parseToolCall()', () => {
+    it('parses standard JSON tool call format', () => {
+      const raw = '{"tool": "file_read", "args": {"path": "sip_signaling_service/src/dialogManager.ts", "startLine": 1, "endLine": 10}}';
+      const parsed = parseToolCall(raw);
+      expect(parsed).toEqual({
+        tool: 'file_read',
+        args: {
+          path: 'sip_signaling_service/src/dialogManager.ts',
+          startLine: 1,
+          endLine: 10,
+        },
+      });
+    });
+
+    it('parses tool calls wrapped in markdown code fence', () => {
+      const raw = 'Let me inspect the dialog manager:\n```json\n{"tool": "code_search", "args": {"pattern": "DialogState"}}\n```';
+      const parsed = parseToolCall(raw);
+      expect(parsed).toEqual({
+        tool: 'code_search',
+        args: { pattern: 'DialogState' },
+      });
+    });
+
+    it('parses bracket syntax [TOOL_CALL: name(args)]', () => {
+      const raw = '[TOOL_CALL: symbol_lookup({"symbolName": "PortAllocator"})]';
+      const parsed = parseToolCall(raw);
+      expect(parsed).toEqual({
+        tool: 'symbol_lookup',
+        args: { symbolName: 'PortAllocator' },
+      });
+    });
+
+    it('parses OpenAI tool_calls array format', () => {
+      const raw = '{"tool_calls": [{"name": "file_read", "arguments": {"path": "README.md"}}]}';
+      const parsed = parseToolCall(raw);
+      expect(parsed).toEqual({
+        tool: 'file_read',
+        args: { path: 'README.md' },
+      });
+    });
+
+    it('returns null for final review findings JSON (not a tool call)', () => {
+      const raw = '{"findings": [{"severity": "P0", "path": "src/a.ts", "line": 10, "title": "Critical flaw"}]}';
+      expect(parseToolCall(raw)).toBeNull();
+    });
+
+    it('returns null for standard conversational plain text', () => {
+      expect(parseToolCall('The PR looks good to me, clean implementation.')).toBeNull();
+      expect(parseToolCall('')).toBeNull();
+    });
+  });
+
+  // =========================================================================
+  // 8. MULTI-TURN LIVE SCENARIO INTERACTION LOOP
+  // =========================================================================
+  describe('Multi-Turn Interactive Live Scenario Execution', () => {
+    it('executes 2-turn conversation: turn 1 tool query -> tool execution on workspace -> turn 2 final findings', async () => {
+      let turnNumber = 0;
+
+      const mockMultiTurnFetch = async (input: any, init: any): Promise<Response> => {
+        turnNumber++;
+        const body = JSON.parse(init.body);
+        const messages = body.messages;
+
+        if (turnNumber === 1) {
+          // Model requests file_read tool
+          const streamData = [
+            'data: {"model":"openai/gpt-5.6-luna","choices":[{"delta":{"content":"{\\"tool\\":\\"file_read\\",\\"args\\":{\\"path\\":\\"sip_signaling_service/src/dialogManager.ts\\",\\"startLine\\":1,\\"endLine\\":5}}"}}]}\n\n',
+            'data: {"usage":{"prompt_tokens":500,"completion_tokens":40,"total_tokens":540},"cost":0.0012}\n\n',
+            'data: [DONE]\n\n',
+          ].join('');
+          return new Response(streamData, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        } else {
+          // Verify user message contained [TOOL_RESULT: file_read]
+          const lastMsg = messages[messages.length - 1].content;
+          expect(lastMsg).toContain('[TOOL_RESULT: file_read]');
+          expect(lastMsg).toContain('SIP Dialog Manager');
+
+          // Model provides final findings
+          const streamData = [
+            'data: {"model":"openai/gpt-5.6-luna","choices":[{"delta":{"content":"{\\"findings\\":[]}"}}]}\n\n',
+            'data: {"usage":{"prompt_tokens":650,"completion_tokens":45,"total_tokens":695},"cost":0.0015}\n\n',
+            'data: [DONE]\n\n',
+          ].join('');
+          return new Response(streamData, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        }
+      };
+
+      const runner = new EvaluationRunner({
+        offline: false,
+        apiKey: 'test-key',
+        fetchImplementation: mockMultiTurnFetch as any,
+        workspaceRoot: telecomWorkspaceRoot,
+      });
+
+      const scenario = getScenarioById('clean-multi-feature-ship')!;
+      const result = await runner.runScenario('openai/gpt-5.6-luna', scenario);
+
+      expect(result.turnDepth).toBe(2);
+      expect(result.promptTokens).toBe(1150); // 500 + 650
+      expect(result.completionTokens).toBe(85); // 40 + 45
+      expect(result.totalTokens).toBe(1235);
+      expect(result.costUSD).toBe(0.0027); // 0.0012 + 0.0015
+      expect(result.verdict).toBe('SHIP');
+      expect(result.verdictMatch).toBe(true);
+    });
+
+    it('enforces maxTurns limit and terminates multi-turn loop cleanly', async () => {
+      let turnNumber = 0;
+
+      const infiniteLoopFetch = async (): Promise<Response> => {
+        turnNumber++;
+        const streamData = [
+          'data: {"choices":[{"delta":{"content":"{\\"tool\\":\\"code_search\\",\\"args\\":{\\"pattern\\":\\"DialogManager\\"}}"}}]}\n\n',
+          'data: {"usage":{"prompt_tokens":300,"completion_tokens":30,"total_tokens":330},"cost":0.0008}\n\n',
+          'data: [DONE]\n\n',
+        ].join('');
+        return new Response(streamData, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+
+      const runner = new EvaluationRunner({
+        offline: false,
+        apiKey: 'test-key',
+        maxTurns: 3,
+        fetchImplementation: infiniteLoopFetch as any,
+        workspaceRoot: telecomWorkspaceRoot,
+      });
+
+      const scenario = getScenarioById('clean-multi-feature-ship')!;
+      const result = await runner.runScenario('openai/gpt-5.6-luna', scenario);
+
+      expect(result.turnDepth).toBe(3);
+      expect(turnNumber).toBe(3);
+      expect(result.totalTokens).toBe(990); // 330 * 3
+    });
+  });
+
+  // =========================================================================
+  // 9. APPROVED 4-MODEL OFFLINE SIMULATION CALIBRATION
+  // =========================================================================
+  describe('Approved 4-Model Offline Simulation Calibration', () => {
+    const approvedModels = [
+      'deepseek/deepseek-v4-flash-0731:high',
+      'openrouter/5.6-luna-high',
+      'qwen/qwen-3.8-27b:high',
+      'google/gemini-3.7-flash:high',
+    ];
+
+    it('verifies calibrated simulation profiles for all 4 approved models', () => {
+      for (const model of approvedModels) {
+        const profile = getSimulatedProfile(model);
+        expect(profile.discoveryRate).toBeGreaterThanOrEqual(0.98);
+        expect(profile.ttftBase).toBeGreaterThanOrEqual(100);
+        expect(profile.ttftBase).toBeLessThanOrEqual(150);
+        expect(profile.turnDepth).toBe(3);
+        expect(profile.promptFactor).toBeGreaterThanOrEqual(1.0);
+        expect(profile.completionFactor).toBeGreaterThanOrEqual(1.0);
+      }
+    });
+
+    it('produces deterministic scores via FNV-1a hash', () => {
+      const score1 = deterministicScore('openai/gpt-5.6-luna', 'sec-multi-tenant-isolation', 0);
+      const score2 = deterministicScore('openai/gpt-5.6-luna', 'sec-multi-tenant-isolation', 0);
+      expect(score1).toBe(score2);
+      expect(score1).toBeGreaterThanOrEqual(0.0);
+      expect(score1).toBeLessThan(1.0);
+
+      const score3 = deterministicScore('openai/gpt-5.6-luna', 'sec-multi-tenant-isolation', 1);
+      expect(score3).not.toBe(score1);
+    });
+
+    it('evaluates all 4 approved models across benchmark scenarios with calibrated metrics', async () => {
+      const runner = new EvaluationRunner({ offline: true, workspaceRoot: telecomWorkspaceRoot });
+      const scenarios = getAllScenarios().slice(0, 4);
+
+      for (const model of approvedModels) {
+        const report = await runner.runBenchmarkSuite([model], scenarios);
+        const summary = report.summary[model];
+
+        expect(summary.totalScenarios).toBe(4);
+        expect(summary.precision).toBeGreaterThanOrEqual(0.9);
+        expect(summary.recall).toBeGreaterThanOrEqual(0.95);
+        expect(summary.f1Score).toBeGreaterThanOrEqual(0.95);
+        expect(summary.avgSnr).toBeGreaterThanOrEqual(0);
+        expect(summary.avgTtftMs).toBeGreaterThan(90);
+        expect(summary.totalCostUSD).toBeGreaterThan(0);
+        expect(summary.avgTurnDepth).toBeGreaterThanOrEqual(1.0);
+      }
     });
   });
 });
-

@@ -1,0 +1,8 @@
+{
+  "name": "@telecom/sip-signaling-service",
+  "version": "1.0.0",
+  "description": "RFC 3261 SIP Signaling & Dialog State Machine Micro-Module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true
+}

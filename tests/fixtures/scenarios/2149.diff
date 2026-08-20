@@ -1,0 +1,20 @@
+--- FILE: sip_signaling_service/src/callTransferCoordinator.ts ---
+diff --git a/sip_signaling_service/src/callTransferCoordinator.ts b/sip_signaling_service/src/callTransferCoordinator.ts
+@@ -110,14 +110,8 @@
+   public async handleEarlyBye(transferSessionId: string): Promise<void> {
+     const session = this.transferSessions.get(transferSessionId);
+     if (!session) return;
+-    await session.transferLock.acquire();
+-    try {
+-      if (session.state === 'PENDING') {
+-        session.state = 'ABORTED';
+-        await this.mediaBridge.destroyBridge(session.bridgeId);
+-      }
+-    } finally {
+-      session.transferLock.release();
+-    }
++    // Bug: Unlocked check-then-act race: destroys media bridge immediately
++    session.state = 'ABORTED';
++    await this.mediaBridge.destroyBridge(session.bridgeId);
+   }
+ }

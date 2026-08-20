@@ -1,0 +1,9 @@
+--- FILE: rtp_media_gateway/src/jitterBuffer.ts ---
+diff --git a/rtp_media_gateway/src/jitterBuffer.ts b/rtp_media_gateway/src/jitterBuffer.ts
+@@ -105,14 +105,22 @@ export class JitterBuffer {
++  public isSequenceOlder(seqA: number, seqB: number): boolean {
++    // RFC 3550 Appendix A.1: 16-bit unsigned modular sequence difference
++    const diff = (seqA - seqB) & 0xFFFF;
++    return diff > 0x8000;
++  }
+ }

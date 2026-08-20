@@ -22,12 +22,12 @@ const { changedLineNumbers, sanitizeFindings, computeArbitration } = require('..
 describe('Evaluation Scenarios & Matrices Registry', () => {
   const fixturesDir = path.resolve(__dirname, '../fixtures/scenarios');
 
-  it('contains 94 comprehensive evaluation scenarios (≥93)', () => {
+  it('contains 190 comprehensive evaluation scenarios (≥188)', () => {
     const scenarios = getAllScenarios();
-    expect(scenarios.length).toBeGreaterThanOrEqual(93);
-    expect(scenarios.length).toBe(94);
-    expect(DEFAULT_EVALUATION_SCENARIOS.length).toBe(94);
-    expect(listEvaluationScenarios().length).toBe(94);
+    expect(scenarios.length).toBeGreaterThanOrEqual(188);
+    expect(scenarios.length).toBe(190);
+    expect(DEFAULT_EVALUATION_SCENARIOS.length).toBe(190);
+    expect(listEvaluationScenarios().length).toBe(190);
   });
 
   it('guarantees unique scenario IDs across all entries', () => {
@@ -265,6 +265,48 @@ describe('Evaluation Scenarios & Matrices Registry', () => {
     // Domain 9: Multi-Turn Evidence Chaining (8 scenarios)
     const chain = all.filter((s) => s.id.startsWith('chain-'));
     expect(chain.length).toBe(8);
+
+    // Domain 10: Generic Telecom Call Engine Benchmark Expansion (96 scenarios)
+    const telecom = all.filter((s) => s.id.startsWith('telecom-'));
+    expect(telecom.length).toBe(96);
+
+    // Archetype 1: Needle-in-a-Haystack Refactor Diffs (24 scenarios)
+    const haystack = all.filter((s) => s.id.startsWith('telecom-haystack-'));
+    expect(haystack.length).toBe(24);
+
+    // Archetype 2: Cross-Module Architectural Breakages (24 scenarios)
+    const cross = all.filter((s) => s.id.startsWith('telecom-cross-'));
+    expect(cross.length).toBe(24);
+
+    // Archetype 3: High-Concurrency Distributed Race Conditions (24 scenarios)
+    const races = all.filter((s) => s.id.startsWith('telecom-race-'));
+    expect(races.length).toBe(24);
+
+    // Archetype 4: False Positive & Hallucination Trap PRs (24 scenarios)
+    const traps = all.filter((s) => s.id.startsWith('telecom-trap-'));
+    expect(traps.length).toBe(24);
+    for (const trap of traps) {
+      expect(trap.expectedVerdict).toBe('SHIP');
+      expect(trap.expectedFindings.length).toBe(0);
+    }
+
+    // Verify all telecom scenarios mount the telecom workspaceRoot
+    for (const ts of telecom) {
+      expect(ts.workspaceRoot).toBe('tests/fixtures/workspaces/telecom-call-engine');
+      expect(ts.prContext.prNumber).toBeGreaterThanOrEqual(2101);
+      expect(ts.prContext.prNumber).toBeLessThanOrEqual(2196);
+    }
+  });
+
+  it('allows lookups by PR number string', () => {
+    const pr2101 = getScenarioById('2101');
+    expect(pr2101).toBeDefined();
+    expect(pr2101?.id).toBe('telecom-haystack-sip-dropped-tenant');
+
+    const pr2196 = getScenarioById('2196');
+    expect(pr2196).toBeDefined();
+    expect(pr2196?.id).toBe('telecom-trap-sip-dialog-route-set-inversion-ship');
   });
 });
+
 

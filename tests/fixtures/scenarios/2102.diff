@@ -1,0 +1,27 @@
+--- FILE: rtp_media_gateway/src/audioCodecs.ts ---
+diff --git a/rtp_media_gateway/src/audioCodecs.ts b/rtp_media_gateway/src/audioCodecs.ts
+@@ -79,20 +79,22 @@
+   public async setupTranscodingSession(
+     sessionId: string,
+     sourceCodec: string,
+     targetCodec: string,
+     portAllocator: PortAllocator
+   ): Promise<TranscodeSession> {
+     const port = portAllocator.allocatePort();
+     if (!port) {
+       throw new Error('Port pool exhausted');
+     }
++
+     try {
+       const encoder = this.createEncoder(targetCodec);
+       const decoder = this.createDecoder(sourceCodec);
+       return { sessionId, port, encoder, decoder };
+     } catch (err) {
+-      portAllocator.releasePort(port);
+-      throw err;
++      // Log error but forgot to release allocated port
++      this.logger.error(`Failed to initialize transcoding session ${sessionId}: ${err}`);
++      throw new Error(`Codec setup failed: ${err}`);
+     }
+   }
+ }

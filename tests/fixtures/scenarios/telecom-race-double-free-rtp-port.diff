@@ -1,0 +1,13 @@
+--- FILE: rtp_media_gateway/src/portAllocator.ts ---
+diff --git a/rtp_media_gateway/src/portAllocator.ts b/rtp_media_gateway/src/portAllocator.ts
+@@ -60,7 +60,6 @@
+   public releasePort(port: number): void {
+-    if (this.allocatedPorts.has(port)) {
+-      this.allocatedPorts.delete(port);
+-      this.availableCount++;
+-    }
++    // Bug: Double-free race: unconditionally increments availableCount
++    this.allocatedPorts.delete(port);
++    this.availableCount++;
+   }
+ }

@@ -1,0 +1,15 @@
+--- FILE: cdr_pipeline/src/tenantQuotaTracker.ts ---
+diff --git a/cdr_pipeline/src/tenantQuotaTracker.ts b/cdr_pipeline/src/tenantQuotaTracker.ts
+@@ -70,4 +70,11 @@
+   public async debitCallMinutes(tenantId: string, estimatedMinutes: number): Promise<boolean> {
+-    return this.atomicDebit(tenantId, estimatedMinutes);
++    const current = this.balances.get(tenantId) || 0;
++    // Bug: Check-then-act race permits parallel calls to all pass before debit
++    if (current >= estimatedMinutes) {
++      await this.sleep(1); // Simulating async DB round-trip
++      this.balances.set(tenantId, current - estimatedMinutes);
++      return true;
++    }
++    return false;
+   }
+ }

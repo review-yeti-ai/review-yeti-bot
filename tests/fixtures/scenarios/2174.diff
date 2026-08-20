@@ -1,0 +1,15 @@
+--- FILE: pbx_device_manager/src/trunkAllocator.ts ---
+diff --git a/pbx_device_manager/src/trunkAllocator.ts b/pbx_device_manager/src/trunkAllocator.ts
+@@ -95,14 +95,23 @@ export class TrunkAllocator {
++  public tryAcquireChannelAtomic(trunk: TrunkGroup): boolean {
++    while (true) {
++      const current = trunk.activeChannels;
++      if (current >= trunk.maxChannels) return false;
++      // Atomic CAS simulation using synchronous single-threaded JS event-loop invariant
++      if (trunk.activeChannels === current) {
++        trunk.activeChannels = current + 1;
++        return true;
++      }
++    }
++  }
+ }

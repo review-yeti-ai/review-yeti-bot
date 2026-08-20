@@ -22,8 +22,16 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     rawOriginal.startsWith('/api/settings') ||
     reqPath.startsWith('/api/telemetry') ||
     rawOriginal.startsWith('/api/telemetry') ||
+    reqPath.startsWith('/api/memory') ||
+    rawOriginal.startsWith('/api/memory') ||
+    reqPath.startsWith('/api/code') ||
+    rawOriginal.startsWith('/api/code') ||
+    (reqPath.startsWith('/api/github') && !reqPath.startsWith('/api/github/manifest-callback')) ||
+    (rawOriginal.startsWith('/api/github') && !rawOriginal.startsWith('/api/github/manifest-callback')) ||
     reqPath.includes('/apikeys') ||
-    rawOriginal.includes('/apikeys');
+    rawOriginal.includes('/apikeys') ||
+    reqPath === '/api/auth/apikeys' ||
+    rawOriginal === '/api/auth/apikeys';
 
   const isPublicRoute =
     !isProtectedPath &&
@@ -37,13 +45,18 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
       reqPath === '/api/version' ||
       reqPath === '/api/about' ||
       reqPath === '/api/metrics' ||
-      reqPath === '/auth' ||
-      reqPath.startsWith('/auth/') ||
-      reqPath === '/api/auth' ||
-      reqPath.startsWith('/api/auth/') ||
-      reqPath.startsWith('/api/onboarding') ||
-      reqPath.startsWith('/api/github/app-config') ||
-      reqPath.startsWith('/api/github/manifest'));
+      reqPath === '/auth/login' ||
+      reqPath === '/api/auth/login' ||
+      reqPath === '/auth/session' ||
+      reqPath === '/api/auth/session' ||
+      reqPath === '/auth/logout' ||
+      reqPath === '/api/auth/logout' ||
+      reqPath === '/api/onboarding' ||
+      reqPath.startsWith('/api/onboarding/') ||
+      rawOriginal.startsWith('/api/onboarding') ||
+      reqPath === '/api/github/manifest-callback' ||
+      reqPath.startsWith('/api/github/manifest-callback/') ||
+      rawOriginal.startsWith('/api/github/manifest-callback'));
 
   if (isPublicRoute) {
     return next();

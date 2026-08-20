@@ -1,0 +1,15 @@
+--- FILE: pbx_device_manager/src/digestAuth.ts ---
+diff --git a/pbx_device_manager/src/digestAuth.ts b/pbx_device_manager/src/digestAuth.ts
+@@ -50,10 +50,11 @@
+   public isNonceValid(nonce: string, nonceTtlSeconds: number = 300): boolean {
+     const parsed = this.parseNonce(nonce);
+     if (!parsed) return false;
+     const now = Date.now();
+-    if (now - parsed.timestamp > nonceTtlSeconds * 1000) {
++    // Bug: Comparing milliseconds (now - parsed.timestamp) directly against seconds (nonceTtlSeconds)
++    if (now - parsed.timestamp > nonceTtlSeconds) {
+       return false;
+     }
+     return true;
+   }
+ }

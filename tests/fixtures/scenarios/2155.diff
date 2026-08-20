@@ -1,0 +1,14 @@
+--- FILE: pbx_device_manager/src/deviceRegistry.ts ---
+diff --git a/pbx_device_manager/src/deviceRegistry.ts b/pbx_device_manager/src/deviceRegistry.ts
+@@ -87,7 +87,7 @@
+   public async addContact(account: string, newContact: string): Promise<void> {
+-    await this.accountLocks.withLock(account, async () => {
+-      const contacts = this.contacts.get(account) || [];
+-      this.contacts.set(account, [...contacts, newContact]);
+-    });
++    // Bug: Removed per-account lock causing concurrent REGISTERs to overwrite contact list
++    const contacts = this.contacts.get(account) || [];
++    await this.db.saveContact(account, newContact);
++    this.contacts.set(account, [...contacts, newContact]);
+   }
+ }

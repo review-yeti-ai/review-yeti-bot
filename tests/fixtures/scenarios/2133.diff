@@ -1,0 +1,12 @@
+--- FILE: sip_signaling_service/src/callTransferCoordinator.ts ---
+diff --git a/sip_signaling_service/src/callTransferCoordinator.ts b/sip_signaling_service/src/callTransferCoordinator.ts
+@@ -50,6 +50,7 @@
+-  public executeTransfer(req: TransferRequest, callback: (err: Error | null, transferId?: string) => void): void {
++  // Breaking callback change: inverted error-first Node.js convention
++  public executeTransfer(req: TransferRequest, callback: (transferId: string | null, err?: Error) => void): void {
+     if (!req.targetUri) {
+-      return callback(new Error('Target URI missing'));
++      return callback(null, new Error('Target URI missing'));
+     }
+   }
+ }

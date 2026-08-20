@@ -1,6 +1,16 @@
 import { defineConfig } from 'vitest/config';
 import path from 'path';
 
+// Clear proxy environment variables to avoid Supertest routing to local proxy
+delete process.env.http_proxy;
+delete process.env.HTTP_PROXY;
+delete process.env.https_proxy;
+delete process.env.HTTPS_PROXY;
+delete process.env.all_proxy;
+delete process.env.ALL_PROXY;
+process.env.NO_PROXY = '*';
+process.env.no_proxy = '*';
+
 export default defineConfig({
   oxc: {
     jsx: {
@@ -19,6 +29,16 @@ export default defineConfig({
     exclude: ['node:sqlite'],
   },
   test: {
+    env: {
+      HTTP_PROXY: '',
+      http_proxy: '',
+      HTTPS_PROXY: '',
+      https_proxy: '',
+      ALL_PROXY: '',
+      all_proxy: '',
+      NO_PROXY: '*',
+      no_proxy: '*',
+    },
     globals: true,
     environment: 'node',
     server: {

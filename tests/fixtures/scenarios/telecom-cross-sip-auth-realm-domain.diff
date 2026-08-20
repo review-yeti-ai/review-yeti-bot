@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/sipServer.ts ---
+diff --git a/sip_signaling_service/src/sipServer.ts b/sip_signaling_service/src/sipServer.ts
+@@ -75,4 +75,5 @@
+   public getChallengeRealm(request: SipRequest): string {
+-    return this.configuredServerRealm;
++    // Breaking security vulnerability: trusting unauthenticated Contact header domain
++    return request.headers['contact']?.split('@')[1] || this.configuredServerRealm;
+   }
+ }

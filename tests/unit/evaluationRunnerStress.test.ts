@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
+import fs from 'node:fs';
 import {
   EvaluationRunner,
+  WorkspaceToolExecutor,
+  parseToolCall,
   calculateMetrics,
   estimateCost,
   formatMarkdownReport,
@@ -12,6 +16,8 @@ import {
 import { EvaluationScenario, getAllScenarios, getScenarioById } from '../../src/evaluation/scenarios';
 
 describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
+  const rootRepoDir = path.resolve(__dirname, '../..');
+  const telecomWorkspaceRoot = path.resolve(rootRepoDir, 'tests/fixtures/workspaces/telecom-call-engine');
 
   // =========================================================================
   // 1. DIVISION BY ZERO & SNR / PRECISION / RECALL / F1 EDGE CASES
@@ -266,7 +272,7 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
 
       expect(() => calculateMetrics(expected, actual)).not.toThrow();
       const metrics = calculateMetrics(expected, actual);
-      expect(metrics.tp).toBe(1); // One matched (with lineDelta 0 because invalid lines fall back to lineDelta 0)
+      expect(metrics.tp).toBe(1);
       expect(metrics.fp).toBe(3);
     });
 
@@ -290,7 +296,6 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
         },
       ];
 
-      // titlePattern is a string containing regex metacharacters
       expect(() => calculateMetrics(expected, actual)).not.toThrow();
     });
 
@@ -345,7 +350,6 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
       expect(res.totalTokens).toBe(0);
       expect(res.ttftMs).toBe(0);
       expect(res.tp).toBe(1);
-      // Cost efficiency uses Math.max(costUSD, 0.00001) to prevent division by zero
       expect(Number.isFinite(res.costEfficiency)).toBe(true);
       expect(res.costEfficiency).toBeGreaterThan(0);
     });
@@ -374,7 +378,6 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
 
     it('estimateCost correctly calculates for unknown model using fallback pricing', () => {
       const cost = estimateCost('unknown-vendor/custom-32b-model', 1_000_000, 1_000_000);
-      // Default fallback: prompt $0.50/M + completion $1.50/M = $2.0
       expect(cost).toBe(2.0);
     });
   });
@@ -399,7 +402,6 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
           async start(controller) {
             const encoder = new TextEncoder();
             for (let i = 0; i < chunks.length; i++) {
-              // Simulate network delay between chunks
               await new Promise((r) => setTimeout(r, 15));
               controller.enqueue(encoder.encode(chunks[i]));
             }
@@ -490,7 +492,6 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
       const markdown = formatMarkdownReport(report);
       const lines = markdown.split('\n');
 
-      // 1. Verify Executive Summary table column counts
       let inSummaryTable = false;
       let summaryHeaderCols = 0;
 
@@ -498,7 +499,7 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
         if (line.startsWith('| Model |')) {
           inSummaryTable = true;
           summaryHeaderCols = line.split('|').length;
-          expect(summaryHeaderCols).toBe(13); // 11 data columns + leading/trailing empty
+          expect(summaryHeaderCols).toBe(13);
           continue;
         }
         if (inSummaryTable) {
@@ -511,7 +512,6 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
         }
       }
 
-      // 2. Verify Detailed Breakdown table column counts
       let inDetailTable = false;
       let detailHeaderCols = 0;
 
@@ -519,7 +519,7 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
         if (line.startsWith('| Scenario ID |')) {
           inDetailTable = true;
           detailHeaderCols = line.split('|').length;
-          expect(detailHeaderCols).toBe(15); // 13 data columns + leading/trailing empty
+          expect(detailHeaderCols).toBe(15);
           continue;
         }
         if (inDetailTable) {
@@ -555,6 +555,160 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
       for (let i = 0; i < report.detailedResults.length; i++) {
         expect(deserialized.detailedResults[i]).toEqual(report.detailedResults[i]);
       }
+    });
+  });
+
+  // =========================================================================
+  // 7. WORKSPACE PATH TRAVERSAL FUZZING & SECURITY BOUNDARY HARDENING
+  // =========================================================================
+  describe('7. Workspace Path Traversal Fuzzing & Security Boundary Hardening', () => {
+    const executor = new WorkspaceToolExecutor(telecomWorkspaceRoot);
+
+    it('rejects complex directory traversal escape sequences', async () => {
+      const maliciousPaths = [
+        '../package.json',
+        '../../package.json',
+        '../../../etc/passwd',
+        'sip_signaling_service/../../../../../../etc/shadow',
+        '..\\..\\windows\\system32',
+        'sub/dir/../../../../../../var/log/syslog',
+        '/etc/passwd',
+        '/var/run/docker.sock',
+      ];
+
+      for (const p of maliciousPaths) {
+        await expect(executor.fileRead(p)).rejects.toThrow('Access denied');
+      }
+    });
+
+    it('handles empty, null, and whitespace paths safely', async () => {
+      await expect(executor.fileRead('')).rejects.toThrow('Invalid path');
+      await expect(executor.fileRead('   ')).rejects.toThrow('Invalid path');
+      await expect(executor.fileRead(null as any)).rejects.toThrow('Invalid path');
+      await expect(executor.fileRead(undefined as any)).rejects.toThrow('Invalid path');
+    });
+
+    it('handles out-of-bounds startLine and endLine gracefully', async () => {
+      // startLine beyond file length
+      const res1 = await executor.fileRead('README.md', 9999, 10000);
+      expect(res1).toContain('empty');
+
+      // negative and zero startLine normalized to 1
+      const res2 = await executor.fileRead('README.md', -5, 2);
+      expect(res2).toContain('1: # Generic Telecom Call Engine');
+      expect(res2).toContain('2: ');
+    });
+  });
+
+  // =========================================================================
+  // 8. WORKSPACE TOOL BOUNDED EXECUTION & STRESS CONSTRAINTS
+  // =========================================================================
+  describe('8. Workspace Tool Stress & Bounded Execution Constraints', () => {
+    it('enforces custom maxFileSize limit', async () => {
+      // Instantiate executor with 50-byte max file size
+      const boundedExecutor = new WorkspaceToolExecutor(telecomWorkspaceRoot, { maxFileSize: 50 });
+      const res = await boundedExecutor.fileRead('README.md');
+      expect(res).toContain('Error: File exceeds maximum allowed size');
+    });
+
+    it('safely handles malformed regex patterns in codeSearch without throwing', async () => {
+      const executor = new WorkspaceToolExecutor(telecomWorkspaceRoot);
+      const malformedPatterns = ['[unclosed-bracket', '(unclosed-group', '***invalid-quantifier', '\\'];
+
+      for (const pattern of malformedPatterns) {
+        expect(async () => {
+          const res = await executor.codeSearch(pattern);
+          expect(Array.isArray(res)).toBe(true);
+        }).not.toThrow();
+      }
+    });
+
+    it('safely escapes special regex characters in symbolLookup', async () => {
+      const executor = new WorkspaceToolExecutor(telecomWorkspaceRoot);
+      const extremeSymbols = ['*PortAllocator*', 'Dialog(Manager)', '[TariffRatingEngine]', '.*'];
+
+      for (const sym of extremeSymbols) {
+        expect(async () => {
+          const res = await executor.symbolLookup(sym);
+          expect(Array.isArray(res)).toBe(true);
+        }).not.toThrow();
+      }
+    });
+
+    it('executeTool handles unexpected argument shapes safely', async () => {
+      const executor = new WorkspaceToolExecutor(telecomWorkspaceRoot);
+
+      // Missing path
+      const res1 = await executor.executeTool('file_read', {});
+      expect(res1).toContain('Error: Missing "path" argument');
+
+      // Missing pattern
+      const res2 = await executor.executeTool('code_search', {});
+      expect(res2).toContain('Error: Missing "pattern" argument');
+
+      // Missing symbolName
+      const res3 = await executor.executeTool('symbol_lookup', {});
+      expect(res3).toContain('Error: Missing "symbolName" argument');
+    });
+  });
+
+  // =========================================================================
+  // 9. ADVERSARIAL MULTI-TURN LOOP STREAMING & ERROR RECOVERY
+  // =========================================================================
+  describe('9. Adversarial Multi-Turn Loop Streaming & Error Recovery', () => {
+    it('recovers gracefully when model requests a non-existent file in turn 1', async () => {
+      let turnNumber = 0;
+
+      const errorRecoveryFetch = async (input: any, init: any): Promise<Response> => {
+        turnNumber++;
+        const body = JSON.parse(init.body);
+        const messages = body.messages;
+
+        if (turnNumber === 1) {
+          // Model asks for non-existent file
+          const streamData = [
+            'data: {"choices":[{"delta":{"content":"{\\"tool\\":\\"file_read\\",\\"args\\":{\\"path\\":\\"non_existent_module.ts\\"}}"}}]}\n\n',
+            'data: {"usage":{"prompt_tokens":400,"completion_tokens":30,"total_tokens":430},"cost":0.001}\n\n',
+            'data: [DONE]\n\n',
+          ];
+          return new Response(streamData.join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        } else {
+          // Verify turn 2 received the file not found error message
+          const lastMsg = messages[messages.length - 1].content;
+          expect(lastMsg).toContain('Error: File not found in workspace: non_existent_module.ts');
+
+          // Model recognizes error and finishes with SHIP verdict findings
+          const streamData = [
+            'data: {"choices":[{"delta":{"content":"{\\"findings\\":[]}"}}]}\n\n',
+            'data: {"usage":{"prompt_tokens":550,"completion_tokens":40,"total_tokens":590},"cost":0.0012}\n\n',
+            'data: [DONE]\n\n',
+          ];
+          return new Response(streamData.join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        }
+      };
+
+      const runner = new EvaluationRunner({
+        offline: false,
+        apiKey: 'test-key',
+        fetchImplementation: errorRecoveryFetch as any,
+        workspaceRoot: telecomWorkspaceRoot,
+      });
+
+      const scenario = getScenarioById('clean-multi-feature-ship')!;
+      const result = await runner.runScenario('openai/gpt-5.6-luna', scenario);
+
+      expect(result.turnDepth).toBe(2);
+      expect(result.verdict).toBe('SHIP');
+      expect(result.verdictMatch).toBe(true);
+    });
+
+    it('parses bracket syntax with unquoted or single string argument', () => {
+      const raw = '[TOOL_CALL: file_read(sip_signaling_service/src/dialogManager.ts)]';
+      const parsed = parseToolCall(raw);
+      expect(parsed).toEqual({
+        tool: 'file_read',
+        args: { path: 'sip_signaling_service/src/dialogManager.ts' },
+      });
     });
   });
 });

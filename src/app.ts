@@ -795,7 +795,6 @@ export function createApp(): Express {
   app.use('/api/onboarding', createOnboardingRouter());
   app.use('/api/router', createProviderRouter());
   app.use('/api/live', createLiveRouter());
-  app.use('/api/github/manifest-callback', createGitHubAppApiRouter());
 
   // Protected API Routes
   app.use('/api', requireAuth);

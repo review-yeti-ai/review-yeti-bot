@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/callRouter.ts ---
+diff --git a/sip_signaling_service/src/callRouter.ts b/sip_signaling_service/src/callRouter.ts
+@@ -165,4 +165,5 @@
+   public buildOutboundRouteSet(inboundRecordRoutes: string[]): string[] {
+-    return inboundRecordRoutes.filter(route => this.isTrustedProxy(route));
++    // Bug: Blindly copying all inbound Record-Route entries without domain validation
++    return [...inboundRecordRoutes];
+   }
+ }

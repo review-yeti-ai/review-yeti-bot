@@ -1,0 +1,9 @@
+--- FILE: pbx_device_manager/src/ctiWebhookDispatcher.ts ---
+diff --git a/pbx_device_manager/src/ctiWebhookDispatcher.ts b/pbx_device_manager/src/ctiWebhookDispatcher.ts
+@@ -124,4 +124,5 @@
+   public async dispatchEvent(event: CtiEvent): Promise<void> {
+-    await this.sequentialQueue.enqueue(event.callId, () => this.sendHttp(event));
++    // Bug: Dispatches independent retry without preserving per-call event order
++    this.sendWithBackoff(event);
+   }
+ }

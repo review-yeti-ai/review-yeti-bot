@@ -428,6 +428,7 @@ export class DashboardStore {
   /** Reload the backing file and clear transient analytics caches. */
   public reset(): void {
     this.overrideFilePath = undefined;
+    this.filePath = process.env.CT_DASHBOARD_STORE || path.join(process.cwd(), 'data', 'dashboard-store.json');
     this.invalidateCache();
     this.data = this.load();
   }
@@ -1970,12 +1971,14 @@ export class DashboardStore {
       ));
     const activeModels = new Set(updated.activeModels || []);
     const providerDisabled = patch.enabled === false || patch.active === false;
-    for (const p of activePersonas) {
-      if (providerDisabled || !activeModels.has(p.model)) {
-        this.data.settings.providerConfigs[providerId] = current;
-        throw new Error(
-          `Cannot disable provider or model '${providerId}': Active persona '${p.displayName || p.id}' relies on model '${p.model}'`
-        );
+    if (providerDisabled || patch.activeModels !== undefined) {
+      for (const p of activePersonas) {
+        if (providerDisabled || !activeModels.has(p.model)) {
+          this.data.settings.providerConfigs[providerId] = current;
+          throw new Error(
+            `Cannot disable provider or model '${providerId}': Active persona '${p.displayName || p.id}' relies on model '${p.model}'`
+          );
+        }
       }
     }
 
@@ -2024,6 +2027,24 @@ export class DashboardStore {
     }
 
     const allowedModels = this.getDynamicActiveModels();
+    const provId = persona.model.startsWith('openrouter/') ? 'openrouter' :
+                   persona.model.startsWith('claude') ? 'anthropic' :
+                   persona.model.startsWith('gpt-') || persona.model.startsWith('o1-') || persona.model.startsWith('o3-') || persona.model.startsWith('openai/') ? 'openai' :
+                   persona.model.startsWith('grok') ? 'grok' :
+                   persona.model.startsWith('gemini') || persona.model.startsWith('google/') ? 'gemini' :
+                   persona.model.startsWith('deepseek') ? 'deepseek' :
+                   persona.model.startsWith('qwen') ? 'qwen' :
+                   persona.model.startsWith('codex') ? 'codex' :
+                   persona.model.startsWith('glm') || persona.model.startsWith('synthetic') ? 'synthetic' : undefined;
+
+    const provConfigs = this.getProviderConfigs();
+    if (provId && provConfigs[provId]) {
+      const pCfg = provConfigs[provId];
+      if (pCfg.enabled === false || pCfg.active === false) {
+        throw new Error(`model '${persona.model}' for '${key}' is not an allowed model override`);
+      }
+    }
+
     if (!allowedModels.includes(persona.model) && !R4_ALLOWED_MODELS.includes(persona.model as any)) {
       throw new Error(`model '${persona.model}' for '${key}' is not an allowed model override`);
     }
@@ -2176,24 +2197,29 @@ export class DashboardStore {
       if (typeof rawModel !== 'string' || rawModel.trim() === '') {
         throw new Error(`model for '${personaId}' must be a non-empty string`);
       }
-      const provId = rawModel.startsWith('claude') ? 'anthropic' :
-                     rawModel.startsWith('gpt-') || rawModel.startsWith('o1-') || rawModel.startsWith('o3-') ? 'openai' :
+      if (rawModel.includes('gemini-2.0-flash') && !rawModel.includes('gemini-2.0-flash-lite')) {
+        throw new Error(`model '${rawModel}' for '${personaId}' is a banned model`);
+      }
+
+      const allowedModels = this.getDynamicActiveModels();
+      const provId = rawModel.startsWith('openrouter/') ? 'openrouter' :
+                     rawModel.startsWith('claude') ? 'anthropic' :
+                     rawModel.startsWith('gpt-') || rawModel.startsWith('o1-') || rawModel.startsWith('o3-') || rawModel.startsWith('openai/') ? 'openai' :
                      rawModel.startsWith('grok') ? 'grok' :
-                     rawModel.startsWith('gemini') ? 'gemini' :
+                     rawModel.startsWith('gemini') || rawModel.startsWith('google/') ? 'gemini' :
                      rawModel.startsWith('deepseek') ? 'deepseek' :
+                     rawModel.startsWith('qwen') ? 'qwen' :
                      rawModel.startsWith('codex') ? 'codex' :
-                     rawModel.startsWith('glm') || rawModel.startsWith('synthetic') ? 'glm' : undefined;
+                     rawModel.startsWith('glm') || rawModel.startsWith('synthetic') ? 'synthetic' : undefined;
 
       const provConfigs = this.getProviderConfigs();
-      const realProvId = provId === 'glm' ? (provConfigs['synthetic'] ? 'synthetic' : 'glm') : provId;
-      if (realProvId && provConfigs[realProvId]) {
-        const pCfg = provConfigs[realProvId];
+      if (provId && provConfigs[provId]) {
+        const pCfg = provConfigs[provId];
         if (pCfg.enabled === false || pCfg.active === false) {
           throw new Error(`model '${rawModel}' for '${personaId}' is not an allowed model override`);
         }
       }
 
-      const allowedModels = this.getDynamicActiveModels();
       const isAllowed = allowedModels.includes(rawModel) || R4_ALLOWED_MODELS.includes(rawModel as any);
       if (!isAllowed) {
         throw new Error(`model '${rawModel}' for '${personaId}' is not an allowed model override`);
@@ -2203,8 +2229,14 @@ export class DashboardStore {
     if ('effort' in patch || 'effortLevel' in patch) {
       const rawEffort = patch.effortLevel !== undefined ? patch.effortLevel : patch.effort;
       const allowedEfforts = ['low', 'medium', 'high', 'xhigh', 'max'];
-      if (typeof rawEffort !== 'string' || !allowedEfforts.includes(String(rawEffort).toLowerCase())) {
+      if (typeof rawEffort !== 'string' || !allowedEfforts.includes(rawEffort)) {
         throw new Error(`effort for '${personaId}' must be one of low, medium, high, xhigh, max`);
+      }
+    }
+
+    if ('customPrompt' in patch) {
+      if (typeof patch.customPrompt !== 'string') {
+        throw new Error(`customPrompt for '${personaId}' must be a string`);
       }
     }
 

@@ -1,0 +1,13 @@
+--- FILE: cdr_pipeline/src/tariffRatingEngine.ts ---
+diff --git a/cdr_pipeline/src/tariffRatingEngine.ts b/cdr_pipeline/src/tariffRatingEngine.ts
+@@ -163,6 +163,7 @@
+   public reloadRateSheet(newRates: RateEntry[]): void {
+-    const newTrie = new E164RadixTrie();
+-    for (const rate of newRates) newTrie.insert(rate.prefix, rate);
+-    this.trie = newTrie; // Atomic pointer swap
++    // Bug: Mutates existing active trie in-place during live lookups
++    for (const rate of newRates) {
++      this.trie.insert(rate.prefix, rate);
++    }
+   }
+ }

@@ -1,0 +1,9 @@
+--- FILE: rtp_media_gateway/src/mediaBridge.ts ---
+diff --git a/rtp_media_gateway/src/mediaBridge.ts b/rtp_media_gateway/src/mediaBridge.ts
+@@ -95,14 +95,20 @@ export class MediaBridge {
++  public extractPayloadZeroCopy(packetBuffer: Buffer): Buffer {
++    // Intentional zero-copy view: downstream consumer only performs synchronous forwarding
++    const headerLength = 12 + ((packetBuffer[0] & 0x0F) * 4);
++    return packetBuffer.subarray(headerLength);
++  }
+ }

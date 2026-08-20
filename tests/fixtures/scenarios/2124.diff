@@ -1,0 +1,13 @@
+--- FILE: rtp_media_gateway/src/audioCodecs.ts ---
+diff --git a/rtp_media_gateway/src/audioCodecs.ts b/rtp_media_gateway/src/audioCodecs.ts
+@@ -45,8 +45,5 @@
+   public packetizeOpusFrame(frameData: Buffer): Buffer {
+-    const isOdd = frameData.length % 2 !== 0;
+-    const totalLength = isOdd ? frameData.length + 1 : frameData.length;
+-    const packet = Buffer.alloc(totalLength);
+-    frameData.copy(packet, 0);
+-    return packet;
++    // Bug: Removed 16-bit word alignment padding on odd-length Opus frames
++    return Buffer.from(frameData);
+   }
+ }
