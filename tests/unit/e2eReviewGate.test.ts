@@ -8,10 +8,48 @@
 // silently make the gate meaningless (e.g. treating an ERRORed lane as "0 findings, fine").
 import { describe, expect, it } from 'vitest';
 import {
-  summarizeFixtureResult, redFixtureOk, greenFixtureOk, evaluateGate,
+  summarizeFixtureResult, redFixtureOk, greenFixtureOk, evaluateGate, resolveGateTransportBudget,
 } from '../../src/review/e2eReviewGate';
 
 describe('e2e review gate classification (API-2902)', () => {
+  it('allows a max-reasoning stream to complete while retaining a short TTFT floor', () => {
+    expect(resolveGateTransportBudget({})).toEqual({ timeoutMs: 90_000, ttftMs: 30_000 });
+  });
+
+  it('bounds explicit gate budgets and never lets TTFT exceed the completion budget', () => {
+    expect(resolveGateTransportBudget({
+      E2E_REVIEW_GATE_TIMEOUT_MS: '45000',
+      E2E_REVIEW_GATE_TTFT_MS: '60000',
+    })).toEqual({ timeoutMs: 45_000, ttftMs: 45_000 });
+  });
+
+  it('clamps gate budgets at their exact lower and upper boundaries', () => {
+    expect(resolveGateTransportBudget({
+      E2E_REVIEW_GATE_TIMEOUT_MS: '1',
+      E2E_REVIEW_GATE_TTFT_MS: '1',
+    })).toEqual({ timeoutMs: 500, ttftMs: 500 });
+
+    expect(resolveGateTransportBudget({
+      E2E_REVIEW_GATE_TIMEOUT_MS: '999999',
+      E2E_REVIEW_GATE_TTFT_MS: '999999',
+    })).toEqual({ timeoutMs: 600_000, ttftMs: 600_000 });
+  });
+
+  it('uses defaults for empty or invalid optional environment values', () => {
+    expect(resolveGateTransportBudget({
+      E2E_REVIEW_GATE_TIMEOUT_MS: '  ',
+      E2E_REVIEW_GATE_TTFT_MS: 'invalid',
+    })).toEqual({ timeoutMs: 90_000, ttftMs: 30_000 });
+    expect(resolveGateTransportBudget(null as any)).toEqual({ timeoutMs: 90_000, ttftMs: 30_000 });
+  });
+
+  it('supports a bounded short budget for explicit local canaries', () => {
+    expect(resolveGateTransportBudget({
+      E2E_REVIEW_GATE_TIMEOUT_MS: '15000',
+      E2E_REVIEW_GATE_TTFT_MS: '5000',
+    })).toEqual({ timeoutMs: 15_000, ttftMs: 5_000 });
+  });
+
   it('summarizes a completed lane with findings', () => {
     const summary = summarizeFixtureResult({
       decision: 'FINDINGS', findings: [{ severity: 'P0' }], provider: 'openrouter', model: 'm',

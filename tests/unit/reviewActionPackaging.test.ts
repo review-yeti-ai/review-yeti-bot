@@ -122,9 +122,9 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['action-sha'].description).toMatch(/40-hex commit SHA/i);
   });
 
-  it('defaults to full-quantization performance routing without forcing a provider cohort', () => {
+  it('defaults to full-precision performance routing without forcing a provider cohort', () => {
     expect(action.inputs['openrouter-provider-routing'].default).toBe(
-      '{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp8","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}',
+      '{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp16","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}',
     );
   });
 

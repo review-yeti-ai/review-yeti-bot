@@ -162,7 +162,9 @@ Rules:
 - `compat: openai | openrouter` (default: detected from `base_url`).
   OpenRouter-only keys (`provider_routing`, `ignore_providers`,
   `data_collection`, `allowed_models`, `cost_quality_tradeoff`,
-  `allow_banned_providers`) are **rejected** on `compat: openai` entries.
+  `allow_banned_providers`) are **rejected** on `compat: openai` entries. The legacy
+  `allow_banned_providers` field is accepted on OpenRouter entries only as a deprecated
+  compatibility no-op; Review Yeti no longer injects a built-in provider blocklist.
 - `api_key_env` names the env var carrying that transport's key; the CALLER
   workflow must export it on the action step. It must end in `_API_KEY` or
   `_KEY` and may never name a CI credential (`GITHUB_*`, `ACTIONS_*`,
@@ -575,10 +577,10 @@ github_action:
   openrouter:
     model: openrouter/auto-beta # primary model; Action `model` input can override
     allowed_models: [openrouter/auto-beta]
-    timeout_ms: 60000         # hard per-request timeout (default 60000 = 60s)
+    timeout_ms: 30000         # hard per-request timeout
     data_collection: deny     # allow | deny
     cost_quality_tradeoff: 5  # 0=cheapest … 10=highest quality
-    ignore_providers: [deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]
+    ignore_providers: []
     fallback_models:
       - deepseek/deepseek-v4-flash-0731  # ordered fallback after transient primary failures
     provider_routing:
@@ -590,16 +592,16 @@ github_action:
 
 | Property | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `timeout_ms` | `number` | `60000` | Per-request hard timeout in milliseconds. Lanes that do not return in time fail as `timeout`. Action input `openrouter-timeout-ms` / env `OPENROUTER_TIMEOUT_MS` / var `OPENROUTER_TIMEOUT_MS` override YAML. Clamped to 500–600000. |
+| `timeout_ms` | `number` | `30000` | Per-request hard timeout in milliseconds. Lanes that do not return in time fail as `timeout`. Action input `openrouter-timeout-ms` / env `OPENROUTER_TIMEOUT_MS` / var `OPENROUTER_TIMEOUT_MS` override YAML. Clamped to 500–600000. |
 | `ttft_ms` | `number` | `30000` | Time-to-first-token deadline. It starts at request dispatch and clears on the first SSE chunk; on expiry it aborts with failure class `ttft_timeout` and adds the provider to **no** ignore/quarantine/ban set (OpenRouter's own `sort:latency` routing stays the sole authority — the retry simply re-asks). Also sets `provider_routing.preferred_max_latency` when not explicitly configured. Action input `openrouter-ttft-ms` / env `OPENROUTER_TTFT_MS` override YAML. Clamped to 500ms–`timeout_ms`. |
 | `max_attempts` | `number` | `2` | Maximum attempts per model per persona lane (one initial attempt plus one retry — "1 retry max per lane"). No budget escalation and no bonus attempt after a provider is identified; the attempt loop is the whole retry. Action input `openrouter-max-attempts` / env `OPENROUTER_MAX_ATTEMPTS` override YAML. Clamped to 1–5. |
 | `model` | `string` | `openrouter/auto-beta` | Primary model id. The explicit Action `model` input/environment has precedence. |
 | `fallback_models` | `string[]` | `[]` | Ordered model ids used after the primary exhausts its transient-failure retries. Timeouts, network failures, 408, 429, and 5xx responses can move to the next model. Action input `openrouter-fallback-models` / env `OPENROUTER_FALLBACK_MODELS` overrides YAML. |
 | `allowed_models` | `string[]` | `[]` | Auto Router model allowlist. |
-| `ignore_providers` | `string[]` | `[deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` | Provider slugs excluded from routing; the built-in degraded-provider blocklist is always excluded. |
+| `ignore_providers` | `string[]` | `[]` | Optional provider slugs excluded from routing. The action injects no permanent endpoint exclusions. |
 | `cost_quality_tradeoff` | `number` | unset | Auto Router cost/quality 0–10. |
 | `data_collection` | `allow`\|`deny` | unset | When `deny`, sends OpenRouter training opt-out header. |
-| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. The action input defaults to `allow_fallbacks=false` without forcing a single provider; the trusted base YAML or account-level OpenRouter policy determines eligible providers. `wafer` and `novita` are hard-banned after repeated timeout/provider-error lanes. Fixed models are checked against explicit model/provider compatibility before fan-out, and an incompatible closed cohort fails rather than broadening access. This YAML field is used only when a caller explicitly clears or overrides the action input. |
+| `provider_routing` | object | unset | Validated provider-selection fields: order/only/ignore/quantizations, fallbacks, parameters, data collection/ZDR, sort, throughput/latency, and max price. The default enables fallbacks, requires requested parameters, restricts endpoints to FP16/BF16 full precision, and prefers healthy throughput/latency percentiles without forcing a provider cohort. Fixed models are checked against explicit model/provider compatibility before fan-out. |
 
 **Precedence:** action input / env → `.review-yeti.yaml` → defaults (`timeout_ms=30000`, `fallback_models=[]`).
 Provider requests always use the SSE streaming transport; streaming is not a configuration option.
