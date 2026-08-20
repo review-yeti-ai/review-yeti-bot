@@ -3,8 +3,10 @@
 // (including test:intelligence-eval and test:bounded-review-eval) replays recorded cassettes --
 // deliberately, per TEST_INFRA.md's fail-closed replay boundary -- and is credential-free by
 // design. None of them proves the panel still produces a real finding against a REAL provider
-// today. This script does exactly one thing: run the `security` persona through the real
-// `reviewWithModel` path against two small fixture diffs and assert the shape of the result.
+// today. This script does exactly one thing: run the `security` persona through the real bounded
+// investigation path (runPersonaInvestigation + buildInvestigationMessages -- the same engine
+// review-pipeline.js's main() runs on every real PR review) against two small fixture diffs and
+// assert the shape of the result.
 //
 //   - tests/fixtures/e2e-review-gate/red-known-bug.diff plants an unambiguous P0 (a live-looking
 //     Stripe secret key literal, squarely inside the security persona's own charter) and must
@@ -36,6 +38,7 @@ const {
   evaluateGate,
   resolveGateTransportBudget,
 } = require(path.join(root, 'src/review/e2eReviewGate.js'));
+const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require(path.join(root, 'src/review/reviewInvestigation.js'));
 
 const FIXTURE_DIR = path.join(root, 'tests/fixtures/e2e-review-gate');
 
@@ -46,6 +49,17 @@ function fail(reason, extra = {}) {
   process.exitCode = 1;
 }
 
+/**
+ * Drives the actual production review path -- runPersonaInvestigation (src/review/
+ * reviewInvestigation.js) + buildInvestigationMessages -- instead of the legacy single-shot
+ * reviewWithModel contract this gate used before the legacy path was deleted (review-pipeline.js's
+ * boundedMode branch is now the only branch; see scripts/evaluate-testing-charter.mjs's
+ * reviewWithBoundedInvestigation for the same adapter pattern). Evidence tooling is disabled: both
+ * fixtures are self-contained diffs, so a real evidence registry would add nothing but a repo
+ * checkout this gate does not have. callPersonaModelTurn (the modelTurn implementation below)
+ * already sets investigationSchema: true unconditionally, so the strict review_investigation JSON
+ * schema applies without extra wiring here.
+ */
 async function runFixture({ name, file, persona, model, apiKey, baseUrl, openRouterPolicy }) {
   const diffText = fs.readFileSync(path.join(FIXTURE_DIR, file), 'utf8');
   const diffFiles = pipeline.parseDiff(diffText);
@@ -56,8 +70,15 @@ async function runFixture({ name, file, persona, model, apiKey, baseUrl, openRou
     prNumber: 'e2e-review-gate',
     headSha: 'e'.repeat(40),
   };
-
-  const result = await pipeline.reviewWithModel(persona, diffFiles, prContext, {}, {
+  const identity = {
+    repository: prContext.repo,
+    prNumber: 1,
+    baseSha: 'a'.repeat(40),
+    headSha: prContext.headSha,
+  };
+  const evidenceRegistry = { capabilities: { enabled: false, readOnly: true, tools: [] }, call: async () => ({ status: 'unavailable' }) };
+  const manifest = `<review_units>${JSON.stringify(diffFiles.map((diffFile) => ({ path: diffFile.path })))}</review_units>`;
+  const modelOptions = {
     model,
     apiKey,
     baseUrl,
@@ -66,9 +87,27 @@ async function runFixture({ name, file, persona, model, apiKey, baseUrl, openRou
     ttftMs: openRouterPolicy.ttftMs,
     reasoningEffort: 'max',
     openRouterPolicy,
+  };
+
+  const run = await runBoundedPersonaInvestigation({
+    identity,
+    persona,
+    manifest,
+    diffFiles,
+    evidenceRegistry,
+    modelTurn: (turnArgs) => pipeline.callPersonaModelTurn({
+      persona,
+      prContext,
+      sessionContext: {},
+      messages: turnArgs.messages,
+      options: modelOptions,
+      turn: turnArgs.turn,
+      finalOnly: turnArgs.finalOnly,
+      signal: turnArgs.signal,
+    }),
   });
 
-  return summarizeFixtureResult(result, name);
+  return summarizeFixtureResult(run.personaResult, name);
 }
 
 async function main() {
