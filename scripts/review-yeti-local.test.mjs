@@ -16,6 +16,7 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const policy = loadLocalPolicy();
+const openrouterTransport = policy.review_yeti.transports.find((t) => t.name === 'openrouter-fallback');
 
 test('materializes the committed provider order and routing into the local CLI contract', () => {
   const config = buildLocalConfig(policy);
@@ -23,7 +24,8 @@ test('materializes the committed provider order and routing into the local CLI c
 
   assert.deepEqual(transports.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
   assert.equal(config.github_action.openrouter.stream, true);
-  assert.equal(config.github_action.openrouter.timeout_ms, 90000);
+  // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
+  assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
   assert.equal(config.github_action.openrouter.ttft_ms, 30000);
   assert.equal(config.github_action.openrouter.data_collection, 'deny');
   assert.deepEqual(config.github_action.openrouter.ignore_providers, ['fireworks', 'open-inference', 'akashml']);
@@ -58,7 +60,7 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.LANE_DEADLINE_MS, String(policy.review_yeti.budget.lane_deadline_ms));
   assert.equal(env.LANE_CALL_BUDGET, '24');
   assert.equal(env.OPENROUTER_STREAM, 'true');
-  assert.equal(env.OPENROUTER_TIMEOUT_MS, '90000');
+  assert.equal(env.OPENROUTER_TIMEOUT_MS, String(openrouterTransport.timeout_ms));
   assert.equal(env.OPENROUTER_TTFT_MS, '30000');
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   assert.equal(JSON.parse(env.REVIEW_YETI_TRANSPORTS)[2].provider_routing.ignore[0], 'fireworks');

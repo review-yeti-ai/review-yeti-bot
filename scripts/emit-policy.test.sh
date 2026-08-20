@@ -457,7 +457,11 @@ import sys
 
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
-policy['review_yeti']['budget']['lane_deadline_ms'] = '119999'
+# Derive so this case always isolates the envelope guard. A pinned literal was tuned to a
+# previous openrouter_timeout_ms; once that value changed, the envelope stopped binding and a
+# different guard fired first, failing this case for the wrong reason. Same defect class as #74.
+envelope = int(policy['review_yeti']['openrouter_timeout_ms']) * int(policy['review_yeti']['openrouter_max_attempts'])
+policy['review_yeti']['budget']['lane_deadline_ms'] = str(envelope - 1)
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
