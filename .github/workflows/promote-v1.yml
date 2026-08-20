@@ -1,9 +1,29 @@
 name: Promote Review Yeti v1
 
+# Automated path: fires once per `main` push, right after "Validate central review contract"
+# completes. Its bounded wait for the PR-head "review / Review Yeti" check
+# (PROMOTION_WAIT_SECONDS, promote-v1.sh) can legitimately be shorter than a slow-but-healthy
+# multi-provider review under degraded transport -- that is not a gate failure, just a timing
+# miss, and this workflow only fires once per push. Without a retry entry point, the only way to
+# get a stuck-but-otherwise-good commit onto `v1` was a direct, ungated `git push` to the tag --
+# exactly the bypass this workflow exists to make unnecessary. `workflow_dispatch` below is that
+# retry entry point: it re-runs the SAME fail-closed promote-v1.sh (which independently
+# re-validates the current main tip, the merged-PR linkage, and both required checks), it never
+# skips a check, and manual dispatch of a script that can only ever no-op or fail closed is not
+# the same risk as a direct tag push that skips validation entirely.
 on:
   workflow_run:
     workflows: [Validate central review contract]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: >-
+          Commit to (re-)attempt promoting to v1. Defaults to the current main tip. Must equal
+          main's current tip or promote-v1.sh refuses it (`refusing stale promotion`) -- this
+          input can only select which already-valid attempt to retry, never bypass validation.
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -18,18 +38,35 @@ jobs:
   promote:
     name: Promote v1
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve source SHA
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ github.event.inputs.sha }}
+        run: |
+          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
+            sha="${DISPATCH_SHA:-}"
+            if [[ -z "$sha" ]]; then
+              sha="$(gh api repos/${{ github.repository }}/commits/main --jq .sha)"
+            fi
+          else
+            sha="${{ github.event.workflow_run.head_sha }}"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Checkout validated main commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ steps.source.outputs.sha }}
           fetch-depth: 0
 
       - name: Promote v1 after central checks
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: scripts/promote-v1.sh

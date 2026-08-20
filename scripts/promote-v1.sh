@@ -63,9 +63,14 @@ require_success() {
   local deadline=$((SECONDS + promotion_wait_seconds))
 
   while :; do
+    # Key off attempt recency (check-run id, monotonically assigned), never completion time.
+    # A rerun of a failed check creates a new check-run on the SAME commit SHA; sorting by
+    # completed_at treats "no completed_at yet" (an in-flight rerun) as earliest, so a stale
+    # completed FAILURE from a superseded attempt would permanently shadow the live rerun and
+    # fail closed forever -- the exact "check was red once, can never promote" deadlock.
     latest="$(jq -c --arg name "$name" '
       [.check_runs[] | select(.name == $name)] |
-      sort_by(.completed_at // "") | last // {}
+      sort_by(.id) | last // {}
     ' <<<"$check_runs")"
     status="$(jq -r '.status // empty' <<<"$latest")"
     conclusion="$(jq -r '.conclusion // empty' <<<"$latest")"
