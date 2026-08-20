@@ -12,7 +12,7 @@ const pipeline = require(pipelinePath);
 const { createReviewUnitManifest } = require(path.join(rootRepoDir, 'src/review/reviewUnitManifest.js'));
 
 describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/review-pipeline.js)', () => {
-  const runMainInTempDir = async (diff: string, options: { expectedFetches?: number; config?: string; runChatPreflight?: boolean }) => {
+  const runMainInTempDir = async (diff: string, options: { expectedFetches?: number; config?: string; runChatPreflight?: boolean; mainOptions?: Record<string, unknown> }) => {
     const originalCwd = process.cwd();
     const originalFetch = globalThis.fetch;
     const originalExitCode = process.exitCode;
@@ -125,7 +125,7 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
       process.env.VITEST = options.runChatPreflight ? 'false' : 'true';
       globalThis.fetch = fetchImpl as any;
 
-      await pipeline.main({ commandRunner });
+      await pipeline.main({ commandRunner, ...options.mainOptions });
 
       if (options.expectedFetches !== undefined) expect(fetchImpl).toHaveBeenCalledTimes(options.expectedFetches);
       return {
@@ -512,113 +512,14 @@ deleted file mode 100644
     ]);
   });
 
-  it('drops malformed findings instead of silently publishing invalid model output', () => {
-    const files = [{ path: 'src/app.ts', patch: '@@ -1 +1 @@\n-old\n+new\n' }];
-    const sanitized = pipeline.sanitizeFindings([
-      { severity: 'P1', path: 'src/app.ts', title: 'Missing', body: 'No line' },
-      { severity: 'P1', path: 'src/app.ts', line: 0, title: 'Zero', body: 'Bad line' },
-      { severity: 'P1', path: 'src/app.ts', line: 1.5, title: 'Fractional', body: 'Bad line' },
-      { severity: 'P1', path: 'src/app.ts', line: '1', title: 'String', body: 'Bad line' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, side: 'MIDDLE', title: 'Bad side', body: 'Bad side' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: '', body: 'Missing title' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: '   ', body: 'Blank title' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: 'Missing body', body: '' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: 'Blank body', body: '   ' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, side: 'LEFT', title: 'Valid', body: 'Deleted line' },
-    ], files);
+  // sanitizeFindings and PRESENT_BUT_UNREVIEWED_INSTRUCTION were reviewWithModel's legacy
+  // findings-validation and prompt-construction helpers, deleted with the legacy single-shot
+  // path they only ever served. Equivalent coverage: malformed-finding rejection (bad line,
+  // side, blank title/body) is now parseInvestigationResponse's own stricter per-field
+  // validation (reviewInvestigationPrompt.test.ts); "present but unreviewed" file handling is
+  // now the deferred-diff notice (reviewInvestigationPrompt.test.ts's "names every deferred
+  // file" tests).
 
-    expect(sanitized).toEqual([expect.objectContaining({ line: 1, side: 'LEFT', title: 'Valid' })]);
-  });
-
-  it('serializes only shown files and marks present-but-unreviewed files in every request message', async () => {
-    const oversizedMarker = 'OVERSIZED_OPENAPI_FIXTURE_MARKER';
-    const filtered = pipeline.filterReviewableFiles([
-      { path: 'fixtures/openapi.yaml', patch: `${oversizedMarker}${'x'.repeat(5_001)}` },
-      { path: 'src/app.ts', patch: '@@ -1 +1 @@\n-SOURCE_OLD\n+SOURCE_VISIBLE_MARKER\n' },
-    ], [], { maxFileDiffChars: 5_000 });
-    expect(filtered.files.map((file: any) => file.path)).toEqual(['src/app.ts']);
-
-    let requestBody: any;
-    const result = await pipeline.reviewWithModel(
-      pipeline.PERSONA_CHARTERS[0],
-      filtered.files,
-      { repo: 'o/r', prNumber: '1', headSha: 'head' },
-      null,
-      {
-        apiKey: 'test-key',
-        model: 'test-model',
-        maxDiffChars: 20_000,
-        maxAttempts: 1,
-        timeoutMs: 5_000,
-        fetchImpl: async (_url: string, init: any) => {
-          requestBody = JSON.parse(String(init.body));
-          return {
-            ok: true,
-            status: 200,
-            headers: { get: () => null },
-            json: async () => ({
-              model: 'test-model',
-              provider: 'test-provider',
-              choices: [{ message: { content: '{"findings":[]}' } }],
-            }),
-            body: sseBody({
-              model: 'test-model',
-              provider: 'test-provider',
-              choices: [{ message: { content: '{"findings":[]}' } }],
-            }),
-          };
-        },
-      },
-    );
-
-    expect(result.decision).toBe('APPROVE');
-    const systemMessage = requestBody.messages.find((message: any) => message.role === 'system').content;
-    const userMessage = requestBody.messages.find((message: any) => message.role === 'user').content;
-    expect(systemMessage).toMatch(/present but unreviewed/i);
-    expect(userMessage).toMatch(/present but unreviewed/i);
-    expect(JSON.stringify(requestBody)).toContain('SOURCE_VISIBLE_MARKER');
-    expect(JSON.stringify(requestBody)).not.toContain(oversizedMarker);
-    expect(JSON.stringify(requestBody)).not.toContain('fixtures/openapi.yaml');
-
-    const sanitized = pipeline.sanitizeFindings([
-      { severity: 'P1', path: 'fixtures/openapi.yaml', line: 1, title: 'Hidden', body: 'Hidden' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: 'Shown', body: 'Shown' },
-    ], filtered.files);
-    expect(sanitized).toEqual([expect.objectContaining({ path: 'src/app.ts', title: 'Shown' })]);
-  });
-
-  it('sanitizes findings against files rendered after the whole-request budget', async () => {
-    const result = await pipeline.reviewWithModel(
-      pipeline.PERSONA_CHARTERS[0],
-      [
-        { path: 'src/shown.ts', patch: 'x'.repeat(100) },
-        { path: 'src/omitted.ts', patch: 'OMITTED_PATCH_MARKER' },
-      ],
-      { repo: 'o/r', prNumber: '1', headSha: 'head' },
-      null,
-      {
-        apiKey: 'test-key',
-        model: 'test-model',
-        maxDiffChars: 100,
-        maxAttempts: 1,
-        timeoutMs: 5_000,
-        fetchImpl: async () => ({
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => ({
-            model: 'test-model',
-            provider: 'test-provider',
-            choices: [{ message: { content: JSON.stringify({ findings: [{
-              severity: 'P1', path: 'src/omitted.ts', line: 1, title: 'Hidden', body: 'Hidden',
-            }] }) } }],
-          }),
-        }),
-      },
-    );
-
-    expect(result.findings).toEqual([]);
-  });
 
   it('4. Evaluates 12 personas in parallel and computes binding arbitration quorum', async () => {
     const { PERSONA_CHARTERS, evaluatePersonaLane, computeArbitrationQuorum } = pipeline;
@@ -1524,6 +1425,50 @@ deleted file mode 100644
       expect(arbitration.completedPersonas).toBe(12);
       expect(arbitration.quorumSatisfied).toBe(true);
       expect(['SHIP', 'FIX_FIRST', 'BLOCK']).toContain(arbitration.verdict);
+    });
+  });
+
+  // "The default is bounded" is exactly what let the legacy single-shot path rot undetected for
+  // as long as it did: reviewWithModel's non-bounded prompt-building/parsing branch and the local
+  // (non-imported) runPersonaInvestigation loop were reachable whenever boundedMode was false --
+  // which happened whenever a caller supplied a non-immutable SHA or a non-numeric prNumber (every
+  // unit test in this repo, until this suite was fixed alongside the deletion) or explicitly
+  // passed options.boundedReview: false. These tests prove there is no such branch left to reach,
+  // not merely that the common case selects the bounded one.
+  describe('no reachable non-bounded review path', () => {
+    it('options.boundedReview has no effect -- there is no legacy branch left to select with it', async () => {
+      const diff = diffWithFiles([
+        'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new',
+      ]);
+
+      // boundedReview: false used to select the local (non-imported) legacy runPersonaInvestigation
+      // loop whenever it also lacked a real PR identity. Both are gone now; passing it must be a
+      // silent no-op, not a way to reach different code.
+      const result = await runMainInTempDir(diff, { expectedFetches: 1, mainOptions: { boundedReview: false } });
+
+      expect(result.output).toContain('verdict=SHIP');
+      // Markers only the bounded review-unit-manifest dispatch ever produces (review dispatch
+      // receipt fields, investigation status/receipt) -- present here proves boundedReview: false
+      // did not downgrade this run to some other path.
+      expect(result.output).toMatch(/investigation-status=/);
+      expect(result.output).toMatch(/investigation-receipt=/);
+      expect(result.output).toMatch(/evidence-calls=/);
+    });
+
+    it('reviewWithModel has no legacy fallback: it throws rather than silently building its own prompt when no investigationMessages is supplied', async () => {
+      await expect(pipeline.reviewWithModel(
+        pipeline.PERSONA_CHARTERS[0],
+        [{ path: 'src/a.ts', patch: '+x' }],
+        { repo: 'o/r', prNumber: '1' },
+        null,
+        { apiKey: 'k' },
+      )).rejects.toThrow(/investigationMessages/);
+    });
+
+    it('the legacy findings-only parser and the local (non-bounded) investigation loop are gone as exports, not merely unreachable in practice', () => {
+      expect(pipeline.runPersonaInvestigation).toBeUndefined();
+      expect(pipeline.parseFindingsPayload).toBeUndefined();
+      expect(pipeline.sanitizeFindings).toBeUndefined();
     });
   });
 });

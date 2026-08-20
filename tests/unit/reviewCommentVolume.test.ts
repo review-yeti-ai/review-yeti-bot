@@ -36,7 +36,6 @@ const {
   reviewablePathsChangedSince,
   reviewViewWasPartial,
   splitStickySummaryBody,
-  reviewWithModel,
   suppressPriorFindings,
   withholdUnsoundAbsenceClaims,
   withholdFalseAbsenceClaims,
@@ -107,29 +106,11 @@ describe('work item 1 — a reviewer cannot tell "not shown to me" from "not in 
     expect(manifest.text.length).toBeLessThanOrEqual(21_000);
   });
 
-  it('sends the whole manifest to a reviewer whose diff slice holds only one of the two files', async () => {
-    const calls: any[] = [];
-    const fetchImplementation = async (url: string, init: any) => {
-      calls.push(JSON.parse(init.body));
-      return { ok: true, status: 200, text: async () => '', json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }) };
-    };
-    const manifest = buildFileManifest(splitDiffFiles);
-
-    await reviewWithModel(
-      PERSONA_CHARTERS.find((p: any) => p.id === 'security'),
-      [splitDiffFiles[0]], // only the controller is in this pass
-      { repo: 'example-org/example-app', prNumber: 4821, headSha: 'ecf3964' },
-      {},
-      { apiKey: 'sk-test', enabled: true, fetchImplementation, fileManifest: manifest.text, maxAttempts: 1 },
-    );
-
-    const [system, user] = calls[0].messages;
-    expect(user.content).toContain(SERVICE);
-    expect(user.content).not.toContain(`FILE: ${SERVICE}`);
-    expect(system.content).toContain('is the authority on what this change contains');
-    expect(system.content).toContain('Never report that a file, type, symbol, test, migration, or generated artifact is missing');
-    expect(system.content).toContain('Files marked excluded_from_review are present');
-  });
+  // "sends the whole manifest to a reviewer..." tested reviewWithModel's legacy manifestNote
+  // prompt text ("is the authority on what this change contains", etc.), deleted with the legacy
+  // single-shot path. The false-absence-claim concern it guarded is covered by this file's own
+  // withholdUnsoundAbsenceClaims/withholdFalseAbsenceClaims tests below (post-hoc filtering) and
+  // by the bounded contract's deferred-diff notice (reviewInvestigationPrompt.test.ts).
 
   it('classifies the absence claims this bot actually filed, and leaves real defects alone', () => {
     const absenceClaims = [
