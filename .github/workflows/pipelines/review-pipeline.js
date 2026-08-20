@@ -2033,6 +2033,18 @@ async function callOpenRouterChat(fetchImpl, {
   // streaming-lane gate in main() for the corresponding fixes).
   preferStream = true,
   signal,
+  // Optional: the per-lane wall-clock backstop's OWN signal (review-pipeline.js's
+  // `laneDeadline.signal`, ~240s default), threaded through separately from the generic `signal`
+  // (which is `laneSignal` -- already a MERGE of laneDeadline + the outer job cancellation, and by
+  // the time it reaches here is indistinguishable from either). Passing this too lets the
+  // classification below tell "this call's own totalMs genuinely elapsed" apart from "the outer
+  // per-lane deadline fired while this call happened to be in flight or queued" -- see the
+  // 2026-08-19 lane-budget investigation: a fetch that would legitimately succeed in ~90ms, killed
+  // by an already-mostly-spent lane deadline, was previously logged identically to a genuine
+  // 30s-provider timeout (`phase: 'response'` was the ONLY classification an unrecognized abort
+  // ever received). Optional and backward compatible: omitting it just means that distinction
+  // cannot be made, exactly like today.
+  laneDeadlineSignal,
   transportName = 'openrouter',
   onStreamProgress,
 }) {
@@ -2091,7 +2103,14 @@ async function callOpenRouterChat(fetchImpl, {
       const aborted = Boolean(totalAbort.signal?.aborted || connectAbort.signal?.aborted || err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || '')));
       // 'ttft' here is the non-stream analogue of the stream path's TTFT timer: no headers
       // arrived within the deadline, so the provider never demonstrated it was alive.
-      const phase = connectTimedOut ? 'ttft' : 'response';
+      // Same distinction as the stream path above: a laneDeadlineSignal firing (the outer per-lane
+      // wall-clock backstop) while this connect attempt was in flight is not this call's own
+      // ttft/total budget being exceeded. Checked before totalAbort/response because
+      // totalAbort.signal.aborted is ambiguous (it relays the outer signal too); laneDeadlineSignal
+      // is not.
+      const phase = connectTimedOut
+        ? 'ttft'
+        : (laneDeadlineSignal?.aborted ? 'lane_deadline' : 'response');
       console.warn(
         `${logPrefix} non-stream ${phase === 'ttft' ? 'TTFT_TIMEOUT' : (aborted ? 'RESPONSE_TIMEOUT' : 'ERROR')}`
         + ` model=${body.model} elapsed_ms=${elapsed} ttft_budget_ms=${connectMs} total_budget_ms=${totalMs}`
@@ -2384,10 +2403,35 @@ async function callOpenRouterChat(fetchImpl, {
         };
       }
       if (signal?.aborted || totalAbort.signal.aborted) {
+        // Distinguish a genuine total-budget timeout (totalAbort itself fired) from an abort that
+        // arrived via the outer merged `signal` for some OTHER reason -- most commonly the per-lane
+        // wall-clock backstop (laneDeadlineSignal, ~240s default) firing while this specific call
+        // was in flight or still queued for the streaming lane gate. Both look identical from
+        // inside this function (both reject the same fetch/read via the same merged AbortSignal),
+        // but they mean very different things to an operator: "this provider took >30-45s to
+        // answer" versus "this lane's cumulative turn/queue time ran out and killed an in-flight
+        // request that may never have gotten a real chance." Leaving timeoutPhase unset here used
+        // to make reviewWithModel's classifier default BOTH cases to phase:'response', logging a
+        // lane-deadline kill exactly like a real provider timeout (see the 2026-08-19 lane-budget
+        // investigation).
+        //
+        // IMPORTANT ordering: check laneDeadlineSignal FIRST, not totalAbort.signal.aborted first.
+        // totalAbort is itself `createAbortLink({ signals: [signal], timeoutMs: totalMs })` -- it
+        // relays ANY abort of the outer `signal` into its own controller, in addition to its own
+        // internal timer. So `totalAbort.signal.aborted` is TRUE both when totalMs genuinely
+        // elapsed AND when the outer signal (which may itself be laneSignal, carrying
+        // laneDeadline) fired first and totalAbort merely relayed it -- that flag alone cannot
+        // tell the two apart. laneDeadlineSignal, by contrast, is a distinct AbortController fed
+        // by nothing else in this chain: its `.aborted` state is unambiguous evidence of its own
+        // cause whenever the caller supplies it.
+        const timeoutPhase = laneDeadlineSignal?.aborted
+          ? 'lane_deadline'
+          : (totalAbort.signal.aborted ? 'response' : undefined);
         return {
           ok: false,
           aborted: true,
           error: err,
+          ...(timeoutPhase ? { timeoutPhase } : {}),
           model,
           provider: sawChunk ? provider : defaultProvider,
           generationId,
@@ -2407,6 +2451,7 @@ async function callOpenRouterChat(fetchImpl, {
             ok: false,
             aborted: true,
             error: err,
+            timeoutPhase: laneDeadlineSignal?.aborted ? 'lane_deadline' : 'response',
             ...streamRoute,
             content,
             usage,
@@ -2480,7 +2525,15 @@ async function callOpenRouterChat(fetchImpl, {
       };
     }
     if (signal?.aborted || totalAbort.signal.aborted) {
-      return { ok: false, aborted: true, error: err, ...streamRoute, content: '', usage: null, streamed: true, partial: false };
+      // See the identical comment on the stream-read catch above: distinguish a genuine
+      // total-budget timeout from an abort that arrived via the outer merged `signal` for some
+      // other reason (most commonly laneDeadlineSignal firing). Check laneDeadlineSignal FIRST --
+      // totalAbort.signal.aborted is ambiguous (it relays the outer signal too), laneDeadlineSignal
+      // is not.
+      const timeoutPhase = laneDeadlineSignal?.aborted
+        ? 'lane_deadline'
+        : (totalAbort.signal.aborted ? 'response' : undefined);
+      return { ok: false, aborted: true, error: err, ...(timeoutPhase ? { timeoutPhase } : {}), ...streamRoute, content: '', usage: null, streamed: true, partial: false };
     }
     const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
     const msg = `provider_request_failed:${errorName}`;
@@ -3459,6 +3512,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           preferStream: true,
           transportName: options.transportName || gateway.id,
           signal: options.signal,
+          // Threaded separately from `signal` (which by this point may already be laneSignal, a
+          // merge of laneDeadline + outer cancellation) so callOpenRouterChat can tell "this call's
+          // own total budget elapsed" apart from "the per-lane wall-clock backstop fired while
+          // this call was in flight or queued" -- see callOpenRouterChat's laneDeadlineSignal doc
+          // comment (2026-08-19 lane-budget investigation).
+          laneDeadlineSignal: options.laneDeadlineSignal,
           onStreamProgress: options.onStreamProgress,
         });
 
@@ -3534,9 +3593,21 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (result.aborted) {
             const phase = result.timeoutPhase || 'response';
             const isTtftTimeout = phase === 'ttft';
+            // lane_deadline (2026-08-19 lane-budget investigation): the per-lane wall-clock
+            // backstop (~240s default, review-pipeline.js's laneDeadline) fired while THIS call was
+            // in flight or still queued for the streaming lane gate -- this call's own
+            // ttft/total_budget_ms was never actually exhausted. Previously indistinguishable from
+            // a genuine provider RESPONSE timeout (both defaulted to phase:'response'), which
+            // misattributed queueing/cumulative-turn time as "the provider was slow" in every log
+            // and metric. See callOpenRouterChat's laneDeadlineSignal doc comment for the full
+            // mechanism and a measured repro.
+            const isLaneDeadline = phase === 'lane_deadline';
+            const timeoutFailureClass = isTtftTimeout ? 'ttft_timeout' : (isLaneDeadline ? 'lane_deadline' : 'provider_timeout');
             const msg = isTtftTimeout
               ? `Provider TTFT timeout after ${ttftMs}ms (no first token; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
-              : `Provider RESPONSE timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
+              : isLaneDeadline
+                ? `Lane wall-clock deadline exhausted while this request was in flight or queued (not this call's own ${timeoutMs}ms budget; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
+                : `Provider RESPONSE timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
             lastError = msg;
             const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
             if (isTtftTimeout) {
@@ -3549,6 +3620,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               console.warn(
                 `${modelLogPrefix} TTFT_TIMEOUT persona=${persona.id} elapsed_ms=${elapsedMs}`
                 + ` ttft_budget_ms=${ttftMs} — not banned (sort:latency remains routing authority)`,
+              );
+            } else if (isLaneDeadline) {
+              // Same directive as TTFT: this signal proves nothing about the provider's health --
+              // the lane's OWN cumulative turn/queue time ran out, not this specific request. Never
+              // ban/quarantine a provider for it.
+              streamRetryRequested = true;
+              console.warn(
+                `${modelLogPrefix} LANE_DEADLINE persona=${persona.id} elapsed_ms=${elapsedMs}`
+                + ` total_budget_ms=${timeoutMs} — not banned (lane deadline proves nothing about`
+                + ' this provider; likely streaming-lane-gate queue wait or prior-turn time)',
               );
             } else if (!quarantineProviderTimeouts) {
               streamRetryRequested = true;
@@ -3611,15 +3692,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             // attempt after a provider is identified, no escalated budget. Backoff is 0 after a
             // TTFT abort (a dead provider needs no politeness delay) and a flat 250ms otherwise.
             if (attempt < maxAttempts) {
-              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: isTtftTimeout ? 'ttft_timeout' : 'provider_timeout', startedAt: requestStartedAt });
+              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: timeoutFailureClass, startedAt: requestStartedAt });
               if (!isTtftTimeout && !await waitForAbortableDelay(250, options.signal)) return cancelledResult();
               continue;
             }
             if (modelIndex < models.length - 1) {
-              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: isTtftTimeout ? 'ttft_timeout' : 'provider_timeout', startedAt: requestStartedAt });
+              recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: timeoutFailureClass, startedAt: requestStartedAt });
               break;
             }
-            recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: isTtftTimeout ? 'ttft_timeout' : 'provider_timeout', startedAt: requestStartedAt });
+            recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: timeoutFailureClass, startedAt: requestStartedAt });
             return {
               ...base,
               ...lastRoute,
@@ -3928,9 +4009,27 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
   // condition: streaming is unconditional on every transport regardless of that per-transport
   // config field (reviewWithModel always passes `preferStream: true`), so every transport plan
   // contends for the gate whenever the caller supplies one.
+  // Instrumentation (2026-08-19 lane-budget investigation): queue-wait for this shared slot was
+  // previously invisible -- a lane queued behind a slow/stalled sibling burned lane_deadline_ms
+  // budget with zero log evidence of why. queue_wait_ms plus the acquired/queued gate depth turns
+  // "some lanes time out for no visible reason" into a directly measurable quantity.
+  const streamGateWaitStartedAt = options.streamGate ? Date.now() : null;
+  const queuedAheadAtStart = options.streamGate ? options.streamGate.queued : 0;
   const releaseStream = options.streamGate
     ? await options.streamGate.acquire(options.signal)
     : null;
+  if (streamGateWaitStartedAt !== null) {
+    const queueWaitMs = Date.now() - streamGateWaitStartedAt;
+    // Only log when queueing actually happened (or the gate reports depth) -- an uncontended
+    // acquire is the common case and would otherwise double the log volume for nothing.
+    if (queueWaitMs > 0 || queuedAheadAtStart > 0) {
+      console.log(
+        `[StreamGate] persona=${persona?.id || 'unknown'} queue_wait_ms=${queueWaitMs}`
+        + ` queued_ahead_at_start=${queuedAheadAtStart} active=${options.streamGate.active}`
+        + ` queued_now=${options.streamGate.queued}`,
+      );
+    }
+  }
   let lastResult = null;
   try {
     for (let transportIndex = 0; transportIndex < plan.length; transportIndex++) {
@@ -9244,7 +9343,12 @@ async function main(options = {}) {
                   signal,
                   // turnValidator lets the transport layer fail over on content that
                   // would die upstream as an unrecoverable contract violation.
-                  options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore, turnValidator: validate, laneCallBudget },
+                  // laneDeadlineSignal: threaded separately from `signal` (laneSignal, already a
+                  // merge of laneDeadline + cancellation) so callOpenRouterChat/reviewWithModel can
+                  // tell a lane-deadline abort apart from a genuine per-request total-budget
+                  // timeout instead of misattributing both as phase:'response' (2026-08-19
+                  // lane-budget investigation).
+                  options: { ...modelOptions, investigationUnitIds: batchUnitIds, providerIgnore, turnValidator: validate, laneCallBudget, laneDeadlineSignal: laneDeadline.signal },
                 }),
                 signal: laneSignal.signal,
                 laneDeadlineSignal: laneDeadline.signal,
