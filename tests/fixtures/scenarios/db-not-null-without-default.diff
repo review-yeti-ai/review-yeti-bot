@@ -1,0 +1,9 @@
+--- FILE: migrations/20260820_add_user_status_column.sql ---
+diff --git a/migrations/20260820_add_user_status_column.sql b/migrations/20260820_add_user_status_column.sql
+@@ -1,2 +1,6 @@
+ -- Migration: users schema update
+
++-- Add account status column to active users table
++-- Critical: Adding NOT NULL column without DEFAULT causes immediate migration failure on tables with existing rows
++ALTER TABLE users ADD COLUMN account_status VARCHAR(32) NOT NULL;
++

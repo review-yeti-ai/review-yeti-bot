@@ -95,7 +95,7 @@ function main() {
       defaultBaseUrl: 'https://api.openai.com/v1',
       provenancePrefixes: ['openai', 'gpt'],
       defaultModel: 'gpt-4o',
-      supportedModels: ['gpt-4o', 'gpt-4o-mini', 'o1-mini', 'o3-mini'],
+      supportedModels: ['gpt-4o', 'gpt-4o-mini', 'o1-mini', 'o3-mini', 'openai/gpt-5.6-luna', 'openrouter/5.6-luna-high'],
       supportsCustomModels: true,
       requiresApiKey: true,
     },

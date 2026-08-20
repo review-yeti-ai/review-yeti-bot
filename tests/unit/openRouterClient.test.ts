@@ -16,6 +16,39 @@ describe('OpenRouterClient', () => {
     expect(normalizeOpenRouterModel('grok-cli/grok-4.5')).toBe('x-ai/grok-4.5');
     expect(normalizeOpenRouterModel('claude-opus-4-8')).toBe('anthropic/claude-opus-4.8');
     expect(normalizeOpenRouterModel('openrouter/auto')).toBe('openrouter/auto');
+    expect(normalizeOpenRouterModel('openrouter/5.6-luna-high')).toBe('openai/gpt-5.6-luna');
+    expect(normalizeOpenRouterModel('5.6-luna-high')).toBe('openai/gpt-5.6-luna');
+    expect(normalizeOpenRouterModel('openrouter/openai/gpt-5.6-luna')).toBe('openai/gpt-5.6-luna');
+    expect(normalizeOpenRouterModel('openai/gpt-5.6-luna')).toBe('openai/gpt-5.6-luna');
+  });
+
+  it('normalizes openrouter/5.6-luna-high in requests and computes estimated luna token cost', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      model: 'openai/gpt-5.6-luna',
+      choices: [{ message: { role: 'assistant', content: 'APPROVE' } }],
+      usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    const res = await client.complete({
+      model: 'openrouter/5.6-luna-high',
+      messages: [{ role: 'user', content: 'analyze this PR' }],
+      timeoutMs: 2000,
+    });
+
+    expect(res.model).toBe('openai/gpt-5.6-luna');
+    expect(res.content).toBe('APPROVE');
+    // Luna rate: $0.002 prompt / 1k + $0.006 completion / 1k
+    // 1000 * 0.000002 + 500 * 0.000006 = 0.002 + 0.003 = 0.005 USD
+    expect(res.costUSD).toBe(0.005);
+
+    const init = fetchImplementation.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'openai/gpt-5.6-luna' });
   });
 
   it('uses the injected transport, OpenRouter endpoint, and exact request payload', async () => {

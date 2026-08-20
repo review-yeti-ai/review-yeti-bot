@@ -41,7 +41,9 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "gpt-4o",
       "gpt-4o-mini",
       "o1-mini",
-      "o3-mini"
+      "o3-mini",
+      "openai/gpt-5.6-luna",
+      "openrouter/5.6-luna-high"
     ],
     "supportsCustomModels": true,
     "requiresApiKey": true
@@ -182,7 +184,7 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "codex",
       "cx"
     ],
-    "defaultModel": "codex-gateway/gpt-5.6-sol-high",
+    "defaultModel": "codex/gpt-5.6-sol-high",
     "supportedModels": [
       "codex/gpt-5.6-sol-high",
       "gpt-5.6-sol"
@@ -211,6 +213,8 @@ export const OMNIROUTE_GENERATED_MODEL_LIST: readonly string[] = [
   "gpt-4o-mini",
   "o1-mini",
   "o3-mini",
+  "openai/gpt-5.6-luna",
+  "openrouter/5.6-luna-high",
   "claude-3-5-sonnet",
   "claude-3-7-sonnet",
   "claude-5-sonnet",
@@ -234,6 +238,18 @@ export const OMNIROUTE_GENERATED_MODEL_LIST: readonly string[] = [
   "codex/gpt-5.6-sol-high",
   "gpt-5.6-sol",
   "agy/claude-opus-4-6-thinking",
+  "openrouter/auto",
+  "openrouter/anthropic/claude-3.7-sonnet",
+  "openrouter/deepseek/deepseek-r1",
+  "openrouter/google/gemini-2.5-pro",
+  "openrouter/qwen/qwen-2.5-72b-instruct",
+  "openrouter/openai/gpt-4o",
+  "openrouter/openai/gpt-4o-mini",
+  "openrouter/anthropic/claude-3.5-sonnet",
+  "openrouter/deepseek/deepseek-v3",
+  "openrouter/google/gemini-1.5-pro",
+  "openrouter/anthropic/claude-haiku-4.5",
+  "openrouter/openai/gpt-5.6-luna",
   "synthetic/hf:moonshotai/Kimi-K3",
   "synthetic/hf:zai-org/GLM-5.2",
   "synthetic/hf:zai-org/GLM-4.7-Flash",

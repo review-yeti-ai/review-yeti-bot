@@ -1,0 +1,25 @@
+--- FILE: src/utils/deepMerge.ts ---
+diff --git a/src/utils/deepMerge.ts b/src/utils/deepMerge.ts
+@@ -1,4 +1,22 @@
+ export function isObject(item: any): boolean {
+   return item && typeof item === 'object' && !Array.isArray(item);
+ }
+
++export function deepMerge<T extends Record<string, any>>(target: T, source: Record<string, any>): T {
++  const output = { ...target };
++  if (isObject(target) && isObject(source)) {
++    for (const key of Object.keys(source)) {
++      if (isObject(source[key])) {
++        if (!(key in target)) {
++          Object.assign(output, { [key]: source[key] });
++        } else {
++          // Critical: Unfiltered recursive assignment allows __proto__ or constructor prototype pollution
++          (output as any)[key] = deepMerge((target as any)[key], source[key]);
++        }
++      } else {
++        (output as any)[key] = source[key];
++      }
++    }
++  }
++  return output;
++}

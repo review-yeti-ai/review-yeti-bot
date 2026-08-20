@@ -1,0 +1,15 @@
+--- FILE: src/middleware/rbacRouteFilter.ts ---
+diff --git a/src/middleware/rbacRouteFilter.ts b/src/middleware/rbacRouteFilter.ts
+@@ -1,4 +1,12 @@
+ import { Request, Response, NextFunction } from 'express';
+
++// Defect: Nested quantifiers ((?:[a-zA-Z0-9_-]+/?)+)+ induce exponential backtracking (ReDoS)
++const API_ROUTE_PATTERN = /^(/api/v[0-9]+/(?:[a-zA-Z0-9_-]+/?)+)+$/;
++
+ export function validateRestRoute(req: Request, res: Response, next: NextFunction): void {
++  if (!API_ROUTE_PATTERN.test(req.path)) {
++    res.status(400).json({ error: 'Invalid API route format' });
++    return;
++  }
++  next();
++}

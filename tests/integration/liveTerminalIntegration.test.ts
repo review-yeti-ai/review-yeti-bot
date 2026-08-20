@@ -200,7 +200,7 @@ describe('Live Review Terminal Integration Suite (Milestone 35/36)', () => {
       };
     };
 
-    const domain = 'https://ct-review-bot.example.com';
+    const domain = process.env.DASHBOARD_URL || 'https://ct-review-bot.example.com';
     const expectedLiveUrl = getLiveStreamUrl(domain, jobId);
     const expectedOrgUrl = getOrgDashboardUrl(domain);
 

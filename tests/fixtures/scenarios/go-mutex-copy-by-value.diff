@@ -1,0 +1,21 @@
+--- FILE: pkg/cache/threadsafe_store.go ---
+diff --git a/pkg/cache/threadsafe_store.go b/pkg/cache/threadsafe_store.go
+@@ -8,5 +8,20 @@
+ type Store struct {
+ 	mu    sync.RWMutex
+ 	items map[string]string
+ }
++
++// Flaw: Value receiver copies sync.RWMutex by value, rendering lock ineffective
++func (s Store) Set(key, val string) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.items[key] = val
++}
++
++func (s Store) Get(key string) (string, bool) {
++	s.mu.RLock()
++	defer s.mu.RUnlock()
++	v, ok := s.items[key]
++	return v, ok
++}

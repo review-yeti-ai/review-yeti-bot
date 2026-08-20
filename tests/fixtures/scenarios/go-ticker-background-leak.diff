@@ -1,0 +1,24 @@
+--- FILE: pkg/sampler/latency_sampler.go ---
+diff --git a/pkg/sampler/latency_sampler.go b/pkg/sampler/latency_sampler.go
+@@ -1,5 +1,18 @@
+ package sampler
+
+ import (
+ 	"context"
+ 	"time"
+ )
+
+ func StartLatencySampler(ctx context.Context, interval time.Duration, recordFunc func()) {
++	go func() {
++		ticker := time.NewTicker(interval)
++		// Bug: missing defer ticker.Stop(), timer channel is never GC'd when goroutine exits
++		for {
++			select {
++			case <-ctx.Done():
++				return
++			case <-ticker.C:
++				recordFunc()
++			}
++		}
++	}()
++}

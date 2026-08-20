@@ -1,0 +1,43 @@
+--- FILE: src/tracing/traceCarrier.ts ---
+diff --git a/src/tracing/traceCarrier.ts b/src/tracing/traceCarrier.ts
+@@ -0,0 +1,9 @@
++import { context, propagation } from '@opentelemetry/api';
++
++export function injectTraceContext(carrier: Record<string, string>): void {
++  propagation.inject(context.active(), carrier);
++}
++
++export function extractTraceContext(carrier: Record<string, string>) {
++  return propagation.extract(context.active(), carrier);
++}
+
+--- FILE: src/queue/taskDispatcher.ts ---
+diff --git a/src/queue/taskDispatcher.ts b/src/queue/taskDispatcher.ts
+@@ -1,6 +1,14 @@
+ import { QueueClient } from './queueClient';
+
+ export class TaskDispatcher {
+   constructor(private queue: QueueClient) {}
++
++  async dispatchTask(taskType: string, payload: any): Promise<void> {
++    // Bug: Missing injectTraceContext - message stripped of distributed trace headers
++    await this.queue.enqueue({
++      type: taskType,
++      data: payload,
++    });
++  }
++}
+
+--- FILE: src/queue/taskWorker.ts ---
+diff --git a/src/queue/taskWorker.ts b/src/queue/taskWorker.ts
+@@ -1,6 +1,11 @@
+ import { trace } from '@opentelemetry/api';
+
+ export class TaskWorker {
++  async handleJob(job: { type: string; data: any }): Promise<void> {
++    // Spawns disconnected root span because job lacks traceparent carrier
++    const tracer = trace.getTracer('worker');
++    const span = tracer.startSpan(`process-${job.type}`);
++    span.end();
++  }
++}

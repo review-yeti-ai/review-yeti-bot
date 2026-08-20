@@ -1,0 +1,20 @@
+--- FILE: src/components/dashboard/BillingWidget.tsx ---
+diff --git a/src/components/dashboard/BillingWidget.tsx b/src/components/dashboard/BillingWidget.tsx
+@@ -1,6 +1,17 @@
+ import React, { useEffect, useState } from 'react';
+
+ export const BillingWidget: React.FC<{ orgId: string }> = ({ orgId }) => {
+   const [usage, setUsage] = useState<number | null>(null);
+
+   useEffect(() => {
+     async function fetchUsage() {
++      // Architectural violation: Frontend directly queries internal cluster service instead of /api/gateway
++      const res = await fetch(`http://billing-internal.svc.cluster.local:8080/v1/metrics/${orgId}`);
++      const data = await res.json();
++      setUsage(data.currentUsage);
++    }
++    fetchUsage();
++  }, [orgId]);
+
+   return <div className="p-4 rounded-lg bg-card">Usage: {usage ?? 'Loading...'}</div>;
+ };

@@ -47,11 +47,21 @@ function formatErrorMessage(err: any): string {
 
 export function createMemoryRouter(options: MemoryApiOptions = {}): Router {
   const router = Router();
-  router.use(express.json({ strict: false }));
   router.use((req: Request, res: Response, next: NextFunction) => {
-    if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
-      if (req.body === undefined || req.body === null || typeof req.body !== 'object') {
-        return res.status(400).json({ success: false, error: 'Request body must be a JSON object' });
+    const p = req.path || '';
+    if (!p.startsWith('/memory') && !p.startsWith('/code')) {
+      return next();
+    }
+    if (req.body !== undefined) return next();
+    express.json({ strict: false })(req, res, next);
+  });
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    const p = req.path || '';
+    if (p.startsWith('/memory') || p.startsWith('/code')) {
+      if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+        if (req.body === undefined || req.body === null || typeof req.body !== 'object') {
+          return res.status(400).json({ success: false, error: 'Request body must be a JSON object' });
+        }
       }
     }
     next();
