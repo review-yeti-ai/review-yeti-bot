@@ -501,10 +501,15 @@ describe('reviewWithModel', () => {
     expect(result.provider).toBe('FallbackCloud');
   });
 
-  // REL-271 (D3): a delay that would have succeeded under the removed x2 escalation (15ms, twice
-  // the 10ms flat budget less a small margin) now fails on the final attempt instead of quietly
-  // recovering -- proving there is no budget escalation left anywhere in the retry path.
-  it('does not extend the response budget on retry -- a delay that needed the old x2 escalation now fails', async () => {
+  // REL-271 (D3), updated 2026-08-20: the fixed per-call total-duration clock this test used to
+  // rely on (a chunk arriving 15ms after dispatch, killed by a flat 10ms `totalAbort` timer) was
+  // itself the D1-class bug fixed on 2026-08-20 -- see callOpenRouterChat's `totalAbort` doc
+  // comment (successful lanes measured 47-52s total against an old 30s fixed cap; the fixed clock
+  // was killing actively-streaming lanes, not stalled ones). The flat-budget-with-no-escalation
+  // invariant this test protects is still real, just enforced by the new stall/gap timer instead:
+  // a stream that goes silent AFTER its first chunk for longer than `stallMs`, on both attempts
+  // equally (no x2 growth), still fails on the final attempt.
+  it('does not extend the response budget on retry -- a stall that needed the old x2 escalation now fails', async () => {
     const calls: any[] = [];
     const fetchImpl = async (_url: string, init: any) => {
       const body = JSON.parse(init.body);
@@ -517,23 +522,27 @@ describe('reviewWithModel', () => {
         status: 200,
         body: {
           getReader: () => {
-            let sent = false;
+            let sentChunk = false;
             return {
               read: async () => {
-                if (sent) return { done: true, value: undefined };
-                // Exceeds the flat 10ms budget, but would have fit inside the old doubled 20ms
-                // budget -- this is the regression check for D3.
+                if (!sentChunk) {
+                  sentChunk = true;
+                  return {
+                    done: false,
+                    value: Buffer.from(`data: ${JSON.stringify({
+                      id: 'gen-recovery',
+                      model: 'test/model',
+                      provider: 'ExampleCloud',
+                      choices: [{ delta: { content: '{"findings":[]}' } }],
+                    })}\n\n`),
+                  };
+                }
+                // Exceeds the flat 10ms stall budget after the first chunk, but would have fit
+                // inside an old doubled 20ms budget -- this is the regression check for D3, now
+                // expressed against the post-first-chunk gap timer instead of the removed
+                // fixed-total-duration timer.
                 await new Promise((resolve) => setTimeout(resolve, 15));
-                sent = true;
-                return {
-                  done: false,
-                  value: Buffer.from(`data: ${JSON.stringify({
-                    id: 'gen-recovery',
-                    model: 'test/model',
-                    provider: 'ExampleCloud',
-                    choices: [{ delta: { content: '{"findings":[]}' } }],
-                  })}\n\ndata: [DONE]\n\n`),
-                };
+                return { done: false, value: Buffer.from('data: [DONE]\n\n') };
               },
               cancel: async () => {},
             };
@@ -548,11 +557,13 @@ describe('reviewWithModel', () => {
       model: 'test/model',
       fetchImpl,
       maxAttempts: 2,
-      timeoutMs: 10,
+      timeoutMs: 5_000,
+      stallMs: 10,
     });
 
     expect(calls).toHaveLength(2);
     expect(result.decision).toBe('ERROR');
+    expect(result.failureClass).toBe('stream_stall');
   });
 
   it('enforces the total timeout while reading a streamed response and retries the next route', async () => {
