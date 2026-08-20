@@ -311,21 +311,16 @@ inputs:
     default: ''
   openrouter-allow-banned-providers:
     description: >-
-      Comma-separated provider slugs to REMOVE from the action's built-in hard-ban list.
-      The hard-ban list is a safety default for callers that supply no policy of their own; it
-      must not silently override an operator who has deliberately allow-listed a provider
-      upstream (for example an OpenRouter workspace guardrail in only-allow mode). Where the two
-      intersect to nothing, every request fails with "No endpoints available". Use this only for
-      providers you have explicitly permitted upstream, and record why.
+      Deprecated compatibility input. The action no longer injects a built-in provider blocklist;
+      OpenRouter selects endpoints from live routing statistics and account policy.
     required: false
     default: ''
   openrouter-ignore-providers:
     description: >-
-      Comma-separated OpenRouter provider slugs to exclude from routing. The action always
-      excludes the built-in degraded-provider blocklist (including deepinfra); this input can
-      add further provider bans without enabling fallbacks outside the remaining providers.
+      Optional comma-separated OpenRouter provider slugs to exclude from routing. Empty by
+      default so the action does not impose permanent endpoint exclusions.
     required: false
-    default: 'deepinfra,openrouter,wafer,novita,decart,sail-research,inceptron,fireworks,together,mancer,parasail'
+    default: ''
   transports:
     description: >-
       Optional JSON array declaring an explicit ordered transport plan. Each entry:
@@ -371,21 +366,19 @@ inputs:
     description: >-
       JSON object forwarded as OpenRouter's provider routing policy. The default allows
       provider fallback without forcing a single provider, requires requested parameters,
-      limits endpoint quantization to FP8 or BF16, sorts by throughput, and prefers p90
+      limits endpoints to full-precision FP16 or BF16, sorts by throughput, and prefers p90
       throughput of at least 40 tokens per second plus p99 latency of at most three seconds.
-      ExampleCloud remains eligible when it meets those constraints. Wafer and Novita are hard-banned
-      after repeated provider-error/timeout lanes. Supports the raw API
+      OpenRouter remains responsible for selecting an eligible endpoint. Supports the raw API
       fields order, allow_fallbacks, require_parameters, data_collection, zdr,
       enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,
-      preferred_max_latency, and max_price. The built-in degraded-provider blocklist remains
-      hard-banned and cannot appear in order or only. Action input wins over
+      preferred_max_latency, and max_price. Action input wins over
       github_action.openrouter.provider_routing in YAML when it is non-empty; an explicit `{}` is
       treated as unset so it cannot broaden routing. Fixed models are checked against their
       approved provider cohort before persona fan-out; for example, openai/gpt-5.6-luna requires
       an explicit only list containing openai or azure. The action fails closed when only/order
       restrictions cannot serve the selected fixed model and never broadens the provider list.
     required: false
-    default: '{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp8","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}'
+    default: '{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp16","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}'
   dashboard-api-key:
     description: >-
       Optional Review Yeti dashboard ingestion key (ctd_live_...). When empty, the action does

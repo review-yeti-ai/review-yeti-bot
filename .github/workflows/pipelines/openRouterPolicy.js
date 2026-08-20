@@ -3,7 +3,7 @@
 const DEFAULT_PROVIDER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
-  quantizations: Object.freeze(['fp8', 'bf16']),
+  quantizations: Object.freeze(['fp16', 'bf16']),
   sort: 'throughput',
   preferred_min_throughput: Object.freeze({ p90: 40 }),
   preferred_max_latency: Object.freeze({ p99: 3 }),
@@ -26,8 +26,8 @@ const DEFAULT_PROVIDER_ROUTING = Object.freeze({
  *      ignore_providers / provider_routing / timeout_ms / fallback_models /
  *      structured_output);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
- *      full-quantization throughput routing with fallbacks, known degraded
- *      providers ignored, timeout_ms=30000, stream=true).
+ *      full-precision throughput routing with fallbacks, no built-in provider
+ *      exclusions, timeout_ms=30000, stream=true).
  *
  * @param {object|undefined} localConfig  Parsed local config, or an object whose
  *    `parsed` field holds the parse result (as produced by the pipeline).
@@ -71,12 +71,6 @@ function resolveOpenRouterPolicy(localConfig, env) {
   const envTtft = env.OPENROUTER_TTFT_MS;
   const envMaxAttempts = env.OPENROUTER_MAX_ATTEMPTS;
   const envFallbackModels = splitCsv(env.OPENROUTER_FALLBACK_MODELS);
-  // Providers the OPERATOR has explicitly re-permitted. The hard-ban list below is a safety
-  // default for callers that pass no policy of their own; it must not silently override an
-  // operator who has deliberately allow-listed a provider upstream (e.g. an OpenRouter
-  // workspace guardrail running in only-allow mode). Without this escape hatch the two
-  // policies intersect to nothing and every request 404s with "No endpoints available".
-  const envAllowBanned = splitCsv(env.OPENROUTER_ALLOW_BANNED_PROVIDERS);
   const envStructuredOutput = typeof env.OPENROUTER_STRUCTURED_OUTPUT === 'string'
     ? env.OPENROUTER_STRUCTURED_OUTPUT.trim()
     : '';
@@ -103,23 +97,10 @@ function resolveOpenRouterPolicy(localConfig, env) {
   let allowedModels = (envAllowed.length > 0 ? envAllowed : cfgAllowed) || [];
   let tradeoff = (envTradeoff !== undefined && envTradeoff !== '' ? Number(envTradeoff) : (Number.isFinite(cfgTradeoff) ? cfgTradeoff : undefined));
   let dataCollection = (envData && envData !== '' ? envData : cfgData);
-  // The hard-banned list excludes all known degraded endpoint variants. The base slug excludes
-  // provider tags such as deepinfra/fp4 and decart/fp4 as well. `openrouter` is the fallback
-  // route label emitted when OpenRouter cannot identify a downstream provider.
-  const cfgAllowBanned = Array.isArray(cfgOr.allow_banned_providers)
-    ? cfgOr.allow_banned_providers
-    : splitCsv(cfgOr.allow_banned_providers ?? cfgOr.allowBannedProviders);
-  const allowBanned = new Set(
-    (envAllowBanned.length > 0 ? envAllowBanned : (cfgAllowBanned || []))
-      .map(normalizeProviderSlug).filter(Boolean),
-  );
-  const effectiveHardBanned = HARD_BANNED_PROVIDER_SLUGS.filter((slug) => !allowBanned.has(slug));
   const ignoredProviders = [...new Set([
-    ...effectiveHardBanned,
     ...(envIgnored.length > 0 ? envIgnored : cfgIgnored),
   ].map(normalizeProviderSlug))]
-    .filter(Boolean)
-    .filter((slug) => !allowBanned.has(slug));
+    .filter(Boolean);
 
   // timeout_ms: action env > yaml > 30000. Clamp 500ms..600_000ms.
   let timeoutMs = DEFAULT_TIMEOUT_MS;
@@ -205,7 +186,6 @@ function resolveOpenRouterPolicy(localConfig, env) {
       ? DEFAULT_PROVIDER_ROUTING
       : configuredProviderRouting,
     envIgnored.length > 0 ? envIgnored : cfgIgnored,
-    [...allowBanned],
   );
 
   // Prefer endpoints that answer quickly. This is not a higher total budget — it tells
@@ -283,24 +263,10 @@ const PROVIDER_ROUTING_KEYS = new Set([
 ]);
 
 const PROVIDER_LIST_KEYS = new Set(['order', 'only', 'ignore', 'quantizations']);
-// These providers were returning degraded endpoint health while the central runner was
-// timing out. Keep the ban in the action itself so callers that explicitly pass only their
-// own ignore list cannot accidentally re-enable a known-bad route. Provider routing can still
-// add further temporary bans through OPENROUTER_IGNORE_PROVIDERS or trusted YAML.
-const HARD_BANNED_PROVIDER_SLUGS = Object.freeze([
-  'deepinfra',
-  'openrouter',
-  'wafer',
-  'novita',
-  'siliconflow',
-  'decart',
-  'sail-research',
-  'inceptron',
-  'fireworks',
-  'together',
-  'mancer',
-  'parasail',
-]);
+// Retained as an empty compatibility export for consumers and evaluation fixtures that imported
+// the old symbol. Endpoint health is now delegated to OpenRouter's live routing statistics; the
+// action never injects a permanent provider blocklist.
+const HARD_BANNED_PROVIDER_SLUGS = Object.freeze([]);
 
 // Fixed-model compatibility is deliberately explicit. This is a compatibility guard, not a
 // liveness claim: OpenRouter may add/remove endpoints over time, but a fixed model must never be
@@ -582,30 +548,14 @@ function normalizeProviderRouting(raw, source) {
   return normalized;
 }
 
-function resolveProviderRouting(raw, configuredIgnoredProviders, allowBannedProviders) {
+function resolveProviderRouting(raw, configuredIgnoredProviders) {
   const providerRouting = normalizeProviderRouting(raw, typeof raw === 'string' ? 'action input' : 'config');
-  const allowBanned = new Set((allowBannedProviders || []).map(normalizeProviderSlug).filter(Boolean));
-  const selectedProviders = [...(providerRouting.order || []), ...(providerRouting.only || [])];
-  // An operator who explicitly re-permits a provider may also route to it. Without this the
-  // guard rejects the operator's own allow-list as "hard-banned".
-  const forbidden = selectedProviders
-    .filter((p) => isHardBannedProvider(p) && !allowBanned.has(providerBaseSlug(p)));
-  if (forbidden.length > 0) {
-    throw new Error(`OpenRouter provider routing cannot select hard-banned provider(s): ${forbidden.join(', ')}`);
-  }
   const ignoredProviders = [...new Set([
-    ...HARD_BANNED_PROVIDER_SLUGS.filter((slug) => !allowBanned.has(slug)),
     ...(configuredIgnoredProviders || []),
     ...(providerRouting.ignore || []),
   ].map(normalizeProviderSlug))]
-    .filter(Boolean)
-    .filter((slug) => !allowBanned.has(slug));
+    .filter(Boolean);
   return { ...providerRouting, ignore: ignoredProviders };
-}
-
-function isHardBannedProvider(provider) {
-  const slug = providerBaseSlug(provider);
-  return HARD_BANNED_PROVIDER_SLUGS.includes(slug);
 }
 
 /**
@@ -619,9 +569,8 @@ function isHardBannedProvider(provider) {
  * `openrouter` unknown-route sentinel (which also disables lane retries in
  * reviewInvestigation.retryableProvider).
  *
- * Direct-gateway ids are deliberately namespaced (`fireworks-direct`, not
- * `fireworks`) so they can never collide with OpenRouter provider slugs such
- * as the hard-banned `fireworks` OpenRouter endpoint.
+ * Direct-gateway ids are deliberately namespaced so they cannot collide with
+ * OpenRouter provider slugs in routing and retry state.
  *
  * @param {string|undefined} baseUrl
  * @returns {{id: string, isOpenRouter: boolean}}
