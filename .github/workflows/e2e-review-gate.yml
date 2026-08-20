@@ -1,0 +1,69 @@
+name: E2E Review Gate
+
+# API-2902: the live, model-backed release gate. `npm run test:all` (ci-cd.yaml, release.yml) is
+# entirely credential-free by design (TEST_INFRA.md's fail-closed cassette-replay boundary) --
+# none of it proves the panel still produces a real finding against a REAL provider today. This
+# workflow runs scripts/e2e-review-gate.mjs: one `security`-persona review against a fixture diff
+# with a known planted P0 (must produce >=1 finding on a completed lane) and one clean fixture
+# (must produce 0 findings on a completed lane).
+#
+# Docs/RELEASING.md documents that the `v1` channel tag must not be advanced (via release.yml's
+# `channel=v1` dispatch) unless this workflow is green for the candidate commit. See that file
+# for the current manual-dispatch enforcement state and the TODO on wiring this as a hard
+# release.yml dependency once OPENROUTER_API_KEY availability to Actions in this repo is
+# confirmed by a maintainer with secrets access.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit/tag/branch to check out and gate (defaults to the branch this is dispatched against)
+        required: false
+        type: string
+
+concurrency:
+  group: e2e-review-gate-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_PREFER_OFFLINE: "true"
+
+jobs:
+  e2e-review-gate:
+    name: Live red/green fixture review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      # TODO(API-2902): confirm OPENROUTER_API_KEY is provisioned as a repository (or
+      # environment-scoped) secret for review-yeti-ai/review-yeti-bot Actions before relying on
+      # this job's result -- it was not verified from the vantage this workflow was authored
+      # from. Without it the gate step below fails closed with an explicit
+      # `OPENROUTER_API_KEY is not configured` reason (never a silent pass), so a missing secret
+      # is loud, not a false green -- but it does mean the gate cannot run at all until the
+      # secret exists.
+      - name: Run live E2E review gate (red/green fixtures)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.E2E_REVIEW_GATE_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
+        run: npm run test:e2e-review-gate
