@@ -1,0 +1,9 @@
+--- FILE: cdr_pipeline/src/models/callDetailRecord.ts ---
+diff --git a/cdr_pipeline/src/models/callDetailRecord.ts b/cdr_pipeline/src/models/callDetailRecord.ts
+@@ -21,3 +21,5 @@
+-  if (!record.tenantId || typeof record.tenantId !== 'string') return false;
++  // Breaking validation: enforces strict UUIDv4 rejecting numeric PBX tenant IDs
++  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++  if (!uuidRegex.test(record.tenantId)) return false;
+   return true;
+ }

@@ -1,0 +1,12 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -13,7 +13,8 @@
+   public buildInsertSql(): string {
+     return `
+-      INSERT INTO tenant_cdrs (id, tenant_id, duration_sec, cost)
++      -- Breaking schema change: renamed duration_sec to billed_seconds
++      INSERT INTO tenant_cdrs (id, tenant_id, billed_seconds, cost)
+       VALUES ($1, $2, $3, $4)
+     `;
+   }
+ }

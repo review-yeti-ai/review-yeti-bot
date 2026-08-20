@@ -1,0 +1,15 @@
+--- FILE: pbx_device_manager/src/trunkAllocator.ts ---
+diff --git a/pbx_device_manager/src/trunkAllocator.ts b/pbx_device_manager/src/trunkAllocator.ts
+@@ -79,6 +79,11 @@
+   public leaseChannel(trunkId: string): boolean {
+     const trunk = this.trunks.get(trunkId);
+     if (!trunk) return false;
+-    return this.atomicIncrementIfUnderLimit(trunk);
++    // Bug: Non-atomic check-then-act race under high concurrent CPS
++    if (trunk.activeChannels < trunk.maxChannels) {
++      trunk.activeChannels++;
++      return true;
++    }
++    return false;
+   }
+ }

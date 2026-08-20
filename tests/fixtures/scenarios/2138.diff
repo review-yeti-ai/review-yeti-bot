@@ -1,0 +1,8 @@
+--- FILE: pbx_device_manager/src/models/trunkGroup.ts ---
+diff --git a/pbx_device_manager/src/models/trunkGroup.ts b/pbx_device_manager/src/models/trunkGroup.ts
+@@ -25,3 +25,4 @@
+   id: string;
+-  failoverCodes: Set<number>;
++  // Breaking type change: changed Set<number> to number[]
++  failoverCodes: number[];
+ }

@@ -1,0 +1,12 @@
+--- FILE: pbx_device_manager/src/trunkAllocator.ts ---
+diff --git a/pbx_device_manager/src/trunkAllocator.ts b/pbx_device_manager/src/trunkAllocator.ts
+@@ -114,7 +114,8 @@
+   public recordTrunkSuccess(trunkId: string): void {
+     const trunk = this.trunks.get(trunkId);
+     if (!trunk) return;
+-    trunk.consecutiveFailures = 0;
+     trunk.state = 'HEALTHY';
++    // Bug: Removed resetting consecutiveFailures to 0 on success
++    this.logger.info(`Trunk ${trunkId} marked healthy`);
+   }
+ }

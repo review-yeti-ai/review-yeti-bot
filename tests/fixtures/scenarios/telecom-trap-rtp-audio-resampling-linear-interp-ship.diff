@@ -1,0 +1,14 @@
+--- FILE: rtp_media_gateway/src/audioCodecs.ts ---
+diff --git a/rtp_media_gateway/src/audioCodecs.ts b/rtp_media_gateway/src/audioCodecs.ts
+@@ -115,14 +115,24 @@ export class AudioCodecs {
++  public upsample8kTo16k(inputPcm16: Int16Array): Int16Array {
++    const output = new Int16Array(inputPcm16.length * 2);
++    for (let i = 0; i < inputPcm16.length - 1; i++) {
++      output[i * 2] = inputPcm16[i];
++      output[i * 2 + 1] = Math.round((inputPcm16[i] + inputPcm16[i + 1]) / 2);
++    }
++    output[output.length - 2] = inputPcm16[inputPcm16.length - 1];
++    output[output.length - 1] = inputPcm16[inputPcm16.length - 1];
++    return output;
++  }
+ }

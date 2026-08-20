@@ -12,6 +12,7 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
   let settingsHtmlContent: string;
 
   beforeEach(() => {
+    process.env.ADMIN_PASSWORD = 'admin123';
     process.env.WEBHOOK_SECRET = 'test_webhook_secret';
     process.env.GITHUB_APP_ID = '12345';
     process.env.GITHUB_APP_PRIVATE_KEY = 'test_key';

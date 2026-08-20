@@ -1,0 +1,9 @@
+--- FILE: pbx_device_manager/src/ctiWebhookDispatcher.ts ---
+diff --git a/pbx_device_manager/src/ctiWebhookDispatcher.ts b/pbx_device_manager/src/ctiWebhookDispatcher.ts
+@@ -130,14 +130,22 @@ export class CtiWebhookDispatcher {
++  public calculateFullJitterDelay(attempt: number, baseMs: number = 100, maxMs: number = 10000): number {
++    // Correct full jitter formula: sleep = rand(0, min(maxMs, baseMs * 2^attempt))
++    const ceiling = Math.min(maxMs, baseMs * Math.pow(2, attempt));
++    return Math.floor(Math.random() * ceiling);
++  }
+ }

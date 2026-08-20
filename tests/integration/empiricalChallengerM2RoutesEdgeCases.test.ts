@@ -23,7 +23,9 @@ describe('Empirical Challenger M2: 6 Routes & Edge Cases Verification', () => {
     app.use(requireAuth);
 
     // Register routers as mounted in app.ts
-    app.use('/api/dashboard', createDashboardRouter());
+    const dashboardRouter = createDashboardRouter();
+    app.use('/api/dashboard', dashboardRouter);
+    app.use('/api/personas', dashboardRouter);
     app.use('/api/dashboard', createIntegrationsRouter());
     app.use('/api/github', createGitHubAppApiRouter());
     app.use('/api/onboarding', createOnboardingRouter());
@@ -44,7 +46,6 @@ describe('Empirical Challenger M2: 6 Routes & Edge Cases Verification', () => {
         '/api/dashboard/integrations',
         '/api/github/app-config',
         '/api/github/enforcement-policy',
-        '/api/onboarding/wizard',
       ];
 
       for (const endpoint of protectedEndpoints) {

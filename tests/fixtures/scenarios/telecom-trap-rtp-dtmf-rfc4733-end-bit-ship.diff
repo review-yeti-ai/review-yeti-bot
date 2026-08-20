@@ -1,0 +1,11 @@
+--- FILE: rtp_media_gateway/src/mediaBridge.ts ---
+diff --git a/rtp_media_gateway/src/mediaBridge.ts b/rtp_media_gateway/src/mediaBridge.ts
+@@ -125,14 +125,23 @@ export class MediaBridge {
++  public emitDtmfEndPackets(event: DtmfEvent): void {
++    // RFC 4733 Section 2.5.1.4: Retransmit end packet 3 times with E bit set
++    for (let i = 0; i < 3; i++) {
++      const packet = this.buildDtmfPacket(event, true);
++      this.socket.send(packet);
++    }
++  }
+ }

@@ -1,0 +1,16 @@
+--- FILE: pbx_device_manager/src/trunkAllocator.ts ---
+diff --git a/pbx_device_manager/src/trunkAllocator.ts b/pbx_device_manager/src/trunkAllocator.ts
+@@ -166,10 +166,8 @@
+   public recordFailure(trunkId: string): void {
+     const trunk = this.trunks.get(trunkId);
+     if (!trunk) return;
+-    if (trunk.state === 'OPEN') return;
+-    trunk.consecutiveFailures++;
+-    if (trunk.consecutiveFailures >= 5) {
+-      trunk.state = 'OPEN';
+-    }
++    // Bug: Non-atomic counter mutation permits state flapping
++    trunk.consecutiveFailures++;
++    trunk.state = trunk.consecutiveFailures >= 5 ? 'OPEN' : 'HEALTHY';
+   }
+ }

@@ -1,0 +1,13 @@
+--- FILE: sip_signaling_service/src/sdpNegotiator.ts ---
+diff --git a/sip_signaling_service/src/sdpNegotiator.ts b/sip_signaling_service/src/sdpNegotiator.ts
+@@ -80,14 +80,23 @@ export class SdpNegotiator {
++  public assignDynamicPt(codec: string): number {
++    for (let pt = 96; pt <= 127; pt++) {
++      if (!this.assignedPts.has(pt)) {
++        this.assignedPts.set(pt, codec);
++        return pt;
++      }
++    }
++    throw new Error('Dynamic SDP payload type pool exhausted');
++  }
+ }
