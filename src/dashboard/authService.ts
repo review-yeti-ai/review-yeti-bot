@@ -61,6 +61,10 @@ export class AuthService {
   public validateApiKey(apiKey: string): boolean {
     return dashboardStore.validateApiKey(apiKey);
   }
+
+  public reset(): void {
+    this.sessions.clear();
+  }
 }
 
 export const authService = new AuthService();

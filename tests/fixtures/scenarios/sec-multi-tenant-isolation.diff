@@ -1,0 +1,37 @@
+--- FILE: src/controllers/tenantMemberController.ts ---
+diff --git a/src/controllers/tenantMemberController.ts b/src/controllers/tenantMemberController.ts
+@@ -1,6 +1,18 @@
+ import { Request, Response } from 'express';
+ import { MemberRepository } from '../repositories/memberRepository';
+ 
+ export class TenantMemberController {
+   constructor(private memberRepo: MemberRepository) {}
++
++  async updateMemberRole(req: Request, res: Response): Promise<void> {
++    const { memberId } = req.params;
++    const { role } = req.body;
++    // Bug: updates member by memberId alone without verifying req.user.orgId
++    const updated = await this.memberRepo.updateRole(memberId, role);
++    if (!updated) {
++      res.status(404).json({ error: 'Member not found' });
++      return;
++    }
++    res.json({ success: true, member: updated });
++  }
++}
+
+--- FILE: src/repositories/memberRepository.ts ---
+diff --git a/src/repositories/memberRepository.ts b/src/repositories/memberRepository.ts
+@@ -8,6 +8,13 @@
+ export class MemberRepository {
+   constructor(private db: DatabaseClient) {}
+ 
++  async updateRole(memberId: string, role: string): Promise<Member | null> {
++    // Critical: missing tenant predicate "WHERE id = $1 AND org_id = $2"
++    const result = await this.db.query(
++      'UPDATE organization_members SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
++      [role, memberId]
++    );
++    return result.rows[0] || null;
+   }
+ }

@@ -1,0 +1,17 @@
+--- FILE: pkg/importer/bulk_log_importer.go ---
+diff --git a/pkg/importer/bulk_log_importer.go b/pkg/importer/bulk_log_importer.go
+@@ -10,5 +10,16 @@
+ func ImportLogs(filenames []string) (int, error) {
+ 	total := 0
++	for _, name := range filenames {
++		f, err := os.Open(name)
++		if err != nil {
++			return total, err
++		}
++		// Bug: defer inside loop will not execute until ImportLogs returns, exhausting FDs
++		defer f.Close()
++		n, _ := processLogFile(f)
++		total += n
++	}
+ 	return total, nil
+ }

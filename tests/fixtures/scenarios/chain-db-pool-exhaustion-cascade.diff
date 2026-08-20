@@ -1,0 +1,35 @@
+--- FILE: src/database/sharedPoolConfig.ts ---
+diff --git a/src/database/sharedPoolConfig.ts b/src/database/sharedPoolConfig.ts
+@@ -1,4 +1,6 @@
+ import { Pool } from 'pg';
+
+-export const sharedDbPool = new Pool({ max: 50, idleTimeoutMillis: 30000 });
++// Restricted pool max connections to 10
++export const sharedDbPool = new Pool({ max: 10, idleTimeoutMillis: 10000 });
+
+--- FILE: src/services/bulkStreamService.ts ---
+diff --git a/src/services/bulkStreamService.ts b/src/services/bulkStreamService.ts
+@@ -1,6 +1,15 @@
+ import { sharedDbPool } from '../database/sharedPoolConfig';
+
+ export class BulkStreamService {
++  async streamExportToClient(res: any): Promise<void> {
++    // Bug: Holds connection checked out indefinitely throughout slow client streaming
++    const client = await sharedDbPool.connect();
++    const stream = client.query('SELECT * FROM large_call_logs');
++    stream.pipe(res);
++    // Missing client.release() on stream finish / error
++  }
++}
+
+--- FILE: src/services/livenessProbeService.ts ---
+diff --git a/src/services/livenessProbeService.ts b/src/services/livenessProbeService.ts
+@@ -1,5 +1,10 @@
+ import { sharedDbPool } from '../database/sharedPoolConfig';
+
+ export async function checkDatabaseLiveness(): Promise<boolean> {
++  const client = await sharedDbPool.connect();
++  await client.query('SELECT 1');
++  client.release();
+   return true;
+ }

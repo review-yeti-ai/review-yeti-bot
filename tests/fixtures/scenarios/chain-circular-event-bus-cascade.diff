@@ -1,0 +1,39 @@
+--- FILE: src/events/billingEventHandler.ts ---
+diff --git a/src/events/billingEventHandler.ts b/src/events/billingEventHandler.ts
+@@ -1,5 +1,11 @@
+ import { EventBus } from './eventBus';
+
+ export class BillingEventHandler {
+   constructor(private bus: EventBus) {}
++
++  onInvoiceAuditTriggered(data: { tenantId: string }): void {
++    // Bug: Emits UsageRecomputed which triggers NotificationRequired which re-emits InvoiceAuditTriggered
++    this.bus.publish('UsageRecomputed', { tenantId: data.tenantId, timestamp: Date.now() });
++  }
++}
+
+--- FILE: src/events/usageEventHandler.ts ---
+diff --git a/src/events/usageEventHandler.ts b/src/events/usageEventHandler.ts
+@@ -1,5 +1,11 @@
+ import { EventBus } from './eventBus';
+
+ export class UsageEventHandler {
+   constructor(private bus: EventBus) {}
++
++  onUsageRecomputed(data: { tenantId: string }): void {
++    this.bus.publish('NotificationRequired', { tenantId: data.tenantId, type: 'USAGE_THRESHOLD' });
++  }
++}
+
+--- FILE: src/events/notificationEventHandler.ts ---
+diff --git a/src/events/notificationEventHandler.ts b/src/events/notificationEventHandler.ts
+@@ -1,5 +1,11 @@
+ import { EventBus } from './eventBus';
+
+ export class NotificationEventHandler {
+   constructor(private bus: EventBus) {}
++
++  onNotificationRequired(data: { tenantId: string }): void {
++    this.bus.publish('InvoiceAuditTriggered', { tenantId: data.tenantId });
++  }
++}

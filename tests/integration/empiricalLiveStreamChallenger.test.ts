@@ -392,25 +392,27 @@ describe('Empirical Challenger Suite — Live Terminal & 9-Event SSE Streaming',
       const receivedCounts: number[] = new Array(subscriberCount).fill(0);
       const reqs: http.ClientRequest[] = [];
 
-      for (let i = 0; i < subscriberCount; i++) {
-        const idx = i;
-        const req = http.get(`${baseUrl}/api/live/stream?jobId=${jobId}&token=${validToken}`, (res) => {
-          let buffer = '';
-          res.on('data', (chunk) => {
-            buffer += chunk.toString();
-            const lines = buffer.split('\n\n');
-            buffer = lines.pop() || '';
-            for (const block of lines) {
-              if (block.startsWith('data: ')) {
-                receivedCounts[idx]++;
+      await Promise.all(
+        Array.from({ length: subscriberCount }, (_, i) => new Promise<void>((resolve) => {
+          const req = http.get(`${baseUrl}/api/live/stream?jobId=${jobId}&token=${validToken}`, (res) => {
+            let buffer = '';
+            res.on('data', (chunk) => {
+              buffer += chunk.toString();
+              const lines = buffer.split('\n\n');
+              buffer = lines.pop() || '';
+              for (const block of lines) {
+                if (block.startsWith('data: ')) {
+                  receivedCounts[i]++;
+                }
               }
-            }
+            });
+            resolve();
           });
-        });
-        reqs.push(req);
-      }
+          reqs.push(req);
+        }))
+      );
 
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 50));
 
       // Broadcast 10 events to all connected clients
       for (let k = 1; k <= 10; k++) {

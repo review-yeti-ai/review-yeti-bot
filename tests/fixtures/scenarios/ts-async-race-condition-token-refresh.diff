@@ -1,0 +1,23 @@
+--- FILE: src/gateway/oauthTokenManager.ts ---
+diff --git a/src/gateway/oauthTokenManager.ts b/src/gateway/oauthTokenManager.ts
+@@ -1,6 +1,20 @@
+ import axios from 'axios';
+
+ export class OAuthTokenManager {
+   private accessToken: string | null = null;
+   private expiresAt: number = 0;
+
++  /**
++   * Retrieves valid access token, requesting a new token if expired.
++   * Defect: Concurrent callers all invoke upstream refresh independently without deduplication.
++   */
++  async getValidToken(): Promise<string> {
++    if (!this.accessToken || Date.now() >= this.expiresAt) {
++      // Race condition: Multiple concurrent requests trigger redundant token refresh calls
++      const response = await axios.post('/oauth/token', { grant_type: 'refresh_token' });
++      this.accessToken = response.data.access_token;
++      this.expiresAt = Date.now() + response.data.expires_in * 1000;
++    }
++    return this.accessToken!;
++  }
++}

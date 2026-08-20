@@ -1,0 +1,55 @@
+--- FILE: src/concurrency/distributedLockManager.ts ---
+diff --git a/src/concurrency/distributedLockManager.ts b/src/concurrency/distributedLockManager.ts
+@@ -0,0 +1,24 @@
++import { RedisClient } from '../cache/redisClient';
++
++export interface LockHandle {
++  lockKey: string;
++  fencingToken: number;
++  release: () => Promise<void>;
++}
++
++export class DistributedLockManager {
++  constructor(private redis: RedisClient, private defaultTtlSec = 10) {}
++
++  async acquireWithRenewal(resource: string, token: number): Promise<LockHandle | null> {
++    const lockKey = `lock:${resource}`;
++    const acquired = await this.redis.set(lockKey, String(token), 'NX', 'EX', this.defaultTtlSec);
++    if (!acquired) return null;
++
++    const intervalId = setInterval(async () => {
++      await this.redis.expire(lockKey, this.defaultTtlSec);
++    }, (this.defaultTtlSec * 1000) / 2);
++
++    return {
++      lockKey,
++      fencingToken: token,
++      release: async () => {
++        clearInterval(intervalId);
++        const script = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
++        await this.redis.eval(script, 1, lockKey, String(token));
++      },
++    };
++  }
++}
+
+--- FILE: tests/unit/distributedLockManager.test.ts ---
+diff --git a/tests/unit/distributedLockManager.test.ts b/tests/unit/distributedLockManager.test.ts
+@@ -0,0 +1,16 @@
++import { describe, it, expect, vi } from 'vitest';
++import { DistributedLockManager } from '../../src/concurrency/distributedLockManager';
++
++describe('DistributedLockManager', () => {
++  it('acquires lock and releases cleanly with token match', async () => {
++    const mockRedis = {
++      set: vi.fn().mockResolvedValue('OK'),
++      expire: vi.fn().mockResolvedValue(1),
++      eval: vi.fn().mockResolvedValue(1),
++    } as any;
++    const manager = new DistributedLockManager(mockRedis, 4);
++    const handle = await manager.acquireWithRenewal('orders:123', 101);
++    expect(handle).not.toBeNull();
++    await handle?.release();
++    expect(mockRedis.eval).toHaveBeenCalled();
++  });
++});

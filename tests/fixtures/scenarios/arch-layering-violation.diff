@@ -1,0 +1,14 @@
+--- FILE: src/domain/billingRules.ts ---
+diff --git a/src/domain/billingRules.ts b/src/domain/billingRules.ts
+@@ -1,5 +1,14 @@
++import { Request, Response } from 'express';
++import { InvoiceModal } from '../components/InvoiceModal';
++
+ export class BillingRules {
++  // Layering violation: Domain entity coupling directly to Express HTTP types and React UI
++  static applyTierDiscount(req: Request, totalAmount: number): number {
++    const tier = req.headers['x-tier'] as string;
++    if (tier === 'enterprise') return totalAmount * 0.8;
++    return totalAmount;
+   }
+ }

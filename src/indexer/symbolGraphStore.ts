@@ -1,5 +1,14 @@
 // @ts-ignore
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
+const { DatabaseSync: DatabaseSyncImpl } = (() => {
+  try {
+    return require('node:sqlite');
+  } catch {
+    return { DatabaseSync: class {} };
+  }
+})();
+const DatabaseSync: any = DatabaseSyncImpl;
+type DatabaseSync = DatabaseSyncType;
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

@@ -1,0 +1,43 @@
+--- FILE: src/security/hardenedTenantGuard.ts ---
+diff --git a/src/security/hardenedTenantGuard.ts b/src/security/hardenedTenantGuard.ts
+@@ -0,0 +1,22 @@
++import crypto from 'node:crypto';
++import { Request, Response, NextFunction } from 'express';
++
++export function hardenedTenantGuard(req: Request, res: Response, next: NextFunction): void {
++  const rawSlug = req.params.tenantSlug || '';
++  const userSlug = req.user?.tenantSlug || '';
++
++  const normalizedRaw = rawSlug.normalize('NFKC').toLowerCase();
++  const normalizedUser = userSlug.normalize('NFKC').toLowerCase();
++
++  if (!/^[a-z0-9-]+$/.test(normalizedRaw)) {
++    res.status(400).json({ error: 'Invalid tenant slug format' });
++    return;
++  }
++
++  if (normalizedRaw.length !== normalizedUser.length || !crypto.timingSafeEqual(Buffer.from(normalizedRaw), Buffer.from(normalizedUser))) {
++    res.status(403).json({ error: 'Tenant access denied' });
++    return;
++  }
++  next();
++}
+
+--- FILE: tests/unit/hardenedTenantGuard.test.ts ---
+diff --git a/tests/unit/hardenedTenantGuard.test.ts b/tests/unit/hardenedTenantGuard.test.ts
+@@ -0,0 +1,16 @@
++import { describe, it, expect } from 'vitest';
++import { hardenedTenantGuard } from '../../src/security/hardenedTenantGuard';
++
++describe('hardenedTenantGuard', () => {
++  it('rejects homoglyph mismatched slugs with 403', () => {
++    const req = { params: { tenantSlug: 'аcme' }, user: { tenantSlug: 'acme' } } as any;
++    let statusCode = 0;
++    const res = {
++      status: (code: number) => { statusCode = code; return { json: () => {} }; },
++    } as any;
++    const next = () => {};
++    hardenedTenantGuard(req, res, next);
++    expect(statusCode).toBe(400);
++  });
++});

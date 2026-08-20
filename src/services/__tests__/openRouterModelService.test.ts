@@ -100,6 +100,8 @@ describe('OpenRouterModelService Unit Tests', () => {
       expect(models.length).toBeGreaterThan(0);
       expect(models.some((m) => m.id === 'openrouter/auto')).toBe(true);
       expect(models.some((m) => m.id === 'openrouter/anthropic/claude-3.7-sonnet')).toBe(true);
+      expect(models.some((m) => m.id === 'openai/gpt-5.6-luna')).toBe(true);
+      expect(models.some((m) => m.id === 'openrouter/5.6-luna-high')).toBe(true);
 
       const status = service.getCacheStatus();
       expect(status.isUsingFallback).toBe(true);
@@ -183,6 +185,13 @@ describe('OpenRouterModelService Unit Tests', () => {
       // Half million prompt + quarter million completion
       const partialCost = await service.calculateCost('openrouter/auto', 500_000, 250_000);
       expect(partialCost).toBe(1.25); // 0.5 * 1.00 + 0.25 * 3.00 = 0.5 + 0.75 = 1.25
+
+      // openai/gpt-5.6-luna has $2.00 prompt / $6.00 completion per 1M
+      const lunaCost = await service.calculateCost('openai/gpt-5.6-luna', 1_000_000, 1_000_000);
+      expect(lunaCost).toBe(8.00);
+
+      const lunaAliasedCost = await service.calculateCost('openrouter/5.6-luna-high', 500_000, 500_000);
+      expect(lunaAliasedCost).toBe(4.00);
     });
 
     it('uses baseline fallback rate for unknown models', async () => {
@@ -217,6 +226,15 @@ describe('OpenRouterModelService Unit Tests', () => {
       const modelByShortId = await service.getModel('claude-3.7-sonnet');
       expect(modelByShortId).not.toBeNull();
       expect(modelByShortId?.id).toBe('openrouter/anthropic/claude-3.7-sonnet');
+
+      const lunaModel = await service.getModel('openrouter/5.6-luna-high');
+      expect(lunaModel).not.toBeNull();
+      expect(lunaModel?.id).toBe('openrouter/5.6-luna-high');
+
+      const gptLunaModel = await service.getModel('openai/gpt-5.6-luna');
+      expect(gptLunaModel).not.toBeNull();
+      expect(gptLunaModel?.promptCostPer1M).toBe(2.00);
+      expect(gptLunaModel?.completionCostPer1M).toBe(6.00);
     });
   });
 

@@ -1,0 +1,8 @@
+--- FILE: package.json ---
+diff --git a/package.json b/package.json
+@@ -28,4 +28,6 @@
+   "dependencies": {
++    "express": "*",
++    "uuid": "latest",
+     "typescript": "^5.4.5"
+   }

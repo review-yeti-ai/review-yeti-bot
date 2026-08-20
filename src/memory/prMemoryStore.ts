@@ -1,5 +1,14 @@
 // @ts-ignore
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
+const { DatabaseSync: DatabaseSyncImpl } = (() => {
+  try {
+    return require('node:sqlite');
+  } catch {
+    return { DatabaseSync: class {} };
+  }
+})();
+const DatabaseSync: any = DatabaseSyncImpl;
+type DatabaseSync = DatabaseSyncType;
 import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../utils/logger';
@@ -210,8 +219,8 @@ export class PRMemoryStore {
       repo,
       prNumber,
       nit.pattern,
-      nit.filePath,
-      nit.reason,
+      nit.filePath !== undefined && nit.filePath !== null ? nit.filePath : '',
+      nit.reason !== undefined && nit.reason !== null ? nit.reason : '',
       nit.headSha || null,
       resolvedAt,
       suppressionCount
@@ -247,7 +256,7 @@ export class PRMemoryStore {
       adr.title,
       adr.status,
       adr.rule,
-      JSON.stringify(adr.targetPaths),
+      JSON.stringify(adr.targetPaths || []),
       createdAt
     );
 

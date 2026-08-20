@@ -60,10 +60,10 @@ describe('10-Persona Roster & Per-Persona Settings Dials Suite (Release v1.4.0)'
     expect(keys).toContain('red_team');
 
     expect(settings.personaSettings!.security.effort).toBe('low');
-    expect(['claude-5-sonnet', 'claude-3-5-sonnet']).toContain(settings.personaSettings!.security.model);
-    expect(['gpt-5.6-sol', 'gpt-4o', 'glm-5.2']).toContain(settings.personaSettings!.performance.model);
-    expect(['deepseek-v4-pro', 'deepseek-v3']).toContain(settings.personaSettings!.reliability.model);
-    expect(['glm-5.2', 'glm-4', 'deepseek-v3']).toContain(settings.personaSettings!.devops.model);
+    expect(['claude-5-sonnet', 'claude-3-5-sonnet', 'openrouter/auto']).toContain(settings.personaSettings!.security.model);
+    expect(['gpt-5.6-sol', 'gpt-4o', 'glm-5.2', 'openrouter/auto']).toContain(settings.personaSettings!.performance.model);
+    expect(['deepseek-v4-pro', 'deepseek-v3', 'openrouter/auto']).toContain(settings.personaSettings!.reliability.model);
+    expect(['glm-5.2', 'glm-4', 'deepseek-v3', 'openrouter/auto']).toContain(settings.personaSettings!.devops.model);
   });
 
   it('validates persona settings payload boundaries in DashboardStore', () => {

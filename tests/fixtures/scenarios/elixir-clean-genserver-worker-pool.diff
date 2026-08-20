@@ -1,0 +1,57 @@
+--- FILE: lib/calltelemetry/pool/dynamic_worker_supervisor.ex ---
+diff --git a/lib/calltelemetry/pool/dynamic_worker_supervisor.ex b/lib/calltelemetry/pool/dynamic_worker_supervisor.ex
+@@ -1,5 +1,18 @@
+ defmodule Calltelemetry.Pool.DynamicWorkerSupervisor do
+   use DynamicSupervisor
+ 
+   def start_link(init_arg) do
+     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
+   end
++
++  @impl true
++  def init(_init_arg) do
++    DynamicSupervisor.init(strategy: :one_for_one)
++  end
++
++  def start_worker(args) do
++    spec = {Calltelemetry.Pool.Worker, args}
++    DynamicSupervisor.start_child(__MODULE__, spec)
++  end
++end
+
+--- FILE: lib/calltelemetry/pool/worker.ex ---
+diff --git a/lib/calltelemetry/pool/worker.ex b/lib/calltelemetry/pool/worker.ex
+@@ -1,5 +1,19 @@
+ defmodule Calltelemetry.Pool.Worker do
+   use GenServer, restart: :transient
+ 
+   def start_link(args) do
+     GenServer.start_link(__MODULE__, args)
+   end
++
++  @impl true
++  def init(args) do
++    {:ok, args}
++  end
++
++  @impl true
++  def handle_call({:perform, task}, _from, state) do
++    result = task.()
++    {:reply, {:ok, result}, state}
++  end
++end
+
+--- FILE: test/calltelemetry/pool/worker_test.exs ---
+diff --git a/test/calltelemetry/pool/worker_test.exs b/test/calltelemetry/pool/worker_test.exs
+@@ -1,5 +1,16 @@
+ defmodule Calltelemetry.Pool.WorkerTest do
+   use ExUnit.Case, async: true
+   alias Calltelemetry.Pool.Worker
++
++  describe "worker execution" do
++    test "executes task and returns ok tuple" do
++      {:ok, pid} = Worker.start_link([])
++      assert {:ok, 42} = GenServer.call(pid, {:perform, fn -> 40 + 2 end})
++    end
++  end
++end

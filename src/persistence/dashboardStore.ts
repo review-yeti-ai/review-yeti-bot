@@ -1875,7 +1875,9 @@ export class DashboardStore {
       const displayName = cfg.displayName || name;
       const active = cfg.active !== undefined ? cfg.active : cfg.enabled;
       const enabled = cfg.enabled !== undefined ? cfg.enabled : active;
-      const apiKeyMasked = cfg.apiKeyMasked || maskSecretKey(cfg.apiKeyRaw || cfg.apiKey) || '';
+      const apiKeyMasked = (cfg.apiKeyRaw && !cfg.apiKeyRaw.includes('*'))
+        ? maskSecretKey(cfg.apiKeyRaw)
+        : (cfg.apiKeyMasked || maskSecretKey(cfg.apiKey) || '');
       const apiKey = cfg.apiKey || apiKeyMasked;
 
       let subTier = normalizeSubscriptionTier(cfg.subscriptionTier);
@@ -2319,7 +2321,16 @@ export class DashboardStore {
       const existing = this.data.settings.providerConfigs || {};
       const merged: Record<string, any> = { ...existing };
       for (const [pid, pCfg] of Object.entries(newSettings.providerConfigs)) {
-        merged[pid] = { ...(existing[pid] || {}), ...pCfg };
+        const item = { ...(existing[pid] || {}), ...pCfg };
+        if (pCfg.apiKeyRaw || pCfg.apiKey) {
+          const raw = pCfg.apiKeyRaw || pCfg.apiKey;
+          if (raw && !raw.includes('*')) {
+            item.apiKeyRaw = raw;
+            item.apiKeyMasked = maskSecretKey(raw);
+            item.apiKey = item.apiKeyMasked;
+          }
+        }
+        merged[pid] = item;
       }
       this.data.settings.providerConfigs = merged;
     }

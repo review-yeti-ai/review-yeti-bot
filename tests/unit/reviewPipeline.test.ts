@@ -235,6 +235,359 @@ index 123456..789abc 100644
     expect(formattedComment).not.toContain('e+21');
   });
 
+  describe('Cost & Subscription Telemetry Formatter (Milestone M1 R3)', () => {
+    const { isSubscriptionTransport, isSubscriptionLane, formatCost, formatPRComment } = pipeline;
+
+    describe('isSubscriptionTransport helper', () => {
+      it('identifies unmetered direct and subscription transport identifiers', () => {
+        expect(isSubscriptionTransport('fireworks')).toBe(true);
+        expect(isSubscriptionTransport('direct-fireworks')).toBe(true);
+        expect(isSubscriptionTransport('direct_fireworks')).toBe(true);
+        expect(isSubscriptionTransport('ollama')).toBe(true);
+        expect(isSubscriptionTransport('ollama-cloud')).toBe(true);
+        expect(isSubscriptionTransport('ollama_cloud')).toBe(true);
+        expect(isSubscriptionTransport('ollama-local')).toBe(true);
+        expect(isSubscriptionTransport('ollama_local')).toBe(true);
+        expect(isSubscriptionTransport('subscription')).toBe(true);
+        expect(isSubscriptionTransport('FiReWoRkS')).toBe(true);
+        expect(isSubscriptionTransport('OLLAMA-CLOUD')).toBe(true);
+      });
+
+      it('identifies transport parameter with subscription keywords', () => {
+        expect(isSubscriptionTransport('openrouter', 'subscription')).toBe(true);
+        expect(isSubscriptionTransport('custom-endpoint', 'subscription-tier')).toBe(true);
+        expect(isSubscriptionTransport('anthropic', 'direct_subscription')).toBe(true);
+      });
+
+      it('handles object provider and transport representations', () => {
+        expect(isSubscriptionTransport({ id: 'fireworks' })).toBe(true);
+        expect(isSubscriptionTransport({ name: 'ollama-cloud' })).toBe(true);
+        expect(isSubscriptionTransport({ id: 'openrouter' }, { type: 'subscription' })).toBe(true);
+        expect(isSubscriptionTransport({ transport: 'subscription' })).toBe(true);
+      });
+
+      it('returns false for metered and standard pay-per-token transports', () => {
+        expect(isSubscriptionTransport('openrouter')).toBe(false);
+        expect(isSubscriptionTransport('openai')).toBe(false);
+        expect(isSubscriptionTransport('anthropic')).toBe(false);
+        expect(isSubscriptionTransport('google-gemini')).toBe(false);
+        expect(isSubscriptionTransport('openrouter', 'metered')).toBe(false);
+        expect(isSubscriptionTransport('', '')).toBe(false);
+        expect(isSubscriptionTransport(null as any, null as any)).toBe(false);
+        expect(isSubscriptionTransport(undefined as any)).toBe(false);
+      });
+    });
+
+    describe('isSubscriptionLane helper', () => {
+      it('identifies explicit subscription lane flags', () => {
+        expect(isSubscriptionLane({ isSubscription: true })).toBe(true);
+        expect(isSubscriptionLane({ isSubscription: 'true' })).toBe(true);
+        expect(isSubscriptionLane({ billing: 'subscription' })).toBe(true);
+        expect(isSubscriptionLane({ billing: 'Subscription' })).toBe(true);
+        expect(isSubscriptionLane({ pricingType: 'subscription' })).toBe(true);
+        expect(isSubscriptionLane({ transport: 'subscription' })).toBe(true);
+        expect(isSubscriptionLane({ cost: 'Subscription' })).toBe(true);
+        expect(isSubscriptionLane({ cost: 'subscription' })).toBe(true);
+      });
+
+      it('identifies unmetered providers when cost is null, undefined, empty, or 0', () => {
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: null })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: undefined })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: '' })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: 0 })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'ollama-cloud', cost: null })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'ollama', cost: null })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'direct-fireworks', cost: null })).toBe(true);
+      });
+
+      it('returns false when metered provider has null or positive cost without subscription flags', () => {
+        expect(isSubscriptionLane({ provider: 'openrouter', cost: null })).toBe(false);
+        expect(isSubscriptionLane({ provider: 'openrouter', cost: 0.0074 })).toBe(false);
+        expect(isSubscriptionLane({ provider: 'openai', cost: 0.015 })).toBe(false);
+      });
+
+      it('treats positive numeric cost as metered unless explicit subscription flag is set', () => {
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: 0.005 })).toBe(false);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: 0.005, isSubscription: true })).toBe(true);
+      });
+
+      it('safely handles non-object and malformed inputs', () => {
+        expect(isSubscriptionLane(null)).toBe(false);
+        expect(isSubscriptionLane(undefined)).toBe(false);
+        expect(isSubscriptionLane('string' as any)).toBe(false);
+        expect(isSubscriptionLane(123 as any)).toBe(false);
+        expect(isSubscriptionLane({})).toBe(false);
+      });
+    });
+
+    describe('formatCost helper', () => {
+      it('formats valid positive numbers to 3 decimals with dollar sign', () => {
+        expect(formatCost(0.0074)).toBe('$0.007');
+        expect(formatCost(0.006307)).toBe('$0.006');
+        expect(formatCost(0.013707)).toBe('$0.014');
+        expect(formatCost(0)).toBe('$0.000');
+        expect(formatCost(1.2346)).toBe('$1.235');
+        expect(formatCost('0.0074')).toBe('$0.007');
+      });
+
+      it('returns Subscription for subscription literal strings', () => {
+        expect(formatCost('Subscription')).toBe('Subscription');
+        expect(formatCost('subscription')).toBe('Subscription');
+        expect(formatCost(' SUBSCRIPTION ')).toBe('Subscription');
+      });
+
+      it('returns em dash for null, undefined, invalid, negative, or overflow values', () => {
+        expect(formatCost(null)).toBe('—');
+        expect(formatCost(undefined)).toBe('—');
+        expect(formatCost('')).toBe('—');
+        expect(formatCost('not-a-number')).toBe('—');
+        expect(formatCost(-0.005)).toBe('—');
+        expect(formatCost(1e21)).toBe('—');
+      });
+    });
+
+    describe('formatPRComment roster and total row integration', () => {
+      it('renders pure subscription panel with Subscription in rows and total', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'fireworks/llama-v3p3-70b-instruct',
+            provider: 'fireworks',
+            decision: 'APPROVE',
+            inputTokens: 1200,
+            outputTokens: 350,
+            cost: null,
+            findings: [],
+          },
+          {
+            personaId: 'architecture',
+            displayName: 'Architecture',
+            model: 'ollama-cloud/qwen2.5-coder',
+            provider: 'ollama-cloud',
+            decision: 'APPROVE',
+            inputTokens: 1500,
+            outputTokens: 400,
+            cost: null,
+            findings: [],
+          },
+        ];
+
+        const comment = formatPRComment({
+          totalPersonas: 2,
+          completedPersonas: 2,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Clean review across subscription transports.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '201', repo: 'calltelemetry/ct-review-bot', headSha: 'sub1234' });
+
+        expect(comment).toContain('| Security | `fireworks` | `fireworks/llama-v3p3-70b-instruct` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,200 | 350 | Subscription |');
+        expect(comment).toContain('| Architecture | `ollama-cloud` | `ollama-cloud/qwen2.5-coder` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,500 | 400 | Subscription |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **2,700** | **750** | **Subscription** |');
+      });
+
+      it('renders explicit subscription flags with Subscription in rows and total', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'custom/model-sec',
+            provider: 'custom',
+            decision: 'APPROVE',
+            inputTokens: 800,
+            outputTokens: 150,
+            isSubscription: true,
+            findings: [],
+          },
+          {
+            personaId: 'performance',
+            displayName: 'Performance',
+            model: 'custom/model-perf',
+            provider: 'custom',
+            decision: 'APPROVE',
+            inputTokens: 900,
+            outputTokens: 200,
+            billing: 'subscription',
+            findings: [],
+          },
+          {
+            personaId: 'database',
+            displayName: 'Database',
+            model: 'custom/model-db',
+            provider: 'custom',
+            decision: 'APPROVE',
+            inputTokens: 600,
+            outputTokens: 100,
+            cost: 'Subscription',
+            findings: [],
+          },
+        ];
+
+        const comment = formatPRComment({
+          totalPersonas: 3,
+          completedPersonas: 3,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Explicit subscription review.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '202', repo: 'calltelemetry/ct-review-bot', headSha: 'sub5678' });
+
+        expect(comment).toContain('| Security | `custom` | `custom/model-sec` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 800 | 150 | Subscription |');
+        expect(comment).toContain('| Performance | `custom` | `custom/model-perf` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 900 | 200 | Subscription |');
+        expect(comment).toContain('| Database | `custom` | `custom/model-db` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 600 | 100 | Subscription |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **2,300** | **450** | **Subscription** |');
+      });
+
+      it('accurately aggregates mixed metered and subscription panels ($X.XXXX + Subscription)', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'openai/gpt-5.6-luna',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 1000,
+            outputTokens: 200,
+            cost: 0.0074,
+            findings: [],
+          },
+          {
+            personaId: 'architecture',
+            displayName: 'Architecture',
+            model: 'accounts/fireworks/models/deepseek-v3',
+            provider: 'fireworks',
+            decision: 'APPROVE',
+            inputTokens: 1500,
+            outputTokens: 300,
+            cost: null,
+            findings: [],
+          },
+          {
+            personaId: 'style',
+            displayName: 'Style',
+            model: 'z-ai/glm-5.1',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 500,
+            outputTokens: 100,
+            cost: 0.006307,
+            findings: [],
+          },
+        ];
+
+        const comment = formatPRComment({
+          totalPersonas: 3,
+          completedPersonas: 3,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Mixed metered and subscription evaluation passed.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '203', repo: 'calltelemetry/ct-review-bot', headSha: 'mix1234' });
+
+        expect(comment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,000 | 200 | $0.007 |');
+        expect(comment).toContain('| Architecture | `fireworks` | `accounts/fireworks/models/deepseek-v3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,500 | 300 | Subscription |');
+        expect(comment).toContain('| Style | `openrouter` | `z-ai/glm-5.1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 500 | 100 | $0.006 |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **3,000** | **600** | **$0.014 + Subscription** |');
+      });
+
+      it('accurately aggregates pure metered panels (**$X.XXXX**)', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'openai/gpt-5.6-luna',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 1200,
+            outputTokens: 250,
+            cost: 0.0074,
+            findings: [],
+          },
+          {
+            personaId: 'performance',
+            displayName: 'Performance',
+            model: 'anthropic/claude-3.7-sonnet',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 1800,
+            outputTokens: 400,
+            cost: 0.0125,
+            findings: [],
+          },
+        ];
+
+        const comment = formatPRComment({
+          totalPersonas: 2,
+          completedPersonas: 2,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Pure metered review.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '204', repo: 'calltelemetry/ct-review-bot', headSha: 'met1234' });
+
+        expect(comment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,200 | 250 | $0.007 |');
+        expect(comment).toContain('| Performance | `openrouter` | `anthropic/claude-3.7-sonnet` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,800 | 400 | $0.013 |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **3,000** | **650** | **$0.020** |');
+      });
+
+      it('falls back to em dash in total when any lane has unknown cost (mixed or subscription)', () => {
+        // Mixed panel with unknown lane
+        const mixedWithUnknown = [
+          { personaId: 'security', displayName: 'Security', model: 'm1', provider: 'openrouter', decision: 'APPROVE', cost: 0.007, findings: [] },
+          { personaId: 'perf', displayName: 'Performance', model: 'm2', provider: 'fireworks', decision: 'APPROVE', cost: null, findings: [] },
+          { personaId: 'style', displayName: 'Style', model: 'm3', provider: 'openrouter', decision: 'APPROVE', cost: null, findings: [] },
+        ];
+
+        const comment1 = formatPRComment({
+          totalPersonas: 3,
+          completedPersonas: 3,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Mixed with unknown.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, mixedWithUnknown, { prNumber: '205', repo: 'calltelemetry/ct-review-bot', headSha: 'unk1234' });
+
+        expect(comment1).toContain('| Security | `openrouter` | `m1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | $0.007 |');
+        expect(comment1).toContain('| Performance | `fireworks` | `m2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | Subscription |');
+        expect(comment1).toContain('| Style | `openrouter` | `m3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+        expect(comment1).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+
+        // Subscription panel with unknown lane
+        const subWithUnknown = [
+          { personaId: 'perf', displayName: 'Performance', model: 'm2', provider: 'fireworks', decision: 'APPROVE', cost: null, findings: [] },
+          { personaId: 'style', displayName: 'Style', model: 'm3', provider: 'openrouter', decision: 'APPROVE', cost: null, findings: [] },
+        ];
+
+        const comment2 = formatPRComment({
+          totalPersonas: 2,
+          completedPersonas: 2,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Subscription with unknown.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, subWithUnknown, { prNumber: '206', repo: 'calltelemetry/ct-review-bot', headSha: 'unk5678' });
+
+        expect(comment2).toContain('| Performance | `fireworks` | `m2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | Subscription |');
+        expect(comment2).toContain('| Style | `openrouter` | `m3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+        expect(comment2).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+      });
+
+      it('handles empty persona results cleanly', () => {
+        const comment = formatPRComment({
+          totalPersonas: 0,
+          completedPersonas: 0,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'No personas enabled.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, [], { prNumber: '207', repo: 'calltelemetry/ct-review-bot', headSha: 'empty123' });
+
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+      });
+    });
+  });
+
   it('6. Executes main pipeline cleanly without unhandled exceptions', async () => {
     // Set environment variables for test execution
     process.env.PR_NUMBER = '777';

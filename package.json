@@ -23,6 +23,8 @@
     "test:replay": "vitest run tests/unit/cassetteReplay.test.ts tests/unit/openRouterClient.test.ts tests/integration/reviewReplay.test.ts tests/integration/openRouterFleetReplay.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "benchmark:release": "node scripts/evaluate-release-benchmark.mjs",
+    "benchmark:compare": "node scripts/compare-release-baselines.mjs",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "clean:frontend": "node scripts/clean-frontend.js"
