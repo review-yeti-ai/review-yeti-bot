@@ -30,7 +30,12 @@ const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
-const { summarizeFixtureResult, evaluateGate } = require(path.join(root, 'src/review/e2eReviewGate.js'));
+const { resolveOpenRouterPolicy } = require(path.join(root, '.github/workflows/pipelines/openRouterPolicy.js'));
+const {
+  summarizeFixtureResult,
+  evaluateGate,
+  resolveGateTransportBudget,
+} = require(path.join(root, 'src/review/e2eReviewGate.js'));
 
 const FIXTURE_DIR = path.join(root, 'tests/fixtures/e2e-review-gate');
 
@@ -41,7 +46,7 @@ function fail(reason, extra = {}) {
   process.exitCode = 1;
 }
 
-async function runFixture({ name, file, persona, model, apiKey, baseUrl }) {
+async function runFixture({ name, file, persona, model, apiKey, baseUrl, openRouterPolicy }) {
   const diffText = fs.readFileSync(path.join(FIXTURE_DIR, file), 'utf8');
   const diffFiles = pipeline.parseDiff(diffText);
   if (diffFiles.length === 0) throw new Error(`fixture ${file} parsed to zero changed files`);
@@ -56,7 +61,11 @@ async function runFixture({ name, file, persona, model, apiKey, baseUrl }) {
     model,
     apiKey,
     baseUrl,
-    maxAttempts: 2,
+    maxAttempts: openRouterPolicy.maxAttempts,
+    timeoutMs: openRouterPolicy.timeoutMs,
+    ttftMs: openRouterPolicy.ttftMs,
+    reasoningEffort: 'max',
+    openRouterPolicy,
   });
 
   return summarizeFixtureResult(result, name);
@@ -66,6 +75,13 @@ async function main() {
   const apiKey = String(process.env.OPENROUTER_API_KEY || '').trim();
   const model = String(process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731').trim();
   const baseUrl = String(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').trim();
+  const { timeoutMs, ttftMs } = resolveGateTransportBudget(process.env);
+  const openRouterPolicy = resolveOpenRouterPolicy({}, {
+    OPENROUTER_TIMEOUT_MS: String(timeoutMs),
+    OPENROUTER_TTFT_MS: String(ttftMs),
+    OPENROUTER_MAX_ATTEMPTS: '2',
+    OPENROUTER_STRUCTURED_OUTPUT: 'strict',
+  });
 
   if (!apiKey) {
     fail('OPENROUTER_API_KEY is not configured; refusing to claim a passing gate without live provider evidence. See docs/RELEASING.md for the wiring TODO.');
@@ -83,10 +99,10 @@ async function main() {
   let green;
   try {
     red = await runFixture({
-      name: 'red-known-bug', file: 'red-known-bug.diff', persona: securityPersona, model, apiKey, baseUrl,
+      name: 'red-known-bug', file: 'red-known-bug.diff', persona: securityPersona, model, apiKey, baseUrl, openRouterPolicy,
     });
     green = await runFixture({
-      name: 'green-clean', file: 'green-clean.diff', persona: securityPersona, model, apiKey, baseUrl,
+      name: 'green-clean', file: 'green-clean.diff', persona: securityPersona, model, apiKey, baseUrl, openRouterPolicy,
     });
   } catch (error) {
     fail(`live model call failed: ${error?.message || error}`);

@@ -11,10 +11,10 @@ github_action:
     model: openrouter/auto-beta
     allowed_models: [openrouter/auto-beta]
     fallback_models: [deepseek/deepseek-v4-flash-0731]
-    timeout_ms: 60000
+    timeout_ms: 30000
     data_collection: deny
     cost_quality_tradeoff: 5
-    ignore_providers: [deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]
+    ignore_providers: []
     # Optional raw OpenRouter provider routing policy. This is forwarded as the
     # `provider` request object; use snake_case API field names. Omitting it uses
     # the production default shown in the table below.
@@ -35,8 +35,8 @@ Defaults (when section or keys are missing):
 |-----|---------|
 | `model` | `openrouter/auto-beta` |
 | `fallback_models` | empty |
-| `timeout_ms` | `60000` |
-| `provider_routing` | `allow_fallbacks: true`, `require_parameters: true`, `quantizations: [fp8, bf16]`, `sort: throughput`, `preferred_min_throughput: {p90: 40}`, `preferred_max_latency: {p99: 3}`, plus the enforced degraded-provider ignore policy |
+| `timeout_ms` | `30000` |
+| `provider_routing` | `allow_fallbacks: true`, `require_parameters: true`, `quantizations: [fp16, bf16]`, `sort: throughput`, `preferred_min_throughput: {p90: 40}`, `preferred_max_latency: {p99: 3}` |
 
 Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL`).
 `openrouter/auto` and `openrouter/auto-beta` are never rewritten into each other.
@@ -49,11 +49,11 @@ Provider models default to `openrouter/auto-beta` (see `DEFAULT_OPENROUTER_MODEL
 | `allowed_models` | Model allowlist | empty (no additional allowlist) |
 | `fallback_models` | Ordered fallback models for transient failures | empty |
 | `structured_output` | Optional `strict` JSON Schema contract; unsupported providers fail closed | unset |
-| `timeout_ms` | Per-request timeout, clamped to `500..600000` | `60000` |
+| `timeout_ms` | Per-request timeout, clamped to `500..600000` | `30000` |
 | `data_collection` | Provider data-collection header policy: `allow` or `deny` | unset |
 | `cost_quality_tradeoff` | Auto Router quality/cost band, `0..10` | unset |
-| `ignore_providers` | Provider slugs to ignore; the built-in degraded-provider blocklist is always ignored | `[deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]` |
-| `provider_routing` | Validated OpenRouter provider-selection object | fallbacks enabled; FP8/BF16 only; throughput sorting; p90 throughput at least 40 tokens/s preferred; p99 latency at most 3 seconds preferred |
+| `ignore_providers` | Optional provider slugs to ignore | `[]` |
+| `provider_routing` | Validated OpenRouter provider-selection object | fallbacks enabled; FP16/BF16 full precision; throughput sorting; p90 throughput at least 40 tokens/s preferred; p99 latency at most 3 seconds preferred |
 
 Precedence is: explicit Action input/environment, trusted `github_action.openrouter` YAML, then
 defaults. Action inputs cannot select an untrusted configuration ref. `provider_routing` accepts
@@ -62,9 +62,8 @@ defaults. Action inputs cannot select an untrusted configuration ref. `provider_
 `max_price`; unknown fields fail closed. See the [canonical YAML example](YAML_CONFIGURATION_EXAMPLES.md#recommended-production-configuration).
 
 The throughput and latency settings are OpenRouter preferences based on endpoint percentile
-statistics, not a literal uptime guarantee. Latency values are measured in seconds. ExampleCloud remains
-eligible under the default policy and is neither added to `ignore` nor to the degraded-provider
-ban set.
+statistics, not a literal uptime guarantee. Latency values are measured in seconds. The default
+policy injects no endpoint blocklist; OpenRouter remains responsible for endpoint eligibility.
 
 ## Fixed model/provider compatibility
 

@@ -163,10 +163,10 @@ github_action:
     model: openrouter/auto-beta
     allowed_models: [openrouter/auto-beta]
     fallback_models: [deepseek/deepseek-v4-flash-0731]
-    timeout_ms: 60000
+    timeout_ms: 30000
     data_collection: deny       # allow | deny
     cost_quality_tradeoff: 5    # 0..10
-    ignore_providers: [deepinfra, openrouter, wafer, novita, siliconflow, decart, sail-research, inceptron, fireworks, together, mancer, parasail]
+    ignore_providers: []
     provider_routing:
       allow_fallbacks: false
       require_parameters: true

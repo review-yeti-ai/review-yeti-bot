@@ -5,6 +5,40 @@
 // without a live provider call -- the live script itself stays a thin IO/orchestration wrapper
 // around this.
 
+const DEFAULT_GATE_TIMEOUT_MS = 90_000;
+const DEFAULT_GATE_TTFT_MS = 30_000;
+
+function boundedPositiveInteger(value, fallback, min, max) {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return Math.max(min, Math.min(max, fallback));
+  }
+  const parsed = Number(value);
+  const resolved = Number.isFinite(parsed) ? Math.round(parsed) : fallback;
+  return Math.max(min, Math.min(max, resolved));
+}
+
+/**
+ * The release canary uses maximum reasoning effort, so its total completion budget is longer
+ * than its liveness budget. A reasoning token is still a first token: TTFT remains short while
+ * a healthy stream gets enough time to finish.
+ */
+function resolveGateTransportBudget(env = {}) {
+  const safeEnv = env || {};
+  const timeoutMs = boundedPositiveInteger(
+    safeEnv.E2E_REVIEW_GATE_TIMEOUT_MS,
+    DEFAULT_GATE_TIMEOUT_MS,
+    500,
+    600_000,
+  );
+  const ttftMs = boundedPositiveInteger(
+    safeEnv.E2E_REVIEW_GATE_TTFT_MS,
+    DEFAULT_GATE_TTFT_MS,
+    500,
+    timeoutMs,
+  );
+  return { timeoutMs, ttftMs };
+}
+
 /**
  * A completed (non-ERROR) lane result from `reviewWithModel`, reduced to the fields this gate
  * cares about.
@@ -58,6 +92,7 @@ function evaluateGate({ red, green }) {
 }
 
 module.exports = {
+  resolveGateTransportBudget,
   summarizeFixtureResult,
   redFixtureOk,
   greenFixtureOk,
