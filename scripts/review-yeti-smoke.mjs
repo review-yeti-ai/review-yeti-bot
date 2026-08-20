@@ -2,6 +2,8 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
+import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
+
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'fireworks',
   'ollama',
@@ -123,11 +125,17 @@ export function validatePolicy(policy) {
   }
   const maxAttempts = Number(policy.review_yeti?.openrouter_max_attempts);
   const maxInvestigationTurns = Number(budget.max_investigation_turns);
-  const transportTimeoutSum = transports.reduce((sum, transport) => sum + transport.timeout_ms, 0);
-  const worstCaseLaneMs = transportTimeoutSum * maxAttempts * maxInvestigationTurns;
-  if (Number(budget.lane_deadline_ms) < worstCaseLaneMs) {
-    throw new Error('lane deadline must cover the bounded transport, retry, and investigation-turn envelope');
-  }
+  // Shared with emit-policy.mjs via lane-deadline-invariant.mjs so the two enforcement points
+  // cannot drift again (this copy has already drifted from the primary once: first missing
+  // stall_ms validation, then missing lane_overhead_ms in the arithmetic entirely).
+  checkDeadTransportEnvelope({
+    transports,
+    stallMs: Number(policy.review_yeti?.stall_ms),
+    maxAttempts,
+    maxInvestigationTurns,
+    laneOverheadMs: Number(budget.lane_overhead_ms),
+    laneDeadlineMs: Number(budget.lane_deadline_ms),
+  });
 
   return transports;
 }

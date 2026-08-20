@@ -124,16 +124,24 @@ The central budget is also fixed here: two investigation turns, one 24-request p
 budget, a twelve-minute (720s) lane deadline with a two-minute non-generation reserve, and a
 30-second OpenRouter first-token budget.
 
-- **timeout_ms = 30000 for Fireworks and Ollama, 90000 for the OpenRouter fallback.** The fast local probe (3.4s end to end for a ~26k char
-  panel-sized prompt) is a lower bound, not a ceiling -- `max_diff_chars` allows prompts up to
-  2,000,000 chars, far larger than that probe's payload. The 90000ms fallback envelope leaves
-  room for a streamed provider response to finish after its first token without disabling SSE.
+- **timeout_ms = 120000 for Fireworks, 90000 for Ollama and the OpenRouter fallback.** Since
+  `review-yeti-bot` PR #163, an actively-streaming response is never aborted by a duration cap --
+  the engine's stall/idle timer re-arms on every SSE chunk -- so `timeout_ms` is now primarily a
+  ceiling on the non-streaming fallback path and a sanity bound (1ms-180000ms), not a budget that
+  every healthy call is assumed to burn in full. These values were raised from a previous
+  75000/30000/45000 once the CI invariant below stopped modeling them as a wall-clock sum (see
+  exampleorg/example-meta ADR 0337 for the full decision).
+- **stall_ms = 20000.** The engine's liveness window: if a transport goes silent for a full
+  `stall_ms` after connecting (no SSE chunk, including `reasoning_content`), the call is declared
+  dead and the lane fails over. This matches the engine's own default and is declared in policy so
+  it participates in the lane-deadline invariant below and is tunable without an engine change.
 - **openrouter_ttft_ms = 30000ms.** The action uses this value as the OpenRouter first-token/connect
   budget. Because every configured transport streams, TTFT is measured at the first SSE chunk and
   does not cap a generation after streaming has begun.
 
-A provider that does not answer within that envelope fails over or fails closed; it cannot stretch
-a hosted job or silently consume an unbounded retry budget.
+A provider that never connects, or that goes silent for a full `stall_ms` window, fails over or
+fails closed; a healthy, actively-streaming provider cannot stretch a hosted job past what a
+duration cap used to allow, because there no longer is one.
 
 **Two timeout knobs, kept in lockstep.** The policy carries both a per-transport `timeout_ms`
 (embedded in the `transports` JSON blob emitted by `emit-policy.mjs`, covering all three configured
@@ -152,26 +160,32 @@ non-streaming while retaining a tight TTFT budget; `scripts/emit-policy.test.sh`
 counterfactual. This keeps provider attribution and first-token telemetry intact without disabling
 SSE to hide upstream failures.
 
-**Lane-deadline arithmetic invariant.** A lane advances through the declared transports in order,
-so the worst case for one lane is every transport burning its full `timeout_ms` on every bounded
-attempt across every investigation turn before the lane gives up. `emit-policy.mjs` enforces
-`sum(transport.timeout_ms) * openrouter_max_attempts * max_investigation_turns + budget.lane_overhead_ms <= budget.lane_deadline_ms`
+**Lane-deadline arithmetic invariant (dead-transport envelope, not a timeout_ms sum).** Since an
+actively-streaming call is never aborted by a duration cap, `timeout_ms` no longer bounds a lane's
+worst-case wall time and summing it across every transport, attempt, and investigation turn (the
+pre-#163 model) would reject healthy configurations that could never actually exceed the deadline
+-- exactly the failure mode that once forced Fireworks' `timeout_ms` down from a requested 120000
+to 75000. What genuinely bounds the worst case is the **dead-transport** path: a transport that
+never produces a first byte (`connect_timeout_ms`) or that goes silent after connecting for a full
+`stall_ms` interval. `emit-policy.mjs` enforces
+`(sum(transport.connect_timeout_ms) + transports.length * stall_ms) * openrouter_max_attempts * max_investigation_turns + budget.lane_overhead_ms <= budget.lane_deadline_ms`
 at policy-load time (both in the reusable workflow and in CI) -- summed over however many
-transports the policy declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` re-checks
-the same inequality against the committed policy plus counterfactual fixtures that violate it.
+transports the policy declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` and
+`scripts/review-yeti-smoke.mjs` (a previously-drifted duplicate of the same check) re-check the
+same inequality against the committed policy plus counterfactual fixtures that violate it.
 Separately,
 `max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
 of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
-`30000 + 30000 + 90000 = 150000` per attempt,
-`150000 x 2 attempts x 2 turns + 120000 overhead = 720000 <= 720000`, and
+`connect_timeout_ms` `15000 + 30000 + 30000 = 75000`, plus `3 x 20000 = 60000` stall reserve,
+`(75000 + 60000) x 2 attempts x 2 turns + 120000 overhead = 660000 <= 720000`, and
 `max_passes(2) x lane_deadline_ms(720000) = 1440000 <= 1800000` (the 30-minute job cap, leaving
 360s for workflow setup, publishing, and verdict enforcement). The explicit overhead reserve
-covers streaming-gate wait, validation, failover dispatch, and evidence work that provider timeout
-arithmetic alone cannot represent. This guards
-against a repeat of the incident that motivated this change: at `timeout_ms: 180000` per transport,
-two transports alone summed to 360s against a 240s lane deadline, so a slow or stalled
-primary made the OpenRouter fallback structurally unreachable in exactly the case it exists for.
+covers streaming-gate wait, validation, failover dispatch, and evidence work that connect/stall
+arithmetic alone cannot represent. This still guards against a repeat of the incident that
+originally motivated this invariant -- a full sequential failover of transports that never connect
+or never stream must still finish inside the lane deadline -- while no longer treating a slow but
+healthy, actively-streaming generation as if it were that failure.
 
 Before the model action starts, the reusable workflow runs `scripts/review-yeti-smoke.mjs` against
 each configured transport using a bounded, review-shaped JSON request. The smoke test records only

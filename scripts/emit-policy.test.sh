@@ -93,27 +93,34 @@ for transport in review.get('transports', []):
         if type(value) is not int or not 1 <= value <= 180_000:
             raise SystemExit(f"{transport.get('name', '<unnamed>')} {key} must be between 1ms and 180000ms")
 
-# Hard arithmetic invariant: a lane advances through every declared transport in order, retrying
-# each transport up to openrouter_max_attempts before it gives up. If that worst-case product exceeds
-# the lane deadline, the later transports -- the OpenRouter fallback most of all -- are structurally
-# unreachable in exactly the case they exist for (a slow or stalled primary). This is the same
-# invariant emit-policy.mjs enforces at policy-load time; re-checking it here against the real
-# committed policy keeps the two in lockstep. Sums over however many transports the policy declares
-# -- not hardcoded to today's count -- so it stays meaningful if that count changes.
+# Hard arithmetic invariant (post review-yeti-bot#163): an actively-streaming call is never
+# aborted by a duration cap -- the stall/idle timer re-arms on every SSE chunk, so timeout_ms no
+# longer bounds a lane's worst-case wall time and must not be summed across every transport x
+# attempt x turn (that pre-#163 model rejected healthy configs, which is exactly why
+# fireworks.timeout_ms had to be cut from a requested 120000 to 75000). What genuinely bounds a
+# lane's worst case is the failure path where a transport never produces a first byte:
+# connect_timeout_ms plus one stall_ms interval, summed across every transport, attempt, and
+# investigation turn. This is the same invariant emit-policy.mjs enforces at policy-load time;
+# re-checking it here against the real committed policy keeps the two in lockstep. Sums over
+# however many transports the policy declares -- not hardcoded to today's count -- so it stays
+# meaningful if that count changes.
 lane_deadline_ms = int(budget['lane_deadline_ms'])
 lane_overhead_ms = int(budget['lane_overhead_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
 max_investigation_turns = int(budget['max_investigation_turns'])
-transport_timeout_sum_ms = sum(t['timeout_ms'] for t in transports)
-worst_case_transport_ms = transport_timeout_sum_ms * max_attempts * max_investigation_turns
-required_lane_budget_ms = worst_case_transport_ms + lane_overhead_ms
+stall_ms = int(review['stall_ms'])
+transport_connect_sum_ms = sum(t['connect_timeout_ms'] for t in transports)
+stall_envelope_ms = transport_connect_sum_ms + len(transports) * stall_ms
+worst_case_dead_call_ms = stall_envelope_ms * max_attempts * max_investigation_turns
+required_lane_budget_ms = worst_case_dead_call_ms + lane_overhead_ms
 if required_lane_budget_ms > lane_deadline_ms:
     raise SystemExit(
-        f'worst-case transport budget ({worst_case_transport_ms}ms = {transport_timeout_sum_ms}ms across '
-        f'{len(transports)} transports x {max_attempts} attempts x {max_investigation_turns} turns) '
-        f'plus lane overhead reserve ({lane_overhead_ms}ms) exceeds '
-        f'review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); a full sequential '
-        'failover could never finish the last transport'
+        f'worst-case dead-transport budget ({worst_case_dead_call_ms}ms = ({transport_connect_sum_ms}ms '
+        f'connect + {len(transports)} x {stall_ms}ms stall) across {len(transports)} transports x '
+        f'{max_attempts} attempts x {max_investigation_turns} turns) plus lane overhead reserve '
+        f'({lane_overhead_ms}ms) exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); '
+        'a full sequential failover of never-connecting or never-streaming transports could never '
+        'finish the last transport'
     )
 
 # Second half of the same invariant: a hosted run can retry up to max_passes lanes, so the worst
@@ -142,6 +149,7 @@ PY
 
 mkdir -p "$tmp_dir/scripts" "$tmp_dir/policy"
 cp "$repo_root/scripts/emit-policy.mjs" "$tmp_dir/scripts/emit-policy.mjs"
+cp "$repo_root/scripts/lane-deadline-invariant.mjs" "$tmp_dir/scripts/lane-deadline-invariant.mjs"
 
 write_policy() {
   local key="$1" value="$2"
@@ -236,11 +244,14 @@ run_transport_relation_case() {
   echo "[invalid-transport-relation] passed"
 }
 
-# Counterfactual proof for the lane-deadline arithmetic guard: every transport individually stays
-# inside the per-transport 1ms-180000ms cap (so that check does not fire first), but each transport
-# is set high enough that the sum across all configured transports exceeds the committed lane
-# deadline -- derived from the deadline and transport count rather than hardcoded, so this stays
-# meaningful if a transport is added or removed again.
+# Counterfactual proof for the lane-deadline arithmetic guard, post review-yeti-bot#163: since
+# timeout_ms no longer bounds an actively-streaming call, this fixture must overflow via the
+# quantity that DOES still bound the worst case -- connect_timeout_ms plus one stall_ms interval
+# per transport. Every transport individually stays inside the 1ms-180000ms per-field cap (so that
+# check does not fire first), but connect_timeout_ms is set high enough that the summed
+# connect+stall envelope across all configured transports exceeds the committed lane deadline --
+# derived from the deadline and transport count rather than hardcoded, so this stays meaningful if
+# a transport is added or removed again.
 write_transport_budget_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -248,21 +259,24 @@ import sys
 
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
-transports = policy['review_yeti']['transports']
-lane_deadline_ms = int(policy['review_yeti']['budget']['lane_deadline_ms'])
-overflow_timeout_ms = min(180_000, (lane_deadline_ms // len(transports)) + 10_000)
+review = policy['review_yeti']
+transports = review['transports']
+lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
+overflow_connect_ms = min(180_000, (lane_deadline_ms // len(transports)) + 10_000)
 for transport in transports:
-    transport['timeout_ms'] = overflow_timeout_ms
-    transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), overflow_timeout_ms)
-# A generated cap can otherwise land exactly on the lane deadline. Nudge
-# the fixture deadline just below the resulting sum while keeping the retry-envelope check valid.
-if overflow_timeout_ms * len(transports) <= lane_deadline_ms:
-    lane_deadline_ms = overflow_timeout_ms * len(transports) - 1
-    policy['review_yeti']['budget']['lane_deadline_ms'] = str(lane_deadline_ms)
+    transport['connect_timeout_ms'] = overflow_connect_ms
+    transport['timeout_ms'] = max(transport.get('timeout_ms', 30_000), overflow_connect_ms)
+# A generated cap can otherwise land exactly on the lane deadline. Nudge the fixture deadline just
+# below the resulting sum while keeping the retry-envelope check valid.
+overflow_sum = overflow_connect_ms * len(transports) + len(transports) * int(review['stall_ms'])
+if overflow_sum <= lane_deadline_ms:
+    lane_deadline_ms = overflow_sum - 1
+    review['budget']['lane_deadline_ms'] = str(lane_deadline_ms)
 # Keep the retry-envelope guard from firing first; this fixture is specifically proving that
-# the sum across transports is checked independently of the OpenRouter retry count.
-policy['review_yeti']['openrouter_max_attempts'] = '1'
-policy['review_yeti']['openrouter_timeout_ms'] = str(overflow_timeout_ms)
+# the connect+stall sum across transports is checked independently of the OpenRouter retry count.
+review['openrouter_max_attempts'] = '1'
+openrouter = next(item for item in transports if item['name'] == 'openrouter-fallback')
+review['openrouter_timeout_ms'] = str(openrouter['timeout_ms'])
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
@@ -284,6 +298,8 @@ run_transport_budget_overflow_case() {
   echo "[transport-budget-overflow] passed"
 }
 
+# Same failure mode, isolated to the retry multiplier: a modest connect+stall envelope that fits
+# once but overflows once multiplied by openrouter_max_attempts x max_investigation_turns.
 write_transport_retry_budget_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -295,10 +311,14 @@ review = policy['review_yeti']
 transports = review['transports']
 lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
-retry_timeout_ms = min(180_000, (lane_deadline_ms // (len(transports) * max_attempts)) + 10_000)
+max_investigation_turns = int(review['budget']['max_investigation_turns'])
+retry_connect_ms = min(
+    180_000,
+    (lane_deadline_ms // (len(transports) * max_attempts * max_investigation_turns)) + 10_000,
+)
 for transport in transports:
-    transport['timeout_ms'] = retry_timeout_ms
-    transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), retry_timeout_ms)
+    transport['connect_timeout_ms'] = retry_connect_ms
+    transport['timeout_ms'] = max(transport.get('timeout_ms', 30_000), retry_connect_ms)
 openrouter = next(item for item in transports if item['name'] == 'openrouter-fallback')
 review['openrouter_timeout_ms'] = str(openrouter['timeout_ms'])
 with open(destination, 'w') as handle:
@@ -318,15 +338,15 @@ run_transport_retry_budget_overflow_case() {
     cat "$tmp_dir/transport-retry-budget-overflow.log" >&2
     exit 1
   fi
-  grep -q 'worst-case transport budget' "$tmp_dir/transport-retry-budget-overflow.log"
+  grep -q 'worst-case dead-transport budget' "$tmp_dir/transport-retry-budget-overflow.log"
   echo "[transport-retry-budget-overflow] passed"
 }
 
 # A lane also spends time outside provider generation: acquiring the streaming gate, validating
 # structured output, dispatching a failover, and recording evidence. The production incident in
 # run 32326867604 reached the final transport with only 23s left and was cancelled by the lane
-# deadline even though that transport was actively streaming. Prove the raw timeout product is not
-# sufficient unless the declared overhead reserve also fits.
+# deadline even though that transport was actively streaming. Prove the raw connect+stall
+# dead-transport envelope is not sufficient unless the declared overhead reserve also fits.
 write_transport_overhead_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -337,12 +357,14 @@ policy = json.load(open(source))
 review = policy['review_yeti']
 budget = review['budget']
 budget['lane_overhead_ms'] = '120000'
-raw_transport_budget = (
-    sum(item['timeout_ms'] for item in review['transports'])
+transports = review['transports']
+stall_ms = int(review['stall_ms'])
+raw_dead_call_budget = (
+    (sum(item['connect_timeout_ms'] for item in transports) + len(transports) * stall_ms)
     * int(review['openrouter_max_attempts'])
     * int(budget['max_investigation_turns'])
 )
-budget['lane_deadline_ms'] = str(raw_transport_budget)
+budget['lane_deadline_ms'] = str(raw_dead_call_budget)
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
@@ -531,6 +553,36 @@ run_short_lane_deadline_case() {
   grep -q 'lane_deadline_ms must cover the OpenRouter request retry envelope' "$tmp_dir/invalid-lane-envelope.log"
   echo "[invalid-lane-envelope] passed"
 }
+
+write_stall_ms_policy() {
+  local value="$1"
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" "$value" <<'PY'
+import json
+import sys
+
+source, destination, value = sys.argv[1:]
+policy = json.load(open(source))
+review = policy['review_yeti']
+if value == '__missing__':
+    review.pop('stall_ms', None)
+else:
+    review['stall_ms'] = value
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+for value in 0 -1 abc '' __missing__; do
+  name="invalid-stall-ms-${value:-empty}"
+  write_stall_ms_policy "$value"
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/${name}.output" node emit-policy.mjs) >"$tmp_dir/${name}.log" 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]]
+  grep -q 'review_yeti.stall_ms must be a positive integer string' "$tmp_dir/${name}.log"
+  echo "[$name] passed"
+done
 
 run_openrouter_timeout_mismatch_case
 run_short_lane_deadline_case

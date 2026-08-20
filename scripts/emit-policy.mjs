@@ -1,4 +1,5 @@
 import { appendFileSync, readFileSync } from 'node:fs';
+import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
 
 const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
 const review = policy.review_yeti;
@@ -26,7 +27,7 @@ for (const key of ['lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', '
     throw new Error(`review_yeti.budget.${key} must be a positive integer string`);
   }
 }
-for (const key of ['openrouter_timeout_ms', 'openrouter_ttft_ms', 'openrouter_max_attempts']) {
+for (const key of ['openrouter_timeout_ms', 'openrouter_ttft_ms', 'openrouter_max_attempts', 'stall_ms']) {
   if (!/^[1-9][0-9]*$/.test(String(review[key] ?? ''))) {
     throw new Error(`review_yeti.${key} must be a positive integer string`);
   }
@@ -35,6 +36,7 @@ const openrouterTimeoutMs = Number(review.openrouter_timeout_ms);
 const openrouterTtftMs = Number(review.openrouter_ttft_ms);
 const openrouterMaxAttempts = Number(review.openrouter_max_attempts);
 const maxInvestigationTurns = Number(budget.max_investigation_turns);
+const stallMs = Number(review.stall_ms);
 if (openrouterTtftMs > openrouterTimeoutMs) {
   throw new Error('review_yeti.openrouter_ttft_ms must not exceed openrouter_timeout_ms');
 }
@@ -63,12 +65,21 @@ if (Number(budget.lane_deadline_ms) < openrouterTimeoutMs * openrouterMaxAttempt
 }
 
 // A lane advances through the declared transports in order, retrying each transport up to
-// openrouter_max_attempts before moving on. The worst case for one lane is therefore every
-// transport burning its full timeout_ms on every attempt before the lane gives up -- if that
-// product exceeds the lane deadline, later transports (the OpenRouter fallback most of all) are
-// structurally unreachable in exactly the case they exist for: a slow or stalled primary. This
-// sums over however many transports the policy declares, not a hardcoded count, so it stays
-// correct as that count changes.
+// openrouter_max_attempts before moving on. Since review-yeti-bot PR #163, an actively-streaming
+// call is never aborted by a duration cap -- the stall/idle timer (review_yeti.stall_ms) re-arms
+// on every SSE chunk, so a transport that is genuinely producing tokens can run past its
+// timeout_ms without being killed. timeout_ms therefore no longer bounds a lane's worst-case wall
+// time; summing it across every transport x attempt x turn (the pre-#163 model) rejects healthy
+// configurations that could never actually exceed the deadline, which is exactly the failure mode
+// that forced fireworks.timeout_ms to be cut from a requested 120000 to 75000.
+//
+// What genuinely bounds a lane's worst case now is the failure path where a transport NEVER
+// produces a first byte: connect_timeout_ms (time to establish the connection) plus one stall_ms
+// interval (the engine's liveness window -- if no chunk arrives inside it, the call is declared
+// dead and the lane fails over). That sum, not timeout_ms, is what has to fit inside the lane
+// deadline across every transport, attempt, and investigation turn. This sums over however many
+// transports the policy declares, not a hardcoded count, so it stays correct as that count
+// changes.
 const laneDeadlineMs = Number(budget.lane_deadline_ms);
 const laneOverheadMs = Number(budget.lane_overhead_ms);
 const maxAttempts = Number(review.openrouter_max_attempts);
@@ -81,17 +92,14 @@ if (!Number.isSafeInteger(maxInvestigationTurns) || maxInvestigationTurns < 1) {
 if (!Number.isSafeInteger(laneOverheadMs) || laneOverheadMs < 1) {
   throw new Error('review_yeti.budget.lane_overhead_ms must be a positive integer string');
 }
-const transportTimeoutSumMs = review.transports.reduce((sum, transport) => sum + transport.timeout_ms, 0);
-const worstCaseTransportMs = transportTimeoutSumMs * maxAttempts * maxInvestigationTurns;
-const requiredLaneBudgetMs = worstCaseTransportMs + laneOverheadMs;
-if (requiredLaneBudgetMs > laneDeadlineMs) {
-  throw new Error(
-    `worst-case transport budget (${worstCaseTransportMs}ms = ${transportTimeoutSumMs}ms across `
-    + `${review.transports.length} transports x ${maxAttempts} attempts x ${maxInvestigationTurns} turns) `
-    + `plus lane overhead reserve (${laneOverheadMs}ms) exceeds review_yeti.budget.lane_deadline_ms `
-    + `(${laneDeadlineMs}ms); a full sequential failover could never finish the last transport`,
-  );
-}
+checkDeadTransportEnvelope({
+  transports: review.transports,
+  stallMs,
+  maxAttempts,
+  maxInvestigationTurns,
+  laneOverheadMs,
+  laneDeadlineMs,
+});
 
 // On a non-streaming call, the abort controller that "TTFT" is named for wraps the *entire*
 // fetch, not just the wait for the first byte -- headers on a buffered response do not arrive
@@ -143,6 +151,7 @@ const outputs = {
   openrouter_timeout_ms: review.openrouter_timeout_ms,
   openrouter_ttft_ms: review.openrouter_ttft_ms,
   openrouter_max_attempts: review.openrouter_max_attempts,
+  stall_ms: review.stall_ms,
   lane_deadline_ms: budget.lane_deadline_ms,
   lane_call_budget: budget.lane_call_budget,
   max_investigation_turns: budget.max_investigation_turns,

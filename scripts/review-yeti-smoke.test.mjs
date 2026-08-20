@@ -21,7 +21,8 @@ function policyFixture() {
       openrouter_timeout_ms: '90000',
       openrouter_stream: 'true',
       openrouter_ttft_ms: '30000',
-      budget: { lane_deadline_ms: '600000', max_investigation_turns: '2' },
+      stall_ms: '20000',
+      budget: { lane_deadline_ms: '600000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
         { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', perf_metrics_in_response: true },
         { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'high' },
@@ -79,11 +80,16 @@ test('the committed OpenRouter fallback requires full-precision quants and throu
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
+  // Post review-yeti-bot#163: the lane deadline bounds the dead-transport connect+stall envelope
+  // plus the declared overhead reserve, not the sum of timeout_ms (an actively-streaming call is
+  // never killed by a duration cap). Mirrors the same inequality emit-policy.mjs enforces.
   assert.ok(
     Number(policy.review_yeti.budget.lane_deadline_ms)
-      >= transports.reduce((sum, transport) => sum + transport.timeout_ms, 0)
+      >= (transports.reduce((sum, transport) => sum + transport.connect_timeout_ms, 0)
+        + transports.length * Number(policy.review_yeti.stall_ms))
       * Number(policy.review_yeti.openrouter_max_attempts)
-      * Number(policy.review_yeti.budget.max_investigation_turns),
+      * Number(policy.review_yeti.budget.max_investigation_turns)
+      + Number(policy.review_yeti.budget.lane_overhead_ms),
   );
 });
 
@@ -221,6 +227,47 @@ test('the smoke suite rejects weakened OpenRouter routing before any network req
   // Still rejected, now by the dedicated pin guard rather than the generic shape comparison.
   // The guard runs first precisely so this case reports which key is at fault.
   assert.throws(() => validatePolicy(policy), /pins provider routing via "only"/);
+});
+
+test('the smoke suite rejects a policy whose dead-transport connect+stall envelope exceeds the lane deadline', () => {
+  // Counterfactual proof the guard actually fires: shrink lane_deadline_ms below the
+  // connect+stall envelope the fixture's own transports produce, everything else unchanged.
+  const policy = policyFixture();
+  const transports = policy.review_yeti.transports;
+  const stallMs = Number(policy.review_yeti.stall_ms);
+  const connectSum = transports.reduce((sum, transport) => sum + transport.connect_timeout_ms, 0);
+  const envelope = (connectSum + transports.length * stallMs)
+    * Number(policy.review_yeti.openrouter_max_attempts)
+    * Number(policy.review_yeti.budget.max_investigation_turns);
+  policy.review_yeti.budget.lane_deadline_ms = String(envelope + Number(policy.review_yeti.budget.lane_overhead_ms) - 1);
+  assert.throws(
+    () => validatePolicy(policy),
+    /worst-case dead-transport budget .* exceeds review_yeti\.budget\.lane_deadline_ms/,
+  );
+});
+
+test('the smoke suite rejects missing or invalid lane_overhead_ms before computing the lane-deadline invariant', () => {
+  for (const value of [undefined, '0', '-1', 'abc', '']) {
+    const policy = policyFixture();
+    if (value === undefined) {
+      delete policy.review_yeti.budget.lane_overhead_ms;
+    } else {
+      policy.review_yeti.budget.lane_overhead_ms = value;
+    }
+    assert.throws(() => validatePolicy(policy), /review_yeti\.budget\.lane_overhead_ms must be a positive integer string/);
+  }
+});
+
+test('the smoke suite rejects missing or invalid stall_ms before computing the lane-deadline invariant', () => {
+  for (const value of [undefined, '0', '-1', 'abc', '']) {
+    const policy = policyFixture();
+    if (value === undefined) {
+      delete policy.review_yeti.stall_ms;
+    } else {
+      policy.review_yeti.stall_ms = value;
+    }
+    assert.throws(() => validatePolicy(policy), /review_yeti\.stall_ms must be a positive integer string/);
+  }
 });
 
 test('the smoke suite rejects a provider allow-list before any network request', () => {
