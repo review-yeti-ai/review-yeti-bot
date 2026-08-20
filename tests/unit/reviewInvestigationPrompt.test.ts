@@ -134,6 +134,117 @@ describe('bounded investigation prompt', () => {
   });
 });
 
+describe('risk bookkeeping tolerance -- a validated finding survives missing risk ids', () => {
+  // Live bounded-path captures, 2026-08-19, deepseek/deepseek-v4-flash-0731 via OpenRouter.
+  // The model reports a real, fully validated finding but skips the risk_plan ceremony;
+  // rejecting the WHOLE response over that bookkeeping was measured as the dominant cause of
+  // the bounded path's 40.7% malformed_response rate (testing-charter eval, 27 runs/arm).
+  const noEvidence = { personaId: 'testing', evidenceEnabled: false };
+
+  // Verbatim shape from gen-1787189213-QBcMJqkMPlIW2ZOldr1E: risk_plan is empty and the
+  // finding references a risk id the model never declared.
+  const undeclaredRisk = {
+    review_status: 'COMPLETE',
+    risk_plan: [],
+    evidence_requests: [],
+    risk_dispositions: [],
+    findings: [{
+      severity: 'P1', path: 'src/resolve_marker.js', line: 12, side: 'RIGHT',
+      title: 'Malformed marker and retired marker share the empty-body error message',
+      body: 'The non-match branch is untested; a regression that makes it throw nothing would stay green.',
+      suggestion: 'Add a test for a malformed body and for the retired marker.',
+      risk_id: 'risk-1', unit_id: 'ru_1',
+    }],
+  };
+
+  // Verbatim shape from gen-1787184734 (active-skip-marker-left-in-suite turn 0):
+  // risk_id and unit_id are literal nulls.
+  const nullRisk = {
+    review_status: 'COMPLETE',
+    risk_plan: [],
+    evidence_requests: [],
+    risk_dispositions: [],
+    findings: [{
+      severity: 'P1', path: 'tests/unit/markerRouting.test.ts', line: 13, side: 'RIGHT',
+      title: 'Active exclusive marker disables the rest of the suite',
+      body: 'The third test was changed to it.only, so only it runs and the v1/v2 routing tests are silently skipped.',
+      suggestion: 'Revert to it( so all three tests execute.',
+      risk_id: null, unit_id: null, evidence_receipt_ids: [],
+    }],
+  };
+
+  it('synthesizes the undeclared risk instead of discarding the finding (live shape: risk_plan [], risk_id "risk-1")', () => {
+    const parsed = parseInvestigationResponse(JSON.stringify(undeclaredRisk), limits, noEvidence);
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0]).toMatchObject({ riskId: 'risk-1', path: 'src/resolve_marker.js', line: 12 });
+    expect(parsed.riskPlan.map((risk: any) => risk.id)).toContain('risk-1');
+    expect(parsed.riskDispositions).toContainEqual(expect.objectContaining({ riskId: 'risk-1', status: 'confirmed' }));
+    expect(parsed.synthesizedRiskIds).toEqual(['risk-1']);
+  });
+
+  it('synthesizes bookkeeping for a finding whose risk_id and unit_id are null (live shape)', () => {
+    const parsed = parseInvestigationResponse(JSON.stringify(nullRisk), limits, noEvidence);
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0].riskId).toBeTruthy();
+    expect(parsed.riskDispositions).toContainEqual(expect.objectContaining({ riskId: parsed.findings[0].riskId, status: 'confirmed' }));
+    expect(parsed.synthesizedRiskIds).toEqual([parsed.findings[0].riskId]);
+  });
+
+  it('synthesizes bookkeeping when the risk_id key is omitted entirely or malformed', () => {
+    const omitted = { ...nullRisk, findings: [{ ...nullRisk.findings[0] }] };
+    delete (omitted.findings[0] as any).risk_id;
+    delete (omitted.findings[0] as any).unit_id;
+    expect(parseInvestigationResponse(JSON.stringify(omitted), limits, noEvidence).findings).toHaveLength(1);
+
+    // A path-shaped (regex-invalid) bookkeeping id is treated as missing, not fatal.
+    const malformed = { ...nullRisk, findings: [{ ...nullRisk.findings[0], risk_id: 'ru_tests/test_workflow_guard.py', unit_id: 'ru_tests/test_workflow_guard.py' }] };
+    const parsed = parseInvestigationResponse(JSON.stringify(malformed), limits, noEvidence);
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0].unitId).toBeUndefined();
+  });
+
+  it('scopes a synthesized risk to the assigned unit the finding names, and tolerates a missing unit only on synthesized risks', () => {
+    const options = { ...noEvidence, assignedUnitIds: [assignedUnitId] };
+    const scoped = { ...nullRisk, findings: [{ ...nullRisk.findings[0], risk_id: null, unit_id: assignedUnitId }] };
+    const parsed = parseInvestigationResponse(JSON.stringify(scoped), limits, options);
+    expect(parsed.findings[0].unitId).toBe(assignedUnitId);
+    expect(parsed.riskPlan.find((risk: any) => risk.id === parsed.findings[0].riskId)?.unitIds).toEqual([assignedUnitId]);
+
+    // Missing unit_id on a synthesized risk is tolerated (bookkeeping, not authority)...
+    const unitless = parseInvestigationResponse(JSON.stringify(nullRisk), limits, options);
+    expect(unitless.findings).toHaveLength(1);
+
+    // ...but a well-formed unit id OUTSIDE the dispatch assignment stays fatal.
+    const outside = { ...nullRisk, findings: [{ ...nullRisk.findings[0], unit_id: outsideUnitId }] };
+    expect(() => parseInvestigationResponse(JSON.stringify(outside), limits, options)).toThrow(/outside the dispatch assignment/);
+  });
+
+  it('does not weaken anything the model actually declared', () => {
+    // A disposition referencing a risk no finding rescues stays fatal.
+    expect(() => parseInvestigationResponse(JSON.stringify({
+      ...nullRisk,
+      risk_dispositions: [{ risk_id: 'ghost', status: 'confirmed', reason: 'never declared' }],
+      findings: [],
+    }), limits, noEvidence)).toThrow(/unknown risk/);
+
+    // A finding attached to a DECLARED risk still needs its assigned unit named.
+    const declared = {
+      review_status: 'COMPLETE',
+      risk_plan: [{ id: 'risk-1', unit_ids: [assignedUnitId], statement: 'declared risk', evidence_needed: [], allowed_tools: [] }],
+      evidence_requests: [],
+      risk_dispositions: [{ risk_id: 'risk-1', status: 'confirmed', reason: 'confirmed' }],
+      findings: [{ ...nullRisk.findings[0], risk_id: 'risk-1', unit_id: null }],
+    };
+    expect(() => parseInvestigationResponse(JSON.stringify(declared), limits, { ...noEvidence, assignedUnitIds: [assignedUnitId] }))
+      .toThrow(/must reference an assigned unit/);
+
+    // Evidence-receipt requirements are untouched: with evidence enabled a synthesized-risk
+    // finding still cannot publish without receipts.
+    expect(() => parseInvestigationResponse(JSON.stringify(nullRisk), limits, { personaId: 'testing', evidenceEnabled: true }))
+      .toThrow(/must cite evidence receipts/);
+  });
+});
+
 describe('bounded diff selection (structured diffFiles input)', () => {
   const makeFiles = (count: number, size: number) => Array.from({ length: count }, (_, i) => ({
     path: `src/file-${String(i).padStart(3, '0')}.js`,
