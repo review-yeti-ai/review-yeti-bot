@@ -329,3 +329,21 @@ test('runSmoke + resolveTransport: zero healthy transports still throws before a
   const resolved = resolveTransport(policyFixture().review_yeti.transports, healthy);
   assert.equal(resolved.name, 'openrouter-fallback');
 });
+
+test('the committed fireworks timeout stays above the measured generation ceiling', () => {
+  // Live probes 2026-08-20 (streaming, production prompt shape, no token cap, 4 reps each):
+  //   fireworks  reasoning_effort=max   median 24,017ms  max 31,998ms
+  //   openrouter reasoning_effort=high  median  6,313ms  max  7,205ms
+  // fireworks sat at 30,000ms against a 31,998ms observed max and timed out 7-18 times per
+  // production run. PR #82 raised it; PR #85 reverted it silently while changing something
+  // unrelated, and the timeouts came straight back. This asserts the COMMITTED policy only --
+  // synthetic fixtures elsewhere legitimately use small timeouts -- and it is a floor, not a
+  // pin, so tuning upward stays free.
+  const MEASURED_MAX_MS = 31998;
+  const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+  const fireworks = policy.review_yeti.transports.find((t) => t.name === 'fireworks');
+  assert.ok(
+    fireworks.timeout_ms > MEASURED_MAX_MS,
+    `fireworks timeout_ms ${fireworks.timeout_ms}ms must exceed the measured ${MEASURED_MAX_MS}ms generation max`,
+  );
+});
