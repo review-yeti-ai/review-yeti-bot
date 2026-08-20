@@ -18,7 +18,6 @@ const fireworksEntry = {
   base_url: 'https://api.fireworks.ai/inference/v1',
   api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY',
   model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
-  stream: true,
   reasoning_effort: 'max',
   perf_metrics_in_response: true,
 };
@@ -27,7 +26,6 @@ const openrouterEntry = {
   base_url: 'https://openrouter.ai/api/v1',
   api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
   model: 'deepseek/deepseek-v4-flash-0731',
-  stream: true,
   reasoning_effort: 'max',
   quarantine_on_timeout: false,
   provider_routing: { order: ['coreweave', 'phala'], allow_fallbacks: false, data_collection: 'deny' },
@@ -47,8 +45,8 @@ describe('resolveTransportPlan', () => {
     );
     expect(plan!.transports.map((t: any) => t.name)).toEqual(['fireworks', 'openrouter-fallback']);
     expect(plan!.transports[0]).toMatchObject({ compat: 'openai', apiKey: 'fw-key', baseUrl: 'https://api.fireworks.ai/inference/v1' });
-    expect(plan!.transports[0]).toMatchObject({ stream: true, reasoningEffort: 'max', perfMetricsInResponse: true });
-    expect(plan!.transports[1]).toMatchObject({ compat: 'openrouter', apiKey: 'or-key', stream: true, reasoningEffort: 'max', quarantineOnTimeout: false });
+    expect(plan!.transports[0]).toMatchObject({ reasoningEffort: 'max', perfMetricsInResponse: true });
+    expect(plan!.transports[1]).toMatchObject({ compat: 'openrouter', apiKey: 'or-key', reasoningEffort: 'max', quarantineOnTimeout: false });
     // OpenRouter entries get the full normalized policy: hard bans + declared routing.
     expect(plan!.transports[1].openRouterPolicy.providerRouting).toMatchObject({ order: ['coreweave', 'phala'], allow_fallbacks: false });
     expect(plan!.transports[1].openRouterPolicy.ignoredProviders).toContain('deepinfra');
@@ -78,13 +76,12 @@ describe('resolveTransportPlan', () => {
     )).toThrow(/REVIEW_YETI_TRANSPORT_PLAN_B64 must be base64-encoded JSON/);
   });
 
-  it('inherits global timeout/stream inputs when an entry does not override them', () => {
+  it('inherits global timeout inputs when an entry does not override them', () => {
     const plan = resolveTransportPlan(
       { parsed: { github_action: { transports: [fireworksEntry, { ...fireworksEntry, name: 'fireworks-slow', timeout_ms: 45000 }] } } },
-      { ...bothKeys, OPENROUTER_TIMEOUT_MS: '60000', OPENROUTER_STREAM: 'true' },
+      { ...bothKeys, OPENROUTER_TIMEOUT_MS: '60000' },
     );
     expect(plan!.transports[0].timeoutMs).toBe(60000);
-    expect(plan!.transports[0].stream).toBe(true);
     expect(plan!.transports[1].timeoutMs).toBe(45000);
   });
 
@@ -96,7 +93,6 @@ describe('resolveTransportPlan', () => {
 
     expect(plan!.transports[0]).toMatchObject({
       name: 'openrouter-fallback',
-      stream: true,
       openRouterPolicy: { structuredOutput: 'none' },
     });
   });

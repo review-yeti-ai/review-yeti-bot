@@ -67,7 +67,6 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('model');
     expect(inputs).toContain('openrouter-fallback-models');
     expect(inputs).toContain('openrouter-timeout-ms');
-    expect(inputs).toContain('openrouter-stream');
     expect(inputs).toContain('openrouter-structured-output');
     expect(inputs).toContain('personas');
     expect(inputs).toContain('max-diff-chars');
@@ -81,10 +80,9 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('dashboard-timeout-ms');
   });
 
-  it('requires streaming on the real review action path', () => {
-    expect(action.inputs['openrouter-stream'].default).toBe('true');
-    expect(action.inputs['openrouter-stream'].description).toMatch(/required/i);
-    expect(action.runs.steps.map((step: any) => step.run || '').join('\n')).toContain('stream=${OPENROUTER_STREAM:-true}');
+  it('uses the required SSE transport on the real review action path', () => {
+    expect(action.inputs['openrouter-stream']).toBeUndefined();
+    expect(action.runs.steps.map((step: any) => step.run || '').join('\n')).toContain('stream=true');
   });
 
   it('leaves the per-file input empty by default and distinguishes it from the whole-request budget', () => {

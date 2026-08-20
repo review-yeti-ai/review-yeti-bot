@@ -17,9 +17,6 @@ const DEFAULT_PROVIDER_ROUTING = {
 const DEFAULTS = {
   ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
   timeoutMs: 30000,
-  connectTimeoutMs: 8000,
-  // REL-271: ttftMs defaults to 30000 independently of connectTimeoutMs. Provider routing uses
-  // a stricter p99 latency preference by default.
   ttftMs: 30000,
   maxAttempts: 2,
   stream: true,
@@ -34,7 +31,6 @@ const ENV_ALL = {
   OPENROUTER_DATA_COLLECTION: 'deny',
   OPENROUTER_IGNORE_PROVIDERS: 'siliconflow',
   OPENROUTER_TIMEOUT_MS: '5000',
-  OPENROUTER_STREAM: 'true',
   OPENROUTER_FALLBACK_MODELS: 'deepseek/deepseek-v4-flash-0731, openai/gpt-5.6-luna',
 };
 
@@ -47,7 +43,6 @@ const CFG_ALL = {
         data_collection: 'deny',
         ignore_providers: ['siliconflow'],
         timeout_ms: 8000,
-        stream: true,
         fallback_models: ['deepseek/deepseek-v4-flash-0731'],
       },
     },
@@ -73,9 +68,6 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
       providerRouting: DEFAULT_PROVIDER_ROUTING,
       timeoutMs: 8000,
-      connectTimeoutMs: 8000,
-      // timeoutMs=8000 clamps ttftMs's 30000 default down to 8000 too, coincidentally matching
-      // connectTimeoutMs here -- see the no-config default case for where they actually diverge.
       ttftMs: 8000,
       maxAttempts: 2,
       stream: true,
@@ -92,7 +84,6 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       fallbackModels: ['deepseek/deepseek-v4-flash-0731', 'openai/gpt-5.6-luna'],
       providerRouting: DEFAULT_PROVIDER_ROUTING,
       timeoutMs: 5000,
-      connectTimeoutMs: 5000,
       ttftMs: 5000,
       maxAttempts: 2,
       stream: true,
@@ -170,7 +161,6 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
       model: undefined,
       providerRouting: DEFAULT_PROVIDER_ROUTING,
       timeoutMs: 8000,
-      connectTimeoutMs: 8000,
       ttftMs: 8000,
       maxAttempts: 2,
       stream: true,
@@ -191,7 +181,7 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
 
   it('accepts a config without the github_action wrapper via top-level openrouter', () => {
     expect(resolveOpenRouterPolicy(
-      { parsed: { openrouter: { allowed_models: ['m/n'], cost_quality_tradeoff: 3, data_collection: 'deny', timeout_ms: 2500, stream: false } } },
+      { parsed: { openrouter: { allowed_models: ['m/n'], cost_quality_tradeoff: 3, data_collection: 'deny', timeout_ms: 2500 } } },
       {},
     )).toEqual({
       allowedModels: ['m/n'],
@@ -204,7 +194,6 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
         preferred_max_latency: { p99: 2.5 },
       },
       timeoutMs: 2500,
-      connectTimeoutMs: 2500,
       ttftMs: 2500,
       maxAttempts: 2,
       stream: true,
@@ -216,10 +205,6 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     expect(resolveOpenRouterPolicy({}, {}).timeoutMs).toBe(30000);
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '100' }).timeoutMs).toBe(500); // floor
     expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '9999999' }).timeoutMs).toBe(600_000); // ceiling
-    expect(resolveOpenRouterPolicy({}, {}).connectTimeoutMs).toBe(8000);
-    expect(resolveOpenRouterPolicy({}, { OPENROUTER_CONNECT_TIMEOUT_MS: '100' }).connectTimeoutMs).toBe(500);
-    // connect cannot exceed total budget
-    expect(resolveOpenRouterPolicy({}, { OPENROUTER_TIMEOUT_MS: '2000', OPENROUTER_CONNECT_TIMEOUT_MS: '9000' }).connectTimeoutMs).toBe(2000);
   });
 
   it('defaults ttft_ms to 30000, clamps it to the total budget, and converts custom latency fallback to seconds (REL-271 D1/D2/D10)', () => {
@@ -412,12 +397,8 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     })).toThrow(/incompatible or ignored member.*unverified-gateway/i);
   });
 
-  it('keeps streaming enabled even when legacy falsey settings are present', () => {
-    expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: 'true' }).stream).toBe(true);
-    expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: '1' }).stream).toBe(true);
-    expect(resolveOpenRouterPolicy({}, { OPENROUTER_STREAM: 'false' }).stream).toBe(true);
-    expect(resolveOpenRouterPolicy({ github_action: { openrouter: { stream: true } } }, {}).stream).toBe(true);
-    expect(resolveOpenRouterPolicy({ github_action: { openrouter: { stream: 'off' } } }, {}).stream).toBe(true);
+  it('exposes streaming as a fixed capability', () => {
+    expect(resolveOpenRouterPolicy({}, {}).stream).toBe(true);
   });
 
   it('env OPENROUTER_MODEL beats yaml model', () => {
@@ -431,10 +412,10 @@ describe('pipeline resolveOpenRouterPolicy (input > github_action.openrouter con
     ).model).toBe('deepseek/deepseek-v4-flash-0731');
   });
 
-  it('env stream/timeout beat yaml', () => {
+  it('env timeout beats yaml while streaming remains fixed', () => {
     expect(resolveOpenRouterPolicy(
-      { github_action: { openrouter: { timeout_ms: 9000, stream: true } } },
-      { OPENROUTER_TIMEOUT_MS: '1200', OPENROUTER_STREAM: 'false' },
+      { github_action: { openrouter: { timeout_ms: 9000 } } },
+      { OPENROUTER_TIMEOUT_MS: '1200' },
     )).toEqual(expect.objectContaining({ timeoutMs: 1200, stream: true }));
   });
 });

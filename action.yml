@@ -79,16 +79,6 @@ inputs:
       omit OpenRouter-only request fields automatically. Default: https://openrouter.ai/api/v1.
     required: false
     default: 'https://openrouter.ai/api/v1'
-  openrouter-stream:
-    description: >-
-      Use SSE streaming (default true -- streaming is required on the real review path, not a
-      tunable: a buffered request silently turns the time-to-first-token budget into a hidden
-      total-generation cap). Also configurable via github_action.openrouter.stream in
-      .review-yeti.yaml. Action input wins over YAML; direct gateways use their OpenAI-compatible
-      streaming contract. Kept as an input for compatibility, but false values are ignored and
-      cannot disable streaming on the review path.
-    required: false
-    default: 'true'
   openrouter-structured-output:
     description: >-
       Optional response contract. Set to 'strict' only after the chosen model and closed provider
@@ -104,20 +94,11 @@ inputs:
       github_action.openrouter.timeout_ms in .review-yeti.yaml; action input wins.
     required: false
     default: '30000'
-  openrouter-connect-timeout-ms:
-    description: >-
-      Legacy fallback for the non-stream connect budget, only used when openrouter-ttft-ms is
-      entirely unset (default 8000). Separate from openrouter-timeout-ms (total response
-      budget). Prefer openrouter-ttft-ms, which now drives this budget explicitly and also
-      covers the streaming path.
-    required: false
-    default: '8000'
   openrouter-ttft-ms:
     description: >-
-      Time-to-first-token deadline in milliseconds (default 30000 = 30s). On the streaming path
-      this starts at request dispatch and clears on the first SSE chunk; on expiry it aborts
-      with failure class ttft_timeout. On the non-stream path it drives the connect budget
-      (superseding openrouter-connect-timeout-ms when set). A TTFT abort never adds the
+      Time-to-first-token deadline in milliseconds (default 30000 = 30s). It starts at request
+      dispatch and clears on the first SSE chunk; on expiry it aborts with failure class
+      ttft_timeout. A TTFT abort never adds the
       provider to any ignore/quarantine/ban set -- OpenRouter's own sort:latency routing stays
       the sole authority and the retry simply re-asks. Also sets provider.preferred_max_latency.
       Also configurable via github_action.openrouter.ttft_ms in .review-yeti.yaml; action input
@@ -340,7 +321,7 @@ inputs:
     description: >-
       Optional JSON array declaring an explicit ordered transport plan. Each entry:
       {"name","base_url","api_key_env","model","compat"("openai"|"openrouter"),
-      "fallback_models","timeout_ms","connect_timeout_ms","stream","structured_output",
+      "fallback_models","timeout_ms","structured_output",
       and (compat openrouter only) "provider_routing","ignore_providers","data_collection",
       "allowed_models","cost_quality_tradeoff","allow_banned_providers"}.
       Transports are tried in order per model call; the first non-failed result wins.
@@ -356,7 +337,7 @@ inputs:
       Optional base64-encoded JSON transport plan. This is an output-safe equivalent of
       `transports` for callers whose workflow output scanner rejects JSON containing credential
       environment names. When present it takes precedence over `transports` and trusted YAML.
-      Each entry still requires `stream: true` on the real review path.
+      All entries use the required SSE streaming transport on the real review path.
     required: false
     default: ''
   conditional-lanes:
@@ -807,11 +788,7 @@ runs:
         REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
         # Pre-review "started" comment metadata (GITHUB_EVENT_NAME / ACTOR / RUN_ID are built-in).
         GITHUB_EVENT_ACTION: ${{ github.event.action }}
-        # Streaming is required on every real review lane. Composite actions cannot use
-        # `vars.*`; the compatibility input is accepted but false values are ignored.
-        OPENROUTER_STREAM: ${{ inputs.openrouter-stream }}
         OPENROUTER_TIMEOUT_MS: ${{ inputs.openrouter-timeout-ms }}
-        OPENROUTER_CONNECT_TIMEOUT_MS: ${{ inputs.openrouter-connect-timeout-ms }}
         OPENROUTER_TTFT_MS: ${{ inputs.openrouter-ttft-ms }}
         OPENROUTER_MAX_ATTEMPTS: ${{ inputs.openrouter-max-attempts }}
         LANE_DEADLINE_MS: ${{ inputs.lane-deadline-ms }}
@@ -824,7 +801,7 @@ runs:
         NODE_PATH: ${{ github.action_path }}/node_modules
       run: |
         echo "OpenRouter base URL: $OPENROUTER_BASE_URL (direct)"
-        echo "OpenRouter timeout_ms=${OPENROUTER_TIMEOUT_MS:-30000} stream=${OPENROUTER_STREAM:-true}"
+        echo "OpenRouter timeout_ms=${OPENROUTER_TIMEOUT_MS:-30000} stream=true"
         if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
           echo "::error::llm-api-key / OPENROUTER_API_KEY is empty. Pass a single OpenRouter API key."
           exit 1

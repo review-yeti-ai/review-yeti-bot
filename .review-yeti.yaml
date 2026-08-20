@@ -71,10 +71,6 @@ github_action:
       - parasail
     # Hard per-request timeout (60s default). Lanes that do not return in time fail as timeout.
     timeout_ms: 30000
-    # Max wait for headers/first-byte. Slow providers are banned after timeout; budget is NOT raised.
-    connect_timeout_ms: 8000
-    # SSE streaming (default false). Enable only if you need mid-flight provider attribution.
-    stream: false
     # Optional Auto Router policy:
     # allowed_models: []
     # cost_quality_tradeoff: 5

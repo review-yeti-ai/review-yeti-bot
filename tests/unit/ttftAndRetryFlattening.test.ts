@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import { runPersonaInvestigation } from '../../src/review/reviewInvestigation';
+import { sseBody } from '../support/streamableFetchStub';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -313,7 +314,7 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
     });
   });
 
-  it('D2: non-stream path drives its connect budget from ttft-ms when supplied', async () => {
+  it('D2: the streamed path drives its connect budget from ttft-ms', async () => {
     const startedAt = Date.now();
     // Real fetch() rejects when its AbortSignal fires; a hand-rolled mock has to do the same or
     // it hangs forever regardless of any budget.
@@ -325,10 +326,8 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
       headers: { Authorization: 'Bearer test' },
       body: { model: 'test/model', messages: [] },
       timeoutMs: 5_000,
-      // No connectTimeoutMs supplied -- if ttftMs were not driving the connect budget here, this
-      // would fall back to the legacy 8s default and not fire until well past 200ms.
+      // The request remains streamed even when a caller supplies the former opt-out flag.
       ttftMs: 40,
-      preferStream: false,
     });
     const elapsedMs = Date.now() - startedAt;
 
@@ -342,11 +341,9 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
     const { resolveOpenRouterPolicy } = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
     const policy = resolveOpenRouterPolicy({}, {
       OPENROUTER_TTFT_MS: '12000',
-      OPENROUTER_CONNECT_TIMEOUT_MS: '8000',
       OPENROUTER_PROVIDER_ROUTING: JSON.stringify({ only: ['examplecloud'] }),
     });
     expect(policy.providerRouting.preferred_max_latency).toBe(12);
-    expect(policy.connectTimeoutMs).toBe(8000);
   });
 });
 
@@ -492,10 +489,8 @@ describe('REL-271: flattened retry pyramid (D3, D4, D5, D9)', () => {
       timeoutMs: 5_000,
     });
 
-    // Streaming is unconditional, so each of the 2 attempts makes 2 real HTTP calls: a throwaway
-    // stream attempt that gets HTTP 503, then callOpenRouterChat's own in-flight non-stream
-    // fallback on a 5xx (both still count as ONE attempt for the retry-pyramid's own accounting).
-    expect(calls).toHaveLength(4);
+    // Streaming is unconditional, so each configured attempt makes exactly one HTTP call.
+    expect(calls).toHaveLength(2);
     expect(result.decision).toBe('ERROR');
   });
 
@@ -515,8 +510,8 @@ describe('REL-271: flattened retry pyramid (D3, D4, D5, D9)', () => {
       timeoutMs: 5_000,
     });
 
-    // One attempt still makes 2 real HTTP calls now that streaming is unconditional (see D4/D5).
-    expect(calls).toHaveLength(2);
+    // One configured attempt makes exactly one streamed HTTP call.
+    expect(calls).toHaveLength(1);
     expect(result.decision).toBe('ERROR');
   });
 
@@ -535,16 +530,20 @@ describe('REL-271: flattened retry pyramid (D3, D4, D5, D9)', () => {
       // evidence_requests advances the turn without needing real evidence tooling).
       if (n === 1) return { ok: false, status: 503, text: async () => 'unavailable', json: async () => ({ error: { message: 'unavailable' } }) };
       if (n === 2) {
+        const payload = { choices: [{ message: { content: JSON.stringify({ review_status: 'NEEDS_EVIDENCE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }) } }] };
         return {
           ok: true, status: 200, text: async () => '',
-          json: async () => ({ choices: [{ message: { content: JSON.stringify({ review_status: 'NEEDS_EVIDENCE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }) } }] }),
+          json: async () => payload,
+          body: sseBody(payload),
         };
       }
       // Turn 2 (final): attempt 1 fails (retryable 503), attempt 2 succeeds with COMPLETE.
       if (n === 3) return { ok: false, status: 503, text: async () => 'unavailable', json: async () => ({ error: { message: 'unavailable' } }) };
+      const payload = { choices: [{ message: { content: JSON.stringify({ review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }) } }] };
       return {
         ok: true, status: 200, text: async () => '',
-        json: async () => ({ choices: [{ message: { content: JSON.stringify({ review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [] }) } }] }),
+        json: async () => payload,
+        body: sseBody(payload),
       };
     };
 

@@ -25,8 +25,7 @@ const diffFiles = [
 /**
  * Builds a fetch stub returning an OpenAI-compatible chat completion. Streaming is unconditional
  * on the real review path (operator directive), so this answers the streaming request directly
- * with a single-chunk SSE body -- without it, every call would legitimately (and audibly) fall
- * back to a second non-stream call, doubling `calls.length` for every test using this helper.
+ * with a single-chunk SSE body so every test exercises the same transport as production.
  */
 function stubFetch(content: string, opts: { ok?: boolean; status?: number; payload?: any } = {}) {
   const calls: any[] = [];
@@ -175,11 +174,9 @@ describe('reviewWithModel', () => {
     const fetchImpl = async (url: string, init: any) => {
       const body = JSON.parse(init.body);
       calls.push({ url, init, body });
-      // The primary model's HTTP 503 fails BOTH its stream attempt and the in-flight non-stream
-      // fallback that attempt takes on a 5xx (streaming is unconditional -- every attempt tries
-      // to stream first) -- two calls, not one, to genuinely exhaust that one attempt
-      // (maxAttempts: 1) and reach the configured model-level fallback.
-      if (calls.length <= 2) {
+      // A failed SSE request consumes the configured attempt; model-level fallback then receives
+      // its own streamed request.
+      if (calls.length <= 1) {
         return {
           ok: false,
           status: 503,
@@ -216,15 +213,13 @@ describe('reviewWithModel', () => {
           ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
           providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
           timeoutMs: 30_000,
-          stream: false,
         },
       },
     );
 
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
     expect(calls[0].body.model).toBe('openrouter/auto-beta');
-    expect(calls[1].body.model).toBe('openrouter/auto-beta');
-    expect(calls[2].body.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(result.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(result.fallbackUsed).toBe(true);
     expect(result.findings).toHaveLength(1);
@@ -235,11 +230,9 @@ describe('reviewWithModel', () => {
     const fetchImpl = async (url: string, init: any) => {
       const body = JSON.parse(init.body);
       calls.push({ url, init, body });
-      // Two full attempts (maxAttempts default 2) at the primary model, each of which fails BOTH
-      // its stream attempt and the in-flight non-stream fallback a 5xx takes (streaming is
-      // unconditional) -- four calls total for the primary model before the configured
-      // model-level fallback is used.
-      if (calls.length <= 4) {
+      // Two full streamed attempts at the primary model before the configured model-level
+      // fallback is used.
+      if (calls.length <= 2) {
         return {
           ok: false,
           status: 503,
@@ -270,16 +263,14 @@ describe('reviewWithModel', () => {
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(3);
     expect(calls[0].body.model).toBe('openrouter/auto-beta');
     expect(calls[1].body.model).toBe('openrouter/auto-beta');
-    expect(calls[2].body.model).toBe('openrouter/auto-beta');
-    expect(calls[3].body.model).toBe('openrouter/auto-beta');
-    expect(calls[4].body.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(calls[2].body.stream).toBe(true);
+    expect(calls[2].body.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(result.fallbackUsed).toBe(true);
   });
 
@@ -288,11 +279,9 @@ describe('reviewWithModel', () => {
     const fetchImpl = async (url: string, init: any) => {
       const body = JSON.parse(init.body);
       calls.push({ url, init, body });
-      // The primary model's client-side abort fails BOTH its stream attempt and the in-flight
-      // non-stream fallback that failure takes (streaming is unconditional) -- two calls, not
-      // one, to genuinely exhaust the single attempt (maxAttempts: 1) and reach the configured
-      // model-level fallback.
-      if (calls.length <= 2) {
+      // The primary model's client-side abort consumes its streamed attempt, then the configured
+      // model-level fallback gets its own streamed request.
+      if (calls.length <= 1) {
         const error: any = new Error('request aborted');
         error.name = 'AbortError';
         throw error;
@@ -321,15 +310,13 @@ describe('reviewWithModel', () => {
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
     expect(calls[0].body.model).toBe('openrouter/auto-beta');
-    expect(calls[1].body.model).toBe('openrouter/auto-beta');
-    expect(calls[2].body.model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(calls[2].body.stream).toBe(true);
+    expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(calls[1].body.stream).toBe(true);
     expect(result.fallbackUsed).toBe(true);
     expect(result.decision).toBe('FINDINGS');
   });
@@ -343,12 +330,8 @@ describe('reviewWithModel', () => {
       const body = JSON.parse(init.body);
       calls.push({ body });
       if (calls.length === 1) {
-        // Streaming is unconditional, so attempt 1 fails as a STREAM attempt; that failure
-        // unconditionally retries once non-stream within the same attempt (see nonStreamOnce's
-        // own fallback in callOpenRouterChat's outer catch) before the retry loop's own attempt 2
-        // ever runs. `calls.length === 1` is that stream throw; `calls.length === 2` below is its
-        // in-flight non-stream fallback, comfortably under the flat 10ms budget -- proving
-        // recovery survives without needing the removed x2 escalation.
+        // Streaming is unconditional, so attempt 1 fails as a streamed request. The retry loop
+        // then makes one fresh streamed request with the same flat budget.
         throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
       }
       const payload = {
@@ -362,6 +345,7 @@ describe('reviewWithModel', () => {
         status: 200,
         text: async () => '',
         json: async () => payload,
+        body: sseBody(payload),
       };
     };
 
@@ -375,11 +359,9 @@ describe('reviewWithModel', () => {
     });
 
     expect(calls).toHaveLength(2);
-    // The initial attempt always streams; the in-flight resilience fallback callOpenRouterChat
-    // takes on that failure hard-codes `stream: false` on the wire (nonStreamOnce's own request
-    // body), regardless of the caller's preference.
+    // Both the initial attempt and retry remain streamed.
     expect(calls[0].body.stream).toBe(true);
-    expect(calls[1].body.stream).toBe(false);
+    expect(calls[1].body.stream).toBe(true);
     expect(result.decision).toBe('APPROVE');
     expect(result.provider).toBe('ExampleCloud');
   });
@@ -438,30 +420,32 @@ describe('reviewWithModel', () => {
     expect(result.decision).toBe('ERROR');
   });
 
-  it('enforces the total timeout while reading a non-stream response body', async () => {
+  it('enforces the total timeout while reading a streamed response and retries the next route', async () => {
     const calls: any[] = [];
-    // This mock never provides a readable stream body, so every attempt now costs two real HTTP
-    // calls (streaming is unconditional): a throwaway stream attempt that immediately falls back
-    // (no body.getReader), then the real non-stream read that does the actual work. Key
-    // "firstAttempt" off the non-stream sub-call specifically -- that is what maps 1:1 to
-    // "attempt" from the retry loop's perspective, not the raw HTTP call count.
-    let nonStreamCalls = 0;
+    const delayedStream = (provider: string, content: string, delayMs: number) => {
+      const payload = { provider, choices: [{ delta: { content } }] };
+      let index = 0;
+      return {
+        getReader: () => ({
+          read: async () => {
+            if (index++ === 0) return { done: false, value: Buffer.from(`data: ${JSON.stringify(payload)}\n\n`) };
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            throw Object.assign(new Error('request aborted'), { name: 'AbortError' });
+          },
+          cancel: async () => {},
+        }),
+      };
+    };
     const fetchImpl = async (url: string, init: any) => {
       const body = JSON.parse(init.body);
       calls.push({ url, init, body });
-      if (body.stream === true) {
-        return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
-      }
-      nonStreamCalls += 1;
-      const firstAttempt = nonStreamCalls === 1;
+      const firstAttempt = calls.length === 1;
+      const payload = { provider: firstAttempt ? 'ExampleCloud' : 'OpenAI', choices: [{ delta: { content: firstAttempt ? '{"findings":' : validFindings } }] };
       return {
         ok: true,
         status: 200,
-        headers: { get: (name: string) => name.toLowerCase() === 'x-openrouter-provider' ? (firstAttempt ? 'ExampleCloud' : 'OpenAI') : null },
-        json: async () => {
-          if (firstAttempt) await new Promise((resolve) => setTimeout(resolve, 80));
-          return { choices: [{ message: { content: validFindings } }] };
-        },
+        headers: { get: () => null },
+        body: firstAttempt ? delayedStream('ExampleCloud', '{"findings":', 80) : sseBody(payload),
       };
     };
 
@@ -471,18 +455,14 @@ describe('reviewWithModel', () => {
       baseUrl: 'https://api.example.com/v1',
       model: 'test/model',
       fetchImpl,
-      // REL-271 (D3/D4): recovery here now requires 2 real attempts (no bonus attempt after
-      // attribution) -- attempt 1 times out during body-read and bans "examplecloud", attempt 2
-      // forces SSE for attribution and succeeds with "OpenAI". Each attempt now makes 2 HTTP
-      // calls (throwaway stream + real non-stream), so 4 total instead of the pre-unconditional-
-      // streaming 3.
+      // Attempt 1 times out after identifying ExampleCloud; attempt 2 is the recovery route.
       maxAttempts: 2,
       timeoutMs: 20,
     });
 
     expect(result.decision).toBe('FINDINGS');
-    expect(calls).toHaveLength(4);
-    expect(calls[2].body.provider.ignore).toContain('examplecloud');
+    expect(calls).toHaveLength(2);
+    expect(calls[1].body.provider.ignore).toContain('examplecloud');
     expect(result.provider).toBe('OpenAI');
     expect(Date.now() - startedAt).toBeLessThan(3_000);
   });
@@ -630,10 +610,8 @@ describe('reviewWithModel', () => {
     function streamResponse(chunks: any[], { delayMs = 0, abortAfter = false } = {}) {
       let index = 0;
       // Also provides `.text()`/`.json()` (converting the first real chunk's `delta.content`
-      // into a `message.content` chat-completion shape): streaming is unconditional now, so a
-      // fetchImpl that throws before ever returning a response forces callOpenRouterChat's outer
-      // catch to retry once via `nonStreamOnce` WITHIN the same call slot -- and if that retry's
-      // mock is this same helper, `nonStreamOnce` needs `.json()`, not `.body.getReader`.
+      // into a `message.content` chat-completion shape) for HTTP-error diagnostics; successful
+      // responses are always consumed through the SSE reader.
       const firstChunk = chunks.find((chunk) => chunk !== '[DONE]');
       const jsonPayload = firstChunk
         ? { id: firstChunk.id, model: firstChunk.model, provider: firstChunk.provider, choices: [{ message: { content: firstChunk.choices?.[0]?.delta?.content ?? '' } }] }
@@ -664,8 +642,7 @@ describe('reviewWithModel', () => {
     /**
      * A lane whose first attempt identifies a slow provider then times out, and whose second
      * (final) attempt succeeds. Mirrors `laneOneFetch` below -- both stream from the first call,
-     * so unlike a fetchImpl that throws (forcing callOpenRouterChat's non-stream fallback within
-     * the same attempt), this needs no `.json()` seam.
+     * so unlike a fetchImpl that throws, this needs no `.json()` seam.
      */
     function timeoutThenSucceedFetch(bannedProvider: string, calls: any[]) {
       return async (url: string, init: any) => {
@@ -688,7 +665,7 @@ describe('reviewWithModel', () => {
       const laneOneCalls: any[] = [];
       // REL-271 (D4): no bonus attempt after a provider is identified, so the ban has to happen
       // within the configured attempt budget itself -- attempt 1 (forced to stream via
-      // preferStream) identifies+bans DigitalOcean, attempt 2 (the last one) is the recovery.
+      // identifies+bans DigitalOcean, attempt 2 (the last one) is the recovery.
       const laneOneFetch = async (url: string, init: any) => {
         const body = JSON.parse(init.body);
         laneOneCalls.push({ url, init, body });
@@ -848,33 +825,21 @@ describe('reviewWithModel', () => {
     });
   });
 
-  it('treats empty model output as retryable before using the fallback', async () => {
+  it('treats empty streamed output as retryable before using the fallback', async () => {
     const calls: any[] = [];
-    // No `body.getReader` in either branch, so every attempt costs two real HTTP calls
-    // (streaming is unconditional): a throwaway stream attempt that immediately falls back, then
-    // the real non-stream read. Key the empty-vs-findings response off the non-stream sub-call
-    // specifically, since that is the only one ever actually read.
-    let nonStreamCalls = 0;
     const fetchImpl = async (url: string, init: any) => {
       const body = JSON.parse(init.body);
       calls.push({ url, init, body });
-      if (body.stream === true) {
-        return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
-      }
-      nonStreamCalls += 1;
-      if (nonStreamCalls === 1) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => '',
-          json: async () => ({ choices: [{ message: { content: '' } }] }),
-        };
-      }
+      const isPrimary = body.model === 'openrouter/auto-beta';
+      const payload = isPrimary
+        ? { choices: [{ delta: { content: '' } }] }
+        : { choices: [{ delta: { content: validFindings } }] };
       return {
         ok: true,
         status: 200,
         text: async () => '',
-        json: async () => ({ choices: [{ message: { content: validFindings } }] }),
+        json: async () => payload,
+        body: sseBody(payload),
       };
     };
 
@@ -892,15 +857,12 @@ describe('reviewWithModel', () => {
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(2);
     expect(calls[0].body.model).toBe('openrouter/auto-beta');
-    expect(calls[1].body.model).toBe('openrouter/auto-beta');
-    expect(calls[2].body.model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(calls[3].body.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(result.fallbackUsed).toBe(true);
     expect(result.decision).toBe('FINDINGS');
   });
@@ -936,7 +898,6 @@ describe('reviewWithModel', () => {
           ignore: HARD_BANNED_PROVIDER_SLUGS,
         },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
@@ -964,7 +925,6 @@ describe('reviewWithModel', () => {
         structuredOutput: 'strict',
         providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
@@ -990,7 +950,6 @@ describe('reviewWithModel', () => {
         structuredOutput: 'strict',
         providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
-        stream: false,
       },
     };
 
@@ -1025,7 +984,6 @@ describe('reviewWithModel', () => {
         structuredOutput: 'strict',
         providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
@@ -1066,7 +1024,6 @@ describe('reviewWithModel', () => {
         structuredOutput: 'strict',
         providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS, require_parameters: true },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
@@ -1091,7 +1048,6 @@ describe('reviewWithModel', () => {
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: { only: ['azure'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
@@ -1111,7 +1067,6 @@ describe('reviewWithModel', () => {
         ignoredProviders: ['deepinfra'],
         providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: ['deepinfra'] },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
@@ -1137,7 +1092,7 @@ describe('reviewWithModel', () => {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl, maxAttempts: 1,
       openRouterPolicy: {
         allowedModels: [], costQualityTradeoff: undefined, dataCollection: undefined,
-        ignoredProviders: ['open-inference'], providerRouting: { ignore: ['open-inference'] }, timeoutMs: 30_000, stream: false,
+        ignoredProviders: ['open-inference'], providerRouting: { ignore: ['open-inference'] }, timeoutMs: 30_000,
       },
     });
 
@@ -1176,7 +1131,6 @@ describe('reviewWithModel', () => {
         ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
         providerRouting: { only: ['examplecloud'], allow_fallbacks: false, ignore: HARD_BANNED_PROVIDER_SLUGS },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
 
@@ -1440,14 +1394,10 @@ describe('REL-288 flat per-lane call budget', () => {
       apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'test/model', fetchImpl: impl,
       maxAttempts: 3, laneCallBudget,
     });
-    // maxAttempts=3 would normally retry three times on a 500; only the first attempt is a real
-    // dispatch (it spends the only budget unit and fails with HTTP 500). Streaming is
-    // unconditional, so that one dispatched attempt itself makes 2 real HTTP calls (a throwaway
-    // stream attempt that gets HTTP 500, then callOpenRouterChat's own in-flight non-stream
-    // fallback on a 5xx -- both still count as the SAME one spent budget unit). The second
-    // attempt must be refused BEFORE any further network call or retry delay, distinctly as
-    // lane_budget_exhausted -- not a third HTTP 500, not a generic timeout.
-    expect(calls.length).toBe(2);
+    // maxAttempts=3 would normally retry three times on a 500; only the first streamed attempt
+    // is dispatched (it spends the only budget unit). The second attempt must be refused BEFORE
+    // any further network call or retry delay, distinctly as lane_budget_exhausted.
+    expect(calls.length).toBe(1);
     expect(laneCallBudget.remaining).toBe(0);
     expect(result.decision).toBe('ERROR');
     expect(result.error).toBe('lane_budget_exhausted');
