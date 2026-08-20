@@ -33,6 +33,7 @@ const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require(path
 const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(root, '.github/workflows/pipelines/openRouterPolicy.js'));
 const { createReviewUnitManifest } = require(path.join(root, 'src/review/reviewUnitManifest.js'));
 const { sha256 } = require(path.join(root, 'src/review/reviewCore.js'));
+const { withStreamTiming } = require(path.join(root, 'src/evaluation/streamTiming.js'));
 
 // Fixed, valid-shaped placeholders -- createReviewUnitManifest's identity requires 64-hex digests
 // for configDigest/policyDigest/diffDigest, but nothing in this harness ever checks them against
@@ -232,6 +233,20 @@ function wilson(hits, total) {
   return [Number(Math.max(0, centre - spread).toFixed(4)), Number(Math.min(1, centre + spread).toFixed(4))];
 }
 
+/** Extracts a sorted numeric series from `rows[key]`, dropping non-finite/unmeasured entries. */
+function numericSeries(rows, key) {
+  return rows.map((row) => row[key]).filter(Number.isFinite).sort((a, b) => a - b);
+}
+
+/** Same median/p95 selection the original latencyMs computation used, factored out so every
+ * latency-shaped series (total latency, TTFB, first-content) reports identically. */
+function median(sorted) {
+  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
+}
+function p95(sorted) {
+  return sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] : null;
+}
+
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -256,8 +271,14 @@ export function summarizeArm(rows, armId) {
     completionTokens: total.completionTokens + Number(row.usage?.completionTokens || 0),
     costUSD: total.costUSD + Number(row.usage?.costUSD || 0),
   }), { promptTokens: 0, completionTokens: 0, costUSD: 0 });
-  const latencies = selected.map((row) => row.latencyMs).filter(Number.isFinite).sort((a, b) => a - b);
+  const latencies = numericSeries(selected, 'latencyMs');
+  const firstChunkLatencies = numericSeries(selected, 'firstChunkMs');
+  const firstContentLatencies = numericSeries(selected, 'firstContentMs');
   const detectedCount = defects.filter((row) => row.detected).length;
+  const firstChunkKindCounts = { reasoning: 0, content: 0, other: 0 };
+  for (const row of selected) {
+    if (row.firstChunkKind && firstChunkKindCounts[row.firstChunkKind] !== undefined) firstChunkKindCounts[row.firstChunkKind] += 1;
+  }
   return {
     arm: armId,
     runs: selected.length,
@@ -277,8 +298,19 @@ export function summarizeArm(rows, armId) {
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
     costUSD: Number(usage.costUSD.toFixed(6)),
-    latencyMsMedian: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
-    latencyMsP95: latencies.length ? latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)] : null,
+    latencyMsMedian: median(latencies),
+    latencyMsP95: p95(latencies),
+    // Time-to-first-SSE-chunk (any kind, matching production's TTFT measurement) and
+    // time-to-first-content (the first chunk that actually carries `delta.content`). The gap
+    // between them is the reasoning phase -- see src/evaluation/streamTiming.js's doc comment.
+    // null when the run never went through a real fetch (e.g. an offline modelClient adapter).
+    firstChunkMsMedian: median(firstChunkLatencies),
+    firstChunkMsP95: p95(firstChunkLatencies),
+    firstContentMsMedian: median(firstContentLatencies),
+    firstContentMsP95: p95(firstContentLatencies),
+    firstChunkMeasured: firstChunkLatencies.length,
+    firstContentMeasured: firstContentLatencies.length,
+    firstChunkKindCounts,
   };
 }
 
@@ -293,6 +325,35 @@ export function summarizePerFixture(rows, fixtures) {
     };
     return { id: fixture.id, category: fixture.category, baseline: row('baseline'), candidate: row('candidate') };
   });
+}
+
+/**
+ * Wraps `modelOptions.fetchImplementation` (or `globalThis.fetch` when the caller supplied none)
+ * with the streamTiming tap for one row, returning row-scoped `modelOptions` plus a `timing`
+ * accumulator the caller reads after the row's call(s) settle. First-write-wins across whatever
+ * HTTP calls the row makes (multi-turn investigation, retries): the earliest observed firstChunk/
+ * firstContent is what the row reports, matching "how long before this row's request produced
+ * anything at all".
+ *
+ * A no-op when the row is driven by a scripted `modelClient` (offline tests, no network) --
+ * nothing to tap, and wrapping an unused fetch would be pure overhead.
+ */
+function buildTimedModelOptions(modelOptions) {
+  const timing = { firstChunkMs: null, firstContentMs: null, firstChunkKind: null };
+  if (typeof modelOptions.modelClient === 'function') return { modelOptions, timing };
+  const baseFetch = modelOptions.fetchImplementation || modelOptions.fetchImpl || globalThis.fetch;
+  if (typeof baseFetch !== 'function') return { modelOptions, timing };
+  const fetchImplementation = withStreamTiming(baseFetch, {
+    onTiming: (event) => {
+      if (event.type === 'firstChunk' && timing.firstChunkMs === null) {
+        timing.firstChunkMs = event.elapsedMs;
+        timing.firstChunkKind = event.kind;
+      } else if (event.type === 'firstContent' && timing.firstContentMs === null) {
+        timing.firstContentMs = event.elapsedMs;
+      }
+    },
+  });
+  return { modelOptions: { ...modelOptions, fetchImplementation }, timing };
 }
 
 export async function evaluateTestingCharter(matrix, {
@@ -312,6 +373,7 @@ export async function evaluateTestingCharter(matrix, {
   }
   const rows = await mapWithConcurrency(jobs, concurrency, async ({ arm, fixture, repetition }) => {
     const startedAt = Date.now();
+    const { modelOptions: rowModelOptions, timing } = buildTimedModelOptions(modelOptions);
     let result;
     try {
       result = await reviewWithModel(
@@ -319,7 +381,7 @@ export async function evaluateTestingCharter(matrix, {
         fixture.files,
         { repo: 'review-yeti-ai/review-yeti-bot', prNumber: `testing-charter-${arm.id}-${repetition}-${fixture.id}`, title: fixture.title },
         null,
-        modelOptions,
+        rowModelOptions,
       );
     } catch (error) {
       result = { decision: 'ERROR', error: error?.message || 'call_failed', findings: [] };
@@ -331,6 +393,12 @@ export async function evaluateTestingCharter(matrix, {
       category: fixture.category,
       repetition,
       latencyMs: Date.now() - startedAt,
+      // Time-to-first-SSE-chunk and time-to-first-content for this row's first HTTP call, or
+      // null when the row never went through a real fetch (offline modelClient). See
+      // src/evaluation/streamTiming.js.
+      firstChunkMs: timing.firstChunkMs,
+      firstChunkKind: timing.firstChunkKind,
+      firstContentMs: timing.firstContentMs,
       usage: result?.usage || {},
       error: result?.error,
       ...graded,
@@ -381,6 +449,15 @@ async function main() {
       model,
       maxAttempts: Number(argument('--max-attempts', 2)),
       timeoutMs: Number(argument('--timeout-ms', 90_000)),
+      // Undefined (production's own 30s default applies) unless the operator passes --ttft-ms
+      // explicitly. Found recording this eval's own live-pass cassette (2026-08-19): a slow/
+      // queued provider can legitimately take longer than 30s to send its first byte on a
+      // reasoning-heavy call, which reads as a harness/provider reliability problem when it is
+      // really just an under-budgeted client timer. Left at production's default here on
+      // purpose -- a baseline report should measure what production actually does, not a
+      // harness-only allowance -- but exposed so an operator chasing transient ttft_timeout noise
+      // (not a detection or SNR question) can widen it without hand-editing this file.
+      ...(argument('--ttft-ms', '') ? { ttftMs: Number(argument('--ttft-ms', '')) } : {}),
       // Omitted entirely (not 0, not null) on a bounded run with no explicit --max-tokens -- see
       // resolveEvalMaxTokens's doc comment. Spreading conditionally keeps modelOptions identical
       // to before this fix whenever a cap does apply.
