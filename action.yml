@@ -327,7 +327,8 @@ inputs:
       {"name","base_url","api_key_env","model","compat"("openai"|"openrouter"),
       "fallback_models","timeout_ms","structured_output",
       and (compat openrouter only) "provider_routing","ignore_providers","data_collection",
-      "allowed_models","cost_quality_tradeoff","allow_banned_providers"}.
+      "allowed_models","cost_quality_tradeoff"}. The legacy "allow_banned_providers" field is
+      accepted as a deprecated compatibility no-op.
       Transports are tried in order per model call; the first non-failed result wins.
       api_key_env names an environment variable the CALLER must export on this action's
       step (it may not name a CI credential and must end in _API_KEY or _KEY). When set,

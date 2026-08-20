@@ -644,8 +644,10 @@ const TRANSPORT_OPENROUTER_ONLY_KEYS = Object.freeze([
  *   reasoning_effort, perf_metrics_in_response
  *                 optional; unset values inherit the global env/action inputs
  *   provider_routing, ignore_providers, quarantine_on_timeout, data_collection,
- *   allowed_models, cost_quality_tradeoff, allow_banned_providers
+ *   allowed_models, cost_quality_tradeoff
  *                 OpenRouter-only; rejected on compat 'openai'
+ *   allow_banned_providers
+ *                 deprecated OpenRouter-only compatibility no-op
  *
  * An entry whose api_key_env is empty at runtime is DROPPED with a warning so
  * a fallback transport can be declared before its secret is provisioned; if no

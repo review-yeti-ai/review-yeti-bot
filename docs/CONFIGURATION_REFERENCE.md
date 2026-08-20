@@ -162,7 +162,9 @@ Rules:
 - `compat: openai | openrouter` (default: detected from `base_url`).
   OpenRouter-only keys (`provider_routing`, `ignore_providers`,
   `data_collection`, `allowed_models`, `cost_quality_tradeoff`,
-  `allow_banned_providers`) are **rejected** on `compat: openai` entries.
+  `allow_banned_providers`) are **rejected** on `compat: openai` entries. The legacy
+  `allow_banned_providers` field is accepted on OpenRouter entries only as a deprecated
+  compatibility no-op; Review Yeti no longer injects a built-in provider blocklist.
 - `api_key_env` names the env var carrying that transport's key; the CALLER
   workflow must export it on the action step. It must end in `_API_KEY` or
   `_KEY` and may never name a CI credential (`GITHUB_*`, `ACTIONS_*`,
