@@ -170,18 +170,24 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).toContain('--prefix');
   });
 
-  it('verifies js-yaml from the action path instead of the consumer workspace', () => {
+  it('verifies js-yaml from the action path instead of the consumer workspace, and reuses an already-present @actions/cache without a network install', () => {
     const installStep = action.runs.steps.find((step: any) => step.name === 'Install pipeline dependencies');
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-action-install-'));
     const consumerDir = path.join(tempDir, 'consumer');
     const actionDir = path.join(tempDir, 'action');
     const prefixDir = path.join(tempDir, 'prefix');
     const moduleDir = path.join(prefixDir, 'node_modules', 'js-yaml');
+    // Pre-populate both js-yaml and @actions/cache so the script's own already-installed check
+    // takes the "reusing" branch for each -- this test must never attempt a real network install.
+    const cacheModuleDir = path.join(prefixDir, 'node_modules', '@actions', 'cache');
     fs.mkdirSync(consumerDir, { recursive: true });
     fs.mkdirSync(actionDir, { recursive: true });
     fs.mkdirSync(moduleDir, { recursive: true });
+    fs.mkdirSync(cacheModuleDir, { recursive: true });
     fs.writeFileSync(path.join(moduleDir, 'index.js'), 'module.exports = { load() {} };\n');
     fs.writeFileSync(path.join(moduleDir, 'package.json'), JSON.stringify({ name: 'js-yaml', version: '4.1.0', main: 'index.js' }));
+    fs.writeFileSync(path.join(cacheModuleDir, 'index.js'), 'module.exports = {};\n');
+    fs.writeFileSync(path.join(cacheModuleDir, 'package.json'), JSON.stringify({ name: '@actions/cache', version: '4.1.0', main: 'index.js' }));
 
     const output = execFileSync('bash', ['-c', installStep.run], {
       cwd: consumerDir,
@@ -190,7 +196,15 @@ describe('action.yml — installable GitHub Action contract', () => {
     });
 
     expect(output).toContain('js-yaml ok 4.1.0');
+    expect(output).toContain('reusing');
+    expect(output).toContain('@actions/cache');
     expect(fs.existsSync(path.join(actionDir, 'node_modules', 'js-yaml', 'index.js'))).toBe(true);
+    expect(fs.existsSync(path.join(actionDir, 'node_modules', '@actions', 'cache', 'index.js'))).toBe(true);
+  });
+
+  it('never fails the install step outright when @actions/cache cannot be installed -- Zoekt search must stay optional', () => {
+    const installStep = action.runs.steps.find((step: any) => step.name === 'Install pipeline dependencies');
+    expect(installStep.run).toMatch(/@actions\/cache[\s\S]*\|\|\s*echo "::warning::/);
   });
 });
 

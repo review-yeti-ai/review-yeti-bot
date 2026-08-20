@@ -80,6 +80,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@actions/cache": "^4.1.0",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
