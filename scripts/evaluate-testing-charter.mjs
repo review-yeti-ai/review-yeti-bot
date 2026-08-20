@@ -44,6 +44,16 @@ const EVAL_HARNESS_DIGEST = sha256('evaluate-testing-charter.mjs');
 const DEFAULT_FIXTURE = 'tests/fixtures/testing-charter/evaluation-matrix.json';
 const DEFAULT_BASELINE_CHARTER = 'tests/fixtures/testing-charter/baseline-charter.txt';
 
+// Production's own repo-default (README's `github_action.openrouter.fallback_models` example)
+// falls back to `deepseek/deepseek-v4-flash-0731` -- but that assumes a primary of
+// `openrouter/auto-beta`. This eval's persona already pins deepseek-v4-flash-0731 as the
+// primary model, so reusing it as its own fallback nets zero actual redundancy: reviewWithModel
+// dedupes `[cfg.model, ...fallbackModels]` (review-pipeline.js:3104), so an identical fallback
+// model is silently discarded before the retry loop ever runs. A genuinely different model,
+// on a different provider stack, is what "fall back" has to mean here. anthropic/claude-sonnet-4
+// is used elsewhere in this repo's own docs (README.md) as a named, OpenRouter-routable model.
+const DEFAULT_FALLBACK_MODELS = ['anthropic/claude-sonnet-4'];
+
 /**
  * Renders a unified-diff blob from fixture `{path, patch}` entries, matching the header shape
  * GitHub/`git diff` output uses (`file.patch` fixtures carry only the hunk body). This is only a
@@ -131,6 +141,11 @@ export async function reviewWithBoundedInvestigation(persona, files, prContext =
       decision: run.personaResult.decision,
       findings: run.personaResult.findings,
       usage: run.personaResult.usage,
+      // Surfaced so a caller varying `openRouterPolicy.fallbackModels` (see DEFAULT_FALLBACK_MODELS
+      // above) can tell a row that completed on the fallback model from one that completed on the
+      // one actually under test -- a silent model swap mid-measurement would be invisible otherwise.
+      model: run.personaResult.model,
+      provider: run.personaResult.provider,
       ...(terminal && terminal !== 'completed' ? { error: terminal } : {}),
     };
   } catch (error) {
@@ -566,6 +581,11 @@ export async function evaluateTestingCharter(matrix, {
       firstContentMs: timing.firstContentMs,
       usage: result?.usage || {},
       error: result?.error,
+      // Present only on the --bounded path (reviewWithBoundedInvestigation); undefined on legacy.
+      // A value other than the row's requested `model` means this row completed on a
+      // fallbackModels entry, not the model under measurement -- see that constant's doc comment.
+      model: result?.model,
+      provider: result?.provider,
       ...graded,
       findingTitles: (Array.isArray(result?.findings) ? result.findings : []).map((finding) => `${finding.path}:${finding.line} ${finding.title}`),
     };
@@ -604,6 +624,22 @@ async function main() {
   // reviewWithBoundedInvestigation's doc comment for why that distinction is the whole point.
   const bounded = flag('--bounded');
   const maxTokens = resolveEvalMaxTokens({ argv: process.argv, bounded, fallback: 4_096 });
+  // Known trap (fixed here): this harness previously shipped `fallbackModels: []` --
+  // production's own model-level failover, disabled. Combined with `maxAttempts` capped at
+  // production's own REL-271 default (2 attempts per model -- deliberately NOT raised here; the
+  // fix is failover, not more attempts against a struggling model), a model that is degraded
+  // or unavailable across every provider OpenRouter's own provider-level `allow_fallbacks`
+  // routing tries killed the whole row with zero recourse. Observed live: baseline attempts
+  // died on this across three different providers before #149's cassette-recorded run finally
+  // got through. `--fallback-models none` disables it explicitly; comma-separated model ids
+  // otherwise. (argument()'s truthy check on process.argv means a literal empty string cannot
+  // be distinguished from the flag being absent, hence the `none` sentinel rather than ''.)
+  const fallbackModelsArg = argument('--fallback-models', '');
+  const fallbackModels = fallbackModelsArg === 'none'
+    ? []
+    : fallbackModelsArg === ''
+      ? DEFAULT_FALLBACK_MODELS
+      : fallbackModelsArg.split(',').map((entry) => entry.trim()).filter(Boolean);
   const { rows, fixtures } = await evaluateTestingCharter(matrix, {
     repetitions,
     concurrency,
@@ -633,7 +669,7 @@ async function main() {
       // (DigitalOcean, OpenInference) and three prod-banned providers routed in a single
       // 9-fixture pass. A harness that routes differently from production cannot measure it.
       // stream: true preserved from #139 (SSE required on review preflight).
-      openRouterPolicy: { allowedModels: [], fallbackModels: [], ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS], providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS] }, timeoutMs: 90_000, stream: true },
+      openRouterPolicy: { allowedModels: [], fallbackModels, ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS], providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS] }, timeoutMs: 90_000, stream: true },
     },
   });
 
