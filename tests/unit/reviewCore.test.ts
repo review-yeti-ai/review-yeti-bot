@@ -49,6 +49,43 @@ describe('review core diff parsing', () => {
     });
   });
 
+  it('honors the configured coverage quorum for the status label, never for the verdict or mergeEligible', () => {
+    // 5-persona roster, quorum: 'two_thirds' -> requiredCoverageCount(5, 'two_thirds') === 4.
+    const roster = ['security', 'testing', 'contract', 'performance', 'architecture'];
+    const laneFor = (id: string, i: number) => ({
+      id, provider: `provider-${i % 2}`, model: 'review-model', decision: 'APPROVE', findings: [],
+    });
+    const policy = { mandatory_personas: [], provider_diversity_min: 1 };
+
+    // Exactly at the configured quorum: 4/5 trustworthy, zero findings.
+    const atQuorum = computeArbitration(
+      roster.slice(0, 4).map(laneFor),
+      5,
+      { expectedPersonaIds: roster, coveragePolicy: policy },
+    );
+    expect(atQuorum.coverageQuorumSatisfied).toBe(true); // the configured quorum WAS met
+    expect(atQuorum.status).toBe('PARTIAL_REVIEW');
+    expect(atQuorum.quorumSatisfied).toBe(false); // but this field means full coverage, not quorum
+    expect(atQuorum.verdict).toBe('BLOCK'); // and the verdict is BLOCK regardless of quorum
+    expect(atQuorum.mergeEligible).toBe(false);
+
+    // One below the configured quorum: 3/5 trustworthy.
+    const belowQuorum = computeArbitration(
+      roster.slice(0, 3).map(laneFor),
+      5,
+      { expectedPersonaIds: roster, coveragePolicy: policy },
+    );
+    expect(belowQuorum.coverageQuorumSatisfied).toBe(false);
+    expect(belowQuorum.status).toBe('INCOMPLETE_REVIEW');
+    expect(belowQuorum.verdict).toBe('BLOCK');
+    expect(belowQuorum.mergeEligible).toBe(false);
+
+    // The only observable difference the quorum setting makes is the status label and
+    // coverageQuorumSatisfied -- verdict and mergeEligible are identical on both sides of it.
+    expect(atQuorum.verdict).toBe(belowQuorum.verdict);
+    expect(atQuorum.mergeEligible).toBe(belowQuorum.mergeEligible);
+  });
+
   it('does not advance changed line numbers for no-newline metadata', () => {
     const patch = [
       '@@ -1,2 +10,3 @@',
