@@ -24,7 +24,7 @@ function policyFixture() {
       stall_ms: '20000',
       budget: { lane_deadline_ms: '600000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
-        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', perf_metrics_in_response: true },
+        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, reasoning_effort: 'high', structured_output: 'strict', perf_metrics_in_response: true },
         { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'high' },
         {
           name: 'openrouter-fallback',
@@ -32,6 +32,7 @@ function policyFixture() {
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
           model: 'deepseek/deepseek-v4-flash-0731',
           compat: 'openrouter',
+          reasoning_effort: 'high',
           timeout_ms: 90000,
           connect_timeout_ms: 30000,
           stream: true,
@@ -55,12 +56,12 @@ test('the smoke contract pins the approved transport order', () => {
   assert.equal(buildRequest(transports[1]).stream, true);
   assert.equal(buildRequest(transports[2]).stream, true);
   // Measured ablation: pinning `max` cost recall (0.425 vs 0.750) and tripled errors. Unset wins.
-  assert.equal(buildRequest(transports[0]).reasoning_effort, undefined);
+  assert.equal(buildRequest(transports[0]).reasoning_effort, 'high');
   assert.equal(buildRequest(transports[0]).perf_metrics_in_response, true);
   assert.equal(buildRequest(transports[1]).reasoning_effort, 'high');
   // Measured ablation 2026-08-20: pinning `max` scored recall 0.425 with 25/72 errors vs unset
   // at 0.750 with 7/72. The provider default wins; no reasoning override is emitted.
-  assert.equal(buildRequest(transports[2]).reasoning, undefined);
+  assert.deepEqual(buildRequest(transports[2]).reasoning, { effort: 'high' });
 });
 
 test('the committed OpenRouter fallback requires full-precision quants and throughput floors', () => {

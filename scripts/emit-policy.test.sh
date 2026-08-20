@@ -41,8 +41,12 @@ if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrou
 # provider default (unset) at 0.750 [0.60-0.86] with 7/72 -- non-overlapping CIs and 3.5x the
 # failure rate. Fireworks and OpenRouter must therefore NOT pin it. Ollama stays 'high': that
 # specific value was never measured, so it is left alone rather than changed on inference.
-if [item.get('reasoning_effort') for item in transports] != [None, 'high', None]:
-    raise SystemExit('reasoning must be Fireworks=unset, Ollama=high, OpenRouter=unset')
+# Operator directive 2026-08-20: reasoning_effort 'high' on every transport.
+# The guard forbids only 'max', which is the measured-bad arm (ablation: recall 0.425
+# [0.29-0.58] with 25/72 errors, vs the provider default at 0.750 [0.60-0.86] with 7/72).
+# NOTE: 'high' itself was never measured -- the ablation covered none / unset / max only.
+if any(item.get('reasoning_effort') == 'max' for item in transports):
+    raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
 if transports[0].get('structured_output') != 'strict':
     raise SystemExit('Fireworks must use the strict investigation response schema')
 if transports[0].get('perf_metrics_in_response') is not True:

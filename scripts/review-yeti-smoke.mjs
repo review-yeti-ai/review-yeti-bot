@@ -76,8 +76,8 @@ export function validatePolicy(policy) {
   // rate. Its median reasoning output was *lower* than unset's (837 vs 2,902 chars) -- consistent
   // with blowing past the per-attempt budget mid-thought rather than reasoning further. The
   // previous rule required exactly the worst-performing arm.
-  if (transports[0].reasoning_effort !== undefined) {
-    throw new Error('Fireworks must not pin reasoning_effort; measured ablation favours the provider default');
+  if (transports[0].reasoning_effort === 'max') {
+    throw new Error("Fireworks must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
   }
   if (transports[0].perf_metrics_in_response !== true) {
     throw new Error('Fireworks must report performance metrics');
@@ -112,8 +112,8 @@ export function validatePolicy(policy) {
   // counted as failures): `max` scored recall 0.425 [0.29-0.58] with 25/72 errors, versus unset at
   // 0.750 [0.60-0.86] with 7/72. Non-overlapping CIs, 3.5x the failure rate. Pinning `max` here
   // required exactly the worst-measured arm.
-  if (openrouter?.reasoning_effort !== undefined) {
-    throw new Error('OpenRouter must not pin reasoning_effort; measured ablation favours the provider default');
+  if (openrouter?.reasoning_effort === 'max') {
+    throw new Error("OpenRouter must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
   }
   if (openrouter?.model !== 'deepseek/deepseek-v4-flash-0731') throw new Error('OpenRouter must use the approved structured-output fallback model');
   if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
