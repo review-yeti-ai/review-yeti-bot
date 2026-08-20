@@ -184,11 +184,34 @@ export async function evaluateLive(matrix, { repetitions = 3, modelOptions = {},
   };
 }
 
+// KNOWN BROKEN, not yet ported: evaluateLive() below calls pipeline.reviewWithModel directly via
+// the legacy single-shot findings/evidence_requests contract (path+kind+reason evidence requests,
+// multi-turn follow-up via sessionContext.investigationContext), which was deleted along with the
+// rest of the legacy single-shot review path. reviewWithModel now requires a caller-supplied
+// options.investigationMessages and returns {ok, content} instead of {decision, findings,
+// reviewStatus, evidenceRequests} -- this script's decision()/legacyDecision() classifiers and
+// evidence-follow-up loop no longer apply.
+//
+// Porting this to the bounded engine (runPersonaInvestigation from src/review/
+// reviewInvestigation.js + buildInvestigationMessages, the pattern scripts/evaluate-testing-
+// charter.mjs's reviewWithBoundedInvestigation and scripts/e2e-review-gate.mjs's runFixture both
+// now use) is NOT a drop-in adapter here: the bounded contract's evidence model is tool-based
+// (file_read/file_read_diff/code_search/library_docs against a real evidence registry), not the
+// path+kind+reason dependency-evidence shape this eval measures. Whether "dependency evidence"
+// (lockfile/manifest/registry-config classification) becomes a first-class bounded evidence tool,
+// or this eval is retired in favor of the general evidence-tool-based engine already covering the
+// same ground via file_read, is a real product decision outside a legacy-deletion PR's scope.
+// Flagged here, not silently ported or silently left to crash with a generic TypeError.
+const BOUNDED_PORT_PENDING = true;
+
 if (process.argv[1]?.endsWith('evaluate-dependency-investigation-live.mjs')) {
   const fixturePath = path.resolve(process.cwd(), argument('--fixture', 'tests/fixtures/dependency-evaluation.json'));
   const repetitions = Number(argument('--repetitions', '3'));
   const key = process.env.OPENROUTER_API_KEY || '';
-  if (!key) {
+  if (BOUNDED_PORT_PENDING) {
+    console.error('evaluate-dependency-investigation-live.mjs is not compatible with the bounded-only review engine yet -- see the KNOWN BROKEN comment above. No provider call was made.');
+    process.exitCode = 2;
+  } else if (!key) {
     console.error('OPENROUTER_API_KEY is required for the live evaluation; no provider call was made.');
     process.exitCode = 2;
   } else {

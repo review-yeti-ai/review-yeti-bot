@@ -9,9 +9,33 @@ const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/rev
 const policy = require(path.join(rootRepoDir, '.github/workflows/pipelines/openRouterPolicy.js'));
 
 const { resolveTransportPlan } = policy;
-const { reviewWithTransports, PERSONA_CHARTERS } = pipeline;
+const { reviewWithTransports: reviewWithTransportsRaw, PERSONA_CHARTERS } = pipeline;
 const persona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
 const diffFiles = [{ path: 'src/a.ts', patch: '+x', addedLines: [], deletedLines: [] }];
+
+// reviewWithTransports ultimately calls reviewWithModel, which now requires a caller-supplied
+// options.investigationMessages (the legacy single-shot prompt-building/parsing path it used to
+// fall back to is gone). These tests are about transport-plan selection/failover, not message
+// content, so every call gets the same bounded stand-in messages unless it supplies its own.
+const DEFAULT_INVESTIGATION_MESSAGES = [
+  { role: 'system', content: 'You are a bounded code-review panel reviewer.' },
+  { role: 'user', content: '<review_manifest></review_manifest><pull_request_diff></pull_request_diff>' },
+];
+function reviewWithTransports(persona: any, diffFiles: any, prContext: any, sessionContext: any, options: any = {}) {
+  return reviewWithTransportsRaw(persona, diffFiles, prContext, sessionContext, {
+    rawTurn: true,
+    investigationMessages: DEFAULT_INVESTIGATION_MESSAGES,
+    ...options,
+  });
+}
+// Several tests monkey-patch reviewWithTransports.reviewWithModelImpl (the seam
+// reviewWithTransports itself calls through) to stub out the real HTTP layer. Forward that
+// property to the underlying pipeline function so those patches still take effect through this
+// wrapper instead of silently landing on a plain property of the wrapper itself.
+Object.defineProperty(reviewWithTransports, 'reviewWithModelImpl', {
+  get() { return reviewWithTransportsRaw.reviewWithModelImpl; },
+  set(value) { reviewWithTransportsRaw.reviewWithModelImpl = value; },
+});
 
 const fireworksEntry = {
   name: 'fireworks',

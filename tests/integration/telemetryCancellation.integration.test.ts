@@ -153,6 +153,8 @@ describe('Action telemetry cancellation seam', () => {
       {
         model: 'model-a', apiKey: 'test-key', baseUrl: 'https://api.example.test', maxAttempts: 1,
         signal: controller.signal,
+        rawTurn: true,
+        investigationMessages: [{ role: 'system', content: 'x' }, { role: 'user', content: 'y' }],
         fetchImplementation: async (_url: string, options: any) => new Promise((_resolve, reject) => {
           rejectFetch = reject;
           options.signal.addEventListener('abort', () => { modelAborted = true; reject(new Error('aborted')); });
@@ -182,6 +184,8 @@ describe('Action telemetry cancellation seam', () => {
       {
         model: 'model-a', apiKey: 'test-key', baseUrl: 'https://api.example.test', maxAttempts: 2,
         signal: controller.signal,
+        rawTurn: true,
+        investigationMessages: [{ role: 'system', content: 'x' }, { role: 'user', content: 'y' }],
         fetchImplementation: async () => {
           modelCalls += 1;
           return { ok: false, status: 500, headers: { get: () => null }, text: async () => '' };

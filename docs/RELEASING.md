@@ -94,8 +94,10 @@ non-green gate stops the release before any tag moves — there is no path from 
 `channel=v1` dispatch to a moved tag that does not pass through this workflow.
 
 The workflow (`npm run test:e2e-review-gate`, `scripts/e2e-review-gate.mjs`) runs the `security`
-persona through the real `reviewWithModel` path against two fixture diffs, using a real
-`OPENROUTER_API_KEY` and a real provider call — not a cassette:
+persona through the real bounded investigation path (`runPersonaInvestigation` +
+`buildInvestigationMessages` — the same production engine `review-pipeline.js`'s `main()` runs on
+every real PR review) against two fixture diffs, using a real `OPENROUTER_API_KEY` and a real
+provider call — not a cassette:
 
 - [`tests/fixtures/e2e-review-gate/red-known-bug.diff`](../tests/fixtures/e2e-review-gate/red-known-bug.diff)
   plants an unambiguous, in-charter P0 (a live-looking secret-key literal) and must produce
