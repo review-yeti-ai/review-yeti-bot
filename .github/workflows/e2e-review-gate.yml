@@ -81,8 +81,25 @@ jobs:
       # `OPENROUTER_API_KEY is not configured` reason, never a silent pass; an invalid/expired
       # key fails closed too (HTTP 401 from the provider), which is the same correct outcome:
       # this gate must not let `channel=v1` advance while its own credential is broken.
+      # OPENROUTER_TIMEOUT_MS (run 32387378324, 2026-08-20 diagnosis + live remeasure): the gate
+      # was failing not on a true zero-byte TTFT stall -- REASONING_ALIVE fired at 4356ms in that
+      # same failing run, well inside any TTFT budget -- but on the flat 30s TOTAL response budget
+      # expiring mid-stream while deepseek-v4-flash-0731 was still reasoning (last REASONING_ALIVE
+      # at 29703ms, killed at 30009ms). openRouterPolicy.js's TTFT default (30s) is clamped to
+      # min(default, timeoutMs), so with timeout_ms left at its 30s default the two budgets
+      # collapse into one and a legitimate in-progress stream gets cut off as if the provider had
+      # never responded. Four live local runs of this exact fixture (red-known-bug, same model,
+      # same OPENROUTER_API_KEY) measured full-completion elapsed_ms of 21865 / 53267 / 32712 /
+      # 29841 -- i.e. genuine reasoning-lane completions land in the 22-53s band, consistent with
+      # the 47-52s reasoning-lane floor observed elsewhere in this system (see the parallel
+      # ct-review-actions policy/review-yeti.json timeout raise, 60s -> 120s). 120000 gives >2x
+      # headroom over the worst measured run (53267ms) without weakening the TTFT budget, which
+      # stays at its 30s default (real TTFT is consistently <1s per REASONING_ALIVE elapsed_ms=
+      # 452-988 across the same four runs) -- so a provider that genuinely never sends a byte is
+      # still caught in 30s, only slow-but-alive reasoning completions get more room to finish.
       - name: Run live E2E review gate (red/green fixtures)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: ${{ vars.E2E_REVIEW_GATE_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
+          OPENROUTER_TIMEOUT_MS: "120000"
         run: npm run test:e2e-review-gate

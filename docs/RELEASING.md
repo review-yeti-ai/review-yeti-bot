@@ -10,14 +10,18 @@ Review Yeti ships two things a consumer can depend on:
 
 - **Immutable semver tags** — `vX.Y.Z`, each a real GitHub Release with
   provenance attestation. These never move once published.
-- **Floating channel tags** — `v1` (recommended default) and `v1-rc`
-  (pre-release, fast-forwards on every `main` merge). A floating tag is a
-  pointer, not a release; it is moved only by `release.yml`, never by hand and
-  never from a developer machine.
+- **Floating channel tags** — `v1` (recommended default, release-gated) and
+  `v1-rc` (pre-release, fast-forwards on every push to `main`, **ungated** —
+  see the [`v1-rc` fast-forward](#v1-rc-fast-forward-ungated) section below).
+  A floating tag is a pointer, not a release; `v1` is moved only by
+  `release.yml`, `v1-rc` only by `.github/workflows/channel-rc.yml`, never by
+  hand and never from a developer machine.
 
-`v1` and `v1-rc` are ordinary annotated tags force-updated to a commit that
-has already passed the full gate below. Nothing else in this repository is
-permitted to push to them — see [Tag protection](#tag-protection).
+`v1` is an ordinary annotated tag force-updated to a commit that has already
+passed the full gate below. `v1-rc` is force-updated to whatever commit was
+just pushed to `main`, with no gate of its own — see below. Nothing else in
+this repository is permitted to push to either tag — see
+[Tag protection](#tag-protection).
 
 ## Cutting a release
 
@@ -122,14 +126,21 @@ the key is rotated — that is this gate doing its job, not a regression.
 
 ## How `v1` and `v1-rc` move
 
-| Tag | Moves on | Points at |
-|---|---|---|
-| `v1-rc` | Every `main` merge (fast-forward), gated by the same `test:all` battery as a release. | The latest candidate commit — may be ahead of the latest published `vX.Y.Z`. |
-| `v1` | Only an explicit `release.yml` dispatch with `channel=v1`. | The most recently published immutable `v1.x.y` release. |
+| Tag | Moves on | Gate | Points at |
+|---|---|---|---|
+| `v1-rc` | Every push to `main` (fast-forward, `channel-rc.yml`). | **None.** The workflow's only trigger is `on: push: branches: [main]` — it does not `need:` `test:all`, the E2E review gate, or any other check, and `main` itself is not a protected branch (no required status checks). A push that would fail CI still moves `v1-rc` the moment it lands. | The latest commit pushed to `main` — may be ahead of the latest published `vX.Y.Z` and may be red. |
+| `v1` | Only an explicit `release.yml` dispatch with `channel=v1`. | The full `test:all` battery, plus (channel=v1 only) the live [E2E review gate](#e2e-review-gate-before-advancing-v1). | The most recently published immutable `v1.x.y` release. |
+
+### `v1-rc` fast-forward (ungated)
 
 `v1-rc` exists so hardened consumers who want to track `main` closely (or who
-are validating an upcoming release before it reaches `v1`) have a channel that
-still passed the full gate — it is never an unvetted moving target.
+are validating an upcoming release before it reaches `v1`) have a channel one
+commit ahead of `v1`. It is **not** a vetted channel: it is a bare
+fast-forward of whatever lands on `main`, with no test battery, no live
+provider gate, and no branch protection standing in front of it. Any gating
+`v1-rc` gets comes entirely from PR review discipline on `main` before merge,
+not from anything `channel-rc.yml` itself checks. Treat `v1-rc` as "the tip of
+`main`," not as "the last thing that passed CI."
 
 ## Rollback
 
