@@ -206,6 +206,15 @@ describe('action.yml — installable GitHub Action contract', () => {
     const installStep = action.runs.steps.find((step: any) => step.name === 'Install pipeline dependencies');
     expect(installStep.run).toMatch(/@actions\/cache[\s\S]*\|\|\s*echo "::warning::/);
   });
+
+  it('reasserts js-yaml after the optional cache install can rewrite the npm prefix', () => {
+    const installStep = action.runs.steps.find((step: any) => step.name === 'Install pipeline dependencies');
+    const run = String(installStep.run);
+    const cacheInstall = run.indexOf('npm install --prefix "$NPM_PREFIX" @actions/cache');
+    const restore = run.indexOf('restoring js-yaml@4.1.0 after optional cache install');
+    expect(cacheInstall).toBeGreaterThanOrEqual(0);
+    expect(restore).toBeGreaterThan(cacheInstall);
+  });
 });
 
 describe('review ignore policy documentation contract', () => {
