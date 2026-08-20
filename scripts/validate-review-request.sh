@@ -60,9 +60,6 @@ path_state() {
   printf '%s\n' absent
 }
 
-changed_pages="$(gh api --paginate --slurp "repos/${REVIEW_REPOSITORY}/pulls/${REVIEW_PR_NUMBER}/files?per_page=100")"
-changed_files="$(jq -r '.[][] | [.filename, .status] | @tsv' <<<"$changed_pages")"
-
 # .coderabbit.* is deliberately NOT in this list. Per README 'No
 # consumer-owned Review Yeti configuration': that file belongs to the
 # independent CodeRabbit service, Review Yeti does not read it, and it
@@ -76,21 +73,13 @@ for path in \
   .ct-review.yml \
   .review-yeti \
   .ct-review; do
-  base_state="$(path_state "$path" "$EXPECTED_BASE_SHA")"
   head_state="$(path_state "$path" "$EXPECTED_HEAD_SHA")"
+  # Operator directive 2026-08-20: consumer review-config files are INERT, not
+  # forbidden. The action runs with target-config: none, so these files cannot
+  # influence a review — their presence is dead config worth a cleanup nag,
+  # never a full review outage.
   if [[ "$head_state" == exists ]]; then
-    echo "::error::Consumer-owned review configuration is forbidden: ${path}"
-    exit 1
-  fi
-  if [[ "$base_state" == exists ]]; then
-    if ! awk -F '\t' -v prefix="$path" '
-      $1 == prefix || index($1, prefix "/") == 1 { found = 1; if ($2 != "removed") bad = 1 }
-      END { exit !(found && !bad) }
-    ' <<<"$changed_files"; then
-      echo "::error::Existing consumer review configuration at ${path} must be removed in this migration PR."
-      exit 1
-    fi
-    echo "Allowing ${path} only because this PR removes the base configuration."
+    echo "::warning::Dead consumer review configuration ignored: ${path}. Central policy owns all review configuration (target-config: none); please delete this file."
   fi
 done
 

@@ -117,6 +117,7 @@ jobs:
           llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
+          target-config: 'none'
           model: ${{ steps.smoke.outputs.resolved_model }}
           transports: ${{ steps.smoke.outputs.healthy_transports }}
           transport-plan-b64: ${{ steps.policy.outputs.transport_plan_b64 }}
