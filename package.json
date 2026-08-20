@@ -68,6 +68,7 @@
     "test:dependency-eval": "node scripts/evaluate-dependency-investigation.mjs --fixture tests/fixtures/dependency-evaluation.json",
     "test:testing-charter-eval": "node scripts/evaluate-testing-charter.mjs",
     "test:dependency-live-eval": "node scripts/evaluate-dependency-investigation-live.mjs --fixture tests/fixtures/dependency-evaluation.json --repetitions 3",
+    "test:e2e-review-gate": "node scripts/e2e-review-gate.mjs",
     "eval": "node bin/review-yeti.mjs eval",
     "eval:tui": "node bin/review-yeti.mjs eval tui",
     "review": "npm run build && node bin/reviewyeti.js review",

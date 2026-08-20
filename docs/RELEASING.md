@@ -26,7 +26,15 @@ local `git tag && git push`. Local tagging can't attest provenance and can't
 enforce the gate.
 
 1. Confirm `main` is green and contains everything you intend to ship.
-2. Dispatch the workflow with the version and channel:
+2. **`channel=v1` only**: confirm the [E2E review gate](#e2e-review-gate-before-advancing-v1) is
+   green for the candidate commit. `npm run test:all` (the battery below) is entirely
+   credential-free by design and cannot catch a regression that only shows up against a real
+   provider — see [OPERATIONS.md's incident writeup](OPERATIONS.md#incident-response-bad-release)
+   for the 2026-08-19 outage this requirement exists because of: the in-run chat preflight (see
+   [`OPERATIONS.md`](OPERATIONS.md)) reported "healthy http=200" while the streamed review path
+   was actually broken, and nothing in `test:all` would have caught it either, since every lane
+   there replays a recorded cassette.
+3. Dispatch the workflow with the version and channel:
 
    ```bash
    gh workflow run release.yml \
@@ -39,14 +47,14 @@ enforce the gate.
      `v1` for a normal release, `v1-rc` for a pre-release/candidate cut that
      should not yet reach `v1` consumers.
 
-3. The workflow runs the full gate (below), and only on a fully green run
+4. The workflow runs the full gate (below), and only on a fully green run
    does it:
    - publish the immutable `vX.Y.Z` tag as a GitHub Release with build
      provenance attestation, then
    - force-update the selected floating tag (`v1` or `v1-rc`) to that same
      commit.
 
-A red gate stops at step 3 — no tag moves, no release is published. There is
+A red gate stops at step 4 — no tag moves, no release is published. There is
 no partial-credit release.
 
 ## What the gate runs
@@ -59,6 +67,50 @@ dependency evaluation, CLI/Action equivalence, intelligence promotion, lint,
 and build. See [`TEST_INFRA.md`](../TEST_INFRA.md) and the `test:*` scripts in
 [`package.json`](../package.json) for what each lane covers. Nothing in the
 release path is allowed to skip a lane that PR CI runs.
+
+Every lane in that battery is entirely credential-free by design (see
+[`TEST_INFRA.md`](../TEST_INFRA.md)'s fail-closed cassette-replay boundary) — it proves the
+engine's *logic* against recorded provider responses, never that a real, live provider call still
+works end to end today. That gap is exactly what let the 2026-08-19 SSE-termination regression
+ship on `v1`: the in-run chat preflight reported "healthy http=200", `test:all` was fully green,
+and persona lanes still hung to the lane deadline against the real provider. See the [E2E review
+gate](#e2e-review-gate-before-advancing-v1) below for the live check that closes this gap.
+
+## E2E review gate (before advancing `v1`)
+
+**`v1` must not be advanced (a `release.yml` dispatch with `channel=v1`) unless
+[`.github/workflows/e2e-review-gate.yml`](../.github/workflows/e2e-review-gate.yml) is green for
+the candidate commit.** `v1-rc` is unaffected — it keeps fast-forwarding on every green `main`
+merge as before; this requirement is scoped to the tag real consumer fleets resolve.
+
+The workflow (`npm run test:e2e-review-gate`, `scripts/e2e-review-gate.mjs`) runs the `security`
+persona through the real `reviewWithModel` path against two fixture diffs, using a real
+`OPENROUTER_API_KEY` and a real provider call — not a cassette:
+
+- [`tests/fixtures/e2e-review-gate/red-known-bug.diff`](../tests/fixtures/e2e-review-gate/red-known-bug.diff)
+  plants an unambiguous, in-charter P0 (a live-looking secret-key literal) and must produce
+  **>= 1 finding on a completed (non-`ERROR`) lane**.
+- [`tests/fixtures/e2e-review-gate/green-clean.diff`](../tests/fixtures/e2e-review-gate/green-clean.diff)
+  is a trivial, safe refactor and must produce **0 findings on a completed lane**.
+
+An `ERROR`ed lane never counts as a pass on either fixture, even with a finding count that would
+otherwise look right — see `src/review/e2eReviewGate.js` (unit-tested in
+`tests/unit/e2eReviewGate.test.ts`) for the exact pass/fail rule. A missing `OPENROUTER_API_KEY`
+fails the gate closed with an explicit reason; it never reports a soft skip that could be misread
+as a green run.
+
+Dispatch it manually against the release candidate commit before cutting a `v1` release:
+
+```bash
+gh workflow run e2e-review-gate.yml -f ref=<candidate-sha-or-branch>
+```
+
+**TODO (tracked under API-2902, not yet done):** wire this as a hard `release.yml` dependency
+(`workflow_call` + `needs:`) instead of a separate manual pre-flight step, once a maintainer with
+repository-secrets access confirms `OPENROUTER_API_KEY` is actually provisioned to Actions in
+`review-yeti-ai/review-yeti-bot` — that was not verified from the vantage this gate was authored
+from, and hard-wiring a dependency on an unconfirmed secret would break every future release
+dispatch instead of gating it.
 
 ## How `v1` and `v1-rc` move
 
