@@ -105,7 +105,7 @@ describe('verifyCandidateRows', () => {
   });
 
   it('clears a clean-fixture false positive when the verifier refutes', async () => {
-    const row = laneRow({ fixtureId: 'clean-1', category: 'clean', detected: false, falsePositive: true, findingsDetail: [{ ...matchingFinding(), path: 'src/app.js' }] });
+    const row = laneRow({ fixtureId: 'clean-1', category: 'clean', detected: false, falsePositive: true, noise: 1, findingsDetail: [{ ...matchingFinding(), path: 'src/app.js' }] });
     const { rows } = await verifyCandidateRows({
       rows: [row],
       matrix: { fixtures: [fixture, cleanFixture] },
@@ -113,6 +113,8 @@ describe('verifyCandidateRows', () => {
     });
     expect(rows[0].falsePositive).toBe(false);
     expect(rows[0].findings).toBe(0);
+    // SNR inputs are recomputed on the confirmed subset, never inherited from the candidate row.
+    expect(rows[0].noise).toBe(0);
   });
 
   it('withholds on abstention: a detected row loses its finding but never gains one', async () => {

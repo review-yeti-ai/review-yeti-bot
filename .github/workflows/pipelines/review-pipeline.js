@@ -1242,6 +1242,32 @@ function resolveFindingReflectionPolicy({ localConfig, findingVerifierPolicy, en
   return Object.freeze({ enabled: true, reason: 'configured', ...(limits ? { limits } : {}) });
 }
 
+/**
+ * Verified publication (src/review/findingFalsification.js): an independent falsification pass
+ * that gates which hypotheses reach the arbiter. The existing gates are positional -- the
+ * finding verifier proves the anchored line exists at the exact SHA, and reflection is the same
+ * model reconsidering its own claim -- so neither establishes causality. This stage does not
+ * layer on finding_verifier (it is grounded directly in the shown diff), and unlike reflection
+ * it fails CLOSED per finding: REFUTE, ABSTAIN, contract violations, and verifier provider
+ * failure all withhold the finding (recorded in the receipt, never silently), matching the
+ * contract that uncertainty must produce abstention, not publication.
+ * Config: review.finding_falsification (true | {limits: {...}});
+ * env kill-switch REVIEW_YETI_FINDING_FALSIFICATION=false.
+ */
+function resolveFindingFalsificationPolicy({ localConfig, env = process.env } = {}) {
+  const disabled = (reason) => Object.freeze({ enabled: false, reason });
+  const configured = localConfig?.parsed?.review?.finding_falsification;
+  if (configured === undefined || configured === null) return disabled('not_configured');
+  if (configured === false) return disabled('disabled_by_config');
+  if (configured !== true && (typeof configured !== 'object' || Array.isArray(configured))) return disabled('invalid_config');
+  const settings = configured === true ? {} : configured;
+  if (settings.enabled === false) return disabled('disabled_by_config');
+  const envOverride = String(env.REVIEW_YETI_FINDING_FALSIFICATION ?? '').trim().toLowerCase();
+  if (envOverride === 'false') return disabled('disabled_by_env');
+  const limits = settings.limits && typeof settings.limits === 'object' && !Array.isArray(settings.limits) ? settings.limits : undefined;
+  return Object.freeze({ enabled: true, reason: 'configured', ...(limits ? { limits } : {}) });
+}
+
 function canonicalFindingPath(value) {
   if (typeof value !== 'string') return null;
   const normalized = value.replace(/\\/g, '/').replace(/^\.\//u, '').trim();
@@ -8065,6 +8091,7 @@ async function main(options = {}) {
   let reviewUnitManifest = null;
   let findingVerification = null;
   let findingReflectionReceipt = null;
+  let findingFalsificationReceipt = null;
   let findingReflectionDurationMs = 0;
   let findingReflectionUsage = [];
   let arbitration = null;
@@ -9531,6 +9558,46 @@ async function main(options = {}) {
       }
     }
 
+    // Verified publication: the independent falsification gate (see
+    // resolveFindingFalsificationPolicy's doc comment). Runs strictly after reflection and
+    // strictly before arbitration, so the arbiter consumes only hypotheses that survived an
+    // adversarial verification attempt. Only the stage's own failure to RUN leaves findings
+    // untouched (config off, or the module itself throwing) -- a per-finding verifier failure
+    // inside a run is an abstention, and abstention withholds.
+    {
+      const falsificationPolicy = resolveFindingFalsificationPolicy({ localConfig, env: runtimeEnv });
+      if (falsificationPolicy.enabled && Array.isArray(personaResults) && personaResults.some((lane) => (lane?.findings || []).length > 0)) {
+        try {
+          const { findings: flatFindings, locations } = flattenPersonaFindings(personaResults);
+          const falsificationResult = await runFindingFalsification({
+            findings: flatFindings,
+            changedFiles: shownReviewFiles,
+            limits: falsificationPolicy.limits,
+            signal: cancellation.signal,
+            falsifyTurn: ({ messages, signal }) => callPersonaModelTurn({
+              persona: { id: 'finding-falsification', name: 'Finding Falsification' },
+              prContext,
+              sessionContext,
+              messages,
+              options: {
+                ...modelConfig,
+                modelClient: options.modelClient,
+                fetchImplementation,
+                reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined,
+              },
+              signal,
+            }),
+          });
+          const applied = applyFalsificationOutcomes(personaResults, locations, falsificationResult);
+          personaResults = applied.personaResults;
+          findingFalsificationReceipt = falsificationResult.receipt;
+          console.log(`[Falsification] ${applied.confirmed} finding(s) confirmed, ${applied.refuted} refuted, ${applied.abstained} withheld on abstention (${falsificationResult.receipt.summary.unavailable} verifier-unavailable).`);
+        } catch (error) {
+          console.warn(`[Falsification] Stage unavailable (${error.message}); findings stand as reported.`);
+        }
+      }
+    }
+
     console.log('[Arbitration] Computing binding arbitration quorum...');
     if (!boundedMode) reviewUnitManifest = buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
@@ -9984,6 +10051,7 @@ module.exports = {
   resolveTrustedFindingVerifierPolicy,
   findingVerifierIdentity,
   resolveFindingReflectionPolicy,
+  resolveFindingFalsificationPolicy,
   withStaleZoektMatchTagging,
   resolveZoektRegistry,
   fetchExactFindingBlobSnapshot,
