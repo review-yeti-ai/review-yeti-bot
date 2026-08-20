@@ -287,8 +287,22 @@ if grep -Fq "DISPATCH_REFLECTION_STATUS is required" <<<"$output"; then
   echo "$output" >&2
   exit 1
 fi
-grep -Fq "accepted" <<<"$output" || { echo "[zero-lane-ship] expected the acceptance message" >&2; echo "$output" >&2; exit 1; }
-echo "[zero-lane-ship] passed (published SHIP honored, no crash)"
+# The gate must not fail-closed on a legitimate zero-lane SHIP (that would wedge every
+# generated-file-only PR toward --admin), but it must ALSO not report this the same way as a
+# real review: "accepted" wording is reserved for lane_count > 0. A zero-lane SHIP must be
+# labeled NO_REVIEWABLE_CONTENT so a human reading the log can tell "nothing was reviewed" from
+# "N personas approved".
+if grep -Fq "accepted" <<<"$output"; then
+  echo "[zero-lane-ship] expected the honest NO_REVIEWABLE_CONTENT message, not the real-review acceptance wording" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "NO_REVIEWABLE_CONTENT" <<<"$output" || {
+  echo "[zero-lane-ship] expected the NO_REVIEWABLE_CONTENT message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[zero-lane-ship] passed (published SHIP honored as NO_REVIEWABLE_CONTENT, not fake review evidence, no crash)"
 
 # 3d. A zero-lane run is not a blanket amnesty: if DISPATCH_REFLECTION_STATUS
 #     is present but contradicts the zero-lane shape (anything other than
