@@ -81,14 +81,12 @@ promotion.
 
 ## Fireworks timeout debug
 
-The hosted panel uses `openrouter-ttft-ms` across the model transports. Both Fireworks
-and the OpenRouter fallback stream their responses, so the 30-second TTFT deadline
-measures the first SSE token rather than a fully buffered JSON body. OpenRouter sorts the
-eligible provider catalog by latency, excludes explicitly banned/degraded slugs, and
-allows eligible hosts to fall over. The policy deliberately avoids
-pinning quantization or live throughput/latency cohorts because those provider
-attributes can legitimately produce a 404 even while the model has healthy
-endpoints. Smoke sends `stream: true` for every configured transport.
+The hosted panel uses `openrouter-ttft-ms` across the model transports. Fireworks, Ollama,
+and the OpenRouter fallback all stream their responses, so the 30-second TTFT deadline
+measures the first SSE token rather than a fully buffered JSON body. OpenRouter requires
+BF16/FP16 endpoints, sorts the eligible provider catalog by throughput, applies a p90
+throughput floor and p99 latency preference, and allows eligible hosts to fall over.
+Smoke sends `stream: true` for every configured transport.
 
 Smoke logs `elapsed_ms` and `http` per transport. For a panel-sized probe:
 
@@ -105,22 +103,21 @@ receipt without printing credentials or response content.
 The current standard transport plan is deliberately limited and ordered:
 
 1. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`)
-2. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
+2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
+3. OpenRouter (`OPENROUTER_PR_REVIEW_API_KEY`) as the final fallback
 
-The action starts each model turn at Fireworks and advances to OpenRouter only when that transport
-fails. The OpenRouter entry leaves provider and quantization selection to the gateway, requires
-compatible request parameters, uses `deepseek/deepseek-v4-flash-0731` with strict investigation
-output, sorts by latency, permits eligible hosts to fail over, and denies provider data collection.
-Each caller must expose the two named environment variables through its inherited GitHub Actions
-secrets. Fireworks stays on the default serverless tier and uses maximum reasoning. The fallback
-uses `reasoning.effort=high` (the model's supported lower-latency reasoning level) while keeping
-SSE enabled. Each transport gets one retry, and OpenRouter owns endpoint selection after
-a timeout without Review Yeti dynamically banning the resolved endpoint.
+The action starts each model turn at Fireworks and advances through the declared order when a
+transport fails. The OpenRouter entry requires compatible request parameters, full-precision
+quantizations, strict investigation output, and throughput-ranked routing while leaving provider
+identity unpinned. Each caller must expose the three named environment variables through its
+inherited GitHub Actions secrets. Fireworks stays on the default serverless tier; Fireworks and
+OpenRouter use maximum reasoning, while Ollama uses its documented `high` setting. Each transport
+gets one retry, and OpenRouter owns endpoint selection after a timeout.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
 budget, a ten-minute (600s) lane deadline, and a 30-second OpenRouter first-token budget.
 
-- **timeout_ms = 30000 for Fireworks and 90000 for the OpenRouter fallback.** The fast local probe (3.4s end to end for a ~26k char
+- **timeout_ms = 30000 for Fireworks and Ollama, 90000 for the OpenRouter fallback.** The fast local probe (3.4s end to end for a ~26k char
   panel-sized prompt) is a lower bound, not a ceiling -- `max_diff_chars` allows prompts up to
   2,000,000 chars, far larger than that probe's payload. The 90000ms fallback envelope leaves
   room for a streamed provider response to finish after its first token without disabling SSE.
@@ -132,7 +129,7 @@ A provider that does not answer within that envelope fails over or fails closed;
 a hosted job or silently consume an unbounded retry budget.
 
 **Two timeout knobs, kept in lockstep.** The policy carries both a per-transport `timeout_ms`
-(embedded in the `transports` JSON blob emitted by `emit-policy.mjs`, covering both configured
+(embedded in the `transports` JSON blob emitted by `emit-policy.mjs`, covering all three configured
 transports including OpenRouter) and a separate top-level `openrouter_timeout_ms` /
 `openrouter_ttft_ms` pair, forwarded as the dedicated `openrouter-timeout-ms` / `openrouter-ttft-ms`
 action inputs. Which one the OpenRouter-compat code path in the hosted action actually honors is
@@ -142,7 +139,7 @@ silently carrying a stale budget.
 
 **Streaming is an invariant.** Every transport declares `stream: true` and the global
 `openrouter_stream` flag is `"true"`. The action's single-slot streaming gate serializes the full
-Fireworks-to-OpenRouter transport plan per persona, so a failover never opens a sibling SSE stream
+Fireworks-to-Ollama-to-OpenRouter transport plan per persona, so a failover never opens a sibling SSE stream
 over the active one. `emit-policy.mjs` rejects a future policy that makes only one transport
 non-streaming while retaining a tight TTFT budget; `scripts/emit-policy.test.sh` exercises that
 counterfactual. This keeps provider attribution and first-token telemetry intact without disabling
@@ -158,13 +155,13 @@ the same inequality against the committed policy plus counterfactual fixtures th
 Separately,
 `max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
-of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 2 transports at
-`30000 + 90000 = 120000` per attempt, `120000 x 2 attempts x 2 turns = 480000 <= 600000` (120s
-of the lane deadline spare), and
+of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
+`30000 + 30000 + 90000 = 150000` per attempt,
+`150000 x 2 attempts x 2 turns = 600000 <= 600000`, and
 `max_passes(2) x lane_deadline_ms(600000) = 1200000 <= 1500000` (the 25-minute job cap, leaving
 300s for workflow setup, publishing, and verdict enforcement). This guards
 against a repeat of the incident that motivated this change: at `timeout_ms: 180000` per transport,
-both transports alone summed to 360s against a 240s lane deadline, so a slow or stalled
+two transports alone summed to 360s against a 240s lane deadline, so a slow or stalled
 primary made the OpenRouter fallback structurally unreachable in exactly the case it exists for.
 
 Before the model action starts, the reusable workflow runs `scripts/review-yeti-smoke.mjs` against

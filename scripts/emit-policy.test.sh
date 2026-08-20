@@ -34,18 +34,16 @@ import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
 transports = review.get('transports', [])
-if [item.get('name') for item in transports] != ['fireworks', 'openrouter-fallback']:
-    raise SystemExit('policy must preserve Fireworks -> OpenRouter order')
-if [item.get('reasoning_effort') for item in transports] != ['max', 'high']:
-    raise SystemExit('reasoning must be Fireworks=max and DeepSeek fallback=high')
+if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrouter-fallback']:
+    raise SystemExit('policy must preserve Fireworks -> Ollama -> OpenRouter order')
+if [item.get('reasoning_effort') for item in transports] != ['max', 'high', 'max']:
+    raise SystemExit('reasoning must be Fireworks=max, Ollama=high, OpenRouter=max')
 if transports[0].get('structured_output') != 'strict':
     raise SystemExit('Fireworks must use the strict investigation response schema')
 if transports[0].get('perf_metrics_in_response') is not True:
     raise SystemExit('Fireworks must return performance metrics')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
-if any(item.get('name') == 'ollama' for item in review.get('transports', [])):
-    raise SystemExit('obsolete Ollama transport must not return to the central policy')
 budget = review.get('budget')
 if not isinstance(budget, dict):
     raise SystemExit('policy must keep lane limits in review_yeti.budget')
@@ -68,15 +66,16 @@ if fallback.get('quarantine_on_timeout') is not False:
 routing = fallback.get('provider_routing') or {}
 if 'fireworks' not in (routing.get('ignore') or []):
     raise SystemExit('openrouter-fallback must explicitly ignore the hard-banned Fireworks provider')
-if 'morph' not in (routing.get('ignore') or []):
-    raise SystemExit('openrouter-fallback must quarantine the observed Morph timeout provider')
 if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
-if routing.get('sort') != 'latency':
-    raise SystemExit('openrouter-fallback must sort by latency for fastest overall response time')
-for key in ('quantizations', 'preferred_min_throughput', 'preferred_max_latency'):
-    if routing.get(key) is not None:
-        raise SystemExit(f'openrouter-fallback must not require endpoint-specific {key}')
+if routing.get('sort') != 'throughput':
+    raise SystemExit('openrouter-fallback must sort by throughput')
+if routing.get('quantizations') != ['bf16', 'fp16']:
+    raise SystemExit('openrouter-fallback must require full-precision quantizations')
+if routing.get('preferred_min_throughput') != {'p90': 40}:
+    raise SystemExit('openrouter-fallback must enforce the p90 throughput floor')
+if routing.get('preferred_max_latency') != {'p99': 3}:
+    raise SystemExit('openrouter-fallback must enforce the p99 latency preference')
 if routing.get('only') or routing.get('order'):
     raise SystemExit('openrouter-fallback must not pin provider.only or provider.order')
 if review.get('openrouter_stream') != 'true':
@@ -247,7 +246,7 @@ overflow_timeout_ms = min(180_000, (lane_deadline_ms // len(transports)) + 10_00
 for transport in transports:
     transport['timeout_ms'] = overflow_timeout_ms
     transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), overflow_timeout_ms)
-# The current two-transport cap (180000ms) can otherwise land exactly on a 360000ms lane. Nudge
+# A generated cap can otherwise land exactly on the lane deadline. Nudge
 # the fixture deadline just below the resulting sum while keeping the retry-envelope check valid.
 if overflow_timeout_ms * len(transports) <= lane_deadline_ms:
     lane_deadline_ms = overflow_timeout_ms * len(transports) - 1
@@ -292,7 +291,8 @@ retry_timeout_ms = min(180_000, (lane_deadline_ms // (len(transports) * max_atte
 for transport in transports:
     transport['timeout_ms'] = retry_timeout_ms
     transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), retry_timeout_ms)
-review['openrouter_timeout_ms'] = str(transports[1]['timeout_ms'])
+openrouter = next(item for item in transports if item['name'] == 'openrouter-fallback')
+review['openrouter_timeout_ms'] = str(openrouter['timeout_ms'])
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
@@ -369,14 +369,14 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['fireworks', 'openrouter-fallback']:
-    raise SystemExit('base64 transport plan must preserve Fireworks -> OpenRouter order')
+if [item.get('name') for item in plan] != ['fireworks', 'ollama', 'openrouter-fallback']:
+    raise SystemExit('base64 transport plan must preserve Fireworks -> Ollama -> OpenRouter order')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
-grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml,morph'
-grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml","morph"]'
+grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml'
+grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml"]'
 grep -qx 'v1' "$tmp_dir/valid.output"
 grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
@@ -431,7 +431,8 @@ import sys
 
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
-policy['review_yeti']['transports'][1]['timeout_ms'] += 1
+openrouter = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'openrouter-fallback')
+openrouter['timeout_ms'] += 1
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY

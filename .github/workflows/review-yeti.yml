@@ -60,8 +60,8 @@ jobs:
           test -n "$TRANSPORT_PLAN_B64"
           node - <<'NODE'
           const plan = JSON.parse(Buffer.from(process.env.TRANSPORT_PLAN_B64, 'base64').toString('utf8'));
-          if (!Array.isArray(plan) || plan.length !== 2) throw new Error('expected two ordered transports');
-          if (plan.map((entry) => entry.name).join(' -> ') !== 'fireworks -> openrouter-fallback') {
+          if (!Array.isArray(plan) || plan.length !== 3) throw new Error('expected three ordered transports');
+          if (plan.map((entry) => entry.name).join(' -> ') !== 'fireworks -> ollama -> openrouter-fallback') {
             throw new Error('unexpected transport order');
           }
           if (plan.some((entry) => entry.stream !== true)) throw new Error('all transports must stream');
@@ -73,6 +73,7 @@ jobs:
         working-directory: .exampleorg-review-actions
         env:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000
         run: |
@@ -115,13 +116,14 @@ jobs:
         uses: ./.review-yeti-bot
         env:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
-          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
         with:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
           pr-number: ${{ github.event.pull_request.number }}
-          llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
           model: ${{ steps.smoke.outputs.resolved_model }}

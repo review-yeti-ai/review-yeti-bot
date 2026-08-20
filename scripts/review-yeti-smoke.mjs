@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'fireworks',
+  'ollama',
   'openrouter-fallback',
 ]);
 
@@ -12,9 +13,12 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
-  sort: 'latency',
+  quantizations: ['bf16', 'fp16'],
+  sort: 'throughput',
+  preferred_min_throughput: { p90: 40 },
+  preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
-  ignore: ['fireworks', 'open-inference', 'akashml', 'morph'],
+  ignore: ['fireworks', 'open-inference', 'akashml'],
 });
 
 // The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
@@ -74,7 +78,7 @@ export function validatePolicy(policy) {
     throw new Error('Fireworks must use maximum reasoning with performance metrics');
   }
   if (transports[0].structured_output !== 'strict') throw new Error('Fireworks must use strict investigation output');
-  if (transports[1].reasoning_effort !== 'high') throw new Error('DeepSeek fallback must use high reasoning for bounded latency');
+  if (transports[1].reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
@@ -94,12 +98,12 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must leave endpoint cohort selection to the live provider catalog');
+    throw new Error('OpenRouter routing must require full-precision quants, throughput floors, and fallback');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
   }
-  if (openrouter?.reasoning_effort !== 'high') throw new Error('DeepSeek fallback must use high reasoning for bounded latency');
+  if (openrouter?.reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
   if (openrouter?.model !== 'deepseek/deepseek-v4-flash-0731') throw new Error('OpenRouter must use the approved structured-output fallback model');
   if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
   if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
@@ -201,12 +205,19 @@ async function readChatCompletion(response) {
   throw new Error('empty_sse');
 }
 
-export async function probeTransport(transport, apiKey, fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS) {
+export async function probeTransport(
+  transport,
+  apiKey,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  ttftMs = timeoutMs,
+) {
   if (!apiKey) return { name: transport.name, status: 'missing' };
 
   const started = Date.now();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timeoutStage = 'ttft';
+  let timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, ttftMs));
   const elapsed = () => Date.now() - started;
   try {
     const response = await fetchImpl(`${transport.base_url.replace(/\/$/, '')}/chat/completions`, {
@@ -218,6 +229,10 @@ export async function probeTransport(transport, apiKey, fetchImpl = globalThis.f
       body: JSON.stringify(buildRequest(transport)),
       signal: controller.signal,
     });
+    const measuredTtftMs = elapsed();
+    clearTimeout(timeout);
+    timeoutStage = 'response';
+    timeout = setTimeout(() => controller.abort(), Math.max(1, timeoutMs - measuredTtftMs));
 
     if (!response.ok) {
       return {
@@ -226,6 +241,7 @@ export async function probeTransport(transport, apiKey, fetchImpl = globalThis.f
         code: `http_${response.status}`,
         http: response.status,
         elapsed_ms: elapsed(),
+        ttft_ms: measuredTtftMs,
       };
     }
 
@@ -238,6 +254,7 @@ export async function probeTransport(transport, apiKey, fetchImpl = globalThis.f
         code: 'invalid_response',
         http: response.status,
         elapsed_ms: elapsed(),
+        ttft_ms: measuredTtftMs,
       };
     }
 
@@ -246,12 +263,15 @@ export async function probeTransport(transport, apiKey, fetchImpl = globalThis.f
       status: 'healthy',
       http: response.status,
       elapsed_ms: elapsed(),
+      ttft_ms: measuredTtftMs,
     };
   } catch (error) {
     return {
       name: transport.name,
       status: 'unhealthy',
-      code: error?.name === 'AbortError' ? 'timeout' : 'request_error',
+      code: error?.name === 'AbortError'
+        ? (timeoutStage === 'ttft' ? 'ttft_timeout' : 'timeout')
+        : 'request_error',
       elapsed_ms: elapsed(),
     };
   } finally {
@@ -259,22 +279,41 @@ export async function probeTransport(transport, apiKey, fetchImpl = globalThis.f
   }
 }
 
-export async function runSmoke({ policy, policyPath, env = process.env, fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS, log = console.log } = {}) {
+export async function runSmoke({
+  policy,
+  policyPath,
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  ttftMs,
+  log = console.log,
+} = {}) {
   const loadedPolicy = policy || loadPolicy(policyPath);
   const transports = validatePolicy(loadedPolicy);
   const results = [];
   const review = loadedPolicy.review_yeti || {};
+  const effectiveTtftMs = Number(ttftMs ?? review.openrouter_ttft_ms ?? timeoutMs);
+  if (!Number.isFinite(effectiveTtftMs) || effectiveTtftMs <= 0) {
+    throw new Error('Review Yeti smoke TTFT budget must be a positive number');
+  }
   log(
     `[Review Yeti smoke] policy stream=${review.openrouter_stream ?? 'unset'} ` +
-      `ttft_ms=${review.openrouter_ttft_ms ?? 'unset'} timeout_ms=${timeoutMs}`,
+      `ttft_ms=${effectiveTtftMs} timeout_ms=${timeoutMs}`,
   );
 
   for (const transport of transports) {
-    const result = await probeTransport(transport, env[transport.api_key_env], fetchImpl, timeoutMs);
+    const result = await probeTransport(
+      transport,
+      env[transport.api_key_env],
+      fetchImpl,
+      timeoutMs,
+      effectiveTtftMs,
+    );
     results.push(result);
     const timing = result.elapsed_ms != null ? ` elapsed_ms=${result.elapsed_ms}` : '';
     const http = result.http != null ? ` http=${result.http}` : '';
-    log(`[Review Yeti smoke] ${result.name}: ${result.status}${timing}${http}${result.code ? ` (${result.code})` : ''}`);
+    const ttft = result.ttft_ms != null ? ` ttft_ms=${result.ttft_ms}` : '';
+    log(`[Review Yeti smoke] ${result.name}: ${result.status}${timing}${http}${ttft}${result.code ? ` (${result.code})` : ''}`);
   }
 
   const healthy = results.filter((result) => result.status === 'healthy').map((result) => result.name);
