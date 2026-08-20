@@ -139,6 +139,7 @@ const { buildRebuttalMessages, parseRebuttalResponse, renderRebuttalReply, selec
 const { applyConfirmationOutcomes, buildConfirmationMessages, parseConfirmationResponse, selectFindingsForConfirmation } = require('../../../src/review/crossModelConfirm');
 const { demoteToAdvisories, matchConditionalLanes, resolveConditionalLanes } = require('../../../src/review/conditionalLanes');
 const { applyReflectionOutcomes, flattenPersonaFindings, runFindingReflection } = require('../../../src/review/reviewReflection');
+const { restoreWarmZoektIndex } = require('../../../src/mcp/zoektIndexCache');
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731';
 // Optional; default true. Set OPENROUTER_SESSION_STICKY=0 to disable.
@@ -1103,6 +1104,105 @@ function resolveTrustedFindingVerifierPolicy({ localConfig, prContext, env = pro
   const configDigest = sha256(String(localConfig?.raw || ''));
   const policyDigest = sha256(canonicalJson({ schemaVersion: 'finding-verification-policy-v1', mode, trustedBaseRef: verified.baseSha }));
   return Object.freeze({ status: 'trusted', enabled: true, mode, trustedBaseRef: verified.baseSha, configDigest, policyDigest });
+}
+
+/**
+ * Wraps a Zoekt search registry so any match on a path this review itself changed is tagged
+ * `stale: true`. Only meaningful when the wrapped registry's index reflects an older commit than
+ * the review's own head (a restored warm index) -- see the call site in `main()` for why a
+ * freshly built index skips this entirely. `changedPaths` with no entries is a no-op (nothing to
+ * tag), never an error.
+ */
+function withStaleZoektMatchTagging(registry, changedPaths) {
+  const changed = new Set((Array.isArray(changedPaths) ? changedPaths : []).filter((path) => typeof path === 'string' && path));
+  if (!registry || typeof registry.call !== 'function' || changed.size === 0) return registry;
+  return Object.freeze({
+    capabilities: registry.capabilities,
+    call: async (tool, args, options) => {
+      const result = await registry.call(tool, args, options);
+      if (result?.status !== 'ok' || !Array.isArray(result.matches)) return result;
+      return {
+        ...result,
+        matches: result.matches.map((match) => (
+          match && changed.has(match.path) ? { ...match, stale: true } : match
+        )),
+      };
+    },
+  });
+}
+
+/**
+ * Resolves a ready Zoekt search registry for `identity`, restoring a warm index before ever
+ * paying to build one fresh. Fully dependency-injected (no direct `require`, no direct
+ * `console.*`) so every branch -- cache hit, cache miss falling through to materialize+build,
+ * a materialize or build failure, and the stale-tagging decision -- is directly testable without
+ * a live GitHub Actions runner, live GitHub network access, or the zoekt/zoekt-index binaries.
+ * `main()`'s call site supplies the real implementations; see resolveZoektRegistry's own doc
+ * comments upstream (the block that built this call) for the ADR 0329 / operator-provisioning
+ * rationale.
+ *
+ * Returns the ready registry, or `null` if nothing worked (never throws -- every failure of
+ * `restoreZoektIndex`/`materialize`/`build` is inspected via its own `status` field, matching
+ * their own fail-soft contract).
+ */
+async function resolveZoektRegistry({
+  identity,
+  changedPaths,
+  scratchRoot,
+  token,
+  fetchImplementation,
+  signal,
+  restoreZoektIndex,
+  materialize,
+  build,
+  createSearchTool,
+  log = () => {},
+  warn = () => {},
+}) {
+  const indexDir = path.join(scratchRoot, `zoekt-index-${identity.headSha}`);
+  let ready = false;
+  let indexedSha = identity.headSha;
+
+  // Provisioning-first (operator direction: the repo tree and its index are deployment assets,
+  // not request-path work): try a warm index a separate, deliberately-triggered refresh workflow
+  // already built and cached for this repository (src/mcp/zoektIndexCache.js) before paying the
+  // materialize+build tax below. Measured live against cisco-cdr (14.2k files): 7,865ms +
+  // 4,692ms = 12,557ms flat, paid on every review today, before any persona lane's own
+  // laneDeadline clock even starts. A cache miss -- no refresh workflow configured yet, first
+  // run, or a 7-day-unused eviction -- falls straight through to exactly the materialize+build
+  // sequence this replaces; this can only ever be a strict superset of what already worked.
+  const restored = await restoreZoektIndex({ repository: identity.repository, indexDir });
+  if (restored.status === 'ok') {
+    ready = true;
+    indexedSha = restored.indexedSha;
+    log(`[Evidence] Restored a warm Zoekt index for ${identity.repository}@${indexedSha.slice(0, 12)} in ${restored.elapsedMs}ms (review head ${identity.headSha.slice(0, 12)}).`);
+  } else {
+    log(`[Evidence] No warm Zoekt index available (${restored.reason}); building fresh.`);
+    const workdir = path.join(scratchRoot, `zoekt-src-${identity.headSha}`);
+    const materialized = await materialize({ repository: identity.repository, headSha: identity.headSha, token, destDir: workdir, fetchImplementation, signal });
+    if (materialized.status === 'ok') {
+      const built = await build({ workdir: materialized.workdir, indexDir });
+      if (built.status === 'ok') {
+        ready = true;
+        log(`[Evidence] Zoekt index ready: ${built.shardCount ?? 0} shard(s) in ${built.elapsedMs}ms.`);
+      } else {
+        warn(`[Evidence] Zoekt index build unavailable: ${built.reason}`);
+      }
+    } else {
+      warn(`[Evidence] Zoekt workdir materialization unavailable: ${materialized.reason}`);
+    }
+  }
+  if (!ready) return null;
+
+  const searchTool = createSearchTool({ identity: { ...identity, indexedSha }, indexDir, config: { enabled: true } });
+  // A warm index restored above is a fixed, factual gap: it reflects indexedSha, and every file
+  // THIS review changes is -- by definition -- not reflected there (its content is what this PR
+  // is proposing, not what the index saw). That gap is knowable for free, with no extra network
+  // call: it is exactly this review's own diff. Any other drift (unrelated commits landed on the
+  // default branch between the last refresh and this review's base) is a real but separate,
+  // bounded residual risk that shrinks with refresh cadence -- not computed here. A fresh
+  // (indexedSha === identity.headSha) index has no gap at all and skips tagging entirely.
+  return indexedSha === identity.headSha ? searchTool : withStaleZoektMatchTagging(searchTool, changedPaths);
 }
 
 function findingVerifierIdentity(policy, prContext) {
@@ -9028,28 +9128,20 @@ async function main(options = {}) {
           }
         } else if (evidenceRegistryConfig.zoekt?.enabled && navigationToken && navigationIdentity.repository && navigationIdentity.headSha) {
           try {
-            const zoektScratchRoot = runtimeEnv.RUNNER_TEMP || require('os').tmpdir();
-            const zoektWorkdir = path.join(zoektScratchRoot, `zoekt-src-${navigationIdentity.headSha}`);
-            const materialized = await materializeReviewWorkdir({
-              repository: navigationIdentity.repository,
-              headSha: navigationIdentity.headSha,
+            zoektRegistry = await resolveZoektRegistry({
+              identity: navigationIdentity,
+              changedPaths: reviewDiffFiles.map((file) => file.path),
+              scratchRoot: runtimeEnv.RUNNER_TEMP || require('os').tmpdir(),
               token: navigationToken,
-              destDir: zoektWorkdir,
               fetchImplementation,
               signal: cancellation.signal,
+              restoreZoektIndex: options.zoektCache?.restoreWarmZoektIndex || restoreWarmZoektIndex,
+              materialize: materializeReviewWorkdir,
+              build: buildZoektIndex,
+              createSearchTool: createZoektSearchTool,
+              log: console.log,
+              warn: console.warn,
             });
-            if (materialized.status === 'ok') {
-              const zoektIndexDir = path.join(zoektScratchRoot, `zoekt-index-${navigationIdentity.headSha}`);
-              const built = await buildZoektIndex({ workdir: materialized.workdir, indexDir: zoektIndexDir });
-              if (built.status === 'ok') {
-                zoektRegistry = createZoektSearchTool({ identity: navigationIdentity, indexDir: zoektIndexDir, config: { enabled: true } });
-                console.log(`[Evidence] Zoekt index ready: ${built.shardCount ?? 0} shard(s) in ${built.elapsedMs}ms.`);
-              } else {
-                console.warn(`[Evidence] Zoekt index build unavailable: ${built.reason}`);
-              }
-            } else {
-              console.warn(`[Evidence] Zoekt workdir materialization unavailable: ${materialized.reason}`);
-            }
           } catch (error) {
             console.warn(`[Evidence] Zoekt review-time search unavailable: ${error.message || error}`);
           }
@@ -10015,6 +10107,8 @@ module.exports = {
   resolveTrustedFindingVerifierPolicy,
   findingVerifierIdentity,
   resolveFindingReflectionPolicy,
+  withStaleZoektMatchTagging,
+  resolveZoektRegistry,
   fetchExactFindingBlobSnapshot,
   applyFindingVerifier,
   applyFindingVerifierGate,
