@@ -602,11 +602,15 @@ runs:
           --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/review-yeti.diff"
         echo "Fetched $(wc -l < "${RUNNER_TEMP}/review-yeti.diff") diff lines."
 
-    # ── Node pipeline deps (js-yaml) ──────────────────────────────────────────
+    # ── Node pipeline deps (js-yaml, @actions/cache) ──────────────────────────
     # Do NOT use actions/setup-node or actions/cache here. Consumer repos with
     # sha_pinning_required reject nested marketplace actions inside a composite
     # action checked out to a local path (error reports @v4 even when SHA-pinned).
-    # Blacksmith Ubuntu runners already ship Node 20; install js-yaml with npm only.
+    # Blacksmith Ubuntu runners already ship Node 20; install both with npm only.
+    # @actions/cache is the same toolkit the actions/cache marketplace action itself is built on
+    # -- calling it directly from Node has no such nested-action restriction. js-yaml is fatal if
+    # missing (config parsing has no fallback); @actions/cache is best-effort (src/mcp/
+    # zoektIndexCache.js already fails soft to "build fresh" if it never loads).
     - name: Install pipeline dependencies
       shell: bash
       env:
@@ -630,6 +634,13 @@ runs:
           ls -la "$NPM_PREFIX" "$NPM_PREFIX/node_modules" 2>/dev/null || true
           exit 1
         }
+        if [[ ! -d "$NPM_PREFIX/node_modules/@actions/cache" ]]; then
+          echo "installing @actions/cache@4.1.0 into $NPM_PREFIX (best-effort)"
+          npm install --prefix "$NPM_PREFIX" @actions/cache@4.1.0 --no-save --no-audit --no-fund --prefer-offline \
+            || echo "::warning::@actions/cache install failed; Zoekt review-time search will build a fresh index every review instead of restoring a warm one"
+        else
+          echo "reusing $NPM_PREFIX/node_modules/@actions/cache"
+        fi
         # Pipeline scripts resolve modules from GITHUB_ACTION_PATH/node_modules
         # (walk-up from .github/workflows/pipelines/*.js).
         rm -rf "$GITHUB_ACTION_PATH/node_modules"
