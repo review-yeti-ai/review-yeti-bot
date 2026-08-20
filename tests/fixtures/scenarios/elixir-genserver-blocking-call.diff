@@ -1,0 +1,13 @@
+--- FILE: lib/calltelemetry/telemetry/metrics_collector.ex ---
+diff --git a/lib/calltelemetry/telemetry/metrics_collector.ex b/lib/calltelemetry/telemetry/metrics_collector.ex
+@@ -10,5 +10,14 @@
+   def handle_call({:track_metric, metric}, _from, state) do
+     new_state = [metric | state]
++    # Blocking: synchronous HTTP call inside handle_call blocks mailbox
++    case Req.post("https://telemetry.internal/api/v1/metrics", json: metric) do
++      {:ok, %{status: 200}} ->
++        {:reply, :ok, new_state}
++      {:error, reason} ->
++        {:reply, {:error, reason}, new_state}
++    end
+   end

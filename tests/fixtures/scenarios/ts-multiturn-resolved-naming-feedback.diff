@@ -1,0 +1,20 @@
+--- FILE: src/services/billingAlertService.ts ---
+diff --git a/src/services/billingAlertService.ts b/src/services/billingAlertService.ts
+@@ -1,5 +1,18 @@
+ export class BillingAlertService {
+   constructor(private readonly notifier: any) {}
+
++  /**
++   * Dispatches notification when tenant exceeds defined spending threshold.
++   */
++  async dispatchThresholdAlert(
++    tenantId: string,
++    quotaThresholdPercent: number,
++    currentUsageTokens: number
++  ): Promise<void> {
++    if (quotaThresholdPercent > 100 || quotaThresholdPercent <= 0) {
++      throw new RangeError('quotaThresholdPercent must be between 1 and 100');
++    }
++    await this.notifier.send(tenantId, { quotaThresholdPercent, currentUsageTokens });
++  }
++}

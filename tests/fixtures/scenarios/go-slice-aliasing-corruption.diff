@@ -1,0 +1,19 @@
+--- FILE: pkg/chunker/packet_chunker.go ---
+diff --git a/pkg/chunker/packet_chunker.go b/pkg/chunker/packet_chunker.go
+@@ -1,5 +1,17 @@
+ package chunker
+
+ type PacketHandler func(chunk []byte)
+
+ func ProcessStream(buf []byte, chunkSize int, handler PacketHandler) {
++	for len(buf) > 0 {
++		size := chunkSize
++		if size > len(buf) {
++			size = len(buf)
++		}
++		// Bug: slice aliasing shares backing array capacity with caller and concurrent workers
++		chunk := buf[:size]
++		go handler(chunk)
++		buf = buf[size:]
++	}
++}

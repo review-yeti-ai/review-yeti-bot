@@ -1,0 +1,9 @@
+--- FILE: migrations/20260820_add_metric_idx.sql ---
+diff --git a/migrations/20260820_add_metric_idx.sql b/migrations/20260820_add_metric_idx.sql
+@@ -1,2 +1,6 @@
+ -- Telemetry performance indexes
+
++-- Query pattern: SELECT * FROM metric_events WHERE org_id = $1 AND status = $2 ORDER BY timestamp DESC LIMIT 50;
++-- Defect: Single-column index is insufficient for composite filter and sort order
++CREATE INDEX CONCURRENTLY idx_metric_events_org ON metric_events(org_id);
++

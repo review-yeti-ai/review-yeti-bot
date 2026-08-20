@@ -12,9 +12,20 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  ssr: {
+    external: ['node:sqlite'],
+  },
+  optimizeDeps: {
+    exclude: ['node:sqlite'],
+  },
   test: {
     globals: true,
     environment: 'node',
+    server: {
+      deps: {
+        external: ['node:sqlite'],
+      },
+    },
     setupFiles: ['./tests/setup.ts'],
     environmentMatchGlobs: [
       ['**/*.tsx', 'jsdom'],
@@ -32,9 +43,7 @@ export default defineConfig({
       'tests/e2e/**/*.test.ts',
       'tests/benchmark/**/*.test.ts'
     ],
-    cache: {
-      dir: 'node_modules/.vitest',
-    },
+    cacheDir: 'node_modules/.vitest',
     pool: 'forks',
     poolOptions: {
       forks: {

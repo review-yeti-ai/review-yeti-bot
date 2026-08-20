@@ -2,10 +2,12 @@ import '@testing-library/jest-dom';
 import * as matchers from '@testing-library/jest-dom/matchers';
 import { expect, beforeEach, afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
+import fs from 'node:fs';
 import { dashboardStore } from '../src/persistence/dashboardStore';
 import { postgresStore } from '../src/persistence/postgresStore';
 import { providerPool } from '../src/gateway/providerPool';
 import { inMemorySpanExporter } from '../src/telemetry/spans';
+import { authService } from '../src/dashboard/authService';
 
 expect.extend(matchers);
 
@@ -30,6 +32,15 @@ function resetAllGlobalState() {
     }
   }
   Object.assign(process.env, initialEnv);
+
+  // 1.5. Clean test store file if in /tmp
+  if (process.env.CT_DASHBOARD_STORE && process.env.CT_DASHBOARD_STORE.startsWith('/tmp/')) {
+    try {
+      if (fs.existsSync(process.env.CT_DASHBOARD_STORE)) {
+        fs.unlinkSync(process.env.CT_DASHBOARD_STORE);
+      }
+    } catch {}
+  }
 
   // 2. Reset Singleton Stores
   if (typeof dashboardStore.reset === 'function') {

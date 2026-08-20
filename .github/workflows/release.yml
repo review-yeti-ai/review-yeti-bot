@@ -1,0 +1,147 @@
+name: Release & Benchmark Publishing Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version/tag (e.g. v1.8.4 or v2.0.0)'
+        required: false
+        type: string
+      compare_baseline:
+        description: 'Historical baseline to compare against'
+        required: false
+        default: 'eval-baselines/model-benchmark-matrix-v2.json'
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-and-release:
+    name: Release Benchmark Gate & Digest Publishing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: read
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify TypeScript Build
+        run: npm run build
+
+      - name: Execute Fast Quality Test Suite
+        run: |
+          npm run test:unit
+          npm run test:integration
+
+      - name: Resolve Release Version
+        id: resolve-version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            RELEASE_VER="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            RELEASE_VER="${GITHUB_REF#refs/tags/}"
+          else
+            RELEASE_VER="v$(node -p "require('./package.json').version")"
+          fi
+          echo "version=${RELEASE_VER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: ${RELEASE_VER}"
+
+      - name: Run Benchmark Evaluation & Automated Quality Gate
+        id: benchmark
+        env:
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+          BASELINE_INPUT: ${{ inputs.compare_baseline }}
+        run: |
+          set -euo pipefail
+          
+          BASELINE_PATH="${BASELINE_INPUT:-eval-baselines/model-benchmark-matrix-v2.json}"
+          if [ ! -f "$BASELINE_PATH" ]; then
+            BASELINE_PATH="eval-baselines/model-benchmark-matrix-v1.json"
+          fi
+          
+          echo "Executing benchmark harness..."
+          echo "Version: ${RELEASE_VER}"
+          echo "Baseline: ${BASELINE_PATH}"
+          
+          node scripts/evaluate-release-benchmark.mjs \
+            --offline \
+            --save-baseline="${RELEASE_VER}" \
+            --compare-baseline="${BASELINE_PATH}" \
+            --fail-on-regression
+          
+          JSON_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.json"
+          MD_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.md"
+          
+          if [ ! -f "$JSON_PATH" ] || [ ! -f "$MD_PATH" ]; then
+            echo "::error::Benchmark baseline artifacts were not generated at expected paths."
+            exit 1
+          fi
+          
+          echo "json_path=${JSON_PATH}" >> "$GITHUB_OUTPUT"
+          echo "md_path=${MD_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GitHub Release Exists
+        env:
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+        run: |
+          if ! gh release view "$RELEASE_VER" >/dev/null 2>&1; then
+            echo "Creating release $RELEASE_VER..."
+            gh release create "$RELEASE_VER" --title "Release $RELEASE_VER" --generate-notes
+          else
+            echo "Release $RELEASE_VER already exists."
+          fi
+
+      - name: Upload Benchmark Matrix Downloadable Assets
+        env:
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+          JSON_PATH: ${{ steps.benchmark.outputs.json_path }}
+          MD_PATH: ${{ steps.benchmark.outputs.md_path }}
+        run: |
+          echo "Uploading $JSON_PATH and $MD_PATH to release $RELEASE_VER..."
+          gh release upload "$RELEASE_VER" "$JSON_PATH" "$MD_PATH" --clobber
+
+      - name: Embed Summary Benchmark Table into Release Notes
+        env:
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+          MD_PATH: ${{ steps.benchmark.outputs.md_path }}
+        run: |
+          set -euo pipefail
+          
+          BENCHMARK_DIGEST=$(node scripts/evaluate-release-benchmark.mjs \
+            --extract-digest-from="${MD_PATH}" \
+            --save-baseline="${RELEASE_VER}" \
+            --repository="${GITHUB_REPOSITORY:-calltelemetry/ct-review-bot}")
+          
+          EXISTING_NOTES=$(gh release view "$RELEASE_VER" --json body -q .body 2>/dev/null || echo "")
+          
+          UPDATED_NOTES=$(node -e "
+            import('./scripts/evaluate-release-benchmark.mjs').then(({ mergeReleaseNotes }) => {
+              const existing = process.argv[1] || '';
+              const digest = process.argv[2] || '';
+              console.log(mergeReleaseNotes(existing, digest));
+            });
+          " "$EXISTING_NOTES" "$BENCHMARK_DIGEST")
+          
+          gh release edit "$RELEASE_VER" --notes "$UPDATED_NOTES"
+          echo "Successfully embedded benchmark digest into release $RELEASE_VER notes."

@@ -1,0 +1,15 @@
+--- FILE: src/handlers/webhookHandler.ts ---
+diff --git a/src/handlers/webhookHandler.ts b/src/handlers/webhookHandler.ts
+@@ -1,8 +1,12 @@
+ import { Request, Response } from 'express';
+ import { verifySignature } from '../utils/crypto';
+ 
+ export async function handleWebhookEvent(req: Request, res: Response): Promise<void> {
+   const sig = req.headers['stripe-signature'] as string;
+   const evt = verifySignature(req.body, sig);
++  if (!evt) {
++    res.status(400).send('Invalid signature');
++    return;
+   }
+   res.status(200).json({ received: true });
+ }

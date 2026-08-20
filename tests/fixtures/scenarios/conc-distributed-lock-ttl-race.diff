@@ -1,0 +1,24 @@
+--- FILE: src/services/batchExportService.ts ---
+diff --git a/src/services/batchExportService.ts b/src/services/batchExportService.ts
+@@ -1,5 +1,20 @@
+ import { RedisClient } from '../cache/redisClient';
+ import { DatabaseClient } from '../database/dbClient';
+
+ export class BatchExportService {
+   constructor(private redis: RedisClient, private db: DatabaseClient) {}
++
++  async runExportJob(jobId: string, tenantId: string): Promise<void> {
++    const lockKey = `lock:export:${tenantId}:${jobId}`;
++    const acquired = await this.redis.set(lockKey, 'locked', 'NX', 'EX', 5);
++    if (!acquired) {
++      throw new Error(`Export job ${jobId} is already running for tenant ${tenantId}`);
++    }
++    try {
++      // Long running batch export (> 30s) without heartbeat/timer renewal of lock TTL
++      const records = await this.db.fetchLargeDataset(tenantId);
++      await this.processAndUploadRecords(jobId, records);
++    } finally {
++      await this.redis.del(lockKey);
++    }
++  }
++}

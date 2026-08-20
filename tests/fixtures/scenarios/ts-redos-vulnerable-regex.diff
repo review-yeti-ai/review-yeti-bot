@@ -1,0 +1,14 @@
+--- FILE: src/validators/tagValidator.ts ---
+diff --git a/src/validators/tagValidator.ts b/src/validators/tagValidator.ts
+@@ -1,4 +1,12 @@
+ export class TagValidator {
+   private static MAX_TAG_LENGTH = 128;
+
++  // Defect: Nested greedy quantifiers cause catastrophic exponential backtracking (ReDoS)
++  private static TAG_REGEX = /^([a-zA-Z0-9]+)+$/;
+
++  static isValidTag(input: string): boolean {
++    if (!input || input.length > this.MAX_TAG_LENGTH) return false;
++    return this.TAG_REGEX.test(input);
++  }
++}

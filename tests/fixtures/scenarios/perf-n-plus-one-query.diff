@@ -1,0 +1,17 @@
+--- FILE: src/services/orderBatchService.ts ---
+diff --git a/src/services/orderBatchService.ts b/src/services/orderBatchService.ts
+@@ -12,6 +12,17 @@
+ export class OrderBatchService {
+   constructor(private db: DatabaseClient) {}
+ 
++  async getOrdersWithItems(orgId: string): Promise<OrderSummary[]> {
++    const orders = await this.db.query('SELECT * FROM orders WHERE org_id = $1', [orgId]);
++    const summaries: OrderSummary[] = [];
++    for (const order of orders.rows) {
++      // Performance defect: N+1 query executed sequentially for each order
++      const items = await this.db.query('SELECT * FROM order_items WHERE order_id = $1', [order.id]);
++      summaries.push({ ...order, items: items.rows });
++    }
++    return summaries;
+   }
+ }

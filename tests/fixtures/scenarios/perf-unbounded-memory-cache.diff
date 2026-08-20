@@ -1,0 +1,14 @@
+--- FILE: src/cache/sessionEventBuffer.ts ---
+diff --git a/src/cache/sessionEventBuffer.ts b/src/cache/sessionEventBuffer.ts
+@@ -1,6 +1,14 @@
+ export class SessionEventBuffer {
++  // Unbounded Map with no eviction, max-size, or TTL leads to memory leak
++  private static eventStore = new Map<string, any[]>();
++
++  static recordEvent(sessionId: string, payload: any): void {
++    if (!this.eventStore.has(sessionId)) {
++      this.eventStore.set(sessionId, []);
++    }
++    this.eventStore.get(sessionId)!.push(payload);
++  }
+ }

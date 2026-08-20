@@ -1,0 +1,18 @@
+--- FILE: src/storage/secureKeyStorage.ts ---
+diff --git a/src/storage/secureKeyStorage.ts b/src/storage/secureKeyStorage.ts
+@@ -1,5 +1,17 @@
+ import fs from 'node:fs/promises';
+ import path from 'node:path';
+
+ export class SecureKeyStorage {
++  async writeSecretKey(keyPath: string, secretData: string): Promise<void> {
++    try {
++      // TOCTOU Race: check access first then write without O_EXCL or atomic file creation
++      await fs.access(keyPath);
++      throw new Error(`Target key file already exists at ${keyPath}`);
++    } catch (err: any) {
++      if (err.code !== 'ENOENT') throw err;
++    }
++    await fs.writeFile(keyPath, secretData, { mode: 0o600 });
++  }
++}

@@ -40,7 +40,10 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
       reqPath === '/auth' ||
       reqPath.startsWith('/auth/') ||
       reqPath === '/api/auth' ||
-      reqPath.startsWith('/api/auth/'));
+      reqPath.startsWith('/api/auth/') ||
+      reqPath.startsWith('/api/onboarding') ||
+      reqPath.startsWith('/api/github/app-config') ||
+      reqPath.startsWith('/api/github/manifest'));
 
   if (isPublicRoute) {
     return next();
