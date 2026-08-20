@@ -38,6 +38,8 @@ if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrou
     raise SystemExit('policy must preserve Fireworks -> Ollama -> OpenRouter order')
 if [item.get('reasoning_effort') for item in transports] != ['max', 'high', 'max']:
     raise SystemExit('reasoning must be Fireworks=max, Ollama=high, OpenRouter=max')
+if transports[1].get('model') != 'deepseek-v4-flash:cloud':
+    raise SystemExit('ollama must use the cloud DeepSeek-V4-Flash slug')
 if transports[0].get('perf_metrics_in_response') is not True:
     raise SystemExit('Fireworks must return performance metrics')
 if review.get('openrouter_max_attempts') != '2':

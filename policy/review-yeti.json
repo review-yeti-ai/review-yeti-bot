@@ -22,7 +22,7 @@
         "name": "ollama",
         "base_url": "https://ollama.com/v1",
         "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
-        "model": "deepseek-v4-flash:0731",
+        "model": "deepseek-v4-flash:cloud",
         "compat": "openai",
         "timeout_ms": 60000,
         "connect_timeout_ms": 30000,
