@@ -423,6 +423,81 @@ describe('persona investigation state machine', () => {
     expect(result.personaResult).toMatchObject({ decision: 'ERROR', error: 'malformed_response' });
   });
 
+  it('shows the model its own rejected response in the corrective re-ask transcript', async () => {
+    // Live failure 2026-08-19 (deepseek-v4-flash-0731): the re-ask says "Resend the ENTIRE
+    // corrected JSON object" but the transcript contained no assistant turn at all, so the
+    // model had nothing to correct -- observed degenerating to `{}` (2 bytes) and empty
+    // responses instead of a repair. The rejected response must be in the transcript.
+    const rejected = JSON.stringify({
+      review_status: 'COMPLETE',
+      risk_plan: [{ id: 'risk-1', unit_ids: ['ru_auth'], statement: 'auth guard can be bypassed', evidence_needed: [], allowed_tools: [] }],
+      evidence_requests: [],
+      risk_dispositions: [{ risk_id: 'risk-1', status: 'confirmed', reason: 'confirmed' }],
+      findings: [{ severity: 'P9', path: 'src/a.js', line: 1, title: 'bad severity', body: 'contract-rejected', risk_id: 'risk-1', evidence_receipt_ids: [] }],
+    });
+    const calls: Array<{ messages: any[] }> = [];
+    let index = 0;
+    const responses = [
+      { ok: true, content: rejected, model: 'test/model', provider: 'examplecloud' },
+      completeResponse(),
+    ];
+    const modelTurn = async ({ messages }: { messages: any[] }) => {
+      calls.push({ messages });
+      return responses[Math.min(index++, responses.length - 1)];
+    };
+
+    const result = await runPersonaInvestigation({ ...baseInput, modelTurn });
+
+    expect(calls).toHaveLength(2);
+    const reaskMessages = calls[1].messages;
+    const last = reaskMessages[reaskMessages.length - 1];
+    const beforeLast = reaskMessages[reaskMessages.length - 2];
+    expect(last.role).toBe('user');
+    expect(last.content).toContain('rejected before publication');
+    expect(beforeLast.role).toBe('assistant');
+    expect(beforeLast.content).toBe(rejected);
+    expect(result.executionReceipt.termination).toBe('completed');
+  });
+
+  it('shows the model its own COMPLETE response in the omitted-units re-ask transcript', async () => {
+    const omitting = {
+      ok: true,
+      content: JSON.stringify({
+        review_status: 'COMPLETE',
+        risk_plan: [{ id: 'risk-1', unit_ids: ['ru_auth'], statement: 'auth guard can be bypassed', evidence_needed: [], allowed_tools: [] }],
+        evidence_requests: [],
+        risk_dispositions: [{ risk_id: 'risk-1', status: 'rejected', reason: 'guard present' }],
+        findings: [],
+      }),
+      model: 'test/model',
+      provider: 'examplecloud',
+    };
+    const calls: Array<{ messages: any[] }> = [];
+    let index = 0;
+    const responses = [omitting, completeResponse()];
+    const modelTurn = async ({ messages }: { messages: any[] }) => {
+      calls.push({ messages });
+      return responses[Math.min(index++, responses.length - 1)];
+    };
+
+    const result = await runPersonaInvestigation({
+      ...baseInput,
+      investigationUnitIds: ['ru_auth', 'ru_other'],
+      limits: { maxTurns: 3 },
+      modelTurn,
+    });
+
+    expect(calls.length).toBeGreaterThan(1);
+    const reaskMessages = calls[1].messages;
+    const last = reaskMessages[reaskMessages.length - 1];
+    const beforeLast = reaskMessages[reaskMessages.length - 2];
+    expect(last.role).toBe('user');
+    expect(last.content).toContain('omitted assigned review unit');
+    expect(beforeLast.role).toBe('assistant');
+    expect(beforeLast.content).toBe(omitting.content);
+    expect(result.executionReceipt.termination).toBe('completed');
+  });
+
   it('fails closed after one corrective re-ask on an unresolved-OpenRouter-route empty response', async () => {
     const calls: Array<{ providerIgnore?: string[] }> = [];
     const modelTurn = async ({ providerIgnore }: { providerIgnore?: string[] }) => {

@@ -428,10 +428,21 @@ async function runPersonaInvestigation(input = {}) {
       // bookkeeping across all three model builds.
       if (!semanticRepairAttempted) {
         semanticRepairAttempted = true;
-        messages = [...messages, {
-          role: 'user',
-          content: `Your previous response was rejected before publication: ${failure.reason}. Resend the ENTIRE corrected JSON object now — exact same schema, no commentary, no markdown fences. Fix only the rejected aspect; keep review_status, risk ids, dispositions, findings, and evidence receipt references mutually consistent.`,
-        }];
+        // The rejected response must be IN the transcript. Every prior corrective path appended
+        // only user messages, so "Resend the ENTIRE corrected JSON object" referred to a
+        // response the model could not see -- observed live (2026-08-19, deepseek-v4-flash-0731)
+        // degenerating the re-ask to `{}` or empty content instead of a repair. An empty
+        // rejected response has nothing to show (and some gateways reject empty assistant
+        // turns), so it is only appended when non-empty.
+        const rejectedContent = typeof response.content === 'string' ? response.content : '';
+        messages = [
+          ...messages,
+          ...(rejectedContent ? [{ role: 'assistant', content: rejectedContent }] : []),
+          {
+            role: 'user',
+            content: `Your previous response was rejected before publication: ${failure.reason}. Resend the ENTIRE corrected JSON object now — exact same schema, no commentary, no markdown fences. Fix only the rejected aspect; keep review_status, risk ids, dispositions, findings, and evidence receipt references mutually consistent.`,
+          },
+        ];
         continue;
       }
       return incompleteLane({
@@ -484,6 +495,9 @@ async function runPersonaInvestigation(input = {}) {
         }
         messages = [
           ...messages,
+          // Same transcript rule as the corrective re-ask above: the response being corrected
+          // must be visible to the model correcting it.
+          ...(typeof response.content === 'string' && response.content ? [{ role: 'assistant', content: response.content }] : []),
           {
             role: 'user',
             content: `Your COMPLETE response omitted assigned review unit(s): ${missingUnits.join(', ')}. Return the entire JSON object again and include every assigned unit in risk_plan. For a unit with no actionable risk, add a rejected or not_applicable risk and disposition; do not invent findings or evidence receipts.`,

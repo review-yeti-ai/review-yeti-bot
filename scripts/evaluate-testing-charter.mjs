@@ -30,6 +30,7 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
 const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require(path.join(root, 'src/review/reviewInvestigation.js'));
+const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(root, '.github/workflows/pipelines/openRouterPolicy.js'));
 const { createReviewUnitManifest } = require(path.join(root, 'src/review/reviewUnitManifest.js'));
 const { sha256 } = require(path.join(root, 'src/review/reviewCore.js'));
 
@@ -384,7 +385,13 @@ async function main() {
       // resolveEvalMaxTokens's doc comment. Spreading conditionally keeps modelOptions identical
       // to before this fix whenever a cap does apply.
       ...(maxTokens !== undefined ? { maxTokens } : {}),
-      openRouterPolicy: { allowedModels: [], fallbackModels: [], ignoredProviders: ['deepinfra'], providerRouting: { ignore: ['deepinfra'] }, timeoutMs: 90_000, stream: true },
+      // Production's full hard-ban list, not a hand-picked subset. The old `['deepinfra']`
+      // literal let providers production always excludes (novita, together, parasail,
+      // openinference, ...) serve eval traffic -- observed live 2026-08-19: two 60s stalls
+      // (DigitalOcean, OpenInference) and three prod-banned providers routed in a single
+      // 9-fixture pass. A harness that routes differently from production cannot measure it.
+      // stream: true preserved from #139 (SSE required on review preflight).
+      openRouterPolicy: { allowedModels: [], fallbackModels: [], ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS], providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS] }, timeoutMs: 90_000, stream: true },
     },
   });
 
