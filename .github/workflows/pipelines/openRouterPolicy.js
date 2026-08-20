@@ -39,6 +39,7 @@ const DEFAULT_PROVIDER_ROUTING = Object.freeze({
  *   ignoredProviders: string[],
  *   timeoutMs: number,
  *   ttftMs: number,
+ *   maxAttempts: number,
  *   stream: boolean,
  *   fallbackModels: string[],
  *   providerRouting: object,
@@ -91,7 +92,7 @@ function resolveOpenRouterPolicy(localConfig, env) {
   const cfgStructuredOutput = cfgOr.structured_output ?? cfgOr.structuredOutput;
   const cfgProviderRouting = cfgOr.provider_routing ?? cfgOr.providerRouting;
 
-  // 3. Defaults — 60s per request is the product default.
+  // 3. Defaults — 30s per request is the product default.
   const DEFAULT_TIMEOUT_MS = 30_000;
 
   let allowedModels = (envAllowed.length > 0 ? envAllowed : cfgAllowed) || [];
