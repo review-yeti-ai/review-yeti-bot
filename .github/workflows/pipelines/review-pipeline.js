@@ -2952,7 +2952,7 @@ function renderDiffForPrompt(diffFiles, maxDiffChars) {
 //
 // A caller that wants the ban to actually span the run passes one Set instance via
 // `options.runTimedOutProviders`, shared by reference across every persona lane's modelOptions
-// (see the boundedMode and legacy dispatch sites below). This module only ever mutates that Set
+// (see the persona-dispatch site below). This module only ever mutates that Set
 // through addRunScopedProviderBan, which caps its size. Deliberately NOT a module-level global:
 // that would leak a ban across unrelated PRs/reviews in any process that reviews more than one PR
 // (and across parallel test runs) -- the Set must be constructed fresh per review run and threaded
@@ -8010,13 +8010,6 @@ async function main(options = {}) {
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const fetchImplementation = options.fetchImplementation || globalThis.fetch;
   let prContext = options.prContext || getPRDiffAndContext(runtimeEnv);
-  // Bounded evidence execution is the authoritative production path whenever the event supplies
-  // an immutable review identity. Synthetic helper tests without real SHAs retain their fixture
-  // adapter path; production has no such escape hatch.
-  const boundedMode = options.boundedReview !== false
-    && Number(prContext.prNumber) > 0
-    && isImmutableCommitSha(prContext.baseSha)
-    && isImmutableCommitSha(prContext.headSha);
   console.log(`[Context] Repo: ${prContext.repo} | PR #: ${prContext.prNumber || 'N/A'} | SHA: ${prContext.headSha.slice(0, 7)}`);
 
   let sessionContext = null;
@@ -8096,7 +8089,7 @@ async function main(options = {}) {
     prContext,
     env: runtimeEnv,
     commandRunner,
-    authoritative: boundedMode,
+    authoritative: true,
   });
   if (findingVerifierPolicy.enabled) console.log(`[Finding verifier] Trusted ${findingVerifierPolicy.mode} mode active (policy=${findingVerifierPolicy.policyDigest.slice(0, 12)}).`);
   const cancellation = createPipelineCancellation({
@@ -8259,16 +8252,15 @@ async function main(options = {}) {
   // Review-unit coverage consumes only the base snapshot's .gitmodules metadata. A URL change
   // visible in the immutable PR diff makes gitlinks unreviewable; it never authorizes reading a
   // PR-checkout .gitmodules file as policy or origin metadata.
-  const trustedSubmoduleUrlChange = boundedMode && diffFiles.some((file) => file.path === '.gitmodules' && /^[+-]\s*url\s*=/mu.test(String(file.patch || '')));
+  const trustedSubmoduleUrlChange = diffFiles.some((file) => file.path === '.gitmodules' && /^[+-]\s*url\s*=/mu.test(String(file.patch || '')));
   const submoduleInputs = trustedSubmoduleUrlChange
     ? diffFiles.map((file) => isGitlinkMode(file) ? { ...file, submoduleUrlChanged: true } : file)
     : diffFiles;
-  const submoduleUrls = boundedMode || reviewUnitsPolicy.enabled ? baseSubmoduleUrls : loadActionSubmoduleUrls(process.cwd(), prContext.repo);
   const submoduleReview = applyActionSubmodulePolicy(submoduleInputs, actionPolicy.submodules, {
     baseSubmoduleUrls,
-    submoduleUrls,
+    submoduleUrls: baseSubmoduleUrls,
     parentRepository: prContext.repo,
-    preserveIgnoredSubmodules: boundedMode || reviewUnitsPolicy.enabled,
+    preserveIgnoredSubmodules: true,
   });
   const reviewDiffFiles = submoduleReview.files;
   if (reviewDiffFiles.length === 0) {
@@ -8318,9 +8310,8 @@ async function main(options = {}) {
     [...configuredExcludes, ...envExcludes],
     { maxFileDiffChars: actionPolicy.maxFileDiffChars },
   );
-  if (boundedMode || reviewUnitsPolicy.enabled) {
+  {
     // Rebuild selection from the immutable manifest, not from Action environment exclusions.
-    // The existing legacy filter remains completely untouched when this opt-in is disabled.
     const planned = createReviewUnitManifest({
       identity: reviewUnitIdentity(authoritativeUnitPolicy, prContext),
       files: reviewDiffFiles,
@@ -8362,16 +8353,14 @@ async function main(options = {}) {
   }
   const manifest = buildFileManifest(diffFiles, exclusions);
   console.log(`[Manifest] Describing all ${manifest.entries.length} changed file(s) to every reviewer (${exclusions.size} marked excluded from review).`);
-  const provisionalReviewUnitManifest = boundedMode ? createReviewUnitManifest({
+  const provisionalReviewUnitManifest = createReviewUnitManifest({
     identity: reviewUnitIdentity(authoritativeUnitPolicy, prContext),
     files: reviewDiffFiles,
     trustedRules: authoritativeUnitPolicy.rules,
     policy: authoritativeUnitPolicy.rules,
     now,
-  }) : null;
-  const unitIdsByPath = provisionalReviewUnitManifest
-    ? Object.fromEntries(provisionalReviewUnitManifest.units.map((unit) => [unit.path, unit.id]))
-    : {};
+  });
+  const unitIdsByPath = Object.fromEntries(provisionalReviewUnitManifest.units.map((unit) => [unit.path, unit.id]));
   const dependencyRiskHints = buildDependencyRiskHints({ files: reviewDiffFiles, unitIdsByPath });
   // The raw thread snapshot is captured once and shared: the ledger consumes
   // it for decision state, and the rebuttal re-run needs the reply bodies the
@@ -8444,13 +8433,11 @@ async function main(options = {}) {
       passes: 0,
       terminalStatus: submoduleReview.coverageComplete ? 'SHIP' : 'INCOMPLETE_REVIEW',
     };
-    reviewUnitManifest = boundedMode
-      ? buildReviewUnitManifest(authoritativeUnitPolicy, prContext, reviewDiffFiles, coverage, now)
-      : buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
+    reviewUnitManifest = buildReviewUnitManifest(authoritativeUnitPolicy, prContext, reviewDiffFiles, coverage, now);
     if (reviewUnitManifest && !reviewUnitManifest.coverage.complete) coverage.terminalStatus = 'INCOMPLETE_REVIEW';
     investigationSummary = {
       schemaVersion: 'review-investigation-summary-v1',
-      enabled: boundedMode,
+      enabled: true,
       complete: Boolean(reviewUnitManifest?.coverage.complete),
       laneCount: 0,
       evidenceReceipts: 0,
@@ -9026,7 +9013,7 @@ async function main(options = {}) {
         + (streamGate ? ` stream_lane_limit=${streamLaneLimit}` : '')
         + ` lane_deadline_ms=${laneDeadlineMs}`,
       );
-      if (boundedMode) {
+      {
         const navigationIdentity = {
           repository: prContext.repo,
           prNumber: Number(prContext.prNumber),
@@ -9455,93 +9442,6 @@ async function main(options = {}) {
           evidenceEnabled,
           dependencyHints: dependencyRiskHints.length,
         };
-      } else {
-      // See the boundedMode branch above for why this is a single Set shared by reference across
-      // every persona lane in this review run, constructed fresh per run rather than module-level.
-      const runTimedOutProviders = new Set();
-      const evaluatedPersonas = await cancellation.race(Promise.all(
-        enabledPersonas.map(async (persona) => {
-          const runs = [];
-          for (const batch of passes) {
-            runs.push(await runPersonaInvestigation({
-              persona,
-              diffFiles: batch,
-              allDiffFiles: diffFiles,
-              prContext,
-              sessionContext: { ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext },
-              maxInvestigationTurns,
-              evidenceOptions: {
-                maxChars: 12_000,
-                excludedPaths: [...skipped.map((entry) => entry.path), ...oversized.map((entry) => entry.path)],
-              },
-              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, streamGate, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs, firstChunkKind } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0} first_chunk_kind=${firstChunkKind || 'unknown'}`) },
-            }));
-          }
-          return aggregatePersonaRuns(persona, runs, modelConfig.model);
-        })
-      ));
-      if (cancellation.isCancellationResult(evaluatedPersonas)) return;
-      personaResults = evaluatedPersonas;
-
-      const failed = personaResults.filter((r) => r.decision === 'ERROR');
-      for (const lane of failed) {
-        console.warn(`[Persona ${stablePersonaId(lane)}] Lane failed (${formatRouteLabel(lane)}): ${stableFailureReason(lane)}`);
-      }
-      if (failed.length === personaResults.length) {
-        console.error('[Review] Every persona lane failed. Refusing to post a verdict derived from zero completed reviews.');
-        process.exitCode = 1;
-        return;
-      }
-      if (findingVerifierPolicy.enabled) {
-        const verified = await applyFindingVerifier(personaResults, shownReviewFiles, findingVerifierPolicy, prContext, { commandRunner, fetchImplementation });
-        personaResults = verified.personaResults;
-        findingVerification = verified.verification;
-      } else {
-        personaResults = personaResults.map((lane) => {
-          const { rawFindings, ...safeLane } = lane;
-          return { ...safeLane, findings: sanitizeCanonicalFindings(safeLane.findings, shownReviewFiles) };
-        });
-      }
-
-      // Both filters run before arbitration: a verdict must be computed from findings that
-      // survive, or the panel blocks a merge on a defect it never actually established.
-      const incompletePersonaResults = personaResults.filter((result) => result.incomplete === true || result.reviewStatus === 'INCOMPLETE_REVIEW');
-      if (incompletePersonaResults.length > 0) {
-        coverage.incompletePersonas = incompletePersonaResults.map((result) => result.personaId || 'unknown');
-        console.warn(`[Investigation] ${incompletePersonaResults.length} persona lane(s) exhausted bounded evidence turns: ${coverage.incompletePersonas.join(', ')}`);
-      }
-      const partialPersonaResults = personaResults.filter((result) => Number(result.partial) > 0 && result.decision !== 'ERROR');
-      if (partialPersonaResults.length > 0) {
-        coverage.recoveredPartialLanes = partialPersonaResults.map((result) => result.personaId || 'unknown');
-        console.warn(`[Persona] ${partialPersonaResults.length} lane(s) recovered after a failed provider pass: ${coverage.recoveredPartialLanes.join(', ')}`);
-      }
-      coverage.providerFailures = personaResults
-        .filter((result) => result.decision === 'ERROR')
-        .map((result) => result.personaId || 'unknown');
-      const partialView = reviewViewWasPartial(coverage);
-      // Runs first and unconditionally: a claim that names a real path in this pull request is
-      // wrong regardless of whether coverage was complete, so it does not need the partial-view
-      // precondition below. What survives this pass still goes through the coverage-based check,
-      // which catches absence claims that never named a specific, checkable path at all.
-      const falseAbsencePass = withholdFalseAbsenceClaims(personaResults, diffFiles);
-      personaResults = falseAbsencePass.personaResults;
-      if (falseAbsencePass.withheld.length > 0) {
-        console.log(`[Soundness] Withheld ${falseAbsencePass.withheld.length} finding(s) asserting absence of a path this pull request actually contains: ${falseAbsencePass.withheld.map((item) => item.verifiedPath).join(', ')}.`);
-      }
-      const absencePass = withholdUnsoundAbsenceClaims(personaResults, partialView);
-      personaResults = absencePass.personaResults;
-      withheldAbsenceClaims = [...falseAbsencePass.withheld, ...absencePass.withheld];
-      if (absencePass.withheld.length > 0) {
-        console.log(`[Soundness] Withheld ${absencePass.withheld.length} finding(s) asserting absence: no reviewer saw the whole change (${coverage.passes} pass(es), ${coverage.skipped.length + coverage.oversized.length} policy-excluded, ${coverage.omitted.length} unreviewed).`);
-      }
-
-      const reconciliation = reconcileDecisionFindings(personaResults, decisionLedger);
-      personaResults = reconciliation.personaResults;
-      carriedOpen = reconciliation.carriedOpen;
-      ignored = reconciliation.ignored;
-      recurrentResolved = reconciliation.recurrentResolved;
-      suppressedRepeats = reconciliation.suppressedRepeats;
-      console.log(`[Decision ledger] ${carriedOpen.length} open blocker(s) carried, ${reconciliation.matchedOpenRepeats.length} duplicate repeat(s) reused, ${ignored.length} explicit ignore(s), ${recurrentResolved.length} neutral-resolution recurrence(s), ${suppressedRepeats.length} repeat(s) suppressed after an author-replied resolution.`);
       }
     } else {
       console.error('[Review] Model transport unavailable (no credential configured, or the chat preflight failed on every transport). Refusing to post a heuristic or successful verdict.');
@@ -9609,7 +9509,6 @@ async function main(options = {}) {
     }
 
     console.log('[Arbitration] Computing binding arbitration quorum...');
-    if (!boundedMode) reviewUnitManifest = buildReviewUnitManifest(reviewUnitsPolicy, prContext, reviewDiffFiles, coverage, now);
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
       changedFiles: shownReviewFiles,
       expectedPersonaIds: enabledPersonas.map((persona) => persona.id),
@@ -9623,16 +9522,14 @@ async function main(options = {}) {
       carriedChangedFiles: diffFiles,
     });
     arbitration = applyFindingVerifierGate(arbitration, findingVerification, findingVerifierPolicy);
-    if (boundedMode) {
-      arbitration = deriveReceiptOutcome({
-        arbitration,
-        unitManifest: reviewUnitManifest,
-        laneReceipts: laneExecutionReceipts,
-        findingVerification: findingVerification || { summary: { incomplete: true } },
-        headCurrent: true,
-        evidenceEnabled,
-      });
-    }
+    arbitration = deriveReceiptOutcome({
+      arbitration,
+      unitManifest: reviewUnitManifest,
+      laneReceipts: laneExecutionReceipts,
+      findingVerification: findingVerification || { summary: { incomplete: true } },
+      headCurrent: true,
+      evidenceEnabled,
+    });
     }
     if (currentCoverageIdentity) arbitration.coverageIdentity = currentCoverageIdentity;
   }
@@ -9974,7 +9871,7 @@ async function main(options = {}) {
       : null,
     findingVerification: findingVerification || { summary: { incomplete: true, verified: 0, rejected: 0 } },
     usage: usageTotal,
-    investigation: investigationSummary || { schemaVersion: 'review-investigation-summary-v1', enabled: boundedMode, complete: false, laneCount: 0, evidenceReceipts: 0 },
+    investigation: investigationSummary || { schemaVersion: 'review-investigation-summary-v1', enabled: true, complete: false, laneCount: 0, evidenceReceipts: 0 },
     overview: overviewReceipt,
     calibration: calibrationReceipt,
     rebuttal: rebuttalReceipt,
