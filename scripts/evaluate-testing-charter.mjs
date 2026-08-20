@@ -384,7 +384,7 @@ async function main() {
       // resolveEvalMaxTokens's doc comment. Spreading conditionally keeps modelOptions identical
       // to before this fix whenever a cap does apply.
       ...(maxTokens !== undefined ? { maxTokens } : {}),
-      openRouterPolicy: { allowedModels: [], fallbackModels: [], ignoredProviders: ['deepinfra'], providerRouting: { ignore: ['deepinfra'] }, timeoutMs: 90_000, stream: false },
+      openRouterPolicy: { allowedModels: [], fallbackModels: [], ignoredProviders: ['deepinfra'], providerRouting: { ignore: ['deepinfra'] }, timeoutMs: 90_000, stream: true },
     },
   });
 
