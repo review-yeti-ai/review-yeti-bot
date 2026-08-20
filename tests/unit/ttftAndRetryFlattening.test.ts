@@ -347,6 +347,128 @@ describe('REL-271: TTFT deadline (D1, D2, D10)', () => {
   });
 });
 
+// 2026-08-20 fixed-total-budget investigation: `REASONING_ALIVE elapsed_ms=...` heartbeats were
+// observed logging past 35s of active, provider-confirmed streaming against a
+// `total_budget_ms=30000` lane, while successful lanes independently measured 47-52s total (TTFT
+// 406-692ms). The old `totalAbort` was a single fixed-clock `setTimeout(totalMs)` started at
+// dispatch and never reset on chunk arrival -- it was killing lanes that were still being
+// answered, not lanes that had gone quiet. The fix replaces it with a resettable stall/gap timer
+// that only fires when NO chunk (reasoning or content) arrives for `stallMs`.
+describe('2026-08-20 fix: a stall/gap timer replaces the fixed total-duration abort for the streaming path', () => {
+  function chunkTrainThenHangResponse(chunks: Array<{ delayMs: number; reasoning?: boolean }>) {
+    let sent = 0;
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (sent < chunks.length) {
+              const spec = chunks[sent];
+              sent += 1;
+              if (spec.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, spec.delayMs));
+              const delta = spec.reasoning ? { reasoning: `tok${sent} ` } : { content: `tok${sent} ` };
+              return {
+                done: false,
+                value: Buffer.from(`data: ${JSON.stringify({
+                  id: 'gen-train',
+                  model: 'test/model',
+                  provider: 'ExampleCloud',
+                  choices: [{ delta }],
+                })}\n\n`),
+              };
+            }
+            // After the scripted chunks, go silent forever -- simulates either a genuinely
+            // stalled connection (no [DONE], no further chunk) for the stall test, or a lane that
+            // is still actively working but whose remaining generation time this fixture does not
+            // need to simulate because the assertion only cares that it was NOT killed by a fixed
+            // wall clock before the stall timer itself would ever fire.
+            return new Promise(() => {});
+          },
+          cancel: async () => {},
+        }),
+      },
+    };
+  }
+
+  it('headline: an actively-streaming response that exceeds a fixed total cap is NOT aborted by that cap', async () => {
+    // Five real content chunks, 15ms apart (75ms of active streaming), against a `timeoutMs` of
+    // only 30ms -- under the OLD fixed-clock behavior this lane would be killed by totalAbort
+    // partway through even though the provider never stopped answering. `stallMs` is generous
+    // (200ms) so the 15ms inter-chunk gaps never trip it either; the assertion is specifically
+    // that the fixed 30ms total cap is not what determines the outcome anymore.
+    const startedAt = Date.now();
+    const result = await callOpenRouterChat(
+      async () => chunkTrainThenHangResponse([
+        { delayMs: 0 }, { delayMs: 15 }, { delayMs: 15 }, { delayMs: 15 }, { delayMs: 15 },
+      ]),
+      {
+        url: 'https://openrouter.ai/api/v1/chat/completions',
+        headers: { Authorization: 'Bearer test' },
+        body: { model: 'test/model', messages: [] },
+        timeoutMs: 30,
+        ttftMs: 500,
+        stallMs: 200,
+        preferStream: true,
+      },
+    );
+    const elapsedMs = Date.now() - startedAt;
+
+    // The fixture never sends [DONE], so the call is still pending at the 75ms mark when this
+    // assertion fires; what matters is that it was not aborted at/near the 30ms fixed cap.
+    expect(elapsedMs).toBeGreaterThanOrEqual(50);
+    expect(result.ok).toBe(false);
+    expect(result.timeoutPhase).not.toBe('response');
+    expect(result.aborted).toBe(true);
+    // It is still pending on the STALL timer (200ms, never reset because the fixture went silent
+    // after 5 chunks) or genuinely still running -- either way, it must not have been killed by
+    // the removed fixed-total-duration mechanism at the 30ms mark.
+    expect(elapsedMs).toBeGreaterThanOrEqual(170);
+  }, 10_000);
+
+  it('non-negotiable companion: a genuinely stalled stream (no bytes for longer than the stall budget) still aborts', async () => {
+    const startedAt = Date.now();
+    const result = await callOpenRouterChat(
+      async () => chunkTrainThenHangResponse([{ delayMs: 0 }]),
+      {
+        url: 'https://openrouter.ai/api/v1/chat/completions',
+        headers: { Authorization: 'Bearer test' },
+        body: { model: 'test/model', messages: [] },
+        timeoutMs: 5_000,
+        ttftMs: 500,
+        stallMs: 40,
+        preferStream: true,
+      },
+    );
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(result.ok).toBe(false);
+    expect(result.aborted).toBe(true);
+    expect(result.timeoutPhase).toBe('stall');
+    expect(result.failureClass).toBe('stream_stall');
+    // Fired on the ~40ms stall budget, nowhere near the 5s total budget -- proves the stall path
+    // is genuinely gap-based, not a disguised fixed clock.
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(elapsedMs).toBeGreaterThanOrEqual(35);
+  });
+
+  it('a never-starting response (connect ok, no first token at all) still aborts on TTFT, unaffected by the stall timer', async () => {
+    const result = await callOpenRouterChat(async () => neverChunkingStreamResponse(), {
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      headers: { Authorization: 'Bearer test' },
+      body: { model: 'test/model', messages: [] },
+      timeoutMs: 5_000,
+      ttftMs: 25,
+      stallMs: 5_000,
+      preferStream: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.timeoutPhase).toBe('ttft');
+    expect(result.failureClass).toBe('ttft_timeout');
+  });
+});
+
 describe('REL-271: operator directive -- a TTFT abort adds nothing to any ban set (dedicated hard-constraint test)', () => {
   it('a TTFT-aborted retry never populates the run-scoped ban set or the request ignore list beyond the hard-banned baseline', async () => {
     const runTimedOutProviders = new Set<string>();

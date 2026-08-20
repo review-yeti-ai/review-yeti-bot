@@ -212,8 +212,13 @@ describe('infra-vs-verdict status split (API-2902)', () => {
   });
 
   it('classifies the reason vocabulary consistently with reviewInvestigation.js', () => {
-    expect([...INFRA_FAILURE_REASONS].sort()).toEqual(['schema_contract_violation', 'timeout', 'ttft_timeout']);
+    // 'stream_stall' (2026-08-20 fixed-total-budget fix): a stream that produced at least one
+    // real chunk and then went silent past the gap-timer budget -- see review-pipeline.js's
+    // callOpenRouterChat `stallController` doc comment. Must classify as infra, same as a genuine
+    // ttft_timeout, never as a completed/graded review.
+    expect([...INFRA_FAILURE_REASONS].sort()).toEqual(['schema_contract_violation', 'stream_stall', 'timeout', 'ttft_timeout']);
     expect(isInfraFailure(infraFailedLane('a', 'ttft_timeout'))).toBe(true);
+    expect(isInfraFailure(infraFailedLane('a', 'stream_stall'))).toBe(true);
     expect(isInfraFailure(infraFailedLane('a', 'semantic_invalid_response'))).toBe(false);
     expect(isInfraFailure({ personaId: 'a', decision: 'APPROVE' })).toBe(false);
   });
