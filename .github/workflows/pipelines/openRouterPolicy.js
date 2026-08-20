@@ -701,8 +701,9 @@ const TRANSPORT_OPENROUTER_ONLY_KEYS = Object.freeze([
 /**
  * Resolves the explicit ordered transport plan, if configured.
  *
- * Precedence: env REVIEW_YETI_TRANSPORTS (JSON array string, action input
- * `transports`) > trusted-base YAML `github_action.transports`. Absent → null,
+ * Precedence: env REVIEW_YETI_TRANSPORT_PLAN_B64 (base64 JSON array string), then
+ * REVIEW_YETI_TRANSPORTS (JSON array string, action input `transports`) > trusted-base YAML
+ * `github_action.transports`. Absent → null,
  * and the legacy single-transport inputs (llm-api-key / llm-base-url / model)
  * apply unchanged.
  *
@@ -736,8 +737,18 @@ function resolveTransportPlan(localConfig, env) {
     : {};
 
   let rawEntries = null;
+  const envPlanB64 = typeof env.REVIEW_YETI_TRANSPORT_PLAN_B64 === 'string'
+    ? env.REVIEW_YETI_TRANSPORT_PLAN_B64.trim()
+    : '';
   const envRaw = typeof env.REVIEW_YETI_TRANSPORTS === 'string' ? env.REVIEW_YETI_TRANSPORTS.trim() : '';
-  if (envRaw) {
+  if (envPlanB64) {
+    try {
+      const decoded = Buffer.from(envPlanB64, 'base64').toString('utf8');
+      rawEntries = JSON.parse(decoded);
+    } catch (error) {
+      throw new Error(`REVIEW_YETI_TRANSPORT_PLAN_B64 must be base64-encoded JSON: ${error.message}`);
+    }
+  } else if (envRaw) {
     try {
       rawEntries = JSON.parse(envRaw);
     } catch (error) {

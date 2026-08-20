@@ -62,6 +62,22 @@ describe('resolveTransportPlan', () => {
     expect(plan!.transports.map((t: any) => t.name)).toEqual(['fireworks']);
   });
 
+  it('lets the output-safe base64 plan win over JSON and trusted YAML', () => {
+    const encoded = Buffer.from(JSON.stringify([openrouterEntry])).toString('base64');
+    const plan = resolveTransportPlan(
+      { parsed: { github_action: { transports: [fireworksEntry] } } },
+      { ...bothKeys, REVIEW_YETI_TRANSPORTS: JSON.stringify([fireworksEntry]), REVIEW_YETI_TRANSPORT_PLAN_B64: encoded },
+    );
+    expect(plan!.transports.map((t: any) => t.name)).toEqual(['openrouter-fallback']);
+  });
+
+  it('rejects an invalid base64 transport plan before reading trusted YAML', () => {
+    expect(() => resolveTransportPlan(
+      { parsed: { github_action: { transports: [fireworksEntry] } } },
+      { ...bothKeys, REVIEW_YETI_TRANSPORT_PLAN_B64: 'not-json' },
+    )).toThrow(/REVIEW_YETI_TRANSPORT_PLAN_B64 must be base64-encoded JSON/);
+  });
+
   it('inherits global timeout/stream inputs when an entry does not override them', () => {
     const plan = resolveTransportPlan(
       { parsed: { github_action: { transports: [fireworksEntry, { ...fireworksEntry, name: 'fireworks-slow', timeout_ms: 45000 }] } } },
