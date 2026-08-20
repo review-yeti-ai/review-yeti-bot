@@ -7,7 +7,17 @@
     "Each defect is self-contained: everything needed to resolve it is inside the supplied diff,",
     "so a miss is a reasoning/attention failure, not a missing-evidence failure.",
     "Clean fixtures are controls: a charter change that raises detection by making the lane",
-    "indiscriminate is not an improvement, so false positives are measured in the same run."
+    "indiscriminate is not an improvement, so false positives are measured in the same run.",
+    "2026-08-19 corpus-expansion note: the original three defect fixtures above all target the",
+    "charter's newest 'deep' additions (vacuous default-value assertions, formatting-evadable",
+    "guards). None exercised the charter's original base Flag list -- exclusive/skipped markers",
+    "left active, or shared mutable state / execution-order dependence between tests -- which had",
+    "zero regression coverage in this matrix despite being two of the charter's four founding",
+    "rules. active-skip-marker-left-in-suite and shared-module-state-order-dependent-test close",
+    "that gap; each is paired with a near-miss clean control (table-driven-consolidation-",
+    "preserves-coverage, function-scoped-fixture-avoids-shared-state) shaped to trip a reviewer",
+    "that pattern-matches on surface signals ('fewer it() blocks', 'a module-level let') rather",
+    "than the actual rule."
   ],
   "fixtures": [
     {
@@ -106,6 +116,68 @@
         {
           "path": "src/publisher.js",
           "patch": "@@ -1,7 +1,7 @@\n-import { resolveMarker } from './resolve_marker.js';\n+import { readMarkerVersion } from './resolve_marker.js';\n \n export function publisherVersion(body) {\n-  return resolveMarker(body);\n+  return readMarkerVersion(body);\n }\n"
+        }
+      ]
+    },
+    {
+      "id": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "title": "Isolate a flaky marker-routing case with .only while debugging",
+      "summary": "An exclusive `.only` marker lands on one test in a shared describe block, silently disabling its two siblings for every future run until someone notices and reverts it.",
+      "expectedPaths": ["tests/unit/markerRouting.test.ts"],
+      "mustMatch": [
+        ["only", ".only", "exclusive", "focus"],
+        ["sibling", "rest of the suite", "other test", "remaining test", "silently skip", "silently disable", "won't run", "will not run", "not run", "stop running", "stops running", "no longer run"]
+      ],
+      "files": [
+        {
+          "path": "tests/unit/markerRouting.test.ts",
+          "patch": "@@ -1,14 +1,14 @@\n import { describe, it, expect } from 'vitest';\n import { classifyMarker } from '../../src/markerRouting';\n \n describe('classifyMarker', () => {\n   it('routes v1 markers to the legacy lane', () => {\n     expect(classifyMarker('review-yeti-bot:v1')).toBe('legacy');\n   });\n \n   it('routes v2 markers to the bounded lane', () => {\n     expect(classifyMarker('review-yeti-bot:v2')).toBe('bounded');\n   });\n \n-  it('rejects a marker with no version suffix', () => {\n+  it.only('rejects a marker with no version suffix', () => {\n     expect(() => classifyMarker('review-yeti-bot')).toThrow();\n   });\n });\n"
+        }
+      ]
+    },
+    {
+      "id": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "title": "Add rate-limiter coverage for the two-call burst window",
+      "summary": "A new test file declares its limiter and an events log at module scope instead of per-test, so the third test only passes because the first two already ran and mutated that shared state first; running it alone or reordering the suite breaks it.",
+      "expectedPaths": ["tests/unit/rateLimiter.test.ts"],
+      "mustMatch": [
+        ["shared", "module-level", "module scope", "global state", "mutable state", "outside each test", "outside the test", "not reset", "no reset", "isn't reset", "never reset", "not cleared"],
+        ["order", "depends on", "dependent", "prior test", "previous test", "earlier test", "run in order", "execution order", "run first", "run before", "test order", "run alone", "run in isolation", "run by itself"]
+      ],
+      "files": [
+        {
+          "path": "tests/unit/rateLimiter.test.ts",
+          "patch": "@@ -0,0 +1,19 @@\n+import { describe, it, expect } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+const events = [];\n+const limiter = new RateLimiter({ max: 2 });\n+\n+describe('RateLimiter', () => {\n+  it('allows the first call', () => {\n+    events.push('first');\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    events.push('second');\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call because two calls already landed', () => {\n+    events.push('third');\n+    expect(limiter.allow('key')).toBe(false);\n+    expect(events).toEqual(['first', 'second', 'third']);\n+  });\n+});\n"
+        }
+      ]
+    },
+    {
+      "id": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "title": "Consolidate the marker-routing cases into a table-driven test",
+      "summary": "Control: two separate it() blocks become one it.each() over the same two cases. Assertion count and coverage are identical; a reviewer that pattern-matches on 'fewer it() blocks' as a proxy for 'fewer tests' would false-positive here.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "tests/unit/markerRouting.test.ts",
+          "patch": "@@ -1,14 +1,12 @@\n import { describe, it, expect } from 'vitest';\n import { classifyMarker } from '../../src/markerRouting';\n \n describe('classifyMarker', () => {\n-  it('routes v1 markers to the legacy lane', () => {\n-    expect(classifyMarker('review-yeti-bot:v1')).toBe('legacy');\n-  });\n-\n-  it('routes v2 markers to the bounded lane', () => {\n-    expect(classifyMarker('review-yeti-bot:v2')).toBe('bounded');\n-  });\n+  it.each([\n+    ['review-yeti-bot:v1', 'legacy'],\n+    ['review-yeti-bot:v2', 'bounded'],\n+  ])('routes %s to the %s lane', (marker, lane) => {\n+    expect(classifyMarker(marker)).toBe(lane);\n+  });\n \n   it('rejects a marker with no version suffix', () => {\n     expect(() => classifyMarker('review-yeti-bot')).toThrow();\n   });\n });\n"
+        }
+      ]
+    },
+    {
+      "id": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "title": "Add rate-limiter coverage with a fresh instance per test",
+      "summary": "Control: same three cases as the paired defect fixture, but the limiter is constructed in beforeEach and the third test drives its own two setup calls instead of relying on the first two tests having already run. Order-independent by construction; nothing to flag.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "tests/unit/rateLimiter.test.ts",
+          "patch": "@@ -0,0 +1,20 @@\n+import { describe, it, expect, beforeEach } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+describe('RateLimiter', () => {\n+  let limiter;\n+\n+  beforeEach(() => {\n+    limiter = new RateLimiter({ max: 2 });\n+  });\n+\n+  it('allows the first call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call once the limit is reached', () => {\n+    limiter.allow('key');\n+    limiter.allow('key');\n+    expect(limiter.allow('key')).toBe(false);\n+  });\n+});\n"
         }
       ]
     }
