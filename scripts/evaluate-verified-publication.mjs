@@ -63,16 +63,34 @@ export function findingMatchesFixture(finding, fixture) {
   return fixture.mustMatch.every((group) => group.some((token) => text.includes(token)));
 }
 
+function findingAnchors(finding, fixture) {
+  return fixture.expectedPaths.some((expected) => String(finding.path || '').endsWith(expected));
+}
+
 export function gradeFindings(fixture, findings, errored) {
+  // Same hit / valid_suggestion / noise labels the harness's classifyFindings assigns, so a
+  // re-graded verified row replaces (never inherits) its candidate row's SNR inputs.
+  const classifications = errored ? [] : findings.map((finding) => {
+    if (fixture.category === 'clean') return 'noise';
+    if (findingMatchesFixture(finding, fixture)) return 'hit';
+    if (findingAnchors(finding, fixture)) return 'valid_suggestion';
+    return 'noise';
+  });
+  const counts = {
+    hits: classifications.filter((label) => label === 'hit').length,
+    validSuggestions: classifications.filter((label) => label === 'valid_suggestion').length,
+    noise: classifications.filter((label) => label === 'noise').length,
+  };
   if (fixture.category === 'clean') {
-    return { errored, falsePositive: !errored && findings.length > 0, detected: false, anchored: false, findings: findings.length };
+    return { errored, falsePositive: !errored && findings.length > 0, detected: false, anchored: false, findings: findings.length, ...counts };
   }
   return {
     errored,
     falsePositive: false,
     detected: !errored && findings.some((finding) => findingMatchesFixture(finding, fixture)),
-    anchored: !errored && findings.some((finding) => fixture.expectedPaths.some((expected) => String(finding.path || '').endsWith(expected))),
+    anchored: !errored && findings.some((finding) => findingAnchors(finding, fixture)),
     findings: findings.length,
+    ...counts,
   };
 }
 
