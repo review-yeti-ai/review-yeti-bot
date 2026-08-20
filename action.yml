@@ -649,6 +649,18 @@ runs:
         else
           echo "reusing $NPM_PREFIX/node_modules/@actions/cache"
         fi
+        # npm can rewrite the temporary prefix when the optional cache toolkit is installed,
+        # removing the required js-yaml package that was installed above. Reassert the fatal
+        # dependency after the best-effort install, before copying the prefix into the action.
+        if [[ ! -d "$NPM_PREFIX/node_modules/js-yaml" ]]; then
+          echo "restoring js-yaml@4.1.0 after optional cache install"
+          npm install --prefix "$NPM_PREFIX" js-yaml@4.1.0 --no-save --no-audit --no-fund --prefer-offline
+        fi
+        test -d "$NPM_PREFIX/node_modules/js-yaml" || {
+          echo "::error::js-yaml missing under $NPM_PREFIX/node_modules after dependency setup"
+          ls -la "$NPM_PREFIX" "$NPM_PREFIX/node_modules" 2>/dev/null || true
+          exit 1
+        }
         # Pipeline scripts resolve modules from GITHUB_ACTION_PATH/node_modules
         # (walk-up from .github/workflows/pipelines/*.js).
         rm -rf "$GITHUB_ACTION_PATH/node_modules"
