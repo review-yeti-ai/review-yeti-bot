@@ -103,7 +103,13 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs.model.default).toBe('openrouter/auto-beta');
     const executeStep = (centralReviewWorkflow.jobs.review.steps || [])
       .find((step: any) => step.name === 'Execute AI Review Panel');
-    expect(executeStep.with.model).toContain('openrouter/auto-beta');
+    // The bot's OWN self-review must not use a router alias. `openrouter/auto-beta` picks a
+    // different underlying model per request; under a key with a model allowlist, any pick
+    // outside the list 404s. Measured 2026-08-20 run 32425334732: 18 auto-beta requests, 6
+    // returned HTTP 404, 5 lanes died, verdict BLOCK. A non-deterministic router cannot satisfy
+    // a deterministic allowlist -- the guardrail is correct and is deliberately not widened.
+    expect(executeStep.with.model).not.toContain('auto-beta');
+    expect(executeStep.with.model).toContain('deepseek/deepseek-v4-flash-0731');
     expect(executeStep.with['openrouter-fallback-models'])
       .toContain('deepseek/deepseek-v4-flash-0731');
   });
