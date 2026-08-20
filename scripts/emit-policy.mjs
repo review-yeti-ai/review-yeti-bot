@@ -123,6 +123,11 @@ const outputs = {
   action_ref: review.action_channel,
   personas: review.personas,
   transports: JSON.stringify(review.transports),
+  // Explicit name plus a base64 twin. GitHub Actions can drop a JSON output that
+  // contains credential environment names when it is forwarded into an input of
+  // the same name; the action decodes transport_plan_b64 before the JSON/YAML plan.
+  transport_plan: JSON.stringify(review.transports),
+  transport_plan_b64: Buffer.from(JSON.stringify(review.transports), 'utf8').toString('base64'),
   openrouter_data_collection: openrouterTransport.data_collection ?? openrouterTransport.provider_routing?.data_collection ?? '',
   openrouter_ignore_providers: [
     ...(openrouterTransport.ignore_providers ?? []),

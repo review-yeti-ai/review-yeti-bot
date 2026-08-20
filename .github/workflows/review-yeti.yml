@@ -52,6 +52,22 @@ jobs:
         working-directory: .exampleorg-review-actions
         run: node scripts/emit-policy.mjs
 
+      - name: Validate encoded transport handoff
+        id: transport_handoff
+        env:
+          TRANSPORT_PLAN_B64: ${{ steps.policy.outputs.transport_plan_b64 }}
+        run: |
+          test -n "$TRANSPORT_PLAN_B64"
+          node - <<'NODE'
+          const plan = JSON.parse(Buffer.from(process.env.TRANSPORT_PLAN_B64, 'base64').toString('utf8'));
+          if (!Array.isArray(plan) || plan.length !== 2) throw new Error('expected two ordered transports');
+          if (plan.map((entry) => entry.name).join(' -> ') !== 'fireworks -> openrouter-fallback') {
+            throw new Error('unexpected transport order');
+          }
+          if (plan.some((entry) => entry.stream !== true)) throw new Error('all transports must stream');
+          console.log(`transport_plan_entries=${plan.length} stream=true`);
+          NODE
+
       - name: Smoke-test Review Yeti transports
         id: smoke
         working-directory: .exampleorg-review-actions
@@ -110,6 +126,7 @@ jobs:
           action-sha: ${{ steps.resolved.outputs.sha }}
           model: ${{ steps.smoke.outputs.resolved_model }}
           transports: ${{ steps.smoke.outputs.healthy_transports }}
+          transport-plan-b64: ${{ steps.policy.outputs.transport_plan_b64 }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           openrouter-ignore-providers: ${{ steps.policy.outputs.openrouter_ignore_providers }}
           openrouter-provider-routing: ${{ steps.policy.outputs.openrouter_provider_routing }}

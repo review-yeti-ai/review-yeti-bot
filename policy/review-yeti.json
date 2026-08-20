@@ -28,7 +28,7 @@
         "timeout_ms": 90000,
         "connect_timeout_ms": 30000,
         "stream": true,
-        "reasoning_effort": "max",
+        "reasoning_effort": "high",
         "structured_output": "strict",
         "quarantine_on_timeout": false,
         "provider_routing": {

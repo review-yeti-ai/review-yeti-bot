@@ -74,7 +74,7 @@ export function validatePolicy(policy) {
     throw new Error('Fireworks must use maximum reasoning with performance metrics');
   }
   if (transports[0].structured_output !== 'strict') throw new Error('Fireworks must use strict investigation output');
-  if (transports[1].reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
+  if (transports[1].reasoning_effort !== 'high') throw new Error('DeepSeek fallback must use high reasoning for bounded latency');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
@@ -99,7 +99,7 @@ export function validatePolicy(policy) {
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
   }
-  if (openrouter?.reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
+  if (openrouter?.reasoning_effort !== 'high') throw new Error('DeepSeek fallback must use high reasoning for bounded latency');
   if (openrouter?.model !== 'deepseek/deepseek-v4-flash-0731') throw new Error('OpenRouter must use the approved structured-output fallback model');
   if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
   if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');

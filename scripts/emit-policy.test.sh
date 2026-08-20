@@ -36,8 +36,8 @@ review = json.load(open(sys.argv[1]))['review_yeti']
 transports = review.get('transports', [])
 if [item.get('name') for item in transports] != ['fireworks', 'openrouter-fallback']:
     raise SystemExit('policy must preserve Fireworks -> OpenRouter order')
-if [item.get('reasoning_effort') for item in transports] != ['max', 'max']:
-    raise SystemExit('reasoning must be Fireworks=max, OpenRouter=max')
+if [item.get('reasoning_effort') for item in transports] != ['max', 'high']:
+    raise SystemExit('reasoning must be Fireworks=max and DeepSeek fallback=high')
 if transports[0].get('structured_output') != 'strict':
     raise SystemExit('Fireworks must use the strict investigation response schema')
 if transports[0].get('perf_metrics_in_response') is not True:
@@ -363,6 +363,17 @@ run_ttft_unsafe_case() {
 
 run_case valid lane_call_budget 24 0
 grep -q '^action_ref<<' "$tmp_dir/valid.output"
+grep -q '^transport_plan<<' "$tmp_dir/valid.output"
+grep -q '^transport_plan_b64<<' "$tmp_dir/valid.output"
+transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_dir/valid.output")
+TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
+import base64, json, os
+plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
+if [item.get('name') for item in plan] != ['fireworks', 'openrouter-fallback']:
+    raise SystemExit('base64 transport plan must preserve Fireworks -> OpenRouter order')
+if any(item.get('stream') is not True for item in plan):
+    raise SystemExit('base64 transport plan must preserve streaming for every transport')
+PY
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
 grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml,morph'
 grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml","morph"]'

@@ -32,7 +32,7 @@ function policyFixture() {
           timeout_ms: 90000,
           connect_timeout_ms: 30000,
           stream: true,
-          reasoning_effort: 'max',
+          reasoning_effort: 'high',
           structured_output: 'strict',
           quarantine_on_timeout: false,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
@@ -53,7 +53,7 @@ test('the smoke contract pins the approved transport order', () => {
   assert.equal(buildRequest(transports[1]).stream, true);
   assert.equal(buildRequest(transports[0]).reasoning_effort, 'max');
   assert.equal(buildRequest(transports[0]).perf_metrics_in_response, true);
-  assert.deepEqual(buildRequest(transports[1]).reasoning, { effort: 'max' });
+  assert.deepEqual(buildRequest(transports[1]).reasoning, { effort: 'high' });
 });
 
 test('the committed OpenRouter fallback leaves endpoint cohort selection to OpenRouter', () => {

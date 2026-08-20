@@ -112,8 +112,9 @@ fails. The OpenRouter entry leaves provider and quantization selection to the ga
 compatible request parameters, uses `deepseek/deepseek-v4-flash-0731` with strict investigation
 output, sorts by latency, permits eligible hosts to fail over, and denies provider data collection.
 Each caller must expose the two named environment variables through its inherited GitHub Actions
-secrets. Fireworks stays on the default serverless tier and uses maximum reasoning; OpenRouter also
-uses maximum reasoning. Each transport gets one retry, and OpenRouter owns endpoint selection after
+secrets. Fireworks stays on the default serverless tier and uses maximum reasoning. The fallback
+uses `reasoning.effort=high` (the model's supported lower-latency reasoning level) while keeping
+SSE enabled. Each transport gets one retry, and OpenRouter owns endpoint selection after
 a timeout without Review Yeti dynamically banning the resolved endpoint.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
