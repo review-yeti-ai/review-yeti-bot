@@ -3237,6 +3237,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
     if (options.signal?.aborted) return cancelledResult();
+    // A retry must obtain a fresh route for the model whose stream failed, but a distinct
+    // fallback model gets its own sticky session and must not inherit that retry state.
+    streamRetryRequested = false;
     const requestedModel = models[modelIndex];
     lastRoute = { model: requestedModel, provider: unknownRouteProvider, generationId: null };
     const sessionModel = [
@@ -3523,14 +3526,22 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             + ` attempt=${attempt}/${maxAttempts}`,
           );
           const retryableStatus = status === 408 || status === 429 || status >= 500;
+          // OpenRouter can report an upstream failure inside an otherwise-successful SSE
+          // response. That produces status=0 here after callOpenRouterChat has discarded the
+          // partial body, so status alone cannot identify it as transient. Spend the existing
+          // bounded retry on a fresh streamed request and leave provider selection to OpenRouter;
+          // do not add the resolved provider to any ignore or quarantine set.
+          const retryableTransportFailure = result.detail === 'stream_error';
+          if (retryableTransportFailure) streamRetryRequested = true;
+          const retryableFailure = retryableStatus || retryableTransportFailure;
           // Retry transient failures once before moving to the next model.
-          if (attempt < maxAttempts && retryableStatus) {
+          if (attempt < maxAttempts && retryableFailure) {
             lastError = msg;
             recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_unavailable', startedAt: requestStartedAt });
             if (!await waitForAbortableDelay(250, options.signal)) return cancelledResult();
             continue;
           }
-          if (retryableStatus && modelIndex < models.length - 1) {
+          if (retryableFailure && modelIndex < models.length - 1) {
             lastError = msg;
             recordModelTelemetry({ modelIndex, attempt, outcome: 'failed', failureClass: 'provider_unavailable', startedAt: requestStartedAt });
             break;
