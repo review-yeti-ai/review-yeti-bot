@@ -12,7 +12,11 @@ const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
 // missing evidence, not a verdict -- and is what distinguishes an infra outage (API-2902) from a
 // genuine review defect. `schema_contract_violation` is included deliberately: a model response
 // that fails the JSON contract is a provider/output-shape failure, not a finding about the diff.
-const INFRA_FAILURE_REASONS = new Set(['timeout', 'ttft_timeout', 'schema_contract_violation']);
+// 'stream_stall' (2026-08-20 fixed-total-budget fix): a stream that produced at least one real
+// SSE chunk and then went silent for the gap-timer budget (see review-pipeline.js's
+// callOpenRouterChat `stallController`). Provider-confirmed infra failure, never a completed
+// review -- must classify identically to 'timeout'/'ttft_timeout' here.
+const INFRA_FAILURE_REASONS = new Set(['timeout', 'ttft_timeout', 'schema_contract_violation', 'stream_stall']);
 
 function isInfraFailure(lane) {
   return isFailedLane(lane) && INFRA_FAILURE_REASONS.has(String(lane?.failure?.reason || ''));

@@ -2049,20 +2049,40 @@ async function callOpenRouterChat(fetchImpl, {
   laneDeadlineSignal,
   transportName = 'openrouter',
   onStreamProgress,
+  // Optional: how long the stream may go WITHOUT a parsed SSE chunk (reasoning or content) before
+  // it is treated as stalled and aborted. Defaults to 20s -- four times
+  // REASONING_HEARTBEAT_INTERVAL_MS below, generous enough to absorb heartbeat-cadence jitter
+  // while still catching a genuinely silent connection well inside a lane's overall budget. See
+  // the 2026-08-20 fixed-total-budget investigation doc comment on `execute` for why this
+  // replaced a fixed wall-clock cap as the primary streaming abort mechanism.
+  stallMs,
 }) {
-  // Total budget covers connect + body. TTFT (time-to-first-token) is the SEPARATE
-  // "is the provider talking to us at all" concern: if no first SSE chunk arrives within the
-  // TTFT budget, we refuse the attempt as
-  // TTFT_TIMEOUT — we do NOT raise timeoutMs, and (operator directive, REL-271) we do NOT add
-  // the provider to any ignore/quarantine/ban set on this path; sort:latency stays the routing
-  // authority and the caller simply re-asks.
+  // Total budget's role changed in the 2026-08-20 fix below: it no longer drives an independent
+  // abort timer for the streaming path (see `execute`'s doc comment). It still bounds the TTFT
+  // window (ttftBudgetMs, below) and is passed through in log/error messages as the caller's
+  // configured expectation.
   const totalMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30_000;
   const resolvedTtftMs = Number.isFinite(ttftMs) && ttftMs > 0 ? ttftMs : undefined;
   // Streaming always gets an explicit connect/TTFT budget (30s fallback when the caller supplies
   // none), so a provider that accepts a connection and then queues silently cannot consume the
   // entire generation budget without being classified.
   const ttftBudgetMs = Math.max(500, Math.min(totalMs, resolvedTtftMs !== undefined ? Math.round(resolvedTtftMs) : 30_000));
-  const totalAbort = createAbortLink({ signals: [signal], timeoutMs: totalMs });
+  const stallBudgetMs = Number.isFinite(stallMs) && stallMs > 0 ? Math.round(stallMs) : 20_000;
+  // `totalAbort` is now a PURE RELAY of the outer `signal` -- it carries no timer of its own. It
+  // used to be `createAbortLink({ signals: [signal], timeoutMs: totalMs })`, a fixed clock started
+  // at dispatch that never reset on chunk arrival. That is the D1-class bug this fix closes: a
+  // 2026-08-20 investigation found `REASONING_ALIVE` heartbeats logging past 35s of active,
+  // provider-confirmed streaming against a `total_budget_ms=30000` lane, while successful lanes
+  // measured 47-52s total (TTFT 406-692ms) -- i.e. the fixed cap was killing lanes that were
+  // demonstrably still being answered, not lanes that had gone quiet. The pre-first-chunk case is
+  // already covered by `ttftBudgetMs` (always <= totalMs, see above), so removing totalAbort's own
+  // timer does not reopen the "provider never talks to us" gap; the post-first-chunk case is now
+  // covered by `stallController` below, which resets on every parsed chunk instead of running from
+  // a fixed t0. An absolute per-lane wall clock still exists -- `laneDeadlineSignal` (~240s
+  // default, review-pipeline.js's `laneDeadline`) -- and is the correct place for it: it already
+  // accounts for queueing and retries across the whole lane, where a single-call fixed duration
+  // cannot.
+  const totalAbort = createAbortLink({ signals: [signal] });
   const execute = async () => {
   const baseHeaders = { ...headers };
   const defaultProvider = String(transportName || 'openrouter');
@@ -2082,7 +2102,25 @@ async function callOpenRouterChat(fetchImpl, {
   // also observed through the merged `requestAbort`.
   let sawFirstChunk = false;
   const ttftTimer = createAbortLink({ signals: [], timeoutMs: ttftBudgetMs });
-  const requestAbort = createAbortLink({ signals: [signal, totalAbort.signal, ttftTimer.signal] });
+  // Stall detector: a resettable gap timer, armed on every parsed SSE chunk (reasoning counts as
+  // liveness, same as the TTFT/REASONING_ALIVE logic above -- see `reasoningDeltaField`). Unlike
+  // `ttftTimer`/`totalAbort`, this cannot be a one-shot `createAbortLink` timer because it must
+  // restart on each chunk rather than firing from a fixed t0; it is a bare AbortController with a
+  // hand-rolled resettable `setTimeout` instead.
+  const stallController = new AbortController();
+  let stallTimerId;
+  let stallTimerDisposed = false;
+  const armStallTimer = () => {
+    if (stallTimerDisposed) return;
+    clearTimeout(stallTimerId);
+    stallTimerId = setTimeout(() => stallController.abort(), stallBudgetMs);
+  };
+  const disposeStallTimer = () => {
+    if (stallTimerDisposed) return;
+    stallTimerDisposed = true;
+    clearTimeout(stallTimerId);
+  };
+  const requestAbort = createAbortLink({ signals: [signal, totalAbort.signal, ttftTimer.signal, stallController.signal] });
   let ttftTimerDisposed = false;
   const clearTtftTimer = () => {
     if (ttftTimerDisposed) return;
@@ -2184,6 +2222,9 @@ async function callOpenRouterChat(fetchImpl, {
           const firstChunk = !sawFirstChunk;
           sawFirstChunk = true;
           clearTtftTimer();
+          // Any parsed chunk -- reasoning or content -- is liveness evidence, so it re-arms the
+          // stall gap timer exactly like it clears TTFT above.
+          armStallTimer();
           const route = resolveRouteMeta(chunk, model, defaultProvider);
           if (route.generationId) generationId = route.generationId;
           if (route.model) model = route.model;
@@ -2262,36 +2303,34 @@ async function callOpenRouterChat(fetchImpl, {
           partial: false,
         };
       }
-      if (signal?.aborted || totalAbort.signal.aborted) {
-        // Distinguish a genuine total-budget timeout (totalAbort itself fired) from an abort that
-        // arrived via the outer merged `signal` for some OTHER reason -- most commonly the per-lane
-        // wall-clock backstop (laneDeadlineSignal, ~240s default) firing while this specific call
-        // was in flight or still queued for the streaming lane gate. Both look identical from
-        // inside this function (both reject the same fetch/read via the same merged AbortSignal),
-        // but they mean very different things to an operator: "this provider took >30-45s to
-        // answer" versus "this lane's cumulative turn/queue time ran out and killed an in-flight
-        // request that may never have gotten a real chance." Leaving timeoutPhase unset here used
-        // to make reviewWithModel's classifier default BOTH cases to phase:'response', logging a
-        // lane-deadline kill exactly like a real provider timeout (see the 2026-08-19 lane-budget
-        // investigation).
+      if (stallController.signal.aborted || signal?.aborted || totalAbort.signal.aborted) {
+        // IMPORTANT ordering: check laneDeadlineSignal FIRST, ahead of stallController and
+        // totalAbort.signal.aborted. laneDeadlineSignal is a distinct AbortController fed by
+        // nothing else in this chain, so whenever the caller supplies it its `.aborted` state is
+        // unambiguous evidence of its own cause -- the per-lane wall-clock backstop (~240s
+        // default) fired while this call was in flight or queued, not because THIS call's own
+        // stall/ttft/total handling did anything. Both a lane-deadline kill and a genuine
+        // in-call abort reject the same fetch/read via the same merged AbortSignal, so without
+        // this check they'd be indistinguishable (see the 2026-08-19 lane-budget investigation).
         //
-        // IMPORTANT ordering: check laneDeadlineSignal FIRST, not totalAbort.signal.aborted first.
-        // totalAbort is itself `createAbortLink({ signals: [signal], timeoutMs: totalMs })` -- it
-        // relays ANY abort of the outer `signal` into its own controller, in addition to its own
-        // internal timer. So `totalAbort.signal.aborted` is TRUE both when totalMs genuinely
-        // elapsed AND when the outer signal (which may itself be laneSignal, carrying
-        // laneDeadline) fired first and totalAbort merely relayed it -- that flag alone cannot
-        // tell the two apart. laneDeadlineSignal, by contrast, is a distinct AbortController fed
-        // by nothing else in this chain: its `.aborted` state is unambiguous evidence of its own
-        // cause whenever the caller supplies it.
+        // Once lane_deadline is ruled out, `stallController.signal.aborted` means the gap timer
+        // fired: at least one real chunk arrived (this is the mid-stream catch), but no further
+        // chunk arrived for `stallBudgetMs`. This is now the PRIMARY streaming-phase abort
+        // mechanism (2026-08-20 fix) -- unlike the removed fixed-total-duration timer, it resets
+        // on every parsed chunk, so a lane that is genuinely still being answered is never killed
+        // by it. `totalAbort.signal.aborted` no longer carries its own timer (see its declaration
+        // above); it is now purely a relay of the outer `signal`, so `totalAbort.signal.aborted`
+        // and `signal?.aborted` are equivalent here and only distinguish "some other outer
+        // cancellation reason" once lane_deadline and stall are both ruled out.
         const timeoutPhase = laneDeadlineSignal?.aborted
           ? 'lane_deadline'
-          : (totalAbort.signal.aborted ? 'response' : undefined);
+          : (stallController.signal.aborted ? 'stall' : (totalAbort.signal.aborted ? 'response' : undefined));
         return {
           ok: false,
           aborted: true,
           error: err,
           ...(timeoutPhase ? { timeoutPhase } : {}),
+          ...(timeoutPhase === 'stall' ? { failureClass: 'stream_stall' } : {}),
           model,
           provider: sawChunk ? provider : defaultProvider,
           generationId,
@@ -2321,6 +2360,7 @@ async function callOpenRouterChat(fetchImpl, {
       };
     } finally {
       clearTtftTimer();
+      disposeStallTimer();
       try { await reader.cancel(); } catch (_) {}
     }
 
@@ -2383,6 +2423,7 @@ async function callOpenRouterChat(fetchImpl, {
     };
   } finally {
     clearTtftTimer();
+    disposeStallTimer();
     requestAbort.dispose();
   }
   };
@@ -2411,6 +2452,11 @@ async function runStreamedChatPreflight(fetchImplementation, preflightTarget, { 
     },
     timeoutMs,
     ttftMs: timeoutMs,
+    // The preflight smoke's whole point is to fail FAST on a stalled/incomplete stream (API-2902:
+    // "streams a token and then never sends [DONE]"). callOpenRouterChat's stall gap timer
+    // defaults to 20s (right for a real review lane), which would defeat a smoke check meant to
+    // run in `timeoutMs`; bind stallMs to the same caller-supplied budget instead.
+    stallMs: timeoutMs,
     signal,
     transportName: `${preflightTarget.label || 'preflight'} (stream smoke)`,
   });
@@ -3324,6 +3370,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           body: requestBody,
           timeoutMs: attemptTimeoutMs,
           ttftMs,
+          // Optional caller override of the streaming-phase stall/gap budget (defaults to 20s
+          // inside callOpenRouterChat when omitted -- see its doc comment). Threaded through so a
+          // caller with tighter latency requirements than a persona review lane (a smoke check,
+          // say) can tune it without touching this function.
+          stallMs: options.stallMs,
           transportName: options.transportName || gateway.id,
           signal: options.signal,
           // Threaded separately from `signal` (which by this point may already be laneSignal, a
@@ -3416,12 +3467,25 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             // and metric. See callOpenRouterChat's laneDeadlineSignal doc comment for the full
             // mechanism and a measured repro.
             const isLaneDeadline = phase === 'lane_deadline';
-            const timeoutFailureClass = isTtftTimeout ? 'ttft_timeout' : (isLaneDeadline ? 'lane_deadline' : 'provider_timeout');
+            // stall (2026-08-20 fixed-total-budget fix): the stream produced at least one real
+            // chunk (this phase is only reachable mid-stream) but then went silent for
+            // `stallBudgetMs` with no further chunk. This replaced the fixed-total-duration abort
+            // as the primary streaming-phase timeout -- see callOpenRouterChat's `totalAbort` doc
+            // comment for the measured evidence (successful lanes ran 47-52s against an old 30s
+            // fixed cap). A stall must still surface here as an infra failure with its own
+            // failureClass, never silently as a completed/graded review: the caller only reaches
+            // `decision: 'ERROR'` below, never a findings payload, for any aborted result.
+            const isStall = phase === 'stall';
+            const timeoutFailureClass = isTtftTimeout
+              ? 'ttft_timeout'
+              : (isLaneDeadline ? 'lane_deadline' : (isStall ? 'stream_stall' : 'provider_timeout'));
             const msg = isTtftTimeout
               ? `Provider TTFT timeout after ${ttftMs}ms (no first token; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
               : isLaneDeadline
                 ? `Lane wall-clock deadline exhausted while this request was in flight or queued (not this call's own ${timeoutMs}ms budget; model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
-                : `Provider RESPONSE timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
+                : isStall
+                  ? `Provider stream stalled -- no SSE chunk for the stall gap budget after at least one chunk was received (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`
+                  : `Provider RESPONSE timeout after ${timeoutMs}ms (model ${requestedModel}, attempt ${attempt}/${maxAttempts}) [${routeLabel}]`;
             lastError = msg;
             const timedOutProvider = String(lastRoute.provider || '').trim().toLowerCase().split('/')[0];
             if (isTtftTimeout) {
@@ -3520,7 +3584,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               ...lastRoute,
               decision: 'ERROR',
               findings: [],
-              ...(isTtftTimeout ? { failureClass: 'ttft_timeout' } : {}),
+              // Always forward the resolved failureClass (previously only ttft_timeout did) so a
+              // stall is unambiguously distinguishable downstream from a completed review --
+              // `safeFailureReason` (src/review/reviewInvestigation.js) reads `response.failureClass`
+              // directly rather than pattern-matching the human-readable `error` string, and
+              // `stream_stall` is a recognized INFRA_FAILURE_REASONS entry (src/review/reviewCore.js).
+              failureClass: timeoutFailureClass,
               error: msg,
               generationId: lastRoute.generationId,
             };
