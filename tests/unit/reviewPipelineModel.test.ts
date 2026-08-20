@@ -366,6 +366,141 @@ describe('reviewWithModel', () => {
     expect(result.provider).toBe('ExampleCloud');
   });
 
+  it('retries a mid-stream OpenRouter error without adding a provider exclusion', async () => {
+    const calls: any[] = [];
+    const fetchImpl = async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ body });
+      if (calls.length === 1) {
+        const payload = {
+          id: 'gen-broken-stream',
+          model: 'test/model',
+          provider: 'ExampleCloud',
+          choices: [{ delta: { content: '{"findings":[' } }],
+          error: { message: 'upstream stream ended unexpectedly' },
+        };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => payload,
+          body: sseBody(payload),
+        };
+      }
+      const payload = {
+        id: 'gen-recovered-stream',
+        model: 'test/model',
+        provider: 'RecoveredCloud',
+        choices: [{ message: { content: '{"findings":[]}' } }],
+      };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => payload,
+        body: sseBody(payload),
+      };
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'test/model',
+      fetchImpl,
+      maxAttempts: 2,
+      timeoutMs: 30_000,
+      sessionSticky: true,
+      providerRouting: {
+        allow_fallbacks: true,
+        quantizations: ['fp16', 'bf16'],
+        ignore: HARD_BANNED_PROVIDER_SLUGS,
+      },
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.stream).toBe(true);
+    expect(calls[0].body.session_id).toBeTruthy();
+    expect(calls[1].body.stream).toBe(true);
+    expect(calls[1].body.session_id).toBeUndefined();
+    expect(calls[1].body.provider.ignore).toEqual(HARD_BANNED_PROVIDER_SLUGS);
+    expect(calls[1].body.provider.ignore).not.toContain('examplecloud');
+    expect(result.decision).toBe('APPROVE');
+    expect(result.provider).toBe('RecoveredCloud');
+  });
+
+  it('restores session stickiness for a fallback model after streamed retries are exhausted', async () => {
+    const calls: any[] = [];
+    const fetchImpl = async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ body });
+      if (calls.length <= 2) {
+        const payload = {
+          id: `gen-broken-stream-${calls.length}`,
+          model: body.model,
+          provider: 'ExampleCloud',
+          choices: [{ delta: { content: '{"findings":[' } }],
+          error: { message: 'upstream stream ended unexpectedly' },
+        };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => payload,
+          body: sseBody(payload),
+        };
+      }
+      const payload = {
+        id: 'gen-fallback-stream',
+        model: body.model,
+        provider: 'FallbackCloud',
+        choices: [{ message: { content: '{"findings":[]}' } }],
+      };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => payload,
+        body: sseBody(payload),
+      };
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'primary/model',
+      fetchImpl,
+      maxAttempts: 2,
+      timeoutMs: 30_000,
+      sessionSticky: true,
+      openRouterPolicy: {
+        allowedModels: [],
+        fallbackModels: ['fallback/model'],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        providerRouting: {
+          allow_fallbacks: true,
+          quantizations: ['fp16', 'bf16'],
+          ignore: HARD_BANNED_PROVIDER_SLUGS,
+        },
+        timeoutMs: 30_000,
+      },
+    });
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0].body.model).toBe('primary/model');
+    expect(calls[0].body.session_id).toBeTruthy();
+    expect(calls[1].body.model).toBe('primary/model');
+    expect(calls[1].body.session_id).toBeUndefined();
+    expect(calls[2].body.model).toBe('fallback/model');
+    expect(calls[2].body.session_id).toBeTruthy();
+    expect(calls[2].body.provider.ignore).toEqual(HARD_BANNED_PROVIDER_SLUGS);
+    expect(calls[2].body.provider.ignore).not.toContain('examplecloud');
+    expect(result.decision).toBe('APPROVE');
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.provider).toBe('FallbackCloud');
+  });
+
   // REL-271 (D3): a delay that would have succeeded under the removed x2 escalation (15ms, twice
   // the 10ms flat budget less a small margin) now fails on the final attempt instead of quietly
   // recovering -- proving there is no budget escalation left anywhere in the retry path.
