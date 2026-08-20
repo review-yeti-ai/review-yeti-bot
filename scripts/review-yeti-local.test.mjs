@@ -23,8 +23,8 @@ test('materializes the committed provider order and routing into the local CLI c
 
   assert.deepEqual(transports.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
   assert.equal(config.github_action.openrouter.stream, true);
-  assert.equal(config.github_action.openrouter.timeout_ms, 60000);
-  assert.equal(config.github_action.openrouter.ttft_ms, 5000);
+  assert.equal(config.github_action.openrouter.timeout_ms, 45000);
+  assert.equal(config.github_action.openrouter.ttft_ms, 15000);
   assert.equal(config.github_action.openrouter.data_collection, 'deny');
   assert.deepEqual(config.github_action.openrouter.ignore_providers, ['fireworks', 'open-inference', 'akashml']);
   // Must track policy/review-yeti.json, not restate a preference. #70 restored
@@ -60,8 +60,8 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.LANE_DEADLINE_MS, String(policy.review_yeti.budget.lane_deadline_ms));
   assert.equal(env.LANE_CALL_BUDGET, '24');
   assert.equal(env.OPENROUTER_STREAM, 'true');
-  assert.equal(env.OPENROUTER_TIMEOUT_MS, '60000');
-  assert.equal(env.OPENROUTER_TTFT_MS, '5000');
+  assert.equal(env.OPENROUTER_TIMEOUT_MS, '45000');
+  assert.equal(env.OPENROUTER_TTFT_MS, '15000');
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   assert.equal(JSON.parse(env.REVIEW_YETI_TRANSPORTS)[2].provider_routing.ignore[0], 'fireworks');
 });

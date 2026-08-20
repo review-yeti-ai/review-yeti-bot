@@ -44,19 +44,24 @@ for (const transport of review.transports) {
   }
 }
 
-// A lane advances through the declared transports in order, retrying the next transport only
-// after the previous one fails or times out. The worst case for one lane is therefore every
-// transport burning its full timeout_ms before the lane gives up -- if that sum exceeds the lane
-// deadline, the later transports (the OpenRouter fallback most of all) are structurally
-// unreachable in exactly the case they exist for: a slow or stalled primary. See the ct-review-
-// actions incident where 2 x 180s (360s) already exceeded a 240s lane_deadline_ms with only 2
-// transports configured; this sums over however many transports the policy declares, not a
-// hardcoded count, so it stays correct as that count changes.
+// A lane advances through the declared transports in order, retrying each transport up to
+// openrouter_max_attempts before moving on. The worst case for one lane is therefore every
+// transport burning its full timeout_ms on every attempt before the lane gives up -- if that
+// product exceeds the lane deadline, later transports (the OpenRouter fallback most of all) are
+// structurally unreachable in exactly the case they exist for: a slow or stalled primary. This
+// sums over however many transports the policy declares, not a hardcoded count, so it stays
+// correct as that count changes.
 const laneDeadlineMs = Number(budget.lane_deadline_ms);
+const maxAttempts = Number(review.openrouter_max_attempts);
+if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+  throw new Error('review_yeti.openrouter_max_attempts must be a positive integer string');
+}
 const transportTimeoutSumMs = review.transports.reduce((sum, transport) => sum + transport.timeout_ms, 0);
-if (transportTimeoutSumMs > laneDeadlineMs) {
+const worstCaseTransportMs = transportTimeoutSumMs * maxAttempts;
+if (worstCaseTransportMs > laneDeadlineMs) {
   throw new Error(
-    `sum of transport timeout_ms (${transportTimeoutSumMs}ms across ${review.transports.length} transports) `
+    `worst-case transport budget (${worstCaseTransportMs}ms = ${transportTimeoutSumMs}ms across `
+    + `${review.transports.length} transports x ${maxAttempts} attempts) `
     + `exceeds review_yeti.budget.lane_deadline_ms (${laneDeadlineMs}ms); a full sequential failover `
     + 'could never reach the last transport',
   );

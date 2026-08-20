@@ -138,16 +138,17 @@ went stale. Each caller must expose the named environment variables through its 
 Actions secrets.
 
 The central budget is also fixed here: three investigation turns, one 24-request per-lane call
-budget, a six-minute (360s) lane deadline, and a 5-second time-to-first-token budget. The six-minute
+budget, a six-minute (360s) lane deadline, and a 15-second time-to-first-token budget. The six-minute
 deadline is evidence-based: a live three-turn streamed lane reached its final failover at 240s and
 was cancelled before the healthy last transport could answer.
 
-- **timeout_ms = 60000 per transport.** The fast local probe (3.4s end to end for a ~26k char
-  panel-sized prompt) is a lower bound, not a ceiling -- `max_diff_chars` allows prompts up to
-  2,000,000 chars, far larger than that probe's payload. 60000ms is a conservative, sizeable cut
-  from the prior 180000ms (3x) that still leaves generous room for larger real reviews.
-- **openrouter_ttft_ms = 5000ms.** The measured TTFB was 634ms for a panel-sized streaming call;
-  5000ms is ~7.9x that single sample. This is safe *because* every transport here declares
+- **timeout_ms = 30000 for Fireworks and Ollama; 45000 for OpenRouter.** A hosted run showed
+  Fireworks consuming both 60-second attempts before failover, while a follow-up run showed the
+  final Morph fallback occasionally needing more than 30 seconds to complete. The primary cap keeps
+  slow first attempts bounded; the final fallback gets the extra completion headroom.
+- **openrouter_ttft_ms = 15000ms.** A hosted run showed Ollama's first token arriving after the old
+  5-second cutoff on some lanes while completing successfully on others. 15 seconds keeps streaming
+  route attribution without rejecting a slow-but-healthy Ollama response. This is safe *because* every transport here declares
   `stream: true` and `openrouter_stream` is `"true"` -- see "TTFT is not always TTFT" below for why
   that declaration is load-bearing and what stops it from silently lying.
 
@@ -159,9 +160,9 @@ a hosted job or silently consume an unbounded retry budget.
 transports including OpenRouter) and a separate top-level `openrouter_timeout_ms` /
 `openrouter_ttft_ms` pair, forwarded as the dedicated `openrouter-timeout-ms` / `openrouter-ttft-ms`
 action inputs. Which one the OpenRouter-compat code path in the hosted action actually honors is
-not visible from this repository. `timeout_ms` (60000 on every transport) and
-`openrouter_timeout_ms` ("60000") are kept in lockstep so that ambiguity can't leave either one
-silently carrying the old, oversized budget.
+not visible from this repository. The OpenRouter transport's `timeout_ms` (45000) and
+`openrouter_timeout_ms` ("45000") are kept in lockstep; Fireworks and Ollama retain 30000ms
+transport budgets so ambiguity can't leave either one silently carrying the old, oversized budget.
 
 **TTFT is not always TTFT.** On a non-streaming call, the abort controller `openrouter_ttft_ms`
 drives wraps the *entire* fetch, not just the wait for a first byte -- a buffered response's
@@ -178,20 +179,22 @@ enforces that: if any transport has `stream !== true`, or `openrouter_stream !==
 `openrouter_timeout_ms`), or policy load fails loudly with the offending transport named in the
 error. When every transport genuinely declares streaming on -- the committed state today -- a tight
 TTFT is exactly the healthy, intended shape and is left alone. `scripts/emit-policy.test.sh` proves
-both halves: the committed policy (ttft 5000 < timeout 60000, streaming on) loads cleanly, and two
+both halves: the committed policy (ttft 15000 < largest timeout 45000, streaming on) loads cleanly, and two
 counterfactuals -- flipping a transport's `stream` to `false`, and flipping the global
-`openrouter_stream` to `"false"` -- each with that same 5000ms ttft, are rejected by the guard.
+`openrouter_stream` to `"false"` -- each with that same 15000ms ttft, are rejected by the guard.
 
 **Lane-deadline arithmetic invariant.** A lane advances through the declared transports in order,
-so the worst case for one lane is every transport burning its full `timeout_ms` before the lane
-gives up. `emit-policy.mjs` enforces `sum(transport.timeout_ms) <= budget.lane_deadline_ms` at
-policy-load time (both in the reusable workflow and in CI) -- summed over however many transports
-the policy declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` re-checks the same
-inequality against the committed policy plus a counterfactual fixture that violates it. Separately,
+so the worst case for one lane is every transport burning its full `timeout_ms` on every retry before
+the lane gives up. `emit-policy.mjs` enforces
+`sum(transport.timeout_ms) * openrouter_max_attempts <= budget.lane_deadline_ms` at policy-load
+time (both in the reusable workflow and in CI) -- summed over however many transports the policy
+declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` re-checks the same inequality
+against the committed policy plus a counterfactual fixture that violates it. Separately,
 `max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
 of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
-60000ms each: `3 x 60000 = 180000 <= 360000` (180s of the lane deadline spare), and
+30000ms, 30000ms, and 45000ms across the three transports and 2 attempts:
+`(30000 + 30000 + 45000) x 2 = 210000 <= 360000` (150s of the lane deadline spare), and
 `max_passes(3) x lane_deadline_ms(360000) = 1080000 <= 1200000` (the 20-minute job cap). This guards
 against a repeat of the incident that motivated this change: at `timeout_ms: 180000` per transport,
 even 2 of the 3 transports alone summed to 360s against a 240s lane deadline, so a slow or stalled

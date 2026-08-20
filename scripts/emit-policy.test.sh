@@ -226,9 +226,9 @@ run_transport_relation_case() {
 
 # Counterfactual proof for the lane-deadline arithmetic guard: every transport individually stays
 # inside the per-transport 1ms-180000ms cap (so that check does not fire first), but each transport
-# is set high enough that the sum across all configured transports exceeds the committed lane
-# deadline -- derived from the deadline and transport count rather than hardcoded, so this stays
-# meaningful if a transport is added or removed again.
+# is set high enough that the retry-aware worst-case budget exceeds the committed lane deadline --
+# derived from the deadline and transport count rather than hardcoded, so this stays meaningful if
+# a transport is added or removed again.
 write_transport_budget_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -263,8 +263,45 @@ run_transport_budget_overflow_case() {
   echo "[transport-budget-overflow] passed"
 }
 
+# The old guard only summed one attempt per transport. This fixture makes that sum exactly equal
+# to the lane deadline, so only the retry multiplier can reject it. It is the regression case for
+# the live failure shape where Fireworks consumed both attempts before fallback became useful.
+write_transport_retry_budget_overflow_policy() {
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+policy = json.load(open(source))
+transports = policy['review_yeti']['transports']
+lane_deadline_ms = int(policy['review_yeti']['budget']['lane_deadline_ms'])
+timeout_ms = lane_deadline_ms // len(transports)
+for transport in transports:
+    transport['timeout_ms'] = timeout_ms
+    transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), timeout_ms)
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_transport_retry_budget_overflow_case() {
+  local output_file="$tmp_dir/transport-retry-budget-overflow.output"
+  write_transport_retry_budget_overflow_policy
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/transport-retry-budget-overflow.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 1 ]]; then
+    echo "[transport-retry-budget-overflow] expected exit 1, got $rc" >&2
+    cat "$tmp_dir/transport-retry-budget-overflow.log" >&2
+    exit 1
+  fi
+  grep -q 'worst-case transport budget' "$tmp_dir/transport-retry-budget-overflow.log"
+  echo "[transport-retry-budget-overflow] passed"
+}
+
 # Counterfactual proof for the TTFT-as-total-generation-cap guard. The committed policy's
-# openrouter_ttft_ms (5000) is deliberately tighter than every timeout_ms (60000) -- that is
+# openrouter_ttft_ms (15000) is deliberately tighter than the largest timeout_ms (45000) -- that is
 # healthy and expected when streaming is genuinely on, and "run_case valid" below proves the
 # unmodified committed policy loads cleanly with exactly that shape. The danger is the OTHER
 # combination: a transport declared non-streaming with that same tight ttft, where a live run
@@ -358,6 +395,7 @@ done
 
 run_transport_relation_case
 run_transport_budget_overflow_case
+run_transport_retry_budget_overflow_case
 run_ttft_unsafe_case transport
 run_ttft_unsafe_case global
 
