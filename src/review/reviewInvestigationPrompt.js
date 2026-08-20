@@ -128,6 +128,55 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
     };
   });
   const knownRiskIds = new Set(riskPlan.map((row) => row.id));
+  // --- Risk-bookkeeping tolerance (operator directive 2026-08-19) ---
+  // A model that reports a fully validated finding but skips the risk-plan ceremony
+  // (risk_plan: [], finding risk_id null/omitted/malformed, or a risk id it never declared)
+  // used to fail the WHOLE response here -- a real finding destroyed over bookkeeping.
+  // Measured live as the dominant cause of the bounded path's 40.7% malformed_response rate
+  // (testing-charter eval 2026-08-19, deepseek-v4-flash-0731; e.g. OpenRouter generation
+  // gen-1787189213-QBcMJqkMPlIW2ZOldr1E returned risk_plan:[] with a finding referencing an
+  // undeclared "risk-1"). Synthesize the missing bookkeeping instead: the finding itself still
+  // passes every content check below (severity, anchor, receipts, assignment scoping) and still
+  // faces exact-hunk anchoring and blob verification before publication, so no unverified claim
+  // is admitted -- only an accounting row the model owed us. Everything the model DID declare
+  // (risk plan rows, dispositions, evidence requests, unit references) stays strictly validated.
+  const synthesizedRiskIds = [];
+  const wellFormedId = (value) => {
+    if (value === undefined || value === null) return '';
+    const id = bounded(value, 100);
+    return /^[A-Za-z0-9_.:-]{1,100}$/u.test(id) ? id : '';
+  };
+  {
+    let autoCounter = 0;
+    for (const row of Array.isArray(parsed.findings) ? parsed.findings : []) {
+      const value = object(row);
+      if (!value) continue; // the findings loop below rejects non-objects
+      const claimed = wellFormedId(value.risk_id);
+      if (claimed && knownRiskIds.has(claimed)) continue;
+      let id = claimed;
+      if (!id) {
+        do { autoCounter += 1; id = `auto-risk-${autoCounter}`; } while (knownRiskIds.has(id));
+        value.risk_id = id; // resolve the missing/malformed reference for the findings loop below
+      }
+      const claimedUnit = wellFormedId(value.unit_id);
+      const scopedUnit = claimedUnit && (!assignedUnits || assignedUnits.has(claimedUnit)) ? claimedUnit : '';
+      const existing = riskPlan.find((item) => item.id === id);
+      if (existing) {
+        if (scopedUnit && !existing.unitIds.includes(scopedUnit)) existing.unitIds.push(scopedUnit);
+        continue;
+      }
+      knownRiskIds.add(id);
+      synthesizedRiskIds.push(id);
+      riskPlan.push({
+        id,
+        unitIds: scopedUnit ? [scopedUnit] : [],
+        statement: 'Synthesized: the finding below was reported without risk-plan bookkeeping.',
+        evidenceNeeded: [],
+        allowedTools: [],
+      });
+    }
+  }
+  const synthesizedRisks = new Set(synthesizedRiskIds);
   const evidenceRequests = requiredArray(parsed.evidence_requests, 'evidence_requests');
   if (evidenceRequests.length > Number(limits.maxCalls || 12)) throw new Error('evidence request count exceeds the hard call limit');
   const requests = evidenceRequests.map((row, index) => {
@@ -177,7 +226,13 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
     const riskId = requiredId(value.risk_id, 'risk id');
     if (!knownRiskIds.has(riskId)) throw new Error(`finding references unknown risk: ${riskId}`);
     const planItem = riskPlan.find((item) => item.id === riskId);
-    const unitId = scopedUnitId(value.unit_id, `finding ${index}`, assignedUnits, planItem.unitIds);
+    // A missing or malformed unit_id on a SYNTHESIZED risk is the same bookkeeping gap the
+    // synthesis above already tolerates -- the finding goes unattributed rather than dying.
+    // A well-formed unit reference is still scoped strictly (outside-assignment stays fatal),
+    // and findings on model-declared risks keep the original unconditional requirement.
+    const unitId = synthesizedRisks.has(riskId) && !wellFormedId(value.unit_id)
+      ? ''
+      : scopedUnitId(value.unit_id, `finding ${index}`, assignedUnits, planItem.unitIds);
     const evidenceReceiptIds = value.evidence_receipt_ids === undefined && options.evidenceEnabled === false
       ? []
       : Array.isArray(value.evidence_receipt_ids)
@@ -230,10 +285,24 @@ function parseInvestigationResponse(content, limits = {}, options = {}) {
       evidenceReceiptIds,
     };
   });
+  // Synthesized risks are disposed deterministically (the finding that forced their synthesis
+  // is the confirmation) unless the model coherently disposed the id itself.
+  for (const id of synthesizedRiskIds) {
+    if (!riskDispositions.some((row) => row.riskId === id)) {
+      riskDispositions.push({ riskId: id, status: 'confirmed', reason: 'auto-synthesized: a finding was reported without risk-plan bookkeeping' });
+    }
+  }
   if (status === 'COMPLETE' && riskPlan.some((item) => !riskDispositions.some((row) => row.riskId === item.id))) {
     throw new Error('COMPLETE response must dispose every risk-plan item');
   }
-  return { reviewStatus: status, riskPlan, evidenceRequests: requests, riskDispositions, findings };
+  return {
+    reviewStatus: status,
+    riskPlan,
+    evidenceRequests: requests,
+    riskDispositions,
+    findings,
+    ...(synthesizedRiskIds.length > 0 ? { synthesizedRiskIds } : {}),
+  };
 }
 
 const UNTRUSTED_BLOCK_TAGS = ['review_manifest', 'prior_decisions', 'optional_context', 'pull_request_diff'];
