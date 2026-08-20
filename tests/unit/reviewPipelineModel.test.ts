@@ -179,6 +179,117 @@ describe('reviewWithModel', () => {
     expect(result.content).toBe(validFindings);
   });
 
+  // Issue #166: under a guardrailed key, `openrouter/auto-beta` 404s whenever the router's pick
+  // lands outside the key's model allowlist ("No endpoints available matching your guardrail
+  // restrictions"). That is precisely the case the configured fallback model exists for -- the
+  // fallback slug IS admitted by the guardrail -- so an http_404 must be fallback-eligible, not
+  // a terminal lane error. Measured live (run 32416975595, PR #167): 5 persona lanes died
+  // `http_404` at attempt 1/2 with the deepseek fallback configured and never tried.
+  it('falls back to the configured model when the primary 404s under the key guardrail (issue #166)', async () => {
+    const calls: any[] = [];
+    const fetchImpl = async (url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url, init, body });
+      if (calls.length <= 1) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => 'No endpoints available matching your guardrail restrictions',
+          json: async () => ({ error: { message: 'No endpoints available matching your guardrail restrictions' } }),
+        };
+      }
+      const payload = { choices: [{ message: { content: validFindings } }] };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => payload,
+        body: sseBody(payload),
+      };
+    };
+
+    const result = await reviewWithModel(
+      securityPersona,
+      diffFiles,
+      { repo: 'o/r', prNumber: '1' },
+      null,
+      {
+        apiKey: 'k',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'openrouter/auto-beta',
+        fetchImpl,
+        maxAttempts: 1,
+        openRouterPolicy: {
+          allowedModels: [],
+          fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
+          costQualityTradeoff: undefined,
+          dataCollection: undefined,
+          ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+          providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
+          timeoutMs: 30_000,
+        },
+      },
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.model).toBe('openrouter/auto-beta');
+    expect(calls[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(result.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.content).toBe(validFindings);
+  });
+
+  // auto-beta re-rolls its underlying pick per request (measured in the same run: sibling lanes
+  // requesting auto-beta resolved via Morph to the deepseek slug and completed), so an in-budget
+  // retry of the SAME slug after a 404 is a real second chance, not a guaranteed repeat failure.
+  it('re-asks the primary on http_404 while attempts remain, then falls back', async () => {
+    const calls: any[] = [];
+    const fetchImpl = async (url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url, init, body });
+      if (calls.length <= 2) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => 'No endpoints available matching your guardrail restrictions',
+          json: async () => ({ error: { message: 'No endpoints available matching your guardrail restrictions' } }),
+        };
+      }
+      const payload = { choices: [{ message: { content: validFindings } }] };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => payload,
+        body: sseBody(payload),
+      };
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'openrouter/auto-beta',
+      fetchImpl,
+      openRouterPolicy: {
+        allowedModels: [],
+        fallbackModels: ['deepseek/deepseek-v4-flash-0731'],
+        costQualityTradeoff: undefined,
+        dataCollection: undefined,
+        ignoredProviders: HARD_BANNED_PROVIDER_SLUGS,
+        providerRouting: { ignore: HARD_BANNED_PROVIDER_SLUGS },
+        timeoutMs: 30_000,
+      },
+    });
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0].body.model).toBe('openrouter/auto-beta');
+    expect(calls[1].body.model).toBe('openrouter/auto-beta');
+    expect(calls[2].body.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.ok).toBe(true);
+  });
+
   it('retries the primary model before moving to the configured fallback', async () => {
     const calls: any[] = [];
     const fetchImpl = async (url: string, init: any) => {

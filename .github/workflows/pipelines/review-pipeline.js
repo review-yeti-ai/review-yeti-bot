@@ -3426,7 +3426,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             + ` resolved=${routeLabel} elapsed_ms=${elapsedMs} status=${status}`
             + ` attempt=${attempt}/${maxAttempts}`,
           );
-          const retryableStatus = status === 408 || status === 429 || status >= 500;
+          // 404 is fallback-eligible (issue #166): under a guardrailed key, a router alias like
+          // `openrouter/auto-beta` 404s whenever its per-request pick lands outside the key's
+          // model allowlist ("No endpoints available matching your guardrail restrictions").
+          // The configured fallback model is exactly the slug the guardrail DOES admit, so a 404
+          // must spend the bounded retry (auto-beta re-rolls its pick per request -- sibling
+          // lanes in the same measured run resolved auto-beta to the fallback slug and completed)
+          // and then advance to the next model, never terminate the lane. Measured before this
+          // fix (run 32416975595, PR #167): 5 persona lanes died `http_404` at attempt 1/2 with
+          // the deepseek fallback configured and never tried; verdict BLOCK on infra.
+          const retryableStatus = status === 404 || status === 408 || status === 429 || status >= 500;
           // OpenRouter can report an upstream failure inside an otherwise-successful SSE
           // response. That produces status=0 here after callOpenRouterChat has discarded the
           // partial body, so status alone cannot identify it as transient. Spend the existing
