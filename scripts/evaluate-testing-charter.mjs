@@ -30,6 +30,14 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
 const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require(path.join(root, 'src/review/reviewInvestigation.js'));
+const { createReviewUnitManifest } = require(path.join(root, 'src/review/reviewUnitManifest.js'));
+const { sha256 } = require(path.join(root, 'src/review/reviewCore.js'));
+
+// Fixed, valid-shaped placeholders -- createReviewUnitManifest's identity requires 64-hex digests
+// for configDigest/policyDigest/diffDigest, but nothing in this harness ever checks them against
+// anything else (unlike the real pipeline's trusted-policy digests). Any constant, valid digest
+// produces stable, real-shaped review-unit ids; what matters is the shape, not the value.
+const EVAL_HARNESS_DIGEST = sha256('evaluate-testing-charter.mjs');
 
 const DEFAULT_FIXTURE = 'tests/fixtures/testing-charter/evaluation-matrix.json';
 const DEFAULT_BASELINE_CHARTER = 'tests/fixtures/testing-charter/baseline-charter.txt';
@@ -78,9 +86,25 @@ export async function reviewWithBoundedInvestigation(persona, files, prContext =
     prNumber: Number(prContext.prNumber) || 1,
     baseSha: 'a'.repeat(40),
     headSha: 'b'.repeat(40),
+    configDigest: EVAL_HARNESS_DIGEST,
+    policyDigest: EVAL_HARNESS_DIGEST,
+    diffDigest: EVAL_HARNESS_DIGEST,
   };
   const evidenceRegistry = { capabilities: { enabled: false, readOnly: true, tools: [] }, call: async () => ({ status: 'unavailable' }) };
-  const manifest = `<review_units>${JSON.stringify((Array.isArray(files) ? files : []).map((file) => ({ path: file.path })))}</review_units>`;
+  // Found live (legacy-cutover's repro, three original defect fixtures, 3/3 failed on first
+  // turn): a bare `{path}` manifest with no `id` field let the model echo a path-shaped string
+  // (e.g. "ru_tests/test_workflow_guard.py") back as a finding's unit_id, which requiredId()'s
+  // format check (no `/` allowed) hard-rejects as malformed_response. Real production unit ids
+  // are always `ru_<64-hex-sha256>` (reviewUnitManifest.js's stableReviewUnitId) -- reusing the
+  // real manifest builder here, not a hand-rolled shape, is what actually eliminates that gap
+  // rather than papering over one specific symptom of it.
+  const manifestUnits = createReviewUnitManifest({
+    identity,
+    trustedRules: { maxFileDiffChars: 5_000, generatedPatterns: [], vendorPatterns: [] },
+    policy: { maxFileDiffChars: 5_000 },
+    files: (Array.isArray(files) ? files : []).map((file) => ({ path: file.path, patch: file.patch })),
+  }).units;
+  const manifest = `<review_units>${JSON.stringify(manifestUnits)}</review_units>`;
   try {
     const run = await runBoundedPersonaInvestigation({
       identity,

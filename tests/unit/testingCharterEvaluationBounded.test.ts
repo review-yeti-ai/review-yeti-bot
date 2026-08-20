@@ -55,6 +55,47 @@ describe('evaluate-testing-charter.mjs bounded-path harness (offline)', () => {
     expect(capturedSystemPrompts.some((prompt) => prompt.includes('one reviewer on a code review panel'))).toBe(false);
   });
 
+  // Found live by legacy-cutover's repro (3/3 original defect fixtures failed on the first turn):
+  // a bare `{path}` manifest with no `id` field let the model echo a path-shaped string back as a
+  // finding's unit_id ("ru_tests/test_workflow_guard.py"), which requiredId()'s format check (no
+  // `/` allowed) hard-rejects as malformed_response -- a harness artifact, not a production defect,
+  // since real manifests always carry real ru_<sha256> ids.
+  it('gives the model real ru_<sha256> unit ids in the manifest, matching production\'s reviewUnitManifest.js shape exactly', async () => {
+    const capturedUserPrompts: string[] = [];
+    const modelClient = async ({ messages }: { messages: Array<{ role: string; content: string }> }) => {
+      const user = messages.find((message) => message.role === 'user');
+      if (user) capturedUserPrompts.push(user.content);
+      return {
+        ok: true,
+        content: JSON.stringify({
+          review_status: 'COMPLETE', risk_plan: [], evidence_requests: [], risk_dispositions: [], findings: [],
+        }),
+      };
+    };
+
+    await evaluateTestingCharter(matrix, {
+      repetitions: 1,
+      concurrency: 1,
+      arms: [{ id: 'offline', persona, charter: persona.charter }],
+      reviewWithModel: reviewWithBoundedInvestigation,
+      modelOptions: { modelClient },
+    });
+
+    expect(capturedUserPrompts.length).toBeGreaterThan(0);
+    const fullPrompt = capturedUserPrompts.find((prompt) => prompt.includes('<review_units>'));
+    expect(fullPrompt, 'a <review_units> block must be present in some user turn').toBeTruthy();
+    const manifestBlock = (fullPrompt as string).slice(
+      (fullPrompt as string).indexOf('<review_units>'),
+      (fullPrompt as string).indexOf('</review_units>'),
+    );
+    const idMatches = [...manifestBlock.matchAll(/"id":"([^"]*)"/g)].map((match) => match[1]);
+    // Every changed fixture file must produce exactly one manifest unit.
+    expect(idMatches.length).toBeGreaterThan(0);
+    // Every unit id must be real-shaped (ru_<64-hex-sha256>) -- never a bare path, which is what
+    // requiredId() rejects on the model's echoed unit_id.
+    expect(idMatches.every((id) => /^ru_[a-f0-9]{64}$/.test(id))).toBe(true);
+  });
+
   it('detects a seeded defect through the real bounded contract and stays quiet on a clean control', async () => {
     const modelClient = async ({ prContext }: { prContext: { prNumber: string } }) => {
       const fixtureId = fixtureIdFromPrNumber(prContext.prNumber);
