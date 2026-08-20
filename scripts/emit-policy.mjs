@@ -26,6 +26,17 @@ for (const key of ['lane_deadline_ms', 'lane_call_budget', 'max_investigation_tu
     throw new Error(`review_yeti.budget.${key} must be a positive integer string`);
   }
 }
+for (const key of ['openrouter_timeout_ms', 'openrouter_ttft_ms', 'openrouter_max_attempts']) {
+  if (!/^[1-9][0-9]*$/.test(String(review[key] ?? ''))) {
+    throw new Error(`review_yeti.${key} must be a positive integer string`);
+  }
+}
+const openrouterTimeoutMs = Number(review.openrouter_timeout_ms);
+const openrouterTtftMs = Number(review.openrouter_ttft_ms);
+const openrouterMaxAttempts = Number(review.openrouter_max_attempts);
+if (openrouterTtftMs > openrouterTimeoutMs) {
+  throw new Error('review_yeti.openrouter_ttft_ms must not exceed openrouter_timeout_ms');
+}
 if (!Array.isArray(review.transports) || review.transports.length === 0) throw new Error('policy must define transports');
 if (!openrouterTransport) throw new Error('policy must define an OpenRouter fallback transport');
 const transportNames = review.transports.map((transport) => transport.name);
@@ -42,6 +53,12 @@ for (const transport of review.transports) {
   if (transport.connect_timeout_ms > transport.timeout_ms) {
     throw new Error(`transport ${transport.name}.connect_timeout_ms must not exceed timeout_ms`);
   }
+}
+if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
+  throw new Error('openrouter-fallback.timeout_ms must equal review_yeti.openrouter_timeout_ms');
+}
+if (Number(budget.lane_deadline_ms) < openrouterTimeoutMs * openrouterMaxAttempts) {
+  throw new Error('review_yeti.budget.lane_deadline_ms must cover the OpenRouter request retry envelope');
 }
 
 // A lane advances through the declared transports in order, retrying each transport up to
@@ -76,10 +93,6 @@ if (worstCaseTransportMs > laneDeadlineMs) {
 // policy's job is to make sure that IF a transport is ever declared non-streaming, a tight TTFT can
 // never silently become a generation ceiling -- that must be a loud policy-load failure instead of
 // a config footgun that reappears the next time someone edits `stream`.
-const openrouterTtftMs = String(review.openrouter_ttft_ms ?? '');
-if (!/^[1-9][0-9]*$/.test(openrouterTtftMs)) {
-  throw new Error('review_yeti.openrouter_ttft_ms must be a positive integer string');
-}
 const declaredNonStreamingTransports = review.transports.filter((transport) => transport.stream !== true);
 const streamingDeclaredGlobally = review.openrouter_stream === 'true';
 if (declaredNonStreamingTransports.length > 0 || !streamingDeclaredGlobally) {

@@ -34,16 +34,18 @@ import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
 transports = review.get('transports', [])
-if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrouter-fallback']:
-    raise SystemExit('policy must preserve Fireworks -> Ollama -> OpenRouter order')
-if [item.get('reasoning_effort') for item in transports] != ['max', 'high', 'max']:
-    raise SystemExit('reasoning must be Fireworks=max, Ollama=high, OpenRouter=max')
-if transports[1].get('model') != 'deepseek-v4-flash:cloud':
-    raise SystemExit('ollama must use the cloud DeepSeek-V4-Flash slug')
+if [item.get('name') for item in transports] != ['fireworks', 'openrouter-fallback']:
+    raise SystemExit('policy must preserve Fireworks -> OpenRouter order')
+if [item.get('reasoning_effort') for item in transports] != ['max', 'max']:
+    raise SystemExit('reasoning must be Fireworks=max, OpenRouter=max')
+if transports[0].get('structured_output') != 'strict':
+    raise SystemExit('Fireworks must use the strict investigation response schema')
 if transports[0].get('perf_metrics_in_response') is not True:
     raise SystemExit('Fireworks must return performance metrics')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
+if any(item.get('name') == 'ollama' for item in review.get('transports', [])):
+    raise SystemExit('obsolete Ollama transport must not return to the central policy')
 budget = review.get('budget')
 if not isinstance(budget, dict):
     raise SystemExit('policy must keep lane limits in review_yeti.budget')
@@ -55,6 +57,10 @@ if not fallback:
     raise SystemExit('policy must define the openrouter-fallback transport')
 if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
+if fallback.get('model') != 'deepseek/deepseek-v4-flash-0731':
+    raise SystemExit('openrouter-fallback must use the approved structured-output fallback model')
+if fallback.get('structured_output') != 'strict':
+    raise SystemExit('openrouter-fallback must use strict investigation output')
 if fallback.get('allow_banned_providers') is not None:
     raise SystemExit('openrouter-fallback must not re-enable the hard-banned Fireworks provider')
 if fallback.get('quarantine_on_timeout') is not False:
@@ -62,16 +68,15 @@ if fallback.get('quarantine_on_timeout') is not False:
 routing = fallback.get('provider_routing') or {}
 if 'fireworks' not in (routing.get('ignore') or []):
     raise SystemExit('openrouter-fallback must explicitly ignore the hard-banned Fireworks provider')
+if 'morph' not in (routing.get('ignore') or []):
+    raise SystemExit('openrouter-fallback must quarantine the observed Morph timeout provider')
 if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
-if routing.get('quantizations') != ['bf16', 'fp16']:
-    raise SystemExit('openrouter-fallback must require full-precision bf16/fp16 quants')
-if routing.get('sort') != 'throughput':
-    raise SystemExit('openrouter-fallback must sort by throughput')
-if (routing.get('preferred_min_throughput') or {}).get('p90') != 40:
-    raise SystemExit('openrouter-fallback must require p90 throughput >= 40')
-if (routing.get('preferred_max_latency') or {}).get('p99') != 3:
-    raise SystemExit('openrouter-fallback must require p99 latency <= 3s')
+if routing.get('sort') != 'latency':
+    raise SystemExit('openrouter-fallback must sort by latency for fastest overall response time')
+for key in ('quantizations', 'preferred_min_throughput', 'preferred_max_latency'):
+    if routing.get(key) is not None:
+        raise SystemExit(f'openrouter-fallback must not require endpoint-specific {key}')
 if routing.get('only') or routing.get('order'):
     raise SystemExit('openrouter-fallback must not pin provider.only or provider.order')
 if review.get('openrouter_stream') != 'true':
@@ -84,18 +89,21 @@ for transport in review.get('transports', []):
         if type(value) is not int or not 1 <= value <= 180_000:
             raise SystemExit(f"{transport.get('name', '<unnamed>')} {key} must be between 1ms and 180000ms")
 
-# Hard arithmetic invariant: a lane advances through every declared transport in order before it
-# gives up, so the worst case for one lane is every transport burning its full timeout_ms. If that
-# sum exceeds the lane deadline, the later transports -- the OpenRouter fallback most of all -- are
-# structurally unreachable in exactly the case they exist for (a slow or stalled primary). This is
-# the same invariant emit-policy.mjs enforces at policy-load time; re-checking it here against the
-# real committed policy keeps the two in lockstep. Sums over however many transports the policy
-# declares -- not hardcoded to today's count of 3 -- so it stays meaningful if that count changes.
+# Hard arithmetic invariant: a lane advances through every declared transport in order, retrying
+# each transport up to openrouter_max_attempts before it gives up. If that worst-case product exceeds
+# the lane deadline, the later transports -- the OpenRouter fallback most of all -- are structurally
+# unreachable in exactly the case they exist for (a slow or stalled primary). This is the same
+# invariant emit-policy.mjs enforces at policy-load time; re-checking it here against the real
+# committed policy keeps the two in lockstep. Sums over however many transports the policy declares
+# -- not hardcoded to today's count -- so it stays meaningful if that count changes.
 lane_deadline_ms = int(budget['lane_deadline_ms'])
+max_attempts = int(review['openrouter_max_attempts'])
 transport_timeout_sum_ms = sum(t['timeout_ms'] for t in transports)
-if transport_timeout_sum_ms > lane_deadline_ms:
+worst_case_transport_ms = transport_timeout_sum_ms * max_attempts
+if worst_case_transport_ms > lane_deadline_ms:
     raise SystemExit(
-        f'sum of transport timeout_ms ({transport_timeout_sum_ms}ms across {len(transports)} transports) '
+        f'worst-case transport budget ({worst_case_transport_ms}ms = {transport_timeout_sum_ms}ms across '
+        f'{len(transports)} transports x {max_attempts} attempts) '
         f'exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); a full sequential '
         'failover could never reach the last transport'
     )
@@ -117,12 +125,8 @@ if max_passes * lane_deadline_ms > job_cap_ms:
     )
 
 # On a non-streaming fallback, the "TTFT" abort wraps the entire request rather than just the wait
-# for a first byte, so a tight openrouter_ttft_ms silently becomes a total-generation cap. The
-# committed policy declares stream:true on every transport (checked above) and openrouter_stream
-# is "true", so a tight TTFT is legitimate here -- it means what its name says. The invariant that
-# guards the OTHER case (some transport declared non-streaming) lives in emit-policy.mjs and is
-# exercised below by a counterfactual, not asserted unconditionally here, because "ttft tighter
-# than timeout" is exactly the healthy, expected shape when streaming is genuinely on.
+# for a first byte. The committed policy declares streaming on every transport, so a tight TTFT is
+# legitimate here; the invariant for any future non-streaming change is exercised below.
 if not str(review.get('openrouter_ttft_ms', '')).isdigit() or int(review['openrouter_ttft_ms']) < 1:
     raise SystemExit('openrouter_ttft_ms must be a positive integer string')
 print('policy budget source passed')
@@ -226,9 +230,9 @@ run_transport_relation_case() {
 
 # Counterfactual proof for the lane-deadline arithmetic guard: every transport individually stays
 # inside the per-transport 1ms-180000ms cap (so that check does not fire first), but each transport
-# is set high enough that the retry-aware worst-case budget exceeds the committed lane deadline --
-# derived from the deadline and transport count rather than hardcoded, so this stays meaningful if
-# a transport is added or removed again.
+# is set high enough that the sum across all configured transports exceeds the committed lane
+# deadline -- derived from the deadline and transport count rather than hardcoded, so this stays
+# meaningful if a transport is added or removed again.
 write_transport_budget_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -242,6 +246,15 @@ overflow_timeout_ms = min(180_000, (lane_deadline_ms // len(transports)) + 10_00
 for transport in transports:
     transport['timeout_ms'] = overflow_timeout_ms
     transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), overflow_timeout_ms)
+# The current two-transport cap (180000ms) can otherwise land exactly on a 360000ms lane. Nudge
+# the fixture deadline just below the resulting sum while keeping the retry-envelope check valid.
+if overflow_timeout_ms * len(transports) <= lane_deadline_ms:
+    lane_deadline_ms = overflow_timeout_ms * len(transports) - 1
+    policy['review_yeti']['budget']['lane_deadline_ms'] = str(lane_deadline_ms)
+# Keep the retry-envelope guard from firing first; this fixture is specifically proving that
+# the sum across transports is checked independently of the OpenRouter retry count.
+policy['review_yeti']['openrouter_max_attempts'] = '1'
+policy['review_yeti']['openrouter_timeout_ms'] = str(overflow_timeout_ms)
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
@@ -263,9 +276,6 @@ run_transport_budget_overflow_case() {
   echo "[transport-budget-overflow] passed"
 }
 
-# The old guard only summed one attempt per transport. This fixture makes that sum exactly equal
-# to the lane deadline, so only the retry multiplier can reject it. It is the regression case for
-# the live failure shape where Fireworks consumed both attempts before fallback became useful.
 write_transport_retry_budget_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -273,12 +283,15 @@ import sys
 
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
-transports = policy['review_yeti']['transports']
-lane_deadline_ms = int(policy['review_yeti']['budget']['lane_deadline_ms'])
-timeout_ms = lane_deadline_ms // len(transports)
+review = policy['review_yeti']
+transports = review['transports']
+lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
+max_attempts = int(review['openrouter_max_attempts'])
+retry_timeout_ms = min(180_000, (lane_deadline_ms // (len(transports) * max_attempts)) + 10_000)
 for transport in transports:
-    transport['timeout_ms'] = timeout_ms
-    transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), timeout_ms)
+    transport['timeout_ms'] = retry_timeout_ms
+    transport['connect_timeout_ms'] = min(transport.get('connect_timeout_ms', 30_000), retry_timeout_ms)
+review['openrouter_timeout_ms'] = str(transports[1]['timeout_ms'])
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
 PY
@@ -301,10 +314,9 @@ run_transport_retry_budget_overflow_case() {
 }
 
 # Counterfactual proof for the TTFT-as-total-generation-cap guard. The committed policy's
-# openrouter_ttft_ms (15000) is deliberately tighter than the largest timeout_ms (45000) -- that is
-# healthy and expected when streaming is genuinely on, and "run_case valid" below proves the
-# unmodified committed policy loads cleanly with exactly that shape. The danger is the OTHER
-# combination: a transport declared non-streaming with that same tight ttft, where a live run
+# The committed policy streams on every transport and keeps a first-token budget below the total
+# timeout. The danger is the OTHER combination: a transport declared non-streaming with a tighter
+# ttft, where a live run
 # showed the "TTFT" abort silently becomes a total-generation cap wrapping the entire request.
 # Both ways a transport can end up declared non-streaming are exercised: per-transport
 # `stream: false`, and the global `openrouter_stream` flag.
@@ -317,6 +329,7 @@ import sys
 source, destination, stream_scope = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
+review['openrouter_ttft_ms'] = '30000'
 if stream_scope == 'transport':
     review['transports'][0]['stream'] = False
 elif stream_scope == 'global':
@@ -350,8 +363,8 @@ run_ttft_unsafe_case() {
 run_case valid lane_call_budget 24 0
 grep -q '^action_ref<<' "$tmp_dir/valid.output"
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
-grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml'
-grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"quantizations":["bf16","fp16"]'
+grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml,morph'
+grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml","morph"]'
 grep -qx 'v1' "$tmp_dir/valid.output"
 grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
@@ -398,6 +411,59 @@ run_transport_budget_overflow_case
 run_transport_retry_budget_overflow_case
 run_ttft_unsafe_case transport
 run_ttft_unsafe_case global
+
+write_openrouter_timeout_mismatch_policy() {
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+policy = json.load(open(source))
+policy['review_yeti']['transports'][1]['timeout_ms'] += 1
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_openrouter_timeout_mismatch_case() {
+  local output_file="$tmp_dir/invalid-openrouter-timeout.output"
+  write_openrouter_timeout_mismatch_policy
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/invalid-openrouter-timeout.log" 2>&1
+  local rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]]
+  grep -q 'openrouter-fallback.timeout_ms must equal review_yeti.openrouter_timeout_ms' "$tmp_dir/invalid-openrouter-timeout.log"
+  echo "[invalid-openrouter-timeout] passed"
+}
+
+write_short_lane_deadline_policy() {
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+policy = json.load(open(source))
+policy['review_yeti']['budget']['lane_deadline_ms'] = '119999'
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_short_lane_deadline_case() {
+  local output_file="$tmp_dir/invalid-lane-envelope.output"
+  write_short_lane_deadline_policy
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/invalid-lane-envelope.log" 2>&1
+  local rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]]
+  grep -q 'lane_deadline_ms must cover the OpenRouter request retry envelope' "$tmp_dir/invalid-lane-envelope.log"
+  echo "[invalid-lane-envelope] passed"
+}
+
+run_openrouter_timeout_mismatch_case
+run_short_lane_deadline_case
 
 echo "emit-policy lane_call_budget contract passed"
 echo "emit-policy bounded lane contract passed"

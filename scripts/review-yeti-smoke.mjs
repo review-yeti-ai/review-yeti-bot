@@ -4,7 +4,6 @@ import { resolve } from 'node:path';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'fireworks',
-  'ollama',
   'openrouter-fallback',
 ]);
 
@@ -13,12 +12,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
-  quantizations: ['bf16', 'fp16'],
-  sort: 'throughput',
-  preferred_min_throughput: { p90: 40 },
-  preferred_max_latency: { p99: 3 },
+  sort: 'latency',
   data_collection: 'deny',
-  ignore: ['fireworks', 'open-inference', 'akashml'],
+  ignore: ['fireworks', 'open-inference', 'akashml', 'morph'],
 });
 
 // The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
@@ -61,7 +57,8 @@ export function validatePolicy(policy) {
   if (transports[0].reasoning_effort !== 'max' || transports[0].perf_metrics_in_response !== true) {
     throw new Error('Fireworks must use maximum reasoning with performance metrics');
   }
-  if (transports[1].reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
+  if (transports[0].structured_output !== 'strict') throw new Error('Fireworks must use strict investigation output');
+  if (transports[1].reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
@@ -81,15 +78,23 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must require full-precision quants, throughput floors, and fallback');
+    throw new Error('OpenRouter routing must leave endpoint cohort selection to the live provider catalog');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
   }
   if (openrouter?.reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
-  if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must enforce the strict investigation schema');
+  if (openrouter?.model !== 'deepseek/deepseek-v4-flash-0731') throw new Error('OpenRouter must use the approved structured-output fallback model');
+  if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
   if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
   if (policy.review_yeti?.openrouter_max_attempts !== '2') throw new Error('each transport must retain one retry');
+  if (policy.review_yeti?.openrouter_stream !== 'true') throw new Error('OpenRouter must use streaming for provider attribution');
+  if (openrouter?.timeout_ms !== Number(policy.review_yeti?.openrouter_timeout_ms)) {
+    throw new Error('OpenRouter transport timeout must match the central request timeout');
+  }
+  if (Number(policy.review_yeti?.budget?.lane_deadline_ms) < openrouter.timeout_ms * Number(policy.review_yeti?.openrouter_max_attempts)) {
+    throw new Error('lane deadline must cover the bounded OpenRouter retry envelope');
+  }
 
   return transports;
 }
@@ -109,8 +114,8 @@ export function buildRequest(transport) {
     ],
     temperature: 0,
     max_tokens: 128,
-    stream: true,
-    response_format: { type: 'json_object' },
+    stream: transport.stream === true,
+    ...(transport.structured_output === 'none' ? {} : { response_format: { type: 'json_object' } }),
   };
 
   if (transport.provider_routing) {
