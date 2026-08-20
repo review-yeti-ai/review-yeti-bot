@@ -185,16 +185,52 @@ function findingText(finding = {}) {
  * group. Groups are OR within, AND across: the finding must name each required idea somehow,
  * which no amount of generic "add more tests" phrasing can accidentally do.
  */
+function findingAnchors(finding, fixture) {
+  return fixture.expectedPaths.some((expected) => String(finding.path || '').endsWith(expected));
+}
+
 function findingMatchesFixture(finding, fixture) {
-  const anchored = fixture.expectedPaths.some((expected) => String(finding.path || '').endsWith(expected));
-  if (!anchored) return false;
+  if (!findingAnchors(finding, fixture)) return false;
   const text = findingText(finding);
   return fixture.mustMatch.every((group) => group.some((token) => text.includes(token)));
+}
+
+/**
+ * Structural per-finding classification for CR-Bench's SNR: `hits + valid suggestions / noise`.
+ * Every finding gets exactly one label -- mutually exclusive, collectively exhaustive over the
+ * findings a run produced -- using only the same structural rules `gradeRun` already applies:
+ *
+ *   hit             — matches the fixture exactly (findingMatchesFixture): anchored to an
+ *                      expected path AND names the seeded defect mechanism.
+ *   valid_suggestion — anchored to an expected path but doesn't name the mechanism. This is the
+ *                      harness's structural proxy for CR-Bench's "sound feedback that isn't the
+ *                      target defect": we cannot judge soundness without an LLM judge (out of
+ *                      scope, see module doc), so "pointed at the right file" stands in for it.
+ *   noise           — everything else: any finding on a clean control (the charter's own
+ *                      "do not flag" list makes every one of those wrong by definition), and any
+ *                      defect-fixture finding that didn't even anchor to an expected path.
+ *
+ * No new judgment machinery: this reuses findingMatchesFixture/findingAnchors, the exact
+ * functions `detected`/`anchored` already call per run.
+ */
+function classifyFindings(fixture, findings) {
+  if (fixture.category === 'clean') return findings.map(() => 'noise');
+  return findings.map((finding) => {
+    if (findingMatchesFixture(finding, fixture)) return 'hit';
+    if (findingAnchors(finding, fixture)) return 'valid_suggestion';
+    return 'noise';
+  });
 }
 
 function gradeRun(fixture, result) {
   const findings = Array.isArray(result?.findings) ? result.findings : [];
   const errored = result?.decision === 'ERROR' || Boolean(result?.error);
+  const classifications = errored ? [] : classifyFindings(fixture, findings);
+  const counts = {
+    hits: classifications.filter((label) => label === 'hit').length,
+    validSuggestions: classifications.filter((label) => label === 'valid_suggestion').length,
+    noise: classifications.filter((label) => label === 'noise').length,
+  };
   if (fixture.category === 'clean') {
     return {
       errored,
@@ -204,6 +240,7 @@ function gradeRun(fixture, result) {
       detected: false,
       anchored: false,
       findings: findings.length,
+      ...counts,
     };
   }
   return {
@@ -213,8 +250,9 @@ function gradeRun(fixture, result) {
     // Weaker signal kept for diagnosis: the lane looked at the right file but did not name the
     // mechanism. A jump in `anchored` with flat `detected` means the probes aimed attention
     // without changing the conclusion.
-    anchored: !errored && findings.some((finding) => fixture.expectedPaths.some((expected) => String(finding.path || '').endsWith(expected))),
+    anchored: !errored && findings.some((finding) => findingAnchors(finding, fixture)),
     findings: findings.length,
+    ...counts,
   };
 }
 
@@ -247,6 +285,21 @@ function p95(sorted) {
   return sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] : null;
 }
 
+/**
+ * CR-Bench's signal-to-noise ratio: (hits + valid suggestions) / noise, over every finding the
+ * arm produced (see `classifyFindings`'s doc comment for how each finding is labeled). `noise`
+ * counting zero with nonzero signal is a real, measured "no noise observed" result, not missing
+ * data -- reported as `ratio: null, unbounded: true` rather than `Infinity` (which JSON silently
+ * turns into `null` anyway, indistinguishable from "not computable"). Zero signal and zero noise
+ * (no findings at all, e.g. every run errored) is genuinely not computable: `ratio: null,
+ * unbounded: false`.
+ */
+function signalToNoiseRatio(hits, validSuggestions, noise) {
+  const signal = hits + validSuggestions;
+  if (noise === 0) return { ratio: null, unbounded: signal > 0 };
+  return { ratio: Number((signal / noise).toFixed(3)), unbounded: false };
+}
+
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -275,6 +328,16 @@ export function summarizeArm(rows, armId) {
   const firstChunkLatencies = numericSeries(selected, 'firstChunkMs');
   const firstContentLatencies = numericSeries(selected, 'firstContentMs');
   const detectedCount = defects.filter((row) => row.detected).length;
+  const totalHits = selected.reduce((sum, row) => sum + Number(row.hits || 0), 0);
+  const totalValidSuggestions = selected.reduce((sum, row) => sum + Number(row.validSuggestions || 0), 0);
+  const totalNoise = selected.reduce((sum, row) => sum + Number(row.noise || 0), 0);
+  const snr = signalToNoiseRatio(totalHits, totalValidSuggestions, totalNoise);
+  const failureClasses = {};
+  for (const row of selected) {
+    if (!row.errored) continue;
+    const label = row.error || 'unknown';
+    failureClasses[label] = (failureClasses[label] || 0) + 1;
+  }
   const firstChunkKindCounts = { reasoning: 0, content: 0, other: 0 };
   for (const row of selected) {
     if (row.firstChunkKind && firstChunkKindCounts[row.firstChunkKind] !== undefined) firstChunkKindCounts[row.firstChunkKind] += 1;
@@ -283,6 +346,7 @@ export function summarizeArm(rows, armId) {
     arm: armId,
     runs: selected.length,
     erroredRuns: selected.filter((row) => row.errored).length,
+    failureClasses,
     defectRuns: defects.length,
     detected: detectedCount,
     detectionRate: rate(detectedCount, defects.length),
@@ -295,6 +359,16 @@ export function summarizeArm(rows, armId) {
     // The ≤3-findings output contract is a hard rule; a charter change that breaks it is a
     // regression regardless of what it does to detection.
     outputContractBreaches: selected.filter((row) => row.findings > 3).length,
+    // CR-Bench-style finding classification (see classifyFindings) and the SNR/precision it
+    // enables. hits/validSuggestions/noise sum across every finding, not every run.
+    hits: totalHits,
+    validSuggestions: totalValidSuggestions,
+    noise: totalNoise,
+    // Classic precision (hits / (hits + noise)): valid suggestions are neither counted for nor
+    // against it -- they are not the target defect, but they are not wrong, either.
+    precision: rate(totalHits, totalHits + totalNoise),
+    snr: snr.ratio,
+    snrUnbounded: snr.unbounded,
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
     costUSD: Number(usage.costUSD.toFixed(6)),
@@ -325,6 +399,97 @@ export function summarizePerFixture(rows, fixtures) {
     };
     return { id: fixture.id, category: fixture.category, baseline: row('baseline'), candidate: row('candidate') };
   });
+}
+
+function fmtRate(rateValue, interval, n) {
+  if (rateValue === null) return `n/a (N=${n})`;
+  const ci = interval ? ` (95% CI ${interval[0].toFixed(3)}–${interval[1].toFixed(3)})` : '';
+  return `${rateValue.toFixed(3)}${ci} N=${n}`;
+}
+
+function fmtMs(value) {
+  return Number.isFinite(value) ? `${Math.round(value)}` : '—';
+}
+
+function fmtSnr(arm) {
+  if (arm.snrUnbounded) return `∞ (0 noise, ${arm.hits + arm.validSuggestions} signal)`;
+  return arm.snr === null ? 'n/a (0 signal, 0 noise)' : arm.snr.toFixed(3);
+}
+
+function fmtFailureClasses(failureClasses) {
+  const entries = Object.entries(failureClasses || {});
+  if (!entries.length) return 'none';
+  return entries.map(([label, count]) => `${label}: ${count}`).join(', ');
+}
+
+function fmtChunkKinds(counts) {
+  if (!counts) return '—';
+  return `reasoning ${counts.reasoning} / content ${counts.content} / other ${counts.other}`;
+}
+
+/**
+ * Renders one corpus's evaluation report (the object `evaluateTestingCharter` + `summarizeArm` +
+ * `summarizePerFixture` produce, as shipped in `report`/`--out`) as a GitHub-flavored markdown
+ * document: one arm-comparison table with every metric the operator asked to see side by side
+ * (detection rate + CI, FP rate, precision, SNR, errored/N with failure-class breakdown, total
+ * latency, TTFB, and first-content latency), followed by a per-fixture detail table.
+ *
+ * Pure formatting over already-computed numbers -- this function invents nothing and estimates
+ * nothing; a `null` field renders as an explicit "n/a"/"—" cell, never a guess.
+ */
+export function renderMarkdownReport(report) {
+  const lines = [];
+  const corpus = report.fixture || 'unknown-fixture';
+  lines.push(`## Testing-charter evaluation — \`${corpus}\``);
+  lines.push('');
+  lines.push(`- Model: \`${report.model || 'unknown'}\``);
+  lines.push(`- Path: \`${report.path || 'unknown'}\` (max_tokens=${report.maxTokens ?? 'uncapped (production default)'})`);
+  lines.push(`- Repetitions per fixture/arm: ${report.repetitions ?? 'unknown'}`);
+  lines.push('');
+  lines.push('| Metric | ' + report.arms.map((arm) => arm.arm).join(' | ') + ' |');
+  lines.push('|---|' + report.arms.map(() => '---').join('|') + '|');
+  const row = (label, fn) => lines.push(`| ${label} | ${report.arms.map(fn).join(' | ')} |`);
+  row('Detection rate (recall)', (arm) => fmtRate(arm.detectionRate, arm.detectionRate95, arm.defectRuns));
+  row('Anchored rate', (arm) => fmtRate(arm.anchoredRate, null, arm.defectRuns));
+  row('False-positive rate', (arm) => fmtRate(arm.falsePositiveRate, null, arm.cleanRuns));
+  row('Precision (hits / (hits+noise))', (arm) => (arm.precision === null ? 'n/a' : arm.precision.toFixed(3)));
+  row('SNR ((hits+valid)/noise)', (arm) => fmtSnr(arm));
+  row('Hits / valid suggestions / noise', (arm) => `${arm.hits} / ${arm.validSuggestions} / ${arm.noise}`);
+  row('Errored runs', (arm) => `${arm.erroredRuns}/${arm.runs} (${fmtFailureClasses(arm.failureClasses)})`);
+  row('Findings/run (output-contract breaches)', (arm) => `${arm.findingsPerRun ?? 'n/a'} (${arm.outputContractBreaches} > 3)`);
+  row('Total latency ms, median / P95', (arm) => `${fmtMs(arm.latencyMsMedian)} / ${fmtMs(arm.latencyMsP95)}`);
+  row('TTFB ms, median / P95 (measured N)', (arm) => `${fmtMs(arm.firstChunkMsMedian)} / ${fmtMs(arm.firstChunkMsP95)} (N=${arm.firstChunkMeasured})`);
+  row('First-content ms, median / P95 (measured N)', (arm) => `${fmtMs(arm.firstContentMsMedian)} / ${fmtMs(arm.firstContentMsP95)} (N=${arm.firstContentMeasured})`);
+  row('First-chunk kind (reasoning/content/other)', (arm) => fmtChunkKinds(arm.firstChunkKindCounts));
+  row('Prompt / completion tokens', (arm) => `${arm.promptTokens} / ${arm.completionTokens}`);
+  row('Cost (USD)', (arm) => arm.costUSD.toFixed(6));
+  lines.push('');
+
+  if (Array.isArray(report.perFixture) && report.perFixture.length) {
+    lines.push('### Per-fixture detection');
+    lines.push('');
+    lines.push('| Fixture | Category | ' + report.arms.map((arm) => arm.arm).join(' | ') + ' |');
+    lines.push('|---|---|' + report.arms.map(() => '---').join('|') + '|');
+    for (const fixture of report.perFixture) {
+      const cells = report.arms.map((arm) => {
+        const entry = fixture[arm.arm];
+        if (!entry || !entry.runs) return 'n/a';
+        return fmtRate(entry.rate, entry.interval, entry.runs);
+      });
+      lines.push(`| ${fixture.id} | ${fixture.category} | ${cells.join(' | ')} |`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Concatenates one markdown report per corpus with a top-level heading. Multi-corpus is not yet
+ * exercised by this repo (one testing-charter matrix today), but callers should not have to
+ * hand-roll concatenation once a second corpus fixture exists.
+ */
+export function renderMarkdownReports(reports) {
+  return reports.map((report) => renderMarkdownReport(report)).join('\n---\n\n');
 }
 
 /**
@@ -486,8 +651,22 @@ async function main() {
     perFixture: summarizePerFixture(rows, fixtures),
   };
   const outputPath = argument('--out', '');
-  if (outputPath) fs.writeFileSync(path.resolve(root, outputPath), `${JSON.stringify({ ...report, rows }, null, 2)}\n`);
+  const markdown = renderMarkdownReport(report);
+  if (outputPath) {
+    const resolvedOutputPath = path.resolve(root, outputPath);
+    fs.writeFileSync(resolvedOutputPath, `${JSON.stringify({ ...report, rows }, null, 2)}\n`);
+    // Sibling .md next to the .json --out, matching src/evaluation/evaluationArtifacts.js's own
+    // json+md pairing convention -- the operator asked for a table readable in a PR body, and a
+    // PR body quotes a file, not a stdout stream.
+    const markdownPath = resolvedOutputPath.replace(/\.json$/u, '') + '.md';
+    fs.writeFileSync(markdownPath, `${markdown}\n`);
+  }
+  // JSON stays first and unchanged (testing-charter-promotion-gate.mjs and any other machine
+  // reader parse the --out FILE, never this stdout stream, but keeping the JSON block intact and
+  // first is the conservative choice regardless). The markdown table is appended after it so a
+  // human running this directly in a terminal sees the readable summary too.
   console.log(JSON.stringify(report, null, 2));
+  console.log(`\n${markdown}`);
   const candidate = report.arms.find((arm) => arm.arm === 'candidate');
   return candidate && candidate.outputContractBreaches > 0 ? 1 : 0;
 }
