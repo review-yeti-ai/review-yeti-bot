@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { sseBody } from '../support/streamableFetchStub';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -14,11 +15,13 @@ const diffFiles = [{ path: 'src/a.ts', patch: '+x', addedLines: [], deletedLines
 
 /** Fetch stub returning a completion with an optional usage block. */
 function stub(usage?: any, content = '{"findings":[]}') {
+  const payload = { choices: [{ message: { content } }], ...(usage ? { usage } : {}) };
   return async () => ({
     ok: true,
     status: 200,
     text: async () => '',
-    json: async () => ({ choices: [{ message: { content } }], ...(usage ? { usage } : {}) }),
+    json: async () => payload,
+    body: sseBody(payload),
   });
 }
 

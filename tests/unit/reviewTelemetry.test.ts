@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
+import { sseBody } from '../support/streamableFetchStub';
 
 const root = fs.existsSync(path.join(path.resolve(__dirname, '../..'), 'src/telemetry/reviewTelemetry.js'))
   ? path.resolve(__dirname, '../..')
@@ -107,10 +108,10 @@ describe('review telemetry', () => {
       {
         model: 'model-a', apiKey: 'test-key', baseUrl: 'https://api.example.test', maxAttempts: 1,
         reviewTelemetry: { record(event: unknown) { events.push(event); } },
-        fetchImplementation: async () => ({
-          ok: true, status: 200, headers: { get: () => null },
-          json: async () => ({ model: 'model-a', provider: 'provider-a', id: 'gen_123', choices: [{ message: { content: '{"findings":[]}' } }] }),
-        }),
+        fetchImplementation: async () => {
+          const payload = { model: 'model-a', provider: 'provider-a', id: 'gen_123', choices: [{ message: { content: '{"findings":[]}' } }] };
+          return { ok: true, status: 200, headers: { get: () => null }, json: async () => payload, body: sseBody(payload) };
+        },
       },
     );
 
@@ -129,10 +130,10 @@ describe('review telemetry', () => {
         {
           model: 'model-a', apiKey: 'test-key', baseUrl: 'https://api.example.test', maxAttempts: 1,
           reviewTelemetry: { record(event: unknown) { events.push(event); } },
-          fetchImplementation: async () => ({
-            ok: true, status: 200, headers: { get: () => null },
-            json: async () => ({ model: 'model-a', provider: 'provider-a', id: 'gen_123', usage: { prompt_tokens: 10, completion_tokens: 4, cost }, choices: [{ message: { content: '{"findings":[]}' } }] }),
-          }),
+          fetchImplementation: async () => {
+            const payload = { model: 'model-a', provider: 'provider-a', id: 'gen_123', usage: { prompt_tokens: 10, completion_tokens: 4, cost }, choices: [{ message: { content: '{"findings":[]}' } }] };
+            return { ok: true, status: 200, headers: { get: () => null }, json: async () => payload, body: sseBody(payload) };
+          },
         },
       );
 
@@ -285,10 +286,10 @@ describe('review telemetry', () => {
       {
         model: 'model-a', apiKey: 'test-key', baseUrl: 'https://api.example.test', maxAttempts: 1,
         reviewTelemetry: { record(event: unknown) { events.push(event); } },
-        fetchImplementation: async () => ({
-          ok: true, status: 200, headers: { get: () => null },
-          json: async () => ({ model: 'model-a', provider: 'provider-a', id: 'gen-secret', usage: { prompt_tokens: 10, completion_tokens: 4, cost: 0.01 }, choices: [{ message: { content: '{"findings":[]}' } }] }),
-        }),
+        fetchImplementation: async () => {
+          const payload = { model: 'model-a', provider: 'provider-a', id: 'gen-secret', usage: { prompt_tokens: 10, completion_tokens: 4, cost: 0.01 }, choices: [{ message: { content: '{"findings":[]}' } }] };
+          return { ok: true, status: 200, headers: { get: () => null }, json: async () => payload, body: sseBody(payload) };
+        },
       },
     );
 

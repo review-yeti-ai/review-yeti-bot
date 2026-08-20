@@ -30,6 +30,21 @@ async function runDoctor(dependencies = {}) {
     }
   } else checks.push(check('trusted-config', 'warning', 'no repository configuration found'));
 
+  const pipelinePath = path.join(cwd, '.github', 'workflows', 'pipelines', 'review-pipeline.js');
+  try {
+    const pipelineSource = (dependencies.fs || fs).readFileSync(pipelinePath, 'utf8');
+    const legacyTransport = /\bnonStreamOnce\b|\bstream\s*:\s*false\b/u.test(pipelineSource);
+    checks.push(check(
+      'openrouter-streaming-invariant',
+      legacyTransport ? 'error' : 'ok',
+      legacyTransport
+        ? 'legacy buffered transport path detected; provider requests must remain SSE streaming'
+        : 'provider requests require SSE streaming and have no buffered fallback',
+    ));
+  } catch (_) {
+    checks.push(check('openrouter-streaming-invariant', 'warning', 'review pipeline source not available for static invariant check'));
+  }
+
   const openRouterSource = env.OPENROUTER_API_KEY ? 'OPENROUTER_API_KEY' : '';
   checks.push(check('openrouter-credential', openRouterSource ? 'ok' : 'warning', openRouterSource ? 'credential present' : 'credential not configured', { source: openRouterSource || undefined }));
   const githubSource = env.GITHUB_TOKEN ? 'GITHUB_TOKEN' : env.GH_TOKEN ? 'GH_TOKEN' : '';

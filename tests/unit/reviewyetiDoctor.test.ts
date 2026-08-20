@@ -12,4 +12,12 @@ describe('reviewyeti doctor', () => {
     expect(JSON.stringify(receipt)).not.toContain('sk-secret');
     expect(JSON.stringify(receipt)).not.toContain('gh-secret');
   });
+
+  it('reports the streaming-only provider transport invariant', async () => {
+    const receipt = await runDoctor({ env: {}, cwd: process.cwd() });
+    expect(receipt.checks).toContainEqual(expect.objectContaining({
+      id: 'openrouter-streaming-invariant',
+      status: 'ok',
+    }));
+  });
 });

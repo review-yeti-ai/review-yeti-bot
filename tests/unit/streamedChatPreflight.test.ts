@@ -1,10 +1,6 @@
-// API-2902: the streamed-completion smoke. The pre-existing chat preflight sent `stream: false`
-// and only checked HTTP 200 -- invisible to an SSE stream-termination regression. This is the
-// exact bug class that shipped 2026-08-19: persona lanes streamed tokens from Fireworks (billed),
-// never saw the [DONE] marker, and hung to the lane deadline while the old preflight kept
-// reporting "healthy http=200". `runStreamedChatPreflight` performs one real streamed completion
-// through the SAME `callOpenRouterChat` path the persona lanes use and requires it to actually
-// terminate within budget.
+// API-2902: the streamed-completion smoke catches providers that emit tokens but never terminate
+// their SSE stream. `runStreamedChatPreflight` performs one real streamed completion through the
+// SAME `callOpenRouterChat` path the persona lanes use and requires it to terminate within budget.
 import { describe, expect, it } from 'vitest';
 import path from 'path';
 import fs from 'fs';
@@ -120,7 +116,7 @@ describe('runStreamedChatPreflight (API-2902 streamed-completion smoke)', () => 
     expect(outcome.result.partial).toBe(true);
   });
 
-  it('reports a distinct non-stream_incomplete reason when no chunk ever arrives (a connect-shaped failure, not a mid-stream hang)', async () => {
+  it('reports a distinct stream_connect_failure reason when no chunk ever arrives (not a mid-stream hang)', async () => {
     // `stream_incomplete` means chunks were received (tokens billed) but the completion never
     // terminated -- the exact incident shape. A provider that never answers at all is a
     // different, already-well-understood failure mode (connect/TTFT); it must not be folded into

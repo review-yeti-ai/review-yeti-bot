@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
+import { sseBody } from '../support/streamableFetchStub';
 
 // Resolve path to root repository .github/workflows/pipelines/review-pipeline.js
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -104,20 +105,19 @@ describe('createPipelineCancellation().race() — abandoned-loser rejection safe
   });
 });
 
-/**
- * Leaf-level defense in depth: `nonStreamOnce`'s ok-response branch used to call
- * `await response.json()` unguarded. An abort landing mid-body-read threw a raw AbortError out
- * of `callOpenRouterChat`, instead of the structured `{ ok: false, aborted: true }` shape every
- * other failure branch in the same function already returns.
- */
-describe('callOpenRouterChat — response.json() abort safety (non-stream path)', () => {
-  it('returns a structured {ok:false, aborted:true} result instead of throwing when response.json() aborts mid-read', async () => {
+describe('callOpenRouterChat — streamed response cancellation safety', () => {
+  it('returns a structured {ok:false, aborted:true} result instead of throwing when an SSE read aborts', async () => {
     const abortError = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
     const fetchImpl = vi.fn(async (_url: string, _init: any) => ({
       ok: true,
       status: 200,
       headers: { get: () => null },
-      json: async () => { throw abortError; },
+      body: {
+        getReader: () => ({
+          read: async () => { throw abortError; },
+          cancel: async () => {},
+        }),
+      },
     }));
 
     const result = await callOpenRouterChat(fetchImpl as any, {
@@ -125,28 +125,28 @@ describe('callOpenRouterChat — response.json() abort safety (non-stream path)'
       headers: { Authorization: 'Bearer test' },
       body: { model: 'deepseek/deepseek-v4-flash-0731', messages: [] },
       timeoutMs: 5_000,
-      // preferStream omitted — exercises the default non-stream nonStreamOnce() path.
     });
 
     expect(result.ok).toBe(false);
     expect(result.aborted).toBe(true);
-    expect(result.streamed).toBe(false);
+    expect(result.streamed).toBe(true);
     expect(result.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(result.provider).toBe('openrouter');
   });
 
-  it('still resolves normally when response.json() succeeds (no regression on the happy path)', async () => {
+  it('still resolves normally when an SSE stream completes (no regression on the happy path)', async () => {
+    const payload = {
+      id: 'gen-happy-path',
+      model: 'anthropic/claude-sonnet-4',
+      provider: 'Anthropic',
+      choices: [{ delta: { content: '{"findings":[]}' } }],
+      usage: { prompt_tokens: 5, completion_tokens: 1 },
+    };
     const fetchImpl = vi.fn(async (_url: string, _init: any) => ({
       ok: true,
       status: 200,
       headers: { get: () => null },
-      json: async () => ({
-        id: 'gen-happy-path',
-        model: 'anthropic/claude-sonnet-4',
-        provider: 'Anthropic',
-        choices: [{ message: { content: '{"findings":[]}' } }],
-        usage: { prompt_tokens: 5, completion_tokens: 1 },
-      }),
+      body: sseBody(payload),
     }));
 
     const result = await callOpenRouterChat(fetchImpl as any, {
