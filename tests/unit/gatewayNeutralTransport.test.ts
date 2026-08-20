@@ -17,7 +17,7 @@ const diffFiles = [{ path: 'src/a.ts', patch: '+x', addedLines: [], deletedLines
 /**
  * Fetch stub that records every request and answers the (unconditional, per operator directive)
  * streaming request directly with a clean completion -- no `.body.getReader` would otherwise
- * cause a legitimate second non-stream fallback call, doubling `record.length`.
+ * cause a transport failure and lose the route evidence needed by the assertions.
  */
 function capturingFetch(record: any[], extra: Record<string, unknown> = {}) {
   return async (url: string, init: any) => {
@@ -72,7 +72,6 @@ describe('gateway-neutral request body', () => {
         fallbackModels: [],
         providerRouting: { ignore: ['deepinfra', 'fireworks'] },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
     expect(requests).toHaveLength(1);
@@ -122,7 +121,6 @@ describe('gateway-neutral request body', () => {
         // A closed OpenRouter cohort left over in config must not fail Fireworks responses.
         providerRouting: { only: ['examplecloud'], allow_fallbacks: false },
         timeoutMs: 30_000,
-        stream: false,
       },
     });
     expect(res.decision).not.toBe('ERROR');

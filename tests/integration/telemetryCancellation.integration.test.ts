@@ -194,11 +194,9 @@ describe('Action telemetry cancellation seam', () => {
 
     try {
       await expect(review).resolves.toMatchObject({ decision: 'ERROR' });
-      // Streaming is unconditional, so the one dispatched attempt itself makes 2 real HTTP
-      // calls: a throwaway stream attempt that gets HTTP 500, then callOpenRouterChat's own
-      // in-flight non-stream fallback on a 5xx -- cancellation still stops the retry TIMER
-      // (attempt 2 never dispatches), it just does not change how many calls one attempt makes.
-      expect(modelCalls).toBe(2);
+      // Streaming is unconditional and has no buffered retry. Cancellation still stops the
+      // retry timer after the one dispatched SSE attempt.
+      expect(modelCalls).toBe(1);
     } finally {
       vi.useRealTimers();
     }

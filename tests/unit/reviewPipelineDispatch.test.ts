@@ -89,7 +89,6 @@ describe('Persona lane progress reporting', () => {
       personaIds: ['security', 'testing'],
       model: 'openrouter/auto',
       baseUrl: 'https://openrouter.ai/api/v1',
-      stream: true,
       laneDeadlineMs: 180_000,
       intervalMs: 15_000,
       clock: () => now,

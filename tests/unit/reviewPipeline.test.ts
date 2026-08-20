@@ -19,10 +19,8 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     const originalEnv = { ...process.env };
     const tempDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'review-yeti-terminal-'));
     const outputPath = path.join(tempDir, 'github-output.txt');
-    // Streaming is unconditional on the real review path (operator directive), so this needs a
-    // readable `body` (a single-chunk SSE stream) or every persona-lane fetch would legitimately
-    // (and audibly) retry once non-stream within the same attempt, doubling `expectedFetches` for
-    // every test that counts model-fetch calls.
+    // Streaming is unconditional on the real review path (operator directive), so this returns a
+    // readable body (a single-chunk SSE stream) for every persona-lane request.
     const chatPayload = {
       model: 'test-model',
       provider: 'test-provider',
@@ -459,6 +457,11 @@ deleted file mode 100644
               provider: 'test-provider',
               choices: [{ message: { content: '{"findings":[]}' } }],
             }),
+            body: sseBody({
+              model: 'test-model',
+              provider: 'test-provider',
+              choices: [{ message: { content: '{"findings":[]}' } }],
+            }),
           };
         },
       },
@@ -662,22 +665,23 @@ deleted file mode 100644
     expect(comment).not.toContain('undefined');
   });
 
-  it('defaults to non-stream and still resolves provider/model from the JSON body', async () => {
+  it('always requests a streamed response and resolves provider/model from SSE metadata', async () => {
     const { callOpenRouterChat } = pipeline;
     let seenBody = '';
     const fetchImpl = async (_url: string, init: any) => {
       seenBody = String(init.body || '');
+      const payload = {
+        id: 'gen-stream-1',
+        model: 'anthropic/claude-sonnet-4',
+        provider: 'Anthropic',
+        choices: [{ delta: { content: '{"findings":[]}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001 },
+      };
       return {
         ok: true,
         status: 200,
         headers: { get: () => null },
-        json: async () => ({
-          id: 'gen-json-1',
-          model: 'anthropic/claude-sonnet-4',
-          provider: 'Anthropic',
-          choices: [{ message: { content: '{"findings":[]}' } }],
-          usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001 },
-        }),
+        body: sseBody(payload),
       };
     };
 
@@ -686,17 +690,16 @@ deleted file mode 100644
       headers: { Authorization: 'Bearer test' },
       body: { model: 'deepseek/deepseek-v4-flash-0731', messages: [] },
       timeoutMs: 5_000,
-      // preferStream omitted — default false
     });
 
-    expect(JSON.parse(seenBody).stream).toBe(false);
+    expect(JSON.parse(seenBody).stream).toBe(true);
     expect(result.ok).toBe(true);
-    expect(result.streamed).toBe(false);
+    expect(result.streamed).toBe(true);
     expect(result.provider).toBe('Anthropic');
     expect(result.model).toBe('anthropic/claude-sonnet-4');
   });
 
-  it('falls back to non-stream on HTTP/2 StreamReset 502 (proxy concurrent stream bug)', async () => {
+  it('fails closed on an HTTP/2 StreamReset 502 without a buffered retry', async () => {
     const { callOpenRouterChat } = pipeline;
     let calls = 0;
     const fetchImpl = async (_url: string, init: any) => {
@@ -711,18 +714,7 @@ deleted file mode 100644
           json: async () => ({}),
         };
       }
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => null },
-        json: async () => ({
-          id: 'gen-fallback',
-          model: 'deepseek/deepseek-v4-flash-0731',
-          provider: 'Venice',
-          choices: [{ message: { content: '{"findings":[]}' } }],
-          usage: { prompt_tokens: 1, completion_tokens: 1 },
-        }),
-      };
+      throw new Error(`unexpected non-stream retry: ${JSON.stringify(body)}`);
     };
 
     const result = await callOpenRouterChat(fetchImpl as any, {
@@ -730,13 +722,12 @@ deleted file mode 100644
       headers: { Authorization: 'Bearer test' },
       body: { model: 'deepseek/deepseek-v4-flash-0731', messages: [] },
       timeoutMs: 5_000,
-      preferStream: true,
     });
 
-    expect(calls).toBe(2);
-    expect(result.ok).toBe(true);
-    expect(result.streamed).toBe(false);
-    expect(result.provider).toBe('Venice');
+    expect(calls).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(result.streamed).toBe(true);
+    expect(result.status).toBe(502);
     expect(result.model).toBe('deepseek/deepseek-v4-flash-0731');
   });
 
