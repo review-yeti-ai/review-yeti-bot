@@ -24,7 +24,8 @@
     "lower confidence in a crisp clean control without more investigation-turn machinery than a",
     "fixtures-only change should lean on.",
     "Run candidate-only (no charter rewrite here to A/B against a baseline snapshot):",
-    "  node scripts/evaluate-testing-charter.mjs --fixture tests/fixtures/dependencies-charter/evaluation-matrix.json --candidate-only"
+    "  node scripts/evaluate-testing-charter.mjs --fixture tests/fixtures/dependencies-charter/evaluation-matrix.json --candidate-only",
+    "2026-08-20 corpus repair: clean-swap-between-comparable-established-libraries previously changed package.json without any package-lock.json hunk, the same evidence shape this charter's manifest-lockfile-inconsistent-after-bump defect fixture teaches reviewers to flag (and the clean-routine-patch-bump control demonstrates the lockfile exists and moves with the manifest). A reviewer flagging manifest/lockfile drift here was applying the charter correctly. The lockfile hunk is now part of the diff. clean-internal-workspace-package-reference is left as-is and recorded as ambiguous: its workspace:* specifier belongs to pnpm/yarn, which would not use the npm package-lock.json shown elsewhere in this fictional repo, so a lockfile expectation there is underdetermined."
   ],
   "fixtures": [
     {
@@ -184,13 +185,17 @@
       "id": "clean-swap-between-comparable-established-libraries",
       "category": "clean",
       "title": "Replace moment with date-fns for invoice date formatting",
-      "summary": "Control: moment is dropped and date-fns added -- both well-established, actively used libraries doing the same job -- and the one call site is updated in the same diff to match. This is a preference between comparable libraries, which the charter explicitly excludes, not a supply-chain or reproducibility problem.",
+      "summary": "Control: moment is dropped and date-fns added -- both well-established, actively used libraries doing the same job -- package-lock.json's resolved entry is swapped in the same diff to match, and the one call site is updated too. This is a preference between comparable libraries, which the charter explicitly excludes, not a supply-chain or reproducibility problem.",
       "expectedPaths": [],
       "mustMatch": [],
       "files": [
         {
           "path": "package.json",
           "patch": "@@ -2,6 +2,6 @@\n   \"name\": \"billing-service\",\n   \"version\": \"3.4.0\",\n   \"dependencies\": {\n-    \"moment\": \"^2.30.1\"\n+    \"date-fns\": \"^3.6.0\"\n   }\n }\n"
+        },
+        {
+          "path": "package-lock.json",
+          "patch": "@@ -3,9 +3,9 @@\n   \"lockfileVersion\": 3,\n   \"packages\": {\n-    \"node_modules/moment\": {\n-      \"version\": \"2.30.1\",\n-      \"resolved\": \"https://registry.npmjs.org/moment/-/moment-2.30.1.tgz\",\n-      \"integrity\": \"sha512-hash-for-moment-2.30.1==\"\n+    \"node_modules/date-fns\": {\n+      \"version\": \"3.6.0\",\n+      \"resolved\": \"https://registry.npmjs.org/date-fns/-/date-fns-3.6.0.tgz\",\n+      \"integrity\": \"sha512-hash-for-date-fns-3.6.0==\"\n     }\n   }\n }"
         },
         {
           "path": "src/invoices/formatInvoiceDate.js",
