@@ -27,6 +27,7 @@ const {
 const { normalizeCoveragePolicy } = require('../../../src/review/coveragePolicy');
 const { planFindingPublication } = require('../../../src/review/findingPublication');
 const { verifyFindings } = require('../../../src/review/findingVerifier');
+const { applyFalsificationOutcomes, runFindingFalsification } = require('../../../src/review/findingFalsification');
 const { assertsAbsence, claimType, compareClaims } = require('../../../src/review/claimSimilarity');
 const {
   buildDependencyEvidence,
