@@ -8,10 +8,10 @@ name: E2E Review Gate
 # (must produce 0 findings on a completed lane).
 #
 # Docs/RELEASING.md documents that the `v1` channel tag must not be advanced (via release.yml's
-# `channel=v1` dispatch) unless this workflow is green for the candidate commit. See that file
-# for the current manual-dispatch enforcement state and the TODO on wiring this as a hard
-# release.yml dependency once OPENROUTER_API_KEY availability to Actions in this repo is
-# confirmed by a maintainer with secrets access.
+# `channel=v1` dispatch) unless this workflow is green for the candidate commit. `release.yml`
+# calls this workflow directly (`workflow_call`, below) as a hard `needs:` dependency for
+# `channel=v1` releases -- see release.yml's `e2e_gate` job. `workflow_dispatch` remains for
+# ad hoc manual checks against an arbitrary ref outside a release.
 on:
   workflow_dispatch:
     inputs:
@@ -19,9 +19,18 @@ on:
         description: Commit/tag/branch to check out and gate (defaults to the branch this is dispatched against)
         required: false
         type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit/tag/branch to check out and gate
+        required: true
+        type: string
+    secrets:
+      OPENROUTER_API_KEY:
+        required: true
 
 concurrency:
-  group: e2e-review-gate-${{ github.event.inputs.ref || github.ref }}
+  group: e2e-review-gate-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -41,7 +50,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -55,13 +64,12 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --no-fund
 
-      # TODO(API-2902): confirm OPENROUTER_API_KEY is provisioned as a repository (or
-      # environment-scoped) secret for review-yeti-ai/review-yeti-bot Actions before relying on
-      # this job's result -- it was not verified from the vantage this workflow was authored
-      # from. Without it the gate step below fails closed with an explicit
-      # `OPENROUTER_API_KEY is not configured` reason (never a silent pass), so a missing secret
-      # is loud, not a false green -- but it does mean the gate cannot run at all until the
-      # secret exists.
+      # Confirmed (run 32331379188, 2026-08-20): OPENROUTER_API_KEY is provisioned to Actions in
+      # this repository -- the gate step consumed it and reached the provider (HTTP 401, not a
+      # "not configured" failure). A missing secret fails closed with an explicit
+      # `OPENROUTER_API_KEY is not configured` reason, never a silent pass; an invalid/expired
+      # key fails closed too (HTTP 401 from the provider), which is the same correct outcome:
+      # this gate must not let `channel=v1` advance while its own credential is broken.
       - name: Run live E2E review gate (red/green fixtures)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

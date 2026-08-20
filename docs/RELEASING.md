@@ -83,6 +83,12 @@ gate](#e2e-review-gate-before-advancing-v1) below for the live check that closes
 the candidate commit.** `v1-rc` is unaffected — it keeps fast-forwarding on every green `main`
 merge as before; this requirement is scoped to the tag real consumer fleets resolve.
 
+This is enforced, not just documented: `release.yml`'s `e2e_gate` job calls this workflow
+(`workflow_call`) as a hard `needs:` dependency of the `release` job, scoped to
+`channel=v1` only (`v1-rc` dispatches skip it, matching the paragraph above). A red or
+non-green gate stops the release before any tag moves — there is no path from a
+`channel=v1` dispatch to a moved tag that does not pass through this workflow.
+
 The workflow (`npm run test:e2e-review-gate`, `scripts/e2e-review-gate.mjs`) runs the `security`
 persona through the real `reviewWithModel` path against two fixture diffs, using a real
 `OPENROUTER_API_KEY` and a real provider call — not a cassette:
@@ -99,18 +105,20 @@ otherwise look right — see `src/review/e2eReviewGate.js` (unit-tested in
 fails the gate closed with an explicit reason; it never reports a soft skip that could be misread
 as a green run.
 
-Dispatch it manually against the release candidate commit before cutting a `v1` release:
+`release.yml` dispatches it automatically for `channel=v1` (see above) — no manual step is
+required before cutting a release. It remains available for an ad hoc manual check against an
+arbitrary ref outside a release:
 
 ```bash
 gh workflow run e2e-review-gate.yml -f ref=<candidate-sha-or-branch>
 ```
 
-**TODO (tracked under API-2902, not yet done):** wire this as a hard `release.yml` dependency
-(`workflow_call` + `needs:`) instead of a separate manual pre-flight step, once a maintainer with
-repository-secrets access confirms `OPENROUTER_API_KEY` is actually provisioned to Actions in
-`review-yeti-ai/review-yeti-bot` — that was not verified from the vantage this gate was authored
-from, and hard-wiring a dependency on an unconfirmed secret would break every future release
-dispatch instead of gating it.
+**Resolved (API-2902):** `OPENROUTER_API_KEY` is confirmed provisioned to Actions in
+`review-yeti-ai/review-yeti-bot` (run `32331379188`, 2026-08-20 — the gate reached the provider
+and got an HTTP 401, not a "not configured" failure), and the gate is now a hard `release.yml`
+dependency for `channel=v1`, as above. Note the 401: the currently-provisioned key is invalid or
+expired, which means the next `channel=v1` release attempt will fail closed on this gate until
+the key is rotated — that is this gate doing its job, not a regression.
 
 ## How `v1` and `v1-rc` move
 
