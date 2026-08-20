@@ -1729,6 +1729,32 @@ function formatRouteLabel({ provider, model } = {}) {
   return `provider=${p} model=${m}`;
 }
 
+// Reasoning models (deepseek-v4-flash-0731 at reasoning_effort max/high, per REL-27x transport
+// policy) stream their reasoning tokens in a provider-specific SSE delta field SEPARATE from
+// `delta.content`. Empirically verified against live providers (2026-08-19 reasoning-stall
+// investigation, ~12k-char prompt, reasoning_effort:max):
+//   - Fireworks/DeepSeek-native:  delta.reasoning_content (string)   -- first byte ~630ms
+//   - OpenRouter:                 delta.reasoning (string) + delta.reasoning_details[] -- ~820ms
+//   - Ollama-compatible APIs:     delta.thinking (string), by convention (not directly probed --
+//     no lab credential for this transport; named here defensively so it is recognized rather
+//     than silently falling through as an unnamed "other" chunk kind).
+// The stream reader's firstChunk/TTFT-clearing check below is intentionally field-agnostic (ANY
+// successfully-parsed SSE chunk counts as liveness, not only one carrying `delta.content`) so a
+// reasoning-only chunk already proves the lane is alive. This helper exists to make that
+// invariant explicit, testable, and observable in logs (see REASONING_DELTA_FIELDS callers) --
+// it deliberately does NOT feed reasoning text into the accumulated response body; liveness and
+// response-body accumulation are different questions (see the stream loop below).
+const REASONING_DELTA_FIELDS = ['reasoning_content', 'reasoning', 'thinking'];
+function reasoningDeltaField(delta) {
+  if (!delta || typeof delta !== 'object') return null;
+  for (const field of REASONING_DELTA_FIELDS) {
+    const value = delta[field];
+    if (typeof value === 'string' && value.length > 0) return field;
+    if (value && typeof value === 'object' && typeof value.text === 'string' && value.text.length > 0) return field;
+  }
+  return null;
+}
+
 function createAbortLink({ signals = [], timeoutMs } = {}) {
   const controller = new AbortController();
   const listeners = [];
@@ -2149,6 +2175,12 @@ async function callOpenRouterChat(fetchImpl, {
     let perfMetrics = null;
     let providerTtftMs;
     let sawChunk = false;
+    // Throttled visibility into a long reasoning phase: without this, a lane spending 55s
+    // reasoning before hitting totalAbort produces ZERO log output between the "start" line and
+    // the eventual TIMEOUT — indistinguishable from a genuinely silent connection. This is
+    // liveness-only logging; it does not change TTFT/abort behavior (see reasoningDeltaField doc).
+    let lastReasoningHeartbeatMs = -Infinity;
+    const REASONING_HEARTBEAT_INTERVAL_MS = 5_000;
 
     try {
       streamRead: while (true) {
@@ -2188,8 +2220,31 @@ async function callOpenRouterChat(fetchImpl, {
             provider = normalizeResponseProvider(chunk.provider);
           }
           streamRoute = { model, provider, generationId };
-          if (firstChunk) onStreamProgress?.({ elapsedMs: Math.max(0, Date.now() - t0), ...streamRoute, totalBudgetMs: totalMs });
-          const delta = chunk.choices?.[0]?.delta?.content;
+          const deltaObj = chunk.choices?.[0]?.delta || {};
+          const reasoningField = reasoningDeltaField(deltaObj);
+          const elapsedNowMs = Math.max(0, Date.now() - t0);
+          if (firstChunk) {
+            // firstChunkKind is observability-only (see reasoningDeltaField's doc comment): the
+            // TTFT clear above already happened unconditionally on ANY parsed chunk, reasoning or
+            // content. Naming which kind arrived first turns a silent "TTFT_OK" into a log line an
+            // operator can actually use to tell a reasoning-heavy lane apart from a fast one.
+            onStreamProgress?.({
+              elapsedMs: elapsedNowMs,
+              ...streamRoute,
+              totalBudgetMs: totalMs,
+              firstChunkKind: reasoningField ? 'reasoning' : (typeof deltaObj.content === 'string' && deltaObj.content.length > 0 ? 'content' : 'other'),
+            });
+          } else if (reasoningField && elapsedNowMs - lastReasoningHeartbeatMs >= REASONING_HEARTBEAT_INTERVAL_MS) {
+            lastReasoningHeartbeatMs = elapsedNowMs;
+            console.log(`${logPrefix} REASONING_ALIVE elapsed_ms=${elapsedNowMs} field=${reasoningField} total_budget_ms=${totalMs}`);
+          }
+          // Reasoning text is liveness evidence only -- it must never be accumulated into the
+          // response body. The parser downstream expects the final JSON contract in
+          // `delta.content`/`message.content` alone; leaking reasoning prose in front of it would
+          // break every JSON parse (a provider that inlines thinking as `<think>...</think>` text
+          // INSIDE `delta.content` itself, rather than a separate field, is a distinct failure mode
+          // not fixed by this liveness check -- see REASONING_DELTA_FIELDS doc comment).
+          const delta = deltaObj.content;
           if (typeof delta === 'string') content += delta;
           const msg = chunk.choices?.[0]?.message?.content;
           if (typeof msg === 'string' && msg.length > content.length) content = msg;
@@ -8983,9 +9038,10 @@ async function main(options = {}) {
           streamGate,
           signal: cancellation.signal,
           runTimedOutProviders,
-          onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(
+          onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs, firstChunkKind } = {}) => console.log(
             `[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0}`
-            + ` route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`,
+            + ` route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`
+            + ` first_chunk_kind=${firstChunkKind || 'unknown'}`,
           ),
         };
         let evaluatedPersonas;
@@ -9264,7 +9320,7 @@ async function main(options = {}) {
                 maxChars: 12_000,
                 excludedPaths: [...skipped.map((entry) => entry.path), ...oversized.map((entry) => entry.path)],
               },
-              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, streamGate, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0}`) },
+              modelOptions: { ...modelConfig, ...(sessionContext || {}), fileManifest: manifest.text, decisionLedgerText: renderedDecisionLedger.text, ...modelSideContext, fetchImplementation, modelClient: options.modelClient, reviewTelemetry: telemetryPolicy.enabled ? reviewTelemetry : undefined, signal: cancellation.signal, runTimedOutProviders, streamGate, onStreamProgress: ({ elapsedMs, provider, model, totalBudgetMs, firstChunkKind } = {}) => console.log(`[OpenRouter] stream TTFT_OK elapsed_ms=${Number(elapsedMs) || 0} route=${formatRouteLabel({ provider, model })} total_budget_ms=${Number(totalBudgetMs) || 0} first_chunk_kind=${firstChunkKind || 'unknown'}`) },
             }));
           }
           return aggregatePersonaRuns(persona, runs, modelConfig.model);
