@@ -29,9 +29,88 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
+const { runPersonaInvestigation: runBoundedPersonaInvestigation } = require(path.join(root, 'src/review/reviewInvestigation.js'));
 
 const DEFAULT_FIXTURE = 'tests/fixtures/testing-charter/evaluation-matrix.json';
 const DEFAULT_BASELINE_CHARTER = 'tests/fixtures/testing-charter/baseline-charter.txt';
+
+/**
+ * Renders a unified-diff blob from fixture `{path, patch}` entries, matching the header shape
+ * GitHub/`git diff` output uses (`file.patch` fixtures carry only the hunk body). This is only a
+ * fallback for `buildInvestigationMessages`'s legacy `diffText` string path -- the primary path
+ * below hands it `diffFiles` directly, which is what production actually does.
+ */
+function buildDiffTextFromFiles(files) {
+  return (Array.isArray(files) ? files : [])
+    .map((file) => `diff --git a/${file.path} b/${file.path}\n--- a/${file.path}\n+++ b/${file.path}\n${file.patch}`)
+    .join('\n');
+}
+
+/**
+ * `reviewWithModel`-shaped adapter (same `(persona, files, prContext, sessionContext,
+ * modelOptions)` signature `evaluateTestingCharter` already accepts as an injectable
+ * `reviewWithModel`) that instead drives the actual bounded investigation engine --
+ * `runPersonaInvestigation` from src/review/reviewInvestigation.js, fed by
+ * `buildInvestigationMessages` (reviewInvestigationPrompt.js) via the SAME `diffFiles` input shape
+ * and the SAME `callPersonaModelTurn` turn dispatcher production uses.
+ *
+ * This is what makes the measurement mean something: `reviewWithModel` (the function this script
+ * called before) is the legacy single-shot path. `runPersonaInvestigation` here is what actually
+ * ships on every real PR review (review-pipeline.js's `boundedMode` branch). A charter or
+ * prompt change validated only against the legacy path could pass this eval while doing nothing,
+ * or the wrong thing, on the path that is production default.
+ *
+ * Evidence tooling is deliberately disabled (`capabilities.enabled: false`): every fixture in
+ * this matrix is self-contained by design ("everything needed to resolve it is inside the
+ * supplied diff, so a miss is a reasoning/attention failure, not a missing-evidence failure" --
+ * see the matrix's own `notes`), so a real evidence registry would add nothing but a repo
+ * checkout this harness does not have. `runPersonaInvestigation`'s own evidence-disabled carve-out
+ * (findings marked `unverified: true` but retained, no evidence_receipt_ids required) is exactly
+ * the behavior this needs.
+ *
+ * `modelOptions.modelClient`, when supplied, flows straight through to `callPersonaModelTurn` and
+ * makes this run fully offline against a scripted response -- no network, no OPENROUTER_API_KEY.
+ * `modelOptions.apiKey`/`model`/`transportPlan` flow through the same way for a live run.
+ */
+export async function reviewWithBoundedInvestigation(persona, files, prContext = {}, sessionContext = {}, modelOptions = {}) {
+  const identity = {
+    repository: prContext.repo || 'owner/repository',
+    prNumber: Number(prContext.prNumber) || 1,
+    baseSha: 'a'.repeat(40),
+    headSha: 'b'.repeat(40),
+  };
+  const evidenceRegistry = { capabilities: { enabled: false, readOnly: true, tools: [] }, call: async () => ({ status: 'unavailable' }) };
+  const manifest = `<review_units>${JSON.stringify((Array.isArray(files) ? files : []).map((file) => ({ path: file.path })))}</review_units>`;
+  try {
+    const run = await runBoundedPersonaInvestigation({
+      identity,
+      persona,
+      manifest,
+      diffFiles: files,
+      diffText: buildDiffTextFromFiles(files),
+      evidenceRegistry,
+      modelTurn: (turnArgs) => pipeline.callPersonaModelTurn({
+        persona,
+        prContext,
+        sessionContext,
+        messages: turnArgs.messages,
+        options: modelOptions,
+        turn: turnArgs.turn,
+        finalOnly: turnArgs.finalOnly,
+        signal: turnArgs.signal,
+      }),
+    });
+    const terminal = run.executionReceipt?.termination;
+    return {
+      decision: run.personaResult.decision,
+      findings: run.personaResult.findings,
+      usage: run.personaResult.usage,
+      ...(terminal && terminal !== 'completed' ? { error: terminal } : {}),
+    };
+  } catch (error) {
+    return { decision: 'ERROR', error: error?.message || 'call_failed', findings: [] };
+  }
+}
 
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -233,10 +312,16 @@ async function main() {
     console.warn('[testing-charter-eval] baseline snapshot equals the live charter; both arms are identical');
   }
 
+  // --bounded measures the path that actually ships (runPersonaInvestigation +
+  // buildInvestigationMessages, review-pipeline.js's boundedMode default) instead of the legacy
+  // single-shot reviewWithModel this script always used before. See
+  // reviewWithBoundedInvestigation's doc comment for why that distinction is the whole point.
+  const bounded = flag('--bounded');
   const { rows, fixtures } = await evaluateTestingCharter(matrix, {
     repetitions,
     concurrency,
     arms,
+    reviewWithModel: bounded ? reviewWithBoundedInvestigation : pipeline.reviewWithModel,
     modelOptions: {
       apiKey,
       model,
@@ -251,6 +336,7 @@ async function main() {
     schemaVersion: 'testing-charter-eval-report-v1',
     fixture: path.relative(root, fixturePath),
     model,
+    path: bounded ? 'bounded' : 'legacy',
     repetitions,
     arms: arms.map((arm) => summarizeArm(rows, arm.id)),
     perFixture: summarizePerFixture(rows, fixtures),
