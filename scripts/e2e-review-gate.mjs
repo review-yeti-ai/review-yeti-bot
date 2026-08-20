@@ -13,8 +13,8 @@
 //     produce 0 findings on a completed lane.
 //
 // Docs/RELEASING.md documents that `v1` must not advance unless this gate is green for the
-// candidate commit. See that file for the current (manual-dispatch) enforcement state and the
-// TODO on wiring this as a hard `release.yml` dependency.
+// candidate commit. `release.yml` calls this workflow as a hard `needs:` dependency for
+// `channel=v1` releases (`v1-rc` is unaffected) -- see that file's `e2e_gate` job.
 //
 // This never fabricates a pass: if OPENROUTER_API_KEY (or an explicit override) is not
 // configured, the script exits non-zero with a `status: "fail"` JSON line explaining why -- the

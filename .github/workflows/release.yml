@@ -103,9 +103,32 @@ jobs:
       - name: Full test battery (test:all)
         run: npm run test:all
 
+  # API-2902: `npm run test:all` above is entirely credential-free (cassette replay) and cannot
+  # catch a regression that only shows up against a real provider -- see RELEASING.md's
+  # "E2E review gate" section for the 2026-08-19 incident this closes. Scoped to `channel=v1`
+  # only: `v1-rc` keeps fast-forwarding on every green `main` merge as before (RELEASING.md's
+  # existing contract), unaffected by this job.
+  e2e_gate:
+    name: E2E review gate (channel=v1 only)
+    needs: [resolve, battery]
+    if: needs.resolve.outputs.channel == 'v1'
+    uses: ./.github/workflows/e2e-review-gate.yml
+    with:
+      ref: ${{ github.sha }}
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
   release:
     name: Tag, release, and move channel
-    needs: [resolve, battery]
+    needs: [resolve, battery, e2e_gate]
+    # e2e_gate is conditionally skipped above for non-v1 channels; `always()` plus explicit
+    # per-job result checks lets this job proceed on that skip while still hard-failing if
+    # resolve/battery failed, or if channel=v1 and the gate did not pass.
+    if: >-
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.battery.result == 'success' &&
+      (needs.resolve.outputs.channel != 'v1' || needs.e2e_gate.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
