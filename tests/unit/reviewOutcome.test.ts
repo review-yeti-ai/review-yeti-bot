@@ -63,6 +63,55 @@ describe('receipt-derived review outcome', () => {
     expect(result.findings).toEqual([{ title: 'confirmed' }]);
   });
 
+  // API-2902: computeArbitration (reviewCore.js) marks an infra-only N-1-quorum outage with
+  // `infraFailure: true` and status INCOMPLETE_INFRA. Without the fix below, this receipt-derived
+  // gate ran AFTER arbitration and unconditionally downgraded that back to a generic
+  // PARTIAL_REVIEW/INCOMPLETE_REVIEW -- the exact same failed lane, seen a second time from the
+  // receipt side, silently erased the more specific label the whole hardening item exists to add.
+  describe('infra-vs-verdict status split is preserved through the receipt gate (API-2902)', () => {
+    const infraArbitration = {
+      verdict: 'BLOCK', status: 'INCOMPLETE_INFRA', rationale: 'infra outage', metrics: {}, infraFailure: true,
+    };
+
+    it('keeps INCOMPLETE_INFRA -- not PARTIAL_REVIEW -- when the only incompleteness is the already-known infra-failed lane', () => {
+      const failedLane = createLaneExecutionReceipt({ identity, personaId: 'testing', plan, termination: 'timeout' });
+      const result = deriveReceiptOutcome({
+        arbitration: infraArbitration,
+        unitManifest: completeManifest,
+        laneReceipts: [validLane, failedLane],
+        findingVerification: completeVerification,
+        headCurrent: true,
+      });
+      expect(result).toMatchObject({ status: 'INCOMPLETE_INFRA', verdict: 'BLOCK', mergeEligible: false, gateDecision: 'BLOCKED' });
+    });
+
+    it('still downgrades to the generic status when the head went stale on top of the infra failure', () => {
+      const failedLane = createLaneExecutionReceipt({ identity, personaId: 'testing', plan, termination: 'timeout' });
+      const result = deriveReceiptOutcome({
+        arbitration: infraArbitration,
+        unitManifest: completeManifest,
+        laneReceipts: [validLane, failedLane],
+        findingVerification: completeVerification,
+        headCurrent: false,
+      });
+      expect(result.status).not.toBe('INCOMPLETE_INFRA');
+      expect(result).toMatchObject({ verdict: 'BLOCK', mergeEligible: false });
+    });
+
+    it('still downgrades to the generic status when finding verification is independently incomplete', () => {
+      const failedLane = createLaneExecutionReceipt({ identity, personaId: 'testing', plan, termination: 'timeout' });
+      const result = deriveReceiptOutcome({
+        arbitration: infraArbitration,
+        unitManifest: completeManifest,
+        laneReceipts: [validLane, failedLane],
+        findingVerification: { summary: { incomplete: true, needsReview: 1 } },
+        headCurrent: true,
+      });
+      expect(result.status).not.toBe('INCOMPLETE_INFRA');
+      expect(result).toMatchObject({ verdict: 'BLOCK', mergeEligible: false });
+    });
+  });
+
   it('ships when the same persona recovers after a failed multi-pass attempt', () => {
     // Multi-pass: pass1 timeout + pass2 completed for security → recovered, not incomplete.
     const failedPass = createLaneExecutionReceipt({ identity, personaId: 'security', plan, termination: 'timeout' });

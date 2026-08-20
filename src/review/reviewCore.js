@@ -4,6 +4,18 @@ const crypto = require('node:crypto');
 const { evaluateCoverage } = require('./coveragePolicy');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
+// Provider/infra failure reasons (src/review/reviewInvestigation.js's failureDiagnostic /
+// safeFailureReason) that describe the provider or transport, not the persona's actual review
+// judgment. A lane that failed for one of these reasons carries no findings either way -- it is
+// missing evidence, not a verdict -- and is what distinguishes an infra outage (API-2902) from a
+// genuine review defect. `schema_contract_violation` is included deliberately: a model response
+// that fails the JSON contract is a provider/output-shape failure, not a finding about the diff.
+const INFRA_FAILURE_REASONS = new Set(['timeout', 'ttft_timeout', 'schema_contract_violation']);
+
+function isInfraFailure(lane) {
+  return isFailedLane(lane) && INFRA_FAILURE_REASONS.has(String(lane?.failure?.reason || ''));
+}
+
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === 'object') {
@@ -202,8 +214,30 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const quorumSatisfied = fullCoverage;
   const coverageQuorumSatisfied = coverage ? coverage.numericQuorumSatisfied : quorumSatisfied;
   const incomplete = !fullCoverage && !partialCoverage;
+
+  // API-2902: an otherwise-incomplete/partial review whose ONLY failed lane(s) failed for a
+  // provider/infra reason (never a real review judgment), with the rest of the expected panel
+  // (N-1 or better) trustworthy and zero blocking findings among them, is a distinct outcome from
+  // both a findings-based BLOCK and a generic INCOMPLETE_REVIEW: it means "infra broke this run",
+  // not "the panel found a problem" or "coverage never ran". Evidenced live: cisco-cdr
+  // #4411/#4413 blocked twice with 4/5 personas approving and 0 P0/P1/P2 findings because a
+  // single lane errored once (schema_contract_violation, then ttft_timeout). Still fails closed
+  // -- verdict stays BLOCK and mergeEligible stays false -- only the status label changes so
+  // on-call can tell infra apart from a real verdict without reading the lane table.
+  const infraFailedLanes = failedLanes.filter(isInfraFailure);
+  const nonInfraFailedLanes = failedLanes.filter((lane) => !isInfraFailure(lane));
+  const infraOnlyOutage = (incomplete || partialCoverage)
+    && expected > 0
+    && infraFailedLanes.length > 0
+    && nonInfraFailedLanes.length === 0
+    && completedResults.length >= expected - 1
+    && p0Count === 0
+    && p1Count === 0;
+
   const verdict = incomplete || partialCoverage ? 'BLOCK' : candidateVerdict;
-  const status = incomplete ? 'INCOMPLETE_REVIEW' : partialCoverage ? 'PARTIAL_REVIEW' : verdict;
+  const status = infraOnlyOutage
+    ? 'INCOMPLETE_INFRA'
+    : incomplete ? 'INCOMPLETE_REVIEW' : partialCoverage ? 'PARTIAL_REVIEW' : verdict;
   const gateDecision = status === 'SHIP' && verdict === 'SHIP' && p0Count === 0 && p1Count === 0
     ? 'PASS'
     : 'BLOCKED';
@@ -224,11 +258,19 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     gateDecision,
     mergeEligible,
     ...(coverage ? { coverage } : {}),
-    rationale: incomplete
-      ? `${rationale} Review is incomplete; publication and merge approval must remain blocked until every expected lane and coverage check completes.`
-      : partialCoverage
-        ? `${rationale} Numeric coverage quorum met for ${coverage.trustworthyCount}/${coverage.expectedCount} trustworthy lane(s), but the review is partial; publication may retain evidence while merge approval remains blocked.`
-        : rationale,
+    ...(infraOnlyOutage
+      ? { infraFailure: true, infraFailedPersonaIds: infraFailedLanes.map((lane) => lane.personaId || lane.id).filter(Boolean) }
+      : {}),
+    rationale: infraOnlyOutage
+      ? `${rationale} ${infraFailedLanes.length} persona lane(s) failed for a provider/infra reason `
+        + `(${[...new Set(infraFailedLanes.map((lane) => lane.failure?.reason).filter(Boolean))].join(', ') || 'infra'}); `
+        + `the remaining ${completedResults.length}/${expected} lane(s) completed with zero blocking findings. `
+        + 'This is an infra outage, not a review verdict; publication and merge approval remain blocked until it clears.'
+      : incomplete
+        ? `${rationale} Review is incomplete; publication and merge approval must remain blocked until every expected lane and coverage check completes.`
+        : partialCoverage
+          ? `${rationale} Numeric coverage quorum met for ${coverage.trustworthyCount}/${coverage.expectedCount} trustworthy lane(s), but the review is partial; publication may retain evidence while merge approval remains blocked.`
+          : rationale,
     thresholds: { blockP1, fixP2 },
     metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length },
     findings,
@@ -243,4 +285,6 @@ module.exports = {
   sanitizeFinding,
   sanitizeFindings,
   computeArbitration,
+  INFRA_FAILURE_REASONS,
+  isInfraFailure,
 };
