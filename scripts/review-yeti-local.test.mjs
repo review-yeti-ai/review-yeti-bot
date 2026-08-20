@@ -28,7 +28,7 @@ test('materializes the committed provider order and routing into the local CLI c
   assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
   assert.equal(config.github_action.openrouter.ttft_ms, 30000);
   assert.equal(config.github_action.openrouter.data_collection, 'deny');
-  assert.deepEqual(config.github_action.openrouter.ignore_providers, ['fireworks', 'open-inference', 'akashml']);
+  assert.deepEqual(config.github_action.openrouter.ignore_providers, ['fireworks', 'open-inference', 'akashml', 'morph']);
   // Must track policy/review-yeti.json rather than restating a provider preference.
   assert.equal(
     config.github_action.openrouter.provider_routing.sort,

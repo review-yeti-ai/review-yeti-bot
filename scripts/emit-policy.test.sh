@@ -425,8 +425,8 @@ if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
-grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml'
-grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml"]'
+grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -qx 'fireworks,open-inference,akashml,morph'
+grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["fireworks","open-inference","akashml","morph"]'
 grep -qx 'v1' "$tmp_dir/valid.output"
 grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"

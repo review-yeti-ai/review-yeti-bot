@@ -18,7 +18,7 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   preferred_min_throughput: { p90: 40 },
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
-  ignore: ['fireworks', 'open-inference', 'akashml'],
+  ignore: ['fireworks', 'open-inference', 'akashml', 'morph'],
 });
 
 // The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
