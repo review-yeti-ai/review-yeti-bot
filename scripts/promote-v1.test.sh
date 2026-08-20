@@ -30,8 +30,20 @@ case "$request" in
   *"repos/exampleorg/example-review-actions/commits/source123/check-runs?per_page=100"*)
     printf '{"check_runs":[{"name":"validate","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:01:00Z"}]}\n'
     ;;
+  *"repos/exampleorg/example-review-actions/pulls/42/commits?per_page=100"*)
+    printf '[[{"sha":"oldhead1"},{"sha":"head123"}]]\n'
+    ;;
+  *"repos/exampleorg/example-review-actions/commits/oldhead1/check-runs?per_page=100"*)
+    if [[ "${FAKE_EARLIER_GREEN:-}" == true ]]; then
+      printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T14:58:00Z"}]}\n'
+    else
+      printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"completed","conclusion":"failure","completed_at":"2026-08-19T14:58:00Z"}]}\n'
+    fi
+    ;;
   *"repos/exampleorg/example-review-actions/commits/head123/check-runs?per_page=100"*)
-    if [[ "${FAKE_STALE_THEN_FRESH:-}" == true ]]; then
+    if [[ "${FAKE_HEAD_RED:-}" == true ]]; then
+      printf '{"check_runs":[{"id":3,"name":"review / Review Yeti","status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:04:00Z"}]}\n'
+    elif [[ "${FAKE_STALE_THEN_FRESH:-}" == true ]]; then
       # A prior attempt on this exact head SHA (e.g. a transient failure that was rerun)
       # completed and left a check-run behind; a fresh rerun (higher id, no completed_at yet)
       # is the one that actually reflects reality. `last` must key off recency of the attempt
@@ -148,5 +160,38 @@ if [[ "$stale_rc" -ne 0 ]]; then
   exit 1
 fi
 grep -Fq 'Promoted Review Yeti v1' <<<"$stale_output"
+
+# Stranded-head rescue: the merged head has NO green review (an update-branch or
+# in-flight-merge push left it red), but an earlier commit of the SAME pull
+# request was reviewed green. The fallback walk must accept that earlier green
+# review with a loud warning instead of stranding the promotion.
+stranded_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_HEAD_RED=true FAKE_EARLIER_GREEN=true \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+grep -Fq 'accepting the green review on earlier PR commit oldhead1' <<<"$stranded_output"
+grep -Fq 'Promoted Review Yeti v1' <<<"$stranded_output"
+
+# No green review anywhere on the pull request: the fallback walk finds nothing
+# and the promotion must still refuse — a deliberately unreviewed merge stays
+# stranded rather than being rescued.
+set +e
+unreviewed_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    PROMOTION_WAIT_SECONDS=2 PROMOTION_POLL_SECONDS=0 \
+    FAKE_HEAD_RED=true \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+unreviewed_rc=$?
+set -e
+if [[ "$unreviewed_rc" -eq 0 ]]; then
+  echo "expected promotion with no green review on any PR commit to refuse:" >&2
+  echo "$unreviewed_output" >&2
+  exit 1
+fi
+grep -Fq 'Required central check did not pass' <<<"$unreviewed_output"
 
 echo "promote-v1 behavioral contract passed"

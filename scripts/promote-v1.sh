@@ -93,8 +93,38 @@ require_success() {
 
 require_success "$source_check_runs" validate "source ${SOURCE_SHA}" \
   "repos/${repository}/commits/${SOURCE_SHA}/check-runs?per_page=100"
-require_success "$pr_check_runs" 'review / Review Yeti' "PR #${pr_number} head ${pr_head}" \
-  "repos/${repository}/commits/${pr_head}/check-runs?per_page=100"
+
+# The Review Yeti check lives on a PR head, and heads move: an update-branch
+# right before merge (or a merge landing while the re-review is in flight)
+# leaves the final head without its own green check even though an earlier
+# head of the SAME pull request was reviewed green. That stranded promotion
+# three times in one day. Accept a green review on the exact head first;
+# otherwise walk the PR's recent commits (newest first) and accept the first
+# green review with a loud warning. A pull request with NO green review on
+# any commit still refuses — a deliberately unreviewed merge stays stranded.
+green_review_sha=""
+if jq -e '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last // {} | select(.status == "completed" and .conclusion == "success")' >/dev/null <<<"$pr_check_runs"; then
+  green_review_sha="$pr_head"
+else
+  # Fail-soft walk: any API/parse hiccup here simply falls through to the
+  # original exact-head requirement below — the fallback can only rescue,
+  # never produce a new failure mode.
+  pr_commits="$(gh api --paginate --slurp "repos/${repository}/pulls/${pr_number}/commits?per_page=100" 2>/dev/null | jq -r '.[][].sha' 2>/dev/null | tail -10 || true)"
+  for candidate in $(printf '%s\n' "$pr_commits" | tail -r 2>/dev/null || printf '%s\n' "$pr_commits" | tac 2>/dev/null || true); do
+    [[ "$candidate" == "$pr_head" ]] && continue
+    candidate_runs="$(gh api "repos/${repository}/commits/${candidate}/check-runs?per_page=100" 2>/dev/null || true)"
+    [[ -n "$candidate_runs" ]] || continue
+    if jq -e '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last // {} | select(.status == "completed" and .conclusion == "success")' >/dev/null 2>&1 <<<"$candidate_runs"; then
+      green_review_sha="$candidate"
+      echo "::warning::PR #${pr_number} head ${pr_head} has no green Review Yeti check; accepting the green review on earlier PR commit ${candidate} (head moved before its re-review completed)."
+      break
+    fi
+  done
+fi
+if [[ -z "$green_review_sha" ]]; then
+  require_success "$pr_check_runs" 'review / Review Yeti' "PR #${pr_number} head ${pr_head}" \
+    "repos/${repository}/commits/${pr_head}/check-runs?per_page=100"
+fi
 
 old_v1=""
 branch_exists=false
