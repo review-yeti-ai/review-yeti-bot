@@ -352,19 +352,23 @@ fi
 grep -Fq "accepted" <<<"$output" || { echo "[exact-match] expected the acceptance message" >&2; exit 1; }
 echo "[exact-match] passed"
 
-# 5. A syntactically valid SHIP/PASS report with an unresolved P2 advisory must block.
+# 5. A SHIP/PASS report with unresolved P2 advisories must PASS, warning rather than failing.
+#    Inverted from "must block" -- an advisory that blocks is not an advisory, and the verdict
+#    engine already escalates P2 volume via fixP2 on deduped clusters. Option A of the three in
+#    example-meta docs/plans/2026-08-20-review-yeti-known-gaps.md. Observed contradiction this
+#    replaces: example-api run 32369789786 reached `Verdict: SHIP` and still got a red check.
 run_script "$(pr_json "$base_sha" "$head_sha")" '' "$nonzero_p2_report"
-if [[ "$rc" -eq 0 ]]; then
-  echo "[p2-advisory] expected unresolved P2 advisory to block" >&2
+if [[ "$rc" -ne 0 ]]; then
+  echo "[p2-advisory] expected P2 advisories to be non-blocking on a SHIP verdict" >&2
   echo "$output" >&2
   exit 1
 fi
-grep -Fq "unresolved P2 advisory finding(s)" <<<"$output" || {
-  echo "[p2-advisory] expected the required-advisory failure message" >&2
+grep -Fq "advisory only, not blocking" <<<"$output" || {
+  echo "[p2-advisory] expected the advisory warning to be emitted" >&2
   echo "$output" >&2
   exit 1
 }
-echo "[p2-advisory] passed (unresolved advisory blocks)"
+echo "[p2-advisory] passed (advisory warns, does not block)"
 
 # 6. Report identity fields must retain their schema types; a string PR number is invalid.
 run_script "$(pr_json "$base_sha" "$head_sha")" '' "$string_pr_report"

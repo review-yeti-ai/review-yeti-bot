@@ -121,11 +121,23 @@ report_summary="$({
   exit 1;
 }
 
+# P2 is advisory: report it, do not fail on it. An advisory that blocks is not an advisory.
+#
+# The bot's verdict engine already applies severity thresholds to DEDUPED cluster counts --
+# `p2Count >= fixP2` escalates SHIP to FIX_FIRST on its own. This gate was applying a second,
+# stricter opinion to RAW per-lane P2 counts, so a run could legitimately reach `Verdict: SHIP`
+# and still get a red required check. Observed live: example-api run 32369789786 / PR #4425 --
+# `[Verdict] SHIP` followed by `1 unresolved P2 advisory finding(s); SHIP/PASS is blocked`.
+# #152's near-duplicate clustering widened the split further: three lanes reporting one nit
+# count once for the verdict and three times here.
+#
+# Option A of the three written up in example-meta docs/plans/2026-08-20-review-yeti-known-gaps.md.
+# P0/P1 gating is untouched -- only the advisory tier stops failing the check.
 p2_count="$(jq -er '.p2_count' <<<"$report_summary")"
-[[ "$p2_count" == 0 ]] || {
-  echo "::error::Review Yeti found ${p2_count} unresolved P2 advisory finding(s); SHIP/PASS is blocked";
-  exit 1;
-}
+if [[ "$p2_count" != 0 ]]; then
+  echo "::warning::Review Yeti reported ${p2_count} unresolved P2 advisory finding(s); advisory only, not blocking";
+  jq -r '.p2_findings[]? | "::warning::P2 advisory: \(.path // "?"):\(.line // "?") \(.title // .summary // "")"' <<<"$report_summary" 2>/dev/null || true;
+fi
 
 lane_count="$(jq -er '.lane_count' <<<"$report_summary")"
 if [[ "$lane_count" -eq 0 ]]; then
