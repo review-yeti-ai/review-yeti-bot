@@ -81,6 +81,12 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('dashboard-timeout-ms');
   });
 
+  it('requires streaming on the real review action path', () => {
+    expect(action.inputs['openrouter-stream'].default).toBe('true');
+    expect(action.inputs['openrouter-stream'].description).toMatch(/required/i);
+    expect(action.runs.steps.map((step: any) => step.run || '').join('\n')).toContain('stream=${OPENROUTER_STREAM:-true}');
+  });
+
   it('leaves the per-file input empty by default and distinguishes it from the whole-request budget', () => {
     expect(action.inputs['max-file-diff-chars'].default).toBe('');
     expect(action.inputs['max-file-diff-chars'].description).toMatch(/per-file/i);
