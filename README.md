@@ -116,8 +116,8 @@ secrets. Fireworks stays on the default serverless tier and uses maximum reasoni
 uses maximum reasoning. Each transport gets one retry, and OpenRouter owns endpoint selection after
 a timeout without Review Yeti dynamically banning the resolved endpoint.
 
-The central budget is also fixed here: three investigation turns, one 24-request per-lane call
-budget, a six-minute (360s) lane deadline, and a 30-second OpenRouter first-token budget.
+The central budget is also fixed here: two investigation turns, one 24-request per-lane call
+budget, a ten-minute (600s) lane deadline, and a 30-second OpenRouter first-token budget.
 
 - **timeout_ms = 30000 for Fireworks and 90000 for the OpenRouter fallback.** The fast local probe (3.4s end to end for a ~26k char
   panel-sized prompt) is a lower bound, not a ceiling -- `max_diff_chars` allows prompts up to
@@ -149,17 +149,19 @@ SSE to hide upstream failures.
 
 **Lane-deadline arithmetic invariant.** A lane advances through the declared transports in order,
 so the worst case for one lane is every transport burning its full `timeout_ms` on every bounded
-attempt before the lane gives up. `emit-policy.mjs` enforces
-`sum(transport.timeout_ms) * openrouter_max_attempts <= budget.lane_deadline_ms` at policy-load time
-(both in the reusable workflow and in CI) -- summed over however many transports the policy
-declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` re-checks the same inequality
-against the committed policy plus counterfactual fixtures that violate it. Separately,
+attempt across every investigation turn before the lane gives up. `emit-policy.mjs` enforces
+`sum(transport.timeout_ms) * openrouter_max_attempts * max_investigation_turns <= budget.lane_deadline_ms`
+at policy-load time (both in the reusable workflow and in CI) -- summed over however many
+transports the policy declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` re-checks
+the same inequality against the committed policy plus counterfactual fixtures that violate it.
+Separately,
 `max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
 of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 2 transports at
-`30000 + 90000 = 120000` per attempt, `120000 x 2 = 240000 <= 360000` (120s of the lane deadline
-spare), and
-`max_passes(3) x lane_deadline_ms(360000) = 1080000 <= 1200000` (the 20-minute job cap). This guards
+`30000 + 90000 = 120000` per attempt, `120000 x 2 attempts x 2 turns = 480000 <= 600000` (120s
+of the lane deadline spare), and
+`max_passes(2) x lane_deadline_ms(600000) = 1200000 <= 1500000` (the 25-minute job cap, leaving
+300s for workflow setup, publishing, and verdict enforcement). This guards
 against a repeat of the incident that motivated this change: at `timeout_ms: 180000` per transport,
 both transports alone summed to 360s against a 240s lane deadline, so a slow or stalled
 primary made the OpenRouter fallback structurally unreachable in exactly the case it exists for.

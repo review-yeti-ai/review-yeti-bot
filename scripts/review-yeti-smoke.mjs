@@ -42,6 +42,16 @@ export function validatePolicy(policy) {
     throw new Error('Review Yeti policy must define transports');
   }
 
+  const budget = policy.review_yeti?.budget;
+  const positiveSafeInteger = (value) => Number.isSafeInteger(value) && value > 0;
+  for (const [label, value] of [
+    ['lane_deadline_ms', Number(budget?.lane_deadline_ms)],
+    ['max_investigation_turns', Number(budget?.max_investigation_turns)],
+    ['openrouter_max_attempts', Number(policy.review_yeti?.openrouter_max_attempts)],
+  ]) {
+    if (!positiveSafeInteger(value)) throw new Error(`Review Yeti ${label} must be a positive safe integer`);
+  }
+
   const names = transports.map((transport) => transport.name);
   if (JSON.stringify(names) !== JSON.stringify(EXPECTED_TRANSPORT_ORDER)) {
     throw new Error(`Review Yeti transport order must be ${EXPECTED_TRANSPORT_ORDER.join(' -> ')}`);
@@ -50,6 +60,12 @@ export function validatePolicy(policy) {
   for (const transport of transports) {
     if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !['openai', 'openrouter'].includes(transport.compat)) {
       throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
+    }
+    if (!positiveSafeInteger(transport.timeout_ms) || !positiveSafeInteger(transport.connect_timeout_ms)) {
+      throw new Error(`transport ${transport.name} timeout budgets must be positive safe integers`);
+    }
+    if (transport.connect_timeout_ms > transport.timeout_ms) {
+      throw new Error(`transport ${transport.name} connect timeout must not exceed timeout`);
     }
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
@@ -92,8 +108,12 @@ export function validatePolicy(policy) {
   if (openrouter?.timeout_ms !== Number(policy.review_yeti?.openrouter_timeout_ms)) {
     throw new Error('OpenRouter transport timeout must match the central request timeout');
   }
-  if (Number(policy.review_yeti?.budget?.lane_deadline_ms) < openrouter.timeout_ms * Number(policy.review_yeti?.openrouter_max_attempts)) {
-    throw new Error('lane deadline must cover the bounded OpenRouter retry envelope');
+  const maxAttempts = Number(policy.review_yeti?.openrouter_max_attempts);
+  const maxInvestigationTurns = Number(budget.max_investigation_turns);
+  const transportTimeoutSum = transports.reduce((sum, transport) => sum + transport.timeout_ms, 0);
+  const worstCaseLaneMs = transportTimeoutSum * maxAttempts * maxInvestigationTurns;
+  if (Number(budget.lane_deadline_ms) < worstCaseLaneMs) {
+    throw new Error('lane deadline must cover the bounded transport, retry, and investigation-turn envelope');
   }
 
   return transports;

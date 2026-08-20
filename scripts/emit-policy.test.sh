@@ -98,12 +98,13 @@ for transport in review.get('transports', []):
 # -- not hardcoded to today's count -- so it stays meaningful if that count changes.
 lane_deadline_ms = int(budget['lane_deadline_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
+max_investigation_turns = int(budget['max_investigation_turns'])
 transport_timeout_sum_ms = sum(t['timeout_ms'] for t in transports)
-worst_case_transport_ms = transport_timeout_sum_ms * max_attempts
+worst_case_transport_ms = transport_timeout_sum_ms * max_attempts * max_investigation_turns
 if worst_case_transport_ms > lane_deadline_ms:
     raise SystemExit(
         f'worst-case transport budget ({worst_case_transport_ms}ms = {transport_timeout_sum_ms}ms across '
-        f'{len(transports)} transports x {max_attempts} attempts) '
+        f'{len(transports)} transports x {max_attempts} attempts x {max_investigation_turns} turns) '
         f'exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); a full sequential '
         'failover could never reach the last transport'
     )
@@ -371,13 +372,13 @@ grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
 grep -q '^lane_call_budget<<' "$tmp_dir/valid.output"
 grep -qx '24' "$tmp_dir/valid.output"
 
-run_case valid-lane-deadline lane_deadline_ms 360000 0
+run_case valid-lane-deadline lane_deadline_ms 600000 0
 grep -q '^lane_deadline_ms<<' "$tmp_dir/valid-lane-deadline.output"
-grep -qx '360000' "$tmp_dir/valid-lane-deadline.output"
+grep -qx '600000' "$tmp_dir/valid-lane-deadline.output"
 
-run_case valid-investigation-turns max_investigation_turns 3 0
+run_case valid-investigation-turns max_investigation_turns 2 0
 grep -q '^max_investigation_turns<<' "$tmp_dir/valid-investigation-turns.output"
-grep -qx '3' "$tmp_dir/valid-investigation-turns.output"
+grep -qx '2' "$tmp_dir/valid-investigation-turns.output"
 
 for value in 0 -1 abc '24 ' ''; do
   run_case "invalid-${value:-empty}" lane_call_budget "$value" 1

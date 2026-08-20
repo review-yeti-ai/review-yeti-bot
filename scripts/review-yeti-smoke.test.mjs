@@ -20,9 +20,9 @@ function policyFixture() {
       openrouter_timeout_ms: '90000',
       openrouter_stream: 'true',
       openrouter_ttft_ms: '30000',
-      budget: { lane_deadline_ms: '300000' },
+      budget: { lane_deadline_ms: '600000', max_investigation_turns: '2' },
       transports: [
-        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', stream: true, reasoning_effort: 'max', structured_output: 'strict', perf_metrics_in_response: true },
+        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, reasoning_effort: 'max', structured_output: 'strict', perf_metrics_in_response: true },
         {
           name: 'openrouter-fallback',
           base_url: 'https://openrouter.test/api/v1',
@@ -30,6 +30,7 @@ function policyFixture() {
           model: 'deepseek/deepseek-v4-flash-0731',
           compat: 'openrouter',
           timeout_ms: 90000,
+          connect_timeout_ms: 30000,
           stream: true,
           reasoning_effort: 'max',
           structured_output: 'strict',
@@ -69,7 +70,12 @@ test('the committed OpenRouter fallback leaves endpoint cohort selection to Open
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
-  assert.ok(Number(policy.review_yeti.budget.lane_deadline_ms) >= openrouter.timeout_ms * Number(policy.review_yeti.openrouter_max_attempts));
+  assert.ok(
+    Number(policy.review_yeti.budget.lane_deadline_ms)
+      >= transports.reduce((sum, transport) => sum + transport.timeout_ms, 0)
+      * Number(policy.review_yeti.openrouter_max_attempts)
+      * Number(policy.review_yeti.budget.max_investigation_turns),
+  );
 });
 
 test('the committed OpenRouter fallback does not require an endpoint-specific cohort', () => {

@@ -34,6 +34,7 @@ for (const key of ['openrouter_timeout_ms', 'openrouter_ttft_ms', 'openrouter_ma
 const openrouterTimeoutMs = Number(review.openrouter_timeout_ms);
 const openrouterTtftMs = Number(review.openrouter_ttft_ms);
 const openrouterMaxAttempts = Number(review.openrouter_max_attempts);
+const maxInvestigationTurns = Number(budget.max_investigation_turns);
 if (openrouterTtftMs > openrouterTimeoutMs) {
   throw new Error('review_yeti.openrouter_ttft_ms must not exceed openrouter_timeout_ms');
 }
@@ -73,12 +74,15 @@ const maxAttempts = Number(review.openrouter_max_attempts);
 if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
   throw new Error('review_yeti.openrouter_max_attempts must be a positive integer string');
 }
+if (!Number.isSafeInteger(maxInvestigationTurns) || maxInvestigationTurns < 1) {
+  throw new Error('review_yeti.budget.max_investigation_turns must be a positive integer string');
+}
 const transportTimeoutSumMs = review.transports.reduce((sum, transport) => sum + transport.timeout_ms, 0);
-const worstCaseTransportMs = transportTimeoutSumMs * maxAttempts;
+const worstCaseTransportMs = transportTimeoutSumMs * maxAttempts * maxInvestigationTurns;
 if (worstCaseTransportMs > laneDeadlineMs) {
   throw new Error(
     `worst-case transport budget (${worstCaseTransportMs}ms = ${transportTimeoutSumMs}ms across `
-    + `${review.transports.length} transports x ${maxAttempts} attempts) `
+    + `${review.transports.length} transports x ${maxAttempts} attempts x ${maxInvestigationTurns} turns) `
     + `exceeds review_yeti.budget.lane_deadline_ms (${laneDeadlineMs}ms); a full sequential failover `
     + 'could never reach the last transport',
   );
