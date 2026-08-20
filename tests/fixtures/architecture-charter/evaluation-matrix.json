@@ -1,0 +1,276 @@
+{
+  "schemaVersion": "testing-charter-eval-v1",
+  "personaId": "architecture",
+  "repetitions": 8,
+  "notes": [
+    "Seeded detection corpus for the architecture persona (2026-08-19 corpus-expansion), the",
+    "highest-observed production-failure-rate persona with zero prior detection coverage.",
+    "Same self-contained-diff, AND-of-OR mustMatch grading evaluate-testing-charter.mjs already",
+    "uses for the testing and security corpora -- no code changes needed, only this fixture file.",
+    "One defect fixture per Flag rule in the architecture charter (layering direction, duplicated",
+    "business rule, circular dependency, silent public-interface break, logic stranded in an",
+    "untestable layer), each paired with a near-miss clean control shaped to bait a reviewer that",
+    "pattern-matches on surface signal -- 'a domain file imports the db client', 'two functions",
+    "with the same if-throw shape', 'a file moved', 'a signature changed' -- rather than the",
+    "actual rule (a NEW inconsistency, an actual duplicated RULE that can drift, a genuine cycle,",
+    "an UPDATED-elsewhere-in-the-diff caller, a real cross-module reference).",
+    "Run candidate-only (no charter rewrite here to A/B against a baseline snapshot):",
+    "  node scripts/evaluate-testing-charter.mjs --fixture tests/fixtures/architecture-charter/evaluation-matrix.json --candidate-only"
+  ],
+  "fixtures": [
+    {
+      "id": "layering-violation-domain-imports-infrastructure",
+      "category": "defect",
+      "title": "Look up per-SKU discount overrides when pricing a line item",
+      "summary": "A pure domain pricing function that previously took all its inputs as arguments now reaches directly into the infrastructure layer (the Postgres client) to fetch a discount override, coupling domain logic to a concrete database and making it untestable without one.",
+      "expectedPaths": [
+        "src/domain/pricing/calculateDiscount.js"
+      ],
+      "mustMatch": [
+        [
+          "domain",
+          "pricing logic",
+          "business logic",
+          "pure function"
+        ],
+        [
+          "postgres",
+          "database",
+          "db client",
+          "infra",
+          "infrastructure",
+          "sql",
+          "pool.query"
+        ],
+        [
+          "import",
+          "depend",
+          "couple",
+          "reach",
+          "wrong direction",
+          "layering",
+          "layer"
+        ]
+      ],
+      "files": [
+        {
+          "path": "src/domain/pricing/calculateDiscount.js",
+          "patch": "@@ -1,11 +1,14 @@\n+const { pool } = require('../../infra/db/postgresClient');\n+\n /**\n  * Pure domain rule: computes the discounted price for a line item.\n  * Takes everything it needs as arguments so it can be unit tested without\n  * a database or network connection.\n  */\n-function calculateDiscount(basePriceCents, customerTier, overridePercent) {\n+async function calculateDiscount(basePriceCents, customerTier, sku) {\n   const tierPercent = customerTier === 'gold' ? 0.15 : customerTier === 'silver' ? 0.08 : 0;\n-  const percent = overridePercent != null ? overridePercent : tierPercent;\n+  const overrideRow = await pool.query('SELECT percent FROM discount_overrides WHERE sku = $1', [sku]);\n+  const percent = overrideRow.rows[0] ? overrideRow.rows[0].percent : tierPercent;\n   return Math.round(basePriceCents * (1 - percent));\n }\n \n"
+        }
+      ]
+    },
+    {
+      "id": "duplicated-business-rule-drifts",
+      "category": "defect",
+      "title": "Apply the loyalty discount at checkout time",
+      "summary": "A new checkout module reimplements the loyalty-tier discount percentages that already live in calculateDiscount.js, with a copy that already rounds differently (floor vs round) -- exactly the drift the two-implementations pattern predicts.",
+      "expectedPaths": [
+        "src/checkout/applyPromotion.js"
+      ],
+      "mustMatch": [
+        [
+          "duplicat",
+          "reimplement",
+          "already exists",
+          "copy",
+          "second place",
+          "same logic",
+          "same calculation",
+          "same rule"
+        ],
+        [
+          "calculateDiscount",
+          "drift",
+          "diverge",
+          "differently",
+          "floor",
+          "round",
+          "inconsistent"
+        ]
+      ],
+      "files": [
+        {
+          "path": "src/domain/pricing/calculateDiscount.js",
+          "patch": "@@ -1,6 +1,8 @@\n function calculateDiscount(basePriceCents, customerTier, overridePercent) {\n   const tierPercent = customerTier === 'gold' ? 0.15 : customerTier === 'silver' ? 0.08 : 0;\n   const percent = overridePercent != null ? overridePercent : tierPercent;\n+  // Loyalty-tier percentages live here; see also applyPromotion.js in checkout,\n+  // which historically special-cased loyalty pricing at checkout time.\n   return Math.round(basePriceCents * (1 - percent));\n }\n \n"
+        },
+        {
+          "path": "src/checkout/applyPromotion.js",
+          "patch": "@@ -0,0 +1,9 @@\n+/**\n+ * Applies the loyalty discount at checkout time.\n+ */\n+function applyPromotion(basePriceCents, customerTier) {\n+  const tierPercent = customerTier === 'gold' ? 0.15 : customerTier === 'silver' ? 0.08 : 0;\n+  return Math.floor(basePriceCents * (1 - tierPercent));\n+}\n+\n+module.exports = { applyPromotion };\n"
+        }
+      ]
+    },
+    {
+      "id": "new-circular-dependency-introduced",
+      "category": "defect",
+      "title": "Guard against reserving stock for a cancelled order",
+      "summary": "inventoryService.js adds a require of orderService.js to check order status, but orderService.js already requires inventoryService.js to reserve stock -- this closes a new import cycle between the two modules.",
+      "expectedPaths": [
+        "src/services/inventoryService.js"
+      ],
+      "mustMatch": [
+        [
+          "circular",
+          "cycle",
+          "cyclic"
+        ],
+        [
+          "orderService",
+          "inventoryService"
+        ]
+      ],
+      "files": [
+        {
+          "path": "src/services/orderService.js",
+          "patch": "@@ -1,5 +1,6 @@\n const inventoryService = require('./inventoryService');\n \n+// Reserve stock, then mark the order placed once every reservation succeeds.\n async function placeOrder(db, orderId, items) {\n   for (const item of items) {\n     await inventoryService.reserveStock(db, item.sku, item.quantity);\n"
+        },
+        {
+          "path": "src/services/inventoryService.js",
+          "patch": "@@ -1,4 +1,12 @@\n-async function reserveStock(db, sku, quantity) {\n+const orderService = require('./orderService');\n+\n+async function reserveStock(db, sku, quantity, orderId) {\n+  // Guard: don't reserve stock for an order that was already cancelled\n+  // while this request was in flight.\n+  const order = await orderService.getOrderStatus(db, orderId);\n+  if (order.status === 'cancelled') {\n+    throw new Error('order cancelled');\n+  }\n   return db.query(\n     'UPDATE inventory SET reserved = reserved + $1 WHERE sku = $2',\n     [quantity, sku],\n"
+        }
+      ]
+    },
+    {
+      "id": "public-interface-change-breaks-callers",
+      "category": "defect",
+      "title": "Reorder formatMoney's parameters for consistency with other formatters",
+      "summary": "formatMoney's exported parameter order is swapped (currencyCode, amountCents) but renderInvoiceLine.js -- shown unmodified in the same diff -- still calls it in the old order, so every invoice line will silently render the wrong currency-to-amount pairing.",
+      "expectedPaths": [
+        "src/lib/formatMoney.js"
+      ],
+      "mustMatch": [
+        [
+          "parameter",
+          "argument",
+          "signature",
+          "order",
+          "swap",
+          "reorder"
+        ],
+        [
+          "caller",
+          "call site",
+          "renderInvoiceLine",
+          "not updated",
+          "still calls",
+          "breaks",
+          "silently",
+          "wrong"
+        ]
+      ],
+      "files": [
+        {
+          "path": "src/lib/formatMoney.js",
+          "patch": "@@ -1,9 +1,9 @@\n /**\n  * Formats an integer cent amount as a currency string.\n- * @param {number} amountCents\n  * @param {string} currencyCode\n+ * @param {number} amountCents\n  */\n-function formatMoney(amountCents, currencyCode) {\n+function formatMoney(currencyCode, amountCents) {\n   const amount = (amountCents / 100).toFixed(2);\n   return `${currencyCode} ${amount}`;\n }\n"
+        },
+        {
+          "path": "src/invoices/renderInvoiceLine.js",
+          "patch": "@@ -1,7 +1,9 @@\n const { formatMoney } = require('../lib/formatMoney');\n \n function renderInvoiceLine(item) {\n-  return `${item.description}: ${formatMoney(item.amountCents, item.currencyCode)}`;\n+  // Round quantities to 2 decimal places for display.\n+  const quantity = Number(item.quantity).toFixed(2);\n+  return `${item.description} x${quantity}: ${formatMoney(item.amountCents, item.currencyCode)}`;\n }\n \n module.exports = { renderInvoiceLine };\n"
+        }
+      ]
+    },
+    {
+      "id": "logic-embedded-in-untestable-layer",
+      "category": "defect",
+      "title": "Compute free-shipping eligibility during checkout",
+      "summary": "Multi-branch free-shipping eligibility logic (tier thresholds, oversized-item exception) is written directly inside the Express route handler, reading req.body -- it can only be exercised through an HTTP request, not as a unit-testable function.",
+      "expectedPaths": [
+        "src/controllers/checkoutController.js"
+      ],
+      "mustMatch": [
+        [
+          "controller",
+          "route handler",
+          "req.body",
+          "http"
+        ],
+        [
+          "business",
+          "logic",
+          "decision",
+          "branching",
+          "eligibility",
+          "rule"
+        ],
+        [
+          "test",
+          "testable",
+          "untestable",
+          "unit test",
+          "extract",
+          "service",
+          "domain"
+        ]
+      ],
+      "files": [
+        {
+          "path": "src/controllers/checkoutController.js",
+          "patch": "@@ -1,7 +1,23 @@\n const checkoutService = require('../services/checkoutService');\n \n async function postCheckout(req, res) {\n-  const result = await checkoutService.completeCheckout(req.body.cartId, req.body.customerId);\n+  // Free-shipping eligibility: orders over $50, or gold-tier customers over $25,\n+  // qualify unless the cart contains an oversized item.\n+  const subtotalCents = req.body.subtotalCents;\n+  const isGold = req.body.customerTier === 'gold';\n+  const hasOversizedItem = req.body.items.some((item) => item.oversized);\n+  let freeShippingEligible = false;\n+  if (!hasOversizedItem) {\n+    if (subtotalCents >= 5000) {\n+      freeShippingEligible = true;\n+    } else if (isGold && subtotalCents >= 2500) {\n+      freeShippingEligible = true;\n+    }\n+  }\n+\n+  const result = await checkoutService.completeCheckout(req.body.cartId, req.body.customerId, {\n+    freeShippingEligible,\n+  });\n   res.status(200).json(result);\n }\n \n"
+        }
+      ]
+    },
+    {
+      "id": "clean-layering-matches-existing-consistent-pattern",
+      "category": "clean",
+      "title": "Add an order count to the regional sales summary",
+      "summary": "Control: salesSummary.js already imports postgresClient directly, same as its siblings calculateDiscount.js and inventoryValuation.js -- this diff only widens the existing query, it does not introduce a new layering violation. A reviewer flagging any domain-file-imports-db pattern regardless of whether the codebase already does this consistently would false-positive here.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/domain/reporting/salesSummary.js",
+          "patch": "@@ -8,10 +8,10 @@\n  */\n async function salesSummary(region, from, to) {\n   const rows = await pool.query(\n-    'SELECT SUM(total_cents) AS total FROM orders WHERE region = $1 AND placed_at BETWEEN $2 AND $3',\n+    'SELECT SUM(total_cents) AS total, COUNT(*) AS order_count FROM orders WHERE region = $1 AND placed_at BETWEEN $2 AND $3',\n     [region, from, to],\n   );\n-  return rows.rows[0].total;\n+  return { total: rows.rows[0].total, orderCount: rows.rows[0].order_count };\n }\n \n module.exports = { salesSummary };\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-similar-validators-not-duplicated-business-rule",
+      "category": "clean",
+      "title": "Add promo code format validation",
+      "summary": "Control: validatePromoCode has the same shape as validateEmail (a presence check plus a format check) but validates a genuinely different field with different rules -- structurally similar, not a duplicated business rule that will drift. A reviewer pattern-matching on 'two functions with the same if-throw shape' would false-positive here.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/validation/validators.js",
+          "patch": "@@ -7,4 +7,13 @@\n   }\n }\n \n-module.exports = { validateEmail };\n+function validatePromoCode(value) {\n+  if (!value || value.length === 0) {\n+    throw new Error('promo code is required');\n+  }\n+  if (!/^[A-Z0-9]{4,12}$/.test(value)) {\n+    throw new Error('promo code must be 4-12 uppercase letters or digits');\n+  }\n+}\n+\n+module.exports = { validateEmail, validatePromoCode };\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-file-move-preserves-public-interface",
+      "category": "clean",
+      "title": "Consolidate slugify into the shared text-helpers module",
+      "summary": "Control: slugify() is moved to src/lib/text/slugify.js, but src/utils/slugify.js becomes a re-export shim with the exact same exported signature, so every existing caller keeps working unchanged. This is a file move/layout change, not a public interface break.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/utils/slugify.js",
+          "patch": "@@ -1,9 +1,3 @@\n-function slugify(text) {\n-  return text\n-    .toLowerCase()\n-    .trim()\n-    .replace(/[^a-z0-9]+/g, '-')\n-    .replace(/(^-|-$)/g, '');\n-}\n-\n-module.exports = { slugify };\n+// Moved to src/lib/text/slugify.js as part of consolidating text helpers.\n+// Re-exported here so existing callers keep working unchanged.\n+module.exports = require('../lib/text/slugify');\n"
+        },
+        {
+          "path": "src/lib/text/slugify.js",
+          "patch": "@@ -0,0 +1,9 @@\n+function slugify(text) {\n+  return text\n+    .toLowerCase()\n+    .trim()\n+    .replace(/[^a-z0-9]+/g, '-')\n+    .replace(/(^-|-$)/g, '');\n+}\n+\n+module.exports = { slugify };\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-interface-change-with-caller-updated-in-same-diff",
+      "category": "clean",
+      "title": "Switch formatMoney to a single options object for readability",
+      "summary": "Control: formatMoney's parameter shape changes from positional args to a destructured options object, but the one caller (renderInvoiceLine.js) is updated in the very same diff to match. Nothing breaks silently -- this is the same class of change as fixture public-interface-change-breaks-callers, minus the actual break.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/lib/formatMoney.js",
+          "patch": "@@ -1,7 +1,10 @@\n /**\n  * Formats an integer cent amount as a currency string.\n+ * @param {object} money\n+ * @param {number} money.amountCents\n+ * @param {string} money.currencyCode\n  */\n-function formatMoney(amountCents, currencyCode) {\n+function formatMoney({ amountCents, currencyCode }) {\n   const amount = (amountCents / 100).toFixed(2);\n   return `${currencyCode} ${amount}`;\n }\n"
+        },
+        {
+          "path": "src/invoices/renderInvoiceLine.js",
+          "patch": "@@ -1,7 +1,7 @@\n const { formatMoney } = require('../lib/formatMoney');\n \n function renderInvoiceLine(item) {\n-  return `${item.description}: ${formatMoney(item.amountCents, item.currencyCode)}`;\n+  return `${item.description}: ${formatMoney({ amountCents: item.amountCents, currencyCode: item.currencyCode })}`;\n }\n \n module.exports = { renderInvoiceLine };\n"
+        }
+      ]
+    }
+  ]
+}
