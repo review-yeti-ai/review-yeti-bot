@@ -15,7 +15,8 @@
     "actual rule (a NEW inconsistency, an actual duplicated RULE that can drift, a genuine cycle,",
     "an UPDATED-elsewhere-in-the-diff caller, a real cross-module reference).",
     "Run candidate-only (no charter rewrite here to A/B against a baseline snapshot):",
-    "  node scripts/evaluate-testing-charter.mjs --fixture tests/fixtures/architecture-charter/evaluation-matrix.json --candidate-only"
+    "  node scripts/evaluate-testing-charter.mjs --fixture tests/fixtures/architecture-charter/evaluation-matrix.json --candidate-only",
+    "2026-08-20 corpus repair: clean-layering-matches-existing-consistent-pattern previously changed salesSummary's return shape from a scalar to an object with no caller updated in the diff -- the evidence shape of this charter's own public-interface-change-breaks-callers defect fixture, and the opposite of the convention its clean-interface-change-with-caller-updated-in-same-diff control establishes (interface changes are clean when the caller moves in the same diff). The single caller is now updated in-diff so the control isolates the layering judgment it was built for."
   ],
   "fixtures": [
     {
@@ -212,13 +213,17 @@
       "id": "clean-layering-matches-existing-consistent-pattern",
       "category": "clean",
       "title": "Add an order count to the regional sales summary",
-      "summary": "Control: salesSummary.js already imports postgresClient directly, same as its siblings calculateDiscount.js and inventoryValuation.js -- this diff only widens the existing query, it does not introduce a new layering violation. A reviewer flagging any domain-file-imports-db pattern regardless of whether the codebase already does this consistently would false-positive here.",
+      "summary": "Control: salesSummary.js already imports postgresClient directly, same as its siblings calculateDiscount.js and inventoryValuation.js -- this diff only widens the existing query and updates the one caller in the same diff to consume the new return shape. It does not introduce a new layering violation. A reviewer flagging any domain-file-imports-db pattern regardless of whether the codebase already does this consistently would false-positive here.",
       "expectedPaths": [],
       "mustMatch": [],
       "files": [
         {
           "path": "src/domain/reporting/salesSummary.js",
           "patch": "@@ -8,10 +8,10 @@\n  */\n async function salesSummary(region, from, to) {\n   const rows = await pool.query(\n-    'SELECT SUM(total_cents) AS total FROM orders WHERE region = $1 AND placed_at BETWEEN $2 AND $3',\n+    'SELECT SUM(total_cents) AS total, COUNT(*) AS order_count FROM orders WHERE region = $1 AND placed_at BETWEEN $2 AND $3',\n     [region, from, to],\n   );\n-  return rows.rows[0].total;\n+  return { total: rows.rows[0].total, orderCount: rows.rows[0].order_count };\n }\n \n module.exports = { salesSummary };\n"
+        },
+        {
+          "path": "src/http/routes/salesReport.js",
+          "patch": "@@ -3,7 +3,7 @@\n const { salesSummary } = require('../../domain/reporting/salesSummary');\n \n router.get('/reports/sales-summary', async (req, res) => {\n-  const total = await salesSummary(req.query.region, req.query.from, req.query.to);\n-  res.json({ total });\n+  const { total, orderCount } = await salesSummary(req.query.region, req.query.from, req.query.to);\n+  res.json({ total, orderCount });\n });"
         }
       ]
     },
