@@ -110,6 +110,23 @@ describe('coverage evaluation', () => {
     expect(result.missingPersonaIds).toEqual(['contract']);
   });
 
+  it('crosses from incomplete to partial exactly at the configured quorum boundary, but never becomes mergeable', () => {
+    const roster = ['security', 'testing', 'contract', 'performance', 'architecture'];
+    const lanesOf = (n: number) => roster.slice(0, n).map((id, i) => verdictLane(id, `provider-${i % 2}`));
+    const policy = { mandatory_personas: [], provider_diversity_min: 1 };
+
+    // two_thirds of 5 personas rounds up to 4 (requiredCoverageCount(5, 'two_thirds') === 4).
+    const oneBelow = evaluateCoverage({ expectedPersonaIds: roster, lanes: lanesOf(3), policy });
+    expect(oneBelow).toMatchObject({ status: 'incomplete', required: 4, trustworthyCount: 3, mergeEligible: false });
+
+    const exactlyAt = evaluateCoverage({ expectedPersonaIds: roster, lanes: lanesOf(4), policy });
+    expect(exactlyAt).toMatchObject({ status: 'partial', required: 4, trustworthyCount: 4, mergeEligible: false });
+
+    // The quorum boundary changes the *label* (incomplete -> partial), never mergeEligible: only
+    // full coverage (5/5) can ever produce mergeEligible: true.
+    expect(oneBelow.mergeEligible).toBe(exactlyAt.mergeEligible);
+  });
+
   it('does not shrink the denominator to the lanes that launched', () => {
     const result = evaluateCoverage({
       expectedPersonaIds: ['security', 'testing', 'contract'],

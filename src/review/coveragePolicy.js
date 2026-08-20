@@ -3,6 +3,18 @@
 const QUORUMS = new Set(['two_thirds', 'simple_majority', 'unanimous']);
 const LANE_STATUSES = new Set(['verdict', 'error', 'timeout', 'empty', 'partial', 'incomplete', 'invalid']);
 
+// `quorum` decides only whether an incomplete panel is labeled 'partial' (numeric quorum met --
+// see requiredCoverageCount below) or 'incomplete' (quorum not met). It never widens what can
+// merge: `mergeEligible` below is `complete`, i.e. every expected persona produced a trustworthy
+// verdict, regardless of which quorum is configured here. A review with 4/5 trustworthy personas
+// is 'partial' whether quorum is 'two_thirds' or 'unanimous' -- the *value* of `quorum` changes
+// the boundary at which 'partial' degrades further to 'incomplete' (see requiredCoverageCount),
+// not whether 'partial' can ever merge. Concretely: setting quorum to 'simple_majority' does not
+// make a two-out-of-three-persona review mergeable; it only changes whether that review is
+// reported as PARTIAL_REVIEW (evidence retained, quorum met) instead of INCOMPLETE_REVIEW
+// (generic incomplete). See reviewCore.js computeArbitration for where `partialCoverage` still
+// forces `verdict: 'BLOCK'` even when this quorum is satisfied, and why (API-2902 and the
+// find-1/quorum-knob review trace).
 const DEFAULT_COVERAGE_POLICY = Object.freeze({
   quorum: 'two_thirds',
   min_personas: 3,
@@ -133,6 +145,10 @@ function evaluateCoverage({ expectedPersonaIds, lanes, policy } = {}) {
   const mandatorySatisfied = missingMandatoryPersonaIds.length === 0;
   const providerDiversitySatisfied = distinctProviders.length >= normalizedPolicy.provider_diversity_min;
   const complete = trustworthyPersonaIds.length === expectedIds.length;
+  // `partial` is gated by the configured quorum (numericQuorumSatisfied) plus the roster/mandatory/
+  // diversity floors -- this is the one place `quorum` has any effect. It only ever produces the
+  // 'partial' label, never 'complete': merge eligibility (mergeEligible below) is unaffected by
+  // quorum and requires `complete` in every case.
   const partial = !complete
     && minimumRosterSatisfied
     && numericQuorumSatisfied
@@ -159,6 +175,8 @@ function evaluateCoverage({ expectedPersonaIds, lanes, policy } = {}) {
     providerDiversitySatisfied,
     distinctProviders,
     classifications,
+    // Deliberately `complete`, not `partial || complete`: the configured quorum never makes a
+    // review mergeable on its own. See the `quorum` comment on DEFAULT_COVERAGE_POLICY above.
     mergeEligible: complete,
   };
 }

@@ -211,6 +211,18 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     ? coverage.status === 'complete' && coverageComplete
     : expected > 0 && failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
   const partialCoverage = Boolean(coverage && coverage.status === 'partial' && coverageComplete);
+  // `quorumSatisfied` here means "every expected persona produced a trustworthy verdict"
+  // (full/unanimous coverage) -- it is NOT the configured coverage_policy.quorum threshold
+  // (two_thirds / simple_majority / unanimous). That numeric-quorum signal is
+  // `coverageQuorumSatisfied` below (coverage.numericQuorumSatisfied). The two are different
+  // questions with different answers: a 4-of-5 panel can have coverageQuorumSatisfied: true
+  // (two_thirds quorum met) while quorumSatisfied is still false (one lane short of full
+  // coverage). Only `quorumSatisfied`/`fullCoverage` gates `verdict` and `mergeEligible` below --
+  // the configured quorum affects only whether an incomplete panel is labeled PARTIAL_REVIEW
+  // (`partialCoverage`, quorum met) vs INCOMPLETE_REVIEW (quorum not met); it never allows SHIP.
+  // This is deliberate, not a bug: see the `partialCoverage` branch a few lines down (verdict
+  // stays BLOCK either way), coveragePolicy.js's own `mergeEligible: complete`, and API-2902 --
+  // a false SHIP from a review that never actually finished is a worse failure than a slow BLOCK.
   const quorumSatisfied = fullCoverage;
   const coverageQuorumSatisfied = coverage ? coverage.numericQuorumSatisfied : quorumSatisfied;
   const incomplete = !fullCoverage && !partialCoverage;
@@ -234,6 +246,9 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     && p0Count === 0
     && p1Count === 0;
 
+  // Coverage quorum (however configured) never overrides this: `partialCoverage` still forces
+  // BLOCK. Only `fullCoverage` (every expected persona trustworthy) allows `candidateVerdict`
+  // through. See the `quorumSatisfied` comment above.
   const verdict = incomplete || partialCoverage ? 'BLOCK' : candidateVerdict;
   const status = infraOnlyOutage
     ? 'INCOMPLETE_INFRA'
