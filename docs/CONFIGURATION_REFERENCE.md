@@ -470,6 +470,41 @@ Generated OpenAPI or other API-spec artifacts, such as `openapi.generated.json` 
 remains ordinary source and is included. A pattern without `/` is filename-only and matches that
 filename at any depth; slash-bearing patterns match the path shape.
 
+### Zoekt review-time search: warm index caching
+
+The `code_search_zoekt` evidence tool (ADR 0329) indexes the reviewed repository so a persona can
+search across files it did not otherwise read. Building that index from scratch costs real
+wall-clock time before any lane can start (measured live against a 14.2k-file repository: ~7.9s to
+fetch and extract the repository tarball, ~4.7s to build the index — a flat ~12.6s tax on every
+review). Provisioning that index once, outside the request path, is far cheaper than rebuilding it
+per review.
+
+review-yeti-bot restores a warm index from the reviewed repository's own **GitHub Actions cache**
+before ever falling back to a from-scratch build — never from a server review-yeti-ai operates.
+This is deliberate: `## Why this rather than a hosted review service` above states plainly that no
+Review Yeti-managed server, database, or codebase index is required, and a warm index review-yeti-ai
+hosted would break that. The cache entry lives entirely in the reviewed repository's own account.
+
+- **Restore is the only thing this version does.** review-yeti-bot never writes to this cache from
+  a review run — an untrusted pull request must never be able to influence what a future review
+  trusts as a warm index. Populating the cache (a scheduled or push-to-default-branch refresh
+  workflow that builds and saves an index) is a deliberate, separate provisioning step and is not
+  shipped yet; until a repository adds one, every review builds fresh, exactly as before this
+  feature existed. This is a strict superset with no regression either way.
+- **A cache miss changes nothing.** No refresh workflow configured, a first run, or a 7-day-unused
+  cache eviction all fall straight through to the existing from-scratch materialize-and-build path.
+- **Staleness is a known, bounded risk, not silently ignored.** A restored index almost never
+  reflects this exact review's own head commit — it reflects whatever commit the last refresh
+  indexed. Every match on a path this review itself changed is tagged `stale: true` in the tool's
+  response (that gap is exact and free: it is precisely this review's own diff). Any other drift —
+  unrelated commits landed on the default branch since the last refresh — is a smaller, separate
+  risk that shrinks with refresh cadence. Crucially, this only affects search *usefulness*: any
+  finding a persona actually publishes is independently checked against the real, immutable
+  content at this review's exact head commit by the finding verifier
+  ([Exact-snapshot finding verification](#exact-snapshot-finding-verification) above), regardless
+  of what the Zoekt index told it. A stale search result can mislead a persona toward a wrong
+  conclusion; it cannot make a wrong claim survive to publication.
+
 ### Action terminal outcomes and coverage outputs
 
 If every changed file is removed by the built-in generated-file catalog or configured repository
