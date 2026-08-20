@@ -87,6 +87,7 @@ export function validatePolicy(policy) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
   }
   if (openrouter?.reasoning_effort !== 'max') throw new Error('OpenRouter must use maximum reasoning');
+  if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must enforce the strict investigation schema');
   if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
   if (policy.review_yeti?.openrouter_max_attempts !== '2') throw new Error('each transport must retain one retry');
 
@@ -278,15 +279,8 @@ export async function runSmoke({ policy, policyPath, env = process.env, fetchImp
   return { results, healthy };
 }
 
-// Picking the failover target here, not just logging it, is the point: before this, the smoke
-// probe already *detected* an unhealthy primary but the caller workflow still hardcoded Fireworks
-// into the review panel step regardless, so a Fireworks outage still took the run down even
-// though OpenRouter was proven healthy one step earlier. The selection stays a whole-run decision
-// (one transport for every persona, chosen before any persona runs) rather than per-persona
-// mid-run switching -- that keeps the Fireworks/OpenRouter-ban boundary trivial to reason about:
-// exactly one of "direct Fireworks" or "OpenRouter with Fireworks on its ignore list" is ever
-// live for a given run, so the double-billing case (Fireworks selected *through* OpenRouter) is
-// structurally unreachable, not just policed by the routing-selector guard above.
+// Pick the highest-priority healthy transport to seed the action's legacy single-transport
+// inputs. The complete healthy subset is emitted separately for per-lane failover.
 export function resolveTransport(transports, healthy, order = EXPECTED_TRANSPORT_ORDER) {
   const healthySet = new Set(healthy);
   for (const name of order) {
@@ -298,6 +292,14 @@ export function resolveTransport(transports, healthy, order = EXPECTED_TRANSPORT
   return null;
 }
 
+// A preflight result is an admission decision for this run, not merely telemetry. Keeping an
+// unhealthy transport in the action input makes every persona rediscover the same known failure
+// and can consume the entire lane deadline before a healthy fallback is reached.
+export function selectHealthyTransports(transports, healthy) {
+  const healthySet = new Set(healthy);
+  return transports.filter((transport) => healthySet.has(transport.name));
+}
+
 async function main() {
   const { results, healthy } = await runSmoke({
     timeoutMs: Number(process.env.REVIEW_YETI_SMOKE_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
@@ -307,10 +309,11 @@ async function main() {
   const policy = loadPolicy();
   const resolved = resolveTransport(policy.review_yeti.transports, healthy);
   if (!resolved) throw new Error('no healthy transport could be resolved from a validated policy');
+  const healthyTransports = selectHealthyTransports(policy.review_yeti.transports, healthy);
 
   const degraded = resolved.name !== EXPECTED_TRANSPORT_ORDER[0];
   console.log(
-    `[Review Yeti smoke] resolved_transport=${resolved.name}${degraded ? ' (DEGRADED: primary transport unhealthy, running the full panel on the fallback transport)' : ''}`,
+    `[Review Yeti smoke] resolved_transport=${resolved.name}${degraded ? ' (DEGRADED: primary transport unhealthy, seeding the panel with the next healthy transport)' : ''}`,
   );
 
   const outputPath = process.env.GITHUB_OUTPUT;
@@ -321,6 +324,7 @@ async function main() {
       resolved_model: resolved.model,
       resolved_api_key_env: resolved.api_key_env,
       resolved_degraded: String(degraded),
+      healthy_transports: JSON.stringify(healthyTransports),
     };
     for (const [name, value] of Object.entries(outputs)) {
       appendFileSync(outputPath, `${name}=${value}\n`);

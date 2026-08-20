@@ -89,18 +89,12 @@ jobs:
           RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
         run: .exampleorg-review-actions/scripts/validate-release-provenance.sh
 
-      # Resolved transport failover (QA-380): the smoke step above already proves which
-      # transport(s) are healthy before any persona runs. Previously that result was logged and
-      # then ignored -- this step always called the panel against a hardcoded Fireworks
-      # base-url/key/model, so a Fireworks-only outage still took the whole required check down
-      # even when the smoke probe had just shown OpenRouter healthy one step earlier. Now the
-      # resolved transport (fireworks if healthy, else openrouter-fallback) drives the actual
-      # call. Selection is whole-run, not per-persona: exactly one transport is ever live for a
-      # given run, so Fireworks routed *through* OpenRouter (the banned, double-billing path) is
-      # structurally unreachable, not merely policed by the routing-selector guard in
-      # review-yeti-smoke.mjs. Zero healthy transports still hard-fails -- review-yeti-smoke.mjs
-      # throws before writing any `resolved_*` output, so this step never runs on a fully-down
-      # policy.
+      # Preflight admission (QA-380): the smoke step proves which transports are healthy before
+      # any persona runs. The highest-priority healthy transport seeds the panel, and the action
+      # receives only the healthy subset in configured order for per-lane failover. This prevents
+      # every lane from rediscovering the same known provider failure while retaining automatic
+      # failover among the transports that passed the real request shape. Zero healthy transports
+      # still hard-fails before this step.
       - name: Run Review Yeti review panel
         id: review
         uses: ./.review-yeti-bot
@@ -108,16 +102,16 @@ jobs:
           FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
-          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
         with:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
           pr-number: ${{ github.event.pull_request.number }}
-          llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          llm-api-key: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_PR_REVIEW_API_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
           model: ${{ steps.smoke.outputs.resolved_model }}
-          transports: ${{ steps.policy.outputs.transports }}
+          transports: ${{ steps.smoke.outputs.healthy_transports }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           openrouter-ignore-providers: ${{ steps.policy.outputs.openrouter_ignore_providers }}
           openrouter-provider-routing: ${{ steps.policy.outputs.openrouter_provider_routing }}

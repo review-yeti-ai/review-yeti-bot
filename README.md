@@ -130,7 +130,9 @@ timeout without Review Yeti dynamically banning the resolved endpoint.
 
 The OpenRouter entry requires `bf16`/`fp16`, sorts by `throughput` (OpenRouter's rolling 5-minute
 per-provider percentiles), retains the p99 latency preference, allows remaining hosts to fail over
-(`allow_fallbacks: true`), and denies provider data collection. `only` and `order` are never used here: both pin
+(`allow_fallbacks: true`), enforces the strict investigation JSON schema, and denies provider data
+collection. `require_parameters: true` keeps routing on endpoints that honor that schema. `only`
+and `order` are never used here: both pin
 routing to a fixed provider list, which previously froze routing and produced 404s when that list
 went stale. Each caller must expose the named environment variables through its inherited GitHub
 Actions secrets.
@@ -200,7 +202,10 @@ each configured transport using a bounded, review-shaped JSON request. The smoke
 transport names and status, never credentials or response bodies, and fails closed when no
 transport can complete the request. Its contract tests run in the central validation workflow so
 provider order, OpenRouter routing, response validation, fallback behavior, and policy-drift
-rejection are checked before a release can advance.
+rejection are checked before a release can advance. The smoke result is also an admission filter:
+the action receives only transports that passed preflight, in configured order. A known-unhealthy
+provider therefore remains configured and visible in telemetry but cannot consume every lane's
+runtime budget before healthy failover begins.
 
 ## CLI-first local reviews
 

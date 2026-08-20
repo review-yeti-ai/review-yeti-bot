@@ -8,6 +8,7 @@ import {
   buildRequest,
   resolveTransport,
   runSmoke,
+  selectHealthyTransports,
   validatePolicy,
 } from './review-yeti-smoke.mjs';
 
@@ -26,6 +27,7 @@ function policyFixture() {
           model: 'openrouter-model',
           compat: 'openrouter',
           stream: true,
+          structured_output: 'strict',
           reasoning_effort: 'max',
           quarantine_on_timeout: false,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
@@ -66,6 +68,7 @@ test('the committed OpenRouter fallback requires full-precision quants and throu
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
+  assert.equal(openrouter.structured_output, 'strict');
 });
 
 test('validatePolicy rejects a transport that pins provider routing', () => {
@@ -243,6 +246,19 @@ test('resolveTransport never selects Fireworks through the OpenRouter fallback',
 test('resolveTransport returns null when nothing is healthy (caller must hard-fail, not run)', () => {
   const transports = policyFixture().review_yeti.transports;
   assert.equal(resolveTransport(transports, []), null);
+});
+
+test('selectHealthyTransports removes providers that failed preflight while preserving policy order', () => {
+  const transports = policyFixture().review_yeti.transports;
+  const selected = selectHealthyTransports(transports, ['openrouter-fallback', 'fireworks']);
+
+  assert.deepEqual(selected.map((transport) => transport.name), ['fireworks', 'openrouter-fallback']);
+  assert.equal(selected.some((transport) => transport.name === 'ollama'), false);
+});
+
+test('selectHealthyTransports never invents a transport outside the validated policy', () => {
+  const transports = policyFixture().review_yeti.transports;
+  assert.deepEqual(selectHealthyTransports(transports, ['unknown-provider']), []);
 });
 
 test('runSmoke + resolveTransport: zero healthy transports still throws before any output is produced', async () => {

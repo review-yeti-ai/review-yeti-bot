@@ -38,6 +38,7 @@
         "timeout_ms": 60000,
         "connect_timeout_ms": 30000,
         "stream": true,
+        "structured_output": "strict",
         "reasoning_effort": "max",
         "quarantine_on_timeout": false,
         "provider_routing": {
