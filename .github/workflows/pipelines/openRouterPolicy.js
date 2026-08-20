@@ -27,7 +27,7 @@ const DEFAULT_PROVIDER_ROUTING = Object.freeze({
  *      structured_output);
  *   3. Defaults (no allowlist, no tradeoff, no data-collection header,
  *      full-quantization throughput routing with fallbacks, known degraded
- *      providers ignored, timeout_ms=30000, stream=false).
+ *      providers ignored, timeout_ms=30000, stream=true).
  *
  * @param {object|undefined} localConfig  Parsed local config, or an object whose
  *    `parsed` field holds the parse result (as produced by the pipeline).
@@ -182,14 +182,20 @@ function resolveOpenRouterPolicy(localConfig, env) {
   }
   maxAttempts = Math.max(1, Math.min(5, Math.trunc(maxAttempts)));
 
-  // stream: action env > yaml > false.
-  let stream = false;
-  if (envStream !== undefined && envStream !== '') {
-    stream = !['0', 'false', 'no', 'off'].includes(String(envStream).trim().toLowerCase());
-  } else if (cfgStream !== undefined && cfgStream !== null && cfgStream !== '') {
-    if (typeof cfgStream === 'boolean') stream = cfgStream;
-    else stream = !['0', 'false', 'no', 'off'].includes(String(cfgStream).trim().toLowerCase());
+  // Streaming is a review-path invariant. Preserve the legacy inputs for config compatibility,
+  // but never let an old `stream: false` value silently turn a review into a buffered request.
+  // The transport implementation and the policy validator both require SSE streaming.
+  const requestedStream = envStream !== undefined && envStream !== ''
+    ? !['0', 'false', 'no', 'off'].includes(String(envStream).trim().toLowerCase())
+    : (cfgStream !== undefined && cfgStream !== null && cfgStream !== ''
+      ? (typeof cfgStream === 'boolean'
+        ? cfgStream
+        : !['0', 'false', 'no', 'off'].includes(String(cfgStream).trim().toLowerCase()))
+      : true);
+  if (!requestedStream && typeof console !== 'undefined' && typeof console.warn === 'function') {
+    console.warn('[OpenRouter policy] stream=false is deprecated and ignored; review streaming is required');
   }
+  const stream = true;
 
   if (!Array.isArray(allowedModels)) allowedModels = [];
   const fallbackModels = [...new Set((envFallbackModels.length > 0 ? envFallbackModels : cfgFallbackModels)
