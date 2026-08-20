@@ -74,7 +74,7 @@ test('the committed OpenRouter fallback requires full-precision quants and throu
   assert.deepEqual(openrouter.provider_routing.preferred_min_throughput, { p90: 40 });
   assert.deepEqual(openrouter.provider_routing.preferred_max_latency, { p99: 3 });
   assert.equal(openrouter.allow_banned_providers, undefined);
-  assert.ok(openrouter.provider_routing.ignore.includes('fireworks'));
+  assert.equal(openrouter.provider_routing.ignore, undefined);
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
@@ -255,18 +255,13 @@ test('resolveTransport fails over to openrouter-fallback when Fireworks is unhea
   assert.equal(resolved.name, 'openrouter-fallback');
 });
 
-test('resolveTransport never selects Fireworks through the OpenRouter fallback', () => {
-  // The banned path (Fireworks double-billed via OpenRouter routing) has no name of its own --
-  // it can only be reached by resolveTransport returning the openrouter-fallback transport
-  // while Fireworks is the one it is meant to stand in for. Assert the transport it returns is
-  // never openrouter-fallback while fireworks is reported healthy, and that its own provider
-  // routing still bans fireworks regardless of which branch is taken.
+test('resolveTransport prefers the healthy direct transport without statically excluding downstream providers', () => {
   const transports = policyFixture().review_yeti.transports;
   for (const healthy of [['fireworks'], ['fireworks', 'openrouter-fallback']]) {
     assert.equal(resolveTransport(transports, healthy).name, 'fireworks');
   }
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
-  assert.ok(openrouter.provider_routing.ignore.includes('fireworks'));
+  assert.equal(openrouter.provider_routing.ignore, undefined);
 });
 
 test('resolveTransport returns null when nothing is healthy (caller must hard-fail, not run)', () => {

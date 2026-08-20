@@ -18,22 +18,12 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   preferred_min_throughput: { p90: 40 },
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
-  ignore: ['fireworks', 'open-inference', 'akashml', 'morph'],
 });
 
-// The action hard-bans a set of OpenRouter provider slugs that were returning degraded endpoint
-// health, and `resolveProviderRouting` throws outright — before any persona runs — if routing
-// *selects* one of them via `only`/`order`. A policy can therefore be structurally valid, pass
-// every shape assertion here, and still fatally crash the panel on the first call.
-//
-// That is not hypothetical: pinning `only: ['fireworks']` shipped green and took down review for
-// every consumer repo, because nothing in this suite exercised the selection path. Pinning is
-// also independently unwanted -- `only`/`order` freeze routing against a provider list that
-// changes underneath us, which is why routing is left to OpenRouter's own selection.
-//
-// Rejecting the keys outright is deliberately stricter than mirroring the action's ban list:
-// duplicating that list here would drift the moment the action edits it, and a stale copy would
-// re-open exactly this hole.
+// Provider selectors freeze routing against an endpoint list that changes underneath us. Static
+// ignores have the same drift problem, so endpoint eligibility is left to OpenRouter's live
+// statistics and account guardrail. Rejecting only/order outright is deliberately stricter than
+// validating a duplicated list here: a stale copy would re-open exactly this hole.
 const FORBIDDEN_ROUTING_SELECTORS = Object.freeze(['only', 'order']);
 
 export function validatePolicy(policy) {

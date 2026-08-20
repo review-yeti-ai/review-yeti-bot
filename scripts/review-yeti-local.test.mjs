@@ -28,7 +28,7 @@ test('materializes the committed provider order and routing into the local CLI c
   assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
   assert.equal(config.github_action.openrouter.ttft_ms, 30000);
   assert.equal(config.github_action.openrouter.data_collection, 'deny');
-  assert.deepEqual(config.github_action.openrouter.ignore_providers, ['fireworks', 'open-inference', 'akashml', 'morph']);
+  assert.equal(config.github_action.openrouter.ignore_providers, undefined);
   // Must track policy/review-yeti.json rather than restating a provider preference.
   assert.equal(
     config.github_action.openrouter.provider_routing.sort,
@@ -63,7 +63,7 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.OPENROUTER_TIMEOUT_MS, String(openrouterTransport.timeout_ms));
   assert.equal(env.OPENROUTER_TTFT_MS, '30000');
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
-  assert.equal(JSON.parse(env.REVIEW_YETI_TRANSPORTS)[2].provider_routing.ignore[0], 'fireworks');
+  assert.equal(JSON.parse(env.REVIEW_YETI_TRANSPORTS)[2].provider_routing.ignore, undefined);
 });
 
 test('accepts only immutable SHA pairs, diff files, or GitHub pull requests', () => {

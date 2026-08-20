@@ -51,13 +51,7 @@
           "preferred_max_latency": {
             "p99": 3
           },
-          "data_collection": "deny",
-          "ignore": [
-            "fireworks",
-            "open-inference",
-            "akashml",
-            "morph"
-          ]
+          "data_collection": "deny"
         }
       }
     ],
