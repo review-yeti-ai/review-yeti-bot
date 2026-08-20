@@ -39,6 +39,14 @@ export interface ReviewLane {
   findings?: ReviewFinding[];
 }
 
+export interface FindingCluster {
+  severity: 'P0' | 'P1' | 'P2';
+  corroboration: number;
+  path: string;
+  line: number;
+  title: string;
+}
+
 export interface CanonicalArbitration {
   totalPersonas: number;
   completedPersonas: number;
@@ -51,7 +59,10 @@ export interface CanonicalArbitration {
   mergeEligible?: boolean;
   rationale: string;
   thresholds: { blockP1: number; fixP2: number };
-  metrics: { p0Count: number; p1Count: number; p2Count: number; totalFindings: number };
+  metrics: {
+    p0Count: number; p1Count: number; p2Count: number; totalFindings: number; rawFindingCount: number;
+  };
+  findingClusters: FindingCluster[];
   findings: ReviewFinding[];
   coverage?: import('./coveragePolicy').CoverageEvaluation;
 }
