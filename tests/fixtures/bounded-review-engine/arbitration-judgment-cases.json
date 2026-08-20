@@ -155,31 +155,27 @@
         { "id": "testing", "provider": "provider-b", "model": "review-model", "decision": "APPROVE", "findings": [] },
         { "id": "contract", "provider": "provider-a", "model": "review-model", "decision": "APPROVE", "findings": [] }
       ]
-    }
-  ],
-  "knownGapCases": [
+    },
     {
       "id": "duplicates-across-personas-do-not-triple-count",
       "description": "Three of five personas independently describe the same real session-fixation defect, in their own words, at the same file/line. The other two are clean.",
-      "justification": "Product policy (this review): the same defect found by three lanes must not count three times toward a blocking threshold -- one real P1 should read as one P1. blockP1 for this 5-persona panel is 3, so today's un-deduplicated count (p1Count = 3) reaches the floor and blocks; the intended count is 1, which would only warrant FIX_FIRST.",
+      "justification": "Product policy (this review, Decision 2): the same defect found by three lanes must not count three times toward a blocking threshold -- one real P1 should read as one P1. blockP1 for this 5-persona panel is 3. Before computeArbitration clustered near-duplicate claims (claimSimilarity.compareClaims), the un-deduplicated count (p1Count = 3) reached the floor and blocked; now the three findings collapse into one cluster (pairwise similarity 0.575-0.668, all above STRONG_DUPLICATE_THRESHOLD, so they merge regardless of the 10-line window) and p1Count = 1, which only warrants FIX_FIRST. This case used to live in a `knownGapCases` array, run via vitest's `it.fails`, documenting exactly this gap without asserting the broken behavior as correct; it is promoted here now that the fix landed. See src/review/reviewCore.js's clusterFindingsForVerdict for the full trace, calibration notes, and why corroboration (3 lanes agreeing) intentionally has no effect on severity.",
       "intendedVerdict": "FIX_FIRST",
-      "actualVerdictToday": "BLOCK",
-      "knownGap": true,
-      "knownGapNote": "computeArbitration (src/review/reviewCore.js) concatenates every persona's findings and counts raw severities with no cross-persona deduplication. The claim-similarity machinery to fix this already exists and is calibrated (src/review/claimSimilarity.js compareClaims, used by src/review/findingPublication.js's mergeNearDuplicateClaims) -- but it currently runs only at the publication stage, AFTER computeArbitration has already decided the verdict (see .github/workflows/pipelines/review-pipeline.js: computeArbitrationQuorum is called before planFindingPublication). Wiring compareClaims into severity counting was evaluated during the verdict-arbiter review and deliberately deferred: it changes live BLOCK/FIX_FIRST behavior with a blast radius that needs its own calibration pass and product sign-off, and a naive port would also collapse the panel-scaling test corpus in tests/unit/reviewArbitrationAndRoster.test.ts, whose synthetic fixtures share generic boilerplate body text that would false-cluster under real claim comparison. This case is intentionally executed via `it.fails` in tests/unit/reviewArbitrationJudgment.test.ts: it documents the gap against today's actual behavior without asserting the broken behavior as correct, and will loudly fail (flagging itself as stale) the day this is fixed for real.",
       "expectedPersonas": 5,
       "personaResults": [
         { "decision": "FINDINGS", "findings": [
-          { "severity": "P1", "path": "src/auth/session.ts", "line": 88, "title": "Session token not invalidated on password change", "body": "When a user changes their password in this handler, the existing session tokens remain valid, allowing a stolen token to keep working after a password reset." }
+          { "severity": "P1", "path": "src/auth/session.ts", "line": 88, "title": "rotateCredential never calls revokeSessions", "body": "rotateCredential updates the password hash but never calls revokeSessions, so old session tokens issued before rotateCredential ran stay valid after the password change." }
         ] },
         { "decision": "FINDINGS", "findings": [
-          { "severity": "P1", "path": "src/auth/session.ts", "line": 88, "title": "Password change does not revoke active sessions", "body": "This diff updates the password but never revokes other active sessions for the account, so a compromised session survives a password reset." }
+          { "severity": "P1", "path": "src/auth/session.ts", "line": 88, "title": "revokeSessions is not called by rotateCredential", "body": "After rotateCredential runs, old session tokens remain valid because rotateCredential never calls revokeSessions for the previous session tokens." }
         ] },
         { "decision": "FINDINGS", "findings": [
-          { "severity": "P1", "path": "src/auth/session.ts", "line": 88, "title": "Stale session persists after credential rotation", "body": "Rotating the credential here does not invalidate previously issued session tokens, which is the same session-fixation gap raised elsewhere in this review." }
+          { "severity": "P1", "path": "src/auth/session.ts", "line": 88, "title": "Session tokens survive rotateCredential since revokeSessions is not called", "body": "rotateCredential changes the password but old session tokens survive because revokeSessions is never called by rotateCredential after the password change." }
         ] },
         { "decision": "APPROVE", "findings": [] },
         { "decision": "APPROVE", "findings": [] }
       ]
     }
-  ]
+  ],
+  "knownGapCases": []
 }

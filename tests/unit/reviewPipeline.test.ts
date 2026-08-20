@@ -1341,9 +1341,16 @@ deleted file mode 100644
 
   describe('Edge Cases & Quorum Thresholds: computeArbitrationQuorum', () => {
     const { computeArbitrationQuorum } = pipeline;
+    // Distinct files, not just distinct line numbers on one boilerplate title/body: these tests are
+    // pinning threshold *counting*, and computeArbitration now clusters near-duplicate claims
+    // (claimSimilarity.compareClaims) before counting severities. compareClaims requires a path
+    // match before it looks at claim text, so distinct paths guarantee these stay N distinct
+    // findings regardless of title/body wording, which is what "threshold scales with N genuinely
+    // different findings" needs to test -- decoupled from the separate dedup behavior pinned in
+    // tests/unit/reviewArbitrationJudgment.test.ts.
     const finding = (severity: 'P0' | 'P1' | 'P2', line: number) => ({
       severity,
-      path: 'src/app.ts',
+      path: `src/app-${line}.ts`,
       line,
       title: `${severity} finding ${line}`,
       body: 'Concrete issue.',
