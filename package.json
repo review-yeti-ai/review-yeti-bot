@@ -67,6 +67,7 @@
     "test:live-intelligence-smoke": "node scripts/review-intelligence-live-smoke.mjs",
     "test:dependency-eval": "node scripts/evaluate-dependency-investigation.mjs --fixture tests/fixtures/dependency-evaluation.json",
     "test:testing-charter-eval": "node scripts/evaluate-testing-charter.mjs",
+    "test:security-charter-eval": "node scripts/evaluate-testing-charter.mjs --fixture tests/fixtures/security-charter/evaluation-matrix.json --candidate-only",
     "test:dependency-live-eval": "node scripts/evaluate-dependency-investigation-live.mjs --fixture tests/fixtures/dependency-evaluation.json --repetitions 3",
     "test:e2e-review-gate": "node scripts/e2e-review-gate.mjs",
     "eval": "node bin/review-yeti.mjs eval",
