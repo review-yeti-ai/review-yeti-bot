@@ -14,7 +14,7 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
   quantizations: ['bf16', 'fp16'],
-  sort: 'latency',
+  sort: 'throughput',
   preferred_min_throughput: { p90: 40 },
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',

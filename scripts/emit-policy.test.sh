@@ -64,8 +64,8 @@ if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
 if routing.get('quantizations') != ['bf16', 'fp16']:
     raise SystemExit('openrouter-fallback must require full-precision bf16/fp16 quants')
-if routing.get('sort') != 'latency':
-    raise SystemExit('openrouter-fallback must sort by latency for fastest overall response time')
+if routing.get('sort') != 'throughput':
+    raise SystemExit('openrouter-fallback must sort by throughput')
 if (routing.get('preferred_min_throughput') or {}).get('p90') != 40:
     raise SystemExit('openrouter-fallback must require p90 throughput >= 40')
 if (routing.get('preferred_max_latency') or {}).get('p99') != 3:
@@ -319,9 +319,9 @@ grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
 grep -q '^lane_call_budget<<' "$tmp_dir/valid.output"
 grep -qx '24' "$tmp_dir/valid.output"
 
-run_case valid-lane-deadline lane_deadline_ms 240000 0
+run_case valid-lane-deadline lane_deadline_ms 360000 0
 grep -q '^lane_deadline_ms<<' "$tmp_dir/valid-lane-deadline.output"
-grep -qx '240000' "$tmp_dir/valid-lane-deadline.output"
+grep -qx '360000' "$tmp_dir/valid-lane-deadline.output"
 
 run_case valid-investigation-turns max_investigation_turns 3 0
 grep -q '^max_investigation_turns<<' "$tmp_dir/valid-investigation-turns.output"

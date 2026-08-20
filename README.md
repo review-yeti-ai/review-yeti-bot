@@ -98,8 +98,8 @@ panel-sized (~26k char) prompt measured `ttfbMs=634` and a full streaming
 completion in `totalMs=3389`; a non-streaming call against the same prompt
 took `totalMs=4398` to return anything at all, which is the gap streaming
 exists to close -- when it actually happens. OpenRouter requires
-full-precision `bf16`/`fp16` quants, sorts by latency for the fastest overall
-response time (with a p90 ≥ 40 tok/s throughput floor and a p99 ≤ 3s latency
+full-precision `bf16`/`fp16` quants, sorts by throughput for sustained generation
+speed (with a p90 ≥ 40 tok/s throughput floor and a p99 ≤ 3s latency
 preference), and allows eligible hosts to fall. Smoke sends `stream: true`
 (SSE) and accepts either an SSE or a fully buffered JSON response depending on
 the responder's `content-type`.
@@ -128,18 +128,17 @@ reports server-side TTFT, and uses maximum reasoning; OpenRouter also uses maxim
 while Ollama uses `high`, its documented maximum. OpenRouter owns endpoint selection after a
 timeout without Review Yeti dynamically banning the resolved endpoint.
 
-The OpenRouter entry requires `bf16`/`fp16`, sorts by `latency` (OpenRouter's rolling 5-minute
-per-provider percentiles) so the fastest-responding host is tried first, allows remaining hosts to
-fail over (`allow_fallbacks: true`), and denies provider data collection. `sort: latency`
-optimizes for lowest overall request completion time; the alternative, `sort: throughput`,
-optimizes for tokens/sec once a provider is already generating, which is the wrong axis when the
-goal is not blowing through a lane deadline. `only` and `order` are never used here: both pin
+The OpenRouter entry requires `bf16`/`fp16`, sorts by `throughput` (OpenRouter's rolling 5-minute
+per-provider percentiles), retains the p99 latency preference, allows remaining hosts to fail over
+(`allow_fallbacks: true`), and denies provider data collection. `only` and `order` are never used here: both pin
 routing to a fixed provider list, which previously froze routing and produced 404s when that list
 went stale. Each caller must expose the named environment variables through its inherited GitHub
 Actions secrets.
 
 The central budget is also fixed here: three investigation turns, one 24-request per-lane call
-budget, a four-minute (240s) lane deadline, and a 5-second time-to-first-token budget.
+budget, a six-minute (360s) lane deadline, and a 5-second time-to-first-token budget. The six-minute
+deadline is evidence-based: a live three-turn streamed lane reached its final failover at 240s and
+was cancelled before the healthy last transport could answer.
 
 - **timeout_ms = 60000 per transport.** The fast local probe (3.4s end to end for a ~26k char
   panel-sized prompt) is a lower bound, not a ceiling -- `max_diff_chars` allows prompts up to
@@ -190,8 +189,8 @@ inequality against the committed policy plus a counterfactual fixture that viola
 `max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
 of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
-60000ms each: `3 x 60000 = 180000 <= 240000` (60s of the lane deadline spare), and
-`max_passes(3) x lane_deadline_ms(240000) = 720000 <= 1200000` (the 20-minute job cap). This guards
+60000ms each: `3 x 60000 = 180000 <= 360000` (180s of the lane deadline spare), and
+`max_passes(3) x lane_deadline_ms(360000) = 1080000 <= 1200000` (the 20-minute job cap). This guards
 against a repeat of the incident that motivated this change: at `timeout_ms: 180000` per transport,
 even 2 of the 3 transports alone summed to 360s against a 240s lane deadline, so a slow or stalled
 primary made the OpenRouter fallback structurally unreachable in exactly the case it exists for.

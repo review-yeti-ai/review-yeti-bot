@@ -44,7 +44,7 @@
           "allow_fallbacks": true,
           "require_parameters": true,
           "quantizations": ["bf16", "fp16"],
-          "sort": "latency",
+          "sort": "throughput",
           "preferred_min_throughput": {"p90": 40},
           "preferred_max_latency": {"p99": 3},
           "data_collection": "deny",
@@ -57,7 +57,7 @@
     "openrouter_ttft_ms": "5000",
     "openrouter_max_attempts": "2",
     "budget": {
-      "lane_deadline_ms": "240000",
+      "lane_deadline_ms": "360000",
       "lane_call_budget": "24",
       "max_investigation_turns": "3"
     },
