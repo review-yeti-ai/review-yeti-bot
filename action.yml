@@ -228,6 +228,15 @@ inputs:
       which is a worse outcome than reviewing the same code twice.
     required: false
     default: 'false'
+  target-config:
+    description: >-
+      Where reviewer configuration may come from. 'trusted-base' (default) reads
+      .review-yeti.yaml and .review-yeti/personas from the immutable pull-request
+      base ref. 'none' reads NO configuration from the target repository at all —
+      the caller supplies every policy input explicitly and any config files in
+      the target repo are inert. Central/fleet wrappers should pass 'none'.
+    required: false
+    default: 'trusted-base'
   config-ref:
     description: >-
       Deprecated compatibility input. When set, it must equal the immutable pull request base
@@ -671,6 +680,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         CONFIG_REF: ${{ inputs.config-ref }}
+        TARGET_CONFIG: ${{ inputs.target-config }}
         BASE_REF: ${{ steps.target.outputs.base_sha }}
       run: |
         set -euo pipefail
@@ -692,6 +702,15 @@ runs:
         rm -rf "$DEST"
         mkdir -p "$DEST/.review-yeti/personas"
 
+        # The base .gitmodules is part of the trusted policy surface used to classify
+        # submodule URL changes; do not read it from the pull-request checkout.
+        if ! gh api "repos/$REPO/contents/.gitmodules?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/.gitmodules" 2>/dev/null; then
+          rm -f "$DEST/.gitmodules"
+        fi
+
+        if [ "${TARGET_CONFIG:-trusted-base}" = "none" ]; then
+          echo "Target-repository configuration disabled (target-config: none); caller-supplied inputs are the sole policy source."
+        else
         echo "Reading reviewer configuration from $REPO@$REF"
 
         # .coderabbit.yaml/.yml deliberately excluded: another product's config
@@ -705,11 +724,6 @@ runs:
           rm -f "$DEST/$f"
         done
 
-        # The base .gitmodules is part of the trusted policy surface used to classify
-        # submodule URL changes; do not read it from the pull-request checkout.
-        if ! gh api "repos/$REPO/contents/.gitmodules?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/.gitmodules" 2>/dev/null; then
-          rm -f "$DEST/.gitmodules"
-        fi
 
         # Persona files are one markdown file per reviewer; enumerate the directory then fetch each.
         if gh api "repos/$REPO/contents/.review-yeti/personas?ref=$REF" --jq '.[].name' > "${RUNNER_TEMP}/persona-names" 2>/dev/null; then
@@ -722,6 +736,7 @@ runs:
                 ;;
             esac
           done < "${RUNNER_TEMP}/persona-names"
+        fi
         fi
 
     - name: Run review panel

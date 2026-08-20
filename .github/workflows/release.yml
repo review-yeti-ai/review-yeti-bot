@@ -5,6 +5,11 @@ name: Release
 # the floating channel tag (default v1). This workflow is the ONLY mover of
 # the channel tag — no human should move it by hand after this lands.
 on:
+  # Automated path: release-please (conventional commits) publishes the semver
+  # release; this workflow then runs the full battery and moves the channel.
+  release:
+    types: [published]
+  # Manual path: dispatch cuts the tag + release itself, then does the same.
   workflow_dispatch:
     inputs:
       version:
@@ -28,34 +33,52 @@ env:
   NPM_CONFIG_PREFER_OFFLINE: "true"
 
 jobs:
-  validate-inputs:
-    name: Validate inputs
+  resolve:
+    name: Resolve release coordinates
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.coords.outputs.version }}
+      channel: ${{ steps.coords.outputs.channel }}
+      create_release: ${{ steps.coords.outputs.create_release }}
     steps:
-      - name: Validate version and channel format
+      - name: Resolve version and channel from the triggering event
+        id: coords
         run: |
-          version="${{ inputs.version }}"
-          channel="${{ inputs.channel }}"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            version="${{ github.event.release.tag_name }}"
+            create_release="false"
+          else
+            version="${{ inputs.version }}"
+            create_release="true"
+          fi
 
           if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::version '$version' is invalid. Expected format vMAJOR.MINOR.PATCH, e.g. v1.2.5"
             exit 1
           fi
 
+          channel="${{ inputs.channel }}"
+          if [[ -z "$channel" ]]; then
+            channel="${version%%.*}"
+          fi
           if [[ ! "$channel" =~ ^v[0-9]+$ ]]; then
             echo "::error::channel '$channel' is invalid. Expected format vMAJOR, e.g. v1"
             exit 1
           fi
 
-          echo "version=$version is valid"
-          echo "channel=$channel is valid"
+          {
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "create_release=$create_release"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version channel=$channel create_release=$create_release"
 
   battery:
     name: Full test battery
-    needs: validate-inputs
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -82,7 +105,7 @@ jobs:
 
   release:
     name: Tag, release, and move channel
-    needs: battery
+    needs: [resolve, battery]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -119,16 +142,18 @@ jobs:
           git config user.email "release-bot@users.noreply.github.com"
 
       - name: Create annotated release tag
+        if: needs.resolve.outputs.create_release == 'true'
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           git tag -a "$VERSION" "$GITHUB_SHA" -m "Release $VERSION"
           git push origin "refs/tags/$VERSION"
 
       - name: Create GitHub release
+        if: needs.resolve.outputs.create_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           gh release create "$VERSION" \
             --title "$VERSION" \
@@ -144,13 +169,13 @@ jobs:
 
       - name: Fast-forward channel tag
         env:
-          CHANNEL: ${{ inputs.channel }}
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
         run: |
           git push origin "+${GITHUB_SHA}:refs/tags/${CHANNEL}"
 
       - name: Post-verify channel tag points at release SHA
         env:
-          CHANNEL: ${{ inputs.channel }}
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
         run: |
           resolved_sha="$(git ls-remote origin "refs/tags/${CHANNEL}" | cut -f1)"
           if [ "$resolved_sha" != "$GITHUB_SHA" ]; then
@@ -161,8 +186,8 @@ jobs:
 
       - name: Write step summary
         env:
-          VERSION: ${{ inputs.version }}
-          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
         run: |
           {
             echo "## Release complete"
