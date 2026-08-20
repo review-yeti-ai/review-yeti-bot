@@ -45,6 +45,17 @@ The deterministic command reports `promotionReady: false` until live cost and la
 
 ## Provider-backed evaluation
 
+> **Currently broken, pending a port.** `npm run test:dependency-live-eval` (`scripts/
+> evaluate-dependency-investigation-live.mjs`) drove both arms through `reviewWithModel`'s legacy
+> single-shot findings/`evidence_requests` contract, which was deleted along with the rest of the
+> legacy single-shot review path -- there is no "legacy baseline" left to compare against, and the
+> bounded engine's evidence model is tool-based (`file_read`/`file_read_diff`/`code_search`/
+> `library_docs`), not the path+kind+reason dependency-evidence shape this evaluator measures.
+> Whether dependency evidence becomes a first-class bounded evidence tool, or this evaluator is
+> retired in favor of the general evidence-tool-based engine, is an open product decision. The
+> script fails fast with an explicit message rather than a generic crash; do not run it expecting
+> a result. The deterministic contract gate above (`npm run test:dependency-eval`) is unaffected.
+
 Run only with an explicitly provisioned review-fleet key:
 
 ```bash

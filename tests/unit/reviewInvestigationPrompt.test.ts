@@ -35,6 +35,58 @@ describe('bounded investigation prompt', () => {
     expect(messages[1].content).toContain('"unit_id":"ru_..."');
   });
 
+  // Ported from tests/unit/reviewPipelineModel.test.ts's reviewWithModel suite (deleted with the
+  // legacy single-shot path this behavior used to be verified against). The same trust boundary
+  // -- prior review decisions and advisory memory are untrusted data, never system-prompt
+  // instructions -- is enforced here by buildInvestigationMessages via priorDecisionBlock/
+  // optionalContextBlock, both placed only inside <prior_decisions>/<optional_context> tags in
+  // the user message.
+  it('places prior review decisions in untrusted user data, never in the trusted system prompt', () => {
+    const priorDecisionBlock = [
+      'Prior Review Yeti decisions (same pull request):',
+      '- [P1] src/api/user.ts:42 — Tenant predicate is missing',
+    ].join('\n');
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'src/a.js',
+      diffText: '+guard()',
+      priorDecisionBlock,
+      remaining: { calls: 12, turns: 4 },
+    });
+
+    expect(messages[0].content).not.toContain('Tenant predicate is missing');
+    expect(messages[1].content).toContain('<prior_decisions>');
+    expect(messages[1].content).toContain('[P1] src/api/user.ts:42');
+    expect(messages[1].content.indexOf('<review_manifest>')).toBeLessThan(messages[1].content.indexOf('<prior_decisions>'));
+  });
+
+  it('adds no prior-decisions block when there are no carried decisions', () => {
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'src/a.js',
+      diffText: '+guard()',
+      priorDecisionBlock: '',
+      remaining: { calls: 12, turns: 4 },
+    });
+
+    expect(messages[1].content).not.toContain('<prior_decisions>');
+  });
+
+  it('places advisory memory (Honcho) in untrusted user data, never in the trusted system prompt', () => {
+    const optionalContextBlock = 'Honcho advisory memory (untrusted):\n- prior P1 on tenant scoping';
+    const messages = buildInvestigationMessages({
+      persona: { id: 'security', charter: 'review auth' },
+      manifest: 'src/a.js',
+      diffText: '+guard()',
+      optionalContextBlock,
+      remaining: { calls: 12, turns: 4 },
+    });
+
+    expect(messages[0].content).not.toContain('prior P1 on tenant scoping');
+    expect(messages[1].content).toContain('<optional_context>');
+    expect(messages[1].content).toContain('prior P1 on tenant scoping');
+  });
+
   it('tells the model library_docs takes only a library id and topic -- never a URL, host, header, or credential', () => {
     const messages = buildInvestigationMessages({ persona: { id: 'security', charter: 'review auth' }, manifest: 'src/a.js', diffText: '+guard()', remaining: { calls: 12, turns: 4 } });
     expect(messages[0].content).toContain('library_docs');
@@ -131,6 +183,30 @@ describe('bounded investigation prompt', () => {
     expect(parsed.reviewStatus).toBeTruthy();
     expect(JSON.stringify(parsed)).not.toContain('unknown');
     expect(() => parseInvestigationResponse('not json', limits)).toThrow(/valid JSON/);
+  });
+
+  // Ported from reviewPipelineModel.test.ts's reviewWithModel suite (deleted with the legacy
+  // single-shot path): a model wrapping its JSON answer in a ```json code fence, or prefacing it
+  // with prose, must still parse. parseJson (used internally by parseInvestigationResponse) has
+  // carried this tolerance since the diff-bounding rewrite; this is the first direct test of it.
+  const completeResponse = {
+    review_status: 'COMPLETE',
+    risk_plan: [],
+    evidence_requests: [],
+    risk_dispositions: [],
+    findings: [],
+  };
+
+  it('parses a response wrapped in a ```json code fence', () => {
+    const fenced = '```json\n' + JSON.stringify(completeResponse) + '\n```';
+    const parsed = parseInvestigationResponse(fenced, limits);
+    expect(parsed.reviewStatus).toBe('COMPLETE');
+  });
+
+  it('parses a response wrapped in a bare ``` code fence (no "json" tag)', () => {
+    const fenced = '```\n' + JSON.stringify(completeResponse) + '\n```';
+    const parsed = parseInvestigationResponse(fenced, limits);
+    expect(parsed.reviewStatus).toBe('COMPLETE');
   });
 });
 

@@ -15,14 +15,37 @@ const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(rootRepoDir, '.github/w
 
 const {
   callOpenRouterChat,
-  reviewWithModel,
-  reviewWithTransports,
+  reviewWithModel: reviewWithModelRaw,
+  reviewWithTransports: reviewWithTransportsRaw,
   createStreamingLaneGate,
   callPersonaModelTurn,
   resolveBoundedInvestigationLimits,
   PERSONA_CHARTERS,
 } = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
+
+// reviewWithModel/reviewWithTransports now require a caller-supplied options.investigationMessages
+// (the legacy single-shot prompt-building/parsing path they used to fall back to is gone). These
+// tests are about TTFT/retry/lane-budget transport mechanics, not message content, so every call
+// gets the same bounded stand-in messages unless it supplies its own.
+const DEFAULT_INVESTIGATION_MESSAGES = [
+  { role: 'system', content: 'You are a bounded code-review panel reviewer.' },
+  { role: 'user', content: '<review_manifest></review_manifest><pull_request_diff></pull_request_diff>' },
+];
+function reviewWithModel(persona: any, diffFiles: any, prContext: any, sessionContext: any, options: any = {}) {
+  return reviewWithModelRaw(persona, diffFiles, prContext, sessionContext, {
+    rawTurn: true,
+    investigationMessages: DEFAULT_INVESTIGATION_MESSAGES,
+    ...options,
+  });
+}
+function reviewWithTransports(persona: any, diffFiles: any, prContext: any, sessionContext: any, options: any = {}) {
+  return reviewWithTransportsRaw(persona, diffFiles, prContext, sessionContext, {
+    rawTurn: true,
+    investigationMessages: DEFAULT_INVESTIGATION_MESSAGES,
+    ...options,
+  });
+}
 
 const diffFiles = [
   {
@@ -517,7 +540,7 @@ describe('REL-271: operator directive -- a TTFT abort adds nothing to any ban se
     });
 
     expect(calls).toHaveLength(2);
-    expect(result.decision).toBe('APPROVE');
+    expect(result.ok).toBe(true);
     expect(result.provider).toBe('OpenAI');
     // The operator's explicit directive: empty, not just "doesn't contain the timed-out
     // provider" -- because the provider was never even resolved before the TTFT deadline fired.

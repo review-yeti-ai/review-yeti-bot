@@ -9,9 +9,25 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 
-const { reviewWithModel, sumUsage, PERSONA_CHARTERS } = pipeline;
+const { reviewWithModel: reviewWithModelRaw, sumUsage, PERSONA_CHARTERS } = pipeline;
 const persona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
 const diffFiles = [{ path: 'src/a.ts', patch: '+x', addedLines: [], deletedLines: [] }];
+
+// reviewWithModel now requires a caller-supplied options.investigationMessages (the legacy
+// single-shot prompt-building/parsing path it used to fall back to is gone). These tests are
+// about usage/cost metering, not message content, so every call gets the same bounded stand-in
+// messages.
+const DEFAULT_INVESTIGATION_MESSAGES = [
+  { role: 'system', content: 'You are a bounded code-review panel reviewer.' },
+  { role: 'user', content: '<review_manifest></review_manifest><pull_request_diff></pull_request_diff>' },
+];
+function reviewWithModel(persona: any, diffFiles: any, prContext: any, sessionContext: any, options: any = {}) {
+  return reviewWithModelRaw(persona, diffFiles, prContext, sessionContext, {
+    rawTurn: true,
+    investigationMessages: DEFAULT_INVESTIGATION_MESSAGES,
+    ...options,
+  });
+}
 
 /** Fetch stub returning a completion with an optional usage block. */
 function stub(usage?: any, content = '{"findings":[]}') {
@@ -49,11 +65,14 @@ describe('reviewWithModel captures token usage', () => {
   });
 
   it('still reports usage for a lane whose output could not be parsed', async () => {
-    // The request was billed regardless of whether the answer was usable.
+    // The request was billed regardless of whether the answer was usable. Parsing/validating the
+    // raw content is now the caller's job (parseInvestigationResponse); reviewWithModel's own
+    // transport layer succeeds (ok:true) as long as the HTTP round trip did, and usage is read
+    // from the response before anyone judges whether the content is usable.
     const res = await reviewWithModel(persona, diffFiles, { repo: 'o/r' }, null, {
       apiKey: 'k', fetchImpl: stub({ prompt_tokens: 900, completion_tokens: 12 }, 'sorry, no JSON here'),
     });
-    expect(res.decision).toBe('ERROR');
+    expect(res.ok).toBe(true);
     expect(res.usage.promptTokens).toBe(900);
   });
 
