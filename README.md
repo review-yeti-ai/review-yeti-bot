@@ -167,7 +167,9 @@ primary made the OpenRouter fallback structurally unreachable in exactly the cas
 Before the model action starts, the reusable workflow runs `scripts/review-yeti-smoke.mjs` against
 each configured transport using a bounded, review-shaped JSON request. The smoke test records only
 transport names and status, never credentials or response bodies, and fails closed when no
-transport can complete the request. Its contract tests run in the central validation workflow so
+transport can complete the request. Before smoke runs, the workflow decodes the base64 transport
+handoff and verifies the exact Fireworks -> Ollama -> OpenRouter order plus streaming on every
+entry. Its contract tests run in the central validation workflow so
 provider order, OpenRouter routing, response validation, fallback behavior, and policy-drift
 rejection are checked before a release can advance. The smoke result is also an admission filter:
 the action receives only transports that passed preflight, in configured order. A known-unhealthy
