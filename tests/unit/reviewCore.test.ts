@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  changedLineNumbers, computeArbitration, sanitizeFinding, INFRA_FAILURE_REASONS, isInfraFailure,
+  changedLineNumbers, computeArbitration, sanitizeFinding, sanitizeFindings, INFRA_FAILURE_REASONS, isInfraFailure,
 } from '../../src/review/reviewCore';
 
 describe('review core diff parsing', () => {
@@ -115,6 +115,26 @@ describe('review core diff parsing', () => {
     );
 
     expect(finding).toMatchObject({ path: 'src/review.ts', line: 10 });
+  });
+
+  // Ported from tests/unit/reviewPipelineModel.test.ts's reviewWithModel suite (deleted with the
+  // legacy single-shot path). A reviewer that invents file paths posts comments GitHub cannot
+  // anchor and erodes trust in every other finding it reports -- this is the bounded/production
+  // pipeline's own guard against that (main()'s finalize calls sanitizeFindings via the
+  // sanitizeCanonicalFindings alias), distinct from and in addition to
+  // reviewInvestigationPrompt.js's own risk/unit-scoped validation at parse time.
+  it('drops a finding naming a file outside the changed-files list and keeps a real one', () => {
+    const changedFiles = [{ path: 'src/api/user.ts', patch: '@@ -1,1 +1,1 @@\n+const id = req.query.id;' }];
+    const sanitized = sanitizeFindings(
+      [
+        { severity: 'P0', path: 'src/does-not-exist.ts', line: 1, title: 'Ghost', body: 'invented path' },
+        { severity: 'P1', path: 'src/api/user.ts', line: 1, title: 'Real', body: 'actually in the diff' },
+      ],
+      changedFiles,
+    );
+
+    expect(sanitized).toHaveLength(1);
+    expect(sanitized[0].title).toBe('Real');
   });
 
   it('advances through an empty context line inside a hunk', () => {

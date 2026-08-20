@@ -9,6 +9,22 @@ const root = fs.existsSync(path.join(path.resolve(__dirname, '../..'), 'src/tele
 const telemetryModule = require(path.join(root, 'src/telemetry/reviewTelemetry.js'));
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
 
+// reviewWithModel now requires a caller-supplied options.investigationMessages (the legacy
+// single-shot prompt-building/parsing path it used to fall back to is gone). These tests are
+// about telemetry recording, not message content, so every call gets the same bounded stand-in
+// messages.
+const DEFAULT_INVESTIGATION_MESSAGES = [
+  { role: 'system', content: 'You are a bounded code-review panel reviewer.' },
+  { role: 'user', content: '<review_manifest></review_manifest><pull_request_diff></pull_request_diff>' },
+];
+function reviewWithModel(persona: any, diffFiles: any, prContext: any, sessionContext: any, options: any = {}) {
+  return pipeline.reviewWithModel(persona, diffFiles, prContext, sessionContext, {
+    rawTurn: true,
+    investigationMessages: DEFAULT_INVESTIGATION_MESSAGES,
+    ...options,
+  });
+}
+
 const identity = {
   repository: 'review-yeti-ai/review-yeti-bot',
   prNumber: 42,
@@ -100,7 +116,7 @@ describe('review telemetry', () => {
 
   it('omits telemetry usage when the provider did not supply a receipt-backed usage payload', async () => {
     const events: any[] = [];
-    await pipeline.reviewWithModel(
+    await reviewWithModel(
       { id: 'security', name: 'Security', charter: 'Review safely.' },
       [{ path: 'src/app.js', patch: '+const safe = true;', addedLines: [{ text: 'const safe = true;' }] }],
       { repo: identity.repository, prNumber: '42', headSha: identity.headSha },
@@ -122,7 +138,7 @@ describe('review telemetry', () => {
   it('keeps receipt-backed tokens but omits cost when the provider did not return a cost field', async () => {
     for (const cost of [null, '']) {
       const events: any[] = [];
-      await pipeline.reviewWithModel(
+      await reviewWithModel(
         { id: 'security', name: 'Security', charter: 'Review safely.' },
         [{ path: 'src/app.js', patch: '+const safe = true;', addedLines: [{ text: 'const safe = true;' }] }],
         { repo: identity.repository, prNumber: '42', headSha: identity.headSha },
@@ -278,7 +294,7 @@ describe('review telemetry', () => {
 
   it('records receipt-backed provider usage for each model request without storing the receipt ID', async () => {
     const events: any[] = [];
-    await pipeline.reviewWithModel(
+    await reviewWithModel(
       { id: 'security', name: 'Security', charter: 'Review safely.' },
       [{ path: 'src/app.js', patch: '+const safe = true;', addedLines: [{ text: 'const safe = true;' }] }],
       { repo: identity.repository, prNumber: '42', headSha: identity.headSha },
