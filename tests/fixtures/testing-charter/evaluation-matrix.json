@@ -17,7 +17,8 @@
     "that gap; each is paired with a near-miss clean control (table-driven-consolidation-",
     "preserves-coverage, function-scoped-fixture-avoids-shared-state) shaped to trip a reviewer",
     "that pattern-matches on surface signals ('fewer it() blocks', 'a module-level let') rather",
-    "than the actual rule."
+    "than the actual rule.",
+    "2026-08-20 corpus repair: function-scoped-fixture-avoids-shared-state previously contained a real unlabelled defect -- it('allows the second call') executed only ONE allow() on a beforeEach-fresh limiter, a vacuous duplicate of the first test (the charter's own vacuous-test class). Both surviving verified-arm 'false positives' in the PR #159 three-arm measurement were correct detections of it, and 5/8 candidate-arm FP rows in eval-baselines/testing-charter-baseline.md sat on this control. The second test now drives its own first call, so it genuinely pins second-call behaviour. FPR measured against the pre-repair control (all baselines recorded on or before 2026-08-20) is NOT comparable to post-repair runs on this fixture."
   ],
   "fixtures": [
     {
@@ -171,13 +172,13 @@
       "id": "function-scoped-fixture-avoids-shared-state",
       "category": "clean",
       "title": "Add rate-limiter coverage with a fresh instance per test",
-      "summary": "Control: same three cases as the paired defect fixture, but the limiter is constructed in beforeEach and the third test drives its own two setup calls instead of relying on the first two tests having already run. Order-independent by construction; nothing to flag.",
+      "summary": "Control: same three cases as the paired defect fixture, but the limiter is constructed in beforeEach and both the second and third tests drive their own setup calls instead of relying on earlier tests having already run. Order-independent by construction and every test exercises the behaviour its name promises; nothing to flag.",
       "expectedPaths": [],
       "mustMatch": [],
       "files": [
         {
           "path": "tests/unit/rateLimiter.test.ts",
-          "patch": "@@ -0,0 +1,20 @@\n+import { describe, it, expect, beforeEach } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+describe('RateLimiter', () => {\n+  let limiter;\n+\n+  beforeEach(() => {\n+    limiter = new RateLimiter({ max: 2 });\n+  });\n+\n+  it('allows the first call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call once the limit is reached', () => {\n+    limiter.allow('key');\n+    limiter.allow('key');\n+    expect(limiter.allow('key')).toBe(false);\n+  });\n+});\n"
+          "patch": "@@ -0,0 +1,25 @@\n+import { describe, it, expect, beforeEach } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+describe('RateLimiter', () => {\n+  let limiter;\n+\n+  beforeEach(() => {\n+    limiter = new RateLimiter({ max: 2 });\n+  });\n+\n+  it('allows the first call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    limiter.allow('key');\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call once the limit is reached', () => {\n+    limiter.allow('key');\n+    limiter.allow('key');\n+    expect(limiter.allow('key')).toBe(false);\n+  });\n+});\n"
         }
       ]
     }
