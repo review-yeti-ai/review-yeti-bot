@@ -358,10 +358,10 @@ opens a release PR instead of publishing directly from an ordinary merge:
 
 The release PR must pass the normal branch-protection and Review Yeti gates. When
 it is merged, Release Please creates an immutable `vMAJOR.MINOR.PATCH` tag. The
-single canonical tag workflow then runs the full test and benchmark gates,
-publishes the GitHub release and container image, and deploys it. Only after that
-workflow succeeds is the matching tested commit promoted to the rolling `v1`
-tag. The `v1` tag is never advanced by an ordinary `main` merge.
+single canonical tag workflow then runs the full test and benchmark gates and
+publishes the GitHub release assets. Only after that workflow succeeds is the
+matching tested commit promoted to the rolling `v1` tag. The `v1` tag is never
+advanced by an ordinary `main` merge.
 
 This repository's organization policy disables pull-request creation by the
 built-in `GITHUB_TOKEN`. The release workflow therefore uses the encrypted
