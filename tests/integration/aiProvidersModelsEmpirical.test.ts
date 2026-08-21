@@ -374,7 +374,8 @@ describe('AI Providers & Models Management System Empirical Test Suite', () => {
       expect(res.body.success).toBe(false);
       expect(res.body.status).toBe('disconnected');
       expect(typeof res.body.latencyMs).toBe('number');
-      expect(res.body.latencyMs).toBeGreaterThan(0);
+      // A loopback refusal can complete within one Date.now() tick.
+      expect(res.body.latencyMs).toBeGreaterThanOrEqual(0);
     });
 
     it('requires authentication for provider test endpoint', async () => {
