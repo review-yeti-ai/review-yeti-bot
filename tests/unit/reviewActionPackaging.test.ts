@@ -56,6 +56,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(outputs).toContain('gate-decision');
     expect(outputs).toContain('merge-eligible');
     expect(outputs).toContain('run-report-path');
+    expect(outputs).toContain('review-dispatch-reflection-status');
+    expect(outputs).toContain('review-dispatch-provider-receipt-digest');
   });
 
   it('resolves the pipeline through GITHUB_ACTION_PATH, not the consumer workspace', () => {

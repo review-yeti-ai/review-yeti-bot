@@ -188,8 +188,14 @@ outputs:
   dispatch-reflection-status:
     description: 'Provider dispatch reflection status for the exact-head run.'
     value: ${{ steps.review.outputs.dispatch-reflection-status }}
+  review-dispatch-reflection-status:
+    description: 'Legacy-prefixed alias for provider dispatch reflection status.'
+    value: ${{ steps.review.outputs.dispatch-reflection-status }}
   provider-receipt-digest:
     description: 'SHA-256 digest of the exact-head review receipt.'
+    value: ${{ steps.review.outputs.provider-receipt-digest }}
+  review-dispatch-provider-receipt-digest:
+    description: 'Legacy-prefixed alias for the exact-head provider receipt digest.'
     value: ${{ steps.review.outputs.provider-receipt-digest }}
   run-report-path:
     description: 'Path to the exact-head review run report JSON.'
