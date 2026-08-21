@@ -213,7 +213,13 @@ describe('Pi runtime packaging contract', () => {
     for (const directory of ['src/review', 'src/pi', 'src/provenance']) {
       fs.cpSync(path.join(rootRepoDir, directory), path.join(actionDir, directory), { recursive: true });
     }
-    for (const relative of ['pi-runtime/package.json', 'pi-runtime/package-lock.json', 'scripts/install-action-runtime.mjs', 'scripts/generate-build-provenance.mjs']) {
+    for (const relative of [
+      'pi-runtime/package.json',
+      'pi-runtime/package-lock.json',
+      'scripts/install-action-runtime.mjs',
+      'scripts/generate-build-provenance.mjs',
+      'scripts/nodeVersionGuard.js',
+    ]) {
       const destination = path.join(actionDir, relative);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.copyFileSync(path.join(rootRepoDir, relative), destination);
