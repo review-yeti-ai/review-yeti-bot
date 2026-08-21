@@ -13,7 +13,7 @@
   <rect width="1040" height="620" rx="12" class="bg" />
 
   <!-- Title & Subtitle -->
-  <text x="85" y="36" class="title">Pareto Frontier: Verdict Accuracy vs. Total Cost (v1.8.4)</text>
+  <text x="85" y="36" class="title">Pareto Frontier: Verdict Accuracy vs. Total Cost (v1.8.4 - 12 Configurations)</text>
   <text x="85" y="56" class="subtitle">Higher is better for Accuracy (Y), Lower is better for Cost (X) • Highlighted Halo = Pareto Optimal Frontier</text>
 
   <!-- Axes & Grid -->
@@ -65,13 +65,51 @@
   <text x="25" y="305" text-anchor="middle" transform="rotate(-90 25 305)" class="axis-label">Verdict Accuracy (%)</text>
 
   <!-- Pareto Optimal Frontier Line -->
-  
+  <path d="M 182.7 283.0 L 194.5 135.0" fill="none" stroke="#22c55e" stroke-width="3.5" opacity="0.95" stroke-linecap="round" />
 
   <!-- Trajectory Lines between Low -> Medium -> High -->
-  
+  <path d="M 719.6 451.0 L 182.7 283.0 L 194.5 135.0" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="4,4" opacity="0.65" />
+<path d="M 236.7 283.0 L 249.1 199.0 L 262.7 135.0" fill="none" stroke="#10b981" stroke-width="2" stroke-dasharray="4,4" opacity="0.65" />
+<path d="M 905.0 283.0 L 917.7 219.0 L 927.8 135.0" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4,4" opacity="0.65" />
+<path d="M 416.5 387.0 L 435.0 303.0 L 452.6 323.0" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-dasharray="4,4" opacity="0.65" />
+
 
   <!-- Data Points with Anti-Collision Labels -->
   
+      <g class="model-point" data-model="deepseek/deepseek-v4-flash-0731:low">
+        <line x1="719.5884239305925" y1="451.0000000000002" x2="733.5884239305925" y2="439.0000000000002" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="719.5884239305925" cy="451.0000000000002" r="6" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="729.5884239305925" y="425.0000000000002" width="256" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="733.5884239305925" y="438.0000000000002" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+            deepseek/deepseek-v4-flash-0731:low
+          </text>
+          <text x="733.5884239305925" y="450.0000000000002" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+            92.1% | $0.1699
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="deepseek/deepseek-v4-flash-0731:medium">
+        <line x1="182.74678976242407" y1="283.0000000000001" x2="168.74678976242407" y2="297.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        <circle cx="182.74678976242407" cy="283.0000000000001" r="13" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />
+        <circle cx="182.74678976242407" cy="283.0000000000001" r="8" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="-111.6532102375759" y="283.0000000000001" width="276.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="168.74678976242407" y="296.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            deepseek/deepseek-v4-flash-0731:medium
+          </text>
+          <text x="168.74678976242407" y="308.0000000000001" fill="#4ade80" font-size="9.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            96.3% | $0.0218
+          </text>
+        </g>
+      </g>
+    
       <g class="model-point" data-model="deepseek/deepseek-v4-flash-0731:high">
         <line x1="194.47310863599148" y1="135" x2="180.47310863599148" y2="121" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         <circle cx="194.47310863599148" cy="135" r="13" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />
@@ -85,6 +123,91 @@
           </text>
           <text x="180.47310863599148" y="132" fill="#4ade80" font-size="9.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
             100.0% | $0.0228
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="google/gemini-3.7-flash:low">
+        <line x1="236.73473861223107" y1="283.0000000000001" x2="250.73473861223107" y2="299.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="236.73473861223107" cy="283.0000000000001" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="246.73473861223107" y="285.0000000000001" width="201.6" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="250.73473861223107" y="298.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+            google/gemini-3.7-flash:low
+          </text>
+          <text x="250.73473861223107" y="310.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+            96.3% | $0.0268
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="google/gemini-3.7-flash:medium">
+        <line x1="249.11916696912908" y1="198.99999999999977" x2="235.11916696912908" y2="192.99999999999977" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="249.11916696912908" cy="198.99999999999977" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="9.119166969129083" y="178.99999999999977" width="222" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="235.11916696912908" y="191.99999999999977" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            google/gemini-3.7-flash:medium
+          </text>
+          <text x="235.11916696912908" y="203.99999999999977" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+            98.4% | $0.0281
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="google/gemini-3.7-flash:high">
+        <line x1="262.7159784229575" y1="135" x2="276.7159784229575" y2="121" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="262.7159784229575" cy="135" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="272.7159784229575" y="107" width="208.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="276.7159784229575" y="120" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+            google/gemini-3.7-flash:high
+          </text>
+          <text x="276.7159784229575" y="132" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+            100.0% | $0.0296
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="openrouter/5.6-luna-low">
+        <line x1="905.0118864680353" y1="283.0000000000001" x2="891.0118864680353" y2="299.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="905.0118864680353" cy="283.0000000000001" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="712.6118864680353" y="285.0000000000001" width="174.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="891.0118864680353" y="298.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            openrouter/5.6-luna-low
+          </text>
+          <text x="891.0118864680353" y="310.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+            96.3% | $0.3453
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="openrouter/5.6-luna-medium">
+        <line x1="917.7213483520413" y1="218.99999999999977" x2="903.7213483520413" y2="204.99999999999977" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="917.7213483520413" cy="218.99999999999977" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="704.9213483520414" y="190.99999999999977" width="194.79999999999998" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="903.7213483520413" y="203.99999999999977" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            openrouter/5.6-luna-medium
+          </text>
+          <text x="903.7213483520413" y="215.99999999999977" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+            97.9% | $0.3625
           </text>
         </g>
       </g>
@@ -106,6 +229,40 @@
         </g>
       </g>
     
+      <g class="model-point" data-model="qwen/qwen-3.8-27b:low">
+        <line x1="416.4927397294492" y1="386.9999999999999" x2="430.4927397294492" y2="402.9999999999999" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="416.4927397294492" cy="386.9999999999999" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="426.4927397294492" y="388.9999999999999" width="160.79999999999998" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="430.4927397294492" y="401.9999999999999" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+            qwen/qwen-3.8-27b:low
+          </text>
+          <text x="430.4927397294492" y="413.9999999999999" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+            93.7% | $0.0533
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="qwen/qwen-3.8-27b:medium">
+        <line x1="434.9559205101217" y1="303.0000000000001" x2="420.9559205101217" y2="289.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="434.9559205101217" cy="303.0000000000001" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="235.7559205101217" y="275.0000000000001" width="181.2" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="420.9559205101217" y="288.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            qwen/qwen-3.8-27b:medium
+          </text>
+          <text x="420.9559205101217" y="300.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+            95.8% | $0.0572
+          </text>
+        </g>
+      </g>
+    
       <g class="model-point" data-model="qwen/qwen-3.8-27b:high">
         <line x1="452.62839498038204" y1="323.0000000000001" x2="466.62839498038204" y2="315.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
@@ -119,23 +276,6 @@
           </text>
           <text x="466.62839498038204" y="326.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             95.3% | $0.0612
-          </text>
-        </g>
-      </g>
-    
-      <g class="model-point" data-model="google/gemini-3.7-flash:high">
-        <line x1="262.7159784229575" y1="135" x2="276.7159784229575" y2="121" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
-        
-        <circle cx="262.7159784229575" cy="135" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
-        
-        <!-- Text Badge Container -->
-        <g transform="translate(0, 0)">
-          <rect x="272.7159784229575" y="107" width="208.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="276.7159784229575" y="120" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
-            google/gemini-3.7-flash:high
-          </text>
-          <text x="276.7159784229575" y="132" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
-            100.0% | $0.0296
           </text>
         </g>
       </g>
