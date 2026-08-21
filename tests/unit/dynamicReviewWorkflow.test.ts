@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 const {
   REVIEW_WORKFLOW_PACKAGE,
   REVIEW_WORKFLOW_PACKAGE_VERSION,
-  __test,
   loadPiWorkflowRuntime,
   runDynamicReviewWorkflow,
 } = require('../../src/pi/dynamicReviewWorkflow.js');
@@ -39,7 +38,7 @@ function assignment(personaId: string) {
 
 describe('trusted Pi dynamic review workflow', () => {
   it('loads the pinned ESM runtime from the CommonJS wrapper', async () => {
-    const runtime = await __test.importPiWorkflowRuntimeUnattested();
+    const runtime = await import(REVIEW_WORKFLOW_PACKAGE);
     expect(REVIEW_WORKFLOW_PACKAGE).toBe('@quintinshaw/pi-dynamic-workflows');
     expect(REVIEW_WORKFLOW_PACKAGE_VERSION).toBe('3.7.0');
     expect(runtime.runWorkflow).toBeTypeOf('function');

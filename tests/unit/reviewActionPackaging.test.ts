@@ -129,6 +129,20 @@ describe('Pi runtime packaging contract', () => {
       timeout: 120_000,
     });
     expect(execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: releaseDir, encoding: 'utf8' })).toBe('');
+    fs.writeFileSync(path.join(releaseDir, 'dirty-release-marker'), 'must reject');
+    expect(() => execFileSync(process.execPath, ['scripts/stage-publish-package.mjs', '--prepare-current'], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+    })).toThrow(/exact clean release commit/i);
+    fs.rmSync(path.join(releaseDir, 'dirty-release-marker'));
+    execFileSync('git', ['checkout', '--detach', '--quiet', 'HEAD'], { cwd: releaseDir });
+    expect(() => execFileSync(process.execPath, ['scripts/stage-publish-package.mjs', '--prepare-current'], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+    })).toThrow(/attached release branch/i);
+    execFileSync('git', ['switch', '--quiet', '-c', 'release-fixture'], { cwd: releaseDir });
     const packed = execFileSync('npm', ['pack', '--pack-destination', packDir], {
       cwd: releaseDir,
       env: npmEnvironment,
@@ -154,6 +168,34 @@ describe('Pi runtime packaging contract', () => {
     const provenance = provenanceApi.loadBuildProvenance(provenancePath);
     expect(provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
       .toEqual(expect.objectContaining({ runtimeGraphDigest: provenance.runtimeGraphDigest }));
+
+    const actionPrefix = path.join(tempDir, 'action-prefix');
+    execFileSync(process.execPath, [path.join(releaseDir, 'scripts/install-action-runtime.mjs')], {
+      cwd: releaseDir,
+      env: {
+        ...npmEnvironment,
+        GITHUB_ACTION_PATH: releaseDir,
+        NPM_PREFIX: actionPrefix,
+        REVIEW_YETI_ACTION_SHA: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: releaseDir, encoding: 'utf8' }).trim(),
+      },
+      stdio: 'pipe',
+      timeout: 180_000,
+    });
+    const hostedProvenance = provenanceApi.loadBuildProvenance(path.join(releaseDir, 'src/provenance/generated-build-provenance.json'));
+    expect(hostedProvenance.runtimeGraphDigest).toBe(provenance.runtimeGraphDigest);
+
+    const transitive = provenance.packages.find((entry: any) => !entry.path.endsWith('/@quintinshaw/pi-dynamic-workflows')
+      && !entry.path.endsWith('/@earendil-works/pi-ai')
+      && !entry.path.endsWith('/@earendil-works/pi-coding-agent')
+      && !entry.path.endsWith('/@earendil-works/pi-tui')
+      && !entry.path.endsWith('/typebox'));
+    expect(transitive).toBeTruthy();
+    const transitiveManifestPath = path.join(installedRoot, transitive.path, 'package.json');
+    const transitiveManifest = JSON.parse(fs.readFileSync(transitiveManifestPath, 'utf8'));
+    transitiveManifest.__tampered = true;
+    fs.writeFileSync(transitiveManifestPath, `${JSON.stringify(transitiveManifest)}\n`);
+    expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
+      .toThrow(/runtime graph/i);
 
     fs.appendFileSync(path.join(nestedRuntime, 'README.md'), '\ntampered\n');
     expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))

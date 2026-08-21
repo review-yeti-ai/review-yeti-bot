@@ -49,7 +49,7 @@ function assertDigest(value, label) {
 }
 
 function assertSafeId(value, label) {
-  if (!SAFE_ID.test(String(value || ''))) throw new TypeError(`${label} must be a bounded stable identifier`);
+  if (typeof value !== 'string' || !SAFE_ID.test(value)) throw new TypeError(`${label} must be a bounded stable identifier`);
 }
 
 function assertPrompt(value, label) {
@@ -82,7 +82,7 @@ function validateReviewUnitIds(reviewUnitIds, label) {
   if (!Array.isArray(reviewUnitIds) || reviewUnitIds.length === 0) throw new TypeError(`${label} requires reviewUnitIds`);
   if (reviewUnitIds.length > MAX_REVIEW_UNITS_PER_PASS) throw new TypeError(`${label} has too many reviewUnitIds`);
   for (const value of reviewUnitIds) {
-    if (!REVIEW_UNIT_ID.test(String(value || ''))) throw new TypeError(`${label} contains an invalid reviewUnitId`);
+    if (typeof value !== 'string' || !REVIEW_UNIT_ID.test(value)) throw new TypeError(`${label} contains an invalid reviewUnitId`);
   }
   if (new Set(reviewUnitIds).size !== reviewUnitIds.length) throw new TypeError(`duplicate reviewUnitId in ${label}`);
   return reviewUnitIds;

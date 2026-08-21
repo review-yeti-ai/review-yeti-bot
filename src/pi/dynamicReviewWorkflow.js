@@ -115,7 +115,4 @@ module.exports = {
   REVIEW_WORKFLOW_PACKAGE_VERSION,
   loadPiWorkflowRuntime,
   runDynamicReviewWorkflow,
-  ...(process.env.NODE_ENV === 'test' ? {
-    __test: Object.freeze({ importPiWorkflowRuntimeUnattested: importPiWorkflowRuntime }),
-  } : {}),
 };
