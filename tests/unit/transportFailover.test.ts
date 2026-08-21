@@ -189,6 +189,58 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[1].body.provider).toEqual({ data_collection: policy.data_collection });
   });
 
+  it('lowers reasoning effort and retries when a provider returns unusable output', async () => {
+    const requestBodies: any[] = [];
+    const mockFetch = async (url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      requestBodies.push({ url, body });
+      if (url.includes('api.fireworks.ai')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: 'not valid findings json' } }] }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [] }) } }] }),
+      };
+    };
+
+    const result = await reviewWithModel(
+      { id: 'security', name: 'Security & Tenancy Guardian', charter: 'Check tenant scope', reasoning_effort: 'high' },
+      [{ path: 'lib/orders.ex', patch: '+ def list_orders do' }],
+      { repo: 'acme/test', prNumber: 1 },
+      null,
+      {
+        fetchImplementation: mockFetch,
+        transports: [
+          {
+            name: 'fireworks',
+            baseUrl: 'https://api.fireworks.ai/inference/v1',
+            apiKey: 'fw-key',
+            model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+          },
+          {
+            name: 'ollama',
+            baseUrl: 'https://ollama.ai/v1',
+            apiKey: 'ollama-key',
+            model: 'deepseek-v4-flash:cloud',
+            reasoning_effort: 'high',
+          },
+        ],
+      },
+    );
+
+    expect(result.decision).toBe('APPROVE');
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0].body.max_tokens).toBe(1024);
+    expect(requestBodies[1].body.max_tokens).toBe(1024);
+    expect(requestBodies[0].body.reasoning_effort).toBe('high');
+    expect(requestBodies[1].body.reasoning_effort).toBe('medium');
+  });
+
   it('correctly resolves and authenticates all configured candidate transports in resolveModelConfig', () => {
     const env = {
       FIREWORKS_PR_REVIEW_API_KEY: 'secret-fw',
