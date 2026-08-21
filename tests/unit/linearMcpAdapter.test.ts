@@ -29,6 +29,7 @@ describe('Linear MCP Adapter & Tool Integration Tests', () => {
   });
 
   it('executes linear_get_issue with offline fallback when LINEAR_API_KEY is not set', async () => {
+    vi.spyOn((mcpFleetManager as any).dopplerManager, 'getSecret').mockResolvedValue('');
     const result = await mcpFleetManager.executeTool('linear_get_issue', { issueId: 'API-155' });
     expect(result.success).toBe(true);
     expect(result.output).toBeDefined();

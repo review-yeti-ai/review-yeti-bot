@@ -1,10 +1,23 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
-import { Readable, Writable } from 'stream';
+import { EventEmitter } from 'node:events';
+import { IncomingMessage } from 'node:http';
+import { Writable } from 'stream';
 import { createApp, providerPool } from '../../src/app';
 
 async function dispatchGet(app: any, path: string) {
-  const req: any = new Readable();
+  const socket: any = new EventEmitter();
+  socket.readable = true;
+  socket.readableHighWaterMark = 16 * 1024;
+  socket.destroyed = false;
+  socket.destroy = (error?: Error) => {
+    socket.destroyed = true;
+    socket.emit('close', error);
+    return socket;
+  };
+  socket.setTimeout = () => socket;
+  const req: any = new IncomingMessage(socket);
   req._read = () => {};
+  req.complete = true;
   req.method = 'GET';
   req.url = path;
   req.headers = {};
@@ -32,7 +45,10 @@ async function dispatchGet(app: any, path: string) {
     };
 
     app(req, res);
-    setImmediate(() => { req.push(null); });
+    setImmediate(() => {
+      req.complete = true;
+      req.push(null);
+    });
   });
 }
 
