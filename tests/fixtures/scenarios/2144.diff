@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/dialogManager.ts ---
+diff --git a/sip_signaling_service/src/dialogManager.ts b/sip_signaling_service/src/dialogManager.ts
+@@ -103,4 +103,5 @@
+   public formatByeReasonHeader(q850Cause: number): string {
+-    return `Reason: Q.850; cause=${q850Cause}`;
++    // Breaking change: omitted standard space after semicolon
++    return `Reason: Q.850;cause=${q850Cause}`;
+   }
+ }

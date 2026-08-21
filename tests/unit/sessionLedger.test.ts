@@ -23,7 +23,7 @@ describe('SessionLedger Unit Tests', () => {
 
   it('records a review turn and creates session-keyed files and index.json', () => {
     const res = ledger.recordTurn({
-      owner: 'review-yeti-ai',
+      owner: 'calltelemetry',
       repo: 'cisco-cdr',
       prNumber: 42,
       headSha: '8ea184c',
@@ -50,9 +50,9 @@ describe('SessionLedger Unit Tests', () => {
     expect(fs.existsSync(path.join(tmpDir, 'index.json'))).toBe(true);
   });
 
-  it('can inspect locally archived history without implying GitHub Action restoration', () => {
+  it('retrieves previous turn context and generates augmented reviewer header', () => {
     ledger.recordTurn({
-      owner: 'review-yeti-ai',
+      owner: 'calltelemetry',
       repo: 'cisco-cdr',
       prNumber: 42,
       headSha: '8ea184c',
@@ -73,26 +73,11 @@ describe('SessionLedger Unit Tests', () => {
       ],
     });
 
-    const ctx = ledger.getPreviousTurnContext('review-yeti-ai', 'cisco-cdr', 42);
+    const ctx = ledger.getPreviousTurnContext('calltelemetry', 'cisco-cdr', 42);
     expect(ctx.hasHistory).toBe(true);
     expect(ctx.previousTurn).toBe(1);
     expect(ctx.remainingTurns).toBe(19);
     expect(ctx.augmentedHeader).toContain('Multi-Turn Review Context');
     expect(ctx.augmentedHeader).toContain('Remaining Turn Budget');
-    expect(ctx.headSha).toBe('8ea184c');
-  });
-
-  it('recalls the previous head for the next pipeline turn', () => {
-    ledger.recordTurn({
-      owner: 'acme',
-      repo: 'app',
-      prNumber: 7,
-      headSha: 'abc123',
-      currentTurn: 1,
-      maxTurns: 20,
-      arbitration: { verdict: 'SHIP', rationale: '', metrics: { p0Count: 0, p1Count: 0, p2Count: 0 } },
-      personaResults: [],
-    });
-    expect(ledger.getPreviousTurnContext('acme', 'app', 7)).toMatchObject({ hasHistory: true, previousTurn: 1, headSha: 'abc123' });
   });
 });

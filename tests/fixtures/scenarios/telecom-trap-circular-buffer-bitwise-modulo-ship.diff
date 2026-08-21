@@ -1,0 +1,11 @@
+--- FILE: rtp_media_gateway/src/jitterBuffer.ts ---
+diff --git a/rtp_media_gateway/src/jitterBuffer.ts b/rtp_media_gateway/src/jitterBuffer.ts
+@@ -45,14 +45,21 @@ export class JitterBuffer {
++  private static readonly RING_CAPACITY = 256; // Must be power of 2
++  private static readonly RING_MASK = 255;
++
++  public pushPacketToRing(packet: RtpPacket): void {
++    const slot = packet.sequenceNumber & JitterBuffer.RING_MASK;
++    this.ringBuffer[slot] = packet;
++  }
+ }

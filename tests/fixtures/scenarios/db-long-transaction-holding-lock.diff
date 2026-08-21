@@ -1,0 +1,23 @@
+--- FILE: src/services/checkoutService.ts ---
+diff --git a/src/services/checkoutService.ts b/src/services/checkoutService.ts
+@@ -1,6 +1,20 @@
+ import { DatabaseClient } from '../db/client';
+ import { StripeClient } from '../payment/stripeClient';
+
+ export class CheckoutService {
+   constructor(private db: DatabaseClient, private stripe: StripeClient) {}
+
++  async processOrder(orderId: string, itemId: string, paymentToken: string): Promise<void> {
++    await this.db.transaction(async (tx) => {
++      // Acquires row lock on inventory record
++      const item = await tx.query('SELECT stock FROM items WHERE id = $1 FOR UPDATE', [itemId]);
++      if (item.rows[0].stock < 1) throw new Error('Out of stock');
++
++      // Defect: External network HTTP call executed inside database transaction while holding row lock
++      await this.stripe.charges.create({ token: paymentToken, amount: 5000 });
++
++      await tx.query('UPDATE items SET stock = stock - 1 WHERE id = $1', [itemId]);
++      await tx.query('INSERT INTO orders(id, item_id, status) VALUES($1, $2, $3)', [orderId, itemId, 'COMPLETED']);
++    });
++  }
++}

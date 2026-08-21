@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { assertCassetteSafe, type CassetteManifest } from './cassetteManifest';
 
 export type FetchImplementation = (
   input: RequestInfo | URL,
@@ -26,12 +25,8 @@ export interface CassetteInteraction {
 export interface CassetteFetchOptions {
   cassettePath: string;
   mode?: 'replay' | 'record';
-  /** Require the versioned manifest for newly added provider cassettes. */
-  requireVersion?: 2;
   fetchImplementation?: FetchImplementation;
   allowedRecordOrigins?: string[];
-  fixtureId?: string;
-  provider?: string;
 }
 
 export interface CassetteFetch {
@@ -67,7 +62,7 @@ function sortJson(value: unknown, parentKey?: string): JsonValue {
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
     return value as JsonValue;
   }
-  if (Array.isArray(value)) return value.map((item) => sortJson(item));
+  if (Array.isArray(value)) return value.map((item) => sortJson(item, parentKey));
   if (typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
@@ -90,6 +85,13 @@ function parseBody(text: string): JsonValue {
 function normalizeUrl(input: string | URL): string {
   const url = new URL(String(input));
   url.hash = '';
+  url.username = '';
+  url.password = '';
+  const normalizedParams = new URLSearchParams();
+  for (const [key, value] of url.searchParams) {
+    normalizedParams.append(key, SENSITIVE_KEY.test(key) ? '<redacted>' : value);
+  }
+  url.search = normalizedParams.toString();
   url.searchParams.sort();
   if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
   return url.toString().replace(/\/$/, '');
@@ -116,6 +118,13 @@ function requestFingerprint(request: CassetteInteraction['request']): string {
   });
 }
 
+function redactDiagnostic(value: string): string {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer <redacted>')
+    .replace(/gh[psuor]_[A-Za-z0-9_]+/g, '<redacted>')
+    .replace(/(api[_-]?key=)[^&"'\s]+/gi, '$1<redacted>');
+}
+
 async function normalizeRequest(input: RequestInfo | URL, init?: RequestInit): Promise<CassetteInteraction['request']> {
   const request = new Request(input, init);
   return {
@@ -126,14 +135,10 @@ async function normalizeRequest(input: RequestInfo | URL, init?: RequestInit): P
   };
 }
 
-function loadCassette(cassettePath: string, requireVersion?: 2): CassetteInteraction[] {
-  if (!fs.existsSync(cassettePath)) return [];
+function loadCassette(cassettePath: string): CassetteInteraction[] {
+  if (!fs.existsSync(cassettePath)) throw new Error(`Cassette file not found in replay mode: ${cassettePath}`);
   const parsed = JSON.parse(fs.readFileSync(cassettePath, 'utf8')) as { version?: number; interactions?: CassetteInteraction[] };
-  if (requireVersion === 2 && parsed.version !== 2) {
-    throw new Error(`Cassette ${cassettePath} must use manifest version 2; migrate the legacy cassette before replay`);
-  }
-  if (parsed.version === 2) assertCassetteSafe(parsed);
-  if (![1, 2].includes(parsed.version || 0) || !Array.isArray(parsed.interactions)) {
+  if (parsed.version !== 1 || !Array.isArray(parsed.interactions)) {
     throw new Error(`Invalid cassette format in ${cassettePath}`);
   }
   return parsed.interactions.map((interaction) => ({
@@ -142,7 +147,7 @@ function loadCassette(cassettePath: string, requireVersion?: 2): CassetteInterac
       ...interaction.request,
       method: interaction.request.method.toUpperCase(),
       url: normalizeUrl(interaction.request.url),
-      headers: sortJson(interaction.request.headers) as Record<string, string>,
+      headers: allowlistedHeaders(new Headers(interaction.request.headers), REQUEST_HEADER_ALLOWLIST),
       body: sortJson(interaction.request.body),
     },
   }));
@@ -153,22 +158,9 @@ function writeCassette(cassettePath: string, interactions: CassetteInteraction[]
   fs.writeFileSync(cassettePath, `${JSON.stringify({ version: 1, interactions }, null, 2)}\n`, 'utf8');
 }
 
-function writeVersionedCassette(cassettePath: string, options: CassetteFetchOptions, interactions: CassetteInteraction[]): void {
-  const manifest: CassetteManifest = {
-    version: 2,
-    fixtureId: options.fixtureId || path.basename(cassettePath, path.extname(cassettePath)),
-    provider: options.provider || 'unknown',
-    allowedOrigins: options.allowedRecordOrigins || [],
-    interactions,
-  };
-  assertCassetteSafe(manifest);
-  fs.mkdirSync(path.dirname(cassettePath), { recursive: true });
-  fs.writeFileSync(cassettePath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-}
-
 export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetch {
   const mode = options.mode ?? 'replay';
-  const loaded = mode === 'replay' ? loadCassette(options.cassettePath, options.requireVersion) : [];
+  const loaded = mode === 'replay' ? loadCassette(options.cassettePath) : [];
   const recorded: CassetteInteraction[] = [];
   const consumed = new Set<number>();
   const observedFingerprints: string[] = [];
@@ -179,8 +171,8 @@ export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetc
       if (process.env.CI === 'true') {
         throw new Error('Cassette replay is mandatory in CI; recording is disabled');
       }
-      if (process.env.REVIEW_YETI_VCR !== 'record' || process.env.REVIEW_YETI_RECORD_APPROVED !== 'true') {
-        throw new Error('Cassette recording requires REVIEW_YETI_VCR=record and REVIEW_YETI_RECORD_APPROVED=true');
+      if (process.env.CT_REVIEW_VCR !== 'record') {
+        throw new Error('Cassette recording requires CT_REVIEW_VCR=record');
       }
       const request = await normalizeRequest(input, init);
       observedFingerprints.push(requestFingerprint(request));
@@ -198,28 +190,25 @@ export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetc
           body: parseBody(responseText),
         },
       });
-      writeVersionedCassette(options.cassettePath, options, recorded);
+      writeCassette(options.cassettePath, recorded);
       return response;
     }
 
     const request = await normalizeRequest(input, init);
-    const loadedManifest = loadCassetteManifestIfPresent(options.cassettePath);
-    if (loadedManifest) {
-      const origin = new URL(request.url).origin;
-      if (!loadedManifest.allowedOrigins.includes(origin)) throw new Error(`Cassette replay endpoint ${origin} is not allowlisted`);
-    }
     const fingerprint = requestFingerprint(request);
     observedFingerprints.push(fingerprint);
     const interactionIndex = loaded.findIndex((interaction, index) => (
       !consumed.has(index) && requestFingerprint(interaction.request) === fingerprint
     ));
     if (interactionIndex === -1) {
-      throw new Error(`No cassette interaction matches ${fingerprint}`);
+      throw new Error(redactDiagnostic(
+        `No cassette interaction matches request fingerprint ${fingerprint}; consumed ${consumed.size}/${loaded.length} interaction(s)`,
+      ));
     }
     consumed.add(interactionIndex);
     const interaction = loaded[interactionIndex];
     const body = interaction.response.body === null || typeof interaction.response.body === 'string'
-      ? interaction.response.body ?? ''
+      ? interaction.response.body
       : JSON.stringify(interaction.response.body);
     return new Response(body, {
       status: interaction.response.status,
@@ -241,14 +230,6 @@ export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetc
       }
     },
   };
-}
-
-function loadCassetteManifestIfPresent(cassettePath: string): CassetteManifest | null {
-  if (!fs.existsSync(cassettePath)) return null;
-  const parsed = JSON.parse(fs.readFileSync(cassettePath, 'utf8')) as { version?: number };
-  if (parsed.version !== 2) return null;
-  assertCassetteSafe(parsed);
-  return parsed;
 }
 
 export { normalizeUrl, requestFingerprint };

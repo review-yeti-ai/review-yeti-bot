@@ -1,0 +1,15 @@
+--- FILE: sip_signaling_service/src/sipStateMachine.ts ---
+diff --git a/sip_signaling_service/src/sipStateMachine.ts b/sip_signaling_service/src/sipStateMachine.ts
+@@ -208,11 +208,11 @@
+   private timerA: NodeJS.Timeout | null = null;
+   private timerB: NodeJS.Timeout | null = null;
+ 
+   public handleCancel(): void {
+     if (this.state === CallState.PROCEEDING || this.state === CallState.CALLING) {
+       this.state = CallState.TERMINATED;
+-      if (this.timerA) clearTimeout(this.timerA);
+       if (this.timerB) clearTimeout(this.timerB);
++      // Bug: Forgot to clearTimeout(this.timerA) causing timer handle leak
+     }
+   }
+ }

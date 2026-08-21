@@ -1,0 +1,54 @@
+--- FILE: src/ports/paymentPort.ts ---
+diff --git a/src/ports/paymentPort.ts b/src/ports/paymentPort.ts
+@@ -0,0 +1,10 @@
++export interface ChargeRequest {
++  customerId: string;
++  amountCents: number;
++  currency: 'usd' | 'eur';
++}
++
++export interface PaymentGatewayPort {
++  charge(request: ChargeRequest): Promise<{ chargeId: string; status: 'succeeded' | 'failed' }>;
++}
+
+--- FILE: src/adapters/stripeAdapter.ts ---
+diff --git a/src/adapters/stripeAdapter.ts b/src/adapters/stripeAdapter.ts
+@@ -0,0 +1,16 @@
++import { PaymentGatewayPort, ChargeRequest } from '../ports/paymentPort';
++
++export interface StripeClientLike {
++  charges: { create(params: any): Promise<{ id: string; status: string }> };
++}
++
++export class StripeAdapter implements PaymentGatewayPort {
++  constructor(private readonly stripeClient: StripeClientLike) {}
++
++  async charge(req: ChargeRequest): Promise<{ chargeId: string; status: 'succeeded' | 'failed' }> {
++    const result = await this.stripeClient.charges.create({
++      customer: req.customerId,
++      amount: req.amountCents,
++      currency: req.currency,
++    });
++    return { chargeId: result.id, status: result.status === 'succeeded' ? 'succeeded' : 'failed' };
++  }
++}
+
+--- FILE: tests/unit/stripeAdapter.test.ts ---
+diff --git a/tests/unit/stripeAdapter.test.ts b/tests/unit/stripeAdapter.test.ts
+@@ -0,0 +1,17 @@
++import { describe, it, expect, vi } from 'vitest';
++import { StripeAdapter } from '../../src/adapters/stripeAdapter';
++
++describe('StripeAdapter', () => {
++  it('translates domain charge request to stripe charge call', async () => {
++    const mockClient = {
++      charges: {
++        create: vi.fn().mockResolvedValue({ id: 'ch_123', status: 'succeeded' }),
++      },
++    };
++    const adapter = new StripeAdapter(mockClient);
++    const res = await adapter.charge({ customerId: 'cus_1', amountCents: 5000, currency: 'usd' });
++    expect(res.chargeId).toBe('ch_123');
++    expect(res.status).toBe('succeeded');
++  });
++});

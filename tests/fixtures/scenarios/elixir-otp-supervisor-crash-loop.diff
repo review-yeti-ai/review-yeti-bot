@@ -1,0 +1,14 @@
+--- FILE: lib/calltelemetry/workers/supervisor.ex ---
+diff --git a/lib/calltelemetry/workers/supervisor.ex b/lib/calltelemetry/workers/supervisor.ex
+@@ -6,6 +6,13 @@
+   def init(_init_arg) do
+     children = [
++      # Flaw: Permanent restart on transient network worker causes supervisor crash loop
++      %{
++        id: Calltelemetry.Workers.TransientWorker,
++        start: {Calltelemetry.Workers.TransientWorker, :start_link, [[]]},
++        restart: :permanent
++      }
+     ]
+     Supervisor.init(children, strategy: :one_for_one, max_restarts: 3, max_seconds: 5)
+   end

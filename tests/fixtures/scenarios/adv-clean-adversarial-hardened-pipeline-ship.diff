@@ -1,0 +1,41 @@
+--- FILE: src/security/adversarialDefenseLayer.ts ---
+diff --git a/src/security/adversarialDefenseLayer.ts b/src/security/adversarialDefenseLayer.ts
+@@ -0,0 +1,19 @@
++export interface DefendedInput {
++  sanitized: string;
++  hadZeroWidth: boolean;
++}
++
++export class AdversarialDefenseLayer {
++  static sanitize(input: string): DefendedInput {
++    const zeroWidthRegex = /[​-‍﻿‪-‮⁦-⁩]/g;
++    const hadZeroWidth = zeroWidthRegex.test(input);
++    let sanitized = input.replace(zeroWidthRegex, '');
++    sanitized = sanitized.normalize('NFKC');
++    return { sanitized, hadZeroWidth };
++  }
++
++  static isSafeIdentifier(id: string): boolean {
++    return /^[a-zA-Z0-9_-]+$/.test(id);
++  }
++}
+
+--- FILE: tests/unit/adversarialDefenseLayer.test.ts ---
+diff --git a/tests/unit/adversarialDefenseLayer.test.ts b/tests/unit/adversarialDefenseLayer.test.ts
+@@ -0,0 +1,16 @@
++import { describe, it, expect } from 'vitest';
++import { AdversarialDefenseLayer } from '../../src/security/adversarialDefenseLayer';
++
++describe('AdversarialDefenseLayer', () => {
++  it('strips zero-width unicode and normalizes homoglyphs', () => {
++    const input = 'admin​';
++    const res = AdversarialDefenseLayer.sanitize(input);
++    expect(res.hadZeroWidth).toBe(true);
++    expect(res.sanitized).toBe('admin');
++  });
++
++  it('validates pure ascii identifiers', () => {
++    expect(AdversarialDefenseLayer.isSafeIdentifier('isAdmin')).toBe(true);
++    expect(AdversarialDefenseLayer.isSafeIdentifier('isАdmin')).toBe(false);
++  });
++});

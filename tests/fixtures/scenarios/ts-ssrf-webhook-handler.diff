@@ -1,0 +1,21 @@
+--- FILE: src/services/webhookDispatcher.ts ---
+diff --git a/src/services/webhookDispatcher.ts b/src/services/webhookDispatcher.ts
+@@ -1,5 +1,18 @@
+ import axios from 'axios';
+ import { WebhookPayload } from '../types/webhook';
+
+ export class WebhookDispatcher {
++  private maxRetries = 3;
++
++  /**
++   * Dispatches webhook event payload to subscriber target URL.
++   * Vulnerability: Missing IP validation permits SSRF attacks against internal subnets/metadata.
++   */
++  async dispatch(targetUrl: string, payload: WebhookPayload): Promise<void> {
++    // Critical SSRF: user-controlled URL fetched directly without private subnet/metadata blocklist
++    await axios.post(targetUrl, payload, {
++      timeout: 5000,
++      headers: { 'Content-Type': 'application/json' },
++    });
++  }
++}

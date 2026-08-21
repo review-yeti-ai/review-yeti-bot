@@ -1,0 +1,82 @@
+:root {
+  /* HSL Base Dark Palettes */
+  --bg-app: hsl(220, 15%, 8%);              /* #0d0e12 - Deepest obsidian background */
+  --bg-surface: hsl(220, 14%, 12%);          /* #151821 - Card / panel surface */
+  --bg-surface-elevated: hsl(220, 12%, 16%);  /* #202430 - Hover / elevated states */
+  --bg-surface-glass: rgba(21, 24, 33, 0.75); /* Translucent glass surface */
+  --bg-input: hsl(220, 14%, 10%);            /* #12141a - Input fields */
+
+  /* Border & Divider Palette */
+  --border-subtle: hsl(220, 10%, 18%);       /* #282c37 - Default subtle borders */
+  --border-medium: hsl(220, 10%, 24%);       /* #363b4a - Card outline / hover borders */
+  --border-focus: hsl(250, 85%, 65%);        /* #6e56cf - Active focus state border */
+  --border-glass: rgba(255, 255, 255, 0.08); /* Glassmorphism border highlight */
+
+  /* Brand Accents & Gradients */
+  --accent-primary: hsl(250, 85%, 65%);      /* #6e56cf - Linear Indigo */
+  --accent-primary-hover: hsl(250, 85%, 72%);
+  --accent-primary-glow: rgba(110, 86, 207, 0.25);
+  --accent-violet: hsl(280, 80%, 60%);       /* #a242e6 - Secondary Gradient Violet */
+  --gradient-accent: linear-gradient(135deg, hsl(250, 85%, 65%), hsl(280, 80%, 60%));
+
+  /* Status Colors */
+  --color-success: hsl(145, 65%, 45%);       /* #27c46a - Approved / SHIP / Healthy */
+  --color-success-bg: rgba(39, 196, 106, 0.12);
+  --color-danger: hsl(355, 75%, 55%);        /* #eb3b48 - Rejected / NACK / Error */
+  --color-danger-bg: rgba(235, 59, 72, 0.12);
+  --color-warning: hsl(38, 92%, 50%);        /* #f59e0b - Nit / Warning / Pending */
+  --color-warning-bg: rgba(245, 158, 11, 0.12);
+  --color-info: hsl(200, 80%, 55%);           /* #38bdf8 - Quorum / Info */
+  --color-info-bg: rgba(56, 189, 248, 0.12);
+
+  /* Text Color Hierarchy */
+  --text-primary: hsl(220, 20%, 96%);        /* #f0f3f9 - Headings, high emphasis */
+  --text-secondary: hsl(220, 10%, 70%);      /* #abaeb8 - Body text, labels */
+  --text-muted: hsl(220, 8%, 48%);          /* #737885 - Captions, metadata */
+  --text-subdued: hsl(220, 6%, 32%);        /* #4d515a - Disabled / placeholders */
+
+  /* Typography & Layout Spacing */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* Elevation Shadows & Glassmorphism Blur */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6);
+  --glass-blur: blur(16px);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+a {
+  color: var(--accent-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code, pre {
+  font-family: var(--font-mono);
+}

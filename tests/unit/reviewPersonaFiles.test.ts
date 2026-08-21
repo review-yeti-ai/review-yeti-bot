@@ -12,9 +12,9 @@ const { loadPersonaFiles, resolvePersonaRoster, PERSONA_CHARTERS, DEFAULT_PERSON
 
 let repo: string;
 
-/** Writes a persona file into <repo>/.review-yeti/personas/<name>. */
+/** Writes a persona file into <repo>/.ct-review/personas/<name>. */
 function writePersona(name: string, contents: string) {
-  const dir = path.join(repo, '.review-yeti', 'personas');
+  const dir = path.join(repo, '.ct-review', 'personas');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, name), contents, 'utf-8');
 }
@@ -104,7 +104,7 @@ describe('resolvePersonaRoster with persona files', () => {
     name: '🏢 Multi-Tenant Isolation',
     charter: 'Scope every customer query by orgId.',
     enabled: true,
-    source: '.review-yeti/personas/tenancy.md',
+    source: '.ct-review/personas/tenancy.md',
     ...over,
   });
 
@@ -138,7 +138,7 @@ describe('resolvePersonaRoster with persona files', () => {
 
   it('rejects the same id declared both in a file and inline, rather than guessing precedence', () => {
     const localConfig = {
-      file: '.review-yeti.yaml',
+      file: '.ct-review.yaml',
       parsed: { personas: [{ id: 'tenancy', charter: 'Inline version.' }] },
     };
     const r = resolvePersonaRoster({}, localConfig, {}, [filePersona()]);

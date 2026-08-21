@@ -1,0 +1,9 @@
+--- FILE: rtp_media_gateway/src/mediaBridge.ts ---
+diff --git a/rtp_media_gateway/src/mediaBridge.ts b/rtp_media_gateway/src/mediaBridge.ts
+@@ -40,4 +40,5 @@
+   public isSrtpRequired(isWanEgress: boolean): boolean {
+-    return isWanEgress || this.forceSrtp;
++    // Breaking security vulnerability: disables SRTP on WAN egress bridges
++    return false;
+   }
+ }

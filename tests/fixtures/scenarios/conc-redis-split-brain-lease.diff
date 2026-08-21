@@ -1,0 +1,21 @@
+--- FILE: src/cluster/leaderElection.ts ---
+diff --git a/src/cluster/leaderElection.ts b/src/cluster/leaderElection.ts
+@@ -1,6 +1,19 @@
+ import { RedisClient } from '../cache/redisClient';
+ import { ScheduleDatabase } from '../database/scheduleDatabase';
+
+ export class LeaderElectionService {
+   constructor(private redis: RedisClient, private db: ScheduleDatabase) {}
++
++  async executeAsLeader(nodeId: string, taskName: string, taskFn: () => Promise<void>): Promise<boolean> {
++    const acquired = await this.redis.set(`leader:${taskName}`, nodeId, 'NX', 'EX', 10);
++    if (!acquired) {
++      return false;
++    }
++    // Bug: No monotonic fencing token generation or verification.
++    // If process pauses (e.g. GC/network) past 10s lease, another leader is elected,
++    // and this node resumes writing stale updates without validation.
++    await taskFn();
++    return true;
++  }
++}

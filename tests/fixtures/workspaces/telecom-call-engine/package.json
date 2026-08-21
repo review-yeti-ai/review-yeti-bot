@@ -1,0 +1,35 @@
+{
+  "name": "@telecom/call-engine",
+  "version": "1.0.0",
+  "description": "Generic RFC-compliant telecommunications call processing engine fixture",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "telecom",
+    "sip",
+    "rfc3261",
+    "rtp",
+    "rfc3550",
+    "sdp",
+    "rfc4566",
+    "cdr",
+    "pbx"
+  ],
+  "author": "Review Yeti Benchmark Suite",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

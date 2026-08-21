@@ -1,0 +1,43 @@
+--- FILE: src/cache/l1MemoryStore.ts ---
+diff --git a/src/cache/l1MemoryStore.ts b/src/cache/l1MemoryStore.ts
+@@ -0,0 +1,11 @@
++export class L1MemoryStore {
++  private cache = new Map<string, { value: any; expiresAt: number }>();
++
++  get(key: string): any {
++    const entry = this.cache.get(key);
++    if (entry && entry.expiresAt > Date.now()) return entry.value;
++    return null;
++  }
++  set(key: string, value: any, ttlMs: number): void { this.cache.set(key, { value, expiresAt: Date.now() + ttlMs }); }
++  delete(key: string): void { this.cache.delete(key); }
++}
+
+--- FILE: src/cache/l2RedisStore.ts ---
+diff --git a/src/cache/l2RedisStore.ts b/src/cache/l2RedisStore.ts
+@@ -0,0 +1,7 @@
++import { RedisClient } from './redisClient';
++
+ export class L2RedisStore {
++  constructor(private redis: RedisClient) {}
++  async get(key: string) { return this.redis.get(key); }
++  async del(key: string) { return this.redis.del(key); }
++}
+
+--- FILE: src/services/tenantConfigService.ts ---
+diff --git a/src/services/tenantConfigService.ts b/src/services/tenantConfigService.ts
+@@ -1,6 +1,16 @@
+ import { L1MemoryStore } from '../cache/l1MemoryStore';
+ import { L2RedisStore } from '../cache/l2RedisStore';
+ import { DatabaseClient } from '../database/dbClient';
+
+ export class TenantConfigService {
+   constructor(private l1: L1MemoryStore, private l2: L2RedisStore, private db: DatabaseClient) {}
++
++  async updateTenantConfig(tenantId: string, newConfig: any): Promise<void> {
++    await this.db.query('UPDATE tenant_configs SET config = $1 WHERE id = $2', [JSON.stringify(newConfig), tenantId]);
++    // Bug: Deletes L2 Redis entry and local L1 instance, but does not publish Redis Pub/Sub invalidation to peer L1 instances
++    await this.l2.del(`tenant:${tenantId}`);
++    this.l1.delete(`tenant:${tenantId}`);
++  }
++}

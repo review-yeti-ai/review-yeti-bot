@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "messages": [
+            {
+              "content": "You are Testing Replay Reviewer, one reviewer on a code review panel.\n\nYour charter:\nCheck only whether changed behavior has tests.\n\n\nReview the unified diff supplied by the user against your charter and nothing else.\nAnother reviewer covers every other concern; staying in your lane is what makes the panel work.\n\nRules:\n- Report only defects you can point to in the diff. Do not speculate about unseen code.\n- Use the exact file path as given in the diff headers.\n- Every finding must name what breaks and under what conditions. If you cannot, do not report it.\n- Severity: P0 = exploitable, data-losing or outage-causing. P1 = a defect that must be fixed before merge. P2 = worth doing, safe to merge without.\n- P1 and P0 are rare. When unsure between two levels, choose the lower one.\n- If the diff is clean by your charter, return an empty findings array. Finding nothing is the expected result on most changes, and is more useful than a speculative finding.\n\nRespond with JSON only, in exactly this shape:\n{\"findings\":[{\"severity\":\"P0|P1|P2\",\"path\":\"<file path>\",\"line\":<int>,\"title\":\"<short>\",\"body\":\"<why it matters>\",\"suggestion\":\"<concrete fix>\"}]}",
+              "role": "system"
+            },
+            {
+              "content": "Repository: calltelemetry/ct-review-bot\nPull request: #42\nTitle: OpenRouter fleet replay\nUnified diff under review:\n\n--- FILE: src/api/user.ts ---\ndiff --git a/src/api/user.ts b/src/api/user.ts\n@@ -1,1 +1,2 @@\n+const id = req.query.id;\n+return users[id];\n",
+              "role": "user"
+            }
+          ],
+          "model": "openrouter/auto",
+          "plugins": [
+            {
+              "allowed_models": [
+                "openai/gpt-5.6-luna",
+                "moonshotai/kimi-k2.6",
+                "tencent/hy3",
+                "z-ai/glm-5.1",
+                "google/gemini-3.5-flash-lite"
+              ],
+              "cost_quality_tradeoff": 7,
+              "id": "auto-router"
+            }
+          ],
+          "provider": {
+            "data_collection": "deny"
+          },
+          "response_format": {
+            "type": "json_object"
+          },
+          "temperature": 0.1
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "x-ratelimit-remaining": "777"
+        },
+        "body": {
+          "choices": [
+            {
+              "message": {
+                "content": "{\"findings\":[]}"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

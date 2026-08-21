@@ -1,0 +1,16 @@
+--- FILE: src/events/requestTelemetryBridge.ts ---
+diff --git a/src/events/requestTelemetryBridge.ts b/src/events/requestTelemetryBridge.ts
+@@ -1,5 +1,16 @@
+ import { Request, Response, NextFunction } from 'express';
+ import { telemetryBus } from './telemetryBus';
+
+ export function telemetryBridgeMiddleware(req: Request, res: Response, next: NextFunction): void {
++  const requestBuffer: Buffer[] = [];
++  // Bug: registers listener on singleton bus but never removes it on res.finish / res.close
++  telemetryBus.on('metric', (metricData) => {
++    if (metricData.traceId === req.headers['x-trace-id']) {
++      requestBuffer.push(Buffer.from(JSON.stringify(metricData)));
++    }
++  });
++  next();
++}

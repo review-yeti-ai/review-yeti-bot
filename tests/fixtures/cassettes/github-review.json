@@ -1,0 +1,695 @@
+{
+  "version": 1,
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/42",
+        "headers": {
+          "accept": "application/vnd.github+json",
+          "authorization": "<redacted>",
+          "user-agent": "ct-review-bot[bot]",
+          "x-github-api-version": "2022-11-28"
+        },
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "head": {
+            "sha": "head-sha-42"
+          },
+          "base": {
+            "sha": "base-sha-42"
+          },
+          "title": "Replay PR",
+          "body": "Synthetic PR"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/contents/.ct-review.yaml?ref=base-sha-42",
+        "headers": {
+          "accept": "application/vnd.github+json",
+          "authorization": "<redacted>",
+          "user-agent": "ct-review-bot[bot]",
+          "x-github-api-version": "2022-11-28"
+        },
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "encoding": "base64",
+          "content": "dmVyc2lvbjogMwpwcm9maWxlOiBiYWxhbmNlZAo="
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/42/files?per_page=100&page=1",
+        "headers": {
+          "accept": "application/vnd.github+json",
+          "authorization": "<redacted>",
+          "user-agent": "ct-review-bot[bot]",
+          "x-github-api-version": "2022-11-28"
+        },
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": [
+          {
+            "filename": "src/generated/file-1.ts",
+            "patch": "+export const value1 = 1;"
+          },
+          {
+            "filename": "src/generated/file-2.ts",
+            "patch": "+export const value2 = 2;"
+          },
+          {
+            "filename": "src/generated/file-3.ts",
+            "patch": "+export const value3 = 3;"
+          },
+          {
+            "filename": "src/generated/file-4.ts",
+            "patch": "+export const value4 = 4;"
+          },
+          {
+            "filename": "src/generated/file-5.ts",
+            "patch": "+export const value5 = 5;"
+          },
+          {
+            "filename": "src/generated/file-6.ts",
+            "patch": "+export const value6 = 6;"
+          },
+          {
+            "filename": "src/generated/file-7.ts",
+            "patch": "+export const value7 = 7;"
+          },
+          {
+            "filename": "src/generated/file-8.ts",
+            "patch": "+export const value8 = 8;"
+          },
+          {
+            "filename": "src/generated/file-9.ts",
+            "patch": "+export const value9 = 9;"
+          },
+          {
+            "filename": "src/generated/file-10.ts",
+            "patch": "+export const value10 = 10;"
+          },
+          {
+            "filename": "src/generated/file-11.ts",
+            "patch": "+export const value11 = 11;"
+          },
+          {
+            "filename": "src/generated/file-12.ts",
+            "patch": "+export const value12 = 12;"
+          },
+          {
+            "filename": "src/generated/file-13.ts",
+            "patch": "+export const value13 = 13;"
+          },
+          {
+            "filename": "src/generated/file-14.ts",
+            "patch": "+export const value14 = 14;"
+          },
+          {
+            "filename": "src/generated/file-15.ts",
+            "patch": "+export const value15 = 15;"
+          },
+          {
+            "filename": "src/generated/file-16.ts",
+            "patch": "+export const value16 = 16;"
+          },
+          {
+            "filename": "src/generated/file-17.ts",
+            "patch": "+export const value17 = 17;"
+          },
+          {
+            "filename": "src/generated/file-18.ts",
+            "patch": "+export const value18 = 18;"
+          },
+          {
+            "filename": "src/generated/file-19.ts",
+            "patch": "+export const value19 = 19;"
+          },
+          {
+            "filename": "src/generated/file-20.ts",
+            "patch": "+export const value20 = 20;"
+          },
+          {
+            "filename": "src/generated/file-21.ts",
+            "patch": "+export const value21 = 21;"
+          },
+          {
+            "filename": "src/generated/file-22.ts",
+            "patch": "+export const value22 = 22;"
+          },
+          {
+            "filename": "src/generated/file-23.ts",
+            "patch": "+export const value23 = 23;"
+          },
+          {
+            "filename": "src/generated/file-24.ts",
+            "patch": "+export const value24 = 24;"
+          },
+          {
+            "filename": "src/generated/file-25.ts",
+            "patch": "+export const value25 = 25;"
+          },
+          {
+            "filename": "src/generated/file-26.ts",
+            "patch": "+export const value26 = 26;"
+          },
+          {
+            "filename": "src/generated/file-27.ts",
+            "patch": "+export const value27 = 27;"
+          },
+          {
+            "filename": "src/generated/file-28.ts",
+            "patch": "+export const value28 = 28;"
+          },
+          {
+            "filename": "src/generated/file-29.ts",
+            "patch": "+export const value29 = 29;"
+          },
+          {
+            "filename": "src/generated/file-30.ts",
+            "patch": "+export const value30 = 30;"
+          },
+          {
+            "filename": "src/generated/file-31.ts",
+            "patch": "+export const value31 = 31;"
+          },
+          {
+            "filename": "src/generated/file-32.ts",
+            "patch": "+export const value32 = 32;"
+          },
+          {
+            "filename": "src/generated/file-33.ts",
+            "patch": "+export const value33 = 33;"
+          },
+          {
+            "filename": "src/generated/file-34.ts",
+            "patch": "+export const value34 = 34;"
+          },
+          {
+            "filename": "src/generated/file-35.ts",
+            "patch": "+export const value35 = 35;"
+          },
+          {
+            "filename": "src/generated/file-36.ts",
+            "patch": "+export const value36 = 36;"
+          },
+          {
+            "filename": "src/generated/file-37.ts",
+            "patch": "+export const value37 = 37;"
+          },
+          {
+            "filename": "src/generated/file-38.ts",
+            "patch": "+export const value38 = 38;"
+          },
+          {
+            "filename": "src/generated/file-39.ts",
+            "patch": "+export const value39 = 39;"
+          },
+          {
+            "filename": "src/generated/file-40.ts",
+            "patch": "+export const value40 = 40;"
+          },
+          {
+            "filename": "src/generated/file-41.ts",
+            "patch": "+export const value41 = 41;"
+          },
+          {
+            "filename": "src/generated/file-42.ts",
+            "patch": "+export const value42 = 42;"
+          },
+          {
+            "filename": "src/generated/file-43.ts",
+            "patch": "+export const value43 = 43;"
+          },
+          {
+            "filename": "src/generated/file-44.ts",
+            "patch": "+export const value44 = 44;"
+          },
+          {
+            "filename": "src/generated/file-45.ts",
+            "patch": "+export const value45 = 45;"
+          },
+          {
+            "filename": "src/generated/file-46.ts",
+            "patch": "+export const value46 = 46;"
+          },
+          {
+            "filename": "src/generated/file-47.ts",
+            "patch": "+export const value47 = 47;"
+          },
+          {
+            "filename": "src/generated/file-48.ts",
+            "patch": "+export const value48 = 48;"
+          },
+          {
+            "filename": "src/generated/file-49.ts",
+            "patch": "+export const value49 = 49;"
+          },
+          {
+            "filename": "src/generated/file-50.ts",
+            "patch": "+export const value50 = 50;"
+          },
+          {
+            "filename": "src/generated/file-51.ts",
+            "patch": "+export const value51 = 51;"
+          },
+          {
+            "filename": "src/generated/file-52.ts",
+            "patch": "+export const value52 = 52;"
+          },
+          {
+            "filename": "src/generated/file-53.ts",
+            "patch": "+export const value53 = 53;"
+          },
+          {
+            "filename": "src/generated/file-54.ts",
+            "patch": "+export const value54 = 54;"
+          },
+          {
+            "filename": "src/generated/file-55.ts",
+            "patch": "+export const value55 = 55;"
+          },
+          {
+            "filename": "src/generated/file-56.ts",
+            "patch": "+export const value56 = 56;"
+          },
+          {
+            "filename": "src/generated/file-57.ts",
+            "patch": "+export const value57 = 57;"
+          },
+          {
+            "filename": "src/generated/file-58.ts",
+            "patch": "+export const value58 = 58;"
+          },
+          {
+            "filename": "src/generated/file-59.ts",
+            "patch": "+export const value59 = 59;"
+          },
+          {
+            "filename": "src/generated/file-60.ts",
+            "patch": "+export const value60 = 60;"
+          },
+          {
+            "filename": "src/generated/file-61.ts",
+            "patch": "+export const value61 = 61;"
+          },
+          {
+            "filename": "src/generated/file-62.ts",
+            "patch": "+export const value62 = 62;"
+          },
+          {
+            "filename": "src/generated/file-63.ts",
+            "patch": "+export const value63 = 63;"
+          },
+          {
+            "filename": "src/generated/file-64.ts",
+            "patch": "+export const value64 = 64;"
+          },
+          {
+            "filename": "src/generated/file-65.ts",
+            "patch": "+export const value65 = 65;"
+          },
+          {
+            "filename": "src/generated/file-66.ts",
+            "patch": "+export const value66 = 66;"
+          },
+          {
+            "filename": "src/generated/file-67.ts",
+            "patch": "+export const value67 = 67;"
+          },
+          {
+            "filename": "src/generated/file-68.ts",
+            "patch": "+export const value68 = 68;"
+          },
+          {
+            "filename": "src/generated/file-69.ts",
+            "patch": "+export const value69 = 69;"
+          },
+          {
+            "filename": "src/generated/file-70.ts",
+            "patch": "+export const value70 = 70;"
+          },
+          {
+            "filename": "src/generated/file-71.ts",
+            "patch": "+export const value71 = 71;"
+          },
+          {
+            "filename": "src/generated/file-72.ts",
+            "patch": "+export const value72 = 72;"
+          },
+          {
+            "filename": "src/generated/file-73.ts",
+            "patch": "+export const value73 = 73;"
+          },
+          {
+            "filename": "src/generated/file-74.ts",
+            "patch": "+export const value74 = 74;"
+          },
+          {
+            "filename": "src/generated/file-75.ts",
+            "patch": "+export const value75 = 75;"
+          },
+          {
+            "filename": "src/generated/file-76.ts",
+            "patch": "+export const value76 = 76;"
+          },
+          {
+            "filename": "src/generated/file-77.ts",
+            "patch": "+export const value77 = 77;"
+          },
+          {
+            "filename": "src/generated/file-78.ts",
+            "patch": "+export const value78 = 78;"
+          },
+          {
+            "filename": "src/generated/file-79.ts",
+            "patch": "+export const value79 = 79;"
+          },
+          {
+            "filename": "src/generated/file-80.ts",
+            "patch": "+export const value80 = 80;"
+          },
+          {
+            "filename": "src/generated/file-81.ts",
+            "patch": "+export const value81 = 81;"
+          },
+          {
+            "filename": "src/generated/file-82.ts",
+            "patch": "+export const value82 = 82;"
+          },
+          {
+            "filename": "src/generated/file-83.ts",
+            "patch": "+export const value83 = 83;"
+          },
+          {
+            "filename": "src/generated/file-84.ts",
+            "patch": "+export const value84 = 84;"
+          },
+          {
+            "filename": "src/generated/file-85.ts",
+            "patch": "+export const value85 = 85;"
+          },
+          {
+            "filename": "src/generated/file-86.ts",
+            "patch": "+export const value86 = 86;"
+          },
+          {
+            "filename": "src/generated/file-87.ts",
+            "patch": "+export const value87 = 87;"
+          },
+          {
+            "filename": "src/generated/file-88.ts",
+            "patch": "+export const value88 = 88;"
+          },
+          {
+            "filename": "src/generated/file-89.ts",
+            "patch": "+export const value89 = 89;"
+          },
+          {
+            "filename": "src/generated/file-90.ts",
+            "patch": "+export const value90 = 90;"
+          },
+          {
+            "filename": "src/generated/file-91.ts",
+            "patch": "+export const value91 = 91;"
+          },
+          {
+            "filename": "src/generated/file-92.ts",
+            "patch": "+export const value92 = 92;"
+          },
+          {
+            "filename": "src/generated/file-93.ts",
+            "patch": "+export const value93 = 93;"
+          },
+          {
+            "filename": "src/generated/file-94.ts",
+            "patch": "+export const value94 = 94;"
+          },
+          {
+            "filename": "src/generated/file-95.ts",
+            "patch": "+export const value95 = 95;"
+          },
+          {
+            "filename": "src/generated/file-96.ts",
+            "patch": "+export const value96 = 96;"
+          },
+          {
+            "filename": "src/generated/file-97.ts",
+            "patch": "+export const value97 = 97;"
+          },
+          {
+            "filename": "src/generated/file-98.ts",
+            "patch": "+export const value98 = 98;"
+          },
+          {
+            "filename": "src/generated/file-99.ts",
+            "patch": "+export const value99 = 99;"
+          },
+          {
+            "filename": "src/generated/file-100.ts",
+            "patch": "+export const value100 = 100;"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/42/files?per_page=100&page=2",
+        "headers": {
+          "accept": "application/vnd.github+json",
+          "authorization": "<redacted>",
+          "user-agent": "ct-review-bot[bot]",
+          "x-github-api-version": "2022-11-28"
+        },
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": [
+          {
+            "filename": "src/final.ts",
+            "patch": "+export const final = true;"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/42/reviews",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json",
+          "user-agent": "ct-review-bot[bot]"
+        },
+        "body": {
+          "body": "Replay publication\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr42_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)",
+          "event": "COMMENT",
+          "commit_id": "head-sha-42",
+          "comments": [
+            {
+              "path": "src/api/user.ts",
+              "line": 2,
+              "side": "RIGHT",
+              "body": "### [security] Validate input — Severity: P1\n\n**Finding**: Synthetic finding\n"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "x-ratelimit-remaining": "4999"
+        },
+        "body": {
+          "id": 4201
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/43/reviews",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json",
+          "user-agent": "ct-review-bot[bot]"
+        },
+        "body": {
+          "body": "Line fallback\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr43_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)",
+          "event": "REQUEST_CHANGES",
+          "commit_id": "head-sha-43",
+          "comments": [
+            {
+              "path": "src/api/user.ts",
+              "line": 2,
+              "side": "RIGHT",
+              "body": "### [security] Validate input — Severity: P1\n\n**Finding**: Synthetic finding\n"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 422,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "message": "Line could not be resolved"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/43/reviews",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json",
+          "user-agent": "ct-review-bot[bot]"
+        },
+        "body": {
+          "body": "Line fallback\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr43_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)\n\n### 📝 Inline Findings (Fallback)\n\n#### 📄 File: `src/api/user.ts` (Line 2)\n### [security] Validate input — Severity: P1\n\n**Finding**: Synthetic finding\n",
+          "event": "REQUEST_CHANGES",
+          "commit_id": "head-sha-43"
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "id": 4202
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/44/reviews",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json",
+          "user-agent": "ct-review-bot[bot]"
+        },
+        "body": {
+          "body": "Approve fallback\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr44_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)",
+          "event": "APPROVE",
+          "commit_id": "head-sha-44",
+          "comments": []
+        }
+      },
+      "response": {
+        "status": 422,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "message": "Can not approve your own pull request"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/issues/44/comments",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json",
+          "user-agent": "ct-review-bot[bot]"
+        },
+        "body": {
+          "body": "Approve fallback\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr44_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "id": 4203
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/45/reviews",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json",
+          "user-agent": "ct-review-bot[bot]"
+        },
+        "body": {
+          "body": "Retry review\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr45_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)",
+          "event": "COMMENT",
+          "commit_id": "head-sha-45",
+          "comments": []
+        }
+      },
+      "response": {
+        "status": 429,
+        "headers": {
+          "retry-after": "1"
+        },
+        "body": {
+          "message": "rate limited"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://github.test/repos/calltelemetry/ct-review-bot/pulls/45/reviews",
+        "headers": {
+          "authorization": "<redacted>",
+          "content-type": "application/json",
+          "user-agent": "ct-review-bot[bot]"
+        },
+        "body": {
+          "body": "Retry review\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr45_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)",
+          "event": "COMMENT",
+          "commit_id": "head-sha-45",
+          "comments": []
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "id": 4204
+        }
+      }
+    }
+  ]
+}

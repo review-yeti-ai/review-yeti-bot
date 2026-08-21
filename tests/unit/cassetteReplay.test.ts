@@ -3,19 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
-import { assertCassetteSafe } from '../support/cassetteManifest';
-import { buildDecisionLedger, reconcileDecisionFindings, renderDecisionLedger } from '../../src/review/decisionLedger';
 
 const harnessCassette = path.resolve(__dirname, '../fixtures/cassettes/harness.json');
-const decisionCassette = path.resolve(__dirname, '../fixtures/cassettes/decision-ledger.json');
 
 describe('strict cassette replay', () => {
-  const originalCi = process.env.CI;
-
   afterEach(() => {
-    delete process.env.REVIEW_YETI_VCR;
-    if (originalCi === undefined) delete process.env.CI;
-    else process.env.CI = originalCi;
+    delete process.env.CT_REVIEW_VCR;
   });
 
   it('matches concurrent requests by canonical fingerprint and consumes every interaction', async () => {
@@ -43,6 +36,27 @@ describe('strict cassette replay', () => {
     expect(await second.json()).toEqual({ value: 'second' });
     expect(await first.json()).toEqual({ value: 'first' });
     cassette.assertComplete();
+    expect(cassette.interactions[0].request).toEqual({
+      method: 'POST',
+      url: 'https://llm.test/replay?a=1&b=2',
+      headers: {
+        authorization: '<redacted>',
+        'content-type': 'application/json',
+      },
+      body: {
+        a: 'first',
+        b: 1,
+      },
+    });
+    expect(cassette.interactions[0].response).toEqual({
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: {
+        value: 'first',
+      },
+    });
 
     const cassetteText = fs.readFileSync(harnessCassette, 'utf8');
     expect(cassetteText).not.toContain('second-secret');
@@ -65,109 +79,146 @@ describe('strict cassette replay', () => {
     expect(() => incomplete.assertComplete()).toThrow('Unconsumed cassette interactions');
   });
 
-  it('refuses to record in CI regardless of the environment switch', async () => {
-    process.env.CI = 'true';
-    process.env.REVIEW_YETI_VCR = 'record';
-    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'ci.json');
+  it('redacts authorization and API secrets from unmatched request diagnostics', async () => {
+    const cassette = createCassetteFetch({ cassettePath: harnessCassette });
 
-    await expect(createCassetteFetch({
-      cassettePath,
-      mode: 'record',
-      fetchImplementation: async () => new Response('{}', { status: 200 }),
-      allowedRecordOrigins: ['https://llm.test'],
-    }).fetchImplementation('https://llm.test/record')).rejects.toThrow('Cassette replay is mandatory in CI');
+    let message = '';
+    try {
+      await cassette.fetchImplementation('https://llm.test/unrecorded?api_key=query-secret', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer header-secret',
+          'X-Api-Key': 'header-api-secret',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          apiKey: 'body-api-secret',
+          nested: { token: 'body-token-secret' },
+          safe: 'visible',
+        }),
+      });
+    } catch (error: any) {
+      message = String(error.message);
+    }
+
+    expect(message).toContain('No cassette interaction matches');
+    expect(message).toContain('<redacted>');
+    expect(message).toContain('visible');
+    expect(message).not.toContain('query-secret');
+    expect(message).not.toContain('header-secret');
+    expect(message).not.toContain('header-api-secret');
+    expect(message).not.toContain('body-api-secret');
+    expect(message).not.toContain('body-token-secret');
+  });
+
+  it('never calls the underlying network transport in replay mode', async () => {
+    let networkCalls = 0;
+    const cassette = createCassetteFetch({
+      cassettePath: harnessCassette,
+      fetchImplementation: async () => {
+        networkCalls += 1;
+        throw new Error('network escaped replay');
+      },
+    });
+
+    const response = await cassette.fetchImplementation('https://llm.test/replay', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer second-secret',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ b: 2, a: 'second' }),
+    });
+    expect(await response.json()).toEqual({ value: 'second' });
+    await expect(cassette.fetchImplementation('https://github.com/unrecorded')).rejects.toThrow(
+      'No cassette interaction matches',
+    );
+    expect(networkCalls).toBe(0);
+  });
+
+  it('fails when an expected interaction is removed or a request URL/body is changed', async () => {
+    const original = JSON.parse(fs.readFileSync(harnessCassette, 'utf8'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-mutated-cassette-'));
+    const removedInteractionPath = path.join(tempDir, 'removed-interaction.json');
+    const changedUrlPath = path.join(tempDir, 'changed-url.json');
+    const changedBodyPath = path.join(tempDir, 'changed-body.json');
+
+    const removedInteraction = structuredClone(original);
+    removedInteraction.interactions = removedInteraction.interactions.slice(0, 1);
+    fs.writeFileSync(removedInteractionPath, `${JSON.stringify(removedInteraction, null, 2)}\n`, 'utf8');
+
+    const changedUrl = structuredClone(original);
+    changedUrl.interactions[0].request.url = 'https://llm.test/replay?a=1&b=999';
+    fs.writeFileSync(changedUrlPath, `${JSON.stringify(changedUrl, null, 2)}\n`, 'utf8');
+
+    const changedBody = structuredClone(original);
+    changedBody.interactions[0].request.body = { a: 'first', b: 999 };
+    fs.writeFileSync(changedBodyPath, `${JSON.stringify(changedBody, null, 2)}\n`, 'utf8');
+
+    const request = {
+      method: 'POST',
+      headers: { Authorization: 'Bearer first-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ b: 1, a: 'first' }),
+    };
+
+    await expect(createCassetteFetch({ cassettePath: removedInteractionPath }).fetchImplementation(
+      'https://llm.test/replay',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer second-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ b: 2, a: 'second' }),
+      },
+    )).rejects.toThrow('No cassette interaction matches');
+    await expect(createCassetteFetch({ cassettePath: changedUrlPath }).fetchImplementation(
+      'https://llm.test/replay?b=2&a=1',
+      request,
+    )).rejects.toThrow('No cassette interaction matches');
+    await expect(createCassetteFetch({ cassettePath: changedBodyPath }).fetchImplementation(
+      'https://llm.test/replay?b=2&a=1',
+      request,
+    )).rejects.toThrow('No cassette interaction matches');
   });
 
   it('requires explicit record mode, the environment switch, and an origin allowlist', async () => {
-    // Recording is refused outright under CI (covered above); this case exercises
-    // the record-mode contract itself, so it must run outside that guard.
-    delete process.env.CI;
-    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'record.json');
+    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-cassette-')), 'record.json');
+    const originalCi = process.env.CI;
     const fetchImplementation = async () => new Response(JSON.stringify({ recorded: true }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
 
-    await expect(createCassetteFetch({
-      cassettePath,
-      mode: 'record',
-      fetchImplementation,
-      allowedRecordOrigins: ['https://llm.test'],
-    }).fetchImplementation('https://llm.test/record')).rejects.toThrow('REVIEW_YETI_VCR=record');
+    try {
+      delete process.env.CI;
+      await expect(createCassetteFetch({
+        cassettePath,
+        mode: 'record',
+        fetchImplementation,
+        allowedRecordOrigins: ['https://llm.test'],
+      }).fetchImplementation('https://llm.test/record')).rejects.toThrow('CT_REVIEW_VCR=record');
 
-    process.env.REVIEW_YETI_VCR = 'record';
-    process.env.REVIEW_YETI_RECORD_APPROVED = 'true';
-    await expect(createCassetteFetch({
-      cassettePath,
-      mode: 'record',
-      fetchImplementation,
-      allowedRecordOrigins: ['https://other.test'],
-    }).fetchImplementation('https://llm.test/record')).rejects.toThrow('not allowlisted');
+      process.env.CT_REVIEW_VCR = 'record';
+      await expect(createCassetteFetch({
+        cassettePath,
+        mode: 'record',
+        fetchImplementation,
+        allowedRecordOrigins: ['https://other.test'],
+      }).fetchImplementation('https://llm.test/record')).rejects.toThrow('not allowlisted');
 
-    const recorded = createCassetteFetch({
-      cassettePath,
-      mode: 'record',
-      fetchImplementation,
-      allowedRecordOrigins: ['https://llm.test'],
-    });
-    const response = await recorded.fetchImplementation('https://llm.test/record', {
-      headers: { Authorization: 'Bearer live-secret' },
-    });
-    expect(await response.json()).toEqual({ recorded: true });
-    recorded.assertComplete();
-    expect(fs.readFileSync(cassettePath, 'utf8')).not.toContain('live-secret');
-  });
-
-  it('validates v2 cassette manifests and rejects unsafe origins or secrets', () => {
-    const base = {
-      version: 2,
-      fixtureId: 'fresh-clean',
-      provider: 'honcho',
-      allowedOrigins: ['https://honcho.test'],
-      interactions: [],
-    } as const;
-    expect(() => assertCassetteSafe(base)).not.toThrow();
-    expect(() => assertCassetteSafe({ ...base, allowedOrigins: ['https://honcho.test/path'] })).toThrow('not an origin');
-    expect(() => assertCassetteSafe({ ...base, fixtureId: '../escape' })).toThrow('path-safe');
-    expect(() => assertCassetteSafe({ ...base, interactions: [{ request: { method: 'GET', url: 'https://honcho.test', headers: { authorization: 'secret' }, body: null }, response: { status: 200, headers: {}, body: null } }] })).toThrow('not redacted');
-  });
-
-  it('rejects legacy v1 cassettes when a provider replay requires a v2 manifest', () => {
-    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'legacy.json');
-    fs.writeFileSync(cassettePath, JSON.stringify({ version: 1, interactions: [] }));
-    expect(() => createCassetteFetch({ cassettePath, requireVersion: 2 })).toThrow(/Cassette .*legacy\.json must use manifest version 2/u);
-  });
-
-  it('rejects replay calls outside a v2 cassette origin allowlist', async () => {
-    const cassettePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-cassette-')), 'v2.json');
-    fs.writeFileSync(cassettePath, JSON.stringify({ version: 2, fixtureId: 'origin-test', provider: 'honcho', allowedOrigins: ['https://allowed.test'], interactions: [] }));
-    const replay = createCassetteFetch({ cassettePath });
-    await expect(replay.fetchImplementation('https://blocked.test/replay')).rejects.toThrow('not allowlisted');
-  });
-
-  it('replays same-PR decision state byte-identically without exposing human reasons', async () => {
-    const replay = async () => {
-      const cassette = createCassetteFetch({ cassettePath: decisionCassette });
-      const response = await cassette.fetchImplementation('https://github.test/graphql', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer fake-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ operationName: 'DecisionLedgerSnapshot', pullRequest: 7 }),
+      const recorded = createCassetteFetch({
+        cassettePath,
+        mode: 'record',
+        fetchImplementation,
+        allowedRecordOrigins: ['https://llm.test'],
       });
-      const snapshot = await response.json();
-      cassette.assertComplete();
-      const ledger = buildDecisionLedger(snapshot);
-      const rendered = renderDecisionLedger(ledger);
-      const reconciliation = reconcileDecisionFindings([], ledger);
-      return { ledger, rendered, reconciliation };
-    };
-
-    const first = await replay();
-    const second = await replay();
-    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-    expect(first.ledger.entries.map((entry: any) => entry.state)).toEqual([
-      'open', 'resolved', 'ignored', 'open', 'obsolete',
-    ]);
-    expect(first.rendered.text).not.toContain('accepted until API-1234');
-    expect(JSON.stringify(first)).not.toContain('API-1234 has landed');
+      const response = await recorded.fetchImplementation('https://llm.test/record', {
+        headers: { Authorization: 'Bearer live-secret' },
+      });
+      expect(await response.json()).toEqual({ recorded: true });
+      recorded.assertComplete();
+      expect(fs.readFileSync(cassettePath, 'utf8')).not.toContain('live-secret');
+    } finally {
+      if (originalCi === undefined) delete process.env.CI;
+      else process.env.CI = originalCi;
+    }
   });
 });

@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ct-review-bot-config
+  namespace: jbjmllc-review-system
+data:
+  PORT: "3000"
+  HOST: "0.0.0.0"
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
+  CT_REVIEW_RUN_STORE: "/app/data/review-runs.json"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ct-review-bot-data
+  namespace: jbjmllc-review-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ct-review-bot
+  namespace: jbjmllc-review-system
+  labels:
+    app: ct-review-bot
+    instance: jbjmllc
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: ct-review-bot
+    instance: jbjmllc

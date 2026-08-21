@@ -1,0 +1,23 @@
+--- FILE: rtp_media_gateway/src/jitterBuffer.ts ---
+diff --git a/rtp_media_gateway/src/jitterBuffer.ts b/rtp_media_gateway/src/jitterBuffer.ts
+@@ -185,17 +185,18 @@
+   public insertPacket(packet: RtpPacket): void {
+     this.packetMutex.lock();
+     this.queueMutex.lock();
+     this.packetQueue.push(packet);
+     this.queueMutex.unlock();
+     this.packetMutex.unlock();
+   }
+ 
+   public getNextPlayoutFrame(): Buffer | null {
+-    this.packetMutex.lock();
+-    this.queueMutex.lock();
++    // Bug: Inverted lock acquisition order causing deadlock under concurrency
++    this.queueMutex.lock();
++    this.packetMutex.lock();
+     const frame = this.popFrame();
+     this.packetMutex.unlock();
+     this.queueMutex.unlock();
+     return frame;
+   }
+ }

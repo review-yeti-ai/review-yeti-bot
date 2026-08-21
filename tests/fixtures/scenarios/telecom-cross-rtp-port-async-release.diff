@@ -1,0 +1,10 @@
+--- FILE: rtp_media_gateway/src/portAllocator.ts ---
+diff --git a/rtp_media_gateway/src/portAllocator.ts b/rtp_media_gateway/src/portAllocator.ts
+@@ -23,4 +23,6 @@
+-  public releasePort(port: number): void {
++  // Breaking contract change: changed return type from void to Promise<void>
++  public async releasePort(port: number): Promise<void> {
+     this.allocatedPorts.delete(port);
++    await this.redisCooldownStore.set(`cooldown:${port}`, Date.now());
+   }
+ }

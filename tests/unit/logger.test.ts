@@ -32,14 +32,14 @@ describe('Logger Utility', () => {
     logger.setLevel('debug');
     const consoleSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
 
-    logger.debug('Production debug log', { service: 'review-yeti-bot' });
+    logger.debug('Production debug log', { service: 'ct-review-bot' });
 
     expect(consoleSpy).toHaveBeenCalledOnce();
     const output = consoleSpy.mock.calls[0][0];
     const parsed = JSON.parse(output);
     expect(parsed.level).toBe('DEBUG');
     expect(parsed.message).toBe('Production debug log');
-    expect(parsed.service).toBe('review-yeti-bot');
+    expect(parsed.service).toBe('ct-review-bot');
   });
 
   it('respects log level filtering and programmatic setLevel', () => {

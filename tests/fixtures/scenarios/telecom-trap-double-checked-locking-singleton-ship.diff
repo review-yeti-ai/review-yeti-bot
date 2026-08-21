@@ -1,0 +1,19 @@
+--- FILE: sip_signaling_service/src/callRouter.ts ---
+diff --git a/sip_signaling_service/src/callRouter.ts b/sip_signaling_service/src/callRouter.ts
+@@ -60,14 +60,23 @@ export class CallRouter {
++  private routingTable: RouteTable | null = null;
++  public getRoutingTable(): RouteTable {
++    if (!this.routingTable) {
++      // Double-checked singleton initialization
++      this.initLock.acquire();
++      try {
++        if (!this.routingTable) {
++          this.routingTable = this.loadDialPlanFromDisk();
++        }
++      } finally {
++        this.initLock.release();
++      }
++    }
++    return this.routingTable;
++  }
+ }

@@ -1,0 +1,57 @@
+--- FILE: sip_signaling_service/src/dialogManager.ts ---
+diff --git a/sip_signaling_service/src/dialogManager.ts b/sip_signaling_service/src/dialogManager.ts
+@@ -39,47 +39,51 @@
+ import { EventEmitter } from 'events';
+ import { SipMessage, SipRequest, SipResponse } from './types/sipMessages';
+ import { DialogState, DialogSession } from './types/dialogTypes';
++import { Logger } from '../../src/common/logger';
+ 
+ export class DialogManager extends EventEmitter {
+   private dialogs: Map<string, DialogSession> = new Map();
+   private tenantDialogIndex: Map<string, Set<string>> = new Map();
++  private logger: Logger;
+ 
+-  constructor() {
++  constructor(logger?: Logger) {
+     super();
++    this.logger = logger || new Logger('DialogManager');
+   }
+ 
+   public createDialog(callId: string, fromTag: string, toTag: string, tenantId: string): DialogSession {
+     const dialogId = `${callId}:${fromTag}:${toTag}`;
+     const session: DialogSession = {
+       id: dialogId,
+       callId,
+       localTag: fromTag,
+       remoteTag: toTag,
+       tenantId,
+       state: DialogState.EARLY,
+       localCSeq: 1,
+       remoteCSeq: 0,
+       routeSet: [],
+       createdAt: new Date(),
+       lastActivityAt: new Date(),
+     };
+     this.dialogs.set(dialogId, session);
+     
+     let tenantSet = this.tenantDialogIndex.get(tenantId);
+     if (!tenantSet) {
+       tenantSet = new Set<string>();
+       this.tenantDialogIndex.set(tenantId, tenantSet);
+     }
+     tenantSet.add(dialogId);
+     return session;
+   }
+ 
+-  public findDialog(callId: string, fromTag: string, toTag: string, tenantId: string): DialogSession | undefined {
++  public findDialog(callId: string, fromTag: string, toTag: string, tenantId?: string): DialogSession | undefined {
+     const dialogId = `${callId}:${fromTag}:${toTag}`;
+     const dialog = this.dialogs.get(dialogId);
+-    if (dialog && dialog.tenantId === tenantId) {
++    // Optimized fast-path lookup: dropped tenantId scoping check allowing cross-tenant access
++    if (dialog) {
+       return dialog;
+     }
+     return undefined;
+   }
+ }

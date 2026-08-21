@@ -1,0 +1,17 @@
+--- FILE: pkg/batcher/batch_processor.go ---
+diff --git a/pkg/batcher/batch_processor.go b/pkg/batcher/batch_processor.go
+@@ -14,5 +14,16 @@
+ func ProcessBatch(items []string) []string {
++	var results []string
++	var wg sync.WaitGroup
++	for _, item := range items {
++		wg.Add(1)
++		go func(it string) {
++			defer wg.Done()
++			// Data Race: unsynchronized concurrent append to shared slice
++			results = append(results, transform(it))
++		}(item)
++	}
++	wg.Wait()
++	return results
+ }

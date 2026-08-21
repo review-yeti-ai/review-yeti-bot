@@ -1,0 +1,11 @@
+--- FILE: rtp_media_gateway/src/jitterBuffer.ts ---
+diff --git a/rtp_media_gateway/src/jitterBuffer.ts b/rtp_media_gateway/src/jitterBuffer.ts
+@@ -37,6 +37,7 @@
+-  private clockRate: number = 8000;
++  // Breaking change: changed default clock rate to 48000 Hz without codec check
++  private clockRate: number = 48000;
+ 
+   constructor(clockRate?: number) {
+     if (clockRate) this.clockRate = clockRate;
+   }
+ }

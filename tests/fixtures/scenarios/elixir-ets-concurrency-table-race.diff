@@ -1,0 +1,24 @@
+--- FILE: lib/call_telemetry/quota/ets_tracker.ex ---
+diff --git a/lib/call_telemetry/quota/ets_tracker.ex b/lib/call_telemetry/quota/ets_tracker.ex
+@@ -1,6 +1,19 @@
+ defmodule CallTelemetry.Quota.EtsTracker do
+   @table :call_quota_table
+
+   def init_table do
+     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true, write_concurrency: true])
+   end
++
++  def increment_and_check_quota(tenant_id, limit) do
++    case :ets.lookup(@table, tenant_id) do
++      [{^tenant_id, current}] when current >= limit ->
++        {:error, :quota_exceeded}
++      [{^tenant_id, current}] ->
++        # Bug: Non-atomic read-modify-write. Concurrent processes read same current and overwrite.
++        :ets.insert(@table, {tenant_id, current + 1})
++        {:ok, current + 1}
++      [] ->
++        :ets.insert(@table, {tenant_id, 1})
++        {:ok, 1}
++    end
++  end
++end

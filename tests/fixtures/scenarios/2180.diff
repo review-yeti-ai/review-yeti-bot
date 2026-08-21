@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/sipStateMachine.ts ---
+diff --git a/sip_signaling_service/src/sipStateMachine.ts b/sip_signaling_service/src/sipStateMachine.ts
+@@ -140,14 +140,21 @@ export class SipStateMachine {
++  public getNextRetransmitDelay(currentDelay: number): number {
++    const T2 = 32000; // RFC 3261 32-second maximum retransmission ceiling
++    const nextDelay = currentDelay * 2;
++    return Math.min(nextDelay, T2);
++  }
+ }
