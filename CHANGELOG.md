@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.9.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.5...v1.9.6) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** preserve structured reasoning output ([a842ed0](https://github.com/review-yeti-ai/review-yeti-bot/commit/a842ed0a0e598edf4be8122c769e735122fc9206))
+* **review:** preserve structured reasoning output ([df6bf74](https://github.com/review-yeti-ai/review-yeti-bot/commit/df6bf74370bcab87f7495cd43ffc5b2ed08e9cf3))
+* **review:** route format recovery through policy model ([#212](https://github.com/review-yeti-ai/review-yeti-bot/issues/212)) ([2bfb4e2](https://github.com/review-yeti-ai/review-yeti-bot/commit/2bfb4e2f955b7e3094c3e4ae07569f43f4f382d4))
+
 ## [1.9.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.4...v1.9.5) (2026-08-21)
 
 
