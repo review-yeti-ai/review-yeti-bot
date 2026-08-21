@@ -409,3 +409,78 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
     });
   });
 });
+
+describe('Transport-scoped OpenRouter policy (regression: Fireworks-primary runs died)', () => {
+  // Production failure this pins, from cisco-cdr PR 4467 run 32493171244:
+  //   [Review Yeti smoke] resolved_transport=fireworks      (no DEGRADED marker)
+  //   Fatal error: OpenRouter review policy base url must normalize exactly to
+  //                https://openrouter.ai/api/v1
+  //   Review Yeti did not produce a verdict; an earlier workflow step failed
+  // The reusable workflow passes the winning transport's base url as
+  // `llm-base-url`, action.yml maps it onto OPENROUTER_BASE_URL, and the
+  // OpenRouter policy validator then rejected a base url that was never meant
+  // to be OpenRouter's.
+  const FIREWORKS_ENV = {
+    FIREWORKS_PR_REVIEW_API_KEY: 'test-fireworks-key',
+    OPENROUTER_BASE_URL: 'https://api.fireworks.ai/inference/v1',
+    REVIEW_YETI_TRANSPORTS: JSON.stringify([
+      {
+        name: 'fireworks',
+        base_url: 'https://api.fireworks.ai/inference/v1',
+        api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY',
+        model: 'accounts/fireworks/models/test',
+        compat: 'openai',
+      },
+    ]),
+  };
+
+  it('does not throw when the winning transport is not OpenRouter', () => {
+    expect(() => pipeline.resolveActionReviewRuntime({ parsed: {} }, FIREWORKS_ENV)).not.toThrow();
+  });
+
+  it('keeps the resolved transport base url and model instead of forcing OpenRouter', () => {
+    const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, FIREWORKS_ENV);
+    expect(runtime.modelConfig.baseUrl).toBe('https://api.fireworks.ai/inference/v1');
+    expect(runtime.modelConfig.model).toBe('accounts/fireworks/models/test');
+  });
+
+  it('attaches no OpenRouter policy to a non-OpenRouter run, and says so', () => {
+    const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, FIREWORKS_ENV);
+    expect(runtime.modelConfig.openRouterPolicy ?? null).toBeNull();
+    expect(runtime.notes.join(' ')).toMatch(/not OpenRouter/i);
+  });
+
+  it('still applies the full OpenRouter policy when OpenRouter is the transport', () => {
+    const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+      OPENROUTER_REVIEW_FLEET_KEY: 'test-openrouter-key',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+      OPENROUTER_MODEL: 'openrouter/auto',
+    });
+    // The pinning that protects real OpenRouter requests must be untouched.
+    expect(runtime.modelConfig.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(runtime.modelConfig.openRouterPolicy).toBeTruthy();
+    expect(runtime.modelConfig.openRouterPolicy.data_collection).toBe('deny');
+    expect(runtime.modelConfig.openRouterPolicy.policy_fingerprint).toEqual(expect.any(String));
+  });
+
+  it('admitting a host to the OpenRouter path is not a bypass of the exact-url validator', () => {
+    // https://openrouter.ai/api/v2 has the right HOST, so isOpenRouterBaseUrl
+    // admits it and the OpenRouter policy is applied — and the exact-url
+    // validator must then still reject it. This pins that the new predicate
+    // widened only *which runs are checked*, never *how strictly*.
+    expect(() => pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+      OPENROUTER_REVIEW_FLEET_KEY: 'test-openrouter-key',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v2',
+    })).toThrow(/must normalize exactly/);
+  });
+
+  it('a non-OpenRouter host is not silently promoted onto the OpenRouter path', () => {
+    // Guards the other direction: a look-alike host must be treated as
+    // non-OpenRouter (no policy), not as OpenRouter.
+    const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+      FIREWORKS_PR_REVIEW_API_KEY: 'test-fireworks-key',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai.evil.example/api/v1',
+    });
+    expect(runtime.modelConfig.openRouterPolicy ?? null).toBeNull();
+  });
+});

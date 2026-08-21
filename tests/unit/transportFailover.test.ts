@@ -151,3 +151,75 @@ describe('Multi-Transport Fast Failover', () => {
     expect(config.transports[2].apiKey).toBe('secret-openrouter');
   });
 });
+
+describe('OpenRouter request policy is scoped to OpenRouter transports', () => {
+  beforeEach(() => {
+    if (globalRunCircuitBreaker?.reset) globalRunCircuitBreaker.reset();
+  });
+
+  it('never posts OpenRouter-only plugins/provider to a non-OpenRouter transport', async () => {
+    // `requestOptions` built from the OpenRouter policy carries the auto-router
+    // plugin and the data_collection provider block. Those are OpenRouter API
+    // concepts; sending them to Fireworks/Ollama is a malformed request to that
+    // provider. Only the OpenRouter transport may receive them.
+    const policyPath = path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js');
+    const { DEFAULT_OPENROUTER_REVIEW_POLICY } = require(policyPath);
+
+    const bodiesByHost: Record<string, any> = {};
+    const mockFetch = async (url: string, init: any) => {
+      const host = new URL(url).host;
+      bodiesByHost[host] = JSON.parse(init.body);
+      if (host.includes('fireworks')) {
+        return { ok: false, status: 429, text: async () => JSON.stringify({ error: { message: 'Queue full' } }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model: 'openrouter/auto',
+          choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      };
+    };
+
+    await reviewWithModel(
+      { id: 'security', name: 'Security & Tenancy Guardian', charter: 'Check tenant scope' },
+      [{ path: 'lib/orders.ex', patch: '+ def list_orders do' }],
+      { repo: 'acme/test', prNumber: 1 },
+      null,
+      {
+        fetchImplementation: mockFetch,
+        openRouterPolicy: DEFAULT_OPENROUTER_REVIEW_POLICY,
+        transports: [
+          {
+            name: 'fireworks',
+            baseUrl: 'https://api.fireworks.ai/inference/v1',
+            apiKey: 'fw-key',
+            model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+          },
+          {
+            name: 'openrouter-fallback',
+            baseUrl: 'https://openrouter.ai/api/v1',
+            apiKey: 'or-key',
+            model: 'openrouter/auto',
+          },
+        ],
+      },
+    );
+
+    const fireworksBody = bodiesByHost['api.fireworks.ai'];
+    const openRouterBody = bodiesByHost['openrouter.ai'];
+
+    expect(fireworksBody, 'fireworks transport should have been attempted').toBeTruthy();
+    expect(openRouterBody, 'openrouter transport should have been attempted').toBeTruthy();
+
+    // The regression: these were populated for every transport.
+    expect(fireworksBody.plugins).toBeUndefined();
+    expect(fireworksBody.provider).toBeUndefined();
+
+    // OpenRouter still gets its policy.
+    expect(openRouterBody.plugins).toBeTruthy();
+    expect(openRouterBody.provider).toBeTruthy();
+  });
+});

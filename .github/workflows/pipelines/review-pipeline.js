@@ -18,6 +18,7 @@ const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanit
 const {
   resolveOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,
+  isOpenRouterBaseUrl,
 } = require('./openrouter-policy');
 
 let mcpFleetManager = null;
@@ -554,10 +555,22 @@ function resolveActionReviewRuntime(localConfig = null, env = process.env) {
     ? localConfig.parsed.reviewers.providers
     : [];
   const actionPolicy = resolveActionReviewPolicy(localConfig, env);
-  const openRouterPolicy = resolveOpenRouterReviewPolicy({
-    actionInputs: trustedOpenRouterInputsFromEnv(env),
-    trustedConfig,
-  });
+  const baseModelConfig = resolveModelConfig(env);
+
+  // The smoke step hands us the base url of whichever transport won, via the
+  // generic `llm-base-url` action input (action.yml maps it onto the
+  // OPENROUTER_BASE_URL env var, which is why this reads as OpenRouter-specific
+  // when it is not). Only build an OpenRouter policy when the effective
+  // transport really is OpenRouter: validateOpenRouterReviewPolicy demands the
+  // base url normalize exactly to OpenRouter's, so applying it to a Fireworks
+  // or Ollama transport threw and killed the run before any verdict existed.
+  const usesOpenRouter = isOpenRouterBaseUrl(baseModelConfig.baseUrl);
+  const openRouterPolicy = usesOpenRouter
+    ? resolveOpenRouterReviewPolicy({
+        actionInputs: trustedOpenRouterInputsFromEnv(env),
+        trustedConfig,
+      })
+    : null;
   const localReviewerProviderIds = localProviders
     .map((provider) => {
       if (typeof provider === 'string') return provider.trim();
@@ -566,13 +579,25 @@ function resolveActionReviewRuntime(localConfig = null, env = process.env) {
     })
     .filter(Boolean);
   const modelConfig = {
-    ...resolveModelConfig(env),
-    baseUrl: openRouterPolicy.base_url,
-    model: openRouterPolicy.model,
-    openRouterPolicy,
+    ...baseModelConfig,
+    ...(openRouterPolicy
+      ? {
+          baseUrl: openRouterPolicy.base_url,
+          model: openRouterPolicy.model,
+          openRouterPolicy,
+        }
+      : {}),
     maxDiffChars: actionPolicy.maxDiffChars,
   };
   const notes = [];
+
+  if (!usesOpenRouter) {
+    notes.push(
+      `Effective transport base url (${baseModelConfig.baseUrl}) is not OpenRouter; ` +
+      `the OpenRouter request policy (auto-router plugin, canonical allowed_models, ` +
+      `data_collection) is not applied to this run.`
+    );
+  }
 
   if (localReviewerProviderIds.length > 0) {
     notes.push(
@@ -1212,11 +1237,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         requestBody.reasoning_effort = reasoningEffort;
       }
 
-      if (transport.plugins || requestOptions?.plugins) {
-        requestBody.plugins = transport.plugins || requestOptions?.plugins;
+      // `requestOptions` carries the OpenRouter request policy (auto-router
+      // plugin + data_collection provider block). A transport's own plugins /
+      // provider always win; the OpenRouter fallback may only be applied when
+      // this specific transport is actually OpenRouter, otherwise we post
+      // OpenRouter-only fields to Fireworks/Ollama/Anthropic.
+      const transportUsesOpenRouter = isOpenRouterBaseUrl(transportBaseUrl);
+      const fallbackPlugins = transportUsesOpenRouter ? requestOptions?.plugins : undefined;
+      const fallbackProvider = transportUsesOpenRouter ? requestOptions?.provider : undefined;
+
+      if (transport.plugins || fallbackPlugins) {
+        requestBody.plugins = transport.plugins || fallbackPlugins;
       }
-      if (transport.provider || requestOptions?.provider) {
-        requestBody.provider = transport.provider || requestOptions?.provider;
+      if (transport.provider || fallbackProvider) {
+        requestBody.provider = transport.provider || fallbackProvider;
       }
 
       let heartbeatTimer = null;

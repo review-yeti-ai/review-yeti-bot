@@ -50,6 +50,29 @@ function normalizeBaseUrl(value) {
   return value.trim().replace(/\/+$/, '');
 }
 
+/**
+ * True when a base url actually addresses OpenRouter.
+ *
+ * The review pipeline runs a multi-transport panel (OpenRouter, Fireworks,
+ * Ollama, ...). Everything in this module — the auto-router plugin, the
+ * canonical allowed-model set, the data_collection provider block — is
+ * OpenRouter-specific and must only be applied to OpenRouter requests. This
+ * predicate is the guard that keeps that scoping honest; without it an
+ * OpenRouter policy gets validated against, and injected into, a request bound
+ * for a different provider.
+ *
+ * Host comparison (not prefix matching) so that neither a look-alike host nor a
+ * trailing-slash/case difference changes the answer.
+ */
+function isOpenRouterBaseUrl(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return false;
+  try {
+    return new URL(value.trim()).host.toLowerCase() === new URL(OPENROUTER_BASE_URL).host;
+  } catch (_) {
+    return false;
+  }
+}
+
 function normalizeAllowedModels(value) {
   if (!Array.isArray(value)) {
     throw new Error('OpenRouter review policy allowed_models must be an array');
@@ -221,6 +244,7 @@ function buildOpenRouterRequestOptions(policy) {
 
 module.exports = {
   DEFAULT_OPENROUTER_REVIEW_POLICY,
+  isOpenRouterBaseUrl,
   resolveOpenRouterReviewPolicy,
   validateOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,
