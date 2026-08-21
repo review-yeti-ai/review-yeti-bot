@@ -70,6 +70,34 @@ try {
 }
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
+const DEFAULT_PERSONA_CONCURRENCY = 3;
+
+function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURRENCY) {
+  if (value === undefined || value === null || value === '') return DEFAULT_PERSONA_CONCURRENCY;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 25) {
+    throw new Error('REVIEW_YETI_MAX_CONCURRENCY must be an integer between 1 and 25');
+  }
+  return parsed;
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const limit = Math.min(resolvePersonaConcurrency(concurrency), items.length);
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  return results;
+}
 
 // Whitelabel display name used in the posted comment. Override with BOT_NAME.
 const BOT_LABEL = process.env.BOT_NAME || 'AI Review Panel';
@@ -2769,22 +2797,29 @@ async function main() {
     };
   } else {
     if (modelConfig.enabled) {
+      const personaConcurrency = resolvePersonaConcurrency();
       if (partitionPlan && partitionPlan.partitions.length > 1) {
-        console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) across ${partitionPlan.partitions.length} partitions to ${modelConfig.model}...`);
-        const partitionRuns = await Promise.all(
-          partitionPlan.partitions.map(async (partition) => {
+        console.log(`[Bounded Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) across ${partitionPlan.partitions.length} partitions to ${modelConfig.model} with concurrency ${personaConcurrency}...`);
+        const reviewJobs = partitionPlan.partitions.flatMap((partition) =>
+          enabledPersonas.map((persona) => ({ partition, persona }))
+        );
+        const reviewResults = await mapWithConcurrency(
+          reviewJobs,
+          personaConcurrency,
+          async ({ partition, persona }) => {
             const partitionOptions = {
               ...modelConfig,
               partition,
               partitionPlan,
               maxDiffChars: safeDiffCapacityChars,
             };
-            return Promise.all(
-              enabledPersonas.map((persona) =>
-                reviewWithModel(persona, partition.files, prContext, sessionContext, partitionOptions)
-              )
-            );
-          })
+            return reviewWithModel(persona, partition.files, prContext, sessionContext, partitionOptions);
+          }
+        );
+        const partitionRuns = partitionPlan.partitions.map((_, partitionIndex) =>
+          enabledPersonas.map((_, personaIndex) =>
+            reviewResults[(partitionIndex * enabledPersonas.length) + personaIndex]
+          )
         );
 
         // Aggregate results per persona across partitions
@@ -2817,9 +2852,11 @@ async function main() {
           };
         });
       } else {
-        console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
-        personaResults = await Promise.all(
-          enabledPersonas.map((persona) => reviewWithModel(persona, reviewDiffFiles, prContext, sessionContext, modelConfig))
+        console.log(`[Bounded Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl} with concurrency ${personaConcurrency}...`);
+        personaResults = await mapWithConcurrency(
+          enabledPersonas,
+          personaConcurrency,
+          (persona) => reviewWithModel(persona, reviewDiffFiles, prContext, sessionContext, modelConfig)
         );
       }
 
@@ -2942,6 +2979,8 @@ module.exports = {
   globalRunCircuitBreaker,
   isSubscriptionLane,
   calculateSafeDiffCapacity,
+  resolvePersonaConcurrency,
+  mapWithConcurrency,
   getStaticModelContext,
   formatCost,
   shaPartitionManager,
