@@ -13,7 +13,7 @@
   <rect width="1040" height="620" rx="12" class="bg" />
 
   <!-- Title & Subtitle -->
-  <text x="85" y="36" class="title">Pareto Frontier: Verdict Accuracy vs. Total Cost</text>
+  <text x="85" y="36" class="title">Pareto Frontier: Verdict Accuracy vs. Total Cost (v1.8.4 - 12 Configurations)</text>
   <text x="85" y="56" class="subtitle">Higher is better for Accuracy (Y), Lower is better for Cost (X) • Highlighted Halo = Pareto Optimal Frontier</text>
 
   <!-- Axes & Grid -->

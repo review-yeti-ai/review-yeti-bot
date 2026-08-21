@@ -200,27 +200,39 @@ export async function generateBaselineV6() {
     ];
   }
 
-  // Ensure JSON metadata has version v6
-  report.version = 'v6';
+  // Parse CLI version argument if provided (e.g. --version=v1.8.4 or --save-baseline=v1.8.4)
+  let targetVersion = 'v1.8.4';
+  for (const arg of process.argv.slice(2)) {
+    if (arg.startsWith('--version=')) targetVersion = arg.slice('--version='.length);
+    else if (arg.startsWith('--save-baseline=')) targetVersion = arg.slice('--save-baseline='.length);
+  }
 
-  // Save Baseline v6 JSON & MD
-  const outJsonPath = path.resolve(projectRoot, 'eval-baselines/model-benchmark-matrix-v6.json');
-  const outMdPath = path.resolve(projectRoot, 'eval-baselines/model-benchmark-matrix-v6.md');
+  report.version = targetVersion;
+
+  // Save Versioned JSON & MD
+  const outJsonPath = path.resolve(projectRoot, `eval-baselines/model-benchmark-matrix-${targetVersion}.json`);
+  const outMdPath = path.resolve(projectRoot, `eval-baselines/model-benchmark-matrix-${targetVersion}.md`);
+  const fallbackJsonPath = path.resolve(projectRoot, 'eval-baselines/model-benchmark-matrix-v6.json');
+  const fallbackMdPath = path.resolve(projectRoot, 'eval-baselines/model-benchmark-matrix-v6.md');
   const chartsDir = path.resolve(projectRoot, 'eval-baselines/charts');
 
   if (!fs.existsSync(chartsDir)) {
     fs.mkdirSync(chartsDir, { recursive: true });
   }
 
-  fs.writeFileSync(outJsonPath, JSON.stringify(report, null, 2), 'utf8');
-  console.log(`✅ Saved Baseline v6 JSON to ${outJsonPath}`);
+  const jsonContent = JSON.stringify(report, null, 2);
+  fs.writeFileSync(outJsonPath, jsonContent, 'utf8');
+  fs.writeFileSync(fallbackJsonPath, jsonContent, 'utf8');
+  console.log(`✅ Saved Baseline JSON to ${outJsonPath} and ${fallbackJsonPath}`);
 
-  // Generate SVG Pareto Chart
+  // Generate SVG Pareto Chart with all 12 variants
   const points = extractModelPoints(report.summary);
-  const paretoSvg = generateParetoFrontierSVG(points, 'Pareto Frontier: Verdict Accuracy vs. Total Cost (12 Configurations)');
-  const svgPath = path.join(chartsDir, 'pareto-frontier-accuracy-vs-cost.svg');
+  const paretoSvg = generateParetoFrontierSVG(points, `Pareto Frontier: Verdict Accuracy vs. Total Cost (${targetVersion} - 12 Configurations)`);
+  const svgPath = path.join(chartsDir, `pareto-frontier-accuracy-vs-cost-${targetVersion}.svg`);
+  const defaultSvgPath = path.join(chartsDir, 'pareto-frontier-accuracy-vs-cost.svg');
   fs.writeFileSync(svgPath, paretoSvg, 'utf8');
-  console.log(`✅ Saved Pareto Frontier SVG to ${svgPath}`);
+  fs.writeFileSync(defaultSvgPath, paretoSvg, 'utf8');
+  console.log(`✅ Saved Pareto Frontier SVG to ${svgPath} and ${defaultSvgPath}`);
 
   // Generate Markdown report with Pareto section and chart link
   let mdContent = formatMarkdownReport(report);
@@ -234,17 +246,18 @@ export async function generateBaselineV6() {
   }
 
   // Add Chart Link
-  mdContent = mdContent.replace('# Model Comparative Evaluation & Benchmark Report', `# Model Comparative Evaluation & Benchmark Report\n\n![Pareto Frontier Chart](charts/pareto-frontier-accuracy-vs-cost.svg)`);
+  mdContent = mdContent.replace('# Model Comparative Evaluation & Benchmark Report', `# Model Comparative Evaluation & Benchmark Report (${targetVersion})\n\n![Pareto Frontier Chart](charts/pareto-frontier-accuracy-vs-cost-${targetVersion}.svg)`);
 
   fs.writeFileSync(outMdPath, mdContent, 'utf8');
-  console.log(`✅ Saved Baseline v6 Markdown to ${outMdPath}`);
+  fs.writeFileSync(fallbackMdPath, mdContent, 'utf8');
+  console.log(`✅ Saved Baseline Markdown to ${outMdPath} and ${fallbackMdPath}`);
 
   return report;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   generateBaselineV6().catch((err) => {
-    console.error('Fatal error generating baseline v6:', err);
+    console.error('Fatal error generating baseline:', err);
     process.exit(1);
   });
 }
