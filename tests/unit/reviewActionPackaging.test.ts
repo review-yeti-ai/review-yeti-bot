@@ -79,10 +79,16 @@ describe('action.yml — installable GitHub Action contract', () => {
 
 describe('Pi runtime packaging contract', () => {
   it('rejects unsafe installer directory boundaries and accepts a disposable nested path', () => {
-    expect(isBoundedDirectory(path.parse(path.resolve(path.sep)).root)).toBe(false);
+    const root = path.parse(path.resolve(path.sep)).root;
+    expect(isBoundedDirectory(root)).toBe(false);
     expect(isBoundedDirectory(os.homedir())).toBe(false);
     expect(isBoundedDirectory('')).toBe(false);
     expect(isBoundedDirectory('/a')).toBe(false);
+    expect(isBoundedDirectory(path.join(root, '1234567'))).toBe(false);
+    expect(isBoundedDirectory(path.join(root, '12345678'))).toBe(true);
+    expect(isBoundedDirectory(null as any)).toBe(false);
+    expect(isBoundedDirectory(42 as any)).toBe(false);
+    expect(isBoundedDirectory({} as any)).toBe(false);
     expect(isBoundedDirectory(path.join(os.tmpdir(), 'review-yeti-pi-runtime-123'))).toBe(true);
   });
 
