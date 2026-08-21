@@ -380,6 +380,29 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       baseSha: 'exact-base',
     }, { commandRunner })).toThrow('PR head changed during review');
   });
+
+  it('bounds persona work without dropping results or changing their order', async () => {
+    let active = 0;
+    let maxActive = 0;
+
+    const results = await pipeline.mapWithConcurrency([1, 2, 3, 4, 5, 6], 3, async (value: number) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return value * 2;
+    });
+
+    expect(results).toEqual([2, 4, 6, 8, 10, 12]);
+    expect(maxActive).toBe(3);
+  });
+
+  it('defaults persona concurrency to three and rejects unsafe overrides', () => {
+    expect(pipeline.resolvePersonaConcurrency()).toBe(3);
+    expect(pipeline.resolvePersonaConcurrency('2')).toBe(2);
+    expect(() => pipeline.resolvePersonaConcurrency('0')).toThrow('between 1 and 25');
+    expect(() => pipeline.resolvePersonaConcurrency('many')).toThrow('between 1 and 25');
+  });
 });
 
 describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', () => {
