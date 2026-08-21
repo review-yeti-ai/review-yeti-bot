@@ -241,6 +241,53 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[1].body.reasoning_effort).toBe('medium');
   });
 
+  it('retries unparseable output once on the final transport with a bounded format-recovery request', async () => {
+    const requestBodies: any[] = [];
+    const mockFetch = async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      requestBodies.push(body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{
+            message: {
+              content: requestBodies.length === 1
+                ? ''
+                : JSON.stringify({ findings: [] }),
+            },
+          }],
+        }),
+      };
+    };
+
+    const result = await reviewWithModel(
+      { id: 'security', name: 'Security & Tenancy Guardian', charter: 'Check tenant scope', reasoning_effort: 'high' },
+      [{ path: 'lib/orders.ex', patch: '+ def list_orders do' }],
+      { repo: 'acme/test', prNumber: 1 },
+      null,
+      {
+        fetchImplementation: mockFetch,
+        transports: [{
+          name: 'openrouter-fallback',
+          compat: 'openrouter',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          apiKey: 'or-key',
+          model: 'deepseek/deepseek-v4-flash-0731',
+          reasoning_effort: 'high',
+        }],
+      },
+    );
+
+    expect(result.decision).toBe('APPROVE');
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0].max_tokens).toBe(1024);
+    expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
+    expect(requestBodies[1].max_tokens).toBe(4096);
+    expect(requestBodies[1].reasoning).toEqual({ effort: 'low' });
+    expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
+  });
+
   it('correctly resolves and authenticates all configured candidate transports in resolveModelConfig', () => {
     const env = {
       FIREWORKS_PR_REVIEW_API_KEY: 'secret-fw',
