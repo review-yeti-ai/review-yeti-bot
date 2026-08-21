@@ -3,7 +3,7 @@ import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { ReviewModelClient, OpenRouterResponse } from '../../src/gateway/openRouterClient';
 
-describe('Panel Engine Parallel Execution & Dynamic Turn Capping', () => {
+describe('Panel Engine Parallel Execution', () => {
   const mockConfig: CtReviewConfigV3 = {
     version: '3.0',
     enabled: true,
