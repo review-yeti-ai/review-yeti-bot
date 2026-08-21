@@ -1,0 +1,33 @@
+name: Update Rolling Major Tag (v1)
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v1.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-v1-tag:
+    name: Update v1 Major Tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update and Force Push v1 Tag
+        run: |
+          git tag -fa v1 -m "Update v1 major tag to ${GITHUB_SHA}"
+          git push -f origin v1
+          echo "Successfully updated v1 tag to ${GITHUB_SHA} on origin"

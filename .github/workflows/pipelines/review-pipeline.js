@@ -1135,6 +1135,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         response_format: { type: 'json_object' },
       };
 
+      const reasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
+      if (reasoningEffort) {
+        requestBody.reasoning_effort = reasoningEffort;
+      }
+
       if (transport.plugins || requestOptions?.plugins) {
         requestBody.plugins = transport.plugins || requestOptions?.plugins;
       }
@@ -1860,6 +1865,7 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
         name: fp.name || builtin?.name || `🔎 ${fp.id}`,
         model: fp.model || builtin?.model || DEFAULT_MODEL,
         charter: fp.charter,
+        reasoningEffort: fp.reasoning_effort || fp.reasoningEffort || fp.effort,
       },
       enabled: fp.enabled !== false,
       source: fp.source || PERSONA_DIR,
@@ -1908,6 +1914,7 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
         name: entry.name || builtin?.name || `🔎 ${id}`,
         model: entry.model || builtin?.model || DEFAULT_MODEL,
         charter: charter || builtin.charter,
+        reasoningEffort: entry.reasoning_effort || entry.reasoningEffort || entry.effort,
       },
       enabled: entry.enabled !== false,
       source: localConfig.file,
