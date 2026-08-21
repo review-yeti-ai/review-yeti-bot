@@ -1,8 +1,8 @@
-# Model Comparative Evaluation & Benchmark Report (v1.8.4)
+# Model Comparative Evaluation & Benchmark Report (v1.9.6)
 
-![Pareto Frontier Chart](charts/pareto-frontier-accuracy-vs-cost-v1.8.4.svg)
+![Pareto Frontier Chart](charts/pareto-frontier-accuracy-vs-cost-v1.9.6.svg)
 
-**Generated**: 2026-08-21T15:30:35.377Z
+**Generated**: 2026-08-21T19:39:24.421Z
 **Evaluated Models**: deepseek/deepseek-v4-flash-0731:low, deepseek/deepseek-v4-flash-0731:medium, deepseek/deepseek-v4-flash-0731:high, google/gemini-3.7-flash:low, google/gemini-3.7-flash:medium, google/gemini-3.7-flash:high, claude-5-haiku:low, claude-5-haiku:medium, claude-5-haiku:high, claude-5-sonnet, openrouter/5.6-luna-low, openrouter/5.6-luna-medium, openrouter/5.6-luna-high, qwen/qwen-3.8-27b:low, qwen/qwen-3.8-27b:medium, qwen/qwen-3.8-27b:high
 **Total Scenarios**: 190
 
