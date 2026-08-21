@@ -302,6 +302,38 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
+  it('keeps the bounded default for unknown direct-compatible transports', async () => {
+    const requestBodies: any[] = [];
+    const mockFetch = async (_url: string, init: any) => {
+      requestBodies.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [] }) } }] }),
+      };
+    };
+
+    await reviewWithModel(
+      { id: 'security', name: 'Security & Tenancy Guardian', charter: 'Check tenant scope', reasoning_effort: 'high' },
+      [{ path: 'lib/orders.ex', patch: '+ def list_orders do' }],
+      { repo: 'acme/test', prNumber: 1 },
+      null,
+      {
+        fetchImplementation: mockFetch,
+        transports: [{
+          name: 'custom-compatible',
+          baseUrl: 'https://llm.example/v1',
+          apiKey: 'custom-key',
+          model: 'deepseek-v4-flash:cloud',
+          reasoning_effort: 'high',
+        }],
+      },
+    );
+
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0].max_tokens).toBe(1024);
+  });
+
   it('correctly resolves and authenticates all configured candidate transports in resolveModelConfig', () => {
     const env = {
       FIREWORKS_PR_REVIEW_API_KEY: 'secret-fw',
