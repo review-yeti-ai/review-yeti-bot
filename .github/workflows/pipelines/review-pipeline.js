@@ -1208,6 +1208,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const transportApiKey = transport.apiKey || transport.api_key || cfg.apiKey;
       const transportBaseUrl = (transport.baseUrl || transport.base_url || cfg.baseUrl).replace(/\/+$/, '');
       const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
+      const isOpenRouterTransport =
+        String(transport.provider || '').toLowerCase() === 'openrouter' ||
+        String(transport.compat || '').toLowerCase() === 'openrouter' ||
+        transportBaseUrl.toLowerCase().includes('openrouter.ai');
 
       resultBase = { ...resultBase, model: requestModel, transport: transportName };
 
@@ -1226,10 +1230,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         requestBody.reasoning_effort = reasoningEffort;
       }
 
-      if (transport.plugins || requestOptions?.plugins) {
+      if (transport.plugins || (isOpenRouterTransport && requestOptions?.plugins)) {
         requestBody.plugins = transport.plugins || requestOptions?.plugins;
       }
-      if (transport.provider || requestOptions?.provider) {
+      if (transport.provider || (isOpenRouterTransport && requestOptions?.provider)) {
         requestBody.provider = transport.provider || requestOptions?.provider;
       }
 
