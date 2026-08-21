@@ -45,7 +45,7 @@ const { calculatePipelineMetrics } = require('../src/evaluation/pipelineHarnessR
 const { ReviewCassetteReplayer } = require('../src/evaluation/reviewCassetteEngine');
 const { EvaluationRunner, formatMarkdownReport, formatJSONReport } = require('../src/evaluation/evaluationRunner');
 
-export const BENCHMARK_ROSTER_15 = [
+export const BENCHMARK_ROSTER_16 = [
   'deepseek/deepseek-v4-flash-0731:low',
   'deepseek/deepseek-v4-flash-0731:medium',
   'deepseek/deepseek-v4-flash-0731:high',
@@ -55,6 +55,7 @@ export const BENCHMARK_ROSTER_15 = [
   'claude-5-haiku:low',
   'claude-5-haiku:medium',
   'claude-5-haiku:high',
+  'claude-5-sonnet',
   'openrouter/5.6-luna-low',
   'openrouter/5.6-luna-medium',
   'openrouter/5.6-luna-high',
@@ -68,10 +69,10 @@ export async function generateBaselineV6() {
   const replayer = new ReviewCassetteReplayer();
   const runner = new EvaluationRunner({ offline: true });
 
-  console.log(`🚀 Evaluating 15-point model roster across ${scenarios.length} scenarios...`);
+  console.log(`🚀 Evaluating 16-point model roster across ${scenarios.length} scenarios...`);
 
-  // Run evaluation runner across the 15 models
-  const report = await runner.runBenchmarkSuite(BENCHMARK_ROSTER_15, scenarios, { offline: true });
+  // Run evaluation runner across the 16 models
+  const report = await runner.runBenchmarkSuite(BENCHMARK_ROSTER_16, scenarios, { offline: true });
 
   // For deepseek:low, overlay the empirical VCR cassette review recordings
   const dsLowKey = 'deepseek/deepseek-v4-flash-0731:low';
