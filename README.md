@@ -378,8 +378,8 @@ Its REST endpoints:
 
 ### Trusted Pi workflow runtime
 
-The optional `review-engine: pi-workflow` path installs the pinned Pi runtime from this Action's
-lockfile into an empty bounded prefix. It requires caller-provisioned Node 24, an exact
+The optional `review-engine: pi-workflow` path installs the pinned Pi runtime from the small
+`pi-runtime/package-lock.json` manifest into an empty bounded prefix. It requires caller-provisioned Node 24, an exact
 `action-sha`, lifecycle scripts disabled during install, and source-bound build provenance before
 the wrapper is imported. `legacy` remains the default rollback path.
 

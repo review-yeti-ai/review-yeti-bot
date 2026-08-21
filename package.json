@@ -3,6 +3,15 @@
   "version": "1.8.4",
   "description": "Repository-configurable persona-panel GitHub App with binding arbitration",
   "main": "dist/index.js",
+  "files": [
+    "action.yml",
+    ".github/workflows/pipelines/",
+    "src/",
+    "scripts/",
+    "pi-runtime/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "generate:providers": "ts-node scripts/generate-omniroute-providers.ts",
     "build:frontend": "node scripts/clean-frontend.js && next build && node scripts/postbuild.js",

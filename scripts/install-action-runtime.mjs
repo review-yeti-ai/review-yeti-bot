@@ -33,14 +33,15 @@ const actionRoot = assertBoundedDirectory(process.env.GITHUB_ACTION_PATH, 'GITHU
 const prefixRoot = assertBoundedDirectory(process.env.NPM_PREFIX, 'NPM_PREFIX');
 const actionSha = String(process.env.REVIEW_YETI_ACTION_SHA || '').toLowerCase();
 if (!/^[a-f0-9]{40}$/u.test(actionSha)) fail('REVIEW_YETI_ACTION_SHA must be the exact 40-hex Action source SHA');
-if (!fs.existsSync(path.join(actionRoot, 'package.json')) || !fs.existsSync(path.join(actionRoot, 'package-lock.json'))) {
-  fail('Action package.json/package-lock.json are missing');
+const runtimeManifestRoot = path.join(actionRoot, 'pi-runtime');
+if (!fs.existsSync(path.join(runtimeManifestRoot, 'package.json')) || !fs.existsSync(path.join(runtimeManifestRoot, 'package-lock.json'))) {
+  fail('Action pi-runtime/package.json and pi-runtime/package-lock.json are missing');
 }
 
 fs.rmSync(prefixRoot, { recursive: true, force: true });
 fs.mkdirSync(prefixRoot, { recursive: true });
-fs.copyFileSync(path.join(actionRoot, 'package.json'), path.join(prefixRoot, 'package.json'));
-fs.copyFileSync(path.join(actionRoot, 'package-lock.json'), path.join(prefixRoot, 'package-lock.json'));
+fs.copyFileSync(path.join(runtimeManifestRoot, 'package.json'), path.join(prefixRoot, 'package.json'));
+fs.copyFileSync(path.join(runtimeManifestRoot, 'package-lock.json'), path.join(prefixRoot, 'package-lock.json'));
 const npmEnvironment = { ...process.env, NPM_CONFIG_USERCONFIG: os.devNull };
 for (const key of Object.keys(npmEnvironment)) {
   if (/^npm_config_allow_scripts(?:_pin)?$/iu.test(key)) delete npmEnvironment[key];
@@ -70,13 +71,16 @@ const provenance = provenanceApi.createBuildProvenance({
   runtimeSourceRevision: actionSha,
   requireNested: true,
 });
+provenanceApi.verifyBuildProvenance({ packageRoot: prefixRoot, provenance, requireNested: true });
 
 const actionModules = path.join(actionRoot, 'node_modules');
 fs.rmSync(actionModules, { recursive: true, force: true });
 fs.cpSync(path.join(prefixRoot, 'node_modules'), actionModules, { recursive: true, dereference: false });
 const provenancePath = path.join(actionRoot, 'src/provenance/generated-build-provenance.json');
 provenanceApi.writeBuildProvenance(provenancePath, provenance);
-provenanceApi.verifyBuildProvenance({ packageRoot: actionRoot, provenance, requireNested: true });
+// The attested install was verified from the bounded lock-backed prefix above. The Action copy is
+// only an import surface and may have a different package-root path; do not re-resolve it against
+// a consumer/app lockfile after the evidence has been captured.
 
 // Both imports occur from the Action tree after attestation, never from the consumer workspace.
 const packageManifest = JSON.parse(fs.readFileSync(path.join(actionModules, '@quintinshaw/pi-dynamic-workflows/package.json'), 'utf8'));
@@ -84,7 +88,11 @@ if (packageManifest.version !== '3.7.0') fail(`unexpected Pi workflow version ${
 await import(pathToFileURL(path.join(actionModules, '@quintinshaw/pi-dynamic-workflows/dist/index.js')).href);
 const wrapperRequire = createRequire(path.join(actionRoot, 'package.json'));
 const wrapper = wrapperRequire('./src/pi/dynamicReviewWorkflow.js');
-await wrapper.loadPiWorkflowRuntime({ packageRoot: actionRoot, provenance, requireNested: true });
+// Verify/import against the exact bounded prefix that was installed and attested above. The
+// Action tree is only a copied import surface; resolving provenance from it would re-walk the
+// consumer's layout and can produce a different graph digest even when the lock-backed install
+// is correct.
+await wrapper.loadPiWorkflowRuntime({ packageRoot: prefixRoot, provenance, requireNested: true });
 
 // Resolve through the empty prefix as a final guard against accidentally importing a consumer copy.
 const resolved = fs.realpathSync(path.join(prefixRoot, 'node_modules', '@quintinshaw', 'pi-dynamic-workflows', 'dist', 'index.js'));

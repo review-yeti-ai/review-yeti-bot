@@ -93,15 +93,37 @@ function lockIntegrityMap(packageRoot) {
 }
 
 function graphDigest(graph) {
-  return sha256(canonicalJson({ roots: graph.roots, packages: graph.packages }));
+  // Package managers may legally place the same bundled closure at different nested paths
+  // (for example, an ordinary consumer install can nest a peer while the release workspace
+  // hoists it one level). Bind the attestation to package identity, content, integrity, and
+  // resolved dependency identities—not to the consumer-specific filesystem layout.
+  const packages = graph.packages.map((entry) => ({
+    name: entry.name,
+    version: entry.version,
+    integrity: entry.integrity,
+    contentDigest: entry.contentDigest,
+    dependencies: (entry.dependencies || []).map((dependency) => ({
+      name: dependency.name,
+      version: dependency.version,
+    })).sort((left, right) => `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`, 'en')),
+  })).sort((left, right) => `${left.name}@${left.version}:${left.contentDigest}`.localeCompare(`${right.name}@${right.version}:${right.contentDigest}`, 'en'));
+  return sha256(canonicalJson({ roots: graph.roots, packages }));
 }
 
 function runtimeGraphFromInstall(options = {}) {
   const packageRoot = fs.realpathSync(path.resolve(options.packageRoot || path.resolve(__dirname, '../..')));
   const nodeModulesRoot = path.join(packageRoot, 'node_modules');
   if (!fs.existsSync(nodeModulesRoot)) throw new Error(`runtime node_modules is missing under ${packageRoot}`);
+  const hasLockfile = fs.existsSync(path.join(packageRoot, 'package-lock.json'));
   const lockIntegrities = lockIntegrityMap(packageRoot);
   const suppliedIntegrities = new Map((options.integrities || []).map((entry) => [entry.path, entry.integrity]));
+  const suppliedIdentityIntegrities = new Map();
+  for (const entry of options.integrities || []) {
+    const key = `${entry.name}@${entry.version}`;
+    if (typeof entry.integrity === 'string' && !suppliedIdentityIntegrities.has(key)) {
+      suppliedIdentityIntegrities.set(key, entry.integrity);
+    }
+  }
   const requireNested = options.requireNested === true;
   const pending = [];
   for (const name of DIRECT_PI_RUNTIME_PACKAGES) {
@@ -128,12 +150,22 @@ function runtimeGraphFromInstall(options = {}) {
         if (optional) continue;
         throw new Error(`runtime dependency ${dependencyName} required by ${manifest.name}@${manifest.version} is missing`);
       }
+      // Optional peer packages resolved from the release workspace's top-level app install are
+      // not part of the Pi bundle and are not guaranteed to exist for an ordinary npm consumer.
+      // Ignore that ambient resolution; retain optional peers that are actually nested in the
+      // runtime closure.
+      const topLevelOptional = optional && dependencyDir === path.join(packageRoot, 'node_modules', ...dependencyName.split('/'));
+      if (topLevelOptional) continue;
       const dependencyPath = posixRelative(packageRoot, dependencyDir);
       if (!dependencyPath.startsWith('node_modules/')) throw new Error(`runtime dependency is hoisted outside the nested bundle: ${dependencyName}`);
-      dependencies.push(Object.freeze({ name: dependencyName, path: dependencyPath }));
+      const dependencyManifest = readJson(path.join(dependencyDir, 'package.json'), `${dependencyPath}/package.json`);
+      dependencies.push(Object.freeze({ name: dependencyName, version: dependencyManifest.version, path: dependencyPath }));
       pending.push(dependencyDir);
     }
-    const integrity = suppliedIntegrities.get(relativePath) || lockIntegrities.get(relativePath) || null;
+    const integrity = suppliedIntegrities.get(relativePath)
+      || lockIntegrities.get(relativePath)
+      || (!hasLockfile ? suppliedIdentityIntegrities.get(`${manifest.name}@${manifest.version}`) : null)
+      || null;
     if (options.requireIntegrities === true && !integrity) throw new Error(`lock integrity is missing for runtime package ${relativePath}`);
     visited.set(relativePath, Object.freeze({
       path: relativePath,

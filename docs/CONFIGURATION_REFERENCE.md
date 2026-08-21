@@ -6,7 +6,7 @@ This reference guide provides a complete, 1:1 schema specification for `.ct-revi
 
 `review-engine` defaults to `legacy`. Selecting `pi-workflow` requires the caller workflow to
 provision Node 24 before Review Yeti runs; the engine fails fast below Node 22.19.0. The composite
-Action installs only from Review Yeti's reviewed `package-lock.json` in an empty runner prefix with
+Action installs only from Review Yeti's reviewed `pi-runtime/package-lock.json` in an empty runner prefix with
 dependency lifecycle scripts disabled. It validates an exact 40-hex `action-sha`, generates
 `review-yeti-build-provenance.v1`, and attests the installed Pi closure before importing the trusted
 static wrapper. Target-repository and pull-request files cannot provide workflow source or Pi deps.
