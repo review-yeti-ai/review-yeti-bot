@@ -1553,6 +1553,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             }
             if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
               formatRecoveryAttempted = true;
+              // The final OpenRouter transport may be pinned to the same
+              // reasoning-heavy model that already exhausted its answer
+              // budget on the direct transports.  Recovery must change that
+              // failure domain: return to the centrally admitted auto-router
+              // so its allowed-model policy can select a JSON-capable model.
+              if (isOpenRouterTransport && cfg.model) {
+                requestBody.model = cfg.model;
+              }
               requestBody.max_tokens = Math.max(
                 requestBody.max_tokens,
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
@@ -1566,7 +1574,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 '- Keep reasoning brief and reserve output tokens for the final JSON object.',
                 '- Return only {"findings":[]} or the required findings object.',
               ].join('\n');
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once with low reasoning effort and a larger answer budget...`);
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once via ${requestBody.model} with low reasoning effort and a larger answer budget...`);
               continue;
             }
             return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
