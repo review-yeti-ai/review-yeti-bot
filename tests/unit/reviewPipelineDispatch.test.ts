@@ -71,6 +71,32 @@ describe('Dispatch path: persona resolution defaults', () => {
     })).toThrow('canonical five-model fleet');
   });
 
+  it('keeps OpenRouter policy canonical when a legacy caller supplies a provider transport handoff', () => {
+    const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+      OPENROUTER_API_KEY: 'selected-provider-key',
+      OPENROUTER_BASE_URL: 'https://api.fireworks.ai/inference/v1',
+      OPENROUTER_MODEL: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([
+        {
+          name: 'fireworks',
+          base_url: 'https://api.fireworks.ai/inference/v1',
+          model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+          api_key_env: 'OPENROUTER_API_KEY',
+        },
+      ]),
+    });
+
+    expect(runtime.modelConfig.openRouterPolicy).toMatchObject({
+      base_url: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/auto',
+    });
+    expect(runtime.modelConfig.transports[0]).toMatchObject({
+      name: 'fireworks',
+      baseUrl: 'https://api.fireworks.ai/inference/v1',
+      model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+    });
+  });
+
   it('defaults to the default reviewer set when nothing is configured', () => {
     expect(ids({}, null, {})).toEqual(['security', 'performance', 'architecture', 'testing', 'dependencies']);
   });
