@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.11...v1.9.12) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** recover direct reasoning responses ([d5c4dac](https://github.com/review-yeti-ai/review-yeti-bot/commit/d5c4dacdb0e50862f85ed851c85e573837fd5106))
+* **review:** recover direct reasoning responses ([dd95512](https://github.com/review-yeti-ai/review-yeti-bot/commit/dd955122d8b914ecf341247812a0912e1558230b))
+
 ## [1.9.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.10...v1.9.11) (2026-08-21)
 
 
