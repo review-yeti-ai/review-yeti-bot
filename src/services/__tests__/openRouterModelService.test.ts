@@ -102,6 +102,7 @@ describe('OpenRouterModelService Unit Tests', () => {
       expect(models.some((m) => m.id === 'openrouter/anthropic/claude-3.7-sonnet')).toBe(true);
       expect(models.some((m) => m.id === 'openai/gpt-5.6-luna')).toBe(true);
       expect(models.some((m) => m.id === 'openrouter/5.6-luna-high')).toBe(true);
+      expect(new Set(models.map((model) => model.id)).size).toBe(models.length);
 
       const status = service.getCacheStatus();
       expect(status.isUsingFallback).toBe(true);

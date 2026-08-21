@@ -121,8 +121,10 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       const packageJsonPath = path.resolve(__dirname, '../../package.json');
       const rawData = fs.readFileSync(packageJsonPath, 'utf-8');
       const packageData = JSON.parse(rawData);
+      const lockData = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package-lock.json'), 'utf-8'));
 
-      expect(packageData.version).toBe('1.8.3');
+      expect(packageData.version).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(lockData.version).toBe(packageData.version);
       expect(packageData.name).toBe('ct-review-bot');
     });
   });
