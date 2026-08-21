@@ -341,6 +341,43 @@ describe('reviewWithModel', () => {
     expect(reasoningResult.findings).toEqual([]);
   });
 
+  it('parses a complete findings object carried in a streamed reasoning delta', async () => {
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '{"findings":[]}' } }] })}`,
+      'data: [DONE]',
+      '',
+    ].join('\n');
+    const streamFetch = async (_url: string, init: any) => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({
+        start(controller) {
+          // Split the SSE frame to exercise the same carry-buffer path used by
+          // provider streams; the reasoning JSON must survive chunk boundaries.
+          const splitAt = sse.indexOf('findings') + 5;
+          controller.enqueue(new TextEncoder().encode(sse.slice(0, splitAt)));
+          controller.enqueue(new TextEncoder().encode(sse.slice(splitAt)));
+          controller.close();
+        },
+      }),
+    });
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: streamFetch,
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'k',
+        model: 'deepseek-v4-flash:cloud',
+        stream: true,
+      }],
+    });
+
+    expect(result.decision).toBe('APPROVE');
+    expect(result.findings).toEqual([]);
+  });
+
   it('treats the streaming timeout as inactivity instead of total generation time', async () => {
     const frames = [
       `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":' } }] })}\n\n`,

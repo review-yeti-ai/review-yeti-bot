@@ -1181,6 +1181,24 @@ function contentFragments(value) {
   });
 }
 
+// Reasoning-capable OpenAI-compatible providers do not agree on the field used for
+// streamed thought tokens.  Keep this extraction deliberately narrow: only textual
+// fragments are eligible, and callers still require a complete findings payload before
+// accepting the response.  In particular, ordinary prose in a reasoning field must not
+// turn a provider response into an approval.
+function reasoningFragments(value) {
+  if (typeof value === 'string') return [value];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) => {
+    if (typeof part === 'string') return [part];
+    if (!part || typeof part !== 'object') return [];
+    if (typeof part.text === 'string') return [part.text];
+    if (typeof part.reasoning === 'string') return [part.reasoning];
+    if (typeof part.content === 'string') return [part.content];
+    return [];
+  });
+}
+
 /**
  * Read an OpenAI-compatible completion while preserving the transport's streaming contract.
  *
@@ -1222,6 +1240,7 @@ async function readChatCompletionResponse(response, streamEnabled, inactivityTim
   }
 
   const chunks = [];
+  const reasoningChunks = [];
   let latest = null;
   let pending = '';
   const consume = (text, final = false) => {
@@ -1239,8 +1258,16 @@ async function readChatCompletionResponse(response, streamEnabled, inactivityTim
         const choice = payload?.choices?.[0];
         const delta = contentFragments(choice?.delta?.content);
         const message = contentFragments(choice?.message?.content);
+        const deltaReasoning = reasoningFragments(
+          choice?.delta?.reasoning ?? choice?.delta?.reasoning_content,
+        );
+        const messageReasoning = reasoningFragments(
+          choice?.message?.reasoning ?? choice?.message?.reasoning_content,
+        );
         if (delta.length > 0) chunks.push(...delta);
         else if (message.length > 0) chunks.push(...message);
+        if (deltaReasoning.length > 0) reasoningChunks.push(...deltaReasoning);
+        else if (messageReasoning.length > 0) reasoningChunks.push(...messageReasoning);
       } catch (_) {
         // Providers may terminate a stream with a partial final SSE frame. The
         // completed content accumulated so far remains valid and is parsed below.
@@ -1271,7 +1298,7 @@ async function readChatCompletionResponse(response, streamEnabled, inactivityTim
     consume(await withStreamInactivityTimeout(response.text(), inactivityTimeoutMs), true);
   }
 
-  if (chunks.length === 0) throw new Error('empty_sse');
+  if (chunks.length === 0 && reasoningChunks.length === 0) throw new Error('empty_sse');
   const lastChoice = latest?.choices?.[0] || {};
   return {
     ...(latest || {}),
@@ -1280,6 +1307,7 @@ async function readChatCompletionResponse(response, streamEnabled, inactivityTim
       message: {
         ...(lastChoice.message || {}),
         content: chunks.join(''),
+        ...(reasoningChunks.length > 0 ? { reasoning: reasoningChunks.join('') } : {}),
       },
     }],
   };
@@ -1525,7 +1553,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
           }
 
-          const content = contentFragments(payload?.choices?.[0]?.message?.content).join('');
+          const message = payload?.choices?.[0]?.message || {};
+          const content = contentFragments(message.content).join('');
+          const reasoning = reasoningFragments(
+            message.reasoning ?? message.reasoning_content,
+          ).join('');
           if (content) {
             try {
               const providerLane = JSON.parse(content);
@@ -1543,7 +1575,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             } catch (_) {}
           }
 
-          const rawFindings = parseFindingsPayload(content);
+          // Some reasoning providers emit the final structured object in a reasoning
+          // delta and leave assistant content empty.  Accept that alternate wire shape
+          // only when it is itself a complete findings payload; prose or partial thought
+          // remains fail-closed and follows the normal transport recovery path.
+          const rawFindings = parseFindingsPayload(content) ?? parseFindingsPayload(reasoning);
           if (rawFindings === null) {
             if (i < candidateTransports.length - 1) {
               lastError = 'Model response contained no parseable findings JSON.';
