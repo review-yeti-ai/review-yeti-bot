@@ -35,6 +35,7 @@ export function parseModelIdentifier(rawModelId) {
   else if (family.includes('luna')) family = 'OpenRouter 5.6 Luna';
   else if (family.includes('gemini')) family = 'Google Gemini 3.7 Flash';
   else if (family.includes('qwen')) family = 'Qwen 3.8 27B';
+  else if (family.includes('sonnet')) family = 'Anthropic Claude 5 Sonnet';
   else if (family.includes('haiku') || family.includes('claude')) family = 'Anthropic Claude 5 Haiku';
 
   return { exactModel: clean, family, effort };
@@ -121,6 +122,8 @@ export function extractModelPoints(summaryDict) {
 const FAMILY_COLORS = {
   'DeepSeek V4 Flash': { stroke: '#3b82f6', fill: '#60a5fa', text: '#93c5fd' },
   'Google Gemini 3.7 Flash': { stroke: '#10b981', fill: '#34d399', text: '#6ee7b7' },
+  'Anthropic Claude 5 Haiku': { stroke: '#ec4899', fill: '#f472b6', text: '#fbcfe8' },
+  'Anthropic Claude 5 Sonnet': { stroke: '#f43f5e', fill: '#fb7185', text: '#fecdd3' },
   'OpenRouter 5.6 Luna': { stroke: '#f59e0b', fill: '#fbbf24', text: '#fde68a' },
   'Qwen 3.8 27B': { stroke: '#8b5cf6', fill: '#a78bfa', text: '#c4b5fd' },
 };
@@ -269,15 +272,15 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
   <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}" stroke="#64748b" stroke-width="2" />
 
   <!-- Axis Titles -->
-  <text x="${padding.left + plotWidth / 2}" y="${height - 28}" text-anchor="middle" class="axis-label">Total Cost ($ USD per 190 PR Reviews) [Logarithmic Scale]</text>
+  <text x="${padding.left + plotWidth / 2}" y="${height - 28}" text-anchor="middle" class="axis-label">Total Cost ($ USD per 190 PR Reviews) [Linear Scale]</text>
   <text x="25" y="${padding.top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 25 ${padding.top + plotHeight / 2})" class="axis-label">Verdict Accuracy (%)</text>
 
   <!-- Data Points with Anti-Collision Labels -->
   ${dataPointsSvg}
 
   <!-- Bottom-Right Legend Card -->
-  <g transform="translate(${legendX}, ${legendY - 20})">
-    <rect width="215" height="165" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
+  <g transform="translate(${legendX}, ${legendY - 35})">
+    <rect width="215" height="185" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
     <text x="16" y="20" class="legend-title">MODEL FAMILIES</text>
     
     <circle cx="20" cy="38" r="5" fill="#60a5fa" stroke="#3b82f6" stroke-width="1.5" />
@@ -289,15 +292,18 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
     <circle cx="20" cy="78" r="5" fill="#f472b6" stroke="#ec4899" stroke-width="1.5" />
     <text x="34" y="82" class="legend-text">Anthropic Claude 5 Haiku</text>
 
-    <circle cx="20" cy="98" r="5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5" />
-    <text x="34" y="102" class="legend-text">OpenRouter 5.6 Luna</text>
+    <circle cx="20" cy="98" r="5" fill="#fb7185" stroke="#f43f5e" stroke-width="1.5" />
+    <text x="34" y="102" class="legend-text">Anthropic Claude 5 Sonnet</text>
+
+    <circle cx="20" cy="118" r="5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5" />
+    <text x="34" y="122" class="legend-text">OpenRouter 5.6 Luna</text>
     
-    <circle cx="20" cy="118" r="5" fill="#a78bfa" stroke="#8b5cf6" stroke-width="1.5" />
-    <text x="34" y="122" class="legend-text">Qwen 3.8 27B</text>
+    <circle cx="20" cy="138" r="5" fill="#a78bfa" stroke="#8b5cf6" stroke-width="1.5" />
+    <text x="34" y="142" class="legend-text">Qwen 3.8 27B</text>
     
-    <line x1="12" y1="134" x2="203" y2="134" stroke="#334155" stroke-width="1" />
-    <circle cx="20" cy="148" r="6" fill="none" stroke="#22c55e" stroke-width="2" />
-    <text x="34" y="152" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
+    <line x1="12" y1="154" x2="203" y2="154" stroke="#334155" stroke-width="1" />
+    <circle cx="20" cy="168" r="6" fill="none" stroke="#22c55e" stroke-width="2" />
+    <text x="34" y="172" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
   </g>
 </svg>`;
 }
