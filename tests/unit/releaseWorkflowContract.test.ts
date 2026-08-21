@@ -19,21 +19,19 @@ describe('release workflow contract', () => {
     );
   });
 
-  it('validates identity before quality gates and preserves deployment gates', () => {
+  it('validates identity before quality gates and keeps runtime deployment separate', () => {
     const workflow = fs.readFileSync(canonicalPath, 'utf8');
     const validation = workflow.indexOf('validate-release-version.mjs');
     const build = workflow.indexOf('npm run build');
     expect(validation).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(validation);
-    expect(workflow).toContain('docker/build-push-action');
-    expect(workflow).toContain('kubectl rollout status');
-    expect(workflow).toMatch(/deploy:\s*[\s\S]*runs-on:\s*ubuntu-latest/u);
-    expect(workflow).not.toMatch(/deploy:\s*[\s\S]*runs-on:\s*blacksmith-/u);
+    expect(workflow).not.toContain('digitalocean/action-doctl');
+    expect(workflow).not.toContain('kubectl rollout status');
   });
 
-  it('promotes rolling v1 only downstream of the canonical release and deployment jobs', () => {
+  it('promotes rolling v1 only downstream of the canonical validated release job', () => {
     const workflow = fs.readFileSync(canonicalPath, 'utf8');
-    expect(workflow).toMatch(/promote-rolling-v1:[\s\S]*needs:\s*deploy/u);
+    expect(workflow).toMatch(/promote-rolling-v1:[\s\S]*needs:\s*validate-and-release/u);
     expect(workflow).toContain('git push origin v1 --force');
     expect(fs.readFileSync(rollingPath, 'utf8')).toContain('unreleased_recovery');
   });
