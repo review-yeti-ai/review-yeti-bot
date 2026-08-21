@@ -56,9 +56,10 @@ export const openRouterReplayUserPrompt = [
   '',
   '--- FILE: src/api/user.ts ---',
   'diff --git a/src/api/user.ts b/src/api/user.ts',
-  '@@ -1,1 +1,2 @@',
+  '@@ -1,1 +1,3 @@',
   '+const id = req.query.id;',
   '+return users[id];',
+  '',
   '',
 ].join('\n');
 
@@ -104,6 +105,10 @@ export async function runOpenRouterReplay(
   ],
 ) {
   const cassette = createCassetteFetch({ cassettePath: openRouterCassettePath(cassetteName) });
+  // Keep replay scenarios independent from the action's process-wide breaker.
+  // A prior provider-failure test must not suppress a cassette lane in a later
+  // test file; cassette matching remains strict and fail-closed.
+  const circuitBreaker = new pipeline.RunTransportCircuitBreaker();
   const results = await Promise.all(personas.map((persona) => pipeline.reviewWithModel(
     persona,
     openRouterReplayDiffFiles,
@@ -114,6 +119,7 @@ export async function runOpenRouterReplay(
       openRouterPolicy: openRouterReplayPolicy,
       fetchImplementation: cassette.fetchImplementation,
       timeoutMs: 1_000,
+      circuitBreaker,
     },
   )));
   cassette.assertComplete();

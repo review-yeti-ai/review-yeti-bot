@@ -30,6 +30,7 @@ const diffFiles = [{
 
 async function runModelReplay() {
   const cassette = createCassetteFetch({ cassettePath: modelCassettePath });
+  const circuitBreaker = new pipeline.RunTransportCircuitBreaker();
   const personas = ['security', 'performance', 'architecture', 'style']
     .map((id) => pipeline.PERSONA_CHARTERS.find((persona: any) => persona.id === id));
   const results = await Promise.all(personas.map((persona: any) => pipeline.reviewWithModel(
@@ -42,6 +43,7 @@ async function runModelReplay() {
       baseUrl: 'https://llm.test/v1',
       model: 'synthetic/reviewer',
       fetchImplementation: cassette.fetchImplementation,
+      circuitBreaker,
     },
   )));
   cassette.assertComplete();
