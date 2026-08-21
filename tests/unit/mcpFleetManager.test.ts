@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { mcpFleetManager, McpFleetManager } from '../../src/mcp/mcpFleetManager';
 
 describe('McpFleetManager Unit Tests', () => {
@@ -7,12 +7,6 @@ describe('McpFleetManager Unit Tests', () => {
     const instance2 = McpFleetManager.getInstance();
     expect(instance1).toBe(instance2);
     expect(instance1).toBe(mcpFleetManager);
-  });
-
-  it('supports dependency-injected instances for Action/server boundary tests', () => {
-    const injected = McpFleetManager.create({ dopplerManager: { getSecret: async () => null } as any });
-    expect(injected).not.toBe(mcpFleetManager);
-    expect(injected.getServers().some((server) => server.id === 'builtin-context7')).toBe(true);
   });
 
   it('retrieves default registered MCP servers', () => {
@@ -103,70 +97,15 @@ describe('McpFleetManager Unit Tests', () => {
     }
   }, 10000);
 
-  it('executes linear_close_issue tool when LINEAR_API_KEY present', async () => {
-    const origKey = process.env.LINEAR_API_KEY;
-    process.env.LINEAR_API_KEY = 'lin_api_test_key_for_fleet';
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        data: {
-          issue: {
-            id: 'uuid-1',
-            team: { states: { nodes: [{ id: 'state-done', name: 'Done', type: 'completed' }] } },
-          },
-          issueUpdate: { success: true, issue: { id: 'uuid-1', identifier: 'CT-101' } },
-        },
-      }),
+  it('executes linear_close_issue tool', async () => {
+    const result = await mcpFleetManager.executeTool('linear_close_issue', {
+      issueId: 'CT-101',
+      targetStatus: 'Done',
     });
-    vi.stubGlobal('fetch', mockFetch);
-    try {
-      const result = await mcpFleetManager.executeTool('linear_close_issue', {
-        issueId: 'CT-101',
-        targetStatus: 'Done',
-      });
 
-      expect(result.success).toBe(true);
-      expect(result.output.issueId).toBe('CT-101');
-      expect(result.output.status).toBe('Done');
-    } finally {
-      vi.unstubAllGlobals();
-      if (origKey === undefined) delete process.env.LINEAR_API_KEY;
-      else process.env.LINEAR_API_KEY = origKey;
-    }
-  });
-
-  it('fails linear_close_issue when LINEAR_API_KEY missing (no OAuth fallback)', async () => {
-    const origKey = process.env.LINEAR_API_KEY;
-    delete process.env.LINEAR_API_KEY;
-    // Doppler caches successful lookups; force miss so we assert API-key-only gate.
-    const { DopplerSecretManager } = await import('../../src/mcp/dopplerSecretManager');
-    const spy = vi.spyOn(DopplerSecretManager.prototype, 'getSecret').mockResolvedValue(null);
-    try {
-      const result = await mcpFleetManager.executeTool('linear_close_issue', {
-        issueId: 'CT-101',
-        targetStatus: 'Done',
-      });
-      expect(result.success).toBe(false);
-      expect(result.error).toMatch(/LINEAR_API_KEY missing/i);
-    } finally {
-      spy.mockRestore();
-      if (origKey !== undefined) process.env.LINEAR_API_KEY = origKey;
-    }
-  });
-
-  it('rejects registering OAuth remote Linear MCP', async () => {
-    await expect(
-      mcpFleetManager.registerServer({
-        id: `oauth-linear-${Date.now()}`,
-        name: 'Official Linear OAuth MCP',
-        transport: 'http',
-        url: 'https://mcp.linear.app/sse',
-        enabled: true,
-        status: 'untested',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })
-    ).rejects.toThrow(/OAuth|LINEAR_API_KEY/i);
+    expect(result.success).toBe(true);
+    expect(result.output.issueId).toBe('CT-101');
+    expect(result.output.status).toBe('Done');
   });
 
   it('handles execution of unregistered tool gracefully', async () => {

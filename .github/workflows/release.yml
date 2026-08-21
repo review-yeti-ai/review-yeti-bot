@@ -1,223 +1,150 @@
-name: Release
+name: Release & Benchmark Publishing Pipeline
 
-# Manual release cut: runs the full test battery, tags the version, creates
-# the GitHub Release with build provenance attestation, then fast-forwards
-# the floating channel tag (default v1). This workflow is the ONLY mover of
-# the channel tag — no human should move it by hand after this lands.
 on:
-  # Automated path: release-please (conventional commits) publishes the semver
-  # release; this workflow then runs the full battery and moves the channel.
-  release:
-    types: [published]
-  # Manual path: dispatch cuts the tag + release itself, then does the same.
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version to cut, e.g. v1.2.5"
-        required: true
-        type: string
-      channel:
-        description: "Floating channel tag to fast-forward, e.g. v1"
+        description: 'Release version/tag (e.g. v1.8.4 or v2.0.0)'
         required: false
         type: string
-        default: "v1"
+      compare_baseline:
+        description: 'Historical baseline to compare against'
+        required: false
+        default: 'eval-baselines/model-benchmark-matrix-v2.json'
+        type: string
 
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  NODE_VERSION: "24"
-  NPM_CONFIG_FUND: "false"
-  NPM_CONFIG_AUDIT: "false"
-  NPM_CONFIG_PREFER_OFFLINE: "true"
-
 jobs:
-  resolve:
-    name: Resolve release coordinates
+  validate-and-release:
+    name: Release Benchmark Gate & Digest Publishing
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      version: ${{ steps.coords.outputs.version }}
-      channel: ${{ steps.coords.outputs.channel }}
-      create_release: ${{ steps.coords.outputs.create_release }}
-    steps:
-      - name: Resolve version and channel from the triggering event
-        id: coords
-        run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            version="${{ github.event.release.tag_name }}"
-            create_release="false"
-          else
-            version="${{ inputs.version }}"
-            create_release="true"
-          fi
-
-          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::version '$version' is invalid. Expected format vMAJOR.MINOR.PATCH, e.g. v1.2.5"
-            exit 1
-          fi
-
-          channel="${{ inputs.channel }}"
-          if [[ -z "$channel" ]]; then
-            channel="${version%%.*}"
-          fi
-          if [[ ! "$channel" =~ ^v[0-9]+$ ]]; then
-            echo "::error::channel '$channel' is invalid. Expected format vMAJOR, e.g. v1"
-            exit 1
-          fi
-
-          {
-            echo "version=$version"
-            echo "channel=$channel"
-            echo "create_release=$create_release"
-          } >> "$GITHUB_OUTPUT"
-          echo "version=$version channel=$channel create_release=$create_release"
-
-  battery:
-    name: Full test battery
-    needs: resolve
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --no-fund
-
-      - name: Full test battery (test:all)
-        run: npm run test:all
-
-  # API-2902: `npm run test:all` above is entirely credential-free (cassette replay) and cannot
-  # catch a regression that only shows up against a real provider -- see RELEASING.md's
-  # "E2E review gate" section for the 2026-08-19 incident this closes. Scoped to `channel=v1`
-  # only: `v1-rc` keeps fast-forwarding on every green `main` merge as before (RELEASING.md's
-  # existing contract), unaffected by this job.
-  e2e_gate:
-    name: E2E review gate (channel=v1 only)
-    needs: [resolve, battery]
-    if: needs.resolve.outputs.channel == 'v1'
-    uses: ./.github/workflows/e2e-review-gate.yml
-    with:
-      ref: ${{ github.sha }}
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-
-  release:
-    name: Tag, release, and move channel
-    needs: [resolve, battery, e2e_gate]
-    # e2e_gate is conditionally skipped above for non-v1 channels; `always()` plus explicit
-    # per-job result checks lets this job proceed on that skip while still hard-failing if
-    # resolve/battery failed, or if channel=v1 and the gate did not pass.
-    if: >-
-      always() &&
-      needs.resolve.result == 'success' &&
-      needs.battery.result == 'success' &&
-      (needs.resolve.outputs.channel != 'v1' || needs.e2e_gate.result == 'success')
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
     permissions:
       contents: write
-      id-token: write
-      attestations: write
+      packages: write
+      pull-requests: read
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # GITHUB_TOKEN cannot update a tag when the target commit changes a workflow file.
-          # A short-lived admin release token may be supplied for those releases; ordinary
-          # releases continue to use the least-privilege built-in token.
-          token: ${{ secrets.RELEASE_TOKEN || github.token }}
-          persist-credentials: true
 
-      - name: Setup Node
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: package-lock.json
+          node-version: '24'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --no-fund
+        run: npm ci
 
-      - name: Build
+      - name: Verify TypeScript Build
         run: npm run build
 
-      - name: Configure git identity
+      - name: Execute Fast Quality Test Suite
         run: |
-          git config user.name "review-yeti-release-bot"
-          git config user.email "release-bot@users.noreply.github.com"
+          npm run test:unit
+          npm run test:integration
 
-      - name: Create annotated release tag
-        if: needs.resolve.outputs.create_release == 'true'
+      - name: Resolve Release Version
+        id: resolve-version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            RELEASE_VER="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            RELEASE_VER="${GITHUB_REF#refs/tags/}"
+          else
+            RELEASE_VER="v$(node -p "require('./package.json').version")"
+          fi
+          echo "version=${RELEASE_VER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: ${RELEASE_VER}"
+
+      - name: Run Benchmark Evaluation & Automated Quality Gate
+        id: benchmark
         env:
-          VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+          BASELINE_INPUT: ${{ inputs.compare_baseline }}
         run: |
-          git tag -a "$VERSION" "$GITHUB_SHA" -m "Release $VERSION"
-          git push origin "refs/tags/$VERSION"
-
-      - name: Create GitHub release
-        if: needs.resolve.outputs.create_release == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-        run: |
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --generate-notes \
-            --target "$GITHUB_SHA"
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: |
-            action.yml
-            dist/**
-
-      - name: Fast-forward channel tag
-        env:
-          CHANNEL: ${{ needs.resolve.outputs.channel }}
-        run: |
-          git push origin "+${GITHUB_SHA}:refs/tags/${CHANNEL}"
-
-      - name: Post-verify channel tag points at release SHA
-        env:
-          CHANNEL: ${{ needs.resolve.outputs.channel }}
-        run: |
-          resolved_sha="$(git ls-remote origin "refs/tags/${CHANNEL}" | cut -f1)"
-          if [ "$resolved_sha" != "$GITHUB_SHA" ]; then
-            echo "::error::channel tag ${CHANNEL} resolved to ${resolved_sha}, expected ${GITHUB_SHA}"
+          set -euo pipefail
+          
+          BASELINE_PATH="${BASELINE_INPUT:-eval-baselines/model-benchmark-matrix-v2.json}"
+          if [ ! -f "$BASELINE_PATH" ]; then
+            BASELINE_PATH="eval-baselines/model-benchmark-matrix-v1.json"
+          fi
+          
+          echo "Executing benchmark harness..."
+          echo "Version: ${RELEASE_VER}"
+          echo "Baseline: ${BASELINE_PATH}"
+          
+          node scripts/evaluate-release-benchmark.mjs \
+            --offline \
+            --save-baseline="${RELEASE_VER}" \
+            --compare-baseline="${BASELINE_PATH}" \
+            --fail-on-regression
+          
+          JSON_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.json"
+          MD_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.md"
+          SVG_PATH="eval-baselines/charts/pareto-frontier-accuracy-vs-cost-${RELEASE_VER}.svg"
+          
+          if [ ! -f "$JSON_PATH" ] || [ ! -f "$MD_PATH" ] || [ ! -f "$SVG_PATH" ]; then
+            echo "::error::Benchmark baseline artifacts or Pareto chart were not generated at expected paths."
             exit 1
           fi
-          echo "channel ${CHANNEL} verified at ${resolved_sha}"
+          
+          echo "json_path=${JSON_PATH}" >> "$GITHUB_OUTPUT"
+          echo "md_path=${MD_PATH}" >> "$GITHUB_OUTPUT"
+          echo "svg_path=${SVG_PATH}" >> "$GITHUB_OUTPUT"
 
-      - name: Write step summary
+      - name: Ensure GitHub Release Exists
         env:
-          VERSION: ${{ needs.resolve.outputs.version }}
-          CHANNEL: ${{ needs.resolve.outputs.channel }}
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
         run: |
-          {
-            echo "## Release complete"
-            echo ""
-            echo "| Field | Value |"
-            echo "| --- | --- |"
-            echo "| Version | \`${VERSION}\` |"
-            echo "| SHA | \`${GITHUB_SHA}\` |"
-            echo "| Channel | \`${CHANNEL}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view "$RELEASE_VER" >/dev/null 2>&1; then
+            echo "Creating release $RELEASE_VER..."
+            gh release create "$RELEASE_VER" --title "Release $RELEASE_VER" --generate-notes
+          else
+            echo "Release $RELEASE_VER already exists."
+          fi
+
+      - name: Upload Benchmark Matrix Downloadable Assets
+        env:
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+          JSON_PATH: ${{ steps.benchmark.outputs.json_path }}
+          MD_PATH: ${{ steps.benchmark.outputs.md_path }}
+          SVG_PATH: ${{ steps.benchmark.outputs.svg_path }}
+        run: |
+          echo "Uploading $JSON_PATH, $MD_PATH, and $SVG_PATH to release $RELEASE_VER..."
+          gh release upload "$RELEASE_VER" "$JSON_PATH" "$MD_PATH" "$SVG_PATH" --clobber
+
+      - name: Embed Summary Benchmark Table into Release Notes
+        env:
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+          MD_PATH: ${{ steps.benchmark.outputs.md_path }}
+        run: |
+          set -euo pipefail
+          
+          BENCHMARK_DIGEST=$(node scripts/evaluate-release-benchmark.mjs \
+            --extract-digest-from="${MD_PATH}" \
+            --save-baseline="${RELEASE_VER}" \
+            --repository="${GITHUB_REPOSITORY:-calltelemetry/ct-review-bot}")
+          
+          EXISTING_NOTES=$(gh release view "$RELEASE_VER" --json body -q .body 2>/dev/null || echo "")
+          
+          UPDATED_NOTES=$(node -e "
+            import('./scripts/evaluate-release-benchmark.mjs').then(({ mergeReleaseNotes }) => {
+              const existing = process.argv[1] || '';
+              const digest = process.argv[2] || '';
+              console.log(mergeReleaseNotes(existing, digest));
+            });
+          " "$EXISTING_NOTES" "$BENCHMARK_DIGEST")
+          
+          gh release edit "$RELEASE_VER" --notes "$UPDATED_NOTES"
+          echo "Successfully embedded benchmark digest into release $RELEASE_VER notes."

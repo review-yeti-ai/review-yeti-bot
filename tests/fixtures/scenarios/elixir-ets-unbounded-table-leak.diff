@@ -1,0 +1,9 @@
+--- FILE: lib/calltelemetry/cache/session_ets.ex ---
+diff --git a/lib/calltelemetry/cache/session_ets.ex b/lib/calltelemetry/cache/session_ets.ex
+@@ -8,5 +8,11 @@
+   def insert_session_event(session_id, event_data) do
+     timestamp = System.system_time(:second)
++    # Leak: Unbounded ETS insert without TTL expiry, size limit, or sweeper process
++    :ets.insert(@table_name, {session_id, event_data, timestamp})
++    :ok
+   end

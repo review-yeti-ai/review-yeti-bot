@@ -1,0 +1,20 @@
+--- FILE: lib/calltelemetry/accounts/user_context.ex ---
+diff --git a/lib/calltelemetry/accounts/user_context.ex b/lib/calltelemetry/accounts/user_context.ex
+@@ -1,6 +1,17 @@
+ defmodule Calltelemetry.Accounts.UserContext do
+   import Ecto.Query, warn: false
+   alias Calltelemetry.Repo
+   alias Calltelemetry.Accounts.User
+ 
++  @doc """
++  Fetches a user by ID without scoping to the current organization.
++  """
++  def get_user(user_id) do
++    # Bug: Unscoped query allows cross-tenant user lookup
++    User
++    |> where([u], u.id == ^user_id)
++    |> Repo.one()
++  end
++
+   def list_users(org_id) do
+     User

@@ -1,0 +1,184 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.15.0
+  name: prreviewjobs.review.calltelemetry.com
+spec:
+  group: review.calltelemetry.com
+  names:
+    kind: PRReviewJob
+    listKind: PRReviewJobList
+    plural: prreviewjobs
+    singular: prreviewjob
+    shortNames:
+    - prj
+    - prreview
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+      description: Job execution phase
+    - name: Repo
+      type: string
+      jsonPath: .spec.repo
+      description: Target repository
+    - name: PR
+      type: integer
+      jsonPath: .spec.prNumber
+      description: Target PR Number
+    - name: Verdict
+      type: string
+      jsonPath: .status.verdict
+      description: Review Verdict
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    schema:
+      openAPIV3Schema:
+        description: PRReviewJob is the Schema for the prreviewjobs API
+        type: object
+        properties:
+          apiVersion:
+            description: APIVersion defines the versioned schema of this representation of an object.
+            type: string
+          kind:
+            description: Kind is a string value representing the REST resource this object represents.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PRReviewJobSpec defines the desired state of PRReviewJob
+            type: object
+            required:
+            - repo
+            - prNumber
+            - headSha
+            - baseSha
+            - personaRoster
+            properties:
+              repo:
+                description: Repo specifies the GitHub target repository (e.g. "owner/repo").
+                type: string
+                pattern: '^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$'
+              prNumber:
+                description: PRNumber is the pull request number to review.
+                type: integer
+                format: int32
+                minimum: 1
+              headSha:
+                description: HeadSha is the git commit SHA for the head of the pull request.
+                type: string
+                minLength: 7
+              baseSha:
+                description: BaseSha is the git commit SHA for the base target branch of the pull request.
+                type: string
+                minLength: 7
+              personaRoster:
+                description: PersonaRoster defines the list of persona reviewers to run (e.g. ["security", "performance", "code_style"]).
+                type: array
+                minItems: 1
+                items:
+                  type: string
+              pvcStorageSize:
+                description: PVCStorageSize specifies the storage capacity requested for the job's ephemeral PVC. Defaults to "1Gi".
+                type: string
+                default: "1Gi"
+              ttlSecondsAfterFinished:
+                description: TTLSecondsAfterFinished defines the duration (in seconds) to retain the job, pods, and PVC after completion before garbage collection. Defaults to 1800.
+                type: integer
+                format: int32
+                minimum: 0
+                default: 1800
+          status:
+            description: PRReviewJobStatus defines the observed state of PRReviewJob
+            type: object
+            properties:
+              phase:
+                description: Phase is the current execution phase of the PR review job.
+                type: string
+                enum:
+                - Queued
+                - Running
+                - Succeeded
+                - Failed
+                default: "Queued"
+              verdict:
+                description: Verdict is the overall review outcome (e.g., "APPROVED", "CHANGES_REQUESTED", "COMMENT").
+                type: string
+              personaProgress:
+                description: PersonaProgress records detailed execution progress per persona.
+                type: array
+                items:
+                  type: object
+                  required:
+                  - persona
+                  - status
+                  properties:
+                    persona:
+                      type: string
+                    status:
+                      type: string
+                    message:
+                      type: string
+                    finishedAt:
+                      type: string
+                      format: date-time
+              personaProgressMap:
+                description: PersonaProgressMap records progress state per persona as key-value map.
+                type: object
+                additionalProperties:
+                  type: string
+              jobName:
+                description: JobName is the name of the Kubernetes batch/v1 Job created to run this review task.
+                type: string
+              pvcName:
+                description: PVCName is the name of the PersistentVolumeClaim created for workspace storage.
+                type: string
+              startTime:
+                description: StartTime records when the review job started execution.
+                type: string
+                format: date-time
+              completionTime:
+                description: CompletionTime records when the review job finished execution.
+                type: string
+                format: date-time
+              message:
+                description: Message provides human-readable context regarding current phase or execution errors.
+                type: string
+              conditions:
+                description: Conditions represents the standard Kubernetes condition history for this custom resource.
+                type: array
+                items:
+                  type: object
+                  required:
+                  - type
+                  - status
+                  - lastTransitionTime
+                  - reason
+                  - message
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    observedGeneration:
+                      type: integer
+                      format: int64
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map

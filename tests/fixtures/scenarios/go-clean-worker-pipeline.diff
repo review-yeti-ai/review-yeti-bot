@@ -1,0 +1,73 @@
+--- FILE: pkg/pipeline/pipeline.go ---
+diff --git a/pkg/pipeline/pipeline.go b/pkg/pipeline/pipeline.go
+@@ -1,5 +1,18 @@
+ package pipeline
+ 
+ import (
+ 	"context"
+ 	"golang.org/x/sync/errgroup"
+ )
++
++type Pipeline struct {
++	concurrency int
++}
++
++func NewPipeline(concurrency int) *Pipeline {
++	return &Pipeline{concurrency: concurrency}
++}
++
++func (p *Pipeline) Process(ctx context.Context, tasks []func(context.Context) error) error {
++	g, gctx := errgroup.WithContext(ctx)
++	g.SetLimit(p.concurrency)
++	for _, task := range tasks {
++		t := task
++		g.Go(func() error {
++			return t(gctx)
++		})
++	}
++	return g.Wait()
++}
+
+--- FILE: pkg/pipeline/worker.go ---
+diff --git a/pkg/pipeline/worker.go b/pkg/pipeline/worker.go
+@@ -1,5 +1,14 @@
+ package pipeline
+ 
+ import "context"
++
++type WorkerTask func(ctx context.Context) error
++
++func WrapTask(id string, fn func() error) WorkerTask {
++	return func(ctx context.Context) error {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		return fn()
++	}
++}
+
+--- FILE: pkg/pipeline/pipeline_test.go ---
+diff --git a/pkg/pipeline/pipeline_test.go b/pkg/pipeline/pipeline_test.go
+@@ -1,5 +1,19 @@
+ package pipeline
+ 
+ import (
+ 	"context"
+ 	"sync/atomic"
+ 	"testing"
+ )
++
++func TestPipelineProcess(t *testing.T) {
++	p := NewPipeline(4)
++	var count int64
++	tasks := []func(context.Context) error{
++		func(ctx context.Context) error { atomic.AddInt64(&count, 1); return nil },
++		func(ctx context.Context) error { atomic.AddInt64(&count, 1); return nil },
++	}
++	if err := p.Process(context.Background(), tasks); err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if count != 2 {
++		t.Fatalf("expected count 2, got %d", count)
++	}
++}

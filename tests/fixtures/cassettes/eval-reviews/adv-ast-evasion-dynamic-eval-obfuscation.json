@@ -1,0 +1,173 @@
+{
+  "version": "1.0",
+  "scenarioId": "adv-ast-evasion-dynamic-eval-obfuscation",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:21.853Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario adv-ast-evasion-dynamic-eval-obfuscation (Adversarial AST Evasion via Dynamic Process Lookup) under persona security",
+      "rawReasoning": "Searching repository references for src/diagnostics/coreDumper.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for security analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"coreDumper\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"FINDINGS\",\n  \"findings\": [\n    {\n      \"path\": \"src/diagnostics/coreDumper.ts\",\n      \"line\": 7,\n      \"severity\": \"P0\",\n      \"title\": \"Obfuscated character code lookup evades static AST analyzers to execute arbitrary system commands\",\n      \"body\": \"Constructing module and method names via String.fromCharCode evades AST-based rule checks and performs arbitrary command execution.\",\n      \"suggestion\": \"Prohibit dynamic require and char code evaluation, removing unauthorized process execution.\",\n      \"confidence\": 0.95\n    }\n  ]\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "coreDumper"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061846_62wkpx",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "coreDumper"
+          },
+          "startTime": 1787270061846,
+          "endTime": 1787270061850,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 17,
+          "estimatedCompletionTokens": 16
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario adv-ast-evasion-dynamic-eval-obfuscation (Adversarial AST Evasion via Dynamic Process Lookup) under persona performance",
+      "rawReasoning": "Searching repository references for src/diagnostics/coreDumper.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for performance analysis:\n{\"tool_calls\":[{\"name\":\"pi.fs.readFile\",\"arguments\":{\"path\":\"src/diagnostics/coreDumper.ts\",\"startLine\":1,\"endLine\":15}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.fs.readFile",
+          "args": {
+            "path": "src/diagnostics/coreDumper.ts",
+            "startLine": 1,
+            "endLine": 15
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061850_613e7w",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.fs.readFile",
+          "args": {
+            "path": "src/diagnostics/coreDumper.ts",
+            "startLine": 1,
+            "endLine": 15
+          },
+          "startTime": 1787270061850,
+          "endTime": 1787270061850,
+          "durationMs": 1,
+          "bytesRead": 0,
+          "filesScanned": 1,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 28,
+          "estimatedCompletionTokens": 18
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario adv-ast-evasion-dynamic-eval-obfuscation (Adversarial AST Evasion via Dynamic Process Lookup) under persona architecture",
+      "rawReasoning": "Searching repository references for src/diagnostics/coreDumper.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for architecture analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"coreDumper\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "coreDumper"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061850_kc6g0g",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "coreDumper"
+          },
+          "startTime": 1787270061850,
+          "endTime": 1787270061853,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 17,
+          "estimatedCompletionTokens": 16
+        }
+      ]
+    },
+    {
+      "turn": 1,
+      "personaId": "testing",
+      "prompt": "Review request for scenario adv-ast-evasion-dynamic-eval-obfuscation (Adversarial AST Evasion via Dynamic Process Lookup) under persona testing",
+      "rawReasoning": "Completed testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    },
+    {
+      "turn": 1,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario adv-ast-evasion-dynamic-eval-obfuscation (Adversarial AST Evasion via Dynamic Process Lookup) under persona dependencies",
+      "rawReasoning": "Completed dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    }
+  ],
+  "verifierInteraction": {
+    "prompt": "Verify 1 candidate findings for scenario adv-ast-evasion-dynamic-eval-obfuscation",
+    "rawReasoning": "Challenger verification evaluated against AST and diff context for adv-ast-evasion-dynamic-eval-obfuscation",
+    "decisions": [
+      {
+        "findingId": "security-adv-ast-evasion-dynamic-eval-obfuscation-0",
+        "verdict": "CONFIRM",
+        "rationale": "Confirmed genuine defect: Verified against workspace AST and execution paths for src/diagnostics/coreDumper.ts:7.",
+        "confidence": 0.95
+      }
+    ]
+  },
+  "finalArbitration": {
+    "verdict": "BLOCK",
+    "confirmedFindings": [
+      {
+        "id": "security-adv-ast-evasion-dynamic-eval-obfuscation-0",
+        "persona": "security",
+        "path": "src/diagnostics/coreDumper.ts",
+        "line": 7,
+        "severity": "P0",
+        "title": "Obfuscated character code lookup evades static AST analyzers to execute arbitrary system commands",
+        "body": "Constructing module and method names via String.fromCharCode evades AST-based rule checks and performs arbitrary command execution.",
+        "confidence": 0.95,
+        "suggestion": "Prohibit dynamic require and char code evaluation, removing unauthorized process execution."
+      }
+    ],
+    "rationale": "Blocked on 1 critical P0 finding(s)."
+  },
+  "tokenUsage": {
+    "promptTokens": 5022,
+    "completionTokens": 346,
+    "reasoningTokens": 121,
+    "totalCostUSD": 0.00079996
+  },
+  "category": "security",
+  "scenarioName": "Adversarial AST Evasion via Dynamic Process Lookup"
+}

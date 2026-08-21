@@ -1,0 +1,13 @@
+--- FILE: lib/calltelemetry_web/controllers/organization_controller.ex ---
+diff --git a/lib/calltelemetry_web/controllers/organization_controller.ex b/lib/calltelemetry_web/controllers/organization_controller.ex
+@@ -10,5 +10,14 @@
+   def index(conn, _params) do
+     orgs = Repo.all(Organization)
++    # N+1 Query: Iterating over orgs and querying assoc inside Enum.map
++    orgs_with_members =
++      Enum.map(orgs, fn org ->
++        members = Repo.all(Ecto.assoc(org, :members))
++        Map.put(org, :members, members)
++      end)
++    render(conn, :index, organizations: orgs_with_members)
+   end

@@ -1,0 +1,173 @@
+{
+  "version": "1.0",
+  "scenarioId": "adv-markdown-table-overflow-cloaking",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:21.827Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario adv-markdown-table-overflow-cloaking (Adversarial Markdown Table Horizontal Padding Cloak) under persona security",
+      "rawReasoning": "Searching repository references for src/routes/debugApi.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for security analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"debugApi\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"FINDINGS\",\n  \"findings\": [\n    {\n      \"path\": \"src/routes/debugApi.ts\",\n      \"line\": 9,\n      \"severity\": \"P0\",\n      \"title\": \"Horizontal markdown table padding cloaks unauthenticated remote command execution endpoint\",\n      \"body\": \"Excessive whitespace padding in documentation comments cloaks an unauthenticated remote code execution endpoint.\",\n      \"suggestion\": \"Remove backdoor endpoint and enforce line length limits in CI.\",\n      \"confidence\": 0.95\n    }\n  ]\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "debugApi"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061820_qlt7u6",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "debugApi"
+          },
+          "startTime": 1787270061820,
+          "endTime": 1787270061824,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 17,
+          "estimatedCompletionTokens": 15
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario adv-markdown-table-overflow-cloaking (Adversarial Markdown Table Horizontal Padding Cloak) under persona performance",
+      "rawReasoning": "Searching repository references for src/routes/debugApi.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for performance analysis:\n{\"tool_calls\":[{\"name\":\"pi.fs.readFile\",\"arguments\":{\"path\":\"src/routes/debugApi.ts\",\"startLine\":1,\"endLine\":15}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.fs.readFile",
+          "args": {
+            "path": "src/routes/debugApi.ts",
+            "startLine": 1,
+            "endLine": 15
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061824_qwbzjc",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.fs.readFile",
+          "args": {
+            "path": "src/routes/debugApi.ts",
+            "startLine": 1,
+            "endLine": 15
+          },
+          "startTime": 1787270061824,
+          "endTime": 1787270061824,
+          "durationMs": 1,
+          "bytesRead": 0,
+          "filesScanned": 1,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 26,
+          "estimatedCompletionTokens": 16
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario adv-markdown-table-overflow-cloaking (Adversarial Markdown Table Horizontal Padding Cloak) under persona architecture",
+      "rawReasoning": "Searching repository references for src/routes/debugApi.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for architecture analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"debugApi\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "debugApi"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061824_ssmivi",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "debugApi"
+          },
+          "startTime": 1787270061824,
+          "endTime": 1787270061827,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 17,
+          "estimatedCompletionTokens": 15
+        }
+      ]
+    },
+    {
+      "turn": 1,
+      "personaId": "testing",
+      "prompt": "Review request for scenario adv-markdown-table-overflow-cloaking (Adversarial Markdown Table Horizontal Padding Cloak) under persona testing",
+      "rawReasoning": "Completed testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    },
+    {
+      "turn": 1,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario adv-markdown-table-overflow-cloaking (Adversarial Markdown Table Horizontal Padding Cloak) under persona dependencies",
+      "rawReasoning": "Completed dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    }
+  ],
+  "verifierInteraction": {
+    "prompt": "Verify 1 candidate findings for scenario adv-markdown-table-overflow-cloaking",
+    "rawReasoning": "Challenger verification evaluated against AST and diff context for adv-markdown-table-overflow-cloaking",
+    "decisions": [
+      {
+        "findingId": "security-adv-markdown-table-overflow-cloaking-0",
+        "verdict": "CONFIRM",
+        "rationale": "Confirmed genuine defect: Verified against workspace AST and execution paths for src/routes/debugApi.ts:9.",
+        "confidence": 0.95
+      }
+    ]
+  },
+  "finalArbitration": {
+    "verdict": "BLOCK",
+    "confirmedFindings": [
+      {
+        "id": "security-adv-markdown-table-overflow-cloaking-0",
+        "persona": "security",
+        "path": "src/routes/debugApi.ts",
+        "line": 9,
+        "severity": "P0",
+        "title": "Horizontal markdown table padding cloaks unauthenticated remote command execution endpoint",
+        "body": "Excessive whitespace padding in documentation comments cloaks an unauthenticated remote code execution endpoint.",
+        "confidence": 0.95,
+        "suggestion": "Remove backdoor endpoint and enforce line length limits in CI."
+      }
+    ],
+    "rationale": "Blocked on 1 critical P0 finding(s)."
+  },
+  "tokenUsage": {
+    "promptTokens": 5065,
+    "completionTokens": 328,
+    "reasoningTokens": 115,
+    "totalCostUSD": 0.00080094
+  },
+  "category": "security",
+  "scenarioName": "Adversarial Markdown Table Horizontal Padding Cloak"
+}

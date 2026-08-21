@@ -1,0 +1,19 @@
+--- FILE: pkg/db/event_repository.go ---
+diff --git a/pkg/db/event_repository.go b/pkg/db/event_repository.go
+@@ -12,5 +12,18 @@
+ func (r *EventRepository) ListEvents(ctx context.Context, orgID string) ([]Event, error) {
++	// Bug: missing defer rows.Close() leaks database connections from pool
++	rows, err := r.db.QueryContext(ctx, "SELECT id, name, timestamp FROM events WHERE org_id = $1", orgID)
++	if err != nil {
++		return nil, err
++	}
++	var events []Event
++	for rows.Next() {
++		var e Event
++		if err := rows.Scan(&e.ID, &e.Name, &e.Timestamp); err != nil {
++			return nil, err
++		}
++		events = append(events, e)
++	}
++	return events, rows.Err()
+ }

@@ -1,0 +1,25 @@
+--- FILE: src/services/userService.ts ---
+diff --git a/src/services/userService.ts b/src/services/userService.ts
+@@ -1,6 +1,12 @@
++import { NotificationService } from './notificationService';
++
+ export class UserService {
++  constructor(private notifService: NotificationService) {}
++
+   async registerUser(userData: any): Promise<void> {
++    await this.notifService.sendWelcome(userData.id);
+   }
+ }
+
+--- FILE: src/services/notificationService.ts ---
+diff --git a/src/services/notificationService.ts b/src/services/notificationService.ts
+@@ -1,6 +1,12 @@
++import { UserService } from './userService';
++
+ export class NotificationService {
++  constructor(private userService: UserService) {}
++
+   async sendWelcome(userId: string): Promise<void> {
++    const prefs = await this.userService.getUserPreferences(userId);
+   }
+ }

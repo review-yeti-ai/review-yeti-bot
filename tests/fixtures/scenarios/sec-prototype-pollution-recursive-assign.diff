@@ -1,0 +1,15 @@
+--- FILE: src/utils/deepConfigMerge.ts ---
+diff --git a/src/utils/deepConfigMerge.ts b/src/utils/deepConfigMerge.ts
+@@ -1,4 +1,15 @@
+ export function deepMerge(target: any, source: any): any {
++  for (const key of Object.keys(source)) {
++    // Critical: Missing check for __proto__, constructor, prototype keys
++    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
++      if (!target[key]) target[key] = {};
++      deepMerge(target[key], source[key]);
++    } else {
++      target[key] = source[key];
++    }
++  }
++  return target;
++}

@@ -1,0 +1,13 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -9,8 +9,6 @@
+ export class PartitionCleaner {
+   public buildDropQuery(tableName: string, cutoffMonth: string): string {
+-    if (!tableName.startsWith('cdrs_') || tableName >= `cdrs_${cutoffMonth}`) {
+-      throw new Error('Refusing to drop active or unverified partition');
+-    }
+-    return `DROP TABLE IF EXISTS ${tableName} CASCADE;`;
++    // Bug: Dropped safety cutoff validation, allowing active tables to be dropped
++    return `DROP TABLE IF EXISTS ${tableName} CASCADE;`;
+   }
+ }

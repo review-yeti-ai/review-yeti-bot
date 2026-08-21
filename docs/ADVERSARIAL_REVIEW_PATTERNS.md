@@ -6,7 +6,7 @@ Standard AI code review frameworks frequently suffer from **sycophancy** and **c
 
 **Adversarial AI Code Review** flips this paradigm by instituting explicit conflict and debate between specialized AI agents. By deploying **Hostile Personas** (Red Team) designed to actively exploit and invalidate code assumptions, balanced by a **Defender** (Blue Team) and an **Impartial Binding Arbiter**, the review pipeline achieves dramatically higher defect detection rates with near-zero false positive noise.
 
-This document establishes the canonical architectural patterns, debate protocols, persona taxonomy, dual-model cross-examination mechanics, and data schemas for integrating adversarial review into `review-yeti-bot`.
+This document establishes the canonical architectural patterns, debate protocols, persona taxonomy, dual-model cross-examination mechanics, and data schemas for integrating adversarial review into `ct-review-bot`.
 
 ---
 
@@ -69,7 +69,7 @@ Adversarial review introduces dedicated hostile personas alongside standard doma
 
 ### 3.1 Asymmetric Cross-Model Matrix
 
-Single-model review pipelines inherit the biases and safety filters of one specific model family. `review-yeti-bot` routes each lane through OpenRouter to enforce multi-model cross-examination:
+Single-model review pipelines inherit the biases and safety filters of one specific model family. `ct-review-bot` uses OmniRoute to enforce multi-model cross-examination:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -93,8 +93,8 @@ Single-model review pipelines inherit the biases and safety filters of one speci
 ### 3.2 Sycophancy Suppression & Provenance Enforcement
 
 1. **Heterogeneous Quorum Requirement**: Quorum cannot be satisfied by multiple instances of the same model family. The panel must include at least 2 distinct provider families (e.g. `claude` + `codex`).
-2. **Provenance Guarantees**: `OpenRouterClient` records the model actually served for each request. A lane that cannot reach its configured model fails closed rather than silently substituting another.
-3. **Structured Nonce Fencing**: All prompts enforce fence markers (`REVIEW_YETI_BEGIN:<nonce>` ... `REVIEW_YETI_END:<nonce>`) to eliminate prompt injection attacks embedded inside diffs.
+2. **OmniRoute Provenance Guarantees**: `OmniRouteClient` validates `x-omniroute-provider` and `x-omniroute-model` headers. If OmniRoute attempts a silent fallback (e.g. substituting `claude` with `gpt`), the request fails closed immediately.
+3. **Structured Nonce Fencing**: All prompts enforce fence markers (`CT_REVIEW_BEGIN:<nonce>` ... `CT_REVIEW_END:<nonce>`) to eliminate prompt injection attacks embedded inside diffs.
 
 ---
 

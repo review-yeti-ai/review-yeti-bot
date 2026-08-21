@@ -1,0 +1,13 @@
+--- FILE: rtp_media_gateway/src/audioCodecs.ts ---
+diff --git a/rtp_media_gateway/src/audioCodecs.ts b/rtp_media_gateway/src/audioCodecs.ts
+@@ -85,14 +85,22 @@ export class AudioCodecs {
++  public compressLinearToUlaw(sample: number): number {
++    const sign = (sample < 0) ? 0x80 : 0x00;
++    let mag = sample < 0 ? -sample : sample;
++    if (mag > 32767) mag = 32767;
++    mag += 0x84;
++    const exp = AudioCodecs.EXP_TABLE[(mag >> 7) & 0xFF];
++    const mantissa = (mag >> (exp + 3)) & 0x0F;
++    return ~(sign | (exp << 4) | mantissa) & 0xFF;
++  }
+ }

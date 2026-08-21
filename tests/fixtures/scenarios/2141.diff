@@ -1,0 +1,7 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -17,2 +17,3 @@
+-  private flushIntervalMs: number = 1000;
++  // Breaking performance change: 60x increase in batch flush delay
++  private flushIntervalMs: number = 60000;
+ }

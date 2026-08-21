@@ -1,0 +1,12 @@
+--- FILE: tests/unit/subscriptionValidator.test.ts ---
+diff --git a/tests/unit/subscriptionValidator.test.ts b/tests/unit/subscriptionValidator.test.ts
+@@ -1,6 +1,8 @@
+ import { describe, it, expect } from 'vitest';
+ import { validateSubscription } from '../../src/validators/subscription';
+ 
+-describe('Subscription Tier Validation', () => {
++// Critical QA defect: .only left in committed test file disables full test suite in CI
++describe.only('Subscription Tier Validation', () => {
+   it('validates enterprise quota limits', () => {
+     expect(validateSubscription('enterprise', 5000)).toBe(true);
+   });

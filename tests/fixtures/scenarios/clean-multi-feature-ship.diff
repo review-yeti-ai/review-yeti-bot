@@ -1,0 +1,42 @@
+--- FILE: src/utils/rateLimiter.ts ---
+diff --git a/src/utils/rateLimiter.ts b/src/utils/rateLimiter.ts
+@@ -1,5 +1,15 @@
+ export class RateLimiter {
+   private tokens: number;
+   constructor(private readonly maxTokens: number, private readonly refillRatePerSec: number) {
+     this.tokens = maxTokens;
+   }
++
++  tryAcquire(): boolean {
++    if (this.tokens > 0) {
++      this.tokens -= 1;
++      return true;
++    }
++    return false;
++  }
++}
+
+--- FILE: src/routes/healthRoute.ts ---
+diff --git a/src/routes/healthRoute.ts b/src/routes/healthRoute.ts
+@@ -1,5 +1,9 @@
+ import { Router } from 'express';
+ export const healthRouter = Router();
++
+ healthRouter.get('/healthz', (_req, res) => {
+   res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+ });
+
+--- FILE: tests/unit/rateLimiter.test.ts ---
+diff --git a/tests/unit/rateLimiter.test.ts b/tests/unit/rateLimiter.test.ts
+@@ -1,5 +1,12 @@
+ import { describe, it, expect } from 'vitest';
+ import { RateLimiter } from '../../src/utils/rateLimiter';
++
+ describe('RateLimiter', () => {
+   it('allows acquisitions up to max tokens', () => {
+     const limiter = new RateLimiter(2, 1);
+     expect(limiter.tryAcquire()).toBe(true);
+     expect(limiter.tryAcquire()).toBe(true);
+     expect(limiter.tryAcquire()).toBe(false);
+   });
+ });

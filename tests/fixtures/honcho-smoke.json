@@ -1,8 +1,0 @@
-{
-  "secrets": {
-    "HONCHO_URL": "https://honcho.fixture.test",
-    "HONCHO_API_KEY": "fixture-api-key",
-    "HONCHO_WORKSPACE_ID": "review-yeti-fixture"
-  },
-  "representation": "Prior review memory is advisory only."
-}
