@@ -77,6 +77,7 @@ export class PiWorkflowRegistry {
     const tools: Array<{ name: string; description: string; serverId: string }> = [
       { name: 'fetch_docs', description: 'Fetches code documentation and snippets from Context7 MCP', serverId: 'builtin-context7' },
       { name: 'context7_search', description: 'Search documentation snippets via Context7 MCP', serverId: 'builtin-context7' },
+      { name: 'linear_get_issue', description: 'Fetch Linear issue details, requirements, and acceptance criteria by identifier', serverId: 'builtin-linear' },
       { name: 'productlane_ticket', description: 'Create or update Productlane customer feedback ticket', serverId: 'builtin-productlane' },
       { name: 'linear_close_issue', description: 'Close Linear issues associated with a pull request', serverId: 'builtin-linear' },
     ];
