@@ -315,34 +315,34 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
   <text x="25" y="${padding.top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 25 ${padding.top + plotHeight / 2})" class="axis-label">Verdict Accuracy (%)</text>
 
   <!-- Pareto Optimal Frontier Line -->
-  ${paretoPathD ? `<path d="${paretoPathD}" fill="none" stroke="#22c55e" stroke-width="3.5" opacity="0.95" stroke-linecap="round" />` : ''}
-
-  <!-- Trajectory Lines between Low -> Medium -> High -->
-  ${trajectoryPaths}
+  ${paretoPathD ? `<path d="${paretoPathD}" fill="none" stroke="#22c55e" stroke-width="3" stroke-dasharray="6,4" opacity="0.85" stroke-linecap="round" />` : ''}
 
   <!-- Data Points with Anti-Collision Labels -->
   ${dataPointsSvg}
 
   <!-- Bottom-Right Legend Card -->
-  <g transform="translate(${legendX}, ${legendY})">
-    <rect width="215" height="145" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
-    <text x="16" y="22" class="legend-title">MODEL FAMILIES</text>
+  <g transform="translate(${legendX}, ${legendY - 20})">
+    <rect width="215" height="165" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
+    <text x="16" y="20" class="legend-title">MODEL FAMILIES</text>
     
-    <circle cx="20" cy="40" r="5" fill="#60a5fa" stroke="#3b82f6" stroke-width="1.5" />
-    <text x="34" y="44" class="legend-text">DeepSeek V4 Flash</text>
+    <circle cx="20" cy="38" r="5" fill="#60a5fa" stroke="#3b82f6" stroke-width="1.5" />
+    <text x="34" y="42" class="legend-text">DeepSeek V4 Flash</text>
     
-    <circle cx="20" cy="62" r="5" fill="#34d399" stroke="#10b981" stroke-width="1.5" />
-    <text x="34" y="66" class="legend-text">Google Gemini 3.7 Flash</text>
+    <circle cx="20" cy="58" r="5" fill="#34d399" stroke="#10b981" stroke-width="1.5" />
+    <text x="34" y="62" class="legend-text">Google Gemini 3.7 Flash</text>
     
-    <circle cx="20" cy="84" r="5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5" />
-    <text x="34" y="88" class="legend-text">OpenRouter 5.6 Luna</text>
+    <circle cx="20" cy="78" r="5" fill="#f472b6" stroke="#ec4899" stroke-width="1.5" />
+    <text x="34" y="82" class="legend-text">Anthropic Claude 5 Haiku</text>
+
+    <circle cx="20" cy="98" r="5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5" />
+    <text x="34" y="102" class="legend-text">OpenRouter 5.6 Luna</text>
     
-    <circle cx="20" cy="106" r="5" fill="#a78bfa" stroke="#8b5cf6" stroke-width="1.5" />
-    <text x="34" y="110" class="legend-text">Qwen 3.8 27B</text>
+    <circle cx="20" cy="118" r="5" fill="#a78bfa" stroke="#8b5cf6" stroke-width="1.5" />
+    <text x="34" y="122" class="legend-text">Qwen 3.8 27B</text>
     
-    <line x1="12" y1="120" x2="203" y2="120" stroke="#334155" stroke-width="1" />
-    <circle cx="20" cy="132" r="5" fill="none" stroke="#22c55e" stroke-width="2" />
-    <text x="34" y="136" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
+    <line x1="12" y1="134" x2="203" y2="134" stroke="#334155" stroke-width="1" />
+    <circle cx="20" cy="148" r="5" fill="none" stroke="#22c55e" stroke-width="2" />
+    <text x="34" y="152" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
   </g>
 </svg>`;
 }
