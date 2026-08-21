@@ -1100,6 +1100,12 @@ class RunTransportCircuitBreaker {
 
 const globalRunCircuitBreaker = new RunTransportCircuitBreaker();
 
+function isOpenRouterTransport(transport = {}) {
+  const name = String(transport.name || transport.provider || '').toLowerCase();
+  const baseUrl = String(transport.baseUrl || transport.base_url || '').replace(/\/+$/, '').toLowerCase();
+  return name.includes('openrouter') || baseUrl === 'https://openrouter.ai/api/v1';
+}
+
 /**
  * Evaluates one persona charter against the diff using an LLM.
  *
@@ -1230,10 +1236,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         requestBody.reasoning_effort = reasoningEffort;
       }
 
-      if (transport.plugins || (isOpenRouterTransport && requestOptions?.plugins)) {
+      // OpenRouter-only routing controls must never be sent to direct provider
+      // endpoints. Legacy callers can provide a mixed transport handoff while
+      // the action-level policy remains canonical for the OpenRouter fallback.
+      // Sending the auto-router plugin to Fireworks/Ollama is rejected as an
+      // unknown request field and makes every persona lane fail.
+      if (isOpenRouterTransport && (transport.plugins || requestOptions?.plugins)) {
         requestBody.plugins = transport.plugins || requestOptions?.plugins;
       }
-      if (transport.provider || (isOpenRouterTransport && requestOptions?.provider)) {
+      if (isOpenRouterTransport && (transport.provider || requestOptions?.provider)) {
         requestBody.provider = transport.provider || requestOptions?.provider;
       }
 
