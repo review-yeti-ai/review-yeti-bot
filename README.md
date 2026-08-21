@@ -363,6 +363,11 @@ publishes the GitHub release and container image, and deploys it. Only after tha
 workflow succeeds is the matching tested commit promoted to the rolling `v1`
 tag. The `v1` tag is never advanced by an ordinary `main` merge.
 
+This repository's organization policy disables pull-request creation by the
+built-in `GITHUB_TOKEN`. The release workflow therefore uses the encrypted
+`RELEASE_PLEASE_TOKEN` repository secret (with `GITHUB_TOKEN` as a fallback for
+repositories where the organization permits workflow-created pull requests).
+
 ---
 
 ## Optional: self-hosted dashboard service
