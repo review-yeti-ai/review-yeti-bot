@@ -7,6 +7,11 @@ on:
         description: 'Exact released main commit to promote to v1 (40-character SHA).'
         required: true
         type: string
+      unreleased_recovery:
+        description: 'Emergency only: permit the exact current main tip when no v1.x.y tag exists.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -27,6 +32,7 @@ jobs:
         id: release
         env:
           REQUESTED_SHA: ${{ inputs.sha }}
+          UNRELEASED_RECOVERY: ${{ inputs.unreleased_recovery }}
         run: |
           set -euo pipefail
 
@@ -48,10 +54,19 @@ jobs:
           }
 
           release_tag="$(git tag --points-at "$target_sha" | { grep -E '^v1\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)"
-          [[ -n "$release_tag" ]] || {
-            echo "::error::refusing to promote an unversioned commit; expected an exact v1.x.y tag"
-            exit 1
-          }
+          if [[ -z "$release_tag" ]]; then
+            [[ "$UNRELEASED_RECOVERY" == true ]] || {
+              echo "::error::refusing to promote an unversioned commit without explicit recovery mode"
+              exit 1
+            }
+            main_sha="$(git rev-parse origin/main)"
+            [[ "$target_sha" == "$main_sha" ]] || {
+              echo "::error::unreleased recovery may promote only the exact current main tip"
+              exit 1
+            }
+            release_tag="unreleased-recovery"
+            echo "::warning::Promoting the fully tested current main tip through the bounded recovery path"
+          fi
 
           echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
           echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
