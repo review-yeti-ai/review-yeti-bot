@@ -14,6 +14,9 @@ describe('release workflow contract', () => {
     expect(workflow).toContain("- 'v*.*.*'");
     expect(workflow).not.toContain("- 'v*'");
     expect(workflow).toContain('validate-release-version.mjs');
+    expect(workflow).toContain(
+      "ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}",
+    );
   });
 
   it('validates identity before quality gates and preserves deployment gates', () => {
