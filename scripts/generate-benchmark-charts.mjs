@@ -139,71 +139,36 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
 
-  // Min and Max bounds
-  const minCost = Math.min(...points.map((p) => p.totalCostUSD), 0.01);
-  const maxCost = Math.max(...points.map((p) => p.totalCostUSD), 0.40) * 1.15;
-  const minAcc = 90.0;
-  const maxAcc = 101.5;
+  // Min and Max bounds for clean 2D scatter distribution
+  const minCost = 0.0;
+  const maxCost = 0.40;
+  const minAcc = 88.0;
+  const maxAcc = 101.0;
 
   const getX = (cost) => {
-    // Log-scale mapping
-    const minLog = Math.log10(0.015);
-    const maxLog = Math.log10(Math.max(maxCost, 0.45));
-    const curLog = Math.log10(Math.max(cost, 0.015));
-    const ratio = (curLog - minLog) / (maxLog - minLog);
-    return padding.left + Math.max(0, Math.min(plotWidth, ratio * plotWidth));
+    const ratio = Math.max(0, Math.min(1, (cost - minCost) / (maxCost - minCost)));
+    return padding.left + ratio * plotWidth;
   };
 
   const getY = (acc) => {
-    const ratio = (acc - minAcc) / (maxAcc - minAcc);
+    const ratio = Math.max(0, Math.min(1, (acc - minAcc) / (maxAcc - minAcc)));
     return padding.top + plotHeight - (ratio * plotHeight);
   };
 
   const paretoPoints = computeParetoFrontier(points);
 
-  // Group by family for trajectory lines
-  const families = {};
-  for (const p of points) {
-    if (!families[p.family]) families[p.family] = [];
-    families[p.family].push(p);
-  }
-
-  // Sort each family by effort low -> medium -> high -> default
-  const effortRank = { low: 1, medium: 2, high: 3, default: 4 };
-  for (const fam of Object.keys(families)) {
-    families[fam].sort((a, b) => (effortRank[a.effort] || 4) - (effortRank[b.effort] || 4));
-  }
-
-  // Build family trajectory paths
-  let trajectoryPaths = '';
-  for (const [family, fPoints] of Object.entries(families)) {
-    if (fPoints.length > 1) {
-      const color = FAMILY_COLORS[family]?.stroke || DEFAULT_COLOR.stroke;
-      const pathD = fPoints.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${getX(p.totalCostUSD).toFixed(1)} ${getY(p.verdictAccuracyPct).toFixed(1)}`).join(' ');
-      trajectoryPaths += `<path d="${pathD}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4,4" opacity="0.65" />\n`;
-    }
-  }
-
-  // Build Pareto frontier curve
-  let paretoPathD = '';
-  if (paretoPoints.length > 1) {
-    paretoPathD = paretoPoints.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${getX(p.totalCostUSD).toFixed(1)} ${getY(p.verdictAccuracyPct).toFixed(1)}`).join(' ');
-  }
-
-  // Cost Grid Lines
-  const costTicks = [0.02, 0.03, 0.05, 0.10, 0.20, 0.40];
+  // Cost Grid Lines (Linear $0.00 to $0.40)
+  const costTicks = [0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40];
   let xGridLines = '';
   for (const tick of costTicks) {
-    if (tick <= maxCost) {
-      const x = getX(tick);
-      xGridLines += `
-        <line x1="${x}" y1="${padding.top}" x2="${x}" y2="${height - padding.bottom}" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-        <text x="${x}" y="${height - padding.bottom + 22}" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$${tick.toFixed(2)}</text>
-      `;
-    }
+    const x = getX(tick);
+    xGridLines += `
+      <line x1="${x}" y1="${padding.top}" x2="${x}" y2="${height - padding.bottom}" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="${x}" y="${height - padding.bottom + 22}" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$${tick.toFixed(2)}</text>
+    `;
   }
 
-  // Accuracy Grid Lines
+  // Accuracy Grid Lines (90% to 100%)
   const accTicks = [90, 92, 94, 96, 98, 100];
   let yGridLines = '';
   for (const tick of accTicks) {
@@ -215,29 +180,28 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
   }
 
   // Label Offset Heuristic to Prevent Overlaps
-  // Define custom offset directions per exact model
   const customOffsets = {
-    'deepseek/deepseek-v4-flash-0731:low': { dx: 14, dy: -12, anchor: 'start' },
-    'deepseek/deepseek-v4-flash-0731:medium': { dx: -14, dy: 14, anchor: 'end' },
-    'deepseek/deepseek-v4-flash-0731:high': { dx: -14, dy: -14, anchor: 'end' },
+    'deepseek/deepseek-v4-flash-0731:low': { dx: 14, dy: 14, anchor: 'start' },
+    'deepseek/deepseek-v4-flash-0731:medium': { dx: 14, dy: -8, anchor: 'start' },
+    'deepseek/deepseek-v4-flash-0731:high': { dx: 14, dy: -18, anchor: 'start' },
     'google/gemini-3.7-flash:low': { dx: 14, dy: 16, anchor: 'start' },
-    'google/gemini-3.7-flash:medium': { dx: -14, dy: -6, anchor: 'end' },
-    'google/gemini-3.7-flash:high': { dx: 14, dy: -14, anchor: 'start' },
-    'claude-5-haiku:low': { dx: 14, dy: -12, anchor: 'start' },
-    'claude-5-haiku:medium': { dx: -14, dy: 14, anchor: 'end' },
-    'claude-5-haiku:high': { dx: 14, dy: -14, anchor: 'start' },
-    'anthropic/claude-5-haiku:low': { dx: 14, dy: -12, anchor: 'start' },
-    'anthropic/claude-5-haiku:medium': { dx: -14, dy: 14, anchor: 'end' },
-    'anthropic/claude-5-haiku:high': { dx: 14, dy: -14, anchor: 'start' },
+    'google/gemini-3.7-flash:medium': { dx: 14, dy: -4, anchor: 'start' },
+    'google/gemini-3.7-flash:high': { dx: 14, dy: -20, anchor: 'start' },
+    'claude-5-haiku:low': { dx: 14, dy: 14, anchor: 'start' },
+    'claude-5-haiku:medium': { dx: 14, dy: -6, anchor: 'start' },
+    'claude-5-haiku:high': { dx: 14, dy: 20, anchor: 'start' },
+    'anthropic/claude-5-haiku:low': { dx: 14, dy: 14, anchor: 'start' },
+    'anthropic/claude-5-haiku:medium': { dx: 14, dy: -6, anchor: 'start' },
+    'anthropic/claude-5-haiku:high': { dx: 14, dy: 20, anchor: 'start' },
     'qwen/qwen-3.8-27b:low': { dx: 14, dy: 16, anchor: 'start' },
-    'qwen/qwen-3.8-27b:medium': { dx: -14, dy: -14, anchor: 'end' },
-    'qwen/qwen-3.8-27b:high': { dx: 14, dy: -8, anchor: 'start' },
+    'qwen/qwen-3.8-27b:medium': { dx: 14, dy: -10, anchor: 'start' },
+    'qwen/qwen-3.8-27b:high': { dx: 14, dy: 6, anchor: 'start' },
     'openrouter/5.6-luna-low': { dx: -14, dy: 16, anchor: 'end' },
-    'openrouter/5.6-luna-medium': { dx: -14, dy: -14, anchor: 'end' },
-    'openrouter/5.6-luna-high': { dx: -14, dy: -24, anchor: 'end' },
+    'openrouter/5.6-luna-medium': { dx: -14, dy: -10, anchor: 'end' },
+    'openrouter/5.6-luna-high': { dx: -14, dy: -22, anchor: 'end' },
   };
 
-  // Render Data Points with Anti-Collision Badges
+  // Render Data Points with Badges (No leader lines)
   let dataPointsSvg = '';
   for (const p of points) {
     const cx = getX(p.totalCostUSD);
@@ -250,29 +214,23 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
     const labelX = cx + offset.dx;
     const labelY = cy + offset.dy;
 
-    // Leader line if offset is significant
-    const leaderLine = (Math.abs(offset.dx) > 10 || Math.abs(offset.dy) > 10)
-      ? `<line x1="${cx}" y1="${cy}" x2="${labelX}" y2="${labelY}" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />`
-      : '';
-
-    const badgeWidth = p.exactModel.length * 6.8 + 18;
-    const badgeHeight = 28;
+    const badgeWidth = p.exactModel.length * 6.5 + 16;
+    const badgeHeight = 26;
     const badgeX = offset.anchor === 'end' ? labelX - badgeWidth - 4 : (offset.anchor === 'middle' ? labelX - badgeWidth / 2 : labelX - 4);
-    const badgeY = labelY - 14;
+    const badgeY = labelY - 13;
 
     dataPointsSvg += `
       <g class="model-point" data-model="${p.exactModel}">
-        ${leaderLine}
-        ${isPareto ? `<circle cx="${cx}" cy="${cy}" r="${radius + 5}" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />` : ''}
+        ${isPareto ? `<circle cx="${cx}" cy="${cy}" r="${radius + 4}" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />` : ''}
         <circle cx="${cx}" cy="${cy}" r="${radius}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="${badgeX}" y="${badgeY}" width="${badgeWidth}" height="${badgeHeight}" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="${labelX}" y="${labelY - 1}" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="${offset.anchor}">
+          <rect x="${badgeX}" y="${badgeY}" width="${badgeWidth}" height="${badgeHeight}" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="${labelX}" y="${labelY - 1}" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="${offset.anchor}">
             ${p.exactModel}
           </text>
-          <text x="${labelX}" y="${labelY + 11}" fill="${isPareto ? '#4ade80' : '#94a3b8'}" font-size="9.5" font-weight="${isPareto ? '600' : '400'}" font-family="system-ui, sans-serif" text-anchor="${offset.anchor}">
+          <text x="${labelX}" y="${labelY + 10}" fill="${isPareto ? '#4ade80' : '#94a3b8'}" font-size="9" font-weight="${isPareto ? '600' : '400'}" font-family="system-ui, sans-serif" text-anchor="${offset.anchor}">
             ${p.verdictAccuracyPct.toFixed(1)}% | $${p.totalCostUSD.toFixed(4)}
           </text>
         </g>
@@ -280,9 +238,9 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
     `;
   }
 
-  // Position Legend at Bottom Right inside plot area
+  // Position Legend at Bottom Center/Right inside plot area
   const legendX = width - padding.right - 230;
-  const legendY = height - padding.bottom - 165;
+  const legendY = height - padding.bottom - 175;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
