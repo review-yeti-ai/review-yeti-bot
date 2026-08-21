@@ -590,9 +590,15 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
-        gh pr diff "${{ steps.target.outputs.pr }}" \
-          --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/review-yeti.diff"
-        echo "Fetched $(wc -l < "${RUNNER_TEMP}/review-yeti.diff") diff lines."
+        # Not a bare `gh pr diff`: the .diff media type is capped at 300 files and
+        # returns HTTP 406 above it, which failed this step and skipped every step
+        # after it -- surfacing only "did not produce a verdict". See the script.
+        bash "${{ github.action_path }}/scripts/fetch-pr-diff.sh" \
+          "${{ steps.target.outputs.pr }}" \
+          "${{ steps.target.outputs.repo }}" \
+          "${RUNNER_TEMP}/review-yeti.diff" \
+          "${{ steps.target.outputs.base_sha }}" \
+          "${{ steps.target.outputs.head_sha }}"
 
     # ── Node pipeline deps (js-yaml, @actions/cache) ──────────────────────────
     # Do NOT use actions/setup-node or actions/cache here. Consumer repos with
