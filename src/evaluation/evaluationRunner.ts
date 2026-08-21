@@ -957,7 +957,7 @@ export class EvaluationRunner {
   constructor(options: RunnerOptions = {}) {
     this.defaultOptions = {
       offline: true,
-      timeoutMs: 30_000,
+      timeoutMs: 90_000,
       maxTurns: 5,
       ...options,
     };
@@ -1218,7 +1218,7 @@ export class EvaluationRunner {
       const response = await client.complete({
         model: effectiveModel,
         messages,
-        timeoutMs: options.timeoutMs || 30_000,
+        timeoutMs: options.timeoutMs || 90_000,
         stream: true,
       });
 
