@@ -14,6 +14,7 @@ describe('Release Please configuration', () => {
     expect(workflow).toContain('contents: write');
     expect(workflow).toContain('issues: write');
     expect(workflow).toContain('pull-requests: write');
+    expect(workflow).toContain('secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN');
     expect(workflow).toMatch(/googleapis\/release-please-action@[0-9a-f]{40}/u);
     expect(workflow).toContain('target-branch: main');
   });
