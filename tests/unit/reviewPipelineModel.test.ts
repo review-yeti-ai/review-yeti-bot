@@ -70,6 +70,33 @@ describe('resolveModelConfig', () => {
     expect(cfg.baseUrl).toBe('https://openrouter.example/v1');
     expect(cfg.model).toBe('some/model');
   });
+
+  it('auto-synthesizes multi-transport chain when multiple provider API keys are supplied', () => {
+    const cfg = resolveModelConfig({
+      FIREWORKS_API_KEY: 'fw-key-123',
+      ANTHROPIC_API_KEY: 'sk-ant-456',
+      OPENROUTER_API_KEY: 'sk-or-789',
+    });
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.transports).toHaveLength(3);
+    expect(cfg.transports[0].name).toBe('fireworks');
+    expect(cfg.transports[0].apiKey).toBe('fw-key-123');
+    expect(cfg.transports[1].name).toBe('anthropic');
+    expect(cfg.transports[1].apiKey).toBe('sk-ant-456');
+    expect(cfg.transports[2].name).toBe('openrouter');
+    expect(cfg.transports[2].apiKey).toBe('sk-or-789');
+  });
+
+  it('supports direct Gemini and Ollama provider keys', () => {
+    const cfg = resolveModelConfig({
+      GEMINI_API_KEY: 'gem-key-abc',
+      OLLAMA_API_KEY: 'ollama-key-xyz',
+    });
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.transports).toHaveLength(2);
+    expect(cfg.transports[0].name).toBe('ollama');
+    expect(cfg.transports[1].name).toBe('gemini');
+  });
 });
 
 describe('reviewWithModel', () => {
