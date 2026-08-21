@@ -317,6 +317,69 @@ describe('reviewWithModel', () => {
     });
   });
 
+  it('treats the streaming timeout as inactivity instead of total generation time', async () => {
+    const frames = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":' } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '[]}' } }] })}\n\n`,
+      'data: [DONE]\n\n',
+    ];
+    const streamFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({
+        async start(controller) {
+          for (const frame of frames) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            controller.enqueue(new TextEncoder().encode(frame));
+          }
+          controller.close();
+        },
+      }),
+    });
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: streamFetch,
+      timeoutMs: 40,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'fireworks',
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        apiKey: 'fw-key',
+        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        stream: true,
+      }],
+    });
+
+    expect(res.decision).toBe('APPROVE');
+    expect(res.findings).toEqual([]);
+  });
+
+  it('fails closed when a streaming response becomes idle', async () => {
+    const stalledFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({ start() {} }),
+    });
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: stalledFetch,
+      timeoutMs: 25,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'fireworks',
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        apiKey: 'fw-key',
+        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        stream: true,
+      }],
+    });
+
+    expect(res.decision).toBe('ERROR');
+    expect(res.error).toContain('Streaming response stalled');
+  });
+
   it('marks a provider lane failure as ERROR so it cannot become a successful verdict', async () => {
     const { impl } = stubFetch('{"error":{"message":"provider lane failed"}}');
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
