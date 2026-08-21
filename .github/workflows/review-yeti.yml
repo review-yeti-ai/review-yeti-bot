@@ -122,11 +122,9 @@ jobs:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
           pr-number: ${{ github.event.pull_request.number }}
-          openrouter-api-key: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          fireworks-api-key: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
-          ollama-api-key: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           llm-api-key: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           llm-base-url: https://openrouter.ai/api/v1
+          action-sha: ${{ steps.resolved.outputs.sha }}
           model: openrouter/auto
           transports: ${{ steps.smoke.outputs.healthy_transports }}
           transport-plan-b64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
