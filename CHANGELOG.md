@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.6...v1.9.7) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** remove v1.9.6 conflict markers ([#216](https://github.com/review-yeti-ai/review-yeti-bot/issues/216)) ([c4eb036](https://github.com/review-yeti-ai/review-yeti-bot/commit/c4eb036ea7813ac67f1afeef56745cb30694105c))
+
 ## [1.9.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.5...v1.9.6) (2026-08-21)
 
 
