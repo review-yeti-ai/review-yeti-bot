@@ -1100,6 +1100,14 @@ class RunTransportCircuitBreaker {
 
 const globalRunCircuitBreaker = new RunTransportCircuitBreaker();
 
+function isOpenRouterTransport(transport, baseUrl) {
+  const name = String(transport?.name || '').toLowerCase();
+  const provider = String(transport?.provider || '').toLowerCase();
+  const url = String(transport?.baseUrl || transport?.base_url || baseUrl || '').toLowerCase();
+
+  return name.includes('openrouter') || provider === 'openrouter' || url.includes('openrouter.ai');
+}
+
 /**
  * Evaluates one persona charter against the diff using an LLM.
  *
@@ -1208,6 +1216,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const transportApiKey = transport.apiKey || transport.api_key || cfg.apiKey;
       const transportBaseUrl = (transport.baseUrl || transport.base_url || cfg.baseUrl).replace(/\/+$/, '');
       const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
+      const usesOpenRouterPolicy = isOpenRouterTransport(transport, transportBaseUrl);
 
       resultBase = { ...resultBase, model: requestModel, transport: transportName };
 
@@ -1226,11 +1235,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         requestBody.reasoning_effort = reasoningEffort;
       }
 
-      if (transport.plugins || requestOptions?.plugins) {
-        requestBody.plugins = transport.plugins || requestOptions?.plugins;
+      if (transport.plugins || (usesOpenRouterPolicy && requestOptions?.plugins)) {
+        requestBody.plugins = transport.plugins || requestOptions.plugins;
       }
-      if (transport.provider || requestOptions?.provider) {
-        requestBody.provider = transport.provider || requestOptions?.provider;
+      if (transport.provider || (usesOpenRouterPolicy && requestOptions?.provider)) {
+        requestBody.provider = transport.provider || requestOptions.provider;
       }
 
       let heartbeatTimer = null;
