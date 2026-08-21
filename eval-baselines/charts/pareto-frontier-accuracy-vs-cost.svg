@@ -18,42 +18,51 @@
 
   <!-- Axes & Grid -->
   
-        <line x1="160.21536524960072" y1="75" x2="160.21536524960072" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-        <text x="160.21536524960072" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.02</text>
-      
-        <line x1="266.22546849451555" y1="75" x2="266.22546849451555" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-        <text x="266.22546849451555" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.03</text>
-      
-        <line x1="399.7824035616253" y1="75" x2="399.7824035616253" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-        <text x="399.7824035616253" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.05</text>
-      
-        <line x1="581.007872056141" y1="75" x2="581.007872056141" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-        <text x="581.007872056141" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.10</text>
-      
-        <line x1="762.2333405506565" y1="75" x2="762.2333405506565" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-        <text x="762.2333405506565" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.20</text>
-      
-        <line x1="943.4588090451718" y1="75" x2="943.4588090451718" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-        <text x="943.4588090451718" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.40</text>
-      
+      <line x1="85" y1="75" x2="85" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="85" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.00</text>
+    
+      <line x1="196.875" y1="75" x2="196.875" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="196.875" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.05</text>
+    
+      <line x1="308.75" y1="75" x2="308.75" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="308.75" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.10</text>
+    
+      <line x1="420.62499999999994" y1="75" x2="420.62499999999994" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="420.62499999999994" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.15</text>
+    
+      <line x1="532.5" y1="75" x2="532.5" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="532.5" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.20</text>
+    
+      <line x1="644.375" y1="75" x2="644.375" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="644.375" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.25</text>
+    
+      <line x1="756.2499999999999" y1="75" x2="756.2499999999999" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="756.2499999999999" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.30</text>
+    
+      <line x1="868.1249999999999" y1="75" x2="868.1249999999999" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="868.1249999999999" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.35</text>
+    
+      <line x1="980" y1="75" x2="980" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="980" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.40</text>
+    
   
-      <line x1="85" y1="535" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-      <text x="70" y="539" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">90%</text>
+      <line x1="85" y1="464.2307692307692" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="468.2307692307692" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">90%</text>
     
-      <line x1="85" y1="455" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-      <text x="70" y="459" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">92%</text>
+      <line x1="85" y1="393.46153846153845" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="397.46153846153845" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">92%</text>
     
-      <line x1="85" y1="375" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-      <text x="70" y="379" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">94%</text>
+      <line x1="85" y1="322.6923076923077" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="326.6923076923077" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">94%</text>
     
-      <line x1="85" y1="295" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-      <text x="70" y="299" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">96%</text>
+      <line x1="85" y1="251.9230769230769" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="255.9230769230769" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">96%</text>
     
-      <line x1="85" y1="215" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-      <text x="70" y="219" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">98%</text>
+      <line x1="85" y1="181.15384615384613" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="185.15384615384613" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">98%</text>
     
-      <line x1="85" y1="135" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
-      <text x="70" y="139" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">100%</text>
+      <line x1="85" y1="110.38461538461536" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="114.38461538461536" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">100%</text>
     
 
   <!-- Axis Lines -->
@@ -67,255 +76,240 @@
   <!-- Data Points with Anti-Collision Labels -->
   
       <g class="model-point" data-model="deepseek/deepseek-v4-flash-0731:low">
-        <line x1="719.5884239305925" y1="451.0000000000002" x2="733.5884239305925" y2="439.0000000000002" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="719.5884239305925" cy="451.0000000000002" r="6" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
+        <circle cx="465.15124999999995" cy="389.92307692307713" r="6" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="729.5884239305925" y="425.0000000000002" width="256" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="733.5884239305925" y="438.0000000000002" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+          <rect x="475.15124999999995" y="390.92307692307713" width="243.5" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="479.15124999999995" y="402.92307692307713" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             deepseek/deepseek-v4-flash-0731:low
           </text>
-          <text x="733.5884239305925" y="450.0000000000002" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+          <text x="479.15124999999995" y="413.92307692307713" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             92.1% | $0.1699
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="deepseek/deepseek-v4-flash-0731:medium">
-        <line x1="182.74678976242407" y1="283.0000000000001" x2="168.74678976242407" y2="297.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
-        <circle cx="182.74678976242407" cy="283.0000000000001" r="13" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />
-        <circle cx="182.74678976242407" cy="283.0000000000001" r="8" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
+        <circle cx="133.7775" cy="241.30769230769243" r="12" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />
+        <circle cx="133.7775" cy="241.30769230769243" r="8" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="-111.6532102375759" y="283.0000000000001" width="276.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="168.74678976242407" y="296.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="143.7775" y="220.30769230769243" width="263" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="147.7775" y="232.30769230769243" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             deepseek/deepseek-v4-flash-0731:medium
           </text>
-          <text x="168.74678976242407" y="308.0000000000001" fill="#4ade80" font-size="9.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="147.7775" y="243.30769230769243" fill="#4ade80" font-size="9" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             96.3% | $0.0218
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="deepseek/deepseek-v4-flash-0731:high">
-        <line x1="194.47310863599148" y1="135" x2="180.47310863599148" y2="121" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
-        <circle cx="194.47310863599148" cy="135" r="13" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />
-        <circle cx="194.47310863599148" cy="135" r="8" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
+        <circle cx="136.015" cy="110.38461538461536" r="12" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />
+        <circle cx="136.015" cy="110.38461538461536" r="8" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="-86.32689136400847" y="107" width="262.79999999999995" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="180.47310863599148" y="120" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="146.015" y="79.38461538461536" width="250" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="150.015" y="91.38461538461536" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             deepseek/deepseek-v4-flash-0731:high
           </text>
-          <text x="180.47310863599148" y="132" fill="#4ade80" font-size="9.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="150.015" y="102.38461538461536" fill="#4ade80" font-size="9" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             100.0% | $0.0228
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="google/gemini-3.7-flash:low">
-        <line x1="236.73473861223107" y1="283.0000000000001" x2="250.73473861223107" y2="299.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="236.73473861223107" cy="283.0000000000001" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
+        <circle cx="144.965" cy="241.30769230769243" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="246.73473861223107" y="285.0000000000001" width="201.6" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="250.73473861223107" y="298.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+          <rect x="154.965" y="244.30769230769243" width="191.5" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="158.965" y="256.30769230769243" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             google/gemini-3.7-flash:low
           </text>
-          <text x="250.73473861223107" y="310.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+          <text x="158.965" y="267.30769230769243" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             96.3% | $0.0268
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="google/gemini-3.7-flash:medium">
-        <line x1="249.11916696912908" y1="198.99999999999977" x2="235.11916696912908" y2="192.99999999999977" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="249.11916696912908" cy="198.99999999999977" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
+        <circle cx="147.87375" cy="166.99999999999977" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="9.119166969129083" y="178.99999999999977" width="222" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="235.11916696912908" y="191.99999999999977" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="157.87375" y="149.99999999999977" width="211" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="161.87375" y="161.99999999999977" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             google/gemini-3.7-flash:medium
           </text>
-          <text x="235.11916696912908" y="203.99999999999977" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="161.87375" y="172.99999999999977" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             98.4% | $0.0281
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="google/gemini-3.7-flash:high">
-        <line x1="262.7159784229575" y1="135" x2="276.7159784229575" y2="121" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="262.7159784229575" cy="135" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
+        <circle cx="151.23" cy="110.38461538461536" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="272.7159784229575" y="107" width="208.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="276.7159784229575" y="120" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+          <rect x="161.23" y="77.38461538461536" width="198" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="165.23" y="89.38461538461536" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             google/gemini-3.7-flash:high
           </text>
-          <text x="276.7159784229575" y="132" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+          <text x="165.23" y="100.38461538461536" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             100.0% | $0.0296
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="claude-5-haiku:low">
-        <line x1="532.9206786758996" y1="366.9999999999999" x2="546.9206786758996" y2="354.9999999999999" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="532.9206786758996" cy="366.9999999999999" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
+        <circle cx="271.15999999999997" cy="315.6153846153845" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="542.9206786758996" y="340.9999999999999" width="140.39999999999998" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="546.9206786758996" y="353.9999999999999" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+          <rect x="281.15999999999997" y="316.6153846153845" width="133" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="285.15999999999997" y="328.6153846153845" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             claude-5-haiku:low
           </text>
-          <text x="546.9206786758996" y="365.9999999999999" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+          <text x="285.15999999999997" y="339.6153846153845" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             94.2% | $0.0832
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="claude-5-haiku:medium">
-        <line x1="533.5484174760866" y1="238.99999999999977" x2="519.5484174760866" y2="252.99999999999977" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="533.5484174760866" cy="238.99999999999977" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
+        <circle cx="271.60749999999996" cy="202.3846153846152" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="354.7484174760866" y="238.99999999999977" width="160.79999999999998" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="519.5484174760866" y="251.99999999999977" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="281.60749999999996" y="183.3846153846152" width="152.5" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="285.60749999999996" y="195.3846153846152" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             claude-5-haiku:medium
           </text>
-          <text x="519.5484174760866" y="263.9999999999998" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="285.60749999999996" y="206.3846153846152" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             97.4% | $0.0834
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="claude-5-haiku:high">
-        <line x1="532.9206786758996" y1="366.9999999999999" x2="546.9206786758996" y2="352.9999999999999" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="532.9206786758996" cy="366.9999999999999" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
+        <circle cx="271.15999999999997" cy="315.6153846153845" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="542.9206786758996" y="338.9999999999999" width="147.2" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="546.9206786758996" y="351.9999999999999" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+          <rect x="281.15999999999997" y="322.6153846153845" width="139.5" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="285.15999999999997" y="334.6153846153845" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             claude-5-haiku:high
           </text>
-          <text x="546.9206786758996" y="363.9999999999999" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+          <text x="285.15999999999997" y="345.6153846153845" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             94.2% | $0.0832
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="openrouter/5.6-luna-low">
-        <line x1="905.0118864680353" y1="283.0000000000001" x2="891.0118864680353" y2="299.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="905.0118864680353" cy="283.0000000000001" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
+        <circle cx="857.60875" cy="241.30769230769243" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="712.6118864680353" y="285.0000000000001" width="174.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="891.0118864680353" y="298.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="674.10875" y="244.30769230769243" width="165.5" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="843.60875" y="256.30769230769243" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
             openrouter/5.6-luna-low
           </text>
-          <text x="891.0118864680353" y="310.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="843.60875" y="267.30769230769243" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
             96.3% | $0.3453
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="openrouter/5.6-luna-medium">
-        <line x1="917.7213483520413" y1="218.99999999999977" x2="903.7213483520413" y2="204.99999999999977" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="917.7213483520413" cy="218.99999999999977" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
+        <circle cx="896.0937499999999" cy="184.6923076923075" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="704.9213483520414" y="190.99999999999977" width="194.79999999999998" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="903.7213483520413" y="203.99999999999977" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="693.0937499999999" y="161.6923076923075" width="185" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="882.0937499999999" y="173.6923076923075" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
             openrouter/5.6-luna-medium
           </text>
-          <text x="903.7213483520413" y="215.99999999999977" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="882.0937499999999" y="184.6923076923075" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
             97.9% | $0.3625
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="openrouter/5.6-luna-high">
-        <line x1="927.7675891131879" y1="135" x2="913.7675891131879" y2="111" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="927.7675891131879" cy="135" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
+        <circle cx="927.8662499999999" cy="110.38461538461536" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="728.567589113188" y="97" width="181.2" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="913.7675891131879" y="110" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="737.8662499999999" y="75.38461538461536" width="172" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="913.8662499999999" y="87.38461538461536" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
             openrouter/5.6-luna-high
           </text>
-          <text x="913.7675891131879" y="122" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="913.8662499999999" y="98.38461538461536" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
             100.0% | $0.3767
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="qwen/qwen-3.8-27b:low">
-        <line x1="416.4927397294492" y1="386.9999999999999" x2="430.4927397294492" y2="402.9999999999999" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="416.4927397294492" cy="386.9999999999999" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
+        <circle cx="204.25874999999996" cy="333.3076923076922" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="426.4927397294492" y="388.9999999999999" width="160.79999999999998" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="430.4927397294492" y="401.9999999999999" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+          <rect x="214.25874999999996" y="336.3076923076922" width="152.5" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="218.25874999999996" y="348.3076923076922" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             qwen/qwen-3.8-27b:low
           </text>
-          <text x="430.4927397294492" y="413.9999999999999" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+          <text x="218.25874999999996" y="359.3076923076922" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             93.7% | $0.0533
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="qwen/qwen-3.8-27b:medium">
-        <line x1="434.9559205101217" y1="303.0000000000001" x2="420.9559205101217" y2="289.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="434.9559205101217" cy="303.0000000000001" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
+        <circle cx="212.98499999999999" cy="259.0000000000001" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="235.7559205101217" y="275.0000000000001" width="181.2" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="420.9559205101217" y="288.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+          <rect x="222.98499999999999" y="236.0000000000001" width="172" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="226.98499999999999" y="248.0000000000001" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             qwen/qwen-3.8-27b:medium
           </text>
-          <text x="420.9559205101217" y="300.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+          <text x="226.98499999999999" y="259.0000000000001" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             95.8% | $0.0572
           </text>
         </g>
       </g>
     
       <g class="model-point" data-model="qwen/qwen-3.8-27b:high">
-        <line x1="452.62839498038204" y1="323.0000000000001" x2="466.62839498038204" y2="315.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
         
-        <circle cx="452.62839498038204" cy="323.0000000000001" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
+        <circle cx="221.935" cy="276.6923076923078" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
-          <rect x="462.62839498038204" y="301.0000000000001" width="167.6" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
-          <text x="466.62839498038204" y="314.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+          <rect x="231.935" y="269.6923076923078" width="159" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="235.935" y="281.6923076923078" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
             qwen/qwen-3.8-27b:high
           </text>
-          <text x="466.62839498038204" y="326.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+          <text x="235.935" y="292.6923076923078" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             95.3% | $0.0612
           </text>
         </g>
@@ -323,7 +317,7 @@
     
 
   <!-- Bottom-Right Legend Card -->
-  <g transform="translate(750, 350)">
+  <g transform="translate(750, 340)">
     <rect width="215" height="165" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
     <text x="16" y="20" class="legend-title">MODEL FAMILIES</text>
     
