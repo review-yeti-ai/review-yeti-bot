@@ -1015,79 +1015,136 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     if (options.openRouterPolicy) {
       requestOptions = buildOpenRouterRequestOptions(options.openRouterPolicy);
     }
-    const requestModel = requestOptions?.model || cfg.model;
-    resultBase = { ...resultBase, model: requestModel };
-    const requestBody = {
-      model: requestModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.1,
-      response_format: { type: 'json_object' },
-    };
 
-    if (requestOptions?.plugins) requestBody.plugins = requestOptions.plugins;
-    if (requestOptions?.provider) requestBody.provider = requestOptions.provider;
+    const candidateTransports = Array.isArray(options.transports) && options.transports.length > 0
+      ? options.transports
+      : [{
+          baseUrl: requestOptions?.baseUrl || cfg.baseUrl,
+          apiKey: cfg.apiKey,
+          model: requestOptions?.model || cfg.model,
+          provider: requestOptions?.provider,
+          plugins: requestOptions?.plugins,
+          name: 'default',
+          timeoutMs: options.timeoutMs || 90_000,
+          ttftTimeoutMs: options.ttftTimeoutMs || 20_000,
+        }];
 
-    let heartbeatTimer = null;
-    const startMs = Date.now();
-    heartbeatTimer = setInterval(() => {
-      const elapsedSec = Math.round((Date.now() - startMs) / 1000);
-      console.log(`[Persona: ${persona.id}] Awaiting model response from ${requestModel} (${elapsedSec}s elapsed)...`);
-    }, 15_000);
+    let lastError = null;
 
-    let response;
-    try {
-      response = await fetchImpl(`${requestOptions?.baseUrl || cfg.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${cfg.apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-        // Default per-lane timeout of 90 seconds
-        signal: AbortSignal.timeout(options.timeoutMs || 90_000),
-      });
-    } finally {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-    }
+    for (let i = 0; i < candidateTransports.length; i++) {
+      const transport = candidateTransports[i];
+      const transportName = transport.name || transport.provider || 'default';
+      const requestModel = transport.model || cfg.model;
+      const transportApiKey = transport.apiKey || transport.api_key || cfg.apiKey;
+      const transportBaseUrl = (transport.baseUrl || transport.base_url || cfg.baseUrl).replace(/\/+$/, '');
+      const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
+      const transportTtftTimeoutMs = transport.ttftTimeoutMs || transport.connect_timeout_ms || 20_000;
 
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      return { ...resultBase, decision: 'ERROR', findings: [], error: `HTTP ${response.status}: ${String(detail).slice(0, 200)}` };
-    }
+      resultBase = { ...resultBase, model: requestModel, transport: transportName };
 
-    const payload = await response.json();
-    const responseBase = {
-      ...resultBase,
-      model: resolveResponseModel(payload, requestModel),
-      provider: resolveResponseProvider(payload),
-      cost: extractResponseCost(payload),
-      ...extractResponseTokenUsage(payload),
-    };
-    if (payload?.error) {
-      const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
-      return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
-    }
-    const content = payload?.choices?.[0]?.message?.content;
-    if (typeof content === 'string') {
+      const requestBody = {
+        model: requestModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+      };
+
+      if (transport.plugins || requestOptions?.plugins) {
+        requestBody.plugins = transport.plugins || requestOptions?.plugins;
+      }
+      if (transport.provider || requestOptions?.provider) {
+        requestBody.provider = transport.provider || requestOptions?.provider;
+      }
+
+      let heartbeatTimer = null;
+      const startMs = Date.now();
+      heartbeatTimer = setInterval(() => {
+        const elapsedSec = Math.round((Date.now() - startMs) / 1000);
+        console.log(`[Persona: ${persona.id}] Awaiting model response from ${requestModel} via ${transportName} (${elapsedSec}s elapsed)...`);
+      }, 15_000);
+
       try {
-        const providerLane = JSON.parse(content);
-        if (providerLane?.error) {
-          const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
+        const response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${transportApiKey}`,
+          },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(transportTimeoutMs),
+        });
+
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
+          // Check if retryable / queue failure for fallback
+          if (i < candidateTransports.length - 1 && (response.status === 429 || response.status === 503 || response.status === 500 || detail.includes('cancelled') || detail.includes('queue'))) {
+            console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
+            lastError = errMsg;
+            continue;
+          }
+          return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
+        }
+
+        const payload = await response.json();
+        const responseBase = {
+          ...resultBase,
+          model: resolveResponseModel(payload, requestModel),
+          provider: resolveResponseProvider(payload),
+          transport: transportName,
+          cost: extractResponseCost(payload),
+          ...extractResponseTokenUsage(payload),
+        };
+
+        if (payload?.error) {
+          const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
+          if (i < candidateTransports.length - 1 && (String(message).includes('cancelled') || String(message).includes('rate') || String(message).includes('queue'))) {
+            console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
+            lastError = message;
+            continue;
+          }
           return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
         }
-      } catch (_) {}
-    }
-    const rawFindings = parseFindingsPayload(content);
 
-    if (rawFindings === null) {
-      return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
+        const content = payload?.choices?.[0]?.message?.content;
+        if (typeof content === 'string') {
+          try {
+            const providerLane = JSON.parse(content);
+            if (providerLane?.error) {
+              const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
+              if (i < candidateTransports.length - 1) {
+                console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
+                lastError = message;
+                continue;
+              }
+              return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+            }
+          } catch (_) {}
+        }
+
+        const rawFindings = parseFindingsPayload(content);
+        if (rawFindings === null) {
+          return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
+        }
+
+        const findings = sanitizeFindings(rawFindings, diffFiles);
+        return { ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
+      } catch (err) {
+        lastError = err.message;
+        if (i < candidateTransports.length - 1) {
+          console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' exception (${err.message}); trying next transport...`);
+          continue;
+        }
+        return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
+      } finally {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+      }
     }
 
-    const findings = sanitizeFindings(rawFindings, diffFiles);
-    return { ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
+    return { ...resultBase, decision: 'ERROR', findings: [], error: lastError || 'All transports failed' };
   } catch (err) {
     return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
   }
