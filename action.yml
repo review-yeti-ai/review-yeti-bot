@@ -48,6 +48,20 @@ inputs:
     description: 'Trusted workflow/base-config OpenRouter model control. Defaults to the production auto-router alias.'
     required: false
     default: 'openrouter/auto'
+  action-sha:
+    description: >-
+      Exact 40-hex commit SHA of the Review Yeti action source. Required when review-engine is
+      pi-workflow so runtime provenance is bound to the immutable action source.
+    required: false
+    default: ''
+  review-engine:
+    description: >-
+      Trusted review scheduler bootstrap: legacy or pi-workflow. The Pi workflow path requires
+      callers to provision Node 24 before invoking this composite Action, installs the reviewed
+      dependency graph with npm ci from Review Yeti's lockfile, and never resolves Pi packages
+      from the consumer repository. Legacy remains the default until governed callers migrate.
+    required: false
+    default: 'legacy'
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter auto-router fleet, as comma-separated model IDs.
@@ -268,7 +282,29 @@ runs:
     # never leaves a stray node_modules in its checkout.
     - name: Install pipeline dependencies
       shell: bash
-      run: npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 --no-save --no-audit --no-fund --silent
+      env:
+        NPM_PREFIX: ${{ runner.temp }}/review-yeti-npm
+        REVIEW_ENGINE: ${{ inputs.review-engine }}
+        REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
+      run: |
+        set -euo pipefail
+        if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
+          echo "::error::Node and npm are required"
+          exit 1
+        fi
+        echo "node $(node -v) npm $(npm -v)"
+        case "${REVIEW_ENGINE:-legacy}" in
+          pi-workflow)
+            node "$GITHUB_ACTION_PATH/scripts/install-action-runtime.mjs"
+            ;;
+          legacy)
+            npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 --no-save --no-audit --no-fund --silent
+            ;;
+          *)
+            echo "::error::review-engine must be legacy or pi-workflow"
+            exit 1
+            ;;
+        esac
 
     # Fetch configuration from the target repository's trusted base ref (the branch the PR aims at).
     # Reviewer charters are prompts run with the reviewer API key; they must not be injected by

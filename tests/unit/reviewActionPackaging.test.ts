@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { execFileSync } from 'child_process';
 import yaml from 'js-yaml';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -38,6 +39,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('personas');
     expect(inputs).toContain('max-diff-chars');
     expect(inputs).toContain('github-token');
+    expect(inputs).toContain('review-engine');
+    expect(inputs).toContain('action-sha');
   });
 
   it('defaults github-token to the caller workflow token so no PAT is required', () => {
@@ -70,6 +73,51 @@ describe('action.yml — installable GitHub Action contract', () => {
     // --prefix keeps node_modules out of the checked-out repository being reviewed.
     expect(raw).toContain('--prefix');
   });
+});
+
+describe('Pi runtime packaging contract', () => {
+  it('declares the pinned runtime roots as bundled dependencies', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
+    expect(manifest.bundledDependencies).toEqual([
+      '@quintinshaw/pi-dynamic-workflows',
+      '@earendil-works/pi-ai',
+      '@earendil-works/pi-coding-agent',
+      '@earendil-works/pi-tui',
+      'typebox',
+    ]);
+  });
+
+  it('keeps legacy as the default and wires the Pi install branch to the Action path', () => {
+    const action: any = yaml.load(fs.readFileSync(actionPath, 'utf8'));
+    expect(action.inputs['review-engine'].default).toBe('legacy');
+    expect(action.inputs['review-engine'].description).toMatch(/Node 24/i);
+    const raw = fs.readFileSync(actionPath, 'utf8');
+    expect(raw).toContain('install-action-runtime.mjs');
+    expect(raw).toContain('REVIEW_YETI_ACTION_SHA');
+  });
+
+  it('installs the lock-backed Pi runtime from an empty bounded prefix', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-pi-action-install-'));
+    const actionDir = path.join(tempDir, 'action');
+    const prefixDir = path.join(tempDir, 'prefix');
+    fs.mkdirSync(actionDir, { recursive: true });
+    for (const directory of ['src/pi', 'src/provenance']) {
+      fs.cpSync(path.join(rootRepoDir, directory), path.join(actionDir, directory), { recursive: true });
+    }
+    for (const relative of ['package.json', 'package-lock.json', 'scripts/install-action-runtime.mjs', 'scripts/generate-build-provenance.mjs']) {
+      const destination = path.join(actionDir, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(path.join(rootRepoDir, relative), destination);
+    }
+    const output = execFileSync(process.execPath, [path.join(actionDir, 'scripts/install-action-runtime.mjs')], {
+      cwd: tempDir,
+      env: { ...process.env, GITHUB_ACTION_PATH: actionDir, NPM_PREFIX: prefixDir, REVIEW_YETI_ACTION_SHA: 'e'.repeat(40) },
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    expect(output).toContain('Pi workflow runtime ok 3.7.0');
+    expect(fs.existsSync(path.join(actionDir, 'src/provenance/generated-build-provenance.json'))).toBe(true);
+  }, 130_000);
 });
 
 describe('writeStepOutputs', () => {
