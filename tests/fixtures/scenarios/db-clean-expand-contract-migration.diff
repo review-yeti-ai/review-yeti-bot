@@ -1,0 +1,10 @@
+--- FILE: migrations/20260820_safe_add_column.sql ---
+diff --git a/migrations/20260820_safe_add_column.sql b/migrations/20260820_safe_add_column.sql
+@@ -0,0 +1,7 @@
++-- Migration: Zero-downtime expand phase for organizations preferences
++-- Step 1: Add column as nullable with DEFAULT (safe metadata-only operation in PG11+)
++ALTER TABLE organizations ADD COLUMN preferences JSONB DEFAULT '{}'::jsonb;
++
++-- Step 2: Create supporting GIN index concurrently without table locking
++CREATE INDEX CONCURRENTLY idx_organizations_preferences
++  ON organizations USING GIN (preferences);

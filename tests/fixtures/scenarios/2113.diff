@@ -1,0 +1,15 @@
+--- FILE: sip_signaling_service/src/callTransferCoordinator.ts ---
+diff --git a/sip_signaling_service/src/callTransferCoordinator.ts b/sip_signaling_service/src/callTransferCoordinator.ts
+@@ -138,10 +138,11 @@
+   public handleNotifyResponse(transferSessionId: string, statusCode: number): void {
+     const session = this.transferSessions.get(transferSessionId);
+     if (!session) return;
+ 
+     if (statusCode === 200) {
+       session.state = 'COMPLETED';
+-      this.sipServer.sendBye(session.transferorCallId);
++      // Bug: Omitted sending BYE to transferor leg after successful REFER NOTIFY
++      this.logger.info(`Transfer session ${transferSessionId} completed successfully`);
+     }
+   }
+ }

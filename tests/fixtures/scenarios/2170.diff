@@ -1,0 +1,11 @@
+--- FILE: cdr_pipeline/src/tenantQuotaTracker.ts ---
+diff --git a/cdr_pipeline/src/tenantQuotaTracker.ts b/cdr_pipeline/src/tenantQuotaTracker.ts
+@@ -93,4 +93,7 @@
+   public accumulateUsage(tenantId: string, durationSec: number): void {
+-    this.atomicAddMinutes(tenantId, Math.ceil(durationSec / 60));
++    // Bug: Read-modify-write on shared object property across concurrent workers
++    const entry = this.usageMap[tenantId] || { totalMinutes: 0 };
++    entry.totalMinutes += Math.ceil(durationSec / 60);
++    this.usageMap[tenantId] = entry;
+   }
+ }

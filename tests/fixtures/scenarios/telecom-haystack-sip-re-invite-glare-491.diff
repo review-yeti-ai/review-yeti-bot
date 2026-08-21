@@ -1,0 +1,14 @@
+--- FILE: sip_signaling_service/src/dialogManager.ts ---
+diff --git a/sip_signaling_service/src/dialogManager.ts b/sip_signaling_service/src/dialogManager.ts
+@@ -193,9 +193,10 @@
+   public handleIncomingReInvite(dialogId: string): number {
+     const dialog = this.dialogs.get(dialogId);
+     if (!dialog) return 481;
+     if (dialog.hasPendingLocalReInvite) {
+-      return 491; // RFC 3261 Request Pending (glare resolution)
++      // Bug: Returning 500 Server Error aborts the call instead of triggering standard 491 backoff
++      return 500;
+     }
+     return 200;
+   }
+ }

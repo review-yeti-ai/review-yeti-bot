@@ -1,0 +1,14 @@
+--- FILE: pbx_device_manager/src/trunkAllocator.ts ---
+diff --git a/pbx_device_manager/src/trunkAllocator.ts b/pbx_device_manager/src/trunkAllocator.ts
+@@ -120,14 +120,23 @@ export class TrunkAllocator {
++  public evaluateHysteresis(trunk: TrunkGroup, now: number): boolean {
++    if (trunk.state === 'OPEN') {
++      if (now - trunk.lastStateChange > trunk.cooldownMs) {
++        trunk.state = 'HALF_OPEN';
++        return true;
++      }
++      return false;
++    }
++    return trunk.state === 'HEALTHY' || trunk.state === 'HALF_OPEN';
++  }
+ }

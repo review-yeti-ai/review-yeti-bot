@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@common/*": ["src/common/*"],
+      "@sip/*": ["sip_signaling_service/src/*"],
+      "@rtp/*": ["rtp_media_gateway/src/*"],
+      "@cdr/*": ["cdr_pipeline/src/*"],
+      "@pbx/*": ["pbx_device_manager/src/*"]
+    },
+    "noEmit": true,
+    "isolatedModules": true
+  },
+  "include": [
+    "index.ts",
+    "src/**/*.ts",
+    "sip_signaling_service/**/*.ts",
+    "rtp_media_gateway/**/*.ts",
+    "cdr_pipeline/**/*.ts",
+    "pbx_device_manager/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

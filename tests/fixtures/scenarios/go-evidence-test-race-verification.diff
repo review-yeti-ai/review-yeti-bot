@@ -1,0 +1,49 @@
+--- FILE: pkg/queue/priority_queue.go ---
+diff --git a/pkg/queue/priority_queue.go b/pkg/queue/priority_queue.go
+@@ -1,5 +1,19 @@
+ package queue
+ 
+ import "sync"
++
++type SafeQueue struct {
++	mu    sync.Mutex
++	items []string
++}
++
++func (q *SafeQueue) Push(item string) {
++	q.mu.Lock()
++	defer q.mu.Unlock()
++	q.items = append(q.items, item)
++}
++
++func (q *SafeQueue) Len() int {
++	q.mu.Lock()
++	defer q.mu.Unlock()
++	return len(q.items)
++}
+
+--- FILE: pkg/queue/priority_queue_test.go ---
+diff --git a/pkg/queue/priority_queue_test.go b/pkg/queue/priority_queue_test.go
+@@ -1,5 +1,21 @@
+ package queue
+ 
+ import (
+ 	"sync"
+ 	"testing"
+ )
++
++func TestSafeQueueConcurrent(t *testing.T) {
++	q := &SafeQueue{}
++	var wg sync.WaitGroup
++	for i := 0; i < 100; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			q.Push("item")
++		}()
++	}
++	wg.Wait()
++	if q.Len() != 100 {
++		t.Fatalf("expected 100, got %d", q.Len())
++	}
++}

@@ -1,0 +1,13 @@
+--- FILE: rtp_media_gateway/src/jitterBuffer.ts ---
+diff --git a/rtp_media_gateway/src/jitterBuffer.ts b/rtp_media_gateway/src/jitterBuffer.ts
+@@ -174,8 +174,9 @@
+   public estimateClockDrift(samples: number[], intervals: number[]): number {
+     let sumSkew = 0;
+     for (let i = 0; i < samples.length; i++) {
+-      sumSkew += (samples[i] - intervals[i]) / 1000.0;
++      // Bug: Integer truncation with Math.floor inside skew accumulator
++      sumSkew += Math.floor((samples[i] - intervals[i]) / 1000);
+     }
+     return sumSkew / samples.length;
+   }
+ }

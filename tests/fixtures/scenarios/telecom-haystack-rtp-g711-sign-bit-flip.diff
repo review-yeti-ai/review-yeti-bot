@@ -1,0 +1,16 @@
+--- FILE: rtp_media_gateway/src/audioCodecs.ts ---
+diff --git a/rtp_media_gateway/src/audioCodecs.ts b/rtp_media_gateway/src/audioCodecs.ts
+@@ -61,10 +61,11 @@
+   public encodeG711UlawSample(pcm16: number): number {
+-    const sign = (pcm16 < 0) ? 0x80 : 0x00;
+-    let sample = pcm16 < 0 ? -pcm16 : pcm16;
++    // Bug: Inverted sign determination logic in compander
++    const sign = (pcm16 > 0) ? 0x80 : 0x00;
++    let sample = Math.abs(pcm16);
+     if (sample > 32767) sample = 32767;
+     sample += 0x84;
+     const exponent = this.computeExponent(sample);
+     const mantissa = (sample >> (exponent + 3)) & 0x0F;
+     return ~(sign | (exponent << 4) | mantissa) & 0xFF;
+   }
+ }

@@ -9,7 +9,7 @@ export interface Context7AdapterConfig {
   cacheTtlMs?: number; // default 24h
   timeoutMs?: number; // default 5000ms
   maxSnippets?: number; // default 5
-  cacheDir?: string; // default '.review-yeti-memory/cache/context7'
+  cacheDir?: string; // default '.ct-memory/cache/context7'
 }
 
 export interface FetchDocsOptions {
@@ -62,7 +62,7 @@ export class Context7Adapter {
     this.cacheTtlMs = config.cacheTtlMs ?? 86_400_000; // 24 hours
     this.timeoutMs = config.timeoutMs ?? 5_000;
     this.maxSnippets = config.maxSnippets ?? 5;
-    this.cacheDir = config.cacheDir || path.join(process.cwd(), '.review-yeti-memory', 'cache', 'context7');
+    this.cacheDir = config.cacheDir || path.join(process.cwd(), '.ct-memory', 'cache', 'context7');
     this.memoryCache = new Map();
   }
 

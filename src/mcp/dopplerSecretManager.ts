@@ -30,7 +30,7 @@ export class DopplerSecretManager {
   private readonly cache: Map<string, CachedSecret>;
 
   constructor(config: DopplerConfig = {}) {
-    this.project = config.project || process.env.DOPPLER_PROJECT || 'review-yeti-bot';
+    this.project = config.project || process.env.DOPPLER_PROJECT || 'ct-review-bot';
     this.configName = config.config || process.env.DOPPLER_CONFIG || 'dev';
     this.fallbackEnv = config.fallbackEnv ?? true;
     this.cacheTtlMs = config.cacheTtlMs ?? 300_000; // 5 minutes

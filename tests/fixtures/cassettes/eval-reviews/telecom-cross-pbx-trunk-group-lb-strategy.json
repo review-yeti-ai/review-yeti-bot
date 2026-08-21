@@ -1,0 +1,221 @@
+{
+  "version": "1.0",
+  "scenarioId": "telecom-cross-pbx-trunk-group-lb-strategy",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:22.281Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario telecom-cross-pbx-trunk-group-lb-strategy (Strict Priority Load Balancing Overloads Primary Trunk) under persona security",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/trunkAllocator.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for security review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"TrunkAllocator\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062262_qc0uih",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          },
+          "startTime": 1787270062262,
+          "endTime": 1787270062266,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 18,
+          "estimatedCompletionTokens": 22
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario telecom-cross-pbx-trunk-group-lb-strategy (Strict Priority Load Balancing Overloads Primary Trunk) under persona performance",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/trunkAllocator.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for performance review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"TrunkAllocator\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"FINDINGS\",\n  \"findings\": [\n    {\n      \"path\": \"pbx_device_manager/src/trunkAllocator.ts\",\n      \"line\": 56,\n      \"severity\": \"P1\",\n      \"title\": \"Strict Priority Load Balancing Overloads Primary Trunk\",\n      \"body\": \"Replacing weighted round-robin with unconditional selection of `trunks[0]` directs 100% of outbound enterprise traffic to a single trunk group, exhausting its channel capacity and causing call rejections.\",\n      \"suggestion\": \"Restore weighted round-robin or capacity-aware load balancing across available healthy trunk groups.\",\n      \"confidence\": 0.95\n    }\n  ]\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062267_g5qg41",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          },
+          "startTime": 1787270062267,
+          "endTime": 1787270062270,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 18,
+          "estimatedCompletionTokens": 22
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario telecom-cross-pbx-trunk-group-lb-strategy (Strict Priority Load Balancing Overloads Primary Trunk) under persona architecture",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/trunkAllocator.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for architecture review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"TrunkAllocator\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062270_atjsno",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          },
+          "startTime": 1787270062270,
+          "endTime": 1787270062274,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 18,
+          "estimatedCompletionTokens": 22
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "testing",
+      "prompt": "Review request for scenario telecom-cross-pbx-trunk-group-lb-strategy (Strict Priority Load Balancing Overloads Primary Trunk) under persona testing",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/trunkAllocator.ts\nCompleted testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for testing review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"TrunkAllocator\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062274_pquy3i",
+          "personaId": "testing",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          },
+          "startTime": 1787270062274,
+          "endTime": 1787270062277,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 18,
+          "estimatedCompletionTokens": 22
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario telecom-cross-pbx-trunk-group-lb-strategy (Strict Priority Load Balancing Overloads Primary Trunk) under persona dependencies",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/trunkAllocator.ts\nCompleted dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for dependencies review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"TrunkAllocator\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062277_xf69j4",
+          "personaId": "dependencies",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "TrunkAllocator"
+          },
+          "startTime": 1787270062277,
+          "endTime": 1787270062281,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 18,
+          "estimatedCompletionTokens": 22
+        }
+      ]
+    }
+  ],
+  "verifierInteraction": {
+    "prompt": "Verify 1 candidate findings for scenario telecom-cross-pbx-trunk-group-lb-strategy",
+    "rawReasoning": "Challenger verification evaluated against AST and diff context for telecom-cross-pbx-trunk-group-lb-strategy",
+    "decisions": [
+      {
+        "findingId": "performance-telecom-cross-pbx-trunk-group-lb-strategy-0",
+        "verdict": "CONFIRM",
+        "rationale": "Confirmed genuine defect: Verified against workspace AST and execution paths for pbx_device_manager/src/trunkAllocator.ts:56.",
+        "confidence": 0.95
+      }
+    ]
+  },
+  "finalArbitration": {
+    "verdict": "FIX_FIRST",
+    "confirmedFindings": [
+      {
+        "id": "performance-telecom-cross-pbx-trunk-group-lb-strategy-0",
+        "persona": "performance",
+        "path": "pbx_device_manager/src/trunkAllocator.ts",
+        "line": 56,
+        "severity": "P1",
+        "title": "Strict Priority Load Balancing Overloads Primary Trunk",
+        "body": "Replacing weighted round-robin with unconditional selection of `trunks[0]` directs 100% of outbound enterprise traffic to a single trunk group, exhausting its channel capacity and causing call rejections.",
+        "confidence": 0.95,
+        "suggestion": "Restore weighted round-robin or capacity-aware load balancing across available healthy trunk groups."
+      }
+    ],
+    "rationale": "Changes requested for 1 P1 finding(s) and 0 P2 nit(s)."
+  },
+  "tokenUsage": {
+    "promptTokens": 4916,
+    "completionTokens": 431,
+    "reasoningTokens": 151,
+    "totalCostUSD": 0.00080892
+  },
+  "category": "performance",
+  "scenarioName": "Strict Priority Load Balancing Overloads Primary Trunk"
+}

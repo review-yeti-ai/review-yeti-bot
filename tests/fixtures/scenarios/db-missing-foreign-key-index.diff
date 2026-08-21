@@ -1,0 +1,12 @@
+--- FILE: migrations/20260820_add_fk_order_customer.sql ---
+diff --git a/migrations/20260820_add_fk_order_customer.sql b/migrations/20260820_add_fk_order_customer.sql
+@@ -1,2 +1,9 @@
+ -- Schema update: orders foreign key relations
+
++-- Add cascade relationship to customer table
++-- Defect: FK constraint without supporting index on customer_id causes sequential table lock during parent deletes
++ALTER TABLE orders
++  ADD CONSTRAINT fk_orders_customer_id
++  FOREIGN KEY (customer_id)
++  REFERENCES customers(id)
++  ON DELETE CASCADE;

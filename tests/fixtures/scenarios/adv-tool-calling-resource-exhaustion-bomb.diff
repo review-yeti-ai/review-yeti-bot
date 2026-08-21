@@ -1,0 +1,14 @@
+--- FILE: src/parsers/xmlPayloadParser.ts ---
+diff --git a/src/parsers/xmlPayloadParser.ts b/src/parsers/xmlPayloadParser.ts
+@@ -1,5 +1,11 @@
+ import { XMLParser } from 'fast-xml-parser';
+
+ export function createCdrXmlParser(): XMLParser {
++  // Defect: Enables unlimited entity expansion without maxEntityDepth or maxTotalEntities limits
+   return new XMLParser({
+     processEntities: true,
+     allowBooleanAttributes: true,
++    htmlEntities: true,
++    ignoreAttributes: false,
+   });
+ }

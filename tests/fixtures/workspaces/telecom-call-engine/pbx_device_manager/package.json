@@ -1,0 +1,8 @@
+{
+  "name": "@telecom/pbx-device-manager",
+  "version": "1.0.0",
+  "description": "PBX Device Registry, Digest Auth, Trunk Leasing & CTI Webhook Dispatcher",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true
+}

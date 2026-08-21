@@ -1,0 +1,221 @@
+{
+  "version": "1.0",
+  "scenarioId": "telecom-cross-pbx-webhook-header-rename",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:22.172Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario telecom-cross-pbx-webhook-header-rename (Signature Header Rename Breaks Consumer Verification) under persona security",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/ctiWebhookDispatcher.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for security review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"CtiWebhookDispatcher\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062155_whjhxg",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          },
+          "startTime": 1787270062155,
+          "endTime": 1787270062158,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 20,
+          "estimatedCompletionTokens": 25
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario telecom-cross-pbx-webhook-header-rename (Signature Header Rename Breaks Consumer Verification) under persona performance",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/ctiWebhookDispatcher.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for performance review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"CtiWebhookDispatcher\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062158_icogjs",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          },
+          "startTime": 1787270062158,
+          "endTime": 1787270062162,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 20,
+          "estimatedCompletionTokens": 25
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario telecom-cross-pbx-webhook-header-rename (Signature Header Rename Breaks Consumer Verification) under persona architecture",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/ctiWebhookDispatcher.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for architecture review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"CtiWebhookDispatcher\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"FINDINGS\",\n  \"findings\": [\n    {\n      \"path\": \"pbx_device_manager/src/ctiWebhookDispatcher.ts\",\n      \"line\": 30,\n      \"severity\": \"P1\",\n      \"title\": \"Signature Header Rename Breaks Consumer Verification\",\n      \"body\": \"Renaming public webhook HMAC signature header from X-Telecom-Sig to X-Sig-256 without dual-emission breaks signature verification for existing customer PBX webhook receivers.\",\n      \"suggestion\": \"Emit both X-Telecom-Sig and X-Sig-256 during a deprecation transition period.\",\n      \"confidence\": 0.95\n    }\n  ]\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062162_cbmupn",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          },
+          "startTime": 1787270062162,
+          "endTime": 1787270062165,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 20,
+          "estimatedCompletionTokens": 25
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "testing",
+      "prompt": "Review request for scenario telecom-cross-pbx-webhook-header-rename (Signature Header Rename Breaks Consumer Verification) under persona testing",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/ctiWebhookDispatcher.ts\nCompleted testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for testing review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"CtiWebhookDispatcher\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062166_917v6d",
+          "personaId": "testing",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          },
+          "startTime": 1787270062166,
+          "endTime": 1787270062169,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 20,
+          "estimatedCompletionTokens": 25
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario telecom-cross-pbx-webhook-header-rename (Signature Header Rename Breaks Consumer Verification) under persona dependencies",
+      "rawReasoning": "Executing proactive workspace queries to inspect contracts across pbx_device_manager/src/ctiWebhookDispatcher.ts\nCompleted dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Investigating workspace state for dependencies review:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"CtiWebhookDispatcher\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270062169_nfnot2",
+          "personaId": "dependencies",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "CtiWebhookDispatcher"
+          },
+          "startTime": 1787270062169,
+          "endTime": 1787270062172,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 20,
+          "estimatedCompletionTokens": 25
+        }
+      ]
+    }
+  ],
+  "verifierInteraction": {
+    "prompt": "Verify 1 candidate findings for scenario telecom-cross-pbx-webhook-header-rename",
+    "rawReasoning": "Challenger verification evaluated against AST and diff context for telecom-cross-pbx-webhook-header-rename",
+    "decisions": [
+      {
+        "findingId": "architecture-telecom-cross-pbx-webhook-header-rename-0",
+        "verdict": "CONFIRM",
+        "rationale": "Confirmed genuine defect: Verified against workspace AST and execution paths for pbx_device_manager/src/ctiWebhookDispatcher.ts:30.",
+        "confidence": 0.95
+      }
+    ]
+  },
+  "finalArbitration": {
+    "verdict": "FIX_FIRST",
+    "confirmedFindings": [
+      {
+        "id": "architecture-telecom-cross-pbx-webhook-header-rename-0",
+        "persona": "architecture",
+        "path": "pbx_device_manager/src/ctiWebhookDispatcher.ts",
+        "line": 30,
+        "severity": "P1",
+        "title": "Signature Header Rename Breaks Consumer Verification",
+        "body": "Renaming public webhook HMAC signature header from X-Telecom-Sig to X-Sig-256 without dual-emission breaks signature verification for existing customer PBX webhook receivers.",
+        "confidence": 0.95,
+        "suggestion": "Emit both X-Telecom-Sig and X-Sig-256 during a deprecation transition period."
+      }
+    ],
+    "rationale": "Changes requested for 1 P1 finding(s) and 0 P2 nit(s)."
+  },
+  "tokenUsage": {
+    "promptTokens": 5006,
+    "completionTokens": 426,
+    "reasoningTokens": 149,
+    "totalCostUSD": 0.0008201199999999999
+  },
+  "category": "architecture",
+  "scenarioName": "Signature Header Rename Breaks Consumer Verification"
+}

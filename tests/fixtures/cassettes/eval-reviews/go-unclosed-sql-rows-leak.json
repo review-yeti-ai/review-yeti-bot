@@ -1,0 +1,149 @@
+{
+  "version": "1.0",
+  "scenarioId": "go-unclosed-sql-rows-leak",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:21.341Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario go-unclosed-sql-rows-leak (Go Unclosed SQL Rows Connection Leak) under persona security",
+      "rawReasoning": "Searching repository references for pkg/db/event_repository.go\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for security analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"event_repository\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "event_repository"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061334_zr8upj",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "event_repository"
+          },
+          "startTime": 1787270061334,
+          "endTime": 1787270061337,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario go-unclosed-sql-rows-leak (Go Unclosed SQL Rows Connection Leak) under persona performance",
+      "rawReasoning": "Searching repository references for pkg/db/event_repository.go\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for performance analysis:\n{\"tool_calls\":[{\"name\":\"pi.fs.readFile\",\"arguments\":{\"path\":\"pkg/db/event_repository.go\",\"startLine\":1,\"endLine\":15}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.fs.readFile",
+          "args": {
+            "path": "pkg/db/event_repository.go",
+            "startLine": 1,
+            "endLine": 15
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061337_hmj5r2",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.fs.readFile",
+          "args": {
+            "path": "pkg/db/event_repository.go",
+            "startLine": 1,
+            "endLine": 15
+          },
+          "startTime": 1787270061337,
+          "endTime": 1787270061337,
+          "durationMs": 1,
+          "bytesRead": 0,
+          "filesScanned": 1,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 27,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario go-unclosed-sql-rows-leak (Go Unclosed SQL Rows Connection Leak) under persona architecture",
+      "rawReasoning": "Searching repository references for pkg/db/event_repository.go\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for architecture analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"event_repository\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "event_repository"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061337_fxce29",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "event_repository"
+          },
+          "startTime": 1787270061337,
+          "endTime": 1787270061341,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 1,
+      "personaId": "testing",
+      "prompt": "Review request for scenario go-unclosed-sql-rows-leak (Go Unclosed SQL Rows Connection Leak) under persona testing",
+      "rawReasoning": "Completed testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    },
+    {
+      "turn": 1,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario go-unclosed-sql-rows-leak (Go Unclosed SQL Rows Connection Leak) under persona dependencies",
+      "rawReasoning": "Completed dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    }
+  ],
+  "finalArbitration": {
+    "verdict": "SHIP",
+    "confirmedFindings": [],
+    "rationale": "All 5 persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release."
+  },
+  "tokenUsage": {
+    "promptTokens": 5147,
+    "completionTokens": 215,
+    "reasoningTokens": 75,
+    "totalCostUSD": 0.0007807799999999999
+  },
+  "category": "performance",
+  "scenarioName": "Go Unclosed SQL Rows Connection Leak"
+}
