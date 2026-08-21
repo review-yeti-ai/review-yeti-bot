@@ -1026,7 +1026,6 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           plugins: requestOptions?.plugins,
           name: 'default',
           timeoutMs: options.timeoutMs || 90_000,
-          ttftTimeoutMs: options.ttftTimeoutMs || 20_000,
         }];
 
     let lastError = null;
@@ -1038,7 +1037,6 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const transportApiKey = transport.apiKey || transport.api_key || cfg.apiKey;
       const transportBaseUrl = (transport.baseUrl || transport.base_url || cfg.baseUrl).replace(/\/+$/, '');
       const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
-      const transportTtftTimeoutMs = transport.ttftTimeoutMs || transport.connect_timeout_ms || 20_000;
 
       resultBase = { ...resultBase, model: requestModel, transport: transportName };
 
