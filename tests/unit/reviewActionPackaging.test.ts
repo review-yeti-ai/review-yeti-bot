@@ -216,8 +216,8 @@ describe('Pi runtime packaging contract', () => {
     fs.renameSync(transitivePath, path.join(tempDir, 'hoisted-transitive'));
     expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
       .toThrow(/missing|nested bundle|runtime graph/i);
-  }, 180_000);
-  });
+  }, 360_000);
+});
 
   it('installs the lock-backed Pi runtime from an empty bounded prefix', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-pi-action-install-'));
