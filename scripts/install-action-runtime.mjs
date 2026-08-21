@@ -12,13 +12,6 @@ function fail(message) {
   process.exit(1);
 }
 
-function assertNodeVersion() {
-  const [major, minor] = process.versions.node.split('.').map(Number);
-  if (major < 22 || (major === 22 && minor < 19)) {
-    fail(`Node >=22.19.0 is required for review-engine=pi-workflow (found ${process.version}); provision Node 24 before invoking Review Yeti`);
-  }
-}
-
 function assertBoundedDirectory(directory, label) {
   const resolved = path.resolve(directory || '');
   const root = path.parse(resolved).root;
@@ -28,7 +21,12 @@ function assertBoundedDirectory(directory, label) {
   return resolved;
 }
 
-assertNodeVersion();
+const { assertSupportedNodeVersion } = createRequire(import.meta.url)('./nodeVersionGuard.js');
+try {
+  assertSupportedNodeVersion();
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
 const actionRoot = assertBoundedDirectory(process.env.GITHUB_ACTION_PATH, 'GITHUB_ACTION_PATH');
 const prefixRoot = assertBoundedDirectory(process.env.NPM_PREFIX, 'NPM_PREFIX');
 const actionSha = String(process.env.REVIEW_YETI_ACTION_SHA || '').toLowerCase();

@@ -10,6 +10,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const actionPath = path.join(rootRepoDir, 'action.yml');
+const nodeVersionGuard = require(path.join(rootRepoDir, 'scripts/nodeVersionGuard.js'));
 
 describe('action.yml — installable GitHub Action contract', () => {
   it('exists at the repository root so `uses: OWNER/REPO@ref` resolves', () => {
@@ -76,6 +77,13 @@ describe('action.yml — installable GitHub Action contract', () => {
 });
 
 describe('Pi runtime packaging contract', () => {
+  it('tests the Pi Node boundary, including prerelease rejection', () => {
+    expect(nodeVersionGuard.isSupportedNodeVersion('22.18.9')).toBe(false);
+    expect(nodeVersionGuard.isSupportedNodeVersion('22.19.0')).toBe(true);
+    expect(nodeVersionGuard.isSupportedNodeVersion('24.0.0')).toBe(true);
+    expect(nodeVersionGuard.isSupportedNodeVersion('22.19.0-nightly.1')).toBe(false);
+  });
+
   it('declares the pinned runtime roots as bundled dependencies', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
     expect(manifest.bundledDependencies).toEqual([
