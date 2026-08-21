@@ -53,6 +53,9 @@ describe('action.yml — installable GitHub Action contract', () => {
     const outputs = Object.keys(action.outputs || {});
     expect(outputs).toContain('verdict');
     expect(outputs).toContain('findings-count');
+    expect(outputs).toContain('gate-decision');
+    expect(outputs).toContain('merge-eligible');
+    expect(outputs).toContain('run-report-path');
   });
 
   it('resolves the pipeline through GITHUB_ACTION_PATH, not the consumer workspace', () => {
@@ -84,6 +87,9 @@ describe('writeStepOutputs', () => {
 
     expect(content).toContain('verdict=FIX_FIRST');
     expect(content).toContain('findings-count=7');
+    expect(content).toContain('review-status=FIX_FIRST');
+    expect(content).toContain('gate-decision=BLOCK');
+    expect(content).toContain('merge-eligible=false');
     expect(content).toContain('p0-count=1');
     expect(content).toContain('personas-completed=3');
   });
@@ -97,6 +103,39 @@ describe('writeStepOutputs', () => {
 
   it('is a no-op when no output path is provided, so local runs do not throw', () => {
     expect(() => writeStepOutputs(arbitration, undefined)).not.toThrow();
+  });
+
+  it('writes an exact-head run report and receipt digest for the central gate', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-report-'));
+    const report = pipeline.writeRunReport({
+      verdict: 'SHIP',
+      completedPersonas: 1,
+      totalPersonas: 1,
+      quorumSatisfied: true,
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 1, totalFindings: 1 },
+    }, [{
+      personaId: 'security',
+      decision: 'FINDINGS',
+      findings: [{ severity: 'P2', path: 'lib/a.ex', line: 1, title: 'Nit' }],
+    }], {
+      repo: 'calltelemetry/example',
+      prNumber: '7',
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+    }, directory);
+
+    expect(report.path).toContain(directory);
+    expect(report.digest).toMatch(/^[0-9a-f]{64}$/);
+    const payload = JSON.parse(fs.readFileSync(report.path, 'utf-8'));
+    expect(payload).toMatchObject({
+      schemaVersion: 'review-run-report-v1',
+      repository: 'calltelemetry/example',
+      prNumber: 7,
+      verdict: 'SHIP',
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+    });
+    expect(payload.lanes[0].severity).toEqual({ P0: 0, P1: 0, P2: 1 });
   });
 });
 

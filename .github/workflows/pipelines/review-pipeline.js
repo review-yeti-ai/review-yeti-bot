@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { createHash } = require('crypto');
 const { spawnSync, execSync } = require('child_process');
 const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanitizeCanonicalFindings } = require('../../../src/review/reviewCore');
 const {
@@ -2515,7 +2516,53 @@ function postOrOutputComment(commentBody, prContext, options = {}) {
  * @param {object} arbitration - Computed arbitration result.
  * @param {string} [outputPath] - Path to GITHUB_OUTPUT. No-op when absent (local runs).
  */
-function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null) {
+function buildReviewRunReport(arbitration, personaResults, prContext) {
+  const lanes = (Array.isArray(personaResults) ? personaResults : []).map((result) => {
+    const findings = Array.isArray(result.findings) ? result.findings : [];
+    const severity = findings.reduce((counts, finding) => {
+      if (finding?.severity === 'P0') counts.P0++;
+      else if (finding?.severity === 'P1') counts.P1++;
+      else if (finding?.severity === 'P2') counts.P2++;
+      return counts;
+    }, { P0: 0, P1: 0, P2: 0 });
+
+    return {
+      personaId: result.personaId || '',
+      decision: result.decision || 'ERROR',
+      findings,
+      severity,
+    };
+  });
+
+  return {
+    schemaVersion: 'review-run-report-v1',
+    repository: prContext.repo,
+    prNumber: Number(prContext.prNumber),
+    baseSha: prContext.baseSha,
+    headSha: prContext.headSha,
+    verdict: arbitration.verdict,
+    lanes,
+  };
+}
+
+function writeRunReport(arbitration, personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP) {
+  if (!outputDirectory) return null;
+
+  const report = buildReviewRunReport(arbitration, personaResults, prContext);
+  const reportPath = path.join(
+    outputDirectory,
+    `review-yeti-run-report-${String(prContext.prNumber || 'unknown')}-${String(prContext.headSha || 'unknown').slice(0, 12)}.json`,
+  );
+  const reportJson = `${JSON.stringify(report, null, 2)}\n`;
+  fs.writeFileSync(reportPath, reportJson, 'utf-8');
+
+  return {
+    path: reportPath,
+    digest: createHash('sha256').update(reportJson, 'utf-8').digest('hex'),
+  };
+}
+
+function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null) {
   if (!outputPath) return;
 
   const m = arbitration.metrics || {};
@@ -2523,10 +2570,20 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
   const omittedFiles = coverage?.omittedFilesCount ?? (coverage?.omitted?.length || 0);
   const partitionsCount = coverage?.partitionsCount ?? (coverage?.partitionPlan ? coverage.partitionPlan.partitions.length : 1);
   const coveragePct = coverage?.coveragePercent ?? (totalFiles > 0 && omittedFiles === 0 ? 100 : Math.round(((totalFiles - omittedFiles) / Math.max(1, totalFiles)) * 100));
+  const mergeEligible = arbitration.verdict === 'SHIP' && arbitration.quorumSatisfied !== false && omittedFiles === 0 && Boolean(runReport);
+  const rationale = String(arbitration.rationale || '').replace(/[\r\n]+/g, ' ');
 
   const lines = [
     `verdict=${arbitration.verdict}`,
+    `review-status=${arbitration.verdict}`,
+    `gate-decision=${mergeEligible ? 'PASS' : 'BLOCK'}`,
+    `merge-eligible=${mergeEligible}`,
+    `dispatch-reflection-status=${runReport ? 'complete' : ''}`,
+    `provider-receipt-digest=${runReport?.digest || ''}`,
+    `run-report-path=${runReport?.path || ''}`,
+    `rationale=${rationale}`,
     `findings-count=${m.totalFindings || 0}`,
+    `total-findings=${m.totalFindings || 0}`,
     `p0-count=${m.p0Count || 0}`,
     `p1-count=${m.p1Count || 0}`,
     `p2-count=${m.p2Count || 0}`,
@@ -2807,7 +2864,8 @@ async function main() {
     return;
   }
 
-  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage);
+  const runReport = writeRunReport(arbitration, personaResults, prContext);
+  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport);
   emitWorkflowAnnotations(personaResults);
   writeStepSummary(arbitration, personaResults, prContext, coverage);
 
@@ -2870,6 +2928,8 @@ module.exports = {
   sanitizeFindings,
   loadLocalRepoConfig,
   writeStepOutputs,
+  buildReviewRunReport,
+  writeRunReport,
   initMcpFleet,
   evaluatePersonaLane,
   computeArbitrationQuorum,
