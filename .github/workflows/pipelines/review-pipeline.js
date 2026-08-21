@@ -421,7 +421,41 @@ function resolveModelConfig(env = process.env) {
   const dynamicDefaultDiff = calculateSafeDiffCapacity(model);
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || dynamicDefaultDiff;
 
-  return { enabled: Boolean(apiKey), apiKey, baseUrl, model, maxDiffChars };
+  let rawTransports = [];
+  if (env.REVIEW_YETI_TRANSPORTS) {
+    try {
+      rawTransports = JSON.parse(env.REVIEW_YETI_TRANSPORTS);
+    } catch (_) {}
+  } else if (env.REVIEW_YETI_TRANSPORT_PLAN_B64) {
+    try {
+      rawTransports = JSON.parse(Buffer.from(env.REVIEW_YETI_TRANSPORT_PLAN_B64, 'base64').toString('utf8'));
+    } catch (_) {}
+  }
+
+  let transports = Array.isArray(rawTransports)
+    ? rawTransports.map((t) => {
+        const keyEnv = t.api_key_env || t.apiKeyEnv;
+        const resolvedKey = (keyEnv && env[keyEnv]) || env.OPENROUTER_API_KEY || '';
+        return {
+          name: t.name || t.provider || 'default',
+          baseUrl: (t.base_url || t.baseUrl || baseUrl).replace(/\/+$/, ''),
+          apiKey: resolvedKey,
+          model: t.model || model,
+          provider: t.provider,
+          plugins: t.plugins,
+          timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
+        };
+      }).filter((t) => Boolean(t.apiKey))
+    : [];
+
+  return {
+    enabled: Boolean(apiKey || transports.length > 0),
+    apiKey,
+    baseUrl,
+    model,
+    maxDiffChars,
+    transports,
+  };
 }
 
 function trustedOpenRouterInputsFromEnv(env = process.env) {
