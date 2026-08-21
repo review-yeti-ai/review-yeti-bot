@@ -21,7 +21,7 @@
 
 ---
 
-### Task 1: Add fail-closed release-version validation
+### Task 1: Add fail-closed release-version validation — complete
 
 **Files:**
 - Create: `scripts/validate-release-version.mjs`
@@ -32,13 +32,13 @@
 - Produces `validateReleaseVersion({ tag, packageVersion, mainSha, checkedOutSha, taggedSha, tagReachableFromMain })` returning `{ normalizedVersion, major, minor, patch }` or throwing a descriptive error.
 - CLI accepts `--tag`, `--package-version`, `--main-sha`, `--checked-out-sha`, `--tagged-sha`, and `--tag-reachable-from-main`; the release workflow invokes it with the checked-out tag, peeled tag commit, and ancestry result.
 
-- [ ] **Step 1: Write the failing validator tests** for valid `v1.8.6`, missing `v`, malformed versions, package/tag mismatch, a tag not reachable from `main`, and a tag that points at a different commit.
-- [ ] **Step 2: Run `npm run test:release-version` and verify the new tests fail because the module/script is absent.**
-- [ ] **Step 3: Implement the pure validator and CLI with strict `vMAJOR.MINOR.PATCH` parsing, exact package equality, and exact SHA checks.**
-- [ ] **Step 4: Run `npm run test:release-version` and verify all cases pass.**
-- [ ] **Step 5: Commit as `test(release): define semver tag contract`.**
+- [x] **Step 1: Write the failing validator tests** for valid `v1.8.6`, missing `v`, malformed versions, package/tag mismatch, a tag not reachable from `main`, and a tag that points at a different commit.
+- [x] **Step 2: Run `npm run test:release-version` and verify the new tests fail because the module/script is absent.**
+- [x] **Step 3: Implement the pure validator and CLI with strict `vMAJOR.MINOR.PATCH` parsing, exact package equality, and exact SHA checks.**
+- [x] **Step 4: Run `npm run test:release-version` and verify all cases pass.**
+- [x] **Step 5: Commit as `test(release): define semver tag contract`.**
 
-### Task 2: Add reviewed Conventional Commit release PR automation
+### Task 2: Add reviewed Conventional Commit release PR automation — complete
 
 **Files:**
 - Create: `.github/workflows/release-please.yml`
@@ -51,13 +51,13 @@
 - Release Please targets `main`, uses the Node release strategy, and starts from manifest version `1.8.5` (the last pushed semver tag).
 - The workflow has `contents: write`, `issues: write`, and `pull-requests: write` permissions and uses the repository's built-in `GITHUB_TOKEN`.
 
-- [ ] **Step 1: Write the static workflow/config tests** asserting the workflow triggers only on `main`, contains the required permissions, uses Release Please v4, targets `main`, and records `1.8.5` as the current release baseline.
-- [ ] **Step 2: Run the focused test and verify it fails because the workflow/config files do not exist.**
-- [ ] **Step 3: Add the Release Please manifest/config and workflow.** Configure Node release behavior, changelog generation, and Conventional Commit mapping without adding a second publishing path.
-- [ ] **Step 4: Run the focused tests plus YAML/JSON parsing checks and verify they pass.**
-- [ ] **Step 5: Commit as `feat(release): open reviewed conventional semver release prs`.**
+- [x] **Step 1: Write the static workflow/config tests** asserting the workflow triggers only on `main`, contains the required permissions, uses Release Please v4, targets `main`, and records `1.8.5` as the current release baseline.
+- [x] **Step 2: Run the focused test and verify it fails because the workflow/config files do not exist.**
+- [x] **Step 3: Add the Release Please manifest/config and workflow.** Configure Node release behavior, changelog generation, and Conventional Commit mapping without adding a second publishing path.
+- [x] **Step 4: Run the focused tests plus YAML/JSON parsing checks and verify they pass.**
+- [x] **Step 5: Commit as `feat(release): open reviewed conventional semver release prs`.**
 
-### Task 3: Consolidate tag publishing and gated rolling-v1 promotion
+### Task 3: Consolidate tag publishing and gated rolling-v1 promotion — complete
 
 **Files:**
 - Modify: `.github/workflows/release.yml`
@@ -70,22 +70,22 @@
 - The release job invokes `scripts/validate-release-version.mjs` and promotes `v1` only after the benchmark, test suite, GitHub Release assets, image push, and Kubernetes rollout succeed.
 - Manual `update-major-tag.yml` remains available for recovery and retains exact-SHA/main ancestry checks; it cannot promote an unversioned commit without its explicit recovery input.
 
-- [ ] **Step 1: Write static contract tests** proving the duplicate workflow is absent, the canonical workflow does not trigger on rolling `v1`, version validation precedes deployment, and rolling promotion is downstream of the release gate.
-- [ ] **Step 2: Run the focused test and verify it fails against the current duplicate/tag-wildcard workflows.**
-- [ ] **Step 3: Restrict `release.yml` to numeric semver tags, call the validator with exact tag and commit data, and add the gated rolling-`v1` promotion after deployment.**
-- [ ] **Step 4: Delete `release-semver.yaml` and preserve the richer benchmark/artifact behavior from `release.yml`.**
-- [ ] **Step 5: Run the focused contract tests, YAML parsing, and shell syntax checks.**
-- [ ] **Step 6: Commit as `fix(release): consolidate semver publishing and gate v1 promotion`.**
+- [x] **Step 1: Write static contract tests** proving the duplicate workflow is absent, the canonical workflow does not trigger on rolling `v1`, version validation precedes deployment, and rolling promotion is downstream of the release gate.
+- [x] **Step 2: Run the focused test and verify it fails against the current duplicate/tag-wildcard workflows.**
+- [x] **Step 3: Restrict `release.yml` to numeric semver tags, call the validator with exact tag and commit data, and add the gated rolling-`v1` promotion after deployment.**
+- [x] **Step 4: Delete `release-semver.yaml` and preserve the richer benchmark/artifact behavior from `release.yml`.**
+- [x] **Step 5: Run the focused contract tests, YAML parsing, and shell syntax checks.**
+- [x] **Step 6: Commit as `fix(release): consolidate semver publishing and gate v1 promotion`.**
 
-### Task 4: Verify the complete release contract and publish the PR
+### Task 4: Verify the complete release contract and publish the PR — in progress
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-21-conventional-semver-release-automation.md`
 - Modify: `README.md` if verification discovers wording drift.
 
-- [ ] **Step 1: Run `npm run test:release-version`, the workflow-config/contract tests, `npm run lint`, `npm run build`, and `git diff --check`.**
-- [ ] **Step 2: Run the complete local test suite (`npm test`) and record the exact result.**
-- [ ] **Step 3: Inspect the final diff for accidental generated-output or secret changes.**
+- [x] **Step 1: Run `npm run test:release-version`, the workflow-config/contract tests, `npm run lint`, `npm run build`, and `git diff --check`.**
+- [x] **Step 2: Run the complete local test suite (`npm test`) and record the exact result: 323 files, 3,525 tests, 0 failures.**
+- [x] **Step 3: Inspect the final diff for accidental generated-output or secret changes.**
 - [ ] **Step 4: Push the feature branch and open a draft PR against the current official `main` with the exact base/head SHAs.**
 - [ ] **Step 5: Wait for current-head required checks and Review Yeti quorum; do not merge or create another release tag from the feature branch.**
 
