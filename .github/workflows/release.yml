@@ -113,9 +113,11 @@ jobs:
             echo "::error::Benchmark baseline artifacts or Pareto chart were not generated at expected paths."
             exit 1
           fi
-          echo "json_path=${JSON_PATH}" >> "$GITHUB_OUTPUT"
-          echo "md_path=${MD_PATH}" >> "$GITHUB_OUTPUT"
-          echo "svg_path=${SVG_PATH}" >> "$GITHUB_OUTPUT"
+          {
+            echo "json_path=${JSON_PATH}"
+            echo "md_path=${MD_PATH}"
+            echo "svg_path=${SVG_PATH}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Ensure GitHub Release Exists
         env:
