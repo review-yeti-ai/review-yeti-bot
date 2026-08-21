@@ -1601,15 +1601,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 requestBody.max_tokens,
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
               );
-              // Preserve the configured reasoning effort across retries without degradation
+              if (isOpenRouterTransport) requestBody.reasoning = { effort: 'low' };
+              else requestBody.reasoning_effort = 'low';
               requestBody.messages[0].content += [
                 '',
                 'FORMAT RECOVERY:',
                 '- Your prior response did not contain parseable findings JSON.',
-                '- Reserve output tokens for the final JSON object.',
+                '- Keep reasoning brief and reserve output tokens for the final JSON object.',
                 '- Return only {"findings":[]} or the required findings object.',
               ].join('\n');
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once with preserved reasoning effort and a larger answer budget...`);
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once via ${requestBody.model} with low reasoning effort and a larger answer budget...`);
               continue;
             }
             return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
