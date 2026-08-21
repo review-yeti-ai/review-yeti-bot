@@ -7,6 +7,10 @@ branding:
   color: 'purple'
 
 inputs:
+  api-key:
+    description: 'API key for LLM provider (alias for llm-api-key). Auto-discovers from environment if omitted.'
+    required: false
+    default: ''
   llm-api-key:
     description: >-
       OpenRouter API key. Without it the action fails closed and posts no successful verdict.
@@ -188,7 +192,7 @@ runs:
         fi
         echo "Reading reviewer configuration from $REPO@$REF"
 
-        for f in .ct-review.yaml .ct-review.yml .coderabbit.yaml .coderabbit.yml; do
+        for f in .reviewyeti.yaml .reviewyeti.yml .ct-review.yaml .ct-review.yml .coderabbit.yaml .coderabbit.yml; do
           if gh api "repos/$REPO/contents/$f?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/$f" 2>/dev/null; then
             echo "  found $f"
             break
@@ -221,7 +225,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.api-key || inputs.llm-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
         FIREWORKS_PR_REVIEW_API_KEY: ${{ env.FIREWORKS_PR_REVIEW_API_KEY }}
