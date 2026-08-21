@@ -1,11 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'path';
 
 // Load review-pipeline
 const pipelinePath = path.resolve(__dirname, '../../.github/workflows/pipelines/review-pipeline.js');
-const { reviewWithModel, resolveModelConfig } = require(pipelinePath);
+const { reviewWithModel, resolveModelConfig, globalRunCircuitBreaker } = require(pipelinePath);
 
 describe('Multi-Transport Fast Failover', () => {
+  beforeEach(() => {
+    if (globalRunCircuitBreaker?.reset) globalRunCircuitBreaker.reset();
+  });
   it('automatically falls over to secondary transport when primary transport returns 429 / queue cancelled', async () => {
     let attempt = 0;
     const mockFetch = async (url: string, init: any) => {
