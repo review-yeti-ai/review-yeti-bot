@@ -128,6 +128,77 @@ describe('Multi-Transport Fast Failover', () => {
     expect(visitedUrls[2]).toContain('openrouter.ai');
   });
 
+  it('applies OpenRouter-only request fields only to the OpenRouter fallback', async () => {
+    const requests: Array<{ url: string; body: any }> = [];
+    const mockFetch = async (url: string, init: any) => {
+      requests.push({ url, body: JSON.parse(init.body) });
+
+      if (url.includes('fireworks.ai')) {
+        return {
+          ok: false,
+          status: 503,
+          text: async () => JSON.stringify({ error: 'temporarily unavailable' }),
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model: 'openrouter/auto',
+          choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+          usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+        }),
+      };
+    };
+
+    const result = await reviewWithModel(
+      { id: 'testing', name: 'Testing', charter: 'Check test coverage' },
+      [{ path: 'test/example.test.ts', patch: '+ expect(true).toBe(true)' }],
+      { repo: 'calltelemetry/ct-review-actions', prNumber: 106 },
+      null,
+      {
+        fetchImplementation: mockFetch,
+        openRouterPolicy: {
+          base_url: 'https://openrouter.ai/api/v1',
+          model: 'openrouter/auto',
+          allowed_models: [
+            'openai/gpt-5.6-luna',
+            'moonshotai/kimi-k2.6',
+            'tencent/hy3',
+            'z-ai/glm-5.1',
+            'google/gemini-3.5-flash-lite',
+          ],
+          data_collection: 'deny',
+          cost_quality_tradeoff: 7,
+        },
+        transports: [
+          {
+            name: 'fireworks',
+            baseUrl: 'https://api.fireworks.ai/inference/v1',
+            apiKey: 'fw-key',
+            model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+          },
+          {
+            name: 'openrouter-fallback',
+            baseUrl: 'https://openrouter.ai/api/v1',
+            apiKey: 'or-key',
+            model: 'openrouter/auto',
+          },
+        ],
+      },
+    );
+
+    expect(result.decision).toBe('APPROVE');
+    expect(requests).toHaveLength(2);
+    expect(requests[0].body).not.toHaveProperty('plugins');
+    expect(requests[0].body).not.toHaveProperty('provider');
+    expect(requests[1].body).toMatchObject({
+      plugins: [{ id: 'auto-router' }],
+      provider: { data_collection: 'deny' },
+    });
+  });
+
   it('correctly resolves and authenticates all configured candidate transports in resolveModelConfig', () => {
     const env = {
       FIREWORKS_PR_REVIEW_API_KEY: 'secret-fw',
