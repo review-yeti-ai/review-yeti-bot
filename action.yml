@@ -112,6 +112,62 @@ inputs:
     description: 'Context7 API key for documentation evidence retrieval.'
     required: false
     default: ''
+  # Deprecated compatibility inputs retained for callers on the pre-v1 contract. The central
+  # workflow now passes the supported policy/transport inputs above; these are intentionally
+  # accepted and ignored so an older caller can finish its migration without changing review
+  # semantics or producing an unknown-input warning.
+  action-sha:
+    description: 'Deprecated compatibility input; release provenance is validated by the caller.'
+    required: false
+    default: ''
+  target-config:
+    description: 'Deprecated compatibility input; trusted configuration is resolved by the action.'
+    required: false
+    default: ''
+  openrouter-ignore-providers:
+    description: 'Deprecated compatibility input; provider admission is carried by the transport plan.'
+    required: false
+    default: ''
+  openrouter-provider-routing:
+    description: 'Deprecated compatibility input; provider admission is carried by the transport plan.'
+    required: false
+    default: ''
+  openrouter-timeout-ms:
+    description: 'Deprecated compatibility input; transport timeouts are carried by the transport plan.'
+    required: false
+    default: ''
+  openrouter-ttft-ms:
+    description: 'Deprecated compatibility input; transport admission is handled by the caller.'
+    required: false
+    default: ''
+  openrouter-max-attempts:
+    description: 'Deprecated compatibility input; retry policy is handled by the transport plan.'
+    required: false
+    default: ''
+  lane-deadline-ms:
+    description: 'Deprecated compatibility input; lane budgets are enforced by the caller policy.'
+    required: false
+    default: ''
+  lane-call-budget:
+    description: 'Deprecated compatibility input; lane budgets are enforced by the caller policy.'
+    required: false
+    default: ''
+  max-investigation-turns:
+    description: 'Deprecated compatibility input; investigation limits are enforced by the caller policy.'
+    required: false
+    default: ''
+  max-file-diff-chars:
+    description: 'Deprecated compatibility input; use max-diff-chars.'
+    required: false
+    default: ''
+  max-passes:
+    description: 'Deprecated compatibility input; pass limits are enforced by the caller policy.'
+    required: false
+    default: ''
+  exclude:
+    description: 'Deprecated compatibility input; persona selection is controlled by personas.'
+    required: false
+    default: ''
 
 outputs:
   verdict:
