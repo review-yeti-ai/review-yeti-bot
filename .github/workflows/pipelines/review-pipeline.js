@@ -490,7 +490,7 @@ function resolveModelConfig(env = process.env) {
         name: 'anthropic',
         baseUrl: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1').replace(/\/+$/, ''),
         apiKey: env.ANTHROPIC_API_KEY,
-        model: env.ANTHROPIC_MODEL || 'claude-3-7-sonnet',
+        model: env.ANTHROPIC_MODEL || 'claude-5-haiku:high',
         timeoutMs: 120_000,
       });
     }
@@ -508,7 +508,7 @@ function resolveModelConfig(env = process.env) {
         name: 'openai',
         baseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
         apiKey: env.OPENAI_API_KEY,
-        model: env.OPENAI_MODEL || 'openai/gpt-5.6-luna',
+        model: env.OPENAI_MODEL || 'openai/gpt-5.6-luna:high',
         timeoutMs: 90_000,
       });
     }
