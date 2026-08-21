@@ -231,7 +231,11 @@ function buildModelOptions(argv = process.argv) {
   const maxTokens = resolveEvalMaxTokens({ argv, bounded: true, fallback: 4_096 });
   return {
     model,
-    timeoutMs: Number(argument('--timeout-ms', 90_000, argv)),
+    // 300s, not the pipeline's 90s transport default: lanes here are buffered (non-streaming)
+    // single fetches against a reasoning model whose median full-review completion is ~65-75s
+    // with a long tail. Measured 2026-08-21: a 90s cap converted 28-30 of 72 rows per arm into
+    // timeout errors -- a harness artifact, not provider weather. Overridable via --timeout-ms.
+    timeoutMs: Number(argument('--timeout-ms', 300_000, argv)),
     ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
     // Provider routing note: the retired harness pinned an OpenRouter ignore-list
     // (HARD_BANNED_PROVIDER_SLUGS, retired with openRouterPolicy.js). The current pipeline
