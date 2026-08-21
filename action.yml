@@ -130,10 +130,6 @@ inputs:
   # workflow now passes the supported policy/transport inputs above; these are intentionally
   # accepted and ignored so an older caller can finish its migration without changing review
   # semantics or producing an unknown-input warning.
-  action-sha:
-    description: 'Deprecated compatibility input; release provenance is validated by the caller.'
-    required: false
-    default: ''
   target-config:
     description: 'Deprecated compatibility input; trusted configuration is resolved by the action.'
     required: false
