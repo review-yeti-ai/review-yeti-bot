@@ -38,6 +38,8 @@ export interface OpenRouterRequest {
   timeoutMs: number;
   jobId?: string;
   persona?: string;
+  providerId?: string;
+  ttftTimeoutMs?: number;
   stream?: boolean;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 }
@@ -522,11 +524,18 @@ function collectChunk(data: any, state: StreamState): void {
   state.lastChunkTime = Date.now();
 }
 
-async function readWithTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeoutMsg: string): Promise<T> {
+export { ProviderQueueStallError, ProviderCapacityLimiter, resolveProviderCapacity } from './providerCapacityManager';
+import { ProviderQueueStallError, resolveProviderCapacity, ProviderCapacityLimiter } from './providerCapacityManager';
+
+async function readWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeoutError: () => Error
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(new OpenRouterConnectionError(onTimeoutMsg));
+      reject(onTimeoutError());
     }, timeoutMs);
   });
 
@@ -540,7 +549,7 @@ async function readWithTimeout<T>(promise: Promise<T>, timeoutMs: number, onTime
 async function readStreamingResponse(
   response: Response,
   requestedModel: string,
-  options?: { inactivityTimeoutMs?: number; persona?: string }
+  options?: { inactivityTimeoutMs?: number; ttftTimeoutMs?: number; persona?: string; providerId?: string }
 ): Promise<any> {
   const reader = response.body?.getReader();
   if (!reader) return response.json();
@@ -556,9 +565,12 @@ async function readStreamingResponse(
     lastChunkTime: Date.now(),
   };
 
+  const providerCapacity = resolveProviderCapacity(options?.providerId || requestedModel);
+  const ttftTimeoutMs = options?.ttftTimeoutMs ?? providerCapacity.ttftTimeoutMs;
   const inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 45_000;
   const personaLabel = options?.persona ? `[Persona: ${options.persona}] ` : '';
   let lastHeartbeatLog = Date.now();
+  let firstChunkReceived = false;
 
   const consume = (line: string) => {
     const trimmed = line.trim();
@@ -566,12 +578,14 @@ async function readStreamingResponse(
     // SSE comment lines are keep-alives and are not JSON events.
     if (trimmed.startsWith(':')) {
       state.lastChunkTime = Date.now();
+      firstChunkReceived = true;
       return;
     }
     const json = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
     if (!json || json === '[DONE]') return;
     try {
       collectChunk(JSON.parse(json), state);
+      firstChunkReceived = true;
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed streaming JSON');
     }
@@ -590,10 +604,24 @@ async function readStreamingResponse(
   try {
     while (true) {
       const readPromise = reader.read();
+      const currentTimeoutMs = firstChunkReceived
+        ? inactivityTimeoutMs
+        : Math.min(ttftTimeoutMs, inactivityTimeoutMs);
+
       const { done, value } = await readWithTimeout(
         readPromise,
-        inactivityTimeoutMs,
-        `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`
+        currentTimeoutMs,
+        () => {
+          if (!firstChunkReceived) {
+            return new ProviderQueueStallError(
+              options?.providerId || requestedModel,
+              currentTimeoutMs
+            );
+          }
+          return new OpenRouterConnectionError(
+            `Streaming stalled: no data or heartbeat received from provider for ${Math.round(currentTimeoutMs / 1000)}s`
+          );
+        }
       );
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -604,7 +632,9 @@ async function readStreamingResponse(
     buffer += decoder.decode();
     if (buffer.trim()) consume(buffer);
   } catch (error) {
-    await reader.cancel().catch(() => undefined);
+    if (typeof reader.cancel === 'function') {
+      await reader.cancel().catch(() => undefined);
+    }
     throw error;
   }
 
@@ -668,6 +698,8 @@ export class OpenRouterClient implements ReviewModelClient {
 
       const data = await readStreamingResponse(response, effectiveModel, {
         persona: request.persona,
+        providerId: request.providerId,
+        ttftTimeoutMs: request.ttftTimeoutMs,
         inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
       });
       const content = data?.choices?.[0]?.message?.content;
@@ -710,7 +742,7 @@ export class OpenRouterClient implements ReviewModelClient {
 
       return { model, content, usage, costUSD, raw: data };
     } catch (error: any) {
-      if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError) throw error;
+      if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError || error instanceof ProviderQueueStallError) throw error;
       if (error?.name === 'AbortError' || controller.signal.aborted) {
         throw new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`);
       }
