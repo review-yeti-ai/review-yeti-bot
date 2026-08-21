@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.9...v1.9.10) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** reserve direct provider output budget ([de57a9f](https://github.com/review-yeti-ai/review-yeti-bot/commit/de57a9f53d8230312726d9b69b50a7d40b00396c))
+
 ## [1.9.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.8...v1.9.9) (2026-08-21)
 
 
