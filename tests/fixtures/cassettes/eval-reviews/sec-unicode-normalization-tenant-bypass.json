@@ -1,0 +1,173 @@
+{
+  "version": "1.0",
+  "scenarioId": "sec-unicode-normalization-tenant-bypass",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:21.688Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario sec-unicode-normalization-tenant-bypass (Unicode Normalization Bypass on Tenant Identifier) under persona security",
+      "rawReasoning": "Searching repository references for src/auth/tenantAuthorizer.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for security analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"tenantAuthorizer\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"FINDINGS\",\n  \"findings\": [\n    {\n      \"path\": \"src/auth/tenantAuthorizer.ts\",\n      \"line\": 12,\n      \"severity\": \"P0\",\n      \"title\": \"Missing Unicode normalization permits tenant identifier spoofing and authorization bypass\",\n      \"body\": \"Comparing tenant slugs without Unicode NFKC canonicalization allows visual spoofing and authorization bypass using lookalike characters.\",\n      \"suggestion\": \"Normalize both strings with .normalize(\\\"NFKC\\\") and use a canonical ASCII-only alphanumeric regex check.\",\n      \"confidence\": 0.95\n    }\n  ]\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "tenantAuthorizer"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061680_3yxkls",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "tenantAuthorizer"
+          },
+          "startTime": 1787270061680,
+          "endTime": 1787270061684,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario sec-unicode-normalization-tenant-bypass (Unicode Normalization Bypass on Tenant Identifier) under persona performance",
+      "rawReasoning": "Searching repository references for src/auth/tenantAuthorizer.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for performance analysis:\n{\"tool_calls\":[{\"name\":\"pi.fs.readFile\",\"arguments\":{\"path\":\"src/auth/tenantAuthorizer.ts\",\"startLine\":1,\"endLine\":15}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.fs.readFile",
+          "args": {
+            "path": "src/auth/tenantAuthorizer.ts",
+            "startLine": 1,
+            "endLine": 15
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061684_cd6q3i",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.fs.readFile",
+          "args": {
+            "path": "src/auth/tenantAuthorizer.ts",
+            "startLine": 1,
+            "endLine": 15
+          },
+          "startTime": 1787270061684,
+          "endTime": 1787270061685,
+          "durationMs": 1,
+          "bytesRead": 0,
+          "filesScanned": 1,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 28,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario sec-unicode-normalization-tenant-bypass (Unicode Normalization Bypass on Tenant Identifier) under persona architecture",
+      "rawReasoning": "Searching repository references for src/auth/tenantAuthorizer.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for architecture analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"tenantAuthorizer\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "tenantAuthorizer"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061685_6xuut1",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "tenantAuthorizer"
+          },
+          "startTime": 1787270061685,
+          "endTime": 1787270061688,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 1,
+      "personaId": "testing",
+      "prompt": "Review request for scenario sec-unicode-normalization-tenant-bypass (Unicode Normalization Bypass on Tenant Identifier) under persona testing",
+      "rawReasoning": "Completed testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    },
+    {
+      "turn": 1,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario sec-unicode-normalization-tenant-bypass (Unicode Normalization Bypass on Tenant Identifier) under persona dependencies",
+      "rawReasoning": "Completed dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    }
+  ],
+  "verifierInteraction": {
+    "prompt": "Verify 1 candidate findings for scenario sec-unicode-normalization-tenant-bypass",
+    "rawReasoning": "Challenger verification evaluated against AST and diff context for sec-unicode-normalization-tenant-bypass",
+    "decisions": [
+      {
+        "findingId": "security-sec-unicode-normalization-tenant-bypass-0",
+        "verdict": "CONFIRM",
+        "rationale": "Confirmed genuine defect: Verified against workspace AST and execution paths for src/auth/tenantAuthorizer.ts:12.",
+        "confidence": 0.95
+      }
+    ]
+  },
+  "finalArbitration": {
+    "verdict": "BLOCK",
+    "confirmedFindings": [
+      {
+        "id": "security-sec-unicode-normalization-tenant-bypass-0",
+        "persona": "security",
+        "path": "src/auth/tenantAuthorizer.ts",
+        "line": 12,
+        "severity": "P0",
+        "title": "Missing Unicode normalization permits tenant identifier spoofing and authorization bypass",
+        "body": "Comparing tenant slugs without Unicode NFKC canonicalization allows visual spoofing and authorization bypass using lookalike characters.",
+        "confidence": 0.95,
+        "suggestion": "Normalize both strings with .normalize(\"NFKC\") and use a canonical ASCII-only alphanumeric regex check."
+      }
+    ],
+    "rationale": "Blocked on 1 critical P0 finding(s)."
+  },
+  "tokenUsage": {
+    "promptTokens": 5280,
+    "completionTokens": 353,
+    "reasoningTokens": 124,
+    "totalCostUSD": 0.00083804
+  },
+  "category": "security",
+  "scenarioName": "Unicode Normalization Bypass on Tenant Identifier"
+}
