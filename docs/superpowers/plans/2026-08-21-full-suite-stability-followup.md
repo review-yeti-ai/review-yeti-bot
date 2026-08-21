@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces a failure matrix with exact command, Node version, git SHA, test file, failure count, and classification (`regression`, `stale fixture`, `environment-only`, or `baseline`).
 
-- [ ] **Step 1: Record the exact inputs**
+- [x] **Step 1: Record the exact inputs**
 
 ```bash
 git fetch official main
@@ -39,7 +39,7 @@ git rev-parse HEAD official/main
 git diff --name-only official/main...HEAD
 ```
 
-- [ ] **Step 2: Reproduce model/provider failures in isolation**
+- [x] **Step 2: Reproduce model/provider failures in isolation**
 
 ```bash
 npx vitest run \
@@ -52,7 +52,7 @@ npx vitest run \
 
 Expected current failures are the duplicate fallback count, `agy/...` provider mapping, synthetic model filtering, stale OpenRouter model option, and hard-coded package version.
 
-- [ ] **Step 3: Reproduce cassette and HTTP fixture failures separately**
+- [x] **Step 3: Reproduce cassette and HTTP fixture failures separately**
 
 ```bash
 npx vitest run tests/integration/reviewReplay.test.ts tests/integration/openRouterFleetReplay.test.ts
@@ -61,7 +61,7 @@ npx vitest run tests/integration/routerApiIntegration.test.ts tests/integration/
 
 Capture assertion failures and uncaught error counts; do not change code until each is reproducible in isolation.
 
-- [ ] **Step 4: Commit the evidence record**
+- [x] **Step 4: Commit the evidence record**
 
 ```bash
 git add docs/superpowers/evidence/2026-08-21-full-suite-stability.md
@@ -82,7 +82,7 @@ git commit -m "docs: record full suite stability baseline"
 - `getProviderIdForModel(modelId, modelRegistry)` must resolve explicit namespaces before generated metadata: `agy/` → `agy`, `synthetic/` and `opencode-go/` → `glm`, `codex/` → `codex`, and `openrouter/` → `openrouter`.
 - `FALLBACK_OPENROUTER_MODELS` must contain one entry per ID; `populateFallbacks` and `getFallbackModels` must return the same number of unique IDs.
 
-- [ ] **Step 1: Add RED assertions**
+- [x] **Step 1: Add RED assertions**
 
 ```ts
 expect(getProviderIdForModel('agy/claude-opus-4-6-thinking')).toBe('agy');
@@ -91,19 +91,19 @@ expect(new Set(FALLBACK_OPENROUTER_MODELS.map((model) => model.id)).size)
   .toBe(FALLBACK_OPENROUTER_MODELS.length);
 ```
 
-- [ ] **Step 2: Implement explicit namespace precedence and remove duplicate fallback IDs**
+- [x] **Step 2: Implement explicit namespace precedence and remove duplicate fallback IDs**
 
 Place namespace checks before the generated-provider loop. Keep the first canonical definitions for duplicate OpenRouter/Luna IDs and delete the later duplicate objects rather than returning two cache entries for one ID.
 
-- [ ] **Step 3: Update stale model-option assertions to current canonical options**
+- [x] **Step 3: Update stale model-option assertions to current canonical options**
 
 Use `claude-5-haiku:high` (present in `AVAILABLE_MODEL_OPTIONS`) as the always-enabled Anthropic assertion instead of the removed `openrouter/anthropic/claude-3.5-sonnet` option.
 
-- [ ] **Step 4: Replace the hard-coded release version assertion**
+- [x] **Step 4: Replace the hard-coded release version assertion**
 
 Read `package-lock.json` beside `package.json` and assert the two package versions are equal and valid semver; retain the package name assertion.
 
-- [ ] **Step 5: Run the focused model suites**
+- [x] **Step 5: Run the focused model suites**
 
 ```bash
 npx vitest run \
@@ -114,7 +114,7 @@ npx vitest run \
   tests/integration/m43m44EmpiricalChallenger.test.ts
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/model-filtering.ts src/services/openRouterModelService.ts tests/unit/lib/modelFiltering.test.ts tests/integration/challenger2EmpiricalM1AliasAndCache.test.ts tests/integration/m2EmpiricalStressChallenger.test.ts tests/integration/milestone2EmpiricalChallenger.test.ts tests/integration/m43m44EmpiricalChallenger.test.ts
@@ -134,7 +134,7 @@ git commit -m "fix(models): restore provider and fallback identity contracts"
 - Every replay fixture’s request system message must equal the current `reviewWithModel` prompt, including hunk-line guidance and optional Tool Guidance.
 - Fixture generation remains offline-only and must preserve response bodies, redaction, and interaction counts.
 
-- [ ] **Step 1: Make the support prompt builder match the pipeline exactly**
+- [x] **Step 1: Make the support prompt builder match the pipeline exactly**
 
 Add these exact lines to `expectedSystemPrompt` in the existing order:
 
@@ -149,17 +149,17 @@ Add these exact lines to `expectedSystemPrompt` in the existing order:
 
 Use the exact pipeline punctuation (`+newStart,newCount`) when implementing.
 
-- [ ] **Step 2: Regenerate fixture request messages without recording network traffic**
+- [x] **Step 2: Regenerate fixture request messages without recording network traffic**
 
 Run a one-off Node/Vitest fixture migration that parses each JSON file, replaces only request message content and user prompt text from the canonical support constants/persona charters, and writes stable two-space JSON. Assert that response bodies and interaction counts are unchanged.
 
-- [ ] **Step 3: Run replay suites**
+- [x] **Step 3: Run replay suites**
 
 ```bash
 npx vitest run tests/integration/reviewReplay.test.ts tests/integration/openRouterFleetReplay.test.ts
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/support/openRouterReplayScenario.ts tests/fixtures/cassettes/openrouter tests/fixtures/cassettes/model-panel.json tests/integration/reviewReplay.test.ts tests/integration/openRouterFleetReplay.test.ts
@@ -176,7 +176,7 @@ git commit -m "test(replay): regenerate cassettes from canonical prompts"
 **Interfaces:**
 - `dispatchPost` must provide a request socket with `on`, `removeListener`, and `destroy` semantics expected by Node’s HTTP abort cleanup while retaining the current in-memory app invocation.
 
-- [ ] **Step 1: Add a deterministic socket fixture**
+- [x] **Step 1: Add a deterministic socket fixture**
 
 ```ts
 import { EventEmitter } from 'node:events';
@@ -188,7 +188,7 @@ req.connection = socket;
 
 Set this before invoking `app(req, res)` in both helpers; do not suppress uncaught errors globally.
 
-- [ ] **Step 2: Run the HTTP suites**
+- [x] **Step 2: Run the HTTP suites**
 
 ```bash
 npx vitest run tests/integration/routerApiIntegration.test.ts tests/integration/providerRouterApi.test.ts
@@ -196,7 +196,7 @@ npx vitest run tests/integration/routerApiIntegration.test.ts tests/integration/
 
 Expected: all assertions pass and Vitest reports zero unhandled errors.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/integration/routerApiIntegration.test.ts tests/integration/providerRouterApi.test.ts
@@ -208,13 +208,13 @@ git commit -m "test(http): provide socket lifecycle in router fixtures"
 **Files:**
 - Modify: `docs/superpowers/evidence/2026-08-21-full-suite-stability.md`
 
-- [ ] **Step 1: Run all focused suites**
+- [x] **Step 1: Run all focused suites**
 
 ```bash
 npx vitest run tests/unit/reviewActionPackaging.test.ts tests/unit/reviewWorkflowAssignments.test.ts tests/unit/buildProvenance.test.ts tests/unit/dynamicReviewWorkflow.test.ts
 ```
 
-- [ ] **Step 2: Run the repository suite**
+- [x] **Step 2: Run the repository suite**
 
 ```bash
 npm test
@@ -222,7 +222,7 @@ npm test
 
 Expected: zero failed tests and zero uncaught errors. If a failure remains, return to Task 1 and classify it before changing code.
 
-- [ ] **Step 3: Validate package/build contracts**
+- [x] **Step 3: Validate package/build contracts**
 
 ```bash
 node --check scripts/install-action-runtime.mjs

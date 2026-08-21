@@ -30,7 +30,7 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
 
       expect(values).not.toContain('gpt-4o');
       expect(values).not.toContain('gpt-4o-mini');
-      expect(values).toContain('openrouter/anthropic/claude-3.5-sonnet');
+      expect(values).toContain('claude-5-haiku:high');
     });
 
     it('excludes Gemini 1.5 Pro when Google (gemini) provider is disabled', () => {
@@ -49,7 +49,7 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
       const values = filteredOptions.map((opt) => opt.value);
 
       expect(values).not.toContain('gemini-1.5-pro');
-      expect(values).toContain('openrouter/anthropic/claude-3.5-sonnet');
+      expect(values).toContain('claude-5-haiku:high');
     });
   });
 

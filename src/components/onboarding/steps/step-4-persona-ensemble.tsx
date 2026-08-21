@@ -44,6 +44,7 @@ export const AVAILABLE_MODEL_OPTIONS = [
   { label: 'Codex GPT-5.6 Sol High (Codex)', value: 'codex/gpt-5.6-sol-high' },
   { label: 'OpenRouter Auto Router', value: 'openrouter/auto' },
   { label: 'Synthetic GLM 5.2 (Zai Org)', value: 'synthetic/hf:zai-org/GLM-5.2' },
+  { label: 'Synthetic Kimi K3 (Moonshot AI)', value: 'synthetic/hf:moonshotai/Kimi-K3' },
   { label: 'Synthetic Qwen 3.6 27B (Qwen)', value: 'synthetic/hf:Qwen/Qwen3.6-27B' },
   { label: 'Grok 4.5 (xAI)', value: 'grok-cli/grok-4.5' },
   { label: 'GLM 5.2 (Synthetic Arbiter)', value: 'glm-5.2' },
