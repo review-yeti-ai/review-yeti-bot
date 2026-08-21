@@ -22,7 +22,10 @@ jobs:
       # v4.4.1; pin the action to an immutable commit instead of a moving tag.
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # The organization currently disables PR creation by GITHUB_TOKEN.
+          # Keep the built-in token as a fallback for repositories where that
+          # policy is enabled; this repository uses RELEASE_PLEASE_TOKEN.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
