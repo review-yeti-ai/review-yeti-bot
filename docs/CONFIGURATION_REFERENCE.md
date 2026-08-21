@@ -2,6 +2,20 @@
 
 This reference guide provides a complete, 1:1 schema specification for `.ct-review.yaml` and `.coderabbit.yaml` repository configuration files in **ct-review-bot**.
 
+### Pi workflow runtime bootstrap
+
+`review-engine` defaults to `legacy`. Selecting `pi-workflow` requires the caller workflow to
+provision Node 24 before Review Yeti runs; the engine fails fast below Node 22.19.0. The composite
+Action installs only from Review Yeti's reviewed `pi-runtime/package-lock.json` in an empty runner prefix with
+dependency lifecycle scripts disabled. It validates an exact 40-hex `action-sha`, generates
+`review-yeti-build-provenance.v1`, and attests the installed Pi closure before importing the trusted
+static wrapper. Target-repository and pull-request files cannot provide workflow source or Pi deps.
+
+The pinned direct runtime roots are `@quintinshaw/pi-dynamic-workflows@3.7.0`,
+`@earendil-works/pi-ai@0.84.1`, `@earendil-works/pi-coding-agent@0.84.1`,
+`@earendil-works/pi-tui@0.84.1`, and `typebox@1.3.7`. Npm release tarballs bundle all five plus
+their transitive closure; provenance is generated from the exact clean release commit during pack.
+
 ---
 
 ## 📋 Table of Contents
