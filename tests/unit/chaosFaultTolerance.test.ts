@@ -237,4 +237,59 @@ describe('Chaos & Fault Tolerance Suite', () => {
     expect(result.decision).toBe('ERROR');
     expect(result.error).toContain('no parseable findings JSON');
   });
+
+  it('forwards optional reasoning_effort per persona when configured without changing default behavior', async () => {
+    let capturedBodyWithEffort: any = null;
+    let capturedBodyWithoutEffort: any = null;
+
+    const mockFetch = async (_url: string, init: any) => {
+      const parsed = JSON.parse(init.body || '{}');
+      if (parsed.messages?.[0]?.content?.includes('Security')) {
+        capturedBodyWithEffort = parsed;
+      } else {
+        capturedBodyWithoutEffort = parsed;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+        }),
+      };
+    };
+
+    const diffFiles = [{ path: 'lib/core.ex', patch: '+ def run do' }];
+    const prContext = { repo: 'acme/test', prNumber: 7 };
+
+    // 1. Persona with explicit reasoning_effort: 'high'
+    const highEffortPersona = {
+      id: 'security',
+      name: 'Security Guardian',
+      charter: 'Security',
+      reasoning_effort: 'high',
+    };
+
+    await reviewWithModel(highEffortPersona, diffFiles, prContext, null, {
+      fetchImplementation: mockFetch,
+      transports: [{ name: 'test', baseUrl: 'https://api.test.ai/v1', apiKey: 'k' }],
+    });
+
+    expect(capturedBodyWithEffort).not.toBeNull();
+    expect(capturedBodyWithEffort.reasoning_effort).toBe('high');
+
+    // 2. Default Persona without reasoning_effort -> must NOT send reasoning_effort
+    const defaultPersona = {
+      id: 'style',
+      name: 'Style Checker',
+      charter: 'Style',
+    };
+
+    await reviewWithModel(defaultPersona, diffFiles, prContext, null, {
+      fetchImplementation: mockFetch,
+      transports: [{ name: 'test', baseUrl: 'https://api.test.ai/v1', apiKey: 'k' }],
+    });
+
+    expect(capturedBodyWithoutEffort).not.toBeNull();
+    expect(capturedBodyWithoutEffort.reasoning_effort).toBeUndefined();
+  });
 });
