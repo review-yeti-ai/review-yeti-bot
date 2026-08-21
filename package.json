@@ -34,7 +34,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:release-version": "vitest run tests/unit/releaseVersion.test.ts",
-    "test:release-workflows": "vitest run tests/unit/releaseWorkflowConfig.test.ts",
+    "test:release-workflows": "vitest run tests/unit/releaseWorkflowConfig.test.ts tests/unit/releaseWorkflowContract.test.ts",
     "benchmark:release": "node scripts/evaluate-release-benchmark.mjs",
     "benchmark:compare": "node scripts/compare-release-baselines.mjs",
     "prepack": "node scripts/stage-publish-package.mjs --prepare-current",
