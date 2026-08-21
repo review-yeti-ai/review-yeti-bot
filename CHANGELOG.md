@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.10...v1.9.11) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** preserve direct budget transport scope ([a646ab9](https://github.com/review-yeti-ai/review-yeti-bot/commit/a646ab942e4c51fc8f6010a1a7467c6116cb50a7))
+* **review:** preserve direct budget transport scope ([a3292f9](https://github.com/review-yeti-ai/review-yeti-bot/commit/a3292f9cecdd74a52030dabc3a36ae7fa190e145))
+
 ## [1.9.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.9...v1.9.10) (2026-08-21)
 
 
