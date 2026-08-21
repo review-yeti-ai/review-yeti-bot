@@ -500,29 +500,74 @@ function estimateTokenCost(model: string, promptTokens: number, completionTokens
   return Math.round(((promptTokens / 1000) * promptRate + (completionTokens / 1000) * completionRate) * 1_000_000) / 1_000_000;
 }
 
-function collectChunk(data: any, state: { model: string; content: string; usage: any; cost: number }): void {
+interface StreamState {
+  model: string;
+  content: string;
+  reasoning: string;
+  usage: any;
+  cost: number;
+  lastChunkTime: number;
+}
+
+function collectChunk(data: any, state: StreamState): void {
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
   if (typeof content === 'string') state.content += content;
+  const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
+  if (typeof reasoning === 'string') state.reasoning += reasoning;
   if (data?.usage) state.usage = data.usage;
   if (Number.isFinite(Number(data?.cost))) state.cost = Number(data.cost);
   if (Number.isFinite(Number(data?.cost_usd))) state.cost = Number(data.cost_usd);
+  state.lastChunkTime = Date.now();
 }
 
-async function readStreamingResponse(response: Response, requestedModel: string): Promise<any> {
+async function readWithTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeoutMsg: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new OpenRouterConnectionError(onTimeoutMsg));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function readStreamingResponse(
+  response: Response,
+  requestedModel: string,
+  options?: { inactivityTimeoutMs?: number; persona?: string }
+): Promise<any> {
   const reader = response.body?.getReader();
   if (!reader) return response.json();
 
   const decoder = new TextDecoder();
   let buffer = '';
-  const state = { model: requestedModel, content: '', usage: null as any, cost: 0 };
+  const state: StreamState = {
+    model: requestedModel,
+    content: '',
+    reasoning: '',
+    usage: null as any,
+    cost: 0,
+    lastChunkTime: Date.now(),
+  };
+
+  const inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 45_000;
+  const personaLabel = options?.persona ? `[Persona: ${options.persona}] ` : '';
+  let lastHeartbeatLog = Date.now();
 
   const consume = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed === 'data: [DONE]') return;
     // SSE comment lines are keep-alives and are not JSON events.
-    if (trimmed.startsWith(':')) return;
+    if (trimmed.startsWith(':')) {
+      state.lastChunkTime = Date.now();
+      return;
+    }
     const json = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
     if (!json || json === '[DONE]') return;
     try {
@@ -530,11 +575,26 @@ async function readStreamingResponse(response: Response, requestedModel: string)
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed streaming JSON');
     }
+
+    // Periodic heartbeat log in CI if active reasoning or streaming
+    if (Date.now() - lastHeartbeatLog > 15_000) {
+      lastHeartbeatLog = Date.now();
+      const reasoningLen = state.reasoning.length;
+      const contentLen = state.content.length;
+      if (reasoningLen > 0 && contentLen === 0) {
+        logger.info(`${personaLabel}Thinking in progress (${Math.round(reasoningLen / 4)} tokens generated)...`);
+      }
+    }
   };
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const readPromise = reader.read();
+      const { done, value } = await readWithTimeout(
+        readPromise,
+        inactivityTimeoutMs,
+        `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`
+      );
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -550,7 +610,7 @@ async function readStreamingResponse(response: Response, requestedModel: string)
 
   return {
     model: state.model,
-    choices: [{ message: { role: 'assistant', content: state.content } }],
+    choices: [{ message: { role: 'assistant', content: state.content, reasoning: state.reasoning || undefined } }],
     usage: state.usage,
     cost: state.cost,
   };
@@ -606,7 +666,10 @@ export class OpenRouterClient implements ReviewModelClient {
         throw new OpenRouterResponseError(`OpenRouter HTTP ${response.status}: ${text.slice(0, 2_000)}`);
       }
 
-      const data = await readStreamingResponse(response, effectiveModel);
+      const data = await readStreamingResponse(response, effectiveModel, {
+        persona: request.persona,
+        inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+      });
       const content = data?.choices?.[0]?.message?.content;
       if (typeof content !== 'string' || content.trim() === '') {
         throw new OpenRouterResponseError('OpenRouter returned empty completion content');

@@ -1030,17 +1030,28 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     if (requestOptions?.plugins) requestBody.plugins = requestOptions.plugins;
     if (requestOptions?.provider) requestBody.provider = requestOptions.provider;
 
-    const response = await fetchImpl(`${requestOptions?.baseUrl || cfg.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${cfg.apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-      // fetch has no default timeout; without this a stalled provider hangs the job until
-      // GitHub's 6 hour ceiling.
-      signal: AbortSignal.timeout(options.timeoutMs || 120_000),
-    });
+    let heartbeatTimer = null;
+    const startMs = Date.now();
+    heartbeatTimer = setInterval(() => {
+      const elapsedSec = Math.round((Date.now() - startMs) / 1000);
+      console.log(`[Persona: ${persona.id}] Awaiting model response from ${requestModel} (${elapsedSec}s elapsed)...`);
+    }, 15_000);
+
+    let response;
+    try {
+      response = await fetchImpl(`${requestOptions?.baseUrl || cfg.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cfg.apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        // Default per-lane timeout of 90 seconds
+        signal: AbortSignal.timeout(options.timeoutMs || 90_000),
+      });
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+    }
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
