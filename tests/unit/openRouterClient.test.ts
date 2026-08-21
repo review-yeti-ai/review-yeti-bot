@@ -5,6 +5,7 @@ import {
   normalizeOpenRouterModel,
   OpenRouterClient,
   OpenRouterConnectionError,
+  OpenRouterTimeoutError,
   getStaticModelMetadata,
   resolveModelMetadata,
   calculateSafeDiffCapacity,
@@ -104,6 +105,25 @@ describe('OpenRouterClient', () => {
       content: 'FIX_FIRST',
       usage: { prompt: 3, completion: 2, total: 5 },
     });
+  });
+
+  it('fails closed when the first streamed chunk exceeds the TTFT deadline', async () => {
+    const stalledStream = new ReadableStream({
+      start() {},
+      cancel() {},
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(stalledStream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({
+      ...request,
+      stream: true,
+      timeoutMs: 500,
+      ttftTimeoutMs: 10,
+    })).rejects.toThrow(OpenRouterTimeoutError);
   });
 
   it('replays a credential-free OpenRouter cassette and rejects an unmatched request', async () => {

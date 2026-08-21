@@ -8,6 +8,7 @@ export type LiveStreamEventType =
   | 'persona:complete'
   | 'llm:prompt'
   | 'llm:token'
+  | 'llm:error'
   | 'omniroute:metric'
   | 'openrouter:metric'
   | 'ast:lookup'
