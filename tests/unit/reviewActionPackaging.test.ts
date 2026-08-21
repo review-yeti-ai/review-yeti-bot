@@ -109,6 +109,35 @@ describe('action.yml — installable GitHub Action contract', () => {
   });
 
 
+  it('fetches the PR diff through the 300-file fallback, not a bare `gh pr diff`', () => {
+    // GitHub caps the .diff media type at 300 files and returns HTTP 406 above it.
+    // Measured on calltelemetry/ct-meta#2118 (325 files): the fetch step exited 1, every
+    // downstream step went conclusion=skipped, and the run reported only "Review Yeti did
+    // not produce a verdict" -- naming neither the file count nor the 406. A bare
+    // `gh pr diff` here silently gives large PRs no review at all.
+    const fetchStep = (action.runs.steps || [])
+      .find((step: any) => step.name === 'Fetch pull request diff');
+    expect(fetchStep).toBeTruthy();
+    expect(fetchStep.run).toContain('scripts/fetch-pr-diff.sh');
+    expect(fetchStep.run).not.toMatch(/^\s*gh pr diff/m);
+
+    const script = path.join(rootRepoDir, 'scripts', 'fetch-pr-diff.sh');
+    expect(fs.existsSync(script)).toBe(true);
+    const body = fs.readFileSync(script, 'utf-8');
+    // Falls back only on the size cap; a 404 or auth failure must still fail loudly
+    // rather than hand the panel a silently empty diff. The fallback uses the
+    // immutable Git objects so API patch omissions and the 3000-file ceiling cannot
+    // create false complete coverage.
+    expect(body).toContain('exceeded the maximum number of files');
+    expect(body).toContain('--filter=blob:none');
+    expect(body).toContain('merge-base');
+    expect(body).toContain('$BASE_SHA');
+    expect(body).toContain('$HEAD_SHA');
+    expect(body).not.toContain('/pulls/${PR}/files');
+    expect(fetchStep.run).toContain('steps.target.outputs.base_sha');
+    expect(fetchStep.run).toContain('steps.target.outputs.head_sha');
+  });
+
   it('defaults github-token to the caller workflow token so no PAT is required', () => {
     expect(action.inputs['github-token'].default).toContain('github.token');
   });
