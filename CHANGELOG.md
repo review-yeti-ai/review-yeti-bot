@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.1...v1.9.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **release:** compare manifest to package version ([503e272](https://github.com/review-yeti-ai/review-yeti-bot/commit/503e272b103c469c320e81d95a37b2c8be38b756))
+* **release:** compare manifest to package version ([aa5688f](https://github.com/review-yeti-ai/review-yeti-bot/commit/aa5688f674e640f5d156369f5f2b9cbaac871278))
+
 ## [1.9.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.0...v1.9.1) (2026-08-21)
 
 
