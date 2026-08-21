@@ -313,10 +313,72 @@ describe('reviewWithModel', () => {
     expect(res.findings).toEqual([]);
     expect(calls[0].body).toMatchObject({
       stream: true,
-      max_tokens: 1024,
+      max_tokens: 8192,
       reasoning_effort: 'high',
       perf_metrics_in_response: true,
     });
+  });
+
+  it('reserves a direct-provider completion budget for high-reasoning JSON on a full-size diff', async () => {
+    const calls: any[] = [];
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'reviewing the complete diff' } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ findings: [] }) } }] })}`,
+      'data: [DONE]',
+      '',
+    ].join('\n');
+    const streamFetch = async (_url: string, init: any) => {
+      calls.push({ init, body: JSON.parse(init.body) });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(sse));
+            controller.close();
+          },
+        }),
+      };
+    };
+    const huge = [{ path: 'src/api/user.ts', patch: 'x'.repeat(410_400), addedLines: [], deletedLines: [] }];
+
+    const res = await reviewWithModel(securityPersona, huge, { repo: 'o/r' }, null, {
+      maxDiffChars: 410_400,
+      fetchImplementation: streamFetch,
+      transports: [{
+        name: 'fireworks',
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        apiKey: 'fw-key',
+        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        stream: true,
+        reasoning_effort: 'high',
+      }],
+    });
+
+    expect(res.decision).toBe('APPROVE');
+    expect(calls[0].body.messages.find((m: any) => m.role === 'user').content.length).toBeLessThanOrEqual(412_000);
+    expect(calls[0].body).toMatchObject({
+      stream: true,
+      max_tokens: 8192,
+      reasoning_effort: 'high',
+      response_format: { type: 'json_object' },
+    });
+  });
+
+  it('preserves an explicit direct-provider max_tokens override', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: impl,
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'ollama-key',
+        model: 'deepseek-v4-flash:cloud',
+        max_tokens: 4096,
+      }],
+    });
+    expect(calls[0].body.max_tokens).toBe(4096);
   });
 
   it('accepts structured content arrays but never treats reasoning-only output as findings', async () => {

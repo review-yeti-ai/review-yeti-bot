@@ -384,6 +384,12 @@ const ACTION_MAX_DIFF_CAP = 10_000_000;
 // budget bounded makes the live panel request match the bounded smoke probe and prevents a
 // reasoning provider from spending the entire transport deadline on an unbounded tail.
 const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
+// Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
+// still caps the complete generated sequence (reasoning plus the final JSON).
+// A 1,024-token cap is routinely consumed by high-effort reasoning before the
+// structured answer is emitted. Keep OpenRouter's bounded default unchanged,
+// while giving explicitly admitted direct transports enough room to finish.
+const DEFAULT_DIRECT_MAX_OUTPUT_TOKENS = 8_192;
 const DEFAULT_SUBMODULE_POLICY = {
   mode: 'metadata_only',
   max_depth: 1,
@@ -992,6 +998,27 @@ function isSubscriptionTransport(provider, transport = '') {
 }
 
 /**
+ * The high-reasoning completion reserve is only for the explicitly admitted
+ * direct DeepSeek transports. Keep arbitrary direct-compatible test/custom
+ * endpoints on the bounded default unless they identify as Fireworks or
+ * Ollama; this avoids silently changing unrelated provider contracts.
+ *
+ * @param {object} transport
+ * @param {string} baseUrl
+ * @returns {boolean}
+ */
+function isDirectReasoningTransport(transport = {}, baseUrl = '') {
+  const text = [
+    transport.provider,
+    transport.compat,
+    transport.name,
+    transport.model,
+    baseUrl,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return /(?:^|[\s/:._-])(fireworks|ollama)(?:$|[\s/:._-])/i.test(text);
+}
+
+/**
  * Determines whether a persona evaluation result ran on an unmetered or subscription transport.
  *
  * @param {object} res Persona result object
@@ -1468,6 +1495,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         String(transport.provider || '').toLowerCase() === 'openrouter' ||
         String(transport.compat || '').toLowerCase() === 'openrouter' ||
         transportBaseUrl.toLowerCase().includes('openrouter.ai');
+      const isDirectReasoning = isDirectReasoningTransport(transport, transportBaseUrl);
+      const configuredMaxOutputTokens =
+        transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens;
 
       resultBase = { ...resultBase, model: requestModel, transport: transportName };
 
@@ -1479,7 +1509,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         ],
         temperature: 0.1,
         max_tokens: normalizeMaxOutputTokens(
-          transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens,
+          configuredMaxOutputTokens,
+          isDirectReasoning ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS : DEFAULT_MAX_OUTPUT_TOKENS,
         ),
         response_format: { type: 'json_object' },
       };
@@ -3246,6 +3277,7 @@ module.exports = {
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
   DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
   parseDiff,
   abbreviatePath,
   getPRDiffAndContext,
@@ -3274,6 +3306,7 @@ module.exports = {
   writeStepSummary,
   postOrOutputComment,
   isSubscriptionTransport,
+  isDirectReasoningTransport,
   RunTransportCircuitBreaker,
   globalRunCircuitBreaker,
   isSubscriptionLane,
