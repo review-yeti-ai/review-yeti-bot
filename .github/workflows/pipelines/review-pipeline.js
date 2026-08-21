@@ -71,6 +71,7 @@ try {
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 const DEFAULT_PERSONA_CONCURRENCY = 3;
+const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 
 function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURRENCY) {
   if (value === undefined || value === null || value === '') return DEFAULT_PERSONA_CONCURRENCY;
@@ -1448,6 +1449,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
       let fetchAttempts = 0;
       const maxFetchAttempts = 2;
+      let formatRecoveryAttempted = false;
 
       while (fetchAttempts < maxFetchAttempts) {
         fetchAttempts++;
@@ -1548,6 +1550,24 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned no parseable findings JSON; trying next transport...`);
               fallbackAttempt++;
               break;
+            }
+            if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
+              formatRecoveryAttempted = true;
+              requestBody.max_tokens = Math.max(
+                requestBody.max_tokens,
+                DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
+              );
+              if (isOpenRouterTransport) requestBody.reasoning = { effort: 'low' };
+              else requestBody.reasoning_effort = 'low';
+              requestBody.messages[0].content += [
+                '',
+                'FORMAT RECOVERY:',
+                '- Your prior response did not contain parseable findings JSON.',
+                '- Keep reasoning brief and reserve output tokens for the final JSON object.',
+                '- Return only {"findings":[]} or the required findings object.',
+              ].join('\n');
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once with low reasoning effort and a larger answer budget...`);
+              continue;
             }
             return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
           }
