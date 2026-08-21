@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.4...v1.9.5) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** recover unparseable final transport output ([#210](https://github.com/review-yeti-ai/review-yeti-bot/issues/210)) ([ae0af0a](https://github.com/review-yeti-ai/review-yeti-bot/commit/ae0af0a6540475d75dc8ec4e1c5ade2957d0042e))
+
 ## [1.9.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.3...v1.9.4) (2026-08-21)
 
 
