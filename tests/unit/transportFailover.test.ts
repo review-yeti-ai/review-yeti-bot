@@ -286,7 +286,7 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
     expect(requestBodies[1].model).toBe('openrouter/auto');
     expect(requestBodies[1].max_tokens).toBe(4096);
-    expect(requestBodies[1].reasoning).toEqual({ effort: 'high' });
+    expect(requestBodies[1].reasoning).toEqual({ effort: 'low' });
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
