@@ -63,3 +63,12 @@ validated on the exact pushed SHA. Merge remains blocked until hosted `test`
 passes and Review Yeti reports `SHIP`, quorum satisfied, 5/5 personas, and zero
 P0/P1/P2 findings. A local receipt, skipped lane, provider timeout, or stale
 review is not a merge receipt.
+
+## Merged receipt
+
+- PR #184 merged by squash at `2026-08-21T16:38:14Z`.
+- Tested exact head: `defe42f7cc9c1f90f033e7fc46616b0c29ba7875`.
+- Merge commit on `main`: `119114d4c433fbdee588f6ce19983905e8d0a718`.
+- Hosted `test` run `32503772622`: PASS.
+- Exact-head Review Yeti run `32503772570`: SHIP, 5/5 personas, quorum satisfied,
+  zero P0/P1/P2 findings.
