@@ -1056,7 +1056,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '',
     'Rules:',
     '- Report only defects you can point to in the diff. Do not speculate about unseen code.',
-    '- Use the exact file path as given in the diff headers.',
+    '- Use the exact file path from the diff headers and calculate the line number from the hunk headers (@@ -oldStart,oldCount +newStart,newCount @@).',
     '- Every finding must name what breaks and under what conditions. If you cannot, do not report it.',
     '- Severity: P0 = exploitable, data-losing or outage-causing. P1 = a defect that must be fixed before merge. P2 = worth doing, safe to merge without.',
     '- P1 and P0 are rare. When unsure between two levels, choose the lower one.',
