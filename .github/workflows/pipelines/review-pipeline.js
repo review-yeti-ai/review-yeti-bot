@@ -414,10 +414,23 @@ function calculateSafeDiffCapacity(modelOrTokens, options = {}) {
  *
  * @returns {{enabled: boolean, apiKey: string, baseUrl: string, model: string, maxDiffChars: number}}
  */
+function hasExplicitTransportHandoff(env = process.env) {
+  return (
+    (typeof env.REVIEW_YETI_TRANSPORTS === 'string' && env.REVIEW_YETI_TRANSPORTS.trim() !== '') ||
+    (typeof env.REVIEW_YETI_TRANSPORT_PLAN_B64 === 'string' && env.REVIEW_YETI_TRANSPORT_PLAN_B64.trim() !== '')
+  );
+}
+
 function resolveModelConfig(env = process.env) {
   const apiKey = env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || env.OPENROUTER_API_KEY || '';
-  const baseUrl = (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-  const model = env.OPENROUTER_MODEL || 'openrouter/auto';
+  // Older callers passed the selected provider's URL/model through the legacy OpenRouter
+  // fields while also supplying an explicit multi-provider handoff. Keep the action's policy
+  // boundary canonical in that case; the provider-specific URL/model remains in transports.
+  const explicitTransportHandoff = hasExplicitTransportHandoff(env);
+  const baseUrl = explicitTransportHandoff
+    ? 'https://openrouter.ai/api/v1'
+    : (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+  const model = explicitTransportHandoff ? 'openrouter/auto' : (env.OPENROUTER_MODEL || 'openrouter/auto');
   const dynamicDefaultDiff = calculateSafeDiffCapacity(model);
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || dynamicDefaultDiff;
 
@@ -537,9 +550,10 @@ function resolveModelConfig(env = process.env) {
 }
 
 function trustedOpenRouterInputsFromEnv(env = process.env) {
+  const explicitTransportHandoff = hasExplicitTransportHandoff(env);
   return {
-    'llm-base-url': env.OPENROUTER_BASE_URL,
-    model: env.OPENROUTER_MODEL,
+    'llm-base-url': explicitTransportHandoff ? 'https://openrouter.ai/api/v1' : env.OPENROUTER_BASE_URL,
+    model: explicitTransportHandoff ? 'openrouter/auto' : env.OPENROUTER_MODEL,
     'allowed-models': env.OPENROUTER_ALLOWED_MODELS,
     'data-collection': env.OPENROUTER_DATA_COLLECTION,
     'cost-quality-tradeoff': env.OPENROUTER_COST_QUALITY_TRADEOFF,
