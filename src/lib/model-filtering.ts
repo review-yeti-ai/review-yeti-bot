@@ -48,6 +48,10 @@ export function getProviderIdForModel(
   if (lower === 'openrouter' || lower.startsWith('openrouter/')) {
     return 'openrouter';
   }
+  // Resolve an explicit provider-qualified route before generated model
+  // metadata. Older generated catalogs can contain the AGY leaf model under
+  // Anthropic because it includes "claude"; the route prefix is authoritative.
+  if (lower.startsWith('agy/')) return 'agy';
 
   // Check generated provider metadata
   for (const [pId, meta] of Object.entries(OMNIROUTE_GENERATED_PROVIDERS)) {
@@ -65,7 +69,6 @@ export function getProviderIdForModel(
   if (lower.startsWith('grok')) return 'grok';
   if (lower.startsWith('gemini') || lower.startsWith('google')) return 'gemini';
   if (lower.startsWith('codex') || lower.startsWith('cx')) return 'codex';
-  if (lower.startsWith('agy')) return 'agy';
   if (lower.startsWith('llama') || lower.startsWith('qwen') || lower.startsWith('ollama')) return 'ollama';
   if (lower.startsWith('doppler')) return 'doppler';
   if (lower.startsWith('custom')) return 'custom-openai';

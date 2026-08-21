@@ -157,7 +157,23 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
       },
     };
 
-    const result = handler.evaluateTrigger('pull_request', minimalPayload, 'deliv-minimal');
+    // A malformed webhook must fail closed even when the test runner exposes
+    // the repository environment variables that a real GitHub Action uses.
+    // Those variables are runtime defaults for complete events, not a substitute
+    // for the repository identity required by an untrusted payload.
+    const savedOwner = process.env.GITHUB_REPOSITORY_OWNER;
+    const savedRepository = process.env.GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPOSITORY_OWNER;
+    delete process.env.GITHUB_REPOSITORY;
+    let result: ReturnType<GitHubEventHandler['evaluateTrigger']>;
+    try {
+      result = handler.evaluateTrigger('pull_request', minimalPayload, 'deliv-minimal');
+    } finally {
+      if (savedOwner === undefined) delete process.env.GITHUB_REPOSITORY_OWNER;
+      else process.env.GITHUB_REPOSITORY_OWNER = savedOwner;
+      if (savedRepository === undefined) delete process.env.GITHUB_REPOSITORY;
+      else process.env.GITHUB_REPOSITORY = savedRepository;
+    }
 
     expect(result.shouldTrigger).toBe(false);
     expect(result.reason).toContain('Missing owner or repo');
