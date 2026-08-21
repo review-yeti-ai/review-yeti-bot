@@ -179,11 +179,12 @@ Separately,
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
 of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
 `connect_timeout_ms` `15000 + 30000 + 30000 = 75000`, plus `3 x 20000 = 60000` stall reserve,
-`(75000 + 60000) x 2 attempts x 2 turns + 120000 overhead = 660000 <= 900000`, and
-`max_passes(2) x lane_deadline_ms(900000) = 1800000 <= 2400000` (the 40-minute job cap, leaving
-600s for workflow setup, publishing, and verdict enforcement). The explicit overhead reserve
-covers streaming-gate wait, validation, failover dispatch, and evidence work that connect/stall
-arithmetic alone cannot represent. This still guards against a repeat of the incident that
+`(75000 + 60000) x 2 attempts x 2 turns + 120000 overhead = 660000 <= 1050000`, and
+`max_passes(2) x lane_deadline_ms(1050000) = 2100000 <= 2400000` (the 40-minute job cap, leaving
+300s for workflow setup, publishing, and verdict enforcement). The explicit margin includes the
+measured 135-second wait behind the bounded streaming gate before a fallback review can begin,
+plus validation, failover dispatch, and evidence work that connect/stall arithmetic alone cannot
+represent. This still guards against a repeat of the incident that
 originally motivated this invariant -- a full sequential failover of transports that never connect
 or never stream must still finish inside the lane deadline -- while no longer treating a slow but
 healthy, actively-streaming generation as if it were that failure.
