@@ -102,10 +102,21 @@ function isFailedLane(lane) {
   return Boolean(lane && (lane.error || lane.status === 'ERROR' || lane.decision === 'ERROR'));
 }
 
+// Transport/provider outages are not review findings. Fail that provider and
+// continue; do not BLOCK a panel that already produced complete lanes.
+const PROVIDER_FAILURE_RE = /empty_sse|no parseable findings json|http \d+|stalled|timeout|total deadline|all transports failed|error payload|no endpoints available|econnreset|etimedout|epipe|overloaded|und_err_socket/i;
+
+function isProviderLaneFailure(lane) {
+  if (!isFailedLane(lane)) return false;
+  return PROVIDER_FAILURE_RE.test(String(lane.error || ''));
+}
+
 function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const results = Array.isArray(personaResults) ? personaResults : [];
   const expected = Number.isInteger(expectedPersonas) ? expectedPersonas : results.length;
   const failedLanes = results.filter(isFailedLane);
+  const providerFailedLanes = failedLanes.filter(isProviderLaneFailure);
+  const blockingFailedLanes = failedLanes.filter((lane) => !isProviderLaneFailure(lane));
   const completedResults = results.filter((result) => !isFailedLane(result));
   const findings = completedResults.flatMap((result) => sanitizeFindings(result.findings, options.changedFiles));
   let p0Count = 0;
@@ -126,9 +137,12 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   if (expected <= 0) {
     candidateVerdict = 'BLOCK';
     rationale = 'Blocked because no reviewer personas are enabled; no review evidence exists.';
-  } else if (failedLanes.length > 0) {
+  } else if (blockingFailedLanes.length > 0) {
     candidateVerdict = 'BLOCK';
-    rationale = `Blocked because ${failedLanes.length} persona lane(s) failed; provider failures cannot produce a successful verdict.`;
+    rationale = `Blocked because ${blockingFailedLanes.length} persona lane(s) failed.`;
+  } else if (completedResults.length === 0 && failedLanes.length > 0) {
+    candidateVerdict = 'BLOCK';
+    rationale = `Blocked because every persona lane failed at the provider; no review evidence exists.`;
   } else if (p0Count > 0) {
     candidateVerdict = 'BLOCK';
     rationale = `Blocked on ${p0Count} critical P0 finding(s).`;
@@ -143,7 +157,11 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     rationale = `Changes requested for ${p2Count} P2 finding(s) across ${panelSize} reviewer(s), at or above the nit threshold of ${fixP2}.`;
   }
 
-  if (!failedLanes.length && VALID_VERDICTS.has(options.candidateVerdict)) {
+  if (providerFailedLanes.length > 0 && candidateVerdict === 'SHIP') {
+    rationale = `${rationale} Skipped ${providerFailedLanes.length} provider-failed lane(s) after transport failover.`;
+  }
+
+  if (!blockingFailedLanes.length && VALID_VERDICTS.has(options.candidateVerdict)) {
     if (
       options.candidateVerdict === 'BLOCK'
       || options.candidateVerdict === candidateVerdict
@@ -155,7 +173,12 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   }
 
   const coverageComplete = options.coverageComplete !== false;
-  const quorumSatisfied = expected > 0 && failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
+  const accountedLanes = completedResults.length + providerFailedLanes.length;
+  const quorumSatisfied = expected > 0
+    && blockingFailedLanes.length === 0
+    && completedResults.length > 0
+    && accountedLanes === expected
+    && coverageComplete;
   const incomplete = !quorumSatisfied;
   const verdict = incomplete ? 'BLOCK' : candidateVerdict;
   const status = incomplete ? 'INCOMPLETE_REVIEW' : verdict;
@@ -176,6 +199,7 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
 }
 
 module.exports = {
+  isProviderLaneFailure,
   canonicalize,
   canonicalJson,
   sha256,

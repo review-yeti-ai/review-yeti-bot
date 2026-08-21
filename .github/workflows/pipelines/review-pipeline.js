@@ -1233,6 +1233,12 @@ function streamInactivityError(timeoutMs) {
   return error;
 }
 
+function streamTotalDeadlineError(timeoutMs) {
+  const error = new Error(`Streaming response exceeded total deadline of ${timeoutMs}ms`);
+  error.name = 'TimeoutError';
+  return error;
+}
+
 async function withStreamInactivityTimeout(promise, timeoutMs, onTimeout) {
   let timer = null;
   try {
@@ -1250,7 +1256,12 @@ async function withStreamInactivityTimeout(promise, timeoutMs, onTimeout) {
   }
 }
 
-async function readChatCompletionResponse(response, streamEnabled, inactivityTimeoutMs = 90_000) {
+async function readChatCompletionResponse(
+  response,
+  streamEnabled,
+  inactivityTimeoutMs = 90_000,
+  totalTimeoutMs = 0,
+) {
   const contentType = typeof response?.headers?.get === 'function'
     ? String(response.headers.get('content-type') || '').toLowerCase()
     : '';
@@ -1294,27 +1305,56 @@ async function readChatCompletionResponse(response, streamEnabled, inactivityTim
     }
   };
 
+  const totalDeadlineAt = totalTimeoutMs > 0 ? Date.now() + totalTimeoutMs : 0;
+  const remainingTotalMs = () => (totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity);
+  let cancelStream = () => {};
+  const throwIfTotalDeadline = () => {
+    if (totalDeadlineAt && Date.now() >= totalDeadlineAt) {
+      cancelStream();
+      throw streamTotalDeadlineError(totalTimeoutMs);
+    }
+  };
+
   if (response?.body && typeof response.body.getReader === 'function') {
     const reader = response.body.getReader();
+    cancelStream = () => {
+      void Promise.resolve(reader.cancel?.('stream total deadline')).catch(() => {});
+    };
     const decoder = new TextDecoder();
     try {
       while (true) {
-        const { value, done } = await withStreamInactivityTimeout(
-          reader.read(),
-          inactivityTimeoutMs,
-          () => {
-            void Promise.resolve(reader.cancel?.('stream inactivity timeout')).catch(() => {});
-          },
-        );
-        if (done) break;
-        if (value) consume(decoder.decode(value, { stream: true }));
+        throwIfTotalDeadline();
+        const readBudgetMs = Math.min(inactivityTimeoutMs, remainingTotalMs());
+        try {
+          const { value, done } = await withStreamInactivityTimeout(
+            reader.read(),
+            readBudgetMs,
+            () => {
+              void Promise.resolve(reader.cancel?.('stream inactivity timeout')).catch(() => {});
+            },
+          );
+          if (done) break;
+          if (value) consume(decoder.decode(value, { stream: true }));
+        } catch (err) {
+          throwIfTotalDeadline();
+          throw err;
+        }
       }
       consume(decoder.decode(), true);
     } finally {
       reader.releaseLock?.();
     }
   } else if (typeof response.text === 'function') {
-    consume(await withStreamInactivityTimeout(response.text(), inactivityTimeoutMs), true);
+    throwIfTotalDeadline();
+    try {
+      consume(await withStreamInactivityTimeout(
+        response.text(),
+        Math.min(inactivityTimeoutMs, remainingTotalMs()),
+      ), true);
+    } catch (err) {
+      throwIfTotalDeadline();
+      throw err;
+    }
   }
 
   if (chunks.length === 0 && reasoningChunks.length === 0) throw new Error('empty_sse');
@@ -1526,15 +1566,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
             const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
-            const isTrippable = response.status === 429 || response.status === 503 || response.status === 529 || detail.includes('cancelled') || detail.includes('overloaded') || detail.includes('queue');
-            if (isTrippable) {
-              circuitBreaker.trip(transportName, errMsg);
-            }
-            if (i < candidateTransports.length - 1 && isTrippable) {
+            circuitBreaker.trip(transportName, errMsg);
+            if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
               lastError = errMsg;
               fallbackAttempt++;
-              break; 
+              break;
             }
             return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
           }
@@ -1543,10 +1580,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           // budget. Once response headers arrive, each body read gets a fresh
           // timeout so active reasoning/content deltas are never aborted merely
           // because the full review takes longer than one timeout window.
+          // Format recovery already spent one full generation on unparseable
+          // output. Cap that retry by wall clock so a reasoning-only stream
+          // cannot reset the inactivity watchdog for minutes (cisco-cdr#4472).
           const payload = await readChatCompletionResponse(
             response,
             streamEnabled,
             transportTimeoutMs,
+            formatRecoveryAttempted ? transportTimeoutMs : 0,
           );
           const responseBase = {
             ...resultBase,
@@ -1559,11 +1600,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
           if (payload?.error) {
             const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
-            const isTrippable = String(message).includes('cancelled') || String(message).includes('rate') || String(message).includes('queue') || String(message).includes('overloaded');
-            if (isTrippable) {
-              circuitBreaker.trip(transportName, message);
-            }
-            if (i < candidateTransports.length - 1 && isTrippable) {
+            circuitBreaker.trip(transportName, message);
+            if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
               lastError = message;
               fallbackAttempt++;

@@ -145,6 +145,51 @@ describe('Chaos & Fault Tolerance Suite', () => {
     expect(persona2OllamaCalls.length).toBe(1);
   });
 
+  it('treats HTTP 404 as a dead provider and failovers to the next transport', async () => {
+    const breaker = new RunTransportCircuitBreaker();
+    const urls: string[] = [];
+    const mockFetch = async (url: string) => {
+      urls.push(url);
+      if (url.includes('openrouter.ai')) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => JSON.stringify({
+            error: { message: 'No endpoints available matching your guardrail restrictions and data policy', code: 404 },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+        }),
+      };
+    };
+
+    const result = await reviewWithModel(
+      { id: 'testing', name: 'Testing', charter: 'Tests' },
+      [{ path: 'lib/core.ex', patch: '+ def run do' }],
+      { repo: 'calltelemetry/cisco-cdr', prNumber: 4472 },
+      null,
+      {
+        fetchImplementation: mockFetch,
+        circuitBreaker: breaker,
+        transports: [
+          { name: 'openrouter-fallback', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'or-key', compat: 'openrouter' },
+          { name: 'ollama', baseUrl: 'https://ollama.com/v1', apiKey: 'ollama-key' },
+        ],
+      },
+    );
+
+    expect(result.decision).toBe('APPROVE');
+    expect(result.transport).toBe('ollama');
+    expect(breaker.isTripped('openrouter-fallback')).toBe(true);
+    expect(urls.some((url) => url.includes('openrouter.ai'))).toBe(true);
+    expect(urls.some((url) => url.includes('ollama.com'))).toBe(true);
+  });
+
   it('cascades across 3 transports when primary and secondary both fail with distinct error shapes', async () => {
     const breaker = new RunTransportCircuitBreaker();
     const visitedTransports: string[] = [];
