@@ -268,6 +268,16 @@ describe('Multi-Transport Fast Failover', () => {
       null,
       {
         fetchImplementation: mockFetch,
+        openRouterPolicy: {
+          base_url: 'https://openrouter.ai/api/v1',
+          model: 'openrouter/auto',
+          allowed_models: [
+            'moonshotai/kimi-k2.6',
+            'google/gemini-3.5-flash-lite',
+          ],
+          data_collection: 'deny',
+          cost_quality_tradeoff: 8,
+        },
         transports: [{
           name: 'openrouter-fallback',
           compat: 'openrouter',
@@ -284,9 +294,11 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[0].model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(requestBodies[0].max_tokens).toBe(1024);
     expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
-    expect(requestBodies[1].model).toBe('openrouter/auto');
+    expect(requestBodies[1].model).toBe('google/gemini-3.5-flash-lite');
     expect(requestBodies[1].max_tokens).toBe(4096);
     expect(requestBodies[1].reasoning).toEqual({ effort: 'low' });
+    expect(requestBodies[1].provider).toEqual({ data_collection: 'deny' });
+    expect(requestBodies[1].plugins).toBeUndefined();
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
