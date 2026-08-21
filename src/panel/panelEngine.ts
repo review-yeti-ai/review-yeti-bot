@@ -490,17 +490,25 @@ async function invoke(
 
 === MULTI-TURN EXPLORATION & TOOL INVOCATION PROTOCOL ===
 - Permitted Tool Categories:
-  1. Code Reading: view_file, read_file, get_diff
-  2. AST Context: miller (Miller Tool)
-  3. Context Searching: grep_search, find_files, symbol_search, search_code
-  4. Documentation MCPs only: ${mcpToolListStr || 'none'}
+  1. Code Reading: view_file, read_file, get_diff (read surrounding file lines within the repository)
+  2. AST Context & Symbols: miller (AST context), symbol_search, search_code, grep_search, find_files
+  3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}
+     Use Context7 when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.
 - You are granted up to ${maxTurns} execution turns for active codebase exploration.
 - Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.
 ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 `- ACTIVE DEEP EXPLORATION REQUIRED: Perform multi-turn tool calls to search symbol dependencies, inspect related imported files, verify caller/callee context, and audit cross-file contracts before rendering your final decision.` :
 `- Perform tool calls as needed to inspect file contents and verify code context.`}
-- NOTE: All file reads are limited to the supplied changed-file patches. File writes, shell execution, Linear/Productlane/GitHub actions, custom MCPs, and arbitrary local paths are strictly prohibited and will be rejected.
-- When tool execution is required, output a valid JSON block specifying the tool name and arguments.
+- Autonomous Decision: You decide whether to investigate further using tool calls or render your final evaluation immediately. If the diff is clean or self-contained, emit your final findings right away without unnecessary tool calls.
+- When tool execution is required, output a valid JSON block specifying the tool name and arguments:
+  \`\`\`json
+  { "tool": "context7_search", "args": { "library": "ecto", "query": "multi-tenant schema prefixes" } }
+  \`\`\`
+  or
+  \`\`\`json
+  { "tool": "read_file", "args": { "path": "lib/user.ex", "startLine": 1, "endLine": 40 } }
+  \`\`\`
+- NOTE: All file reads are limited to the workspace. File writes, shell execution, Linear/Productlane/GitHub actions, custom MCPs, and arbitrary local paths are strictly prohibited and will be rejected.
 - You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`,
     },
     { role: 'user', content: prompt },
@@ -526,6 +534,9 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         break; // Successfully completed evaluation
       }
     } catch (fenceErr: any) {
+      if (iter + 1 >= maxTurns) {
+        break;
+      }
       // Check if model requested a tool invocation in Pi.dev format
       let toolCall: { tool?: string; args?: any } | null = null;
       try {
@@ -880,23 +891,20 @@ async function runPersona(
             await new Promise((r) => setTimeout(r, 1000));
             continue;
           }
-          if (attempts >= maxAttempts) {
-            bus.publishEvent({
-              jobId: effectiveJobId,
-              timestamp: new Date().toISOString(),
-              type: 'llm:error',
-              persona: persona.id,
-              data: {
-                provider: providerId,
-                model: targetModel,
-                error: error.message,
-                status: 'ERROR',
-              },
-            });
-            errors.push(`${providerId}: ${error?.message || String(error)}`);
-            if (config.reviewers.fallback === 'none') break;
-            break;
-          }
+          bus.publishEvent({
+            jobId: effectiveJobId,
+            timestamp: new Date().toISOString(),
+            type: 'llm:error',
+            persona: persona.id,
+            data: {
+              provider: providerId,
+              model: targetModel,
+              error: error.message,
+              status: 'ERROR',
+            },
+          });
+          errors.push(`${providerId}: ${error?.message || String(error)}`);
+          break;
         }
       }
     }
