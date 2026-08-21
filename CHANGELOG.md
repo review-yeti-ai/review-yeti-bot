@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.2...v1.9.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* **release:** use hosted deploy runner ([bd8a36c](https://github.com/review-yeti-ai/review-yeti-bot/commit/bd8a36cbd1e687b555d305c5f15784fdc5000700))
+* **release:** use hosted deploy runner ([21c5a7b](https://github.com/review-yeti-ai/review-yeti-bot/commit/21c5a7ba208f63148716d28147f556e769cb2e56))
+
 ## [1.9.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.1...v1.9.2) (2026-08-21)
 
 
