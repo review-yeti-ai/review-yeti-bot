@@ -472,7 +472,7 @@ function resolveModelConfig(env = process.env) {
         name: 'fireworks',
         baseUrl: (env.FIREWORKS_BASE_URL || 'https://api.fireworks.ai/inference/v1').replace(/\/+$/, ''),
         apiKey: env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY,
-        model: env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v3',
+        model: env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4-flash-0731',
         timeoutMs: 120_000,
       });
     }
@@ -481,7 +481,7 @@ function resolveModelConfig(env = process.env) {
         name: 'ollama',
         baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com/v1').replace(/\/+$/, ''),
         apiKey: env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY,
-        model: env.OLLAMA_MODEL || 'deepseek-v3:latest',
+        model: env.OLLAMA_MODEL || 'deepseek-v4-flash:cloud',
         timeoutMs: 90_000,
       });
     }
@@ -490,7 +490,7 @@ function resolveModelConfig(env = process.env) {
         name: 'anthropic',
         baseUrl: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1').replace(/\/+$/, ''),
         apiKey: env.ANTHROPIC_API_KEY,
-        model: env.ANTHROPIC_MODEL || 'claude-3-7-sonnet-20250219',
+        model: env.ANTHROPIC_MODEL || 'claude-3-7-sonnet',
         timeoutMs: 120_000,
       });
     }
@@ -499,7 +499,7 @@ function resolveModelConfig(env = process.env) {
         name: 'gemini',
         baseUrl: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/, ''),
         apiKey: env.GEMINI_API_KEY,
-        model: env.GEMINI_MODEL || 'gemini-2.5-flash',
+        model: env.GEMINI_MODEL || 'google/gemini-3.7-flash:high',
         timeoutMs: 90_000,
       });
     }
@@ -508,7 +508,7 @@ function resolveModelConfig(env = process.env) {
         name: 'openai',
         baseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
         apiKey: env.OPENAI_API_KEY,
-        model: env.OPENAI_MODEL || 'gpt-4o',
+        model: env.OPENAI_MODEL || 'openai/gpt-5.6-luna',
         timeoutMs: 90_000,
       });
     }
@@ -517,7 +517,7 @@ function resolveModelConfig(env = process.env) {
         name: 'openrouter',
         baseUrl,
         apiKey,
-        model,
+        model: model || 'deepseek/deepseek-v4-flash-0731:high',
         timeoutMs: 90_000,
       });
     }
