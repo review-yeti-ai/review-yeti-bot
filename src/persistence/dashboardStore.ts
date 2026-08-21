@@ -428,7 +428,6 @@ export class DashboardStore {
   /** Reload the backing file and clear transient analytics caches. */
   public reset(): void {
     this.overrideFilePath = undefined;
-    this.filePath = process.env.CT_DASHBOARD_STORE || path.join(process.cwd(), 'data', 'dashboard-store.json');
     this.invalidateCache();
     this.data = this.load();
   }

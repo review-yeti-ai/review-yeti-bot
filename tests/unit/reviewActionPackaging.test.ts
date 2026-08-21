@@ -31,6 +31,7 @@ describe('action.yml — installable GitHub Action contract', () => {
 
   it('accepts the inputs a consumer needs to configure a review', () => {
     const inputs = Object.keys(action.inputs || {});
+    expect(inputs).toContain('api-key');
     expect(inputs).toContain('llm-api-key');
     expect(inputs).toContain('llm-base-url');
     expect(inputs).toContain('model');
@@ -45,6 +46,7 @@ describe('action.yml — installable GitHub Action contract', () => {
 
   it('does not require an API key, so the action installs before a key is provisioned', () => {
     expect(action.inputs['llm-api-key'].required).not.toBe(true);
+    expect(action.inputs['api-key'].required).not.toBe(true);
   });
 
   it('exposes verdict and finding counts as outputs so callers can gate on them', () => {
@@ -95,5 +97,54 @@ describe('writeStepOutputs', () => {
 
   it('is a no-op when no output path is provided, so local runs do not throw', () => {
     expect(() => writeStepOutputs(arbitration, undefined)).not.toThrow();
+  });
+});
+
+describe('writeStepSummary and emitWorkflowAnnotations', () => {
+  const { writeStepSummary, emitWorkflowAnnotations } = pipeline;
+
+  const arbitration = {
+    verdict: 'SHIP',
+    completedPersonas: 5,
+    totalPersonas: 5,
+    quorumSatisfied: true,
+    rationale: 'Clean diff with zero defects.',
+    metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+  };
+
+  it('writes executive markdown summary table to GITHUB_STEP_SUMMARY', () => {
+    const tempSummaryFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ct-summary-')), 'summary.md');
+    process.env.GITHUB_STEP_SUMMARY = tempSummaryFile;
+
+    writeStepSummary(arbitration, [], { repo: 'calltelemetry/cisco-cdr' }, { reviewed: ['lib/auth.ex'] });
+    const content = fs.readFileSync(tempSummaryFile, 'utf-8');
+
+    expect(content).toContain('### 🏔️ Review Yeti Executive Summary');
+    expect(content).toContain('🟢 SHIP');
+    expect(content).toContain('100% (1 files audited)');
+    expect(content).toContain('Satisfied');
+
+    delete process.env.GITHUB_STEP_SUMMARY;
+  });
+
+  it('emits workflow command annotations for P0 and P1 findings', () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+
+    const mockLanes = [{
+      personaId: 'security',
+      displayName: '🛡️ Security',
+      findings: [
+        { severity: 'P0', path: 'lib/auth.ex', line: 42, title: 'SQL Injection', body: 'Unsafe SQL parameter' },
+        { severity: 'P2', path: 'lib/style.ex', line: 10, title: 'Unused Variable', body: 'Variable x is not used' },
+      ],
+    }];
+
+    emitWorkflowAnnotations(mockLanes);
+    console.log = origLog;
+
+    expect(logs.some((l) => l.includes('::error file=lib/auth.ex,line=42,title=SQL Injection::Unsafe SQL parameter'))).toBe(true);
+    expect(logs.some((l) => l.includes('::warning file=lib/style.ex,line=10,title=Unused Variable::Variable x is not used'))).toBe(true);
   });
 });
