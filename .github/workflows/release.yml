@@ -158,7 +158,7 @@ jobs:
   deploy:
     name: Build & Deploy Docker Image to DOKS
     needs: validate-and-release
-    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
