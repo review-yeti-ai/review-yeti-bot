@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
-import { OpenRouterResponse, ReviewModelClient, TokensUsed, ProviderQueueStallError, ProviderCapacityLimiter } from '../gateway/openRouterClient';
+import { OpenRouterResponse, ReviewModelClient, TokensUsed, isExplicitUpstreamRejection } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
@@ -700,216 +700,204 @@ async function runPersona(
 
     const providersToTry = [...new Set([...baseProviders, 'synthetic', 'glm'])].filter((p) => availableProviderIds.includes(p as any));
 
-    const limiter = ProviderCapacityLimiter.getInstance();
-
     for (const providerId of providersToTry) {
-      if (!limiter.tryAcquire(providerId)) {
-        logger.info(`[Persona: ${persona.id}] Provider '${providerId}' at capacity (${limiter.getActiveCount(providerId)}/${limiter.getCapacity(providerId).maxConcurrentLanes}); failing over to next provider...`);
-        continue;
+      const spec = provider(config, providerId);
+      // The dashboard's openrouter/auto value is the default sentinel, not an
+      // explicit model override. Also keep a persona-specific override bound
+      // to its primary provider; fallback providers must use their own model
+      // contract instead of receiving an incompatible primary-provider model.
+      const dashboardModel = storePersona?.model && storePersona.model !== 'openrouter/auto'
+        ? storePersona.model
+        : undefined;
+      const requestedModel = persona.model || dashboardModel;
+      const primaryProviderId = dualResolved?.providerId || persona.providers[0];
+      let targetModel = providerId === primaryProviderId && requestedModel
+        ? requestedModel
+        : spec.model;
+      if (dualResolved && providerId === dualResolved.providerId) {
+        targetModel = dualResolved.model;
+      } else if (isRedTeam && primaryModelContext) {
+        targetModel = resolveDualModel(primaryModelContext, [{ id: providerId, model: spec.model }], persona.adversarial_model).model;
       }
 
-      try {
-        const spec = provider(config, providerId);
-        // The dashboard's openrouter/auto value is the default sentinel, not an
-        // explicit model override. Also keep a persona-specific override bound
-        // to its primary provider; fallback providers must use their own model
-        // contract instead of receiving an incompatible primary-provider model.
-        const dashboardModel = storePersona?.model && storePersona.model !== 'openrouter/auto'
-          ? storePersona.model
-          : undefined;
-        const requestedModel = persona.model || dashboardModel;
-        const primaryProviderId = dualResolved?.providerId || persona.providers[0];
-        let targetModel = providerId === primaryProviderId && requestedModel
-          ? requestedModel
-          : spec.model;
-        if (dualResolved && providerId === dualResolved.providerId) {
-          targetModel = dualResolved.model;
-        } else if (isRedTeam && primaryModelContext) {
-          targetModel = resolveDualModel(primaryModelContext, [{ id: providerId, model: spec.model }], persona.adversarial_model).model;
-        }
+      const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? 20;
 
-        const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-        const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? 20;
+      let attempts = 0;
+      const maxAttempts = 2;
+      while (attempts < maxAttempts) {
+        attempts++;
+        try {
+          bus.publishEvent({
+            jobId: effectiveJobId,
+            timestamp: new Date().toISOString(),
+            type: 'llm:prompt',
+            persona: persona.id,
+            data: {
+              provider: providerId,
+              model: targetModel,
+              promptSnippet: `CT_REVIEW_NONCE: persona=${persona.id} repository=${repository} headSha=${headSha.slice(0, 7)}`,
+            },
+          });
 
-        let attempts = 0;
-        const maxAttempts = 2;
-        while (attempts < maxAttempts) {
-          attempts++;
+          const result = await invoke(client, targetModel, spec.review_timeout_s * 1_000, 'persona', {
+            persona: persona.id,
+            charter: effectiveCharter,
+            repository,
+            headSha,
+            changedFiles: scopedFiles,
+            pathInstructions: config.path_instructions,
+            rules: [...(config.rules || []), ...memoryRules],
+            outputSchema: {
+              decision: 'APPROVE|FINDINGS',
+              findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'optional string' }],
+              ...(persona.id === 'review_flowchart' ? { mermaidDiagram: 'string' } : {}),
+            },
+          }, {
+            maxTurns: effectiveMaxTurns,
+            effort: effectiveEffort,
+          });
+          if (!result.parsed) {
+            throw new Error('invalid empty persona response');
+          }
+          let findings = validateFindings(result.parsed.findings);
+          if (result.parsed.decision === 'APPROVE' && findings.length > 0) {
+            throw new Error('APPROVE cannot contain findings');
+          }
+          if (result.parsed.decision === 'FINDINGS' && findings.length === 0) {
+            throw new Error('FINDINGS requires at least one finding');
+          }
+
+          const promptTokens = result.response.usage?.prompt || 0;
+          const completionTokens = result.response.usage?.completion || 0;
+          const totalTokens = result.response.usage?.total || (promptTokens + completionTokens);
+          const costUSD = result.response.costUSD || 0;
+
+          bus.publishEvent({
+            jobId: effectiveJobId,
+            timestamp: new Date().toISOString(),
+            type: 'llm:token',
+            persona: persona.id,
+            data: {
+              token: result.parsed?.decision || 'complete',
+              accumulatedLength: result.response.content.length,
+            },
+          });
+
+          bus.publishEvent({
+            jobId: effectiveJobId,
+            timestamp: new Date().toISOString(),
+            type: 'openrouter:metric',
+            persona: persona.id,
+            data: {
+              requestedModel: targetModel,
+              resolvedModel: result.response.model,
+              provider: providerId,
+              latencyMs: result.durationMs,
+              promptTokens,
+              completionTokens,
+              totalTokens,
+              costUSD,
+            },
+          });
+
+          bus.publishEvent({
+            jobId: effectiveJobId,
+            timestamp: new Date().toISOString(),
+            type: 'persona:complete',
+            persona: persona.id,
+            data: {
+              decision: result.parsed.decision,
+              findingsCount: findings.length,
+              durationMs: result.durationMs,
+              tokensUsed: { prompt: promptTokens, completion: completionTokens, total: totalTokens },
+              costUSD,
+            },
+          });
+
+          span.setAttribute('ct.persona.provider', providerId);
+          span.setAttribute('ct.persona.model', result.response.model);
+          span.setAttribute('ct.persona.decision', result.parsed.decision);
+          span.setAttribute('ct.persona.findings_count', findings.length);
+          span.setAttribute('ct.persona.duration_ms', result.durationMs);
+          span.setAttribute('ct.tokens.prompt', promptTokens);
+          span.setAttribute('ct.tokens.completion', completionTokens);
+          span.setAttribute('ct.tokens.total', totalTokens);
+          span.setAttribute('ct.cost_usd', costUSD);
+
           try {
+            const metrics = getMetrics();
+            metrics.tokensPrompt.add(promptTokens, { persona: persona.id, provider: providerId, model: result.response.model });
+            metrics.tokensCompletion.add(completionTokens, { persona: persona.id, provider: providerId, model: result.response.model });
+            metrics.tokensTotal.add(totalTokens, { persona: persona.id, provider: providerId, model: result.response.model });
+            metrics.modelCostUsd.add(costUSD, { persona: persona.id, provider: providerId, model: result.response.model });
+            metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision: result.parsed.decision });
+          } catch (_) {}
+
+          let personaMermaidDiagram: string | undefined = undefined;
+          if (persona.id === 'review_flowchart') {
+            if (typeof result.parsed?.mermaidDiagram === 'string' && result.parsed.mermaidDiagram.trim().length > 0) {
+              personaMermaidDiagram = result.parsed.mermaidDiagram;
+            } else if (typeof result.response?.content === 'string') {
+              const match = result.response.content.match(/```mermaid[\s\S]*?```/);
+              if (match) {
+                personaMermaidDiagram = match[0];
+              }
+            }
+            if (!personaMermaidDiagram) {
+              const combinedDiff = scopedFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
+              personaMermaidDiagram = generateMermaidDiagram(combinedDiff);
+            }
+          }
+
+          return {
+            id: persona.id,
+            required: persona.required,
+            providerId,
+            model: result.response.model,
+            decision: result.parsed.decision,
+            findings,
+            usage: result.response.usage,
+            costUSD: result.response.costUSD,
+            durationMs: result.durationMs,
+            turnsCount: result.turnsCount || 1,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            ...(personaMermaidDiagram ? { mermaidDiagram: personaMermaidDiagram } : {}),
+            ...(isRedTeam ? { isRedTeam: true } : {}),
+            ...(isRedTeam || dualResolved || persona.model ? { crossExaminedModel: targetModel } : {}),
+          };
+        } catch (error: any) {
+          if (isExplicitUpstreamRejection(error)) {
+            logger.warn(`[Persona: ${persona.id}] Fast failover: provider '${providerId}' capacity rejected (${error?.message || error}); failing over to next provider...`);
+            errors.push(`${providerId}: ${error?.message || String(error)}`);
+            if (config.reviewers.fallback === 'none') break;
+            break;
+          }
+          if (attempts < maxAttempts && (error?.message?.includes('500') || error?.message?.includes('Connection error') || error?.message?.includes('fetch failed'))) {
+            logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts}): ${error.message}`);
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
+          if (attempts >= maxAttempts) {
             bus.publishEvent({
               jobId: effectiveJobId,
               timestamp: new Date().toISOString(),
-              type: 'llm:prompt',
+              type: 'llm:error',
               persona: persona.id,
               data: {
                 provider: providerId,
                 model: targetModel,
-                promptSnippet: `CT_REVIEW_NONCE: persona=${persona.id} repository=${repository} headSha=${headSha.slice(0, 7)}`,
+                error: error.message,
+                status: 'ERROR',
               },
             });
-
-            const result = await invoke(client, targetModel, spec.review_timeout_s * 1_000, 'persona', {
-              persona: persona.id,
-              charter: effectiveCharter,
-              repository,
-              headSha,
-              changedFiles: scopedFiles,
-              pathInstructions: config.path_instructions,
-              rules: [...(config.rules || []), ...memoryRules],
-              outputSchema: {
-                decision: 'APPROVE|FINDINGS',
-                findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'optional string' }],
-                ...(persona.id === 'review_flowchart' ? { mermaidDiagram: 'string' } : {}),
-              },
-            }, {
-              maxTurns: effectiveMaxTurns,
-              effort: effectiveEffort,
-            });
-            if (!result.parsed) {
-              throw new Error('invalid empty persona response');
-            }
-            let findings = validateFindings(result.parsed.findings);
-            if (result.parsed.decision === 'APPROVE' && findings.length > 0) {
-              throw new Error('APPROVE cannot contain findings');
-            }
-            if (result.parsed.decision === 'FINDINGS' && findings.length === 0) {
-              throw new Error('FINDINGS requires at least one finding');
-            }
-
-            const promptTokens = result.response.usage?.prompt || 0;
-            const completionTokens = result.response.usage?.completion || 0;
-            const totalTokens = result.response.usage?.total || (promptTokens + completionTokens);
-            const costUSD = result.response.costUSD || 0;
-
-            bus.publishEvent({
-              jobId: effectiveJobId,
-              timestamp: new Date().toISOString(),
-              type: 'llm:token',
-              persona: persona.id,
-              data: {
-                token: result.parsed?.decision || 'complete',
-                accumulatedLength: result.response.content.length,
-              },
-            });
-
-            bus.publishEvent({
-              jobId: effectiveJobId,
-              timestamp: new Date().toISOString(),
-              type: 'openrouter:metric',
-              persona: persona.id,
-              data: {
-                requestedModel: targetModel,
-                resolvedModel: result.response.model,
-                provider: providerId,
-                latencyMs: result.durationMs,
-                promptTokens,
-                completionTokens,
-                totalTokens,
-                costUSD,
-              },
-            });
-
-            bus.publishEvent({
-              jobId: effectiveJobId,
-              timestamp: new Date().toISOString(),
-              type: 'persona:complete',
-              persona: persona.id,
-              data: {
-                decision: result.parsed.decision,
-                findingsCount: findings.length,
-                durationMs: result.durationMs,
-                tokensUsed: { prompt: promptTokens, completion: completionTokens, total: totalTokens },
-                costUSD,
-              },
-            });
-
-            span.setAttribute('ct.persona.provider', providerId);
-            span.setAttribute('ct.persona.model', result.response.model);
-            span.setAttribute('ct.persona.decision', result.parsed.decision);
-            span.setAttribute('ct.persona.findings_count', findings.length);
-            span.setAttribute('ct.persona.duration_ms', result.durationMs);
-            span.setAttribute('ct.tokens.prompt', promptTokens);
-            span.setAttribute('ct.tokens.completion', completionTokens);
-            span.setAttribute('ct.tokens.total', totalTokens);
-            span.setAttribute('ct.cost_usd', costUSD);
-
-            try {
-              const metrics = getMetrics();
-              metrics.tokensPrompt.add(promptTokens, { persona: persona.id, provider: providerId, model: result.response.model });
-              metrics.tokensCompletion.add(completionTokens, { persona: persona.id, provider: providerId, model: result.response.model });
-              metrics.tokensTotal.add(totalTokens, { persona: persona.id, provider: providerId, model: result.response.model });
-              metrics.modelCostUsd.add(costUSD, { persona: persona.id, provider: providerId, model: result.response.model });
-              metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision: result.parsed.decision });
-            } catch (_) {}
-
-            let personaMermaidDiagram: string | undefined = undefined;
-            if (persona.id === 'review_flowchart') {
-              if (typeof result.parsed?.mermaidDiagram === 'string' && result.parsed.mermaidDiagram.trim().length > 0) {
-                personaMermaidDiagram = result.parsed.mermaidDiagram;
-              } else if (typeof result.response?.content === 'string') {
-                const match = result.response.content.match(/```mermaid[\s\S]*?```/);
-                if (match) {
-                  personaMermaidDiagram = match[0];
-                }
-              }
-              if (!personaMermaidDiagram) {
-                const combinedDiff = scopedFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
-                personaMermaidDiagram = generateMermaidDiagram(combinedDiff);
-              }
-            }
-
-            return {
-              id: persona.id,
-              required: persona.required,
-              providerId,
-              model: result.response.model,
-              decision: result.parsed.decision,
-              findings,
-              usage: result.response.usage,
-              costUSD: result.response.costUSD,
-              durationMs: result.durationMs,
-              turnsCount: result.turnsCount || 1,
-              promptTokens,
-              completionTokens,
-              totalTokens,
-              ...(personaMermaidDiagram ? { mermaidDiagram: personaMermaidDiagram } : {}),
-              ...(isRedTeam ? { isRedTeam: true } : {}),
-              ...(isRedTeam || dualResolved || persona.model ? { crossExaminedModel: targetModel } : {}),
-            };
-          } catch (error: any) {
-            const isQueueStall = error instanceof ProviderQueueStallError || error?.name === 'ProviderQueueStallError';
-            const isCancelled = error?.message?.includes('cancelled') || error?.message?.includes('429') || error?.message?.includes('503');
-            if (isQueueStall || isCancelled) {
-              logger.warn(`[Persona: ${persona.id}] Fast failover: provider '${providerId}' queue stalled/cancelled (${error.message}); failing over immediately...`);
-              errors.push(`${providerId}: ${error?.message || String(error)}`);
-              break;
-            }
-            if (attempts < maxAttempts && (error?.message?.includes('500') || error?.message?.includes('Connection error') || error?.message?.includes('fetch failed'))) {
-              logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts}): ${error.message}`);
-              await new Promise((r) => setTimeout(r, 1000));
-              continue;
-            }
-            if (attempts >= maxAttempts) {
-              bus.publishEvent({
-                jobId: effectiveJobId,
-                timestamp: new Date().toISOString(),
-                type: 'llm:error',
-                persona: persona.id,
-                data: {
-                  provider: providerId,
-                  model: targetModel,
-                  error: error.message,
-                  status: 'ERROR',
-                },
-              });
-              errors.push(`${providerId}: ${error?.message || String(error)}`);
-              if (config.reviewers.fallback === 'none') break;
-              break;
-            }
+            errors.push(`${providerId}: ${error?.message || String(error)}`);
+            if (config.reviewers.fallback === 'none') break;
+            break;
           }
         }
-      } finally {
-        limiter.release(providerId);
       }
     }
     throw new PanelConfigurationError(`persona ${persona.id} failed closed: ${errors.join('; ')}`);
