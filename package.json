@@ -33,6 +33,7 @@
     "test:replay": "vitest run tests/unit/cassetteReplay.test.ts tests/unit/openRouterClient.test.ts tests/integration/reviewReplay.test.ts tests/integration/openRouterFleetReplay.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:release-version": "vitest run tests/unit/releaseVersion.test.ts",
     "benchmark:release": "node scripts/evaluate-release-benchmark.mjs",
     "benchmark:compare": "node scripts/compare-release-baselines.mjs",
     "prepack": "node scripts/stage-publish-package.mjs --prepare-current",
