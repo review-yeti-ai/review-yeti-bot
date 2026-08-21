@@ -75,11 +75,11 @@ for path in \
   .ct-review; do
   head_state="$(path_state "$path" "$EXPECTED_HEAD_SHA")"
   # Operator directive 2026-08-20: consumer review-config files are INERT, not
-  # forbidden. The action runs with target-config: none, so these files cannot
-  # influence a review — their presence is dead config worth a cleanup nag,
-  # never a full review outage.
+  # forbidden. The action reads reviewer configuration only from the trusted
+  # base and central policy, so these files cannot influence a review — their
+  # presence is dead config worth a cleanup nag, never a full review outage.
   if [[ "$head_state" == exists ]]; then
-    echo "::warning::Dead consumer review configuration ignored: ${path}. Central policy owns all review configuration (target-config: none); please delete this file."
+    echo "::warning::Dead consumer review configuration ignored: ${path}. Central policy owns all review configuration; please delete this file."
   fi
 done
 

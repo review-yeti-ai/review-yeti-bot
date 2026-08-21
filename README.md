@@ -240,6 +240,8 @@ review process only; local reviews remain read-only and never publish MCP result
 
 ## Distribution
 
-The Review Yeti bot is selected by the platform release channel (`action_channel: v1` in `policy/review-yeti.json`). The workflow resolves that channel to an exact commit, checks the tag target and main reachability, then binds the action's `action-sha` input to the resolved commit. There is no per-repository SHA override or emergency bypass; changes advance through the central channel's reviewed promotion. See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.
-
-<!-- inert-config + target-config:none promoted with this change -->
+The Review Yeti bot is selected by the platform release channel (`action_channel: v1` in the
+`policy/review-yeti.json`). The workflow resolves that channel to an exact commit, checks the
+tag target and main reachability, then executes the checked-out action. There is no
+per-repository SHA override or emergency bypass; changes advance through the central channel's
+reviewed promotion. See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.

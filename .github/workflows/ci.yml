@@ -70,9 +70,14 @@ jobs:
           grep -Fq 'secrets.OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
+          grep -Fq 'openrouter-api-key:' .github/workflows/review-yeti.yml
+          grep -Fq 'fireworks-api-key:' .github/workflows/review-yeti.yml
+          grep -Fq 'ollama-api-key:' .github/workflows/review-yeti.yml
+          grep -Fq 'llm-base-url: https://openrouter.ai/api/v1' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-data-collection:' .github/workflows/review-yeti.yml
-          grep -Fq 'openrouter-ignore-providers:' .github/workflows/review-yeti.yml
-          grep -Fq 'openrouter-provider-routing:' .github/workflows/review-yeti.yml
+          grep -Fq 'max-diff-chars:' .github/workflows/review-yeti.yml
+          grep -Fq 'personas:' .github/workflows/review-yeti.yml
+          grep -Fq 'context7-api-key:' .github/workflows/review-yeti.yml
           grep -Fq 'healthy_transports' .github/workflows/review-yeti.yml
           grep -Fq 'transport-plan-b64:' .github/workflows/review-yeti.yml
           grep -Fq 'transport_plan_b64' scripts/emit-policy.mjs
