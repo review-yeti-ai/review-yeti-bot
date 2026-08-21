@@ -1,0 +1,22 @@
+--- FILE: src/webhooks/secureWebhookSender.ts ---
+diff --git a/src/webhooks/secureWebhookSender.ts b/src/webhooks/secureWebhookSender.ts
+@@ -1,5 +1,19 @@
+ import dns from 'node:dns/promises';
+ import { isPrivateIp } from '../utils/ipValidator';
+
+ export class SecureWebhookSender {
++  async dispatchWebhook(targetUrl: string, payload: any): Promise<void> {
++    const urlObj = new URL(targetUrl);
++    const lookupResult = await dns.lookup(urlObj.hostname);
++    if (isPrivateIp(lookupResult.address)) {
++      throw new Error(`Forbidden private IP: ${lookupResult.address}`);
++    }
++
++    // Bug: DNS Rebinding Race - fetch() performs a second independent DNS resolution
++    await fetch(targetUrl, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify(payload),
++    });
++  }
++}

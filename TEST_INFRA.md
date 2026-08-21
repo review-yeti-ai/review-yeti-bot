@@ -1,113 +1,36 @@
-# Test Infrastructure
+# E2E Test Infra: Dynamic Context Management & Compaction
 
-## Running the suite
+## Test Philosophy
+- Opaque-box, requirement-driven verification of context window discovery, diff compaction, multi-turn sliding history, and zero-loss commit SHA partitioning.
+- Methodology: Category-Partition + BVA + Pairwise Combinatorial + Workload Testing.
 
-```bash
-npm test              # full suite (Vitest)
-npm run test:unit     # tests/unit
-npm run test:integration
-npm run test:replay   # cassette replay — no credentials, no network
-npm run test:all      # unit, fixtures, provider VCR, workflow, outbox, security, runtime, lint, build
-npm run test:workflow  # real pipeline boundary with injected GitHub/model/memory seams
-npx review-yeti eval run --fixture tests/fixtures/review-intelligence/offline-promotion-matrix.json  # manual deterministic eval
-npx review-yeti eval tui  # manual receipt browser and runner
-npm run test:outbox    # atomic outbox, leases, retries, dead-letter, and retarget protection
-npm run test:chaos     # same-head lease/concurrency and duplicate-delivery contracts
-npm run test:receipts  # validates all workflow fixtures and cassette manifests
-npm run lint          # tsc --noEmit
-```
+## Feature Inventory & Coverage Mapping
+| # | Feature | Source (Requirement) | Tier 1 (Coverage) | Tier 2 (Boundary/Edge) | Tier 3 (Cross-Feature) | Tier 4 (Real-World) |
+|---|---------|----------------------|:-----------------:|:----------------------:|:----------------------:|:-------------------:|
+| 1 | Dynamic Model Context Window Discovery | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 2 | Safe Diff Capacity Calculator ($C_{safe}$) | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 3 | Config Schema Boundary Expansion | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 4 | Removal of Static Truncation Caps | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 5 | Unified Diff Context Compactor ($\pm 3$) | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 6 | Line Number Invariance (`changedLineNumbers`) | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 7 | Minified / Bloat & Whitespace Compactor | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 8 | Sliding Multi-Turn History Compactor | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 9 | Commit SHA Range Header Injection | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 10 | Zero-Loss File Partitioning Engine | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 11 | Parallel Partition Execution & Aggregation | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 12 | PR Comment Coverage Telemetry Badge | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 13 | Evaluation Harness Augmentation | ORIGINAL_REQUEST §R4 | 5 cases | 5 cases | ✓ | ✓ |
+| 14 | Baseline Quality Gate Coverage Enforcement | ORIGINAL_REQUEST §R4 | 5 cases | 5 cases | ✓ | ✓ |
+| 15 | Context Management Feature Docs | ORIGINAL_REQUEST §R4 | 5 cases | 5 cases | ✓ | ✓ |
+| 16 | E2E Dual-Track Verification & Audit | Acceptance Criteria | 5 cases | 5 cases | ✓ | ✓ |
 
-## Charter detection evaluation (live, opt-in)
+## Test Architecture
+- Unit Tests: `tests/unit/openRouterClient.test.ts`, `tests/unit/config.test.ts`, `tests/unit/diffCompactor.test.ts`, `tests/unit/turnHistoryManager.test.ts`, `tests/unit/shaPartitionManager.test.ts`, `tests/unit/contextManagementDocs.test.ts`.
+- Integration & E2E Tests: `tests/e2e/contextManagementE2E.test.ts`, `tests/e2e/sandboxedPipelineHarness.test.ts`.
+- Quality Gate Verification: `scripts/compare-release-baselines.mjs`, `scripts/evaluate-release-benchmark.mjs`.
 
-`npm run test:testing-charter-eval` measures whether the testing persona actually reports the
-semantic test defects it is supposed to catch, against the seeded fixtures in
-`tests/fixtures/testing-charter/evaluation-matrix.json`.
-
-It is the only test here that talks to a real provider, and it is opt-in by omission: with no
-`OPENROUTER_API_KEY` it prints `{"status":"not_run"}` and exits 0 rather than claiming evidence
-it does not have. It is deliberately outside `test:all` for that reason.
-
-Two arms run against identical fixtures — the charter frozen in
-`tests/fixtures/testing-charter/baseline-charter.txt` and the charter currently in
-`PERSONA_CHARTERS` — so a charter edit can be shown to move the number rather than asserted to.
-Grading is structural, never a model grading a model: a fixture counts as detected when a
-finding anchors to the expected path *and* names every concept in the fixture's `mustMatch`
-groups, which generic "these tests could be better" phrasing cannot satisfy.
-
-Two properties make the result trustworthy and should be kept:
-
-- **Clean controls run in the same batch.** A charter change that raises detection by making the
-  lane indiscriminate is not an improvement, so false positives are measured alongside recall.
-- **Flash-tier models are non-deterministic.** Run at least 8 repetitions and read the reported
-  Wilson interval, not a single sample. Errored runs (unparseable JSON, provider timeouts) are
-  counted as misses, because in production that is exactly what they are.
-
-```bash
-OPENROUTER_API_KEY=... npm run test:testing-charter-eval -- --repetitions 8 --concurrency 10 --out /tmp/report.json
-```
-
-## Boundary Replay and Cassette Rules
-
-Every external boundary is injectable and deterministic:
-
-- HTTP clients and model calls accept injectable fetch implementations. Retry clocks, sleeps, and jitter are injectable as well.
-- The live review engine uses OpenRouter as its sole model transport.
-- Fixtures are synthetic, deterministic, credential-free, and bind review assertions to the exact PR head and base references.
-- Every action/app run re-checks the authoritative PR head before model execution and before each publication side effect.
-- Replay is the default and is fail-closed: an unmatched request throws immediately and `assertComplete()` rejects unconsumed interactions.
-- Replay tests do not permit real GitHub, model-provider, memory-provider, or other network traffic.
-  The cassettes under `tests/fixtures/cassettes/` are the complete API boundary; they are not a
-  substitute for live provider readiness evidence.
-- Malformed provider JSON and incomplete persona quorum must never become a successful `SHIP` verdict. An
-  unavailable advisory memory provider is different: it must produce an explicit unavailable receipt and
-  continue with the GitHub-authoritative ledger-only review path.
-- The memory provider contract is API-first and single-provider: each run performs one bounded
-  provider query and one normalized write path. The runner's local outbox is tested as delivery
-  recovery infrastructure, not as a memory database.
-- Optional persona/provider failures are treated as infrastructure failure by the production webhook path; they cannot be recorded as a green lane.
-- Reviewer tool execution is read-only and limited to changed-file context plus approved documentation search. Arbitrary local paths, shell, Linear, Productlane, GitHub, and custom MCP writes are rejected.
-- GitHub publication bodies carry a stable exact-head idempotency marker so reruns do not duplicate inline findings or fallback comments.
-- GitHub publication and shell side effects require explicit command-boundary tests. The `gh pr comment` invocation is tested with an injected command runner and filesystem adapter.
-- A failed `gh api` marker lookup or `gh pr comment` publication is a failed review, never a successful local-file fallback.
-- `/ready` returns HTTP 503 until GitHub App, webhook, and OpenRouter configuration is present.
-
-## Review contract asserted on both execution surfaces
-
-- `src/review/reviewCore.js` is the canonical verdict, finding, coverage, and digest boundary; the
-  plain Node Action and typed App adapters must produce the same result for the same snapshot.
-- `PRSnapshot` binds owner, repository, PR number, exact head SHA, exact base SHA, changed-file
-  metadata, base-policy reference/digest, and engine version. A changed head or base fails closed.
-- V4 execution policy is additive to V3 and carries bounded budgets plus explicit submodule policy.
-  Gitlink metadata is preserved; recursive inspection is `INCOMPLETE_REVIEW` until nested content
-  is actually resolved.
-- Durable runs use the `review_runs` identity, lease, heartbeat, stage, result digest, and
-  failure fields. The PostgreSQL repository is used when configured; the in-memory repository is
-  test-only and never evidence of multi-pod durability.
-- A provider or publication failure is persisted as failure, never as a successful verdict. No
-  `SHIP` is valid with missing lanes, incomplete coverage, an unbound snapshot, or missing evidence.
-
-Governance and operational tests also assert that effective policy carries source provenance and a
-digest, platform caps cannot be widened by repository/workflow overrides, tenant boundaries cover
-runs/indexes/artifacts/logs, and SLO receipts expose queue latency, first-comment latency,
-completion latency, provider availability, index freshness, cost, and false-positive feedback.
-
-## Recording cassettes
-
-Recording is an explicit maintenance operation. It requires both `REVIEW_YETI_VCR=record` and an
-endpoint origin in the harness allowlist; it is never enabled implicitly by a missing cassette or an
-environment credential. Review generated cassettes for secrets and customer data before committing
-them.
-## Local CLI and equivalence proof
-
-The installed CLI is a thin adapter over the canonical bounded Action engine. Run the offline
-contract suite with `npm run test:cli`, build with `npm run build`, and compare exact-head
-authority receipts with:
-
-```bash
-node scripts/verify-action-cli-equivalence.mjs \
-  --action-receipt ./action-receipt.json \
-  --cli-receipt ./cli-receipt.json
-```
-
-The CLI uses no automatic live evaluation workflow. Live provider runs are explicit, receipt-backed,
-and kept outside the repository.
+## Coverage Thresholds
+- Tier 1: ≥5 per feature (80+ test cases)
+- Tier 2: ≥5 per feature across boundaries (80+ test cases)
+- Tier 3: Pairwise combinations of compaction + partitioning + multi-turn + large repos
+- Tier 4: Realistic monolithic repo workloads (50+ files, 1500+ lines, 5 persona multi-turn turns)

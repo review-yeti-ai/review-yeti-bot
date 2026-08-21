@@ -1,0 +1,10 @@
+--- FILE: sip_signaling_service/src/types/sipMessages.ts ---
+diff --git a/sip_signaling_service/src/types/sipMessages.ts b/sip_signaling_service/src/types/sipMessages.ts
+@@ -43,4 +43,6 @@
+   OPUS = 'opus',
+-  G711 = 'g711',
++  // Breaking enum change: removed unified G711 enum value
++  G711_ULAW = 'g711u',
++  G711_ALAW = 'g711a',
+   TELEPHONE_EVENT = 'telephone-event',
+ }

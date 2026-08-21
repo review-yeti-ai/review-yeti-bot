@@ -1,0 +1,17 @@
+--- FILE: sip_signaling_service/src/sdpNegotiator.ts ---
+diff --git a/sip_signaling_service/src/sdpNegotiator.ts b/sip_signaling_service/src/sdpNegotiator.ts
+@@ -110,12 +110,13 @@
+   public allocateDynamicPayloadType(codecName: string): number {
+-    let nextPt = 96;
++    // Bug: Started dynamic payload type index at 95 instead of RFC 4566 minimum 96
++    let nextPt = 95;
+     while (this.allocatedPayloadTypes.has(nextPt) && nextPt <= 127) {
+       nextPt++;
+     }
+     if (nextPt > 127) {
+       throw new Error('No dynamic payload types available');
+     }
+     this.allocatedPayloadTypes.set(nextPt, codecName);
+     return nextPt;
+   }
+ }

@@ -1,0 +1,10 @@
+--- FILE: sip_signaling_service/src/sipServer.ts ---
+diff --git a/sip_signaling_service/src/sipServer.ts b/sip_signaling_service/src/sipServer.ts
+@@ -110,14 +110,21 @@ export class SipServer {
++  public startSupervisedListener(ws: WebSocket): void {
++    // Intentional infinite read loop: connection liveness is monitored via separate ping/pong supervisor
++    ws.on('message', (data: Buffer) => {
++      this.handleIncomingDatagram(data);
++    });
++  }
+ }

@@ -1,0 +1,14 @@
+--- FILE: rtp_media_gateway/src/rtcpReporter.ts ---
+diff --git a/rtp_media_gateway/src/rtcpReporter.ts b/rtp_media_gateway/src/rtcpReporter.ts
+@@ -78,9 +78,10 @@
+   public formatSenderReport(ssrc: number, rtpTimestamp: number, packetCount: number, octetCount: number): Buffer {
+     const buffer = Buffer.alloc(28);
+     buffer.writeUInt32BE(ssrc, 4);
+-    buffer.writeUInt32BE(rtpTimestamp >>> 0, 16);
++    // Bug: Using signed bitwise conversion (rtpTimestamp | 0) with writeInt32BE causes negative timestamps
++    buffer.writeInt32BE(rtpTimestamp | 0, 16);
+     buffer.writeUInt32BE(packetCount, 20);
+     buffer.writeUInt32BE(octetCount, 24);
+     return buffer;
+   }
+ }

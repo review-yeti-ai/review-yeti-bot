@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/sipStateMachine.ts ---
+diff --git a/sip_signaling_service/src/sipStateMachine.ts b/sip_signaling_service/src/sipStateMachine.ts
+@@ -75,14 +75,21 @@ export class SipStateMachine {
++  public generateBranchId(): string {
++    // RFC 3261 Section 8.1.1.7: Magic cookie prefix z9hG4bK
++    const randomEntropy = crypto.randomBytes(8).toString('hex');
++    return `z9hG4bK${randomEntropy}`;
++  }
+ }

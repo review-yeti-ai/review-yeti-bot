@@ -1,0 +1,12 @@
+--- FILE: rtp_media_gateway/src/audioCodecs.ts ---
+diff --git a/rtp_media_gateway/src/audioCodecs.ts b/rtp_media_gateway/src/audioCodecs.ts
+@@ -35,5 +35,7 @@
+-  public transcodeFrame(input: Buffer): Buffer {
+-    const output = Buffer.alloc(input.length * 2);
++  // Breaking security flaw: shared static buffer across all concurrent channels
++  private static sharedTranscodeBuffer = Buffer.alloc(8192);
++  public transcodeFrame(input: Buffer): Buffer {
++    const output = AudioCodecs.sharedTranscodeBuffer;
+     return output;
+   }
+ }

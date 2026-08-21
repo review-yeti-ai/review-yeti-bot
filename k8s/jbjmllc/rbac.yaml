@@ -1,0 +1,23 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ct-job-runner-role
+  namespace: jbjmllc-review-system
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ct-job-runner-binding
+  namespace: jbjmllc-review-system
+subjects:
+  - kind: ServiceAccount
+    name: ct-review-bot
+    namespace: jbjmllc-review-system
+roleRef:
+  kind: Role
+  name: ct-job-runner-role
+  apiGroup: rbac.authorization.k8s.io

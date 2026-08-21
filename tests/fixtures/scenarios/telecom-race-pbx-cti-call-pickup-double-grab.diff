@@ -1,0 +1,13 @@
+--- FILE: pbx_device_manager/src/deviceRegistry.ts ---
+diff --git a/pbx_device_manager/src/deviceRegistry.ts b/pbx_device_manager/src/deviceRegistry.ts
+@@ -114,6 +114,9 @@
+   public async pickupCall(callId: string, agentId: string): Promise<boolean> {
+     const call = this.activeCalls.get(callId);
+     if (!call || call.state !== 'RINGING') return false;
+-    return this.claimCallAtomically(call, agentId);
++    // Bug: Non-atomic assignment permits two agents to pick up same call
++    call.assignedAgent = agentId;
++    call.state = 'ANSWERED';
++    return true;
+   }
+ }

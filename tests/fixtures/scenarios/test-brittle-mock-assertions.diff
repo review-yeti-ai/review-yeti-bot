@@ -1,0 +1,11 @@
+--- FILE: tests/unit/orderNotifier.test.ts ---
+diff --git a/tests/unit/orderNotifier.test.ts b/tests/unit/orderNotifier.test.ts
+@@ -10,6 +10,12 @@
+   it('enqueues order notification correctly', async () => {
+     const notifier = new OrderNotifier(mockTransport);
+     await notifier.notifyOrderCreated('order-123');
++    // Anti-pattern: asserting internal private field mutation rather than public contract
++    expect((notifier as any)._internalQueue.length).toBe(1);
++    expect((notifier as any)._lastCallTimestamp).toBeDefined();
++    expect(mockTransport._rawSocketSend).toHaveBeenCalledTimes(1);
+   });

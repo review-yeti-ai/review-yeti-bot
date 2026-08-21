@@ -1,0 +1,19 @@
+--- FILE: src/auth/tokenVerifier.ts ---
+diff --git a/src/auth/tokenVerifier.ts b/src/auth/tokenVerifier.ts
+@@ -1,5 +1,18 @@
+ import jwt from 'jsonwebtoken';
+
+ export class TokenVerifier {
+   constructor(private publicKey: string) {}
++
++  verifyAuthToken(token: string): any {
++    const decodedHeader = jwt.decode(token, { complete: true });
++    if (!decodedHeader) throw new Error('Invalid token structure');
++
++    // Critical: Dynamically using header.alg allows 'none' or HMAC key-confusion attacks
++    const algorithm = decodedHeader.header.alg as jwt.Algorithm;
++    return jwt.verify(token, this.publicKey, {
++      algorithms: [algorithm],
++    });
++  }
++}

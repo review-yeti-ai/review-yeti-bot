@@ -1,0 +1,19 @@
+--- FILE: src/api/publicUserApi.ts ---
+diff --git a/src/api/publicUserApi.ts b/src/api/publicUserApi.ts
+@@ -1,10 +1,16 @@
+ import { Request, Response } from 'express';
+ import { UserRepository } from '../repositories/userRepository';
+
+ export class PublicUserApi {
+   constructor(private userRepo: UserRepository) {}
+
+   async getProfile(req: Request, res: Response): Promise<void> {
+     const user = await this.userRepo.findById(req.params.id);
+     if (!user) {
+       res.status(404).json({ error: 'User not found' });
+       return;
+     }
++    // Defect: returning raw database entity leaks password_hash and mfa_secret
++    res.json({ success: true, data: user });
+   }
+ }

@@ -1,0 +1,7 @@
+--- FILE: pbx_device_manager/src/deviceRegistry.ts ---
+diff --git a/pbx_device_manager/src/deviceRegistry.ts b/pbx_device_manager/src/deviceRegistry.ts
+@@ -43,2 +43,3 @@
+-  public static readonly DEFAULT_EXPIRY: number = 3600;
++  // Breaking change: reduced registration TTL from 1 hour to 30 seconds
++  public static readonly DEFAULT_EXPIRY: number = 30;
+ }

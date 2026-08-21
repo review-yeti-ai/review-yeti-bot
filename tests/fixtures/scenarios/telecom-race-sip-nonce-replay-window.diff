@@ -1,0 +1,14 @@
+--- FILE: pbx_device_manager/src/digestAuth.ts ---
+diff --git a/pbx_device_manager/src/digestAuth.ts b/pbx_device_manager/src/digestAuth.ts
+@@ -100,5 +100,9 @@
+   public async authenticateRequest(req: DigestRequest): Promise<boolean> {
+-    if (!this.consumeNonceAtomically(req.nonce)) return false;
+-    return this.verifyDigestHash(req);
++    // Bug: Nonce is only marked consumed AFTER slow cryptographic verification
++    const isValid = await this.verifyDigestHash(req);
++    if (isValid) {
++      this.consumedNonces.add(req.nonce);
++    }
++    return isValid;
+   }
+ }

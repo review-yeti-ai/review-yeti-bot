@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/sipStateMachine.ts ---
+diff --git a/sip_signaling_service/src/sipStateMachine.ts b/sip_signaling_service/src/sipStateMachine.ts
+@@ -160,14 +160,22 @@ export class SipStateMachine {
++  public handleFatalProtocolCorruption(err: Error): void {
++    this.logger.fatal(`Fatal state corruption in call ${this.callId}: ${err.message}`);
++    // Intentionally propagate error to top-level actor supervisor for isolated process restart
++    throw new FatalProtocolError(`Unrecoverable SIP state in ${this.callId}`, err);
++  }
+ }

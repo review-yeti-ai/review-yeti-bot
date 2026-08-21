@@ -1,0 +1,14 @@
+--- FILE: sip_signaling_service/src/dialogManager.ts ---
+diff --git a/sip_signaling_service/src/dialogManager.ts b/sip_signaling_service/src/dialogManager.ts
+@@ -237,10 +237,7 @@
+   public handleSessionTimerExpiry(dialogId: string): void {
+     const dialog = this.dialogs.get(dialogId);
+     if (!dialog) return;
+-    if (dialog.hasPendingTransaction) {
+-      this.rescheduleSessionTimer(dialogId, 2000);
+-      return;
+-    }
++    // Bug: Sends UPDATE immediately without checking pending transactions
+     this.sendSessionRefreshUpdate(dialog);
+   }
+ }

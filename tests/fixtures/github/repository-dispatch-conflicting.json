@@ -1,9 +1,0 @@
-{
-  "action": "review-requested",
-  "client_payload": {
-    "target_repo": "acme/review-yeti",
-    "pr_number": 42,
-    "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
-    "base_sha": "dddddddddddddddddddddddddddddddddddddddd"
-  }
-}
