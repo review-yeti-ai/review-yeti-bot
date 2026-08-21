@@ -589,13 +589,33 @@ index 123456..789abc 100644
   });
 
   it('6. Executes main pipeline cleanly without unhandled exceptions', async () => {
-    // Set environment variables for test execution
-    process.env.PR_NUMBER = '777';
-    process.env.ACTIVE_PERSONAS = JSON.stringify(['security', 'architecture', 'performance', 'quality', 'database', 'api_contract', 'docs_compliance', 'reliability', 'devops', 'finops', 'red_team', 'review_flowchart']);
-    process.env.PR_DIFF = `diff --git a/README.md b/README.md
+    const originalEnv = {
+      PR_NUMBER: process.env.PR_NUMBER,
+      ACTIVE_PERSONAS: process.env.ACTIVE_PERSONAS,
+      PR_DIFF: process.env.PR_DIFF,
+      GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+      GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
+      VITEST: process.env.VITEST,
+    };
+
+    try {
+      // This is a synthetic unit invocation even when Vitest itself runs on GitHub Actions.
+      process.env.PR_NUMBER = '777';
+      process.env.ACTIVE_PERSONAS = JSON.stringify(['security', 'architecture', 'performance', 'quality', 'database', 'api_contract', 'docs_compliance', 'reliability', 'devops', 'finops', 'red_team', 'review_flowchart']);
+      process.env.PR_DIFF = `diff --git a/README.md b/README.md
 + ## Documentation update
 `;
-    await expect(pipeline.main()).resolves.not.toThrow();
+      process.env.GITHUB_ACTIONS = 'false';
+      process.env.VITEST = 'true';
+      delete process.env.GITHUB_EVENT_PATH;
+
+      await expect(pipeline.main()).resolves.not.toThrow();
+    } finally {
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   // =========================================================================
