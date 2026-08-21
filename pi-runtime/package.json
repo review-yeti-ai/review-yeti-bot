@@ -1,0 +1,16 @@
+{
+  "name": "review-yeti-pi-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lock-backed Pi runtime manifest used by the Review Yeti composite Action",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
+    "@quintinshaw/pi-dynamic-workflows": "3.7.0",
+    "typebox": "1.3.7"
+  }
+}
