@@ -32,11 +32,12 @@ export const PERSONA_ENSEMBLE_DEFINITIONS = [
 ];
 
 export const AVAILABLE_MODEL_OPTIONS = [
-  { label: 'DeepSeek V4 Flash High (Fast Reasoning)', value: 'deepseek/deepseek-v4-flash-0731:high' },
+  { label: 'Claude 5 Haiku High (Anthropic Default)', value: 'claude-5-haiku:high' },
+  { label: 'Gemini 3.7 Flash High (Google Default / 1M Context)', value: 'google/gemini-3.7-flash:high' },
+  { label: 'OpenAI GPT-5.6 Luna High (OpenAI Default)', value: 'openai/gpt-5.6-luna:high' },
+  { label: 'DeepSeek V4 Flash High (Pareto Optimal)', value: 'deepseek/deepseek-v4-flash-0731:high' },
   { label: 'OpenRouter 5.6 Luna High (Top Precision)', value: 'openrouter/5.6-luna-high' },
-  { label: 'Gemini 3.7 Flash High (1M Context)', value: 'google/gemini-3.7-flash:high' },
   { label: 'Qwen 3.8 27B High', value: 'qwen/qwen-3.8-27b:high' },
-  { label: 'Claude 3.7 Sonnet (Hybrid Reasoning)', value: 'openrouter/anthropic/claude-3.7-sonnet' },
   { label: 'Claude 5 Sonnet (Direct)', value: 'claude-5-sonnet' },
   { label: 'Claude Opus 4.8 (Direct)', value: 'claude-opus-4-8' },
   { label: 'OpenAI GPT-5.6 Luna', value: 'openai/gpt-5.6-luna' },
