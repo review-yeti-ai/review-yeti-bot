@@ -1,0 +1,12 @@
+--- FILE: pbx_device_manager/src/models/trunkGroup.ts ---
+diff --git a/pbx_device_manager/src/models/trunkGroup.ts b/pbx_device_manager/src/models/trunkGroup.ts
+@@ -16,4 +16,8 @@
+   id: string;
+   name: string;
+-  capacity: number;
++  // Breaking contract change: changed capacity from number to object
++  capacity: {
++    maxChannels: number;
++    reservedChannels: number;
++  };
+ }

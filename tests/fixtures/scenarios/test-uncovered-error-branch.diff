@@ -1,0 +1,30 @@
+--- FILE: src/services/paymentProcessor.ts ---
+diff --git a/src/services/paymentProcessor.ts b/src/services/paymentProcessor.ts
+@@ -15,6 +15,22 @@
+ export class PaymentProcessor {
+   async processPayment(intent: PaymentIntent): Promise<PaymentResult> {
++    if (intent.currency !== 'USD') {
++      // Branch 1: Currency conversion fallback
++      intent = await this.convertToUSD(intent);
++    }
++    try {
++      return await this.gateway.charge(intent);
++    } catch (err: any) {
++      // Branch 2: Soft decline retry branch
++      if (err.code === 'soft_decline') {
++        return await this.retryWithAlternativeRoute(intent);
++      }
++      // Branch 3: Hard failure error logging
++      this.logger.error('Fatal payment failure', { intentId: intent.id, err });
++      throw new PaymentException('Transaction rejected', err);
++    }
+   }
+ }
+
+--- FILE: tests/unit/paymentProcessor.test.ts ---
+diff --git a/tests/unit/paymentProcessor.test.ts b/tests/unit/paymentProcessor.test.ts
+@@ -8,4 +8,7 @@
+   it('processes a standard USD payment successfully', async () => {
+     const result = await processor.processPayment({ id: '1', amount: 100, currency: 'USD' });
+     expect(result.status).toBe('succeeded');
+   });

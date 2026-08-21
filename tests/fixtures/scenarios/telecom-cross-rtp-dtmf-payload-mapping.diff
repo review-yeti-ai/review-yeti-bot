@@ -1,0 +1,9 @@
+--- FILE: rtp_media_gateway/src/mediaBridge.ts ---
+diff --git a/rtp_media_gateway/src/mediaBridge.ts b/rtp_media_gateway/src/mediaBridge.ts
+@@ -87,4 +87,5 @@
+   public isDtmfPacket(payloadType: number): boolean {
+-    return payloadType === this.negotiatedDtmfPayloadType;
++    // Breaking change: hardcoded 101 ignores dynamic SDP negotiation
++    return payloadType === 101;
+   }
+ }

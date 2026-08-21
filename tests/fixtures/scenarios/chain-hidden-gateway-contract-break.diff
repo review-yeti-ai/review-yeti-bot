@@ -1,0 +1,35 @@
+--- FILE: src/contracts/sessionPayload.ts ---
+diff --git a/src/contracts/sessionPayload.ts b/src/contracts/sessionPayload.ts
+@@ -1,5 +1,5 @@
+ export interface SessionTokenPayload {
+-  accountId: string;
++  tenantOrgId: string;
+   userId: string;
+   issuedAt: number;
+ }
+
+--- FILE: src/services/sessionManager.ts ---
+diff --git a/src/services/sessionManager.ts b/src/services/sessionManager.ts
+@@ -1,5 +1,5 @@
+ import { SessionTokenPayload } from '../contracts/sessionPayload';
+
+ export function createSession(tenantOrgId: string, userId: string): SessionTokenPayload {
+-  return { accountId: tenantOrgId, userId, issuedAt: Date.now() };
++  return { tenantOrgId, userId, issuedAt: Date.now() };
+ }
+
+--- FILE: src/gateway/sessionProxy.ts ---
+diff --git a/src/gateway/sessionProxy.ts b/src/gateway/sessionProxy.ts
+@@ -1,7 +1,13 @@
+ import { SessionTokenPayload } from '../contracts/sessionPayload';
+
+ export class SessionProxy {
+   routeRequest(payload: SessionTokenPayload): string {
++    // Bug: breaking change in contract - accesses legacy (payload as any).accountId which is now undefined
++    const targetTenant = (payload as any).accountId;
++    if (!targetTenant) {
++      throw new Error('Routing failure: missing accountId in token payload');
++    }
++    return `https://${targetTenant}.internal.api/gateway`;
+   }
+ }

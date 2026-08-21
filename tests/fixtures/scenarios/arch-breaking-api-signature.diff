@@ -1,0 +1,11 @@
+--- FILE: src/api/clientSdk.ts ---
+diff --git a/src/api/clientSdk.ts b/src/api/clientSdk.ts
+@@ -10,7 +10,8 @@
+ export class ClientSdk {
+-  async fetchUserData(userId: string): Promise<UserRecord> {
+-    return this.http.get(`/users/${userId}`);
++  // Breaking change: positional userId replaced with required options bag
++  async fetchUserData(options: { id: string; orgId: string; forceRefresh: boolean }): Promise<{ user: UserRecord }> {
++    return this.http.post('/users/query', options);
+   }
+ }

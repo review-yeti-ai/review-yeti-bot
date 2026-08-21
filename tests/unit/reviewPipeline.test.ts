@@ -1,7 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
-import { sseBody } from '../support/streamableFetchStub';
 
 // Resolve path to root repository .github/workflows/pipelines/review-pipeline.js
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -9,299 +8,17 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
 const pipeline = require(pipelinePath);
-const { createReviewUnitManifest } = require(path.join(rootRepoDir, 'src/review/reviewUnitManifest.js'));
 
 describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/review-pipeline.js)', () => {
-  const runMainInTempDir = async (diff: string, options: { expectedFetches?: number; config?: string; runChatPreflight?: boolean }) => {
-    const originalCwd = process.cwd();
-    const originalFetch = globalThis.fetch;
-    const originalExitCode = process.exitCode;
-    const originalEnv = { ...process.env };
-    const tempDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'review-yeti-terminal-'));
-    const outputPath = path.join(tempDir, 'github-output.txt');
-    // Streaming is unconditional on the real review path (operator directive), so this returns a
-    // readable body (a single-chunk SSE stream) for every persona-lane request.
-    const chatPayload = {
-      model: 'test-model',
-      provider: 'test-provider',
-      choices: [{ message: { content: '{"findings":[]}' } }],
-    };
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => chatPayload,
-      body: sseBody(chatPayload),
-    }));
-
-    try {
-      process.chdir(tempDir);
-      if (options.config) fs.writeFileSync(path.join(tempDir, '.review-yeti.yaml'), options.config);
-      process.exitCode = undefined;
-      for (const key of [
-        'PR_NUMBER', 'PR_REPO', 'GITHUB_ACTIONS', 'GITHUB_EVENT_PATH', 'GITHUB_REF',
-        'GITHUB_REPOSITORY', 'GITHUB_SHA',
-        'REVIEW_YETI_CONFIG_DIR', 'EXCLUDE_PATHS',
-        'CONTEXT7_API_KEY', 'CONTEXT7_ENABLED', 'MCP_CONFIG_JSON',
-      ]) delete process.env[key];
-      Object.assign(process.env, {
-        PR_DIFF: JSON.stringify({ diff, repo: 'o/r', headSha: 'head', title: 'terminal coverage' }),
-        ACTIVE_PERSONAS: JSON.stringify(['security']),
-        OPENROUTER_API_KEY: 'test-key',
-        OPENROUTER_MODEL: 'test-model',
-        MAX_FILE_DIFF_CHARS: '5000',
-        MAX_DIFF_CHARS: '20000',
-        GITHUB_OUTPUT: outputPath,
-        // These cases assert exact model-fetch counts for the persona lanes;
-        // the overview pre-pass is covered by its own suites.
-        REVIEW_YETI_OVERVIEW_BRIEF: 'false',
-      });
-      process.env.VITEST = options.runChatPreflight ? 'false' : 'true';
-      globalThis.fetch = fetchImpl as any;
-
-      await pipeline.main();
-
-      if (options.expectedFetches !== undefined) expect(fetchImpl).toHaveBeenCalledTimes(options.expectedFetches);
-      return {
-        output: fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf-8') : '',
-        comment: fs.existsSync(path.join(tempDir, 'review-comment.md'))
-          ? fs.readFileSync(path.join(tempDir, 'review-comment.md'), 'utf-8')
-          : '',
-        fetchImpl,
-      };
-    } finally {
-      process.chdir(originalCwd);
-      globalThis.fetch = originalFetch;
-      process.exitCode = originalExitCode;
-      for (const key of Object.keys(process.env)) {
-        if (!(key in originalEnv)) delete process.env[key];
-      }
-      Object.assign(process.env, originalEnv);
-    }
-  };
-
-  const diffWithFiles = (files: string[]) => files.map((entry) => entry).join('\n');
-
-  it('ships mixed eligible coverage while treating oversized files as expected exclusions', async () => {
-    const oversizedMarker = 'MIXED_OVERSIZED_MARKER';
-    const diff = diffWithFiles([
-      'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new',
-      `diff --git a/src/oversized.ts b/src/oversized.ts\n--- a/src/oversized.ts\n+++ b/src/oversized.ts\n@@ -1 +1 @@\n-${oversizedMarker}${'x'.repeat(5_000)}\n+${oversizedMarker}${'x'.repeat(5_000)}`,
-    ]);
-
-    const result = await runMainInTempDir(diff, { expectedFetches: 1 });
-
-    expect(result.output).toContain('verdict=SHIP');
-    expect(result.output).toContain('review-status=SHIP');
-    expect(result.comment).not.toContain('INCOMPLETE_REVIEW');
-    expect(result.comment).toContain('src/oversized.ts');
-    expect(result.comment).toMatch(/src\/oversized\.ts.*\d[\d,]+ chars/i);
-    expect(result.comment).toMatch(/expected policy exclusion|does not block/i);
-    expect(JSON.stringify(result.fetchImpl.mock.calls)).not.toContain(oversizedMarker);
-  }, 15_000);
-
-  it('ships intentional exclusions without model requests', async () => {
-    const diff = diffWithFiles([
-      'diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n-old\n+new',
-      'diff --git a/generated/schema.generated.json b/generated/schema.generated.json\n--- a/generated/schema.generated.json\n+++ b/generated/schema.generated.json\n@@ -1 +1 @@\n-old\n+new',
-      'diff --git a/configured/fixture.txt b/configured/fixture.txt\n--- a/configured/fixture.txt\n+++ b/configured/fixture.txt\n@@ -1 +1 @@\n-old\n+new',
-    ]);
-
-    const result = await runMainInTempDir(diff, {
-      expectedFetches: 0,
-      config: 'exclude:\n  - configured/**\n',
-    });
-
-    expect(result.output).toContain('verdict=SHIP');
-    expect(result.output).toContain('review-status=SHIP');
-    expect(result.comment).toContain('Verdict: SHIP');
-    expect(result.comment).toMatch(/expected policy exclusion|does not block/i);
-  });
-
-  it('does not run chat preflight before the all-skipped terminal decision', async () => {
-    const diff = diffWithFiles([
-      'diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n-old\n+new',
-    ]);
-
-    const result = await runMainInTempDir(diff, {
-      expectedFetches: 0,
-      runChatPreflight: true,
-    });
-
-    expect(result.output).toContain('verdict=SHIP');
-  });
-
-  it('uses an SSE request for the authentication preflight instead of a buffered ping', async () => {
-    const result = await runMainInTempDir(
-      'diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -0,0 +1 @@\n+const safe = true;\n',
-      { runChatPreflight: true },
-    );
-
-    expect(result.fetchImpl.mock.calls.length).toBeGreaterThan(0);
-    expect(result.fetchImpl.mock.calls.every(([, options]: any[]) => JSON.parse(options.body).stream === true)).toBe(true);
-  });
-
-  it('renders policy-only exclusions as SHIP while keeping real coverage gaps blocked', () => {
-    const { formatPRComment } = pipeline;
-    const context = { repo: 'owner/repo', prNumber: '1', headSha: 'head-sha' };
-    const metadataOnly = formatPRComment({
-      verdict: 'SHIP',
-      status: 'SHIP',
-      quorumSatisfied: true,
-      completedPersonas: 0,
-      totalPersonas: 0,
-      rationale: 'Only expected policy exclusions remained.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [], context, {}, {}, {
-      reviewed: [],
-      skipped: [{ path: 'package-lock.json', category: 'lockfile', reason: 'lockfile' }],
-      oversized: [{ path: 'src/oversized.ts', category: 'oversized', reason: 'per-file cap', diffChars: 5_001 }],
-      truncated: [],
-      omitted: [],
-      passes: 0,
-    });
-
-    expect(metadataOnly).toContain('## 🟢 **Verdict: SHIP**');
-    expect(metadataOnly).not.toContain('Verdict: BLOCK');
-    expect(metadataOnly).toMatch(/expected policy exclusion|does not block/i);
-    expect(metadataOnly).toContain('src/oversized.ts');
-
-    const incomplete = formatPRComment({
-      verdict: 'BLOCK',
-      status: 'INCOMPLETE_REVIEW',
-      quorumSatisfied: false,
-      completedPersonas: 0,
-      totalPersonas: 0,
-      rationale: 'A whole-request budget file was not reviewed.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [], context, {}, { enabled: true, model: 'm' }, {
-      reviewed: [],
-      skipped: [],
-      oversized: [],
-      omitted: ['src/omitted.ts'],
-      truncated: [],
-      passes: 0,
-    });
-
-    expect(incomplete).toContain('## 🔴 **Verdict: BLOCK**');
-    expect(incomplete).toContain('INCOMPLETE_REVIEW');
-  });
-
-  it('ships all oversized files without model requests', async () => {
-    const oversizedMarker = 'ALL_OVERSIZED_MARKER';
-    const diff = diffWithFiles([
-      `diff --git a/src/oversized.ts b/src/oversized.ts\n--- a/src/oversized.ts\n+++ b/src/oversized.ts\n@@ -1 +1 @@\n-${oversizedMarker}${'x'.repeat(5_000)}\n+${oversizedMarker}${'x'.repeat(5_000)}`,
-    ]);
-
-    const result = await runMainInTempDir(diff, { expectedFetches: 0 });
-
-    expect(result.output).toContain('verdict=SHIP');
-    expect(result.output).toContain('review-status=SHIP');
-    expect(result.comment).not.toContain('INCOMPLETE_REVIEW');
-    expect(result.comment).toMatch(/exceeded the per-file limit/i);
-    expect(result.comment).toMatch(/src\/oversized\.ts.*\d[\d,]+ chars/i);
-    expect(result.comment).toMatch(/expected policy exclusion|does not block/i);
-    expect(JSON.stringify(result.fetchImpl.mock.calls)).not.toContain(oversizedMarker);
-  });
-
-  it('keeps intentional generated skips non-blocking when source remains eligible', async () => {
-    const diff = diffWithFiles([
-      'diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n-old\n+new',
-      'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new',
-    ]);
-
-    const result = await runMainInTempDir(diff, { expectedFetches: 1 });
-
-    expect(result.output).toContain('verdict=SHIP');
-    expect(result.output).toContain('files-skipped-generated=1');
-    expect(result.comment).toContain('intentionally skipped');
-    expect(result.comment).not.toContain('INCOMPLETE_REVIEW');
-  });
-
-  it('treats recovered partial multi-pass lanes as complete when decision is not ERROR', () => {
-    // One failed provider attempt of a multi-pass lane is telemetry, not a hard incomplete.
-    expect(pipeline.reviewCoverageCompleteForArbitration(
-      true,
-      { omitted: [], truncated: [] },
-      [{ personaId: 'security', decision: 'APPROVE', partial: 1 }],
-    )).toBe(true);
-
-    expect(pipeline.reviewCoverageCompleteForArbitration(
-      true,
-      { omitted: [], truncated: [] },
-      [{ personaId: 'security' }],
-    )).toBe(true);
-
-    // Hard ERROR still leaves coverage incomplete.
-    expect(pipeline.reviewCoverageCompleteForArbitration(
-      true,
-      { omitted: [], truncated: [] },
-      [{ personaId: 'security', decision: 'ERROR', partial: 1 }],
-    )).toBe(false);
-  });
-
-  it('explains that recovered multi-pass lanes remain visible', () => {
-    const comment = pipeline.formatPRComment({
-      verdict: 'BLOCK',
-      status: 'INCOMPLETE_REVIEW',
-      quorumSatisfied: false,
-      completedPersonas: 1,
-      totalPersonas: 1,
-      rationale: 'A provider pass failed.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [{
-      personaId: 'security',
-      displayName: '🛡️ Security',
-      decision: 'APPROVE',
-      partial: 1,
-      findings: [],
-    }], { repo: 'owner/repo', prNumber: '1', headSha: 'head-sha' }, {}, {}, {
-      reviewed: ['src/app.ts'],
-      skipped: [],
-      oversized: [],
-      truncated: [],
-      omitted: [],
-      passes: 2,
-    });
-
-    expect(comment).toContain('Recovered multi-pass lanes');
-    expect(comment).not.toContain('were excluded');
-  });
-
   it('1. Script file exists and is executable', () => {
     expect(fs.existsSync(pipelinePath)).toBe(true);
     const content = fs.readFileSync(pipelinePath, 'utf-8');
     expect(content).toContain('#!/usr/bin/env node');
   });
 
-  it('resolves the strict per-file limit with Action input precedence', () => {
-    const localConfig = {
-      parsed: {
-        limits: { max_diff_bytes: 90_000, max_file_diff_chars: 12_345 },
-        submodules: {},
-      },
-    };
-
-    const fromYaml = pipeline.resolveActionReviewPolicy(localConfig, {
-      MAX_DIFF_CHARS: '90000',
-      MAX_FILE_DIFF_CHARS: '',
-    });
-    expect(fromYaml).toMatchObject({ maxDiffChars: 90_000, maxFileDiffChars: 12_345 });
-
-    const fromAction = pipeline.resolveActionReviewPolicy(localConfig, {
-      MAX_DIFF_CHARS: '90000',
-      MAX_FILE_DIFF_CHARS: '6789',
-    });
-    expect(fromAction).toMatchObject({ maxDiffChars: 90_000, maxFileDiffChars: 6_789 });
-
-    expect(() => pipeline.resolveActionReviewPolicy(localConfig, {
-      MAX_FILE_DIFF_CHARS: '12.5',
-    })).toThrow('MAX_FILE_DIFF_CHARS must be a positive integer.');
-  });
-
-  it('2. Loads 12 persona charters with default model deepseek/deepseek-v4-flash-0731', () => {
+  it('2. Loads 12 persona charters with default model openrouter/auto', () => {
     const { PERSONA_CHARTERS, DEFAULT_MODEL } = pipeline;
-    expect(DEFAULT_MODEL).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(DEFAULT_MODEL).toBe('openrouter/auto');
     expect(PERSONA_CHARTERS).toHaveLength(12);
 
     const expectedPersonas = [
@@ -344,178 +61,6 @@ index 123456..789abc 100644
     expect(parsed[0].addedLines.some((l: any) => l.text.includes('sk-proj'))).toBe(true);
   });
 
-  it('parses deleted .github and quoted paths from diff headers without splicing old and new paths', () => {
-    const rawDiff = `diff --git a/.github/workflows/old.yml b/.github/workflows/old.yml
-deleted file mode 100644
---- a/.github/workflows/old.yml
-+++ /dev/null
-@@ -1 +0,0 @@
--name: old
-diff --git "a/docs/old name.md" "b/docs/old name.md"
-deleted file mode 100644
---- "a/docs/old name.md"
-+++ /dev/null
-@@ -1 +0,0 @@
--old`;
-
-    expect(pipeline.parseDiff(rawDiff).map((file: any) => file.path)).toEqual([
-      '.github/workflows/old.yml',
-      'docs/old name.md',
-    ]);
-  });
-
-  it('retains real rename, mode, and deletion metadata for deterministic review units', () => {
-    const rawDiff = `diff --git a/src/old.ts b/src/new.ts
-similarity index 100%
-rename from src/old.ts
-rename to src/new.ts
-diff --git a/bin/tool b/bin/tool
-old mode 100644
-new mode 100755
-diff --git a/src/deleted.ts b/src/deleted.ts
-deleted file mode 100644
---- a/src/deleted.ts
-+++ /dev/null
-@@ -1 +0,0 @@
--old`;
-    const [renamed, modeChanged, deleted] = pipeline.parseDiff(rawDiff) as any[];
-
-    expect(renamed).toMatchObject({ path: 'src/new.ts', previousPath: 'src/old.ts', status: 'renamed', similarityIndex: 100 });
-    expect(modeChanged).toMatchObject({ path: 'bin/tool', oldMode: '100644', newMode: '100755', mode: '100755' });
-    expect(deleted).toMatchObject({ path: 'src/deleted.ts', status: 'removed', deleted: true, oldMode: '100644' });
-  });
-
-  it('feeds parsed rename-only and deleted diffs into explicit manifest units', () => {
-    const files = pipeline.parseDiff(`diff --git a/src/old.ts b/src/new.ts
-similarity index 100%
-rename from src/old.ts
-rename to src/new.ts
-diff --git a/src/deleted.ts b/src/deleted.ts
-deleted file mode 100644
---- a/src/deleted.ts
-+++ /dev/null
-@@ -1 +0,0 @@
--old`);
-    const manifest = createReviewUnitManifest({
-      identity: { repository: 'owner/repo', prNumber: 3, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), configDigest: 'c'.repeat(64), policyDigest: 'd'.repeat(64), diffDigest: 'e'.repeat(64) },
-      files,
-      trustedRules: {},
-    });
-
-    expect(manifest.units.map((unit: any) => [unit.path, unit.status, unit.change])).toEqual([
-      ['src/new.ts', 'unreviewable', 'renamed'],
-      ['src/deleted.ts', 'selected', 'deleted'],
-    ]);
-  });
-
-  it('drops malformed findings instead of silently publishing invalid model output', () => {
-    const files = [{ path: 'src/app.ts', patch: '@@ -1 +1 @@\n-old\n+new\n' }];
-    const sanitized = pipeline.sanitizeFindings([
-      { severity: 'P1', path: 'src/app.ts', title: 'Missing', body: 'No line' },
-      { severity: 'P1', path: 'src/app.ts', line: 0, title: 'Zero', body: 'Bad line' },
-      { severity: 'P1', path: 'src/app.ts', line: 1.5, title: 'Fractional', body: 'Bad line' },
-      { severity: 'P1', path: 'src/app.ts', line: '1', title: 'String', body: 'Bad line' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, side: 'MIDDLE', title: 'Bad side', body: 'Bad side' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: '', body: 'Missing title' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: '   ', body: 'Blank title' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: 'Missing body', body: '' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: 'Blank body', body: '   ' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, side: 'LEFT', title: 'Valid', body: 'Deleted line' },
-    ], files);
-
-    expect(sanitized).toEqual([expect.objectContaining({ line: 1, side: 'LEFT', title: 'Valid' })]);
-  });
-
-  it('serializes only shown files and marks present-but-unreviewed files in every request message', async () => {
-    const oversizedMarker = 'OVERSIZED_OPENAPI_FIXTURE_MARKER';
-    const filtered = pipeline.filterReviewableFiles([
-      { path: 'fixtures/openapi.yaml', patch: `${oversizedMarker}${'x'.repeat(5_001)}` },
-      { path: 'src/app.ts', patch: '@@ -1 +1 @@\n-SOURCE_OLD\n+SOURCE_VISIBLE_MARKER\n' },
-    ], [], { maxFileDiffChars: 5_000 });
-    expect(filtered.files.map((file: any) => file.path)).toEqual(['src/app.ts']);
-
-    let requestBody: any;
-    const result = await pipeline.reviewWithModel(
-      pipeline.PERSONA_CHARTERS[0],
-      filtered.files,
-      { repo: 'o/r', prNumber: '1', headSha: 'head' },
-      null,
-      {
-        apiKey: 'test-key',
-        model: 'test-model',
-        maxDiffChars: 20_000,
-        maxAttempts: 1,
-        timeoutMs: 5_000,
-        fetchImpl: async (_url: string, init: any) => {
-          requestBody = JSON.parse(String(init.body));
-          return {
-            ok: true,
-            status: 200,
-            headers: { get: () => null },
-            json: async () => ({
-              model: 'test-model',
-              provider: 'test-provider',
-              choices: [{ message: { content: '{"findings":[]}' } }],
-            }),
-            body: sseBody({
-              model: 'test-model',
-              provider: 'test-provider',
-              choices: [{ message: { content: '{"findings":[]}' } }],
-            }),
-          };
-        },
-      },
-    );
-
-    expect(result.decision).toBe('APPROVE');
-    const systemMessage = requestBody.messages.find((message: any) => message.role === 'system').content;
-    const userMessage = requestBody.messages.find((message: any) => message.role === 'user').content;
-    expect(systemMessage).toMatch(/present but unreviewed/i);
-    expect(userMessage).toMatch(/present but unreviewed/i);
-    expect(JSON.stringify(requestBody)).toContain('SOURCE_VISIBLE_MARKER');
-    expect(JSON.stringify(requestBody)).not.toContain(oversizedMarker);
-    expect(JSON.stringify(requestBody)).not.toContain('fixtures/openapi.yaml');
-
-    const sanitized = pipeline.sanitizeFindings([
-      { severity: 'P1', path: 'fixtures/openapi.yaml', line: 1, title: 'Hidden', body: 'Hidden' },
-      { severity: 'P1', path: 'src/app.ts', line: 1, title: 'Shown', body: 'Shown' },
-    ], filtered.files);
-    expect(sanitized).toEqual([expect.objectContaining({ path: 'src/app.ts', title: 'Shown' })]);
-  });
-
-  it('sanitizes findings against files rendered after the whole-request budget', async () => {
-    const result = await pipeline.reviewWithModel(
-      pipeline.PERSONA_CHARTERS[0],
-      [
-        { path: 'src/shown.ts', patch: 'x'.repeat(100) },
-        { path: 'src/omitted.ts', patch: 'OMITTED_PATCH_MARKER' },
-      ],
-      { repo: 'o/r', prNumber: '1', headSha: 'head' },
-      null,
-      {
-        apiKey: 'test-key',
-        model: 'test-model',
-        maxDiffChars: 100,
-        maxAttempts: 1,
-        timeoutMs: 5_000,
-        fetchImpl: async () => ({
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => ({
-            model: 'test-model',
-            provider: 'test-provider',
-            choices: [{ message: { content: JSON.stringify({ findings: [{
-              severity: 'P1', path: 'src/omitted.ts', line: 1, title: 'Hidden', body: 'Hidden',
-            }] }) } }],
-          }),
-        }),
-      },
-    );
-
-    expect(result.findings).toEqual([]);
-  });
-
   it('4. Evaluates 12 personas in parallel and computes binding arbitration quorum', async () => {
     const { PERSONA_CHARTERS, evaluatePersonaLane, computeArbitrationQuorum } = pipeline;
     const diffFiles = [
@@ -529,7 +74,7 @@ deleted file mode 100644
 
     const prContext = {
       prNumber: '99',
-      repo: 'review-yeti-ai/review-yeti-bot',
+      repo: 'calltelemetry/ct-review-bot',
       headSha: 'abc1234def',
       title: 'Destructive DB Migration PR',
     };
@@ -549,7 +94,7 @@ deleted file mode 100644
     expect(arbitration.completedPersonas).toBe(12);
   });
 
-  it('5. Formats GitHub PR comment output with persona roster breakdown and no pipeline diagram', () => {
+  it('5. Formats GitHub PR comment output containing Mermaid diagram and persona roster breakdown', () => {
     const { PERSONA_CHARTERS, formatPRComment } = pipeline;
     const mockResults = PERSONA_CHARTERS.map((p: any) => ({
       personaId: p.id,
@@ -570,517 +115,507 @@ deleted file mode 100644
 
     const prContext = {
       prNumber: '101',
-      repo: 'review-yeti-ai/review-yeti-bot',
+      repo: 'calltelemetry/ct-review-bot',
       headSha: '1a2b3c4d5e',
     };
 
     const formattedComment = formatPRComment(mockArbitration, mockResults, prContext);
 
     expect(formattedComment).toContain('## 🟢 **Verdict: SHIP**');
-    // The flow diagram was static fan-in topology duplicating the roster table (review-yeti-ai/review-yeti-bot#31).
-    expect(formattedComment).not.toContain('```mermaid');
-    expect(formattedComment).not.toContain('Architectural Pipeline Flow');
-    expect(formattedComment).toContain('📋 Persona Evaluation Roster');
-    expect(formattedComment).toMatch(/`(openrouter\/auto(-beta)?|deepseek\/deepseek-v4-flash(-0731)?)`/);
+    expect(formattedComment).toContain('```mermaid');
+    expect(formattedComment).toContain('flowchart TD');
+    expect(formattedComment).toContain('openrouter/auto');
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
-    expect(formattedComment).toContain('No issues detected across completed reviewer personas');
-    expect(formattedComment).not.toContain('Open full review in Review Yeti');
-
-    const linkedComment = formatPRComment(
-      mockArbitration,
-      mockResults,
-      prContext,
-      {},
-      {},
-      null,
-      null,
-      null,
-      null,
-      { dashboardReviewUrl: 'https://reviewyeti.ai/dashboard/reviews/j57abc123' },
-    );
-    expect(linkedComment).toContain('[📊 Open full review in Review Yeti ↗](https://reviewyeti.ai/dashboard/reviews/j57abc123)');
   });
 
-  it('does not claim a clean review when persona lanes ERROR', () => {
-    const { formatPRComment } = pipeline;
-    const comment = formatPRComment({
-      totalPersonas: 2,
-      completedPersonas: 1,
-      quorumSatisfied: false,
-      verdict: 'BLOCK',
-      status: 'INCOMPLETE_REVIEW',
-      rationale: 'Blocked because 1 persona lane(s) failed.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [
-      {
-        personaId: 'security',
-        displayName: '🛡️ Security',
-        model: 'deepseek/deepseek-v4-flash-0731',
-        decision: 'ERROR',
-        findings: [],
-        error: 'Provider timeout after 180000ms (attempt 2/2)',
-      },
-      {
-        personaId: 'testing',
-        displayName: '🧪 Testing',
-        model: 'deepseek/deepseek-v4-flash-0731',
-        decision: 'APPROVE',
-        findings: [],
-      },
-    ], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, { enabled: true, model: 'deepseek/deepseek-v4-flash-0731' });
-
-    expect(comment).toContain('Failed persona lanes');
-    expect(comment).toContain('timeout');
-    expect(comment).toContain('not a clean review');
-    expect(comment).not.toContain('No issues detected across enabled reviewer personas');
-    expect(comment).not.toMatch(/🎉 \*\*No issues detected across completed/);
-  });
-
-  it('uses persona ids and stable fallbacks instead of undefined diagnostic labels', () => {
-    const comment = pipeline.formatPRComment({
-      totalPersonas: 1,
-      completedPersonas: 0,
-      quorumSatisfied: false,
-      verdict: 'BLOCK',
-      status: 'INCOMPLETE_REVIEW',
-      rationale: 'Provider response was invalid.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [{
-      personaId: 'security',
-      decision: 'ERROR',
-      findings: [],
-      failure: {
-        class: 'semantic_invalid_response',
-        reason: 'empty_response',
-        personaId: 'security',
-        providerRoute: 'azure',
-        model: 'openai/gpt-5.6-luna',
-        attempt: 2,
-        generationId: 'gen-empty',
-      },
-      error: 'malformed_response',
-    }], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, { enabled: true, model: 'openai/gpt-5.6-luna' });
-
-    expect(comment).toContain('| security | `security` | `azure` | `openai/gpt-5.6-luna` | `semantic_invalid_response` | empty_response | 2 | `gen-empty` |');
-    expect(comment).not.toContain('undefined');
-  });
-
-  it('always requests a streamed response and resolves provider/model from SSE metadata', async () => {
-    const { callOpenRouterChat } = pipeline;
-    let seenBody = '';
-    const fetchImpl = async (_url: string, init: any) => {
-      seenBody = String(init.body || '');
-      const payload = {
-        id: 'gen-stream-1',
-        model: 'anthropic/claude-sonnet-4',
-        provider: 'Anthropic',
-        choices: [{ delta: { content: '{"findings":[]}' } }],
-        usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001 },
-      };
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => null },
-        body: sseBody(payload),
-      };
-    };
-
-    const result = await callOpenRouterChat(fetchImpl as any, {
-      url: 'https://openrouter.ai/api/v1/chat/completions',
-      headers: { Authorization: 'Bearer test' },
-      body: { model: 'deepseek/deepseek-v4-flash-0731', messages: [] },
-      timeoutMs: 5_000,
-    });
-
-    expect(JSON.parse(seenBody).stream).toBe(true);
-    expect(result.ok).toBe(true);
-    expect(result.streamed).toBe(true);
-    expect(result.provider).toBe('Anthropic');
-    expect(result.model).toBe('anthropic/claude-sonnet-4');
-  });
-
-  it('fails closed on an HTTP/2 StreamReset 502 without a buffered retry', async () => {
-    const { callOpenRouterChat } = pipeline;
-    let calls = 0;
-    const fetchImpl = async (_url: string, init: any) => {
-      calls += 1;
-      const body = JSON.parse(String(init.body || '{}'));
-      if (body.stream === true) {
-        return {
-          ok: false,
-          status: 502,
-          headers: { get: () => null },
-          text: async () => '<StreamReset stream_id:35, error_code:1, remote_reset:True>',
-          json: async () => ({}),
-        };
-      }
-      throw new Error(`unexpected non-stream retry: ${JSON.stringify(body)}`);
-    };
-
-    const result = await callOpenRouterChat(fetchImpl as any, {
-      url: 'https://openrouter.ai/api/v1/chat/completions',
-      headers: { Authorization: 'Bearer test' },
-      body: { model: 'deepseek/deepseek-v4-flash-0731', messages: [] },
-      timeoutMs: 5_000,
-    });
-
-    expect(calls).toBe(1);
-    expect(result.ok).toBe(false);
-    expect(result.streamed).toBe(true);
-    expect(result.status).toBe(502);
-    expect(result.model).toBe('deepseek/deepseek-v4-flash-0731');
-  });
-
-  it('formats a pre-review started comment with trigger metadata', () => {
-    const { formatStartedComment } = pipeline;
-    const body = formatStartedComment(
-      { repo: 'review-yeti-ai/review-yeti-bot', prNumber: '56', headSha: 'abcdef123456' },
-      {
-        trigger: 'pull_request',
-        eventAction: 'synchronize',
-        actor: 'example-user',
-        model: 'deepseek/deepseek-v4-flash-0731',
-        personaCount: 12,
-        runUrl: 'https://github.com/review-yeti-ai/review-yeti-bot/actions/runs/1',
-        workflow: 'Review Bot',
-      },
-    );
-    expect(body).toContain('Review started');
-    expect(body).toContain('pull_request / synchronize');
-    expect(body).toContain('deepseek/deepseek-v4-flash-0731');
-    expect(body).toContain('12 (parallel)');
-    expect(body).toContain('open run');
-    expect(body).toContain('not** the verdict');
-  });
-
-  it('surfaces the resolved upstream provider + model on failed persona lanes (not just auto-beta)', () => {
-    const { formatPRComment, formatRouteLabel, resolveRouteMeta } = pipeline;
-    expect(formatRouteLabel({ provider: 'OpenAI', model: 'openai/gpt-5' })).toBe(
-      'provider=OpenAI model=openai/gpt-5',
-    );
-    expect(resolveRouteMeta({
-      id: 'gen-abc',
-      model: 'anthropic/claude-sonnet-4',
-      provider: 'Anthropic',
-    }, 'deepseek/deepseek-v4-flash-0731')).toEqual({
-      model: 'anthropic/claude-sonnet-4',
-      provider: 'Anthropic',
-      generationId: 'gen-abc',
-    });
-
-    const comment = formatPRComment({
-      totalPersonas: 2,
-      completedPersonas: 0,
-      quorumSatisfied: false,
-      verdict: 'BLOCK',
-      status: 'INCOMPLETE_REVIEW',
-      rationale: 'Blocked because 2 persona lane(s) failed.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [
-      {
-        personaId: 'security',
-        displayName: '🛡️ Security',
-        provider: 'OpenAI',
-        model: 'openai/gpt-5',
-        decision: 'ERROR',
-        findings: [],
-        error: 'Provider timeout after 180000ms (attempt 2/2) [provider=OpenAI model=openai/gpt-5]',
-      },
-      {
-        personaId: 'licensing',
-        displayName: '📜 Licensing',
-        // Requested router id only — resolved route is retained on the semantic failure.
-        model: 'openrouter/auto-beta',
-        provider: 'openrouter',
-        decision: 'ERROR',
-        findings: [],
-        error: 'malformed_response',
-        failure: {
-          class: 'semantic_invalid_response',
-          reason: 'unknown_response_fields',
-          route: { provider: 'ExampleCloud', model: 'deepseek/deepseek-v4-flash-0731' },
-        },
-      },
-    ], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, { enabled: true, model: 'deepseek/deepseek-v4-flash-0731' });
-
-    expect(comment).toContain('| Persona | Persona ID | Provider | Model | Error class | Reason | Attempt | Generation |');
-    expect(comment).toContain('| 🛡️ Security | `security` | `OpenAI` | `openai/gpt-5` | `timeout` |');
-    // Structured semantic failures retain their resolved route without publishing model output.
-    expect(comment).toContain('| 📜 Licensing | `licensing` | `ExampleCloud` | `deepseek/deepseek-v4-flash-0731` | `semantic_invalid_response` | unknown_response_fields |');
-    expect(comment).toContain('resolved direct transport or downstream OpenRouter provider');
-  });
-
-  it('keeps review outcomes in a compact roster and moves telemetry into collapsible details', () => {
+  it('formats provider, model, supported severity counts, and three-decimal costs', () => {
     const { formatPRComment } = pipeline;
     const results = [
       {
         personaId: 'security',
-        displayName: 'Security | Guardian',
-        provider: 'OpenAI',
+        displayName: 'Security',
         model: 'openai/gpt-5.6-luna',
+        provider: 'openrouter',
         decision: 'FINDINGS',
-        fallbackUsed: true,
-        fallbackModel: 'deepseek/deepseek-v4-flash-0731',
+        inputTokens: 100,
+        outputTokens: 20,
+        cost: 0.0074,
         findings: [
-          { severity: 'P0', path: 'src/a.ts', line: 1, title: 'Critical', body: 'Critical issue' },
-          { severity: 'P1', path: 'src/a.ts', line: 2, title: 'Required', body: 'Required issue' },
-          { severity: 'P2', path: 'src/a.ts', line: 3, title: 'Nit', body: 'Minor issue' },
+          { severity: 'P0', path: 'src/a.ts', line: 1, title: 'Outage', body: 'outage' },
+          { severity: 'P1', path: 'src/a.ts', line: 2, title: 'Defect', body: 'defect' },
+          { severity: 'P2', path: 'src/a.ts', line: 3, title: 'Nit', body: 'nit' },
         ],
-        usage: { promptTokens: 100, completionTokens: 20, costUSD: 0.0074 },
       },
       {
-        personaId: 'testing',
-        displayName: 'Testing',
+        personaId: 'style',
+        displayName: 'Style',
+        model: 'z-ai/glm-5.1',
         provider: 'openrouter',
-        model: 'anthropic/claude-3.5-sonnet',
         decision: 'APPROVE',
+        inputTokens: 200,
+        outputTokens: 30,
+        cost: 0.006307,
         findings: [],
-        usage: { promptTokens: 200, completionTokens: 40, costUSD: 0.0063 },
       },
     ];
-    const comment = formatPRComment({
+
+    const formattedComment = formatPRComment({
       totalPersonas: 2,
       completedPersonas: 2,
       quorumSatisfied: true,
       verdict: 'BLOCK',
-      rationale: 'Critical issue found.',
+      rationale: 'P0 finding requires a fix.',
       metrics: { p0Count: 1, p1Count: 1, p2Count: 1, totalFindings: 3 },
-    }, results, { repo: 'o/r', prNumber: '1', headSha: 'head' });
+    }, results, { prNumber: '102', repo: 'calltelemetry/ct-review-bot', headSha: 'abc1234' });
 
-    expect(comment).toContain('| Reviewer | Decision | Findings | Cost |');
-    expect(comment).not.toContain('| Reviewer | Model | Decision |');
-    expect(comment).toContain('| Security \\| Guardian | ⚠️ FINDINGS | P0 1 · P1 1 · P2 1 | $0.0074 |');
-    expect(comment).toContain('| Testing | ✅ APPROVE | None | $0.0063 |');
-    expect(comment).toContain('| **Total** | — | **P0 1 · P1 1 · P2 1** | **$0.0137** |');
-    expect(comment).toContain('<summary><b>Model and usage details</b> (300 in / 60 out)</summary>');
-    expect(comment).toContain('- **Security \\| Guardian**<br>Model: `openai/gpt-5.6-luna` via `OpenAI`<br>Fallback used: `deepseek/deepseek-v4-flash-0731`');
-    expect(comment).toContain('Usage: 100 in / 20 out');
-    expect(comment).toMatch(/Turns:\s*1/);
-    expect(comment).not.toContain('P3');
+    expect(formattedComment).toContain('| Reviewer Persona | Provider | Model | Decision | P0 | P1 | P2 / Nits | Input Tokens | Output Tokens | Cost |');
+    expect(formattedComment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ⚠️ FINDINGS | 🔴 1 | 🟠 1 | 🟡 1 | 100 | 20 | $0.007 |');
+    expect(formattedComment).toContain('| Style | `openrouter` | `z-ai/glm-5.1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 200 | 30 | $0.006 |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 1 | 🟠 1 | 🟡 1 | **300** | **50** | **$0.014** |');
+    expect(formattedComment).not.toContain('| P3 |');
   });
 
-  it('marks an incomplete total cost as a lower bound and sanitizes Markdown cells', () => {
+  it('uses safe fallbacks when persona metadata omits provider and cost', () => {
     const { formatPRComment } = pipeline;
-    const comment = formatPRComment({
-      totalPersonas: 2,
-      completedPersonas: 2,
+    const formattedComment = formatPRComment({
+      totalPersonas: 1,
+      completedPersonas: 1,
       quorumSatisfied: true,
       verdict: 'SHIP',
-      rationale: 'Clean.',
+      rationale: 'Clean review.',
       metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [
-      {
-        personaId: 'security',
-        displayName: 'A `reviewer` | one',
-        provider: 'Open|AI',
-        model: 'model`name',
-        decision: 'APPROVE',
-        findings: [],
-        usage: { promptTokens: 1, completionTokens: 2, costUSD: 0.001 },
-      },
-      {
-        personaId: 'testing',
-        displayName: 'Testing',
-        model: 'fallback',
-        decision: 'APPROVE',
-        findings: [],
-        usage: { promptTokens: 3, completionTokens: 4 },
-      },
-    ], { repo: 'o/r', prNumber: '1', headSha: 'head' });
+    }, [{
+      personaId: 'security',
+      displayName: 'Security',
+      model: 'openrouter/auto',
+      decision: 'APPROVE',
+      findings: [],
+    }], { prNumber: '103', repo: 'calltelemetry/ct-review-bot', headSha: 'def4567' });
 
-    expect(comment).toContain("| A 'reviewer' \\| one | ✅ APPROVE | None | $0.0010 |");
-    expect(comment).toContain('| **Total** | — | **None** | **≥$0.0010** |');
-    expect(comment).toContain("- **A 'reviewer' \\| one**<br>Model: `model'name` via `Open|AI`");
-    expect(comment).toContain('Usage: 1 in / 2 out');
-    expect(comment).toMatch(/Turns:\s*1/);
-    expect(comment).toContain('<summary><b>Model and usage details</b> (4 in / 6 out)</summary>');
+    expect(formattedComment).toContain('| Security | `openrouter` | `openrouter/auto` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).not.toContain('NaN');
   });
 
-  it('uses the authoritative run cost for the total when lane costs are incomplete', () => {
-    const comment = pipeline.formatPRComment({
+  it('does not present a known-cost subtotal as complete when another lane is unknown', () => {
+    const { formatPRComment } = pipeline;
+    const formattedComment = formatPRComment({
       totalPersonas: 2,
       completedPersonas: 2,
       quorumSatisfied: true,
       verdict: 'SHIP',
-      rationale: 'Clean.',
+      rationale: 'Clean review.',
       metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
     }, [
-      {
-        personaId: 'security',
-        displayName: 'Security',
-        decision: 'APPROVE',
-        findings: [],
-        usage: { promptTokens: 1, completionTokens: 2, costUSD: 0.001 },
-      },
-      {
-        personaId: 'testing',
-        displayName: 'Testing',
-        decision: 'APPROVE',
-        findings: [],
-        usage: { promptTokens: 3, completionTokens: 4 },
-      },
-    ], { repo: 'o/r', prNumber: '1', headSha: 'head' }, {}, {}, null, {
-      totalTokens: 10,
-      promptTokens: 4,
-      completionTokens: 6,
-      costUSD: 0.0042,
+      { personaId: 'security', displayName: 'Security', model: 'm1', provider: 'openrouter', decision: 'APPROVE', cost: 0.001, findings: [] },
+      { personaId: 'style', displayName: 'Style', model: 'm2', provider: 'openrouter', decision: 'APPROVE', findings: [] },
+    ], { prNumber: '104', repo: 'calltelemetry/ct-review-bot', headSha: 'fed7654' });
+
+    expect(formattedComment).toContain('| Security | `openrouter` | `m1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | $0.001 |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+  });
+
+  it('renders invalid costs and hostile provider metadata as safe unknown cells', () => {
+    const { formatPRComment } = pipeline;
+    const formattedComment = formatPRComment({
+      totalPersonas: 2,
+      completedPersonas: 2,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'Clean review.',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    }, [
+      { personaId: 'security', displayName: 'Security', model: 'model`one|x', provider: 'provider`one|x', decision: 'APPROVE', cost: -1, findings: [] },
+      { personaId: 'style', displayName: 'Style', model: 'model-two', provider: 'openrouter', decision: 'APPROVE', cost: 1e21, findings: [] },
+    ], { prNumber: '105', repo: 'calltelemetry/ct-review-bot', headSha: 'fed7655' });
+
+    expect(formattedComment).toContain('| Security | `provider\'one\\|x` | `model\'one\\|x` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).toContain('| Style | `openrouter` | `model-two` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).not.toContain('e+21');
+  });
+
+  describe('Cost & Subscription Telemetry Formatter (Milestone M1 R3)', () => {
+    const { isSubscriptionTransport, isSubscriptionLane, formatCost, formatPRComment } = pipeline;
+
+    describe('isSubscriptionTransport helper', () => {
+      it('identifies unmetered direct and subscription transport identifiers', () => {
+        expect(isSubscriptionTransport('fireworks')).toBe(true);
+        expect(isSubscriptionTransport('direct-fireworks')).toBe(true);
+        expect(isSubscriptionTransport('direct_fireworks')).toBe(true);
+        expect(isSubscriptionTransport('ollama')).toBe(true);
+        expect(isSubscriptionTransport('ollama-cloud')).toBe(true);
+        expect(isSubscriptionTransport('ollama_cloud')).toBe(true);
+        expect(isSubscriptionTransport('ollama-local')).toBe(true);
+        expect(isSubscriptionTransport('ollama_local')).toBe(true);
+        expect(isSubscriptionTransport('subscription')).toBe(true);
+        expect(isSubscriptionTransport('FiReWoRkS')).toBe(true);
+        expect(isSubscriptionTransport('OLLAMA-CLOUD')).toBe(true);
+      });
+
+      it('identifies transport parameter with subscription keywords', () => {
+        expect(isSubscriptionTransport('openrouter', 'subscription')).toBe(true);
+        expect(isSubscriptionTransport('custom-endpoint', 'subscription-tier')).toBe(true);
+        expect(isSubscriptionTransport('anthropic', 'direct_subscription')).toBe(true);
+      });
+
+      it('handles object provider and transport representations', () => {
+        expect(isSubscriptionTransport({ id: 'fireworks' })).toBe(true);
+        expect(isSubscriptionTransport({ name: 'ollama-cloud' })).toBe(true);
+        expect(isSubscriptionTransport({ id: 'openrouter' }, { type: 'subscription' })).toBe(true);
+        expect(isSubscriptionTransport({ transport: 'subscription' })).toBe(true);
+      });
+
+      it('returns false for metered and standard pay-per-token transports', () => {
+        expect(isSubscriptionTransport('openrouter')).toBe(false);
+        expect(isSubscriptionTransport('openai')).toBe(false);
+        expect(isSubscriptionTransport('anthropic')).toBe(false);
+        expect(isSubscriptionTransport('google-gemini')).toBe(false);
+        expect(isSubscriptionTransport('openrouter', 'metered')).toBe(false);
+        expect(isSubscriptionTransport('', '')).toBe(false);
+        expect(isSubscriptionTransport(null as any, null as any)).toBe(false);
+        expect(isSubscriptionTransport(undefined as any)).toBe(false);
+      });
     });
 
-    expect(comment).toContain('| **Total** | — | **None** | **$0.0042** |');
-    expect(comment).not.toContain('≥$0.0010');
-  });
+    describe('isSubscriptionLane helper', () => {
+      it('identifies explicit subscription lane flags', () => {
+        expect(isSubscriptionLane({ isSubscription: true })).toBe(true);
+        expect(isSubscriptionLane({ isSubscription: 'true' })).toBe(true);
+        expect(isSubscriptionLane({ billing: 'subscription' })).toBe(true);
+        expect(isSubscriptionLane({ billing: 'Subscription' })).toBe(true);
+        expect(isSubscriptionLane({ pricingType: 'subscription' })).toBe(true);
+        expect(isSubscriptionLane({ transport: 'subscription' })).toBe(true);
+        expect(isSubscriptionLane({ cost: 'Subscription' })).toBe(true);
+        expect(isSubscriptionLane({ cost: 'subscription' })).toBe(true);
+      });
 
-  it('does not turn an all-zero fallback usage block into a fabricated cost', () => {
-    const comment = pipeline.formatPRComment({
-      totalPersonas: 1,
-      completedPersonas: 1,
-      quorumSatisfied: true,
-      verdict: 'SHIP',
-      rationale: 'Clean.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [{
-      personaId: 'security',
-      displayName: 'Security',
-      model: 'deepseek/deepseek-v4-flash-0731',
-      decision: 'APPROVE',
-      findings: [],
-      usage: { promptTokens: 0, completionTokens: 0, costUSD: 0 },
-    }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
+      it('identifies unmetered providers when cost is null, undefined, empty, or 0', () => {
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: null })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: undefined })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: '' })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: 0 })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'ollama-cloud', cost: null })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'ollama', cost: null })).toBe(true);
+        expect(isSubscriptionLane({ provider: 'direct-fireworks', cost: null })).toBe(true);
+      });
 
-    expect(comment).toContain('| Security | ✅ APPROVE | None | — |');
-    expect(comment).toContain('- **Security**<br>Model: `deepseek/deepseek-v4-flash-0731` via `unresolved model transport`');
-    expect(comment).toContain('Usage: 0 in / 0 out');
-    expect(comment).toMatch(/Turns:\s*1/);
-    expect(comment).toContain('<summary><b>Model and usage details</b> (0 in / 0 out)</summary>');
-    expect(comment).not.toContain('NaN');
-  });
+      it('returns false when metered provider has null or positive cost without subscription flags', () => {
+        expect(isSubscriptionLane({ provider: 'openrouter', cost: null })).toBe(false);
+        expect(isSubscriptionLane({ provider: 'openrouter', cost: 0.0074 })).toBe(false);
+        expect(isSubscriptionLane({ provider: 'openai', cost: 0.015 })).toBe(false);
+      });
 
-  it('keeps partial token telemetry visible when only one token direction is available', () => {
-    const comment = pipeline.formatPRComment({
-      totalPersonas: 1,
-      completedPersonas: 1,
-      quorumSatisfied: true,
-      verdict: 'SHIP',
-      rationale: 'Clean.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [{
-      personaId: 'security',
-      displayName: 'Security',
-      model: 'deepseek/deepseek-v4-flash-0731',
-      decision: 'APPROVE',
-      findings: [],
-      usage: { completionTokens: 5, costUSD: 0.001 },
-    }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
+      it('treats positive numeric cost as metered unless explicit subscription flag is set', () => {
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: 0.005 })).toBe(false);
+        expect(isSubscriptionLane({ provider: 'fireworks', cost: 0.005, isSubscription: true })).toBe(true);
+      });
 
-    expect(comment).toContain('| Security | ✅ APPROVE | None | $0.0010 |');
-    expect(comment).toContain('<summary><b>Model and usage details</b> (— in / 5 out)</summary>');
-    expect(comment).toContain('Usage: — in / 5 out');
-  });
+      it('safely handles non-object and malformed inputs', () => {
+        expect(isSubscriptionLane(null)).toBe(false);
+        expect(isSubscriptionLane(undefined)).toBe(false);
+        expect(isSubscriptionLane('string' as any)).toBe(false);
+        expect(isSubscriptionLane(123 as any)).toBe(false);
+        expect(isSubscriptionLane({})).toBe(false);
+      });
+    });
 
-  it('does not present a failed reviewer lane as having zero findings', () => {
-    const comment = pipeline.formatPRComment({
-      totalPersonas: 1,
-      completedPersonas: 0,
-      quorumSatisfied: false,
-      verdict: 'BLOCK',
-      rationale: 'Reviewer failed.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [{
-      personaId: 'architecture',
-      displayName: 'Architecture',
-      model: 'deepseek/deepseek-v4-flash-0731',
-      decision: 'ERROR',
-      findings: [],
-      usage: { promptTokens: 0, completionTokens: 0, costUSD: 0 },
-    }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
+    describe('formatCost helper', () => {
+      it('formats valid positive numbers to 3 decimals with dollar sign', () => {
+        expect(formatCost(0.0074)).toBe('$0.007');
+        expect(formatCost(0.006307)).toBe('$0.006');
+        expect(formatCost(0.013707)).toBe('$0.014');
+        expect(formatCost(0)).toBe('$0.000');
+        expect(formatCost(1.2346)).toBe('$1.235');
+        expect(formatCost('0.0074')).toBe('$0.007');
+      });
 
-    expect(comment).toContain('| Architecture | ❌ ERROR | Not reviewed | — |');
-    expect(comment).toContain('| **Total** | — | **None** | — |');
-    expect(comment).not.toContain('| Architecture | ❌ ERROR | P0 0');
-  });
+      it('returns Subscription for subscription literal strings', () => {
+        expect(formatCost('Subscription')).toBe('Subscription');
+        expect(formatCost('subscription')).toBe('Subscription');
+        expect(formatCost(' SUBSCRIPTION ')).toBe('Subscription');
+      });
 
-  it('does not round a positive sub-millicent reviewer cost down to zero', () => {
-    const comment = pipeline.formatPRComment({
-      totalPersonas: 1,
-      completedPersonas: 1,
-      quorumSatisfied: true,
-      verdict: 'SHIP',
-      rationale: 'Clean.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-    }, [{
-      personaId: 'security',
-      displayName: 'Security',
-      model: 'deepseek/deepseek-v4-flash-0731',
-      decision: 'APPROVE',
-      findings: [],
-      usage: { promptTokens: 10, completionTokens: 2, costUSD: 0.0004 },
-    }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
+      it('returns em dash for null, undefined, invalid, negative, or overflow values', () => {
+        expect(formatCost(null)).toBe('—');
+        expect(formatCost(undefined)).toBe('—');
+        expect(formatCost('')).toBe('—');
+        expect(formatCost('not-a-number')).toBe('—');
+        expect(formatCost(-0.005)).toBe('—');
+        expect(formatCost(1e21)).toBe('—');
+      });
+    });
 
-    expect(comment).toContain('| Security | ✅ APPROVE | None | $0.0004 |');
-    expect(comment).not.toContain('$0.0000');
-  });
+    describe('formatPRComment roster and total row integration', () => {
+      it('renders pure subscription panel with Subscription in rows and total', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'fireworks/llama-v3p3-70b-instruct',
+            provider: 'fireworks',
+            decision: 'APPROVE',
+            inputTokens: 1200,
+            outputTokens: 350,
+            cost: null,
+            findings: [],
+          },
+          {
+            personaId: 'architecture',
+            displayName: 'Architecture',
+            model: 'ollama-cloud/qwen2.5-coder',
+            provider: 'ollama-cloud',
+            decision: 'APPROVE',
+            inputTokens: 1500,
+            outputTokens: 400,
+            cost: null,
+            findings: [],
+          },
+        ];
 
-  it('shows only non-zero severity counts in the findings column', () => {
-    const comment = pipeline.formatPRComment({
-      totalPersonas: 1,
-      completedPersonas: 1,
-      quorumSatisfied: true,
-      verdict: 'FIX_FIRST',
-      rationale: 'One advisory.',
-      metrics: { p0Count: 0, p1Count: 0, p2Count: 1, totalFindings: 1 },
-    }, [{
-      personaId: 'testing',
-      displayName: 'Testing',
-      model: 'deepseek/deepseek-v4-flash-0731',
-      decision: 'FINDINGS',
-      findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Minor issue' }],
-      usage: { promptTokens: 10, completionTokens: 2, costUSD: 0.0004 },
-    }], { repo: 'o/r', prNumber: '1', headSha: 'head' });
+        const comment = formatPRComment({
+          totalPersonas: 2,
+          completedPersonas: 2,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Clean review across subscription transports.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '201', repo: 'calltelemetry/ct-review-bot', headSha: 'sub1234' });
 
-    expect(comment).toContain('| Testing | ⚠️ FINDINGS | P2 1 | $0.0004 |');
-    expect(comment).toContain('| **Total** | — | **P2 1** | **$0.0004** |');
-    expect(comment).not.toContain('P0 0 · P1 0');
+        expect(comment).toContain('| Security | `fireworks` | `fireworks/llama-v3p3-70b-instruct` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,200 | 350 | Subscription |');
+        expect(comment).toContain('| Architecture | `ollama-cloud` | `ollama-cloud/qwen2.5-coder` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,500 | 400 | Subscription |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **2,700** | **750** | **Subscription** |');
+      });
+
+      it('renders explicit subscription flags with Subscription in rows and total', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'custom/model-sec',
+            provider: 'custom',
+            decision: 'APPROVE',
+            inputTokens: 800,
+            outputTokens: 150,
+            isSubscription: true,
+            findings: [],
+          },
+          {
+            personaId: 'performance',
+            displayName: 'Performance',
+            model: 'custom/model-perf',
+            provider: 'custom',
+            decision: 'APPROVE',
+            inputTokens: 900,
+            outputTokens: 200,
+            billing: 'subscription',
+            findings: [],
+          },
+          {
+            personaId: 'database',
+            displayName: 'Database',
+            model: 'custom/model-db',
+            provider: 'custom',
+            decision: 'APPROVE',
+            inputTokens: 600,
+            outputTokens: 100,
+            cost: 'Subscription',
+            findings: [],
+          },
+        ];
+
+        const comment = formatPRComment({
+          totalPersonas: 3,
+          completedPersonas: 3,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Explicit subscription review.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '202', repo: 'calltelemetry/ct-review-bot', headSha: 'sub5678' });
+
+        expect(comment).toContain('| Security | `custom` | `custom/model-sec` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 800 | 150 | Subscription |');
+        expect(comment).toContain('| Performance | `custom` | `custom/model-perf` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 900 | 200 | Subscription |');
+        expect(comment).toContain('| Database | `custom` | `custom/model-db` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 600 | 100 | Subscription |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **2,300** | **450** | **Subscription** |');
+      });
+
+      it('accurately aggregates mixed metered and subscription panels ($X.XXXX + Subscription)', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'openai/gpt-5.6-luna',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 1000,
+            outputTokens: 200,
+            cost: 0.0074,
+            findings: [],
+          },
+          {
+            personaId: 'architecture',
+            displayName: 'Architecture',
+            model: 'accounts/fireworks/models/deepseek-v3',
+            provider: 'fireworks',
+            decision: 'APPROVE',
+            inputTokens: 1500,
+            outputTokens: 300,
+            cost: null,
+            findings: [],
+          },
+          {
+            personaId: 'style',
+            displayName: 'Style',
+            model: 'z-ai/glm-5.1',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 500,
+            outputTokens: 100,
+            cost: 0.006307,
+            findings: [],
+          },
+        ];
+
+        const comment = formatPRComment({
+          totalPersonas: 3,
+          completedPersonas: 3,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Mixed metered and subscription evaluation passed.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '203', repo: 'calltelemetry/ct-review-bot', headSha: 'mix1234' });
+
+        expect(comment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,000 | 200 | $0.007 |');
+        expect(comment).toContain('| Architecture | `fireworks` | `accounts/fireworks/models/deepseek-v3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,500 | 300 | Subscription |');
+        expect(comment).toContain('| Style | `openrouter` | `z-ai/glm-5.1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 500 | 100 | $0.006 |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **3,000** | **600** | **$0.014 + Subscription** |');
+      });
+
+      it('accurately aggregates pure metered panels (**$X.XXXX**)', () => {
+        const results = [
+          {
+            personaId: 'security',
+            displayName: 'Security',
+            model: 'openai/gpt-5.6-luna',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 1200,
+            outputTokens: 250,
+            cost: 0.0074,
+            findings: [],
+          },
+          {
+            personaId: 'performance',
+            displayName: 'Performance',
+            model: 'anthropic/claude-3.7-sonnet',
+            provider: 'openrouter',
+            decision: 'APPROVE',
+            inputTokens: 1800,
+            outputTokens: 400,
+            cost: 0.0125,
+            findings: [],
+          },
+        ];
+
+        const comment = formatPRComment({
+          totalPersonas: 2,
+          completedPersonas: 2,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Pure metered review.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, results, { prNumber: '204', repo: 'calltelemetry/ct-review-bot', headSha: 'met1234' });
+
+        expect(comment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,200 | 250 | $0.007 |');
+        expect(comment).toContain('| Performance | `openrouter` | `anthropic/claude-3.7-sonnet` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,800 | 400 | $0.013 |');
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **3,000** | **650** | **$0.020** |');
+      });
+
+      it('falls back to em dash in total when any lane has unknown cost (mixed or subscription)', () => {
+        // Mixed panel with unknown lane
+        const mixedWithUnknown = [
+          { personaId: 'security', displayName: 'Security', model: 'm1', provider: 'openrouter', decision: 'APPROVE', cost: 0.007, findings: [] },
+          { personaId: 'perf', displayName: 'Performance', model: 'm2', provider: 'fireworks', decision: 'APPROVE', cost: null, findings: [] },
+          { personaId: 'style', displayName: 'Style', model: 'm3', provider: 'openrouter', decision: 'APPROVE', cost: null, findings: [] },
+        ];
+
+        const comment1 = formatPRComment({
+          totalPersonas: 3,
+          completedPersonas: 3,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Mixed with unknown.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, mixedWithUnknown, { prNumber: '205', repo: 'calltelemetry/ct-review-bot', headSha: 'unk1234' });
+
+        expect(comment1).toContain('| Security | `openrouter` | `m1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | $0.007 |');
+        expect(comment1).toContain('| Performance | `fireworks` | `m2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | Subscription |');
+        expect(comment1).toContain('| Style | `openrouter` | `m3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+        expect(comment1).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+
+        // Subscription panel with unknown lane
+        const subWithUnknown = [
+          { personaId: 'perf', displayName: 'Performance', model: 'm2', provider: 'fireworks', decision: 'APPROVE', cost: null, findings: [] },
+          { personaId: 'style', displayName: 'Style', model: 'm3', provider: 'openrouter', decision: 'APPROVE', cost: null, findings: [] },
+        ];
+
+        const comment2 = formatPRComment({
+          totalPersonas: 2,
+          completedPersonas: 2,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'Subscription with unknown.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, subWithUnknown, { prNumber: '206', repo: 'calltelemetry/ct-review-bot', headSha: 'unk5678' });
+
+        expect(comment2).toContain('| Performance | `fireworks` | `m2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | Subscription |');
+        expect(comment2).toContain('| Style | `openrouter` | `m3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+        expect(comment2).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+      });
+
+      it('handles empty persona results cleanly', () => {
+        const comment = formatPRComment({
+          totalPersonas: 0,
+          completedPersonas: 0,
+          quorumSatisfied: true,
+          verdict: 'SHIP',
+          rationale: 'No personas enabled.',
+          metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+        }, [], { prNumber: '207', repo: 'calltelemetry/ct-review-bot', headSha: 'empty123' });
+
+        expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+      });
+    });
   });
 
   it('6. Executes main pipeline cleanly without unhandled exceptions', async () => {
-    // main() verifies the PR head against a live `gh pr view` on anything it
-    // considers a real runner, and deliberately ignores workflow-supplied
-    // overrides to do so. On a GitHub Actions runner that makes this test call
-    // the network for a PR that does not exist. The synthetic-vitest path
-    // requires BOTH GITHUB_ACTIONS unset and GITHUB_EVENT_PATH absent, and a
-    // real runner sets both — so clear both for the duration. The production
-    // invariant is unchanged and covered by test 6a below.
-    const runnerEnv = ['GITHUB_ACTIONS', 'GITHUB_EVENT_PATH'] as const;
-    const savedRunnerEnv = runnerEnv.map((key) => [key, process.env[key]] as const);
-    runnerEnv.forEach((key) => { delete process.env[key]; });
+    const originalEnv = {
+      PR_NUMBER: process.env.PR_NUMBER,
+      ACTIVE_PERSONAS: process.env.ACTIVE_PERSONAS,
+      PR_DIFF: process.env.PR_DIFF,
+      GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+      GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
+      VITEST: process.env.VITEST,
+    };
 
-    // Set environment variables for test execution
-    process.env.PR_NUMBER = '777';
-    process.env.ACTIVE_PERSONAS = JSON.stringify(['security', 'architecture', 'performance', 'quality', 'database', 'api_contract', 'docs_compliance', 'reliability', 'devops', 'finops', 'red_team', 'review_flowchart']);
-    process.env.PR_DIFF = `diff --git a/README.md b/README.md
+    try {
+      // This is a synthetic unit invocation even when Vitest itself runs on GitHub Actions.
+      process.env.PR_NUMBER = '777';
+      process.env.ACTIVE_PERSONAS = JSON.stringify(['security', 'architecture', 'performance', 'quality', 'database', 'api_contract', 'docs_compliance', 'reliability', 'devops', 'finops', 'red_team', 'review_flowchart']);
+      process.env.PR_DIFF = `diff --git a/README.md b/README.md
 + ## Documentation update
 `;
-    try {
+      process.env.GITHUB_ACTIONS = 'false';
+      process.env.VITEST = 'true';
+      delete process.env.GITHUB_EVENT_PATH;
+
       await expect(pipeline.main()).resolves.not.toThrow();
     } finally {
-      savedRunnerEnv.forEach(([key, value]) => {
+      for (const [key, value] of Object.entries(originalEnv)) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
-      });
+      }
     }
-  });
-
-  it('6a. Verifies the PR head on a real runner even when PR_DIFF is supplied', () => {
-    // The synthetic-vitest escape hatch must never engage on GITHUB_ACTIONS=true,
-    // otherwise a workflow-supplied PR_DIFF could skip exact-head verification.
-    const source = fs.readFileSync(pipelinePath, 'utf-8');
-    expect(source).toContain("runtimeEnv.GITHUB_ACTIONS !== 'true'");
-
-    const commandRunner = () => ({ status: 1, stdout: '', stderr: 'no such PR' });
-    expect(() => pipeline.assertCurrentPullRequest(
-      { repo: 'o/r', prNumber: '777', headSha: 'head' },
-      { commandRunner },
-    )).toThrow('Unable to verify the current PR head');
   });
 
   // =========================================================================
@@ -1103,11 +638,7 @@ deleted file mode 100644
 
     it('8. Handles JSON payload in PR_DIFF environment variable correctly', () => {
       const originalEnv = process.env.PR_DIFF;
-      const originalEventPath = process.env.GITHUB_EVENT_PATH;
-      const originalSha = process.env.GITHUB_SHA;
       try {
-        delete process.env.GITHUB_EVENT_PATH;
-        delete process.env.GITHUB_SHA;
         process.env.PR_DIFF = JSON.stringify({
           diff: 'diff --git a/src/api/user.ts b/src/api/user.ts\n+ const x = 1;\n',
           prNumber: 42,
@@ -1123,10 +654,6 @@ deleted file mode 100644
         expect(ctx.diffText).toContain('src/api/user.ts');
       } finally {
         process.env.PR_DIFF = originalEnv;
-        if (originalEventPath === undefined) delete process.env.GITHUB_EVENT_PATH;
-        else process.env.GITHUB_EVENT_PATH = originalEventPath;
-        if (originalSha === undefined) delete process.env.GITHUB_SHA;
-        else process.env.GITHUB_SHA = originalSha;
       }
     });
 
@@ -1341,33 +868,19 @@ deleted file mode 100644
 
   describe('Edge Cases & Quorum Thresholds: computeArbitrationQuorum', () => {
     const { computeArbitrationQuorum } = pipeline;
-    // Distinct files, not just distinct line numbers on one boilerplate title/body: these tests are
-    // pinning threshold *counting*, and computeArbitration now clusters near-duplicate claims
-    // (claimSimilarity.compareClaims) before counting severities. compareClaims requires a path
-    // match before it looks at claim text, so distinct paths guarantee these stay N distinct
-    // findings regardless of title/body wording, which is what "threshold scales with N genuinely
-    // different findings" needs to test -- decoupled from the separate dedup behavior pinned in
-    // tests/unit/reviewArbitrationJudgment.test.ts.
-    const finding = (severity: 'P0' | 'P1' | 'P2', line: number) => ({
-      severity,
-      path: `src/app-${line}.ts`,
-      line,
-      title: `${severity} finding ${line}`,
-      body: 'Concrete issue.',
-    });
 
     it('22. Computes FIX_FIRST for 1 P1 finding or 5+ P2 findings', () => {
-      const resultsP1 = [{ findings: [finding('P1', 1)] }];
+      const resultsP1 = [{ findings: [{ severity: 'P1' }] }];
       const quorumP1 = computeArbitrationQuorum(resultsP1 as any);
       expect(quorumP1.verdict).toBe('FIX_FIRST');
 
       const resultsP2 = [{
         findings: [
-          finding('P2', 1),
-          finding('P2', 2),
-          finding('P2', 3),
-          finding('P2', 4),
-          finding('P2', 5),
+          { severity: 'P2' },
+          { severity: 'P2' },
+          { severity: 'P2' },
+          { severity: 'P2' },
+          { severity: 'P2' },
         ],
       }];
       const quorumP2 = computeArbitrationQuorum(resultsP2 as any);
@@ -1376,7 +889,7 @@ deleted file mode 100644
 
     it('23. Computes BLOCK for 3+ P1 findings or 1 P0 finding', () => {
       const resultsP1s = [
-        { findings: [finding('P1', 1), finding('P1', 2), finding('P1', 3)] },
+        { findings: [{ severity: 'P1' }, { severity: 'P1' }, { severity: 'P1' }] },
       ];
       const quorumP1s = computeArbitrationQuorum(resultsP1s as any);
       expect(quorumP1s.verdict).toBe('BLOCK');

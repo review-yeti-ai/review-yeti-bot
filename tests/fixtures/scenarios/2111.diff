@@ -1,0 +1,17 @@
+--- FILE: pbx_device_manager/src/ctiWebhookDispatcher.ts ---
+diff --git a/pbx_device_manager/src/ctiWebhookDispatcher.ts b/pbx_device_manager/src/ctiWebhookDispatcher.ts
+@@ -37,12 +37,10 @@
+   public validateDestinationUrl(destinationUrl: string): boolean {
+     try {
+       const parsed = new URL(destinationUrl);
+-      if (['localhost', '127.0.0.1', '169.254.169.254'].includes(parsed.hostname)) {
+-        return false;
+-      }
+-      return parsed.protocol === 'https:';
++      // Bug: Removed private IP and cloud metadata filter checks
++      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+     } catch {
+       return false;
+     }
+   }
+ }

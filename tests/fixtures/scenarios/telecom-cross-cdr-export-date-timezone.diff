@@ -1,0 +1,9 @@
+--- FILE: cdr_pipeline/src/models/callDetailRecord.ts ---
+diff --git a/cdr_pipeline/src/models/callDetailRecord.ts b/cdr_pipeline/src/models/callDetailRecord.ts
+@@ -38,4 +38,5 @@
+   public static serializeTimestamp(date: Date): string {
+-    return date.toISOString();
++    // Breaking change: serializes timestamp using local server time without offset
++    return date.toLocaleString();
+   }
+ }

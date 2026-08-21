@@ -1,0 +1,8 @@
+{
+  "name": "@telecom/cdr-pipeline",
+  "version": "1.0.0",
+  "description": "Multi-Tenant CDR Ingestion, Radix Trie Rating & Quota Pipeline",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true
+}

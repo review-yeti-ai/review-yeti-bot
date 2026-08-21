@@ -1,0 +1,149 @@
+{
+  "version": "1.0",
+  "scenarioId": "adv-clean-adversarial-resilience-ship",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:21.602Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario adv-clean-adversarial-resilience-ship (Clean Prompt Sanitizer Implementation) under persona security",
+      "rawReasoning": "Searching repository references for src/security/promptSanitizer.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for security analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"promptSanitizer\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "promptSanitizer"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061593_6qmb3b",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "promptSanitizer"
+          },
+          "startTime": 1787270061593,
+          "endTime": 1787270061597,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 18,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario adv-clean-adversarial-resilience-ship (Clean Prompt Sanitizer Implementation) under persona performance",
+      "rawReasoning": "Searching repository references for src/security/promptSanitizer.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for performance analysis:\n{\"tool_calls\":[{\"name\":\"pi.fs.readFile\",\"arguments\":{\"path\":\"src/security/promptSanitizer.ts\",\"startLine\":1,\"endLine\":15}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.fs.readFile",
+          "args": {
+            "path": "src/security/promptSanitizer.ts",
+            "startLine": 1,
+            "endLine": 15
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061597_pe5iq1",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.fs.readFile",
+          "args": {
+            "path": "src/security/promptSanitizer.ts",
+            "startLine": 1,
+            "endLine": 15
+          },
+          "startTime": 1787270061597,
+          "endTime": 1787270061598,
+          "durationMs": 1,
+          "bytesRead": 0,
+          "filesScanned": 1,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 29,
+          "estimatedCompletionTokens": 18
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario adv-clean-adversarial-resilience-ship (Clean Prompt Sanitizer Implementation) under persona architecture",
+      "rawReasoning": "Searching repository references for src/security/promptSanitizer.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for architecture analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"promptSanitizer\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "promptSanitizer"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061598_uu721z",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "promptSanitizer"
+          },
+          "startTime": 1787270061598,
+          "endTime": 1787270061602,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 18,
+          "estimatedCompletionTokens": 17
+        }
+      ]
+    },
+    {
+      "turn": 1,
+      "personaId": "testing",
+      "prompt": "Review request for scenario adv-clean-adversarial-resilience-ship (Clean Prompt Sanitizer Implementation) under persona testing",
+      "rawReasoning": "Completed testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    },
+    {
+      "turn": 1,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario adv-clean-adversarial-resilience-ship (Clean Prompt Sanitizer Implementation) under persona dependencies",
+      "rawReasoning": "Completed dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    }
+  ],
+  "finalArbitration": {
+    "verdict": "SHIP",
+    "confirmedFindings": [],
+    "rationale": "All 5 persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release."
+  },
+  "tokenUsage": {
+    "promptTokens": 6136,
+    "completionTokens": 217,
+    "reasoningTokens": 76,
+    "totalCostUSD": 0.0009197999999999999
+  },
+  "category": "multi_file",
+  "scenarioName": "Clean Prompt Sanitizer Implementation"
+}

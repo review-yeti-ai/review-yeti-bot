@@ -1,0 +1,23 @@
+version: 3
+profile: assertive
+quorum: 1
+personas:
+  - id: security
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["**"]
+    providers: [codex]
+reviewers:
+  execution: personas
+  fallback: ordered
+  overall_timeout_s: 300
+  providers:
+    - id: codex
+      enabled: true
+      model: gpt-4o
+      effort: high
+      review_timeout_s: 120
+      arbiter_timeout_s: 120
+  arbiter:
+    order: [codex]

@@ -1,0 +1,14 @@
+--- FILE: src/compiler/astResolver.ts ---
+diff --git a/src/compiler/astResolver.ts b/src/compiler/astResolver.ts
+@@ -1,5 +1,11 @@
+ export class AstResolver {
+   resolveDependencies(modulePath: string, visited = new Set<string>()): string[] {
++    // Bug: Missing cycle check on visited before recursively re-importing self
++    const subModules = this.extractImports(modulePath);
++    return subModules.flatMap(sub => this.resolveDependencies(sub, visited));
+   }
+
+   private extractImports(mod: string): string[] {
++    return [mod]; // Always returns self, causing infinite recursion
+   }
+ }

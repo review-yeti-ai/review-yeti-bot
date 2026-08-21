@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Three-arm verified-publication evaluation over the testing-charter corpus.
+ * Three-arm verified-publication evaluation over the verified-publication fixture corpus.
  *
- *   baseline  — the frozen pre-depth-probe charter, bounded investigation path (live lanes).
- *   candidate — the current deep charter, bounded investigation path (live lanes).
+ *   baseline  — the frozen pre-depth-probe testing charter, production lane path (live lanes).
+ *   candidate — the current testing charter, production lane path (live lanes).
  *   verified  — the SAME candidate lane rows, with the independent falsification stage
  *               (src/review/findingFalsification.js) applied to each row's findings before
  *               grading. Only CONFIRM survives; REFUTE and ABSTAIN withhold.
@@ -12,11 +12,22 @@
  * the product stage runs on lane outputs, not on fresh lanes, and pairing measures the
  * verifier's marginal effect on identical hypotheses instead of burying it in lane variance.
  *
- * Grading stays structural (the same expectedPaths + mustMatch contract the testing-charter
- * harness uses) — no LLM grades an LLM anywhere in this harness. The falsification stage is a
- * product stage; its model calls are the thing under measurement, not the measurement itself.
+ * Grading stays structural (expectedPaths + mustMatch concept groups) — no LLM grades an LLM
+ * anywhere in this harness. The falsification stage is a product stage; its model calls are the
+ * thing under measurement, not the measurement itself.
  *
- * Offline by default: without OPENROUTER_API_KEY, `lanes` and `verify` exit 0 with not_run.
+ * Provenance note (2026-08-21 refit): this harness originally rode on the bounded-investigation
+ * testing-charter harness (scripts/evaluate-testing-charter.mjs at 70bc8a6) and its fixtures at
+ * tests/fixtures/testing-charter/. That subsystem was retired on main along with
+ * openRouterPolicy.js (and its HARD_BANNED_PROVIDER_SLUGS ignore-list, superseded by central
+ * transport failover — PRs #217/#218). Lanes now run the production reviewWithModel path from
+ * the current pipeline; the summarizeArm/summarizePerFixture reporting shapes and the fixture
+ * corpus are vendored here (fixtures relocated to eval-baselines/verified-publication-fixtures/)
+ * so the harness is self-contained. TTFT columns from the retired harness are dropped rather
+ * than reported as nulls: the refit lane path does not measure them.
+ *
+ * Offline by default: without a configured provider transport, `lanes` and `verify` exit 0
+ * with not_run.
  *
  * Usage (each phase is a separate bounded invocation so shards stay under CI/agent timeouts):
  *   node scripts/evaluate-verified-publication.mjs lanes --arm baseline --fixtures <id,...> --out out/b1.json
@@ -29,22 +40,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import {
-  evaluateTestingCharter,
-  resolveEvalMaxTokens,
-  reviewWithBoundedInvestigation,
-  summarizeArm,
-  summarizePerFixture,
-} from './evaluate-testing-charter.mjs';
-
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
-const { HARD_BANNED_PROVIDER_SLUGS } = require(path.join(root, '.github/workflows/pipelines/openRouterPolicy.js'));
 const { runFindingFalsification } = require(path.join(root, 'src/review/findingFalsification.js'));
 
-const DEFAULT_FIXTURE = 'tests/fixtures/testing-charter/evaluation-matrix.json';
-const DEFAULT_BASELINE_CHARTER = 'tests/fixtures/testing-charter/baseline-charter.txt';
+const DEFAULT_FIXTURE = 'eval-baselines/verified-publication-fixtures/evaluation-matrix.json';
+const DEFAULT_BASELINE_CHARTER = 'eval-baselines/verified-publication-fixtures/baseline-charter.txt';
 
 function argument(name, fallback, argv = process.argv) {
   const index = argv.indexOf(name);
@@ -52,9 +54,9 @@ function argument(name, fallback, argv = process.argv) {
 }
 
 /**
- * Same structural detection contract as the testing-charter harness (anchor to an expected path
- * AND satisfy every mustMatch concept group). Mirrored here because the harness does not export
- * it; the shapes are pinned by tests/unit/verifiedPublicationEval.test.ts so drift breaks red.
+ * Same structural detection contract as the retired testing-charter harness (anchor to an
+ * expected path AND satisfy every mustMatch concept group). The shapes are pinned by
+ * tests/unit/verifiedPublicationEval.test.ts so drift breaks red.
  */
 export function findingMatchesFixture(finding, fixture) {
   const anchored = fixture.expectedPaths.some((expected) => String(finding.path || '').endsWith(expected));
@@ -68,8 +70,8 @@ function findingAnchors(finding, fixture) {
 }
 
 export function gradeFindings(fixture, findings, errored) {
-  // Same hit / valid_suggestion / noise labels the harness's classifyFindings assigns, so a
-  // re-graded verified row replaces (never inherits) its candidate row's SNR inputs.
+  // Same hit / valid_suggestion / noise labels the retired harness's classifyFindings assigned,
+  // so a re-graded verified row replaces (never inherits) its candidate row's SNR inputs.
   const classifications = errored ? [] : findings.map((finding) => {
     if (fixture.category === 'clean') return 'noise';
     if (findingMatchesFixture(finding, fixture)) return 'hit';
@@ -94,7 +96,7 @@ export function gradeFindings(fixture, findings, errored) {
   };
 }
 
-/** Wilson 95% interval, matching the harness's own reporting. */
+/** Wilson 95% interval, matching the retired harness's own reporting. */
 export function wilson(hits, total) {
   if (!total) return null;
   const z = 1.96;
@@ -105,6 +107,117 @@ export function wilson(hits, total) {
   return [Number(Math.max(0, centre - spread).toFixed(4)), Number(Math.min(1, centre + spread).toFixed(4))];
 }
 
+// ---------------------------------------------------------------------------
+// Reporting shapes vendored from the retired testing-charter harness (70bc8a6),
+// minus the TTFT columns the refit lane path does not measure.
+// ---------------------------------------------------------------------------
+
+function rate(hits, total) {
+  return total ? Number((hits / total).toFixed(4)) : null;
+}
+
+function numericSeries(rows, key) {
+  return rows.map((row) => row[key]).filter(Number.isFinite).sort((a, b) => a - b);
+}
+
+function median(sorted) {
+  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
+}
+
+function p95(sorted) {
+  return sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] : null;
+}
+
+/**
+ * CR-Bench's signal-to-noise ratio: (hits + valid suggestions) / noise. `noise` counting zero
+ * with nonzero signal is a real "no noise observed" result (`ratio: null, unbounded: true`);
+ * zero signal and zero noise is genuinely not computable (`ratio: null, unbounded: false`).
+ */
+function signalToNoiseRatio(hits, validSuggestions, noise) {
+  const signal = hits + validSuggestions;
+  if (noise === 0) return { ratio: null, unbounded: signal > 0 };
+  return { ratio: Number((signal / noise).toFixed(3)), unbounded: false };
+}
+
+export function resolveEvalMaxTokens({ argv = process.argv, bounded = false, fallback = 4_096 } = {}) {
+  const index = argv.indexOf('--max-tokens');
+  const explicit = index >= 0 && argv[index + 1] !== undefined;
+  if (bounded && !explicit) return undefined;
+  const parsed = explicit ? Number(argv[index + 1]) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function summarizeArm(rows, armId) {
+  const selected = rows.filter((row) => row.arm === armId);
+  const defects = selected.filter((row) => row.category === 'defect');
+  const clean = selected.filter((row) => row.category === 'clean');
+  const usage = selected.reduce((total, row) => ({
+    promptTokens: total.promptTokens + Number(row.usage?.promptTokens || 0),
+    completionTokens: total.completionTokens + Number(row.usage?.completionTokens || 0),
+    costUSD: total.costUSD + Number(row.usage?.costUSD || 0),
+  }), { promptTokens: 0, completionTokens: 0, costUSD: 0 });
+  const latencies = numericSeries(selected, 'latencyMs');
+  const detectedCount = defects.filter((row) => row.detected).length;
+  const totalHits = selected.reduce((sum, row) => sum + Number(row.hits || 0), 0);
+  const totalValidSuggestions = selected.reduce((sum, row) => sum + Number(row.validSuggestions || 0), 0);
+  const totalNoise = selected.reduce((sum, row) => sum + Number(row.noise || 0), 0);
+  const snr = signalToNoiseRatio(totalHits, totalValidSuggestions, totalNoise);
+  const failureClasses = {};
+  for (const row of selected) {
+    if (!row.errored) continue;
+    const label = row.error || 'unknown';
+    failureClasses[label] = (failureClasses[label] || 0) + 1;
+  }
+  return {
+    arm: armId,
+    runs: selected.length,
+    erroredRuns: selected.filter((row) => row.errored).length,
+    failureClasses,
+    defectRuns: defects.length,
+    detected: detectedCount,
+    detectionRate: rate(detectedCount, defects.length),
+    detectionRate95: wilson(detectedCount, defects.length),
+    anchoredRate: rate(defects.filter((row) => row.anchored).length, defects.length),
+    cleanRuns: clean.length,
+    falsePositives: clean.filter((row) => row.falsePositive).length,
+    falsePositiveRate: rate(clean.filter((row) => row.falsePositive).length, clean.length),
+    findingsPerRun: selected.length ? Number((selected.reduce((sum, row) => sum + row.findings, 0) / selected.length).toFixed(3)) : null,
+    // The ≤3-findings output contract is a hard rule; a charter change that breaks it is a
+    // regression regardless of what it does to detection.
+    outputContractBreaches: selected.filter((row) => row.findings > 3).length,
+    hits: totalHits,
+    validSuggestions: totalValidSuggestions,
+    noise: totalNoise,
+    // Classic precision (hits / (hits + noise)): valid suggestions are neither counted for nor
+    // against it -- they are not the target defect, but they are not wrong, either.
+    precision: rate(totalHits, totalHits + totalNoise),
+    snr: snr.ratio,
+    snrUnbounded: snr.unbounded,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    costUSD: Number(usage.costUSD.toFixed(6)),
+    latencyMsMedian: median(latencies),
+    latencyMsP95: p95(latencies),
+  };
+}
+
+export function summarizePerFixture(rows, fixtures) {
+  return fixtures.map((fixture) => {
+    const row = (armId) => {
+      const selected = rows.filter((entry) => entry.arm === armId && entry.fixtureId === fixture.id);
+      const hits = fixture.category === 'clean'
+        ? selected.filter((entry) => entry.falsePositive).length
+        : selected.filter((entry) => entry.detected).length;
+      return { hits, runs: selected.length, rate: rate(hits, selected.length), interval: wilson(hits, selected.length) };
+    };
+    return { id: fixture.id, category: fixture.category, baseline: row('baseline'), candidate: row('candidate') };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phases
+// ---------------------------------------------------------------------------
+
 function loadMatrix(argv = process.argv) {
   const fixturePath = path.resolve(root, argument('--fixture', DEFAULT_FIXTURE, argv));
   const matrix = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
@@ -114,52 +227,80 @@ function loadMatrix(argv = process.argv) {
 }
 
 function buildModelOptions(argv = process.argv) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
   const model = argument('--model', process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731', argv);
   const maxTokens = resolveEvalMaxTokens({ argv, bounded: true, fallback: 4_096 });
   return {
-    apiKey,
     model,
-    maxAttempts: Number(argument('--max-attempts', 2, argv)),
     timeoutMs: Number(argument('--timeout-ms', 90_000, argv)),
-    ...(argument('--ttft-ms', '', argv) ? { ttftMs: Number(argument('--ttft-ms', '', argv)) } : {}),
-    ...(maxTokens !== undefined ? { maxTokens } : {}),
-    openRouterPolicy: {
-      allowedModels: [],
-      fallbackModels: [],
-      ignoredProviders: [...HARD_BANNED_PROVIDER_SLUGS],
-      providerRouting: { ignore: [...HARD_BANNED_PROVIDER_SLUGS] },
-      timeoutMs: 90_000,
-      stream: true,
-    },
+    ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+    // Provider routing note: the retired harness pinned an OpenRouter ignore-list
+    // (HARD_BANNED_PROVIDER_SLUGS, retired with openRouterPolicy.js). The current pipeline
+    // owns provider failover centrally (dead-provider failover + policy-safe format recovery,
+    // PRs #217/#218), so lanes and verifier calls defer to production transport policy here.
   };
 }
 
-/**
- * Phase 1: live lanes for one arm, capturing FULL findings per row (the harness row keeps only
- * titles). Keyed by the unique per-row prNumber the harness already synthesizes.
- */
-export async function runLanesArm({ matrix, armId, charter, persona, repetitions, concurrency, modelOptions, reviewImplementation = reviewWithBoundedInvestigation }) {
-  const captured = new Map();
-  const capturingReview = async (personaArg, files, prContext, sessionContext, options) => {
-    const result = await reviewImplementation(personaArg, files, prContext, sessionContext, options);
-    captured.set(String(prContext.prNumber), Array.isArray(result?.findings) ? result.findings : []);
-    return result;
-  };
-  const { rows, fixtures } = await evaluateTestingCharter(matrix, {
-    repetitions,
-    concurrency,
-    arms: [{ id: armId, persona, charter }],
-    reviewWithModel: capturingReview,
-    modelOptions,
-  });
+function rowUsage(result) {
+  const cost = Number(result?.cost);
   return {
-    fixtures,
-    rows: rows.map((row) => ({
-      ...row,
-      findingsDetail: captured.get(`testing-charter-${row.arm}-${row.repetition}-${row.fixtureId}`) || [],
-    })),
+    promptTokens: Number(result?.inputTokens || 0),
+    completionTokens: Number(result?.outputTokens || 0),
+    ...(Number.isFinite(cost) ? { costUSD: cost } : {}),
   };
+}
+
+function transportsConfigured(env = process.env) {
+  try {
+    return Boolean(pipeline.resolveModelConfig(env).enabled);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Phase 1: live lanes for one arm over the production lane path (pipeline.reviewWithModel),
+ * capturing FULL findings per row in `findingsDetail`.
+ */
+export async function runLanesArm({ matrix, armId, charter, persona, repetitions, concurrency, modelOptions, reviewImplementation = pipeline.reviewWithModel }) {
+  const fixtures = Array.isArray(matrix?.fixtures) ? matrix.fixtures : [];
+  if (!fixtures.length) throw new Error('verified-publication matrix contains no fixtures');
+  const jobs = [];
+  for (const fixture of fixtures) {
+    for (let repetition = 1; repetition <= repetitions; repetition += 1) jobs.push({ fixture, repetition });
+  }
+  const rows = await pipeline.mapWithConcurrency(jobs, concurrency, async ({ fixture, repetition }) => {
+    const startedAt = Date.now();
+    let result;
+    try {
+      result = await reviewImplementation(
+        { ...persona, charter },
+        fixture.files,
+        { repo: 'review-yeti-ai/review-yeti-bot', prNumber: `testing-charter-${armId}-${repetition}-${fixture.id}`, title: fixture.title },
+        null,
+        modelOptions,
+      );
+    } catch (error) {
+      result = { decision: 'ERROR', error: error?.message || 'call_failed', findings: [] };
+    }
+    const findings = Array.isArray(result?.findings) ? result.findings : [];
+    const errored = result?.decision === 'ERROR';
+    const graded = gradeFindings(fixture, findings, errored);
+    return {
+      arm: armId,
+      fixtureId: fixture.id,
+      category: fixture.category,
+      repetition,
+      latencyMs: Date.now() - startedAt,
+      usage: rowUsage(result),
+      error: result?.error,
+      model: result?.model,
+      provider: result?.provider,
+      ...graded,
+      findingTitles: findings.map((finding) => `${finding.path}:${finding.line} ${finding.title}`),
+      findingsDetail: findings,
+    };
+  });
+  return { fixtures, rows };
 }
 
 /**
@@ -223,15 +364,9 @@ export async function verifyCandidateRows({ rows, matrix, falsifyTurnFactory, ar
   return { rows: verifiedRows, verifierStats, perRowOutcomes };
 }
 
-export function buildFalsifyTurnFactory({ modelOptions, modelClient }) {
-  return ({ row, fixture }) => async ({ messages, signal }) => pipeline.callPersonaModelTurn({
-    persona: { id: 'finding-falsification', name: 'Finding Falsification' },
-    prContext: { repo: 'review-yeti-ai/review-yeti-bot', prNumber: `verify-${row.arm}-${row.repetition}-${fixture.id}`, title: fixture.title },
-    sessionContext: null,
-    messages,
-    options: { ...modelOptions, ...(modelClient ? { modelClient } : {}) },
-    signal,
-  });
+export function buildFalsifyTurnFactory({ modelOptions }) {
+  return () => async ({ messages, timeoutMs, signal }) =>
+    pipeline.callFalsificationModelTurn({ messages, timeoutMs, signal }, modelOptions);
 }
 
 function readShards(listArgument) {
@@ -256,7 +391,7 @@ async function main() {
   const { matrix, fixturePath } = loadMatrix();
   const outPath = argument('--out', '');
   if (command === 'lanes') {
-    if (!process.env.OPENROUTER_API_KEY) {
+    if (!transportsConfigured()) {
       console.log(JSON.stringify({ status: 'not_run', reason: 'provider_unavailable' }));
       return 0;
     }
@@ -281,7 +416,7 @@ async function main() {
     return 0;
   }
   if (command === 'verify') {
-    if (!process.env.OPENROUTER_API_KEY) {
+    if (!transportsConfigured()) {
       console.log(JSON.stringify({ status: 'not_run', reason: 'provider_unavailable' }));
       return 0;
     }

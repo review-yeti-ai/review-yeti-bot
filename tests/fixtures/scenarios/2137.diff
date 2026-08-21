@@ -1,0 +1,10 @@
+--- FILE: cdr_pipeline/src/tariffRatingEngine.ts ---
+diff --git a/cdr_pipeline/src/tariffRatingEngine.ts b/cdr_pipeline/src/tariffRatingEngine.ts
+@@ -46,5 +46,6 @@
+   public computeCallCost(durationSec: number, ratePerMin: number): number {
+     const rawCost = (durationSec / 60.0) * ratePerMin;
+-    return Number(rawCost.toFixed(6));
++    // Breaking precision change: rounds intermediate rate to 2 decimal places
++    return Number(rawCost.toFixed(2));
+   }
+ }

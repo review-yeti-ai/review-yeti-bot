@@ -1,271 +1,105 @@
-name: 'Review Yeti'
-description: 'Reviews a pull request with AI personas and publishes resolvable inline P0/P1 conversations in one compact review.'
-author: 'review-yeti-ai'
+name: 'AI PR Review Panel'
+description: 'Reviews a pull request with a panel of AI reviewer personas and posts a single consolidated comment.'
+author: 'JBJMLLC'
 
 branding:
   icon: 'check-circle'
   color: 'purple'
 
 inputs:
+  openrouter-api-key:
+    description: 'OpenRouter API key for multi-model routing.'
+    required: false
+    default: ''
+  fireworks-api-key:
+    description: 'Fireworks AI API key for fast direct inference.'
+    required: false
+    default: ''
+  ollama-api-key:
+    description: 'Ollama API key for Ollama Cloud or endpoint.'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Anthropic API key for direct Claude reviews.'
+    required: false
+    default: ''
+  gemini-api-key:
+    description: 'Google Gemini API key for direct Gemini reviews.'
+    required: false
+    default: ''
+  openai-api-key:
+    description: 'OpenAI API key for direct GPT reviews.'
+    required: false
+    default: ''
+  api-key:
+    description: 'Generic API key alias (auto-maps to OpenRouter or default provider). Auto-discovers from environment if omitted.'
+    required: false
+    default: ''
   llm-api-key:
     description: >-
-      The sole inference API key for the configured OpenRouter or direct OpenAI-compatible
-      gateway. It must be passed explicitly by the caller's workflow action invocation; the
-      action does not read alternate provider-key environment variables or management keys.
-    required: false
-    default: ''
-  context7-api-key:
-    description: >-
-      Optional Context7 API key. When non-empty and the target repo's .review-yeti.yaml has
-      mcp.context7.enabled true (default when key is present), Context7 docs are fetched and
-      injected into every persona prompt. Leave empty to keep Context7 off.
-    required: false
-    default: ''
-  honcho-enabled:
-    description: >-
-      Optional Honcho advisory memory master switch. Empty defers to trusted base configuration;
-      true enables it and false disables it. Honcho never controls deterministic review decisions.
-    required: false
-    default: ''
-  honcho-context:
-    description: >-
-      Optional Honcho context read before reviewer fan-out. Empty defers to trusted base
-      configuration. Returned context is bounded and treated as untrusted review data.
-    required: false
-    default: ''
-  honcho-write:
-    description: >-
-      Optional write-behind persistence of normalized review events to Honcho. Empty defers to
-      trusted base configuration; failures never block GitHub publication.
-    required: false
-    default: ''
-  honcho-mcp-enabled:
-    description: >-
-      Optional MCP memory transport switch. Empty defers to trusted base configuration; true
-      enables the provider-neutral MCP memory path and false disables it.
-    required: false
-    default: ''
-  honcho-mcp-transport:
-    description: >-
-      Honcho memory transport override: mcp or rest. REST is explicit compatibility/rollback;
-      there is no automatic pipeline fallback.
-    required: false
-    default: ''
-  honcho-timeout-ms:
-    description: 'Honcho request timeout in milliseconds, clamped to 250-5000 (default 1500).'
-    required: false
-    default: ''
-  honcho-max-context-chars:
-    description: 'Maximum Honcho advisory context characters, clamped to 1000-8000 (default 4000).'
-    required: false
-    default: ''
-  doppler-token:
-    description: >-
-      Optional Doppler service token used to resolve Honcho connection secrets at runtime. The
-      token is sent only to the Doppler REST API and is never included in review prompts or logs.
-    required: false
-    default: ''
-  doppler-project:
-    description: 'Doppler project containing Honcho secrets (default review-yeti-bot).'
-    required: false
-    default: ''
-  doppler-config:
-    description: 'Doppler config containing Honcho secrets (default dev).'
+      Legacy OpenRouter API key input.
     required: false
     default: ''
   llm-base-url:
-    description: >-
-      OpenAI-compatible base URL for chat completions. Known direct gateways such as Fireworks
-      omit OpenRouter-only request fields automatically. Default: https://openrouter.ai/api/v1.
+    description: 'Trusted workflow/base-config OpenRouter base URL. Must normalize exactly to https://openrouter.ai/api/v1.'
     required: false
     default: 'https://openrouter.ai/api/v1'
-  openrouter-structured-output:
-    description: >-
-      Optional response contract. Set to 'strict' only after the chosen model and closed provider
-      cohort are certified for JSON Schema structured outputs. It sends a strict bounded review
-      schema and requires providers to support every requested parameter; unsupported cohorts fail
-      the lane closed. Empty uses github_action.openrouter.structured_output from trusted base config.
-    required: false
-    default: ''
-  openrouter-timeout-ms:
-    description: >-
-      Per-request OpenRouter hard timeout in milliseconds (default 30000 = 30s).
-      Models that do not return in time fail the persona lane. Also set via
-      github_action.openrouter.timeout_ms in .review-yeti.yaml; action input wins.
-    required: false
-    default: '30000'
-  openrouter-ttft-ms:
-    description: >-
-      Time-to-first-token deadline in milliseconds (default 30000 = 30s). It starts at request
-      dispatch and clears on the first SSE chunk; on expiry it aborts with failure class
-      ttft_timeout. A TTFT abort never adds the
-      provider to any ignore/quarantine/ban set -- OpenRouter's own sort:latency routing stays
-      the sole authority and the retry simply re-asks. Also sets provider.preferred_max_latency.
-      Also configurable via github_action.openrouter.ttft_ms in .review-yeti.yaml; action input
-      wins.
-    required: false
-    default: '30000'
-  openrouter-max-attempts:
-    description: >-
-      Maximum attempts per model per persona lane (default 2 = one initial attempt plus one
-      retry; operator directive "1 retry max per lane"). No budget escalation and no bonus
-      attempt after a provider is identified — the attempt loop is the whole retry. Also
-      configurable via github_action.openrouter.max_attempts in .review-yeti.yaml; action input
-      wins.
-    required: false
-    default: '2'
-  lane-deadline-ms:
-    description: >-
-      Per-lane wall-clock deadline in milliseconds (default 240000 = 4m), checked at the
-      investigation turn loop. A backstop so the ceiling on how long one persona lane can run is
-      a stated number immune to future knob drift, rather than an emergent property of
-      turns * attempts * budgets. A lane that exceeds it fails closed with lane_deadline instead
-      of running until the job is killed.
-    required: false
-    default: '240000'
-  lane-call-budget:
-    description: >-
-      REL-288: flat per-lane HTTP call budget (default 36). Passes, investigation turns,
-      transport failover, and per-model attempts each multiply the number of real provider HTTP
-      requests one persona lane can make; nobody multiplies them on purpose, but the product
-      does. This is a single shared counter spent on every real provider HTTP attempt in one
-      pass's investigation, independent of which knob combination produced the request -- a hard
-      floor immune to future knob drift, not another knob to tune alongside the others. A lane
-      that spends the last unit terminates honestly as lane_budget_exhausted; it is never folded
-      into a silent pass or a generic timeout. The default matches the historical ceiling
-      REL-271 removed as an emergent, undocumented number.
-    required: false
-    default: '36'
   model:
-    description: 'Model identifier passed to the provider.'
+    description: 'Trusted workflow/base-config OpenRouter model control. Defaults to the production auto-router alias.'
     required: false
-    default: 'openrouter/auto-beta'
-  openrouter-fallback-models:
+    default: 'openrouter/auto'
+  action-sha:
     description: >-
-      Comma-separated ordered fallback model ids. Transient primary-model failures (timeouts,
-      network errors, rate limits, and 5xx responses) retry before moving to the next model.
-      Empty default uses github_action.openrouter.fallback_models from the trusted base config.
+      Exact 40-hex commit SHA of the Review Yeti action source. Required when review-engine is
+      pi-workflow so runtime provenance is bound to the immutable action source.
     required: false
     default: ''
+  review-engine:
+    description: >-
+      Trusted review scheduler bootstrap: legacy or pi-workflow. The Pi workflow path requires
+      callers to provision Node 24 before invoking this composite Action, installs the reviewed
+      dependency graph with npm ci from Review Yeti's lockfile, and never resolves Pi packages
+      from the consumer repository. Legacy remains the default until governed callers migrate.
+    required: false
+    default: 'legacy'
+  openrouter-allowed-models:
+    description: >-
+      Trusted workflow/base-config OpenRouter auto-router fleet, as comma-separated model IDs.
+      Defaults to the manifest-approved five-model fleet; this is not read from PR-head config.
+    required: false
+    default: ''
+  openrouter-cost-quality-tradeoff:
+    description: >-
+      Trusted workflow/base-config OpenRouter auto-router cost_quality_tradeoff integer (0-10).
+      Defaults to the policy manifest value; this is not read from PR-head config.
+    required: false
+    default: ''
+  openrouter-data-collection:
+    description: >-
+      Trusted workflow/base-config OpenRouter provider data_collection policy. Must remain deny;
+      this is not read from PR-head config.
+    required: false
+    default: 'deny'
   personas:
     description: >-
-      Comma-separated reviewer persona ids, a JSON array, or "all". Defaults to the five that
-      apply to any codebase: security, performance, architecture, testing, dependencies.
-      Also available: style, documentation, accessibility, database, devops, i18n, licensing.
+      Comma-separated reviewer persona ids, or a JSON array. Defaults to the five default-enabled reviewers.
+      Available: security, performance, architecture, style, testing, documentation,
+      accessibility, database, devops, i18n, dependencies, licensing.
     required: false
     default: ''
   max-diff-chars:
-    description: >-
-      Per-persona per-pass diff character budget. Default is the full safety ceiling (2_000_000)
-      so large PRs are not artificially truncated at 24k. Files beyond the budget (and beyond
-      max-passes packing) are reported as unreviewed, never silently dropped.
+    description: 'Per-persona diff budget. Each persona is one request per push, so this bounds cost on large PRs.'
     required: false
-    default: '2000000'
-  max-file-diff-chars:
-    description: >-
-      Per-file complete diff character limit. This is independent from max-diff-chars, which is
-      the whole-request budget. Leave empty to use limits.max_file_diff_chars from .review-yeti.yaml,
-      or the built-in 5,000-character default.
-    required: false
-    default: ''
-  max-passes:
-    description: >-
-      Maximum number of review passes per persona when packing a large diff into per-pass budgets
-      (a ceiling, not a target — most PRs use 1 pass). After this many passes, remaining files are
-      reported as unreviewed rather than dropped. More passes cost more tokens.
-    required: false
-    default: '3'
-  max-investigation-turns:
-    description: >-
-      Maximum bounded evidence follow-up turns per persona pass (1-3, default 2). A dependency
-      persona that still lacks requested changed-file evidence after this ceiling is marked
-      INCOMPLETE_REVIEW and blocks merge approval; it is never treated as a clean approval.
-    required: false
-    default: '2'
-  evidence-max-calls:
-    description: >-
-      Bounded read-only evidence tool calls one persona lane may make (default 100, the hard
-      ceiling in src/review/evidenceContracts.js). These are file_read / file_find / code_search
-      / file_read_diff against the immutable base and head trees. They are NOT provider HTTP
-      calls: they do not spend lane-call-budget and they do not cost model tokens beyond the
-      bytes they return, which evidence-max-result-bytes bounds. This was hardcoded to 12 --
-      below the contract's own default of 24 -- which is about two file reads per risk on a
-      three-risk plan, and lanes stopped investigating rather than run out. Leave empty to use
-      review.investigation.evidence.max_calls from .review-yeti.yaml.
-    required: false
-    default: ''
-  evidence-max-scan-files:
-    description: >-
-      Files one code_search call may read (default 60). This is the only evidence limit with
-      real network cost: each scanned file is a separate GitHub blob request, so raising it
-      raises latency and API spend roughly linearly. A whole-repository search is deliberately
-      not offered over this transport at any setting.
-    required: false
-    default: ''
-  evidence-max-result-bytes:
-    description: >-
-      Bytes one evidence tool result may return to the model (default 32000). Bounds prompt
-      growth, which is the token cost of investigation.
-    required: false
-    default: ''
-  exclude:
-    description: >-
-      Extra comma-separated path globs to skip, on top of the built-in generated-content list
-      (lockfiles, build output, EF snapshots, minified assets). Prefix a glob with `!` to restore
-      matching files instead, including files a built-in pattern caught.
-    required: false
-    default: ''
+    default: '24000'
   max-personas:
     description: 'Maximum reviewers a resolved roster may contain. Each is one model request per push, so this bounds what a configuration change can spend.'
     required: false
     default: '25'
-  skip-unchanged:
-    description: >-
-      When true, a push that changed only excluded paths since the last reviewed commit carries the
-      previous verdict forward instead of re-running the panel. The summary is still updated in
-      place with the new head SHA, so a check that verifies publication for the head still passes.
-      Off by default: if the comparison is wrong, an unreviewed change ships with a stale verdict,
-      which is a worse outcome than reviewing the same code twice.
-    required: false
-    default: 'false'
-  target-config:
-    description: >-
-      Where reviewer configuration may come from. 'trusted-base' (default) reads
-      .review-yeti.yaml and .review-yeti/personas from the immutable pull-request
-      base ref. 'none' reads NO configuration from the target repository at all —
-      the caller supplies every policy input explicitly and any config files in
-      the target repo are inert. Central/fleet wrappers should pass 'none'.
-    required: false
-    default: 'trusted-base'
   config-ref:
     description: >-
-      Deprecated compatibility input. When set, it must equal the immutable pull request base
-      SHA. Reviewer charters are prompts run with your API key, so configuration is never read
-      from the pull request head or any mutable ref.
-    required: false
-    default: ''
-  action-sha:
-    description: >-
-      Exact 40-hex commit SHA of this Review Yeti action source. Required for the durable provider
-      dispatch receipt; mutable refs and tags are rejected so consumers can bind evidence to the
-      action code that actually ran.
-    required: true
-  review-intelligence-enabled:
-    description: >-
-      Optional v1 Review Intelligence kill switch. Empty defers to trusted base configuration;
-      false disables the trusted feature. true is rejected because Action inputs cannot enable it.
-    required: false
-    default: ''
-  review-intelligence-max-diff-chars:
-    description: 'Optional v1 Review Intelligence diff budget reduction. It may only lower the trusted base limit.'
-    required: false
-    default: ''
-  review-intelligence-max-file-diff-chars:
-    description: 'Optional v1 Review Intelligence per-file budget reduction. It may only lower the trusted base limit.'
-    required: false
-    default: ''
-  review-intelligence-max-personas:
-    description: 'Optional v1 Review Intelligence persona-count reduction. It may only lower the trusted base limit.'
+      Git ref to read .ct-review.yaml and .ct-review/personas from. Defaults to the pull
+      request's base branch. Reviewer charters are prompts run with your API key, so they are
+      deliberately not read from the pull request's own head.
     required: false
     default: ''
   pr-number:
@@ -277,220 +111,116 @@ inputs:
     required: false
     default: ''
   github-token:
-    description: 'Token used to read the diff and publish the pull request review. The default workflow token is sufficient when the caller grants pull-requests: write.'
+    description: 'Token used to read the diff and post the review comment. The default workflow token is sufficient for same-repository reviews.'
     required: false
     default: ${{ github.token }}
-  linear-api-key:
-    description: >-
-      Optional Linear API key (LINEAR_API_KEY only — OAuth Linear MCPs are rejected).
-      When set (typically secrets.LINEAR_API_KEY), Linear issue sync and the builtin Linear
-      adapter (cline/linear-mcp API-key model) are enabled. When unset, Linear is skipped.
-    required: false
-    default: ''
-  openrouter-allowed-models:
-    description: >-
-      Comma-separated allowlist of OpenRouter model ids for Auto Router routing. When set, the
-      action sends an auto-router plugin with these allowed_models on every review request,
-      overriding any github_action.openrouter.allowed_models in .review-yeti.yaml. Empty default
-      means no allowlist is enforced.
-    required: false
-    default: ''
-  openrouter-cost-quality-tradeoff:
-    description: >-
-      Integer 0-10 Auto Router cost/quality tradeoff. 0 favors lowest cost, 10 favors highest
-      quality. When set, overrides github_action.openrouter.cost_quality_tradeoff in
-      .review-yeti.yaml and is sent as the auto-router plugin cost_quality_tradeoff field.
-    required: false
-    default: ''
-  openrouter-data-collection:
-    description: >-
-      OpenRouter data-collection policy, 'allow' or 'deny'. 'deny' opts out of model-provider
-      training on prompt/completion data (default OpenRouter policy). Sent as an HTTP header on
-      every review request; overrides github_action.openrouter.data_collection in .review-yeti.yaml.
-    required: false
-    default: ''
-  openrouter-allow-banned-providers:
-    description: >-
-      Comma-separated provider slugs to REMOVE from the action's built-in hard-ban list.
-      The hard-ban list is a safety default for callers that supply no policy of their own; it
-      must not silently override an operator who has deliberately allow-listed a provider
-      upstream (for example an OpenRouter workspace guardrail in only-allow mode). Where the two
-      intersect to nothing, every request fails with "No endpoints available". Use this only for
-      providers you have explicitly permitted upstream, and record why.
-    required: false
-    default: ''
-  openrouter-ignore-providers:
-    description: >-
-      Comma-separated OpenRouter provider slugs to exclude from routing. The action always
-      excludes the built-in degraded-provider blocklist (including deepinfra); this input can
-      add further provider bans without enabling fallbacks outside the remaining providers.
-    required: false
-    default: 'deepinfra,openrouter,wafer,novita,decart,sail-research,inceptron,fireworks,together,mancer,parasail'
   transports:
-    description: >-
-      Optional JSON array declaring an explicit ordered transport plan. Each entry:
-      {"name","base_url","api_key_env","model","compat"("openai"|"openrouter"),
-      "fallback_models","timeout_ms","structured_output",
-      and (compat openrouter only) "provider_routing","ignore_providers","data_collection",
-      "allowed_models","cost_quality_tradeoff","allow_banned_providers"}.
-      Transports are tried in order per model call; the first non-failed result wins.
-      api_key_env names an environment variable the CALLER must export on this action's
-      step (it may not name a CI credential and must end in _API_KEY or _KEY). When set,
-      this overrides the single-transport model/llm-base-url selection for reviewer lanes
-      and the chat preflight; may also be provided via the trusted base-ref YAML
-      github_action.transports (this input wins). Invalid plans fail the run closed.
+    description: 'JSON array of healthy Review Yeti candidate transports.'
     required: false
     default: ''
   transport-plan-b64:
-    description: >-
-      Optional base64-encoded JSON transport plan. This is an output-safe equivalent of
-      `transports` for callers whose workflow output scanner rejects JSON containing credential
-      environment names. When present it takes precedence over `transports` and trusted YAML.
-      All entries use the required SSE streaming transport on the real review path.
+    description: 'Base64 encoded JSON transport plan.'
     required: false
     default: ''
-  conditional-lanes:
-    description: >-
-      Optional JSON array of conditional advisory lanes, e.g.
-      [{"persona":"licensing","paths":["release/**","**/cli.sh"]}]. Each lane runs one bounded
-      evidence-free turn only when the diff touches its paths, and publishes P2 advisories only —
-      conditional lanes sit outside the coverage denominator and can neither block a verdict nor
-      satisfy quorum. Max 4 lanes.
+  context7-api-key:
+    description: 'Context7 API key for documentation evidence retrieval.'
     required: false
     default: ''
-  overview-brief:
-    description: >-
-      PR overview brief pre-pass (default enabled). One orientation model call runs before
-      persona fan-out; its artifact is injected into every persona lane as untrusted
-      orientation context and rendered as the Walkthrough section of the sticky summary.
-      Set to 'false' to disable. The brief degrades soft: any failure means personas simply
-      run without it, and it can never alter a verdict or count as evidence.
+  # Deprecated compatibility inputs retained for callers on the pre-v1 contract. The central
+  # workflow now passes the supported policy/transport inputs above; these are intentionally
+  # accepted and ignored so an older caller can finish its migration without changing review
+  # semantics or producing an unknown-input warning.
+  target-config:
+    description: 'Deprecated compatibility input; trusted configuration is resolved by the action.'
+    required: false
+    default: ''
+  openrouter-ignore-providers:
+    description: 'Deprecated compatibility input; provider admission is carried by the transport plan.'
     required: false
     default: ''
   openrouter-provider-routing:
-    description: >-
-      JSON object forwarded as OpenRouter's provider routing policy. The default allows
-      provider fallback without forcing a single provider, requires requested parameters,
-      limits endpoint quantization to FP8 or BF16, sorts by throughput, and prefers p90
-      throughput of at least 40 tokens per second plus p99 latency of at most three seconds.
-      ExampleCloud remains eligible when it meets those constraints. Wafer and Novita are hard-banned
-      after repeated provider-error/timeout lanes. Supports the raw API
-      fields order, allow_fallbacks, require_parameters, data_collection, zdr,
-      enforce_distillable_text, only, ignore, quantizations, sort, preferred_min_throughput,
-      preferred_max_latency, and max_price. The built-in degraded-provider blocklist remains
-      hard-banned and cannot appear in order or only. Action input wins over
-      github_action.openrouter.provider_routing in YAML when it is non-empty; an explicit `{}` is
-      treated as unset so it cannot broaden routing. Fixed models are checked against their
-      approved provider cohort before persona fan-out; for example, openai/gpt-5.6-luna requires
-      an explicit only list containing openai or azure. The action fails closed when only/order
-      restrictions cannot serve the selected fixed model and never broadens the provider list.
-    required: false
-    default: '{"allow_fallbacks":true,"require_parameters":true,"quantizations":["fp8","bf16"],"sort":"throughput","preferred_min_throughput":{"p90":40},"preferred_max_latency":{"p99":3}}'
-  dashboard-api-key:
-    description: >-
-      Optional Review Yeti dashboard ingestion key (ctd_live_...). When empty, the action does
-      not contact the dashboard and publishes the GitHub review normally. It is never logged.
+    description: 'Deprecated compatibility input; provider admission is carried by the transport plan.'
     required: false
     default: ''
-  dashboard-api-url:
-    description: >-
-      Optional full Review Yeti review-event.v1 ingestion endpoint. Override this for a self-hosted
-      dashboard. It must be supplied together with dashboard-api-key to enable delivery.
+  openrouter-timeout-ms:
+    description: 'Deprecated compatibility input; transport timeouts are carried by the transport plan.'
     required: false
     default: ''
-  dashboard-url:
-    description: >-
-      Review Yeti Cloud site origin used to build the safe dashboard-review-url output and link in
-      the final GitHub review. Set this alongside dashboard-api-url for a self-hosted dashboard.
+  openrouter-ttft-ms:
+    description: 'Deprecated compatibility input; transport admission is handled by the caller.'
     required: false
-    default: 'https://reviewyeti.ai'
-  dashboard-detail:
-    description: "Cloud telemetry detail: 'metrics' sends mechanics and aggregates by default; set 'full' explicitly for structured findings."
+    default: ''
+  openrouter-max-attempts:
+    description: 'Deprecated compatibility input; retry policy is handled by the transport plan.'
     required: false
-    default: 'metrics'
-  dashboard-timeout-ms:
-    description: 'Cloud dashboard delivery timeout in milliseconds. Delivery is always fail-soft.'
+    default: ''
+  lane-deadline-ms:
+    description: 'Deprecated compatibility input; lane budgets are enforced by the caller policy.'
     required: false
-    default: '10000'
+    default: ''
+  lane-call-budget:
+    description: 'Deprecated compatibility input; lane budgets are enforced by the caller policy.'
+    required: false
+    default: ''
+  max-investigation-turns:
+    description: 'Deprecated compatibility input; investigation limits are enforced by the caller policy.'
+    required: false
+    default: ''
+  max-file-diff-chars:
+    description: 'Deprecated compatibility input; use max-diff-chars.'
+    required: false
+    default: ''
+  max-passes:
+    description: 'Deprecated compatibility input; pass limits are enforced by the caller policy.'
+    required: false
+    default: ''
+  exclude:
+    description: 'Deprecated compatibility input; persona selection is controlled by personas.'
+    required: false
+    default: ''
 
 outputs:
   verdict:
-    description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely. Legacy NO_REVIEWABLE_FILES is no longer emitted for policy exclusions; migrate consumers to SHIP plus coverage outputs.'
+    description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely.'
     value: ${{ steps.review.outputs.verdict }}
-  review-status:
-    description: 'Terminal review status: SHIP, FIX_FIRST, BLOCK, PARTIAL_REVIEW, or INCOMPLETE_REVIEW. Expected policy exclusions do not create a coverage gap; partial and incomplete review statuses are never merge-eligible.'
-    value: ${{ steps.review.outputs.review-status }}
-  coverage-status:
-    description: 'Coverage state: complete, partial, or incomplete. Partial and incomplete are never merge-eligible.'
-    value: ${{ steps.review.outputs.coverage-status }}
-  gate-decision:
-    description: 'Derived gate decision: PASS only for a complete clean review; otherwise BLOCKED.'
-    value: ${{ steps.review.outputs.gate-decision }}
-  merge-eligible:
-    description: 'Derived merge eligibility. True only for complete SHIP with a passing gate and no P0/P1 findings.'
-    value: ${{ steps.review.outputs.merge-eligible }}
-  review-dispatch-mode:
-    description: 'Provider dispatch arm for this exact run: baseline or candidate.'
-    value: ${{ steps.review.outputs.review-dispatch-mode }}
-  review-dispatch-run-id:
-    description: 'Provider-owned run identity for the dispatch receipt.'
-    value: ${{ steps.review.outputs.review-dispatch-run-id }}
-  review-dispatch-run-attempt:
-    description: 'Provider-owned run attempt for the dispatch receipt.'
-    value: ${{ steps.review.outputs.review-dispatch-run-attempt }}
-  review-dispatch-plan-digest:
-    description: 'Digest of the deterministic dispatch assignments for this run.'
-    value: ${{ steps.review.outputs.review-dispatch-plan-digest }}
-  review-dispatch-units-total:
-    description: 'Total units in the complete provider-owned dispatch manifest.'
-    value: ${{ steps.review.outputs.review-dispatch-units-total }}
-  review-dispatch-units-emitted:
-    description: 'Units emitted by the provider-owned dispatch run.'
-    value: ${{ steps.review.outputs.review-dispatch-units-emitted }}
-  review-dispatch-units-omitted:
-    description: 'Units omitted by the provider-owned dispatch run.'
-    value: ${{ steps.review.outputs.review-dispatch-units-omitted }}
-  review-dispatch-reflection-status:
-    description: 'Receipt-safe reflection status: complete or needs_review.'
-    value: ${{ steps.review.outputs.review-dispatch-reflection-status }}
-  review-dispatch-digest:
-    description: 'Digest of the provider-owned review-dispatch-run.v2 receipt for this exact head.'
-    value: ${{ steps.review.outputs.review-dispatch-digest }}
-  review-dispatch-policy-digest:
-    description: 'Trusted policy digest bound into the provider-owned dispatch receipt when the provider emitted one.'
-    value: ${{ steps.review.outputs.review-dispatch-policy-digest }}
-  review-dispatch-manifest-digest:
-    description: 'Canonical JSON digest of the complete bounded manifest bound into the provider-owned dispatch receipt.'
-    value: ${{ steps.review.outputs.review-dispatch-manifest-digest }}
-  review-dispatch-manifest-artifact-digest:
-    description: 'Digest of the exact complete manifest artifact bytes written by the provider run.'
-    value: ${{ steps.review.outputs.review-dispatch-manifest-artifact-digest }}
-  review-dispatch-provider-receipt-digest:
-    description: 'Digest of the provider generation-receipt set when the provider returned receipt-backed usage IDs.'
-    value: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
-  review-dispatch-receipt-path:
-    description: 'Exact local path to the provider-owned review-dispatch-run.v2 receipt artifact. Upload or attach this file for durable evidence.'
-    value: ${{ steps.review.outputs.review-dispatch-receipt-path }}
-  review-dispatch-manifest-path:
-    description: 'Exact local path to the complete review-unit manifest artifact. Upload or attach this file for durable evidence.'
-    value: ${{ steps.review.outputs.review-dispatch-manifest-path }}
-  investigation-status:
-    description: 'Bounded investigation status: complete, partial, or incomplete.'
-    value: ${{ steps.review.outputs.investigation-status }}
-  investigation-receipt:
-    description: 'Redacted bounded investigation receipt summary for the exact reviewed head.'
-    value: ${{ steps.review.outputs.investigation-receipt }}
-  evidence-calls:
-    description: 'Count of bounded immutable evidence calls executed across persona lanes.'
-    value: ${{ steps.review.outputs.evidence-calls }}
   findings-count:
     description: 'Total findings across all personas.'
     value: ${{ steps.review.outputs.findings-count }}
+  review-status:
+    description: 'Overall review outcome: SHIP, FIX_FIRST, or BLOCK.'
+    value: ${{ steps.review.outputs.review-status }}
+  gate-decision:
+    description: 'Exact-head gate result: PASS or BLOCK.'
+    value: ${{ steps.review.outputs.gate-decision }}
+  merge-eligible:
+    description: 'Whether the exact-head review is eligible for merge.'
+    value: ${{ steps.review.outputs.merge-eligible }}
+  dispatch-reflection-status:
+    description: 'Provider dispatch reflection status for the exact-head run.'
+    value: ${{ steps.review.outputs.dispatch-reflection-status }}
+  review-dispatch-reflection-status:
+    description: 'Legacy-prefixed alias for provider dispatch reflection status.'
+    value: ${{ steps.review.outputs.dispatch-reflection-status }}
+  provider-receipt-digest:
+    description: 'SHA-256 digest of the exact-head review receipt.'
+    value: ${{ steps.review.outputs.provider-receipt-digest }}
+  review-dispatch-provider-receipt-digest:
+    description: 'Legacy-prefixed alias for the exact-head provider receipt digest.'
+    value: ${{ steps.review.outputs.provider-receipt-digest }}
+  run-report-path:
+    description: 'Path to the exact-head review run report JSON.'
+    value: ${{ steps.review.outputs.run-report-path }}
+  rationale:
+    description: 'Executive rationale summarizing why this verdict was chosen.'
+    value: ${{ steps.review.outputs.rationale }}
+  total-findings:
+    description: 'Total findings across all evaluated reviewers.'
+    value: ${{ steps.review.outputs.total-findings }}
   p0-count:
-    description: 'Count of P0 (exploitable or data-losing) findings.'
+    description: 'Count of P0 (blocking) findings.'
     value: ${{ steps.review.outputs.p0-count }}
   p1-count:
-    description: 'Count of P1 (must fix before merge) findings.'
+    description: 'Count of P1 (high-priority) findings.'
     value: ${{ steps.review.outputs.p1-count }}
   p2-count:
     description: 'Count of P2 (nit) findings.'
@@ -501,60 +231,9 @@ outputs:
   files-reviewed:
     description: 'Changed files the reviewers were shown.'
     value: ${{ steps.review.outputs.files-reviewed }}
-  memory-outbox-path:
-    description: 'Hashed normalized memory outbox path. Upload it as an artifact for replay after runner cancellation.'
-    value: ${{ steps.review.outputs.memory-outbox-path }}
-  run-report-path:
-    description: 'Path to the review-run-report.v1 JSON (per-lane outcomes, failure classes, severity counts, diff digest). Upload it as an artifact to feed scripts/run-report-summary.mjs.'
-    value: ${{ steps.review.outputs.run-report-path }}
-  memory-provider:
-    description: 'Selected single memory provider for this review run.'
-    value: ${{ steps.review.outputs.memory-provider }}
-  memory-query-status:
-    description: 'Memory recall status: available, empty, or unavailable.'
-    value: ${{ steps.review.outputs.memory-query-status }}
-  memory-query-source:
-    description: 'Memory recall transport/source recorded by the provider receipt.'
-    value: ${{ steps.review.outputs.memory-query-source }}
-  memory-write-status:
-    description: 'Memory persistence status: accepted, pending, skipped, or unavailable.'
-    value: ${{ steps.review.outputs.memory-write-status }}
   files-omitted:
     description: 'Changed files the diff budget excluded. Non-zero means the verdict covers only part of the change.'
     value: ${{ steps.review.outputs.files-omitted }}
-  files-oversized:
-    description: 'Changed files whose complete per-file diff exceeded the configured limit. Excluded before model input and noted in the review comment; non-blocking by itself, while other coverage gaps can still produce INCOMPLETE_REVIEW.'
-    value: ${{ steps.review.outputs.files-oversized }}
-  files-skipped-generated:
-    description: 'Changed files skipped by the built-in generated-file catalog or configured repository path-policy/exclude globs. Intentional, and not a coverage gap.'
-    value: ${{ steps.review.outputs.files-skipped-generated }}
-  review-passes:
-    description: 'Budgeted passes each reviewer made over the diff.'
-    value: ${{ steps.review.outputs.review-passes }}
-  total-tokens:
-    description: 'Tokens consumed across every reviewer and pass.'
-    value: ${{ steps.review.outputs.total-tokens }}
-  cost-usd:
-    description: 'Cost reported by the provider; blank when the provider does not report one.'
-    value: ${{ steps.review.outputs.cost-usd }}
-  telemetry-status:
-    description: 'Redacted telemetry delivery status: noop, exported, unavailable, or cancelled.'
-    value: ${{ steps.review.outputs.telemetry-status }}
-  telemetry-events:
-    description: 'Count of bounded telemetry events emitted; raw telemetry is never exposed as an Action output.'
-    value: ${{ steps.review.outputs.telemetry-events }}
-  dashboard-delivery:
-    description: 'Optional dashboard delivery result: disabled, accepted, duplicate, cancelled, or failed. Delivery never changes the review verdict.'
-    value: ${{ steps.review.outputs.dashboard-delivery }}
-  dashboard-review-url:
-    description: 'Full cloud review URL returned by the dashboard after accepted or duplicate delivery.'
-    value: ${{ steps.review.outputs.dashboard-review-url }}
-  review-unit-identity:
-    description: 'Exact bounded review-unit identity JSON, emitted only when trusted review.units.enabled is active.'
-    value: ${{ steps.review.outputs.review-unit-identity }}
-  review-unit-summary:
-    description: 'Bounded stable-ID/path/change/status/reason review-unit receipt JSON, emitted only when trusted review.units.enabled is active.'
-    value: ${{ steps.review.outputs.review-unit-summary }}
 
 runs:
   using: composite
@@ -577,17 +256,8 @@ runs:
           exit 1
         fi
 
-        PR_METADATA="$(gh api "repos/$REPO/pulls/$PR" --jq '[.head.sha, .base.sha] | @tsv')"
-        IFS=$'\t' read -r HEAD_SHA BASE_SHA <<< "$PR_METADATA"
-        if [[ ! "$HEAD_SHA" =~ ^[0-9a-fA-F]{40,64}$ ]] || [[ ! "$BASE_SHA" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
-          echo "::error::Could not resolve immutable head/base SHAs for $REPO#$PR."
-          exit 1
-        fi
-
         echo "repo=$REPO" >> "$GITHUB_OUTPUT"
         echo "pr=$PR" >> "$GITHUB_OUTPUT"
-        echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-        echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
         echo "Reviewing $REPO#$PR"
 
     - name: Fetch pull request diff
@@ -597,126 +267,65 @@ runs:
       run: |
         set -euo pipefail
         gh pr diff "${{ steps.target.outputs.pr }}" \
-          --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/review-yeti.diff"
-        echo "Fetched $(wc -l < "${RUNNER_TEMP}/review-yeti.diff") diff lines."
+          --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/ct-review.diff"
+        PR_HEAD_SHA="$(gh pr view "${{ steps.target.outputs.pr }}" --repo "${{ steps.target.outputs.repo }}" --json headRefOid --jq .headRefOid)"
+        PR_BASE_SHA="$(gh pr view "${{ steps.target.outputs.pr }}" --repo "${{ steps.target.outputs.repo }}" --json baseRefOid --jq .baseRefOid)"
+        echo "PR_HEAD_SHA=$PR_HEAD_SHA" >> "$GITHUB_ENV"
+        echo "PR_BASE_SHA=$PR_BASE_SHA" >> "$GITHUB_ENV"
+        echo "Fetched $(wc -l < "${RUNNER_TEMP}/ct-review.diff") diff lines."
 
-    # ── Node pipeline deps (js-yaml, @actions/cache) ──────────────────────────
-    # Do NOT use actions/setup-node or actions/cache here. Consumer repos with
-    # sha_pinning_required reject nested marketplace actions inside a composite
-    # action checked out to a local path (error reports @v4 even when SHA-pinned).
-    # Blacksmith Ubuntu runners already ship Node 20; install both with npm only.
-    # @actions/cache is the same toolkit the actions/cache marketplace action itself is built on
-    # -- calling it directly from Node has no such nested-action restriction. js-yaml is fatal if
-    # missing (config parsing has no fallback); @actions/cache is best-effort (src/mcp/
-    # zoektIndexCache.js already fails soft to "build fresh" if it never loads).
+    # Installed under the action path, not the consumer's workspace, so reviewing a repository
+    # never leaves a stray node_modules in its checkout.
     - name: Install pipeline dependencies
       shell: bash
       env:
         NPM_PREFIX: ${{ runner.temp }}/review-yeti-npm
+        REVIEW_ENGINE: ${{ inputs.review-engine }}
+        REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
       run: |
         set -euo pipefail
         if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
-          echo "::error::node/npm missing on runner; install via image, not setup-node action"
+          echo "::error::Node and npm are required"
           exit 1
         fi
         echo "node $(node -v) npm $(npm -v)"
-        mkdir -p "$NPM_PREFIX"
-        if [[ ! -d "$NPM_PREFIX/node_modules/js-yaml" ]]; then
-          echo "installing js-yaml@4.1.0 into $NPM_PREFIX"
-          npm install --prefix "$NPM_PREFIX" js-yaml@4.1.0 --no-save --no-audit --no-fund --prefer-offline
-        else
-          echo "reusing $NPM_PREFIX/node_modules/js-yaml"
-        fi
-        test -d "$NPM_PREFIX/node_modules/js-yaml" || {
-          echo "::error::js-yaml missing under $NPM_PREFIX/node_modules after npm install"
-          ls -la "$NPM_PREFIX" "$NPM_PREFIX/node_modules" 2>/dev/null || true
-          exit 1
-        }
-        if [[ ! -d "$NPM_PREFIX/node_modules/@actions/cache" ]]; then
-          echo "installing @actions/cache@4.1.0 into $NPM_PREFIX (best-effort)"
-          npm install --prefix "$NPM_PREFIX" @actions/cache@4.1.0 --no-save --no-audit --no-fund --prefer-offline \
-            || echo "::warning::@actions/cache install failed; Zoekt review-time search will build a fresh index every review instead of restoring a warm one"
-        else
-          echo "reusing $NPM_PREFIX/node_modules/@actions/cache"
-        fi
-        # npm can rewrite the temporary prefix when the optional cache toolkit is installed,
-        # removing the required js-yaml package that was installed above. Reassert the fatal
-        # dependency after the best-effort install, before copying the prefix into the action.
-        if [[ ! -d "$NPM_PREFIX/node_modules/js-yaml" ]]; then
-          echo "restoring js-yaml@4.1.0 after optional cache install"
-          npm install --prefix "$NPM_PREFIX" js-yaml@4.1.0 --no-save --no-audit --no-fund --prefer-offline
-        fi
-        test -d "$NPM_PREFIX/node_modules/js-yaml" || {
-          echo "::error::js-yaml missing under $NPM_PREFIX/node_modules after dependency setup"
-          ls -la "$NPM_PREFIX" "$NPM_PREFIX/node_modules" 2>/dev/null || true
-          exit 1
-        }
-        # Pipeline scripts resolve modules from GITHUB_ACTION_PATH/node_modules
-        # (walk-up from .github/workflows/pipelines/*.js).
-        rm -rf "$GITHUB_ACTION_PATH/node_modules"
-        mkdir -p "$GITHUB_ACTION_PATH/node_modules"
-        # Copy is more portable than symlinks across runners / action_path mounts.
-        cp -a "$NPM_PREFIX/node_modules/." "$GITHUB_ACTION_PATH/node_modules/"
-        # node -e resolves from cwd (consumer workspace), NOT the action path —
-        # so require('js-yaml') fails without NODE_PATH. Verify via absolute path.
-        node -e "
-          const path = require('path');
-          const root = process.env.GITHUB_ACTION_PATH;
-          const mod = path.join(root, 'node_modules', 'js-yaml');
-          const y = require(mod);
-          const ver = require(path.join(mod, 'package.json')).version;
-          if (!y || !ver) throw new Error('js-yaml load failed from ' + mod);
-          console.log('js-yaml ok', ver, 'at', mod);
-        "
+        case "${REVIEW_ENGINE:-legacy}" in
+          pi-workflow)
+            node "$GITHUB_ACTION_PATH/scripts/install-action-runtime.mjs"
+            ;;
+          legacy)
+            npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 --no-save --no-audit --no-fund --silent
+            ;;
+          *)
+            echo "::error::review-engine must be legacy or pi-workflow"
+            exit 1
+            ;;
+        esac
 
-    # Reviewer charters are prompts executed with the caller's API key. Reading them from the
-    # pull request's own checkout would let a pull request rewrite the instructions reviewing it,
-    # and declare as many reviewers as it likes. They are fetched from the base ref instead, over
+    # Fetch configuration from the target repository's trusted base ref (the branch the PR aims at).
+    # Reviewer charters are prompts run with the reviewer API key; they must not be injected by
+    # the pull request under review. We download .ct-review.yaml and persona files directly via
     # the API, into a directory the pull request cannot write to. This also means the caller does
     # not need to check the repository out at all.
     - name: Fetch reviewer configuration from the trusted base ref
-      id: trusted_config
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         CONFIG_REF: ${{ inputs.config-ref }}
-        TARGET_CONFIG: ${{ inputs.target-config }}
-        BASE_REF: ${{ steps.target.outputs.base_sha }}
+        BASE_REF: ${{ github.event.pull_request.base.sha }}
       run: |
         set -euo pipefail
         REPO="${{ steps.target.outputs.repo }}"
-        if [ -z "${BASE_REF:-}" ]; then
-          BASE_REF="$(gh api "repos/$REPO/pulls/${{ steps.target.outputs.pr }}" --jq .base.sha)"
-        fi
-        if [ -z "${BASE_REF:-}" ]; then
-          echo "::error::Could not resolve the immutable pull request base SHA for trusted configuration."
-          exit 1
-        fi
-        echo "base_sha=$BASE_REF" >> "$GITHUB_OUTPUT"
-        if [ -n "${CONFIG_REF:-}" ] && [ "$CONFIG_REF" != "${BASE_REF:-}" ]; then
-          echo "::error::config-ref must equal the immutable pull request base SHA; pull-request head and mutable refs are not trusted."
-          exit 1
-        fi
-        REF="${BASE_REF:-}"
-        DEST="${RUNNER_TEMP}/review-yeti-config"
-        rm -rf "$DEST"
-        mkdir -p "$DEST/.review-yeti/personas"
+        REF="${CONFIG_REF:-${BASE_REF:-}}"
+        DEST="${RUNNER_TEMP}/ct-review-config"
+        mkdir -p "$DEST/.ct-review/personas"
 
-        # The base .gitmodules is part of the trusted policy surface used to classify
-        # submodule URL changes; do not read it from the pull-request checkout.
-        if ! gh api "repos/$REPO/contents/.gitmodules?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/.gitmodules" 2>/dev/null; then
-          rm -f "$DEST/.gitmodules"
+        if [ -z "$REF" ]; then
+          REF=$(gh api "repos/$REPO" --jq .default_branch)
         fi
-
-        if [ "${TARGET_CONFIG:-trusted-base}" = "none" ]; then
-          echo "Target-repository configuration disabled (target-config: none); caller-supplied inputs are the sole policy source."
-        else
         echo "Reading reviewer configuration from $REPO@$REF"
 
-        # .coderabbit.yaml/.yml deliberately excluded: another product's config
-        # must never be silently parsed as Review Yeti policy (see
-        # loadLocalRepoConfig in review-pipeline.js for the incident history).
-        for f in .review-yeti.yaml .review-yeti.yml; do
+        for f in .reviewyeti.yaml .reviewyeti.yml .ct-review.yaml .ct-review.yml .coderabbit.yaml .coderabbit.yml; do
           if gh api "repos/$REPO/contents/$f?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/$f" 2>/dev/null; then
             echo "  found $f"
             break
@@ -724,19 +333,23 @@ runs:
           rm -f "$DEST/$f"
         done
 
+        # The base .gitmodules is part of the trusted policy surface used to classify
+        # submodule URL changes; do not read it from the pull-request checkout.
+        if ! gh api "repos/$REPO/contents/.gitmodules?ref=$REF" -H "Accept: application/vnd.github.raw" > "$DEST/.gitmodules" 2>/dev/null; then
+          rm -f "$DEST/.gitmodules"
+        fi
 
         # Persona files are one markdown file per reviewer; enumerate the directory then fetch each.
-        if gh api "repos/$REPO/contents/.review-yeti/personas?ref=$REF" --jq '.[].name' > "${RUNNER_TEMP}/persona-names" 2>/dev/null; then
+        if gh api "repos/$REPO/contents/.ct-review/personas?ref=$REF" --jq '.[].name' > "${RUNNER_TEMP}/persona-names" 2>/dev/null; then
           while read -r name; do
             case "$name" in
               *.md|*.mdx)
-                gh api "repos/$REPO/contents/.review-yeti/personas/$name?ref=$REF" \
-                  -H "Accept: application/vnd.github.raw" > "$DEST/.review-yeti/personas/$name" 2>/dev/null \
+                gh api "repos/$REPO/contents/.ct-review/personas/$name?ref=$REF" \
+                  -H "Accept: application/vnd.github.raw" > "$DEST/.ct-review/personas/$name" 2>/dev/null \
                   && echo "  found persona $name"
                 ;;
             esac
           done < "${RUNNER_TEMP}/persona-names"
-        fi
         fi
 
     - name: Run review panel
@@ -745,88 +358,32 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
-        DASHBOARD_SITE_URL: ${{ inputs.dashboard-url }}
-        DASHBOARD_DETAIL: ${{ inputs.dashboard-detail }}
-        DASHBOARD_TIMEOUT_MS: ${{ inputs.dashboard-timeout-ms }}
-        DASHBOARD_API_URL: ${{ inputs.dashboard-api-url }}
-        DASHBOARD_API_KEY: ${{ inputs.dashboard-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key || inputs.api-key || inputs.llm-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
-        OPENROUTER_FALLBACK_MODELS: ${{ inputs.openrouter-fallback-models }}
-        LINEAR_API_KEY: ${{ inputs.linear-api-key }}
-        # Context7: only effective when non-empty AND repo .review-yeti.yaml allows it.
+        FIREWORKS_PR_REVIEW_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY }}
+        FIREWORKS_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_API_KEY }}
+        OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}
+        OLLAMA_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
+        GEMINI_API_KEY: ${{ inputs.gemini-api-key || env.GEMINI_API_KEY }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key || env.OPENAI_API_KEY }}
+        OPENROUTER_PR_REVIEW_API_KEY: ${{ inputs.openrouter-api-key || env.OPENROUTER_PR_REVIEW_API_KEY }}
+        REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
+        REVIEW_YETI_TRANSPORT_PLAN_B64: ${{ inputs.transport-plan-b64 }}
         CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
-        HONCHO_ENABLED: ${{ inputs.honcho-enabled }}
-        HONCHO_CONTEXT: ${{ inputs.honcho-context }}
-        HONCHO_WRITE: ${{ inputs.honcho-write }}
-        HONCHO_MCP_ENABLED: ${{ inputs.honcho-mcp-enabled }}
-        HONCHO_MCP_TRANSPORT: ${{ inputs.honcho-mcp-transport }}
-        HONCHO_TIMEOUT_MS: ${{ inputs.honcho-timeout-ms }}
-        HONCHO_MAX_CONTEXT_CHARS: ${{ inputs.honcho-max-context-chars }}
-        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
-        DOPPLER_PROJECT: ${{ inputs.doppler-project }}
-        DOPPLER_CONFIG: ${{ inputs.doppler-config }}
-        ACTIVE_PERSONAS: ${{ inputs.personas }}
-        MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
-        MAX_FILE_DIFF_CHARS: ${{ inputs.max-file-diff-chars }}
-        MAX_PERSONAS: ${{ inputs.max-personas }}
-        MAX_PASSES: ${{ inputs.max-passes }}
-        MAX_INVESTIGATION_TURNS: ${{ inputs.max-investigation-turns }}
-        EXCLUDE_PATHS: ${{ inputs.exclude }}
-        SKIP_UNCHANGED_REVIEW: ${{ inputs.skip-unchanged }}
+        LINEAR_API_KEY: ${{ inputs.linear-api-key || env.LINEAR_API_KEY }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
         OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
-        OPENROUTER_ALLOW_BANNED_PROVIDERS: ${{ inputs.openrouter-allow-banned-providers }}
-        OPENROUTER_IGNORE_PROVIDERS: ${{ inputs.openrouter-ignore-providers }}
-        OPENROUTER_PROVIDER_ROUTING: ${{ inputs.openrouter-provider-routing }}
-        REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
-        REVIEW_YETI_TRANSPORT_PLAN_B64: ${{ inputs.transport-plan-b64 }}
-        REVIEW_YETI_OVERVIEW_BRIEF: ${{ inputs.overview-brief }}
-        REVIEW_YETI_CONDITIONAL_LANES: ${{ inputs.conditional-lanes }}
-        OPENROUTER_STRUCTURED_OUTPUT: ${{ inputs.openrouter-structured-output }}
-        REVIEW_YETI_CONFIG_REF: ${{ inputs.config-ref }}
-        # The caller supplies the immutable action source SHA explicitly. Mutable refs/tags are
-        # rejected by the provider receipt contract.
-        REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
-        GITHUB_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
-        PR_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
-        REVIEW_INTELLIGENCE_ENABLED: ${{ inputs.review-intelligence-enabled }}
-        REVIEW_INTELLIGENCE_MAX_DIFF_CHARS: ${{ inputs.review-intelligence-max-diff-chars }}
-        REVIEW_INTELLIGENCE_MAX_FILE_DIFF_CHARS: ${{ inputs.review-intelligence-max-file-diff-chars }}
-        REVIEW_INTELLIGENCE_MAX_PERSONAS: ${{ inputs.review-intelligence-max-personas }}
+        ACTIVE_PERSONAS: ${{ inputs.personas }}
+        MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+        MAX_PERSONAS: ${{ inputs.max-personas }}
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
-        REVIEW_YETI_CONFIG_DIR: ${{ runner.temp }}/review-yeti-config
-        REVIEW_YETI_TRUSTED_CONFIG_DIR: ${{ runner.temp }}/review-yeti-config
-        REVIEW_YETI_TRUSTED_CONFIG_BASE_SHA: ${{ steps.trusted_config.outputs.base_sha }}
-        # Pre-review "started" comment metadata (GITHUB_EVENT_NAME / ACTOR / RUN_ID are built-in).
-        GITHUB_EVENT_ACTION: ${{ github.event.action }}
-        OPENROUTER_TIMEOUT_MS: ${{ inputs.openrouter-timeout-ms }}
-        OPENROUTER_TTFT_MS: ${{ inputs.openrouter-ttft-ms }}
-        OPENROUTER_MAX_ATTEMPTS: ${{ inputs.openrouter-max-attempts }}
-        LANE_DEADLINE_MS: ${{ inputs.lane-deadline-ms }}
-        LANE_CALL_BUDGET: ${{ inputs.lane-call-budget }}
-        EVIDENCE_MAX_CALLS: ${{ inputs.evidence-max-calls }}
-        EVIDENCE_MAX_SCAN_FILES: ${{ inputs.evidence-max-scan-files }}
-        EVIDENCE_MAX_RESULT_BYTES: ${{ inputs.evidence-max-result-bytes }}
-        # Ensure bare requires (js-yaml) resolve from the action install even if
-        # Node's walk-up from pipelines/ is disrupted on some runners.
-        NODE_PATH: ${{ github.action_path }}/node_modules
+        CT_REVIEW_CONFIG_DIR: ${{ runner.temp }}/ct-review-config
       run: |
-        echo "OpenRouter base URL: $OPENROUTER_BASE_URL (direct)"
-        echo "OpenRouter timeout_ms=${OPENROUTER_TIMEOUT_MS:-30000} stream=true"
-        if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-          echo "::error::llm-api-key / OPENROUTER_API_KEY is empty. Pass a single OpenRouter API key."
-          exit 1
-        fi
-        echo "OpenRouter API key present (value not logged)"
-        if [[ -n "${CONTEXT7_API_KEY:-}" ]]; then
-          echo "Context7 API key present (repo YAML may still disable mcp.context7)"
-        else
-          echo "Context7 API key absent — Context7 MCP stays off"
-        fi
-        export NODE_PATH="${GITHUB_ACTION_PATH}/node_modules${NODE_PATH:+:$NODE_PATH}"
-        PR_DIFF_FILE="${RUNNER_TEMP}/review-yeti.diff" \
+        # Keep the diff on disk. Exporting an entire PR as PR_DIFF can exceed the runner's
+        # execve argument limit before Node starts.
+        PR_DIFF_FILE="${RUNNER_TEMP}/ct-review.diff" \
           node "$GITHUB_ACTION_PATH/.github/workflows/pipelines/review-pipeline.js"

@@ -1,0 +1,8 @@
+--- FILE: lib/calltelemetry/billing/invoice_generator.ex ---
+diff --git a/lib/calltelemetry/billing/invoice_generator.ex b/lib/calltelemetry/billing/invoice_generator.ex
+@@ -12,5 +12,9 @@
+   def process_invoice(account, amount) do
++    # Unhandled pattern match: will raise MatchError when Gateway returns {:error, reason}
++    {:ok, invoice} = Calltelemetry.PaymentGateway.charge(account.customer_id, amount)
++    Calltelemetry.Repo.insert!(invoice)
+   end

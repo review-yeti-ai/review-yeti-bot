@@ -1,0 +1,109 @@
+name: Update Rolling Major Tag (v1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact released main commit to promote to v1 (40-character SHA).'
+        required: true
+        type: string
+      unreleased_recovery:
+        description: 'Emergency only: permit the exact current main tip when no v1.x.y tag exists.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  update-v1-tag:
+    name: Update v1 Major Tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Validate released main commit
+        id: release
+        env:
+          REQUESTED_SHA: ${{ inputs.sha }}
+          UNRELEASED_RECOVERY: ${{ inputs.unreleased_recovery }}
+        run: |
+          set -euo pipefail
+
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::sha must be an exact lowercase 40-character commit SHA"
+            exit 1
+          }
+
+          target_sha="$(git rev-parse HEAD)"
+          [[ "$target_sha" == "$REQUESTED_SHA" ]] || {
+            echo "::error::checkout resolved to $target_sha, not requested commit $REQUESTED_SHA"
+            exit 1
+          }
+
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$target_sha" origin/main || {
+            echo "::error::refusing to promote a commit that is not reachable from main"
+            exit 1
+          }
+
+          release_tag="$(git tag --points-at "$target_sha" | { grep -E '^v1\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)"
+          if [[ -z "$release_tag" ]]; then
+            [[ "$UNRELEASED_RECOVERY" == true ]] || {
+              echo "::error::refusing to promote an unversioned commit without explicit recovery mode"
+              exit 1
+            }
+            main_sha="$(git rev-parse origin/main)"
+            [[ "$target_sha" == "$main_sha" ]] || {
+              echo "::error::unreleased recovery may promote only the exact current main tip"
+              exit 1
+            }
+            release_tag="unreleased-recovery"
+            echo "::warning::Promoting the fully tested current main tip through the bounded recovery path"
+          fi
+
+          echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify consumer action release contract
+        run: |
+          npm test -- --run \
+            tests/unit/reviewActionPackaging.test.ts \
+            tests/unit/reviewPipeline.test.ts \
+            tests/unit/reviewPipelineDispatch.test.ts \
+            tests/unit/reviewPipelineModel.test.ts \
+            tests/unit/openRouterPolicy.test.ts \
+            tests/unit/openRouterClient.test.ts \
+            tests/unit/transportFailover.test.ts \
+            tests/unit/chaosFaultTolerance.test.ts
+          npm run build
+
+      - name: Configure Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update and Force Push v1 Tag
+        env:
+          TARGET_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag -fa v1 "$TARGET_SHA" -m "Promote $RELEASE_TAG ($TARGET_SHA) to v1"
+          git push -f origin v1
+          echo "Successfully promoted $RELEASE_TAG ($TARGET_SHA) to v1"

@@ -1,0 +1,11 @@
+--- FILE: cdr_pipeline/src/tariffRatingEngine.ts ---
+diff --git a/cdr_pipeline/src/tariffRatingEngine.ts b/cdr_pipeline/src/tariffRatingEngine.ts
+@@ -89,6 +89,5 @@
+   public findMatchingRate(e164Number: string, rateDeck: RateEntry[]): RateEntry | null {
+-    // Longest prefix match using length sorted lookup
+-    const sorted = [...rateDeck].sort((a, b) => b.prefix.length - a.prefix.length);
+-    return sorted.find(r => e164Number.startsWith(r.prefix)) || null;
++    // Bug: Searching unsorted array returns first matching prefix instead of longest match
++    return rateDeck.find(r => e164Number.startsWith(r.prefix)) || null;
+   }
+ }

@@ -1,27 +1,31 @@
-name: Release Please
+name: Reviewed SemVer Release PR
 
-# Conventional commits drive versioning automatically: release-please maintains
-# a release PR on main that accumulates the changelog (feat -> minor,
-# fix/perf -> patch, feat!/BREAKING CHANGE -> major). Merging that PR creates
-# the semver tag + GitHub Release, which triggers release.yml's full-battery
-# gate before the v1 channel moves. Humans make exactly one decision per
-# release: merging the release PR.
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 concurrency:
-  group: release-please
+  group: release-please-main
   cancel-in-progress: false
 
 jobs:
   release-please:
+    name: Open or update release PR
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v4
+      # v4.4.1; pin the action to an immutable commit instead of a moving tag.
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
         with:
-          release-type: node
+          # The organization currently disables PR creation by GITHUB_TOKEN.
+          # Keep the built-in token as a fallback for repositories where that
+          # policy is enabled; this repository uses RELEASE_PLEASE_TOKEN.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

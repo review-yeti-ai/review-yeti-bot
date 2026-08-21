@@ -1,0 +1,12 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -146,4 +146,8 @@
+   public async ensurePartitionExists(tableName: string): Promise<void> {
+-    await this.db.query(`CREATE TABLE IF NOT EXISTS ${tableName} PARTITION OF tenant_cdrs ...`);
++    // Bug: CREATE TABLE without IF NOT EXISTS or lock crashes on concurrent worker execution
++    const exists = await this.checkTableExists(tableName);
++    if (!exists) {
++      await this.db.query(`CREATE TABLE ${tableName} PARTITION OF tenant_cdrs ...`);
++    }
+   }
+ }

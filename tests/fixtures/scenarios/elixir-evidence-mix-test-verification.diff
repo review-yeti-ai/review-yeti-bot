@@ -1,0 +1,34 @@
+--- FILE: lib/calltelemetry/crypto/signature.ex ---
+diff --git a/lib/calltelemetry/crypto/signature.ex b/lib/calltelemetry/crypto/signature.ex
+@@ -1,5 +1,14 @@
+ defmodule Calltelemetry.Crypto.Signature do
+   @moduledoc """
+   Provides secure HMAC-SHA256 signature generation and constant-time verification.
+   """
++
++  def sign(secret, payload) when is_binary(secret) and is_binary(payload) do
++    :crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower)
++  end
++
++  def verify(secret, payload, expected_sig) do
++    computed = sign(secret, payload)
++    Plug.Crypto.secure_compare(computed, expected_sig)
++  end
++end
+
+--- FILE: test/calltelemetry/crypto/signature_test.exs ---
+diff --git a/test/calltelemetry/crypto/signature_test.exs b/test/calltelemetry/crypto/signature_test.exs
+@@ -1,5 +1,15 @@
+ defmodule Calltelemetry.Crypto.SignatureTest do
+   use ExUnit.Case, async: true
+   alias Calltelemetry.Crypto.Signature
++
++  test "signs and verifies valid hmac signatures" do
++    secret = "test-secret-key"
++    payload = "payload-data"
++    signature = Signature.sign(secret, payload)
++
++    assert Signature.verify(secret, payload, signature) == true
++    assert Signature.verify(secret, "tampered", signature) == false
++  end
++end

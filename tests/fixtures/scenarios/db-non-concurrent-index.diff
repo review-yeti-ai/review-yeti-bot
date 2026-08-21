@@ -1,0 +1,7 @@
+--- FILE: migrations/20260820_add_events_idx.sql ---
+diff --git a/migrations/20260820_add_events_idx.sql b/migrations/20260820_add_events_idx.sql
+@@ -1,3 +1,5 @@
+ -- Add index for audit events query optimization
++-- Risk: CREATE INDEX without CONCURRENTLY locks the table against writes in PostgreSQL
++CREATE INDEX idx_audit_events_created_at ON audit_events (created_at);
++

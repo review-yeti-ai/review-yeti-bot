@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/sipServer.ts ---
+diff --git a/sip_signaling_service/src/sipServer.ts b/sip_signaling_service/src/sipServer.ts
+@@ -57,4 +57,5 @@
+-  const uriRegex = /^sip:(?:([^@:]+)(?::([^@]+))?@)?([^;:]+)(?::(\d+))?(?:;(.*))?$/;
++  // Breaking regex change: rejects URI parameter strings containing transport or transport tags
++  const uriRegex = /^sip:([^@]+)@([a-zA-Z0-9.-]+)(?::(\d+))?$/;
+   const match = rawUri.match(uriRegex);
+   if (!match) throw new Error(`Invalid SIP URI: ${rawUri}`);
+ }

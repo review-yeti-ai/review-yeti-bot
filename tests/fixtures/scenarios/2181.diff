@@ -1,0 +1,15 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -60,14 +60,22 @@ export class BatchSqlLogger {
++  public buildUpsertQuery(record: CallDetailRecord): { text: string; values: any[] } {
++    return {
++      text: `
++        INSERT INTO tenant_cdrs (id, tenant_id, duration_sec, cost)
++        VALUES ($1, $2, $3, $4)
++        ON CONFLICT (id) DO UPDATE
++        SET duration_sec = EXCLUDED.duration_sec, cost = EXCLUDED.cost;
++      `,
++      values: [record.id, record.tenantId, record.duration, record.cost],
++    };
++  }
+ }
