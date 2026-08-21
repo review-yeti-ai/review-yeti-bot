@@ -474,6 +474,15 @@ function resolveModelConfig(env = process.env) {
           model: t.model || model,
           provider: t.provider,
           plugins: t.plugins,
+          // Preserve the immutable central transport contract all the way to the
+          // request boundary.  The handoff validator requires every admitted
+          // transport to stream, but this mapping used to silently discard that
+          // field, causing the hosted panel to send buffered completions while
+          // the smoke probe sent streaming completions.
+          stream: t.stream === true,
+          reasoningEffort: t.reasoning_effort || t.reasoningEffort,
+          structuredOutput: t.structured_output || t.structuredOutput,
+          perfMetricsInResponse: t.perf_metrics_in_response === true || t.perfMetricsInResponse === true,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
         };
       }).filter((t) => Boolean(t.apiKey))
@@ -1108,6 +1117,81 @@ function isOpenRouterTransport(transport = {}) {
 }
 
 /**
+ * Read an OpenAI-compatible completion while preserving the transport's streaming contract.
+ *
+ * The hosted policy admits only streaming transports.  Older action code nevertheless called
+ * `response.json()` unconditionally and omitted `stream` from the request, so the smoke probe
+ * exercised a different request shape from the real panel and every persona waited for a
+ * buffered, full-generation response.  Keep the non-streaming branch for legacy callers/tests,
+ * but consume SSE deltas when the central handoff explicitly requests streaming.
+ */
+async function readChatCompletionResponse(response, streamEnabled) {
+  const contentType = typeof response?.headers?.get === 'function'
+    ? String(response.headers.get('content-type') || '').toLowerCase()
+    : '';
+  if (!streamEnabled || !contentType.includes('text/event-stream')) {
+    return response.json();
+  }
+
+  const chunks = [];
+  let latest = null;
+  let pending = '';
+  const consume = (text, final = false) => {
+    pending += String(text);
+    const lines = pending.split(/\r?\n/);
+    pending = final ? '' : (lines.pop() || '');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const payload = JSON.parse(data);
+        latest = payload;
+        const choice = payload?.choices?.[0];
+        const delta = choice?.delta?.content;
+        const message = choice?.message?.content;
+        if (typeof delta === 'string') chunks.push(delta);
+        else if (typeof message === 'string') chunks.push(message);
+      } catch (_) {
+        // Providers may terminate a stream with a partial final SSE frame. The
+        // completed content accumulated so far remains valid and is parsed below.
+      }
+    }
+  };
+
+  if (response?.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) consume(decoder.decode(value, { stream: true }));
+      }
+      consume(decoder.decode(), true);
+    } finally {
+      reader.releaseLock?.();
+    }
+  } else if (typeof response.text === 'function') {
+    consume(await response.text(), true);
+  }
+
+  if (chunks.length === 0) throw new Error('empty_sse');
+  const lastChoice = latest?.choices?.[0] || {};
+  return {
+    ...(latest || {}),
+    choices: [{
+      ...lastChoice,
+      message: {
+        ...(lastChoice.message || {}),
+        content: chunks.join(''),
+      },
+    }],
+  };
+}
+
+/**
  * Evaluates one persona charter against the diff using an LLM.
  *
  * Never throws: a failed lane degrades to zero findings with an `error` set, so one bad persona
@@ -1200,6 +1284,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           provider: requestOptions?.provider,
           plugins: requestOptions?.plugins,
           name: 'default',
+          stream: false,
           timeoutMs: options.timeoutMs || 90_000,
         }];
 
@@ -1215,6 +1300,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const transportApiKey = transport.apiKey || transport.api_key || cfg.apiKey;
       const transportBaseUrl = (transport.baseUrl || transport.base_url || cfg.baseUrl).replace(/\/+$/, '');
       const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
+      const streamEnabled = transport.stream === true;
       const isOpenRouterTransport =
         String(transport.provider || '').toLowerCase() === 'openrouter' ||
         String(transport.compat || '').toLowerCase() === 'openrouter' ||
@@ -1231,10 +1317,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         temperature: 0.1,
         response_format: { type: 'json_object' },
       };
+      if (streamEnabled) requestBody.stream = true;
 
       const reasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
       if (reasoningEffort) {
-        requestBody.reasoning_effort = reasoningEffort;
+        if (isOpenRouterTransport) requestBody.reasoning = { effort: reasoningEffort };
+        else requestBody.reasoning_effort = reasoningEffort;
+      }
+      if (transport.perfMetricsInResponse === true || transport.perf_metrics_in_response === true) {
+        requestBody.perf_metrics_in_response = true;
       }
 
       // OpenRouter-only routing controls must never be sent to direct provider
@@ -1288,7 +1379,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
           }
 
-          const payload = await response.json();
+          const payload = await readChatCompletionResponse(response, streamEnabled);
           const responseBase = {
             ...resultBase,
             model: resolveResponseModel(payload, requestModel),
