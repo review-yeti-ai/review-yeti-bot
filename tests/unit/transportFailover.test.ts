@@ -234,11 +234,60 @@ describe('Multi-Transport Fast Failover', () => {
     );
 
     expect(result.decision).toBe('APPROVE');
-    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies).toHaveLength(3);
     expect(requestBodies[0].body.max_tokens).toBe(8192);
     expect(requestBodies[1].body.max_tokens).toBe(8192);
+    expect(requestBodies[2].body.max_tokens).toBe(8192);
     expect(requestBodies[0].body.reasoning_effort).toBe('high');
-    expect(requestBodies[1].body.reasoning_effort).toBe('medium');
+    expect(requestBodies[1].body.reasoning_effort).toBe('none');
+    expect(requestBodies[2].body.reasoning_effort).toBe('medium');
+  });
+
+  it('recovers direct reasoning output before failing over to another provider', async () => {
+    const requestBodies: any[] = [];
+    const mockFetch = async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      requestBodies.push(body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: {
+          content: requestBodies.length === 1
+            ? 'reasoning only, no findings object'
+            : JSON.stringify({ findings: [] }),
+        } }] }),
+      };
+    };
+
+    const result = await reviewWithModel(
+      { id: 'security', name: 'Security & Tenancy Guardian', charter: 'Check tenant scope', reasoning_effort: 'high' },
+      [{ path: 'lib/orders.ex', patch: '+ def list_orders do' }],
+      { repo: 'acme/test', prNumber: 1 },
+      null,
+      {
+        fetchImplementation: mockFetch,
+        transports: [{
+          name: 'fireworks',
+          baseUrl: 'https://api.fireworks.ai/inference/v1',
+          apiKey: 'fw-key',
+          model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+          reasoning_effort: 'high',
+        }, {
+          name: 'ollama',
+          baseUrl: 'https://ollama.ai/v1',
+          apiKey: 'ollama-key',
+          model: 'deepseek-v4-flash:cloud',
+          reasoning_effort: 'high',
+        }],
+      },
+    );
+
+    expect(result.decision).toBe('APPROVE');
+    expect(result.transport).toBe('fireworks');
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]).toMatchObject({ max_tokens: 8192, reasoning_effort: 'high' });
+    expect(requestBodies[1]).toMatchObject({ max_tokens: 8192, reasoning_effort: 'none' });
+    expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
   it('retries unparseable output once on the final transport with a bounded format-recovery request', async () => {
