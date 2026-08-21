@@ -73,7 +73,7 @@ async function main() {
   const config = createDefaultV3Config();
   const client = new OpenRouterClient({
     baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: requiredWorkerEnv(process.env, 'OPENROUTER_API_KEY'),
+    apiKey: process.env.OPENROUTER_REVIEW_FLEET_KEY || process.env.OPENROUTER_PR_REVIEW_API_KEY || requiredWorkerEnv(process.env, 'OPENROUTER_API_KEY'),
   });
 
   // Parse files from diff
