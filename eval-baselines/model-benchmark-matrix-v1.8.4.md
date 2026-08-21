@@ -2,7 +2,7 @@
 
 ![Pareto Frontier Chart](charts/pareto-frontier-accuracy-vs-cost-v1.8.4.svg)
 
-**Generated**: 2026-08-21T14:56:18.410Z
+**Generated**: 2026-08-21T14:56:38.211Z
 **Evaluated Models**: deepseek/deepseek-v4-flash-0731:low, deepseek/deepseek-v4-flash-0731:medium, deepseek/deepseek-v4-flash-0731:high, google/gemini-3.7-flash:low, google/gemini-3.7-flash:medium, google/gemini-3.7-flash:high, claude-5-haiku:low, claude-5-haiku:medium, claude-5-haiku:high, openrouter/5.6-luna-low, openrouter/5.6-luna-medium, openrouter/5.6-luna-high, qwen/qwen-3.8-27b:low, qwen/qwen-3.8-27b:medium, qwen/qwen-3.8-27b:high
 **Total Scenarios**: 190
 
