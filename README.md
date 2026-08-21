@@ -122,7 +122,7 @@ OpenRouter use maximum reasoning, while Ollama uses its documented `high` settin
 gets one retry, and OpenRouter owns endpoint selection after a timeout.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
-budget, a twelve-minute (720s) lane deadline with a two-minute non-generation reserve, and a
+budget, a fifteen-minute (900s) lane deadline with a two-minute non-generation reserve, and a
 30-second OpenRouter first-token budget.
 
 - **timeout_ms = 120000 for Fireworks, 90000 for Ollama and the OpenRouter fallback.** Since
@@ -179,9 +179,9 @@ Separately,
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
 of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 3 transports at
 `connect_timeout_ms` `15000 + 30000 + 30000 = 75000`, plus `3 x 20000 = 60000` stall reserve,
-`(75000 + 60000) x 2 attempts x 2 turns + 120000 overhead = 660000 <= 720000`, and
-`max_passes(2) x lane_deadline_ms(720000) = 1440000 <= 1800000` (the 30-minute job cap, leaving
-360s for workflow setup, publishing, and verdict enforcement). The explicit overhead reserve
+`(75000 + 60000) x 2 attempts x 2 turns + 120000 overhead = 660000 <= 900000`, and
+`max_passes(2) x lane_deadline_ms(900000) = 1800000 <= 2400000` (the 40-minute job cap, leaving
+600s for workflow setup, publishing, and verdict enforcement). The explicit overhead reserve
 covers streaming-gate wait, validation, failover dispatch, and evidence work that connect/stall
 arithmetic alone cannot represent. This still guards against a repeat of the incident that
 originally motivated this invariant -- a full sequential failover of transports that never connect
