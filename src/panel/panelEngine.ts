@@ -874,9 +874,23 @@ async function runPersona(
             await new Promise((r) => setTimeout(r, 1000));
             continue;
           }
-          errors.push(`${providerId}: ${error?.message || String(error)}`);
-          if (config.reviewers.fallback === 'none') break;
-          break;
+          if (attempts >= maxAttempts) {
+            bus.publishEvent({
+              jobId: effectiveJobId,
+              timestamp: new Date().toISOString(),
+              type: 'llm:error',
+              persona: persona.id,
+              data: {
+                provider: providerId,
+                model: targetModel,
+                error: error.message,
+                status: 'ERROR',
+              },
+            });
+            errors.push(`${providerId}: ${error?.message || String(error)}`);
+            if (config.reviewers.fallback === 'none') break;
+            break;
+          }
         }
       }
     }
@@ -956,22 +970,34 @@ export async function executePersonaPanel(options: {
       primaryAuthoringModel = firstSpec?.model;
     }
 
-    const settled: any[] = [];
-    for (const persona of applicable) {
-      const isCurrent = isCurrentHead ? isCurrentHead() : true;
-      const activeId = activeRuns.get(runKey);
-      if (!isCurrent || activeId !== runId) {
-        logger.info(`Aborting sequential persona execution: run ${runId} for ${runKey} is no longer active. isCurrentHead=${isCurrent}, activeRunsId=${activeId}, expectedId=${runId}`);
-        throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
-      }
-      try {
-        const result = await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId, primaryAuthoringModel);
-        settled.push({ persona, result });
-      } catch (error: any) {
-        console.error('SETTLED_ERROR:', persona.id, error?.stack || error?.message || error);
-        settled.push({ persona, error: error?.message || String(error) });
-      }
+    const isCurrent = isCurrentHead ? isCurrentHead() : true;
+    const activeId = activeRuns.get(runKey);
+    if (!isCurrent || activeId !== runId) {
+      logger.info(`Aborting persona execution: run ${runId} for ${runKey} is no longer active. isCurrentHead=${isCurrent}, activeRunsId=${activeId}, expectedId=${runId}`);
+      throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
     }
+
+    const settledResults = await Promise.allSettled(
+      applicable.map(async (persona) => {
+        const stillCurrent = isCurrentHead ? isCurrentHead() : true;
+        const currentActiveId = activeRuns.get(runKey);
+        if (!stillCurrent || currentActiveId !== runId) {
+          throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
+        }
+        const result = await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId, primaryAuthoringModel);
+        return { persona, result };
+      })
+    );
+
+    const settled = settledResults.map((res, index) => {
+      const persona = applicable[index];
+      if (res.status === 'fulfilled') {
+        return res.value;
+      }
+      const errorMsg = res.reason?.message || String(res.reason);
+      console.error('SETTLED_ERROR:', persona.id, res.reason?.stack || errorMsg);
+      return { persona, error: errorMsg };
+    });
     const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
     if (requiredFailures.length > 0) {
       throw new PanelConfigurationError(`required persona failure: ${requiredFailures.map((entry) => entry.error).join(' | ')}`);
