@@ -443,6 +443,12 @@ function resolveModelConfig(env = process.env) {
             resolvedKey = env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY || '';
           } else if (nameLower.includes('ollama') || urlLower.includes('ollama.com') || urlLower.includes('ollama.ai')) {
             resolvedKey = env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY || '';
+          } else if (nameLower.includes('anthropic') || urlLower.includes('anthropic.com')) {
+            resolvedKey = env.ANTHROPIC_API_KEY || '';
+          } else if (nameLower.includes('gemini') || urlLower.includes('googleapis.com')) {
+            resolvedKey = env.GEMINI_API_KEY || '';
+          } else if (nameLower.includes('openai') || urlLower.includes('openai.com')) {
+            resolvedKey = env.OPENAI_API_KEY || '';
           } else {
             resolvedKey = env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || env.OPENROUTER_API_KEY || '';
           }
@@ -459,11 +465,63 @@ function resolveModelConfig(env = process.env) {
       }).filter((t) => Boolean(t.apiKey))
     : [];
 
+  if (transports.length === 0) {
+    const autoTransports = [];
+    if (env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY) {
+      autoTransports.push({
+        name: 'fireworks',
+        baseUrl: (env.FIREWORKS_BASE_URL || 'https://api.fireworks.ai/inference/v1').replace(/\/+$/, ''),
+        apiKey: env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY,
+        model: env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        timeoutMs: 120_000,
+      });
+    }
+    if (env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY) {
+      autoTransports.push({
+        name: 'ollama',
+        baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com/v1').replace(/\/+$/, ''),
+        apiKey: env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY,
+        model: env.OLLAMA_MODEL || 'deepseek-v4-flash:cloud',
+        timeoutMs: 90_000,
+      });
+    }
+    if (env.ANTHROPIC_API_KEY) {
+      autoTransports.push({
+        name: 'anthropic',
+        baseUrl: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1').replace(/\/+$/, ''),
+        apiKey: env.ANTHROPIC_API_KEY,
+        model: env.ANTHROPIC_MODEL || 'claude-3-7-sonnet-20250219',
+        timeoutMs: 120_000,
+      });
+    }
+    if (env.GEMINI_API_KEY) {
+      autoTransports.push({
+        name: 'gemini',
+        baseUrl: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/, ''),
+        apiKey: env.GEMINI_API_KEY,
+        model: env.GEMINI_MODEL || 'gemini-2.5-flash',
+        timeoutMs: 90_000,
+      });
+    }
+    if (apiKey) {
+      autoTransports.push({
+        name: 'openrouter',
+        baseUrl,
+        apiKey,
+        model,
+        timeoutMs: 90_000,
+      });
+    }
+    if (autoTransports.length > 0) {
+      transports = autoTransports;
+    }
+  }
+
   return {
     enabled: Boolean(apiKey || transports.length > 0),
-    apiKey,
-    baseUrl,
-    model,
+    apiKey: apiKey || (transports.length > 0 ? transports[0].apiKey : ''),
+    baseUrl: (transports.length > 0 ? transports[0].baseUrl : baseUrl),
+    model: (transports.length > 0 ? transports[0].model : model),
     maxDiffChars,
     transports,
   };
