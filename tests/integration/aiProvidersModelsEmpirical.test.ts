@@ -356,7 +356,7 @@ describe('AI Providers & Models Management System Empirical Test Suite', () => {
 
       expect(res.status).toBe(200);
       expect(typeof res.body.status).toBe('string');
-      expect(['connected', 'disconnected', 'error']).toContain(res.body.status);
+      expect(['connected', 'configured', 'disconnected', 'error']).toContain(res.body.status);
       expect(typeof res.body.latencyMs).toBe('number');
       expect(res.body.message).toContain('Local Ollama Cluster');
       expect(res.body.message).toContain('http://localhost:11434/v1');

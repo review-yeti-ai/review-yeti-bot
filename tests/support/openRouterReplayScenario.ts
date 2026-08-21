@@ -56,9 +56,10 @@ export const openRouterReplayUserPrompt = [
   '',
   '--- FILE: src/api/user.ts ---',
   'diff --git a/src/api/user.ts b/src/api/user.ts',
-  '@@ -1,1 +1,2 @@',
+  '@@ -1,1 +1,3 @@',
   '+const id = req.query.id;',
   '+return users[id];',
+  '',
   '',
 ].join('\n');
 
