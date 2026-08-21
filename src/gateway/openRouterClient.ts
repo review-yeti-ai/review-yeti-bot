@@ -551,6 +551,11 @@ async function readStreamingResponse(
   requestedModel: string,
   options?: { inactivityTimeoutMs?: number; ttftTimeoutMs?: number; persona?: string; providerId?: string }
 ): Promise<any> {
+  const contentType = response.headers?.get('content-type') || '';
+  if (!contentType.includes('text/event-stream')) {
+    return response.json();
+  }
+
   const reader = response.body?.getReader();
   if (!reader) return response.json();
 
@@ -623,7 +628,6 @@ async function readStreamingResponse(
       lines.forEach(consume);
     }
     buffer += decoder.decode();
-    if (buffer.trim()) consume(buffer);
   } catch (error) {
     if (typeof reader.cancel === 'function') {
       await reader.cancel().catch(() => undefined);
@@ -631,9 +635,11 @@ async function readStreamingResponse(
     throw error;
   }
 
+  const finalContent = state.content || state.reasoning || '';
+
   return {
     model: state.model,
-    choices: [{ message: { role: 'assistant', content: state.content, reasoning: state.reasoning || undefined } }],
+    choices: [{ message: { role: 'assistant', content: finalContent, reasoning: state.reasoning || undefined } }],
     usage: state.usage,
     cost: state.cost,
   };
@@ -695,7 +701,10 @@ export class OpenRouterClient implements ReviewModelClient {
         ttftTimeoutMs: request.ttftTimeoutMs,
         inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
       });
-      const content = data?.choices?.[0]?.message?.content;
+      const rawMsg = data?.choices?.[0]?.message;
+      const content = (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '')
+        ? rawMsg.content
+        : (typeof rawMsg?.reasoning === 'string' && rawMsg.reasoning.trim() !== '' ? rawMsg.reasoning : '');
       if (typeof content !== 'string' || content.trim() === '') {
         throw new OpenRouterResponseError('OpenRouter returned empty completion content');
       }
