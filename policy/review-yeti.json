@@ -16,7 +16,8 @@
         "connect_timeout_ms": 15000,
         "stream": true,
         "structured_output": "strict",
-        "perf_metrics_in_response": true
+        "perf_metrics_in_response": true,
+        "reasoning_effort": "high"
       },
       {
         "name": "ollama",
@@ -26,7 +27,8 @@
         "compat": "openai",
         "timeout_ms": 90000,
         "connect_timeout_ms": 30000,
-        "stream": true
+        "stream": true,
+        "reasoning_effort": "high"
       },
       {
         "name": "openrouter-fallback",
@@ -52,7 +54,8 @@
             "p99": 3
           },
           "data_collection": "deny"
-        }
+        },
+        "reasoning_effort": "high"
       }
     ],
     "openrouter_stream": "true",
