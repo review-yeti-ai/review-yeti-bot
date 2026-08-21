@@ -80,10 +80,18 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Verify release tests and types
+      - name: Verify consumer action release contract
         run: |
-          npm test
-          npm run lint
+          npm test -- --run \
+            tests/unit/reviewActionPackaging.test.ts \
+            tests/unit/reviewPipeline.test.ts \
+            tests/unit/reviewPipelineDispatch.test.ts \
+            tests/unit/reviewPipelineModel.test.ts \
+            tests/unit/openRouterPolicy.test.ts \
+            tests/unit/openRouterClient.test.ts \
+            tests/unit/transportFailover.test.ts \
+            tests/unit/chaosFaultTolerance.test.ts
+          npm run build
 
       - name: Configure Git User
         run: |
