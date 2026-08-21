@@ -101,6 +101,7 @@ jobs:
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
           REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
           RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
+          RESOLVED_REF_SHA: ${{ steps.resolved.outputs.ref_sha }}
         run: .exampleorg-review-actions/scripts/validate-release-provenance.sh
 
       # Preflight admission (QA-380): the smoke step proves which transports are healthy before
