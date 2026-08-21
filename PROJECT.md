@@ -1,125 +1,237 @@
-# Project: Review Yeti Benchmark Suite Expansion
+# Project: Review Yeti Dynamic Context Management & Compaction Architecture
 
 ## Architecture
-Review Yeti is an automated PR code review and benchmark evaluation engine. This project expands the benchmark evaluation suite by 2x (from 94 to 190 total scenarios) using realistic telecom SWE-bench style multi-file codebases and upgrading the multi-turn workspace runner.
 
-The system is organized into the following major modules and tracks:
-1. **Generic Telecom Call Engine Workspace (`tests/fixtures/workspaces/telecom-call-engine/`)**:
-   - `sip_signaling_service`: RFC 3261 SIP state machine, dialog tracker, RFC 4566 SDP offer/answer negotiation, blind/attended transfer coordinator.
-   - `rtp_media_gateway`: RFC 3550 RTP/RTCP packet handling, adaptive jitter buffer, G.711/Opus codecs, dynamic UDP port pool manager.
-   - `cdr_pipeline`: CDR record normalization, E.164 Radix Trie tariff rate engine, tenant quota tracker, async batch SQL logger.
-   - `pbx_device_manager`: SIP user-agent registration, RFC 2617 MD5 Digest Auth, trunk lease allocator, CTI webhook event emitter.
-   - Zero proprietary IP: 100% RFC-standard generic telephony abstractions.
-2. **Scenario Catalog & Diff Fixtures (`src/evaluation/scenarios.ts` & `tests/fixtures/scenarios/`)**:
-   - Expanded from 94 to 190 scenarios (96 new scenarios #2101–#2196).
-   - 4 challenge archetypes: Needle-in-a-Haystack (300–1,500 lines), Cross-Module Contract Breaks, Distributed Concurrency Races, False Positive Traps.
-   - 1-to-1 matching `.diff` unified patch fixtures under `tests/fixtures/scenarios/`.
-3. **Workspace-Aware Multi-Turn Runner (`src/evaluation/evaluationRunner.ts`)**:
-   - Multi-turn repository tool interaction loop (`file_read`, `code_search`, `symbol_lookup`).
-   - Dual execution modes: Live OpenRouter streaming with token/latency/cost tracking, and deterministic offline replay simulation.
-4. **Release Baseline v4 & Quality Gate (`eval-baselines/` & `scripts/compare-release-baselines.mjs`)**:
-   - Canonical `model-benchmark-matrix-v4.json` and `.md` across all 190 scenarios for approved 4 models.
-   - Automated quality gate comparisons enforcing zero recall/accuracy regression and 0 new false negatives.
-5. **E2E Testing Track (`TEST_INFRA.md` & `tests/e2e/`)**:
-   - Dual track independent test harness covering Tiers 1–4 requirement tests and Tier 5 adversarial coverage hardening.
+The system refactors Review Yeti's context handling architecture to eliminate arbitrary diff truncation and support massive PRs across models ranging from 128k to 1M+ tokens:
+
+1. **Dynamic Model Context Window Discovery & Budget Calculation (`src/gateway/openRouterClient.ts`, `src/config/schema.ts`)**:
+   - Resolves model context window limits dynamically via OpenRouter API metadata (`GET /models`) with 1-hour TTL caching, single-flight async deduplication, and deterministic static fallback tables.
+   - Computes safe diff character capacity dynamically:
+     $$C_{\text{safe}} = (\text{ContextTokens} - \text{SystemPromptTokens} - \text{ToolReserveTokens}) \times 3.8$$
+     Yielding ~410,400 chars (~10,260 lines) for 128k models and ~3,908,588 chars (~97,700 lines) for 1M models, replacing static 24,000 char limits.
+   - Raises config schema ceilings (`max_prompt_tokens` up to 4,000,000; `max_diff_bytes` up to 10,000,000).
+
+2. **Diff & Multi-Turn History Compaction Engine (`src/pipeline/diffCompactor.ts`, `src/pipeline/turnHistoryManager.ts`)**:
+   - **Diff Compactor**: Collapses unchanged context lines to tight $\pm 3$ line bounds, splits distant change clusters (>6 context lines) into distinct hunks, recalculates `oldStart, oldCount, newStart, newCount` preserving exact line number invariance (`changedLineNumbers`), strips minified bundles/lockfiles, and normalizes whitespace.
+   - **Turn History Manager**: Manages multi-turn persona tool loops with a 2-turn active full-fidelity window while compacting older turns ($1 \dots k-2$) into structured tool receipts and rolling findings memory, bounding historical context to <2k tokens per persona.
+
+3. **Commit SHA Range & Zero-Loss Batch Partitioning (`src/pipeline/shaPartitionManager.ts`)**:
+   - Injects explicit commit SHA ranges (`base_sha...head_sha`) and complete file manifest tables into reviewer prompts.
+   - Implements deterministic zero-loss file partitioning: splits PRs exceeding $C_{\text{safe}}$ into parallel batches across review lanes, ensuring 100% of files are audited with 0 files dropped.
+   - Emits transparent coverage telemetry in PR review comments (`"Coverage: 100% (X/X files reviewed across Y partitions, 0 omitted)"`) and step outputs (`files-reviewed`, `files-omitted=0`, `partitions-count`, `coverage-pct=100`).
+
+4. **Evaluation Harness Augmentation & Documentation (`src/evaluation/pipelineHarnessRunner.ts`, `docs/features/context_management.md`)**:
+   - Augments `pipelineHarnessRunner.ts`, `scripts/evaluate-release-benchmark.mjs`, and `scripts/compare-release-baselines.mjs` to benchmark compaction, SHA partitioning, and multi-turn scaling, enforcing zero-omission quality gates.
+   - Authors comprehensive architectural and operational documentation in `docs/features/context_management.md`.
+
+```
+                    ┌─────────────────────────────────────────────────────────┐
+                    │               PR Ingestion & Commit SHA Range           │
+                    │         (base_sha...head_sha + Full File Manifest)      │
+                    └──────────────────────────┬──────────────────────────────┘
+                                               │
+                                               ▼
+                    ┌─────────────────────────────────────────────────────────┐
+                    │       Dynamic Model Discovery & Safe Capacity (C_safe)  │
+                    │   - OpenRouter API / Static Fallback (128k - 1M+ tokens)│
+                    │   - C_safe = (T_ctx - T_sys - T_reserve) * 3.8          │
+                    └──────────────────────────┬──────────────────────────────┘
+                                               │
+                                               ▼
+                    ┌─────────────────────────────────────────────────────────┐
+                    │            Intelligent Diff Compaction Engine           │
+                    │   - +/- 3 Context Line Collapsing & Hunk Recalculation  │
+                    │   - Minified / Bundle Stripping & Whitespace Compaction │
+                    └──────────────────────────┬──────────────────────────────┘
+                                               │
+                                               ▼
+                    ┌─────────────────────────────────────────────────────────┐
+                    │      Zero-Loss File Partitioning (if Diff > C_safe)     │
+                    │   - Bin-packing into K parallel review partition lanes  │
+                    │   - 100% file coverage guarantee (0 dropped files)      │
+                    └──────────────────────────┬──────────────────────────────┘
+                                               │
+                                               ▼
+                    ┌─────────────────────────────────────────────────────────┐
+                    │        Multi-Turn Tool Loop & Sliding Turn Compactor    │
+                    │   - 2-turn full fidelity active window                  │
+                    │   - Sliding tool receipts & findings memory ledger      │
+                    └──────────────────────────┬──────────────────────────────┘
+                                               │
+                                               ▼
+                    ┌─────────────────────────────────────────────────────────┐
+                    │         Finding Aggregation, Verification & Telemetry   │
+                    │   - Cross-partition finding deduplication & verifier    │
+                    │   - Telemetry: "Coverage: 100% (X/X files, 0 omitted)"  │
+                    └─────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## Feature Inventory
+
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | Telecom Workspace - SIP Signaling Service | Implement RFC 3261 state machine, dialog manager, SDP negotiator, and call transfer coordinator | M1 | R1 / ORIGINAL_REQUEST |
-| 2 | Telecom Workspace - RTP Media Gateway | Implement RTP packet jitter buffers, audio transcoding (G.711/Opus), and UDP port allocation pool | M1 | R1 / ORIGINAL_REQUEST |
-| 3 | Telecom Workspace - CDR Pipeline | Implement CDR ingestion, E.164 tariff rating, multi-tenant quota enforcement, and batch SQL logger | M1 | R1 / ORIGINAL_REQUEST |
-| 4 | Telecom Workspace - PBX Device Manager | Implement SIP registration, RFC 2617 Digest Auth, trunk lease allocator, and CTI webhook emitter | M1 | R1 / ORIGINAL_REQUEST |
-| 5 | Telecom Workspace - IP Protection Audit | Verify zero proprietary IP, real company names, or internal schemas across all workspace files | M1 | R1 / ORIGINAL_REQUEST |
-| 6 | Needle-in-a-Haystack Scenarios (24 PRs) | 300–1,500 line large refactors with 1 subtle critical bug (PR #2101–#2124) | M2 | R2 / ORIGINAL_REQUEST |
-| 7 | Cross-Module Architectural Breakages (24 PRs) | PR diffs that break un-modified downstream subscribers/DB schemas (PR #2125–#2148) | M2 | R2 / ORIGINAL_REQUEST |
-| 8 | High-Concurrency Race Condition Scenarios (24 PRs) | Distributed race conditions, early BYE transfer races, trunk split-brain leases (PR #2149–#2172) | M2 | R2 / ORIGINAL_REQUEST |
-| 9 | False Positive & Hallucination Traps (24 PRs) | Complex idiomatic clean PRs testing model hallucination resistance (PR #2173–#2196) | M2 | R2 / ORIGINAL_REQUEST |
-| 10 | Unified Diff Fixtures Authoring | Generate 96 corresponding `.diff` files in `tests/fixtures/scenarios/` matching scenario diffs | M2 | R2 / ORIGINAL_REQUEST |
-| 11 | Workspace Tool Support in Evaluation Runner | Implement `file_read`, `code_search`, `symbol_lookup` against mounted workspace | M3 | R3 / ORIGINAL_REQUEST |
-| 12 | Multi-Turn Runner Execution Loop | Support multi-turn model tool conversations in live mode and deterministic offline replay mode | M3 | R3 / ORIGINAL_REQUEST |
-| 13 | OpenRouter Live Pricing & Latency Tracking | Maintain model pricing and latency telemetry for approved 4-model lineup | M3 | R3 / ORIGINAL_REQUEST |
-| 14 | Baseline Matrix v4 Generation | Generate canonical `eval-baselines/model-benchmark-matrix-v4.json` and `.md` across 190 scenarios | M4 | R4 / ORIGINAL_REQUEST |
-| 15 | Release Quality Gate Verification | Validate 0 regression breaches via `scripts/compare-release-baselines.mjs` against v3 and v1 | M4 | R4 / ORIGINAL_REQUEST |
-| 16 | E2E Testing Infrastructure (Tiers 1–4) | Implement opaque-box test suite for feature coverage, boundary cases, pairwise, and application scenarios | M5 | Dual Track / ORIGINAL_REQUEST |
-| 17 | Adversarial Coverage Hardening (Tier 5) | White-box adversarial testing, edge-case validation, and 100% test pass rate verification | M5 | Dual Track / ORIGINAL_REQUEST |
+| 1 | Dynamic Model Context Window Discovery | Query OpenRouter metadata API with caching and fallback tables for 128k–1M+ models | M1 | ORIGINAL_REQUEST §R1 |
+| 2 | Dynamic Safe Diff Capacity Calculator | Compute $C_{\text{safe}} = (ContextTokens - 4000 - 16000) \times 3.8$ per target model | M1 | ORIGINAL_REQUEST §R1 |
+| 3 | Config Schema Boundary Expansion | Raise schema bounds for `max_prompt_tokens` (4M) and `max_diff_bytes` (10MB) | M1 | ORIGINAL_REQUEST §R1 |
+| 4 | Static Truncation Cap Removal | Eliminate static 24,000 char limits across pipeline, sandbox, and harness | M1 | ORIGINAL_REQUEST §R1 |
+| 5 | Unified Diff Context Compactor | Collapse context lines to $\pm 3$ lines, cluster split $>6$ lines, recalculate hunk headers | M2 | ORIGINAL_REQUEST §R2 |
+| 6 | Line Number Invariance Guarantee | Ensure `changedLineNumbers` produces identical line numbers before and after compaction | M2 | ORIGINAL_REQUEST §R2 |
+| 7 | Minified Artifact & Whitespace Compactor | Strip lockfiles, bundle maps, lines >500 chars, and redundant whitespace | M2 | ORIGINAL_REQUEST §R2 |
+| 8 | Sliding Multi-Turn History Compactor | 2-turn active window, older turns compacted into structured tool receipts and findings ledger | M2 | ORIGINAL_REQUEST §R2 |
+| 9 | Commit SHA Range Header Injection | Inject explicit `base_sha...head_sha` range and full file manifest table into prompts | M3 | ORIGINAL_REQUEST §R3 |
+| 10 | Zero-Loss File Partitioning Engine | Deterministic bin-packing partitioning for PRs exceeding $C_{\text{safe}}$ with 0 dropped files | M3 | ORIGINAL_REQUEST §R3 |
+| 11 | Parallel Partition Execution & Aggregation | Execute review lanes across partitions, aggregate and deduplicate findings globally | M3 | ORIGINAL_REQUEST §R3 |
+| 12 | PR Comment Coverage Telemetry | Output `"Coverage: 100% (X/X files reviewed across Y partitions, 0 omitted)"` and step outputs | M3 | ORIGINAL_REQUEST §R3 |
+| 13 | Evaluation Harness Multi-Partition Support | Augment `pipelineHarnessRunner.ts` to test compaction, partitioning, and scaling | M4 | ORIGINAL_REQUEST §R4 |
+| 14 | Baseline Quality Gate Coverage Enforcement | Enforce 0-dropped-files and coverage checks in `compare-release-baselines.mjs` | M4 | ORIGINAL_REQUEST §R4 |
+| 15 | Context Management Feature Documentation | Create comprehensive `docs/features/context_management.md` architecture guide | M4 | ORIGINAL_REQUEST §R4 |
+| 16 | E2E Dual-Track Verification & Adversarial Audit | 100% test pass rate across all suites + Tier 5 adversarial audit + forensic clean audit | M5 | Acceptance Criteria |
 
 ---
 
 ## Milestones
+
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Generic Telecom Workspace Architecture (R1) | Build `tests/fixtures/workspaces/telecom-call-engine/` with SIP, RTP, CDR, PBX services | none | DONE |
-| M2 | 96 New Evaluation Scenarios & Diff Fixtures (R2) | Author 96 new scenarios (#2101–#2196) in `src/evaluation/scenarios.ts` and `tests/fixtures/scenarios/` | M1 | DONE |
-| M3 | Workspace-Aware Multi-Turn Runner (R3) | Upgrade `src/evaluation/evaluationRunner.ts` with workspace tool mounting & multi-turn loop | M1 | DONE |
-| M4 | Baseline v4 Release & Quality Gate (R4) | Generate `eval-baselines/model-benchmark-matrix-v4.json/.md` and run quality gate | M2, M3 | DONE |
-| M5 | E2E Testing Track & Adversarial Hardening (Dual Track) | Comprehensive E2E test suite (Tiers 1–4) and adversarial coverage hardening (Tier 5) | M1, M2, M3, M4 | DONE |
+| M1 | Dynamic Model Context Window Discovery & Budget Calculation | `src/gateway/openRouterClient.ts`, `src/config/schema.ts`, `tests/unit/openRouterClient.test.ts`, `tests/unit/config.test.ts` | none | DONE |
+| M2 | Diff & Multi-Turn History Compaction Engine | `src/pipeline/diffCompactor.ts`, `src/pipeline/turnHistoryManager.ts`, `src/sandbox/piWorkspacePlugin.ts`, `tests/unit/diffCompactor.test.ts`, `tests/unit/turnHistoryManager.test.ts` | M1 | DONE |
+| M3 | Commit SHA Range & Zero-Loss Batch Partitioning | `src/pipeline/shaPartitionManager.ts`, `.github/workflows/pipelines/review-pipeline.js`, `tests/unit/shaPartitionManager.test.ts` | M1, M2 | DONE |
+| M4 | Evaluation Harness Augmentation & Documentation | `src/evaluation/pipelineHarnessRunner.ts`, `scripts/compare-release-baselines.mjs`, `scripts/evaluate-release-benchmark.mjs`, `docs/features/context_management.md` | M2, M3 | DONE |
+| M5 | E2E Dual-Track Testing & Final Milestone Verification | Full test suite execution, Tier 5 adversarial stress testing, Forensic Integrity Audit | M1, M2, M3, M4 | DONE |
 
 ---
 
 ## Interface Contracts
 
-### 1. Evaluation Scenario Registry (`src/evaluation/scenarios.ts`)
+### Dynamic Model Metadata (`src/gateway/openRouterClient.ts`)
 ```typescript
-export interface EvaluationScenario {
-  id: string;                      // e.g. "2101"
-  title: string;                   // Scenario title
-  category: ScenarioCategory;      // 'architecture' | 'concurrency' | 'refactor' | 'security' | etc.
-  difficulty: 'easy' | 'medium' | 'hard' | 'extreme';
-  expectedVerdict: ArbitrationVerdict; // 'BLOCK' | 'FIX_FIRST' | 'SHIP'
-  expectedFindings: ExpectedFinding[];
-  diffFiles: DiffFile[];
-  prContext: PRContext;
-  sessionContext?: SessionContext;
-  evidenceRequirements?: EvidenceRequirement[];
-  workspaceRoot?: string;          // Optional workspace path relative to project root
-  requiredToolQueries?: { tool: string; query: string; expectedSubstring?: string }[];
+export interface ModelMetadata {
+  id: string;
+  name: string;
+  contextLength: number;
+  maxCompletionTokens?: number;
+  promptCostPer1M: number;
+  completionCostPer1M: number;
+  supportsTools: boolean;
+  supportsReasoning?: boolean;
+}
+
+export function resolveModelMetadata(modelId: string, apiKey?: string): Promise<ModelMetadata>;
+export function getStaticModelMetadata(modelId: string): ModelMetadata;
+export function calculateSafeDiffCapacity(
+  modelId: string,
+  options?: { systemPromptTokens?: number; toolReserveTokens?: number; charsPerToken?: number }
+): {
+  contextTokens: number;
+  usableDiffTokens: number;
+  safeDiffChars: number;
+  systemPromptTokens: number;
+  toolReserveTokens: number;
+};
+```
+
+### Diff Compaction Engine (`src/pipeline/diffCompactor.ts`)
+```typescript
+export interface DiffCompactionOptions {
+  contextLines?: number;         // default: 3
+  maxLineLength?: number;        // default: 500
+  stripMinified?: boolean;       // default: true
+  splitClusterGaps?: boolean;    // default: true
+  maxClusterGap?: number;        // default: 6
+}
+
+export interface CompactedDiffResult {
+  compactedPatch: string;
+  originalChars: number;
+  compactedChars: number;
+  savingsRatio: number;
+  hunkCount: number;
+  strippedArtifacts: string[];
+}
+
+export function compactUnifiedDiff(rawPatch: string, options?: DiffCompactionOptions): CompactedDiffResult;
+export function compactFileListDiffs(
+  files: Array<{ path: string; patch?: string; content?: string }>,
+  options?: DiffCompactionOptions
+): {
+  files: Array<{ path: string; patch: string; originalChars: number; compactedChars: number }>;
+  totalOriginalChars: number;
+  totalCompactedChars: number;
+  totalSavingsRatio: number;
+};
+```
+
+### Multi-Turn History Manager (`src/pipeline/turnHistoryManager.ts`)
+```typescript
+export interface TurnMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  toolReceipts?: Array<{ callId: string; tool: string; status: string; output: string }>;
+}
+
+export interface TurnHistoryManagerOptions {
+  activeTurnWindow?: number;      // default: 2
+  maxTurnHistoryTokens?: number;  // default: 8000
+}
+
+export class TurnHistoryManager {
+  constructor(options?: TurnHistoryManagerOptions);
+  addTurn(role: 'user' | 'assistant', content: string, toolReceipts?: Array<{ callId: string; tool: string; status: string; output: string }>): void;
+  getFormattedMessages(): TurnMessage[];
+  getEstimatedTokens(): number;
+  getReceiptLedger(): Array<{ turn: number; tool: string; summary: string }>;
+  getFindingsLedger(): Array<{ id: string; summary: string; severity: string }>;
 }
 ```
 
-### 2. Workspace Tool Protocol (`src/evaluation/evaluationRunner.ts`)
+### Commit SHA Range & Partition Manager (`src/pipeline/shaPartitionManager.ts`)
 ```typescript
-export interface WorkspaceToolExecutor {
-  fileRead(relPath: string): Promise<string>;
-  codeSearch(pattern: string, fileGlob?: string): Promise<Array<{ path: string; line: number; match: string }>>;
-  symbolLookup(symbolName: string): Promise<Array<{ path: string; line: number; kind: string }>>;
+export interface DiffPartition {
+  partitionIndex: number;
+  totalPartitions: number;
+  files: Array<{ path: string; patch: string; originalChars: number; compactedChars: number }>;
+  totalChars: number;
+  baseSha: string;
+  headSha: string;
 }
-```
 
-### 3. Model Baseline Schema (`eval-baselines/model-benchmark-matrix-v4.json`)
-```typescript
-export interface ModelBenchmarkMatrixV4 {
-  version: "v4";
-  generatedAt: string;
-  totalScenarios: number;          // >= 188 (190 total)
-  models: {
-    [modelId: string]: {
-      summary: ModelSummaryMetrics;
-      scenarios: Record<string, ScenarioEvaluationResult>;
-    }
-  }
+export interface PartitionPlan {
+  baseSha: string;
+  headSha: string;
+  totalFiles: number;
+  totalOriginalChars: number;
+  totalCompactedChars: number;
+  partitions: DiffPartition[];
+  coveragePercent: 100;
+  omittedFilesCount: 0;
+  fileManifest: Array<{ path: string; status: 'added' | 'modified' | 'deleted'; partitionIndex: number }>;
 }
+
+export function createPartitionPlan(
+  files: Array<{ path: string; patch?: string; status?: string }>,
+  baseSha: string,
+  headSha: string,
+  safeDiffChars: number
+): PartitionPlan;
+
+export function formatCoverageComment(plan: PartitionPlan): string;
+export function formatPromptManifestHeader(partition: DiffPartition, plan: PartitionPlan): string;
 ```
 
 ---
 
 ## Code Layout
-- `src/evaluation/scenarios.ts`: All 190 scenario definitions
-- `src/evaluation/evaluationRunner.ts`: Evaluation engine, metrics calculation, workspace tool executor, multi-turn loop
-- `tests/fixtures/scenarios/*.diff`: Unified diff fixture files for all 190 scenarios
-- `tests/fixtures/workspaces/telecom-call-engine/`:
-  - `sip_signaling_service/`: SIP state machine, dialogs, SDP negotiation, call transfer
-  - `rtp_media_gateway/`: RTP/RTCP handlers, jitter buffers, audio codecs, port allocator
-  - `cdr_pipeline/`: Ingestion, rating engine, tenant quota, SQL batch logger
-  - `pbx_device_manager/`: Registration, digest auth, trunk leases, CTI webhook dispatcher
-- `eval-baselines/`:
-  - `model-benchmark-matrix-v3.json` & `.md`: 94-scenario baseline
-  - `model-benchmark-matrix-v4.json` & `.md`: 190-scenario canonical baseline
-- `scripts/`:
-  - `evaluate-release-benchmark.mjs`: Benchmark execution script
-  - `compare-release-baselines.mjs`: Regression quality gate script
-- `tests/e2e/`:
-  - `releaseBenchmark.test.ts`: E2E benchmark test suite
-  - `telecomWorkspace.test.ts`: Workspace integrity test suite
+
+- `src/gateway/` — `openRouterClient.ts`, model metadata resolution, dynamic safe diff capacity.
+- `src/config/` — `schema.ts`, review limits schema with expanded token and byte ceilings.
+- `src/pipeline/` — `diffCompactor.ts`, `turnHistoryManager.ts`, `shaPartitionManager.ts`.
+- `src/sandbox/` — `piWorkspacePlugin.ts` updated with dynamic capacity, compaction, and zero-loss handling.
+- `src/evaluation/` — `pipelineHarnessRunner.ts`, `reviewCassetteEngine.ts`, `evaluationRunner.ts`.
+- `.github/workflows/pipelines/` — `review-pipeline.js` action script.
+- `docs/features/` — `context_management.md` comprehensive architecture & configuration guide.
+- `scripts/` — `evaluate-release-benchmark.mjs`, `compare-release-baselines.mjs`.
+- `tests/unit/` — Unit test suites for all new components and updated gateways.
+- `tests/e2e/` — End-to-end integration and benchmark verification suites.
