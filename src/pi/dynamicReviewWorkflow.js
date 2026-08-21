@@ -22,22 +22,21 @@ async function importPiWorkflowRuntime() {
  * source tests can exercise the import in isolation without pretending to attest a release.
  */
 async function loadPiWorkflowRuntime(options = {}) {
-  if (options.provenance) {
-    const { verifyBuildProvenance } = require('../provenance/buildProvenance');
-    verifyBuildProvenance({
-      packageRoot: options.packageRoot || path.resolve(__dirname, '../..'),
-      provenance: options.provenance,
-      requireNested: options.requireNested !== false,
-    });
-  } else if (options.provenancePath) {
-    const { loadBuildProvenance, verifyBuildProvenance } = require('../provenance/buildProvenance');
-    const packageRoot = options.packageRoot || path.resolve(__dirname, '../..');
-    verifyBuildProvenance({
-      packageRoot,
-      provenance: loadBuildProvenance(options.provenancePath),
-      requireNested: options.requireNested !== false,
-    });
+  const { loadBuildProvenance, verifyBuildProvenance } = require('../provenance/buildProvenance');
+  const packageRoot = options.packageRoot || path.resolve(__dirname, '../..');
+  let provenance = options.provenance;
+  if (!provenance) {
+    const provenancePath = options.provenancePath || path.join(packageRoot, 'src/provenance/generated-build-provenance.json');
+    if (!fs.existsSync(provenancePath)) {
+      throw new Error('Pi runtime build provenance is missing; use the lock-backed Action installer or a staged npm package');
+    }
+    provenance = loadBuildProvenance(provenancePath);
   }
+  verifyBuildProvenance({
+    packageRoot,
+    provenance,
+    requireNested: options.requireNested !== false,
+  });
   return importPiWorkflowRuntime();
 }
 
@@ -116,4 +115,7 @@ module.exports = {
   REVIEW_WORKFLOW_PACKAGE_VERSION,
   loadPiWorkflowRuntime,
   runDynamicReviewWorkflow,
+  ...(process.env.NODE_ENV === 'test' ? {
+    __test: Object.freeze({ importPiWorkflowRuntimeUnattested: importPiWorkflowRuntime }),
+  } : {}),
 };

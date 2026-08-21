@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 const {
   REVIEW_WORKFLOW_PACKAGE,
   REVIEW_WORKFLOW_PACKAGE_VERSION,
+  __test,
   loadPiWorkflowRuntime,
   runDynamicReviewWorkflow,
 } = require('../../src/pi/dynamicReviewWorkflow.js');
@@ -30,7 +31,7 @@ function assignment(personaId: string) {
         passId: 'primary',
         reviewUnitIds: [`ru_${'1'.repeat(64)}`],
         prompt: 'Inspect the assigned review units.',
-        outputSchema: { type: 'object' },
+        outputSchema: { type: 'object', additionalProperties: false, properties: {} },
       }],
     }],
   })[0];
@@ -38,11 +39,15 @@ function assignment(personaId: string) {
 
 describe('trusted Pi dynamic review workflow', () => {
   it('loads the pinned ESM runtime from the CommonJS wrapper', async () => {
-    const runtime = await loadPiWorkflowRuntime();
+    const runtime = await __test.importPiWorkflowRuntimeUnattested();
     expect(REVIEW_WORKFLOW_PACKAGE).toBe('@quintinshaw/pi-dynamic-workflows');
     expect(REVIEW_WORKFLOW_PACKAGE_VERSION).toBe('3.7.0');
     expect(runtime.runWorkflow).toBeTypeOf('function');
     expect(runtime.WorkflowAgent).toBeTypeOf('function');
+  });
+
+  it('requires staged build provenance before the exported runtime loader imports Pi', async () => {
+    await expect(loadPiWorkflowRuntime()).rejects.toThrow(/build provenance is missing/i);
   });
 
   it('ships one stable trusted static workflow source and digest', () => {

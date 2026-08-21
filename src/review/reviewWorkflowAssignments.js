@@ -5,6 +5,10 @@ const { canonicalJson, sha256 } = require('./reviewCore');
 const REVIEW_WORKFLOW_ASSIGNMENT_SCHEMA = 'review-yeti-assignment.v1';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
+const REVIEW_UNIT_ID = /^ru_[a-f0-9]{64}$/u;
+const MAX_PASSES = 64;
+const MAX_REVIEW_UNITS_PER_PASS = 10_000;
+const MAX_SCHEMA_BYTES = 256_000;
 const PERSONA_FIELDS = new Set(['personaId', 'enabled', 'assignmentPrompt', 'personaResultSchema', 'passes']);
 const PASS_FIELDS = new Set(['passId', 'reviewUnitIds', 'prompt', 'outputSchema']);
 const ASSIGNMENT_FIELDS = new Set([
@@ -66,6 +70,24 @@ function canonicalClone(value, label) {
   return JSON.parse(encoded);
 }
 
+function boundedObjectSchema(value, label) {
+  const schema = canonicalClone(value, label);
+  if (schema.type !== 'object') throw new TypeError(`${label} must be a top-level object schema`);
+  if (schema.additionalProperties !== false) throw new TypeError(`${label} must set additionalProperties to false`);
+  if (Buffer.byteLength(canonicalJson(schema), 'utf8') > MAX_SCHEMA_BYTES) throw new TypeError(`${label} exceeds the schema size limit`);
+  return schema;
+}
+
+function validateReviewUnitIds(reviewUnitIds, label) {
+  if (!Array.isArray(reviewUnitIds) || reviewUnitIds.length === 0) throw new TypeError(`${label} requires reviewUnitIds`);
+  if (reviewUnitIds.length > MAX_REVIEW_UNITS_PER_PASS) throw new TypeError(`${label} has too many reviewUnitIds`);
+  for (const value of reviewUnitIds) {
+    if (!REVIEW_UNIT_ID.test(String(value || ''))) throw new TypeError(`${label} contains an invalid reviewUnitId`);
+  }
+  if (new Set(reviewUnitIds).size !== reviewUnitIds.length) throw new TypeError(`duplicate reviewUnitId in ${label}`);
+  return reviewUnitIds;
+}
+
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) deepFreeze(child);
@@ -87,16 +109,9 @@ function assignmentIdentityPayload(assignment, policyDigest, manifestDigest) {
 function createPassDescriptor(pass, personaId) {
   assertClosedObject(pass, PASS_FIELDS, 'pass');
   assertSafeId(pass.passId, 'passId');
-  if (!Array.isArray(pass.reviewUnitIds) || pass.reviewUnitIds.length === 0 || pass.reviewUnitIds.length > 10_000) {
-    throw new TypeError(`persona ${personaId} pass ${pass.passId} must contain ordered reviewUnitIds`);
-  }
-  const reviewUnitIds = pass.reviewUnitIds.map((value) => {
-    if (typeof value !== 'string' || value.length === 0 || value.length > 160) throw new TypeError('reviewUnitIds must be bounded strings');
-    return value;
-  });
-  if (new Set(reviewUnitIds).size !== reviewUnitIds.length) throw new TypeError('duplicate reviewUnitId in pass');
+  const reviewUnitIds = validateReviewUnitIds(pass.reviewUnitIds, `persona ${personaId} pass ${pass.passId}`);
   assertPrompt(pass.prompt, 'pass prompt');
-  const outputSchema = canonicalClone(pass.outputSchema, 'pass outputSchema');
+  const outputSchema = boundedObjectSchema(pass.outputSchema, 'pass outputSchema');
   const descriptor = {
     passId: pass.passId,
     reviewUnitIds,
@@ -124,9 +139,9 @@ function createReviewWorkflowAssignments(input) {
     if (persona.enabled === false) continue;
     if (persona.enabled !== undefined && persona.enabled !== true) throw new TypeError('persona enabled must be boolean');
     assertPrompt(persona.assignmentPrompt, 'assignmentPrompt');
-    const personaResultSchema = canonicalClone(persona.personaResultSchema, 'personaResultSchema');
+    const personaResultSchema = boundedObjectSchema(persona.personaResultSchema, 'personaResultSchema');
     if (!Array.isArray(persona.passes) || persona.passes.length === 0) throw new TypeError(`persona ${persona.personaId} requires at least one pass`);
-    if (persona.passes.length > 64) throw new TypeError(`persona ${persona.personaId} has too many passes`);
+    if (persona.passes.length > MAX_PASSES) throw new TypeError(`persona ${persona.personaId} has too many passes`);
     const passes = persona.passes.map((pass) => createPassDescriptor(pass, persona.personaId));
     if (new Set(passes.map((pass) => pass.passId)).size !== passes.length) throw new TypeError(`duplicate pass for persona ${persona.personaId}`);
     const assignment = {
@@ -166,17 +181,21 @@ function validateReviewWorkflowAssignments(assignments, identity = {}) {
     personas.add(assignment.personaId);
     assertPrompt(assignment.assignmentPrompt, 'assignmentPrompt');
     if (sha256(assignment.assignmentPrompt) !== assignment.assignmentPromptDigest) throw new TypeError('assignment prompt digest mismatch');
-    const resultSchema = canonicalClone(assignment.personaResultSchema, 'personaResultSchema');
+    const resultSchema = boundedObjectSchema(assignment.personaResultSchema, 'personaResultSchema');
     if (sha256(canonicalJson(resultSchema)) !== assignment.personaResultSchemaDigest) throw new TypeError('persona result schema digest mismatch');
     if (!Array.isArray(assignment.passes) || assignment.passes.length === 0) throw new TypeError('assignment requires at least one pass');
+    if (assignment.passes.length > MAX_PASSES) throw new TypeError(`assignment ${assignment.personaId} has too many passes`);
+    const passIds = new Set();
     for (const pass of assignment.passes) {
       assertClosedObject(pass, ASSIGNMENT_PASS_FIELDS, 'assignment pass');
       assertSafeId(pass.passId, 'passId');
+      if (passIds.has(pass.passId)) throw new TypeError(`duplicate pass for persona ${assignment.personaId}`);
+      passIds.add(pass.passId);
       assertPrompt(pass.prompt, 'pass prompt');
       if (sha256(pass.prompt) !== pass.promptDigest) throw new TypeError('pass prompt digest mismatch');
-      const outputSchema = canonicalClone(pass.outputSchema, 'pass outputSchema');
+      const outputSchema = boundedObjectSchema(pass.outputSchema, 'pass outputSchema');
       if (sha256(canonicalJson(outputSchema)) !== pass.outputSchemaDigest) throw new TypeError('pass output schema digest mismatch');
-      if (!Array.isArray(pass.reviewUnitIds) || pass.reviewUnitIds.length === 0) throw new TypeError('assignment pass requires reviewUnitIds');
+      validateReviewUnitIds(pass.reviewUnitIds, `assignment ${assignment.personaId} pass ${pass.passId}`);
     }
     const expectedId = sha256(canonicalJson(assignmentIdentityPayload(assignment, identity.policyDigest, identity.manifestDigest)));
     if (expectedId !== assignment.assignmentId) throw new TypeError(`assignment identity mismatch for ${assignment.personaId}`);

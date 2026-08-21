@@ -89,11 +89,79 @@ describe('Pi runtime packaging contract', () => {
 
   it('keeps legacy as the default and wires the Pi install branch to the Action path', () => {
     const action: any = yaml.load(fs.readFileSync(actionPath, 'utf8'));
+    const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
+    expect(manifest.engines.node).toBe('>=20.0.0');
     expect(action.inputs['review-engine'].default).toBe('legacy');
     expect(action.inputs['review-engine'].description).toMatch(/Node 24/i);
     const raw = fs.readFileSync(actionPath, 'utf8');
     expect(raw).toContain('install-action-runtime.mjs');
     expect(raw).toContain('REVIEW_YETI_ACTION_SHA');
+  });
+  it('packs from a clean exact commit and an empty consumer resolves and attests the nested Pi closure', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-clean-pack-'));
+    const releaseDir = path.join(tempDir, 'release');
+    const packDir = path.join(tempDir, 'pack');
+    const consumerDir = path.join(tempDir, 'consumer');
+    fs.cpSync(rootRepoDir, releaseDir, {
+      recursive: true,
+      filter(source) {
+        const relative = path.relative(rootRepoDir, source);
+        const top = relative.split(path.sep)[0];
+        return !['.git', 'node_modules', 'dist'].includes(top);
+      },
+    });
+    fs.mkdirSync(packDir, { recursive: true });
+    fs.mkdirSync(consumerDir, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: releaseDir });
+    execFileSync('git', ['config', 'user.name', 'Review Yeti Test'], { cwd: releaseDir });
+    execFileSync('git', ['config', 'user.email', 'review-yeti-test@example.invalid'], { cwd: releaseDir });
+    execFileSync('git', ['add', '--all'], { cwd: releaseDir });
+    execFileSync('git', ['commit', '-q', '-m', 'clean release fixture'], { cwd: releaseDir });
+
+    const npmEnvironment = { ...process.env, NPM_CONFIG_USERCONFIG: os.devNull } as Record<string, string | undefined>;
+    for (const key of Object.keys(npmEnvironment)) {
+      if (/^npm_config_allow_scripts(?:_pin)?$/iu.test(key)) delete npmEnvironment[key];
+    }
+    execFileSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+      timeout: 120_000,
+    });
+    expect(execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: releaseDir, encoding: 'utf8' })).toBe('');
+    const packed = execFileSync('npm', ['pack', '--pack-destination', packDir], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      encoding: 'utf8',
+      timeout: 120_000,
+    }).trim().split('\n').at(-1);
+    expect(packed).toMatch(/\.tgz$/u);
+    const tarball = path.join(packDir, String(packed));
+    fs.writeFileSync(path.join(consumerDir, 'package.json'), JSON.stringify({ name: 'ordinary-consumer', private: true }, null, 2));
+    execFileSync('npm', ['install', '--prefix', '.', tarball, '--ignore-scripts', '--no-audit', '--no-fund'], {
+      cwd: consumerDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+      timeout: 120_000,
+    });
+
+    const packageName = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8')).name;
+    const installedRoot = path.join(consumerDir, 'node_modules', packageName);
+    const nestedRuntime = path.join(installedRoot, 'node_modules', '@quintinshaw', 'pi-dynamic-workflows');
+    expect(fs.existsSync(path.join(nestedRuntime, 'package.json'))).toBe(true);
+    const provenanceApi = require(path.join(installedRoot, 'src/provenance/buildProvenance.js'));
+    const provenancePath = path.join(installedRoot, 'src/provenance/generated-build-provenance.json');
+    const provenance = provenanceApi.loadBuildProvenance(provenancePath);
+    expect(provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
+      .toEqual(expect.objectContaining({ runtimeGraphDigest: provenance.runtimeGraphDigest }));
+
+    fs.appendFileSync(path.join(nestedRuntime, 'README.md'), '\ntampered\n');
+    expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
+      .toThrow(/runtime graph/i);
+    fs.renameSync(nestedRuntime, path.join(consumerDir, 'hoisted-pi-runtime'));
+    expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
+      .toThrow(/missing|nested bundle/i);
+  }, 180_000);
   });
 
   it('installs the lock-backed Pi runtime from an empty bounded prefix', () => {

@@ -102,7 +102,11 @@ describe('Review Yeti Pi workflow assignments', () => {
       { policyDigest: 'c'.repeat(64), manifestDigest, personas: [base] },
       { policyDigest, manifestDigest: 'd'.repeat(64), personas: [base] },
       { policyDigest, manifestDigest, personas: [{ ...base, assignmentPrompt: 'different' }] },
-      { policyDigest, manifestDigest, personas: [{ ...base, personaResultSchema: { type: 'null' } }] },
+      {
+        policyDigest,
+        manifestDigest,
+        personas: [{ ...base, personaResultSchema: { type: 'object', additionalProperties: false, properties: { changed: { type: 'boolean' } } } }],
+      },
       { policyDigest, manifestDigest, personas: [{ ...base, passes: [{ ...base.passes[0], reviewUnitIds: [`ru_${'9'.repeat(64)}`] }] }] },
     ];
 
@@ -121,5 +125,58 @@ describe('Review Yeti Pi workflow assignments', () => {
       .toThrow(/at least one pass/i);
     expect(() => createReviewWorkflowAssignments({ policyDigest: 'not-a-digest', manifestDigest, personas: [security] }))
       .toThrow(/policyDigest/i);
+  });
+
+  it('requires closed top-level object schemas for Pi structured results', () => {
+    const security = persona('security', ['auth']);
+    expect(() => createReviewWorkflowAssignments({
+      policyDigest,
+      manifestDigest,
+      personas: [{ ...security, personaResultSchema: { type: 'array', items: { type: 'object' } } }],
+    })).toThrow(/personaResultSchema.*top-level object/i);
+    expect(() => createReviewWorkflowAssignments({
+      policyDigest,
+      manifestDigest,
+      personas: [{ ...security, personaResultSchema: { type: 'object' } }],
+    })).toThrow(/personaResultSchema.*additionalProperties/i);
+    expect(() => createReviewWorkflowAssignments({
+      policyDigest,
+      manifestDigest,
+      personas: [{ ...security, passes: [{ ...security.passes[0], outputSchema: { type: 'object' } }] }],
+    })).toThrow(/pass outputSchema.*additionalProperties/i);
+  });
+
+  it('applies factory pass/unit/id bounds and uniqueness to externally supplied assignments', () => {
+    const valid = createReviewWorkflowAssignments({ policyDigest, manifestDigest, personas: [persona('security', ['auth'])] })[0];
+    const identity = { policyDigest, manifestDigest };
+    const mutable = () => JSON.parse(JSON.stringify(valid));
+
+    const tooManyPasses = mutable();
+    tooManyPasses.passes = Array.from({ length: 65 }, (_, index) => ({
+      ...tooManyPasses.passes[0],
+      passId: `pass-${index}`,
+    }));
+    expect(() => require('../../src/review/reviewWorkflowAssignments.js')
+      .validateReviewWorkflowAssignments([tooManyPasses], identity)).toThrow(/too many passes/i);
+
+    const duplicatePass = mutable();
+    duplicatePass.passes.push({ ...duplicatePass.passes[0] });
+    expect(() => require('../../src/review/reviewWorkflowAssignments.js')
+      .validateReviewWorkflowAssignments([duplicatePass], identity)).toThrow(/duplicate pass/i);
+
+    const duplicateUnit = mutable();
+    duplicateUnit.passes[0].reviewUnitIds.push(duplicateUnit.passes[0].reviewUnitIds[0]);
+    expect(() => require('../../src/review/reviewWorkflowAssignments.js')
+      .validateReviewWorkflowAssignments([duplicateUnit], identity)).toThrow(/duplicate reviewUnitId/i);
+
+    const tooManyUnits = mutable();
+    tooManyUnits.passes[0].reviewUnitIds = Array.from({ length: 10_001 }, (_, index) => `ru_${String(index).padStart(64, '0')}`);
+    expect(() => require('../../src/review/reviewWorkflowAssignments.js')
+      .validateReviewWorkflowAssignments([tooManyUnits], identity)).toThrow(/too many reviewUnitIds/i);
+
+    const unsafeUnitId = mutable();
+    unsafeUnitId.passes[0].reviewUnitIds = ['../outside'];
+    expect(() => require('../../src/review/reviewWorkflowAssignments.js')
+      .validateReviewWorkflowAssignments([unsafeUnitId], identity)).toThrow(/reviewUnitId/i);
   });
 });
