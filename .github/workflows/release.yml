@@ -156,57 +156,10 @@ jobs:
           " "$EXISTING_NOTES" "$BENCHMARK_DIGEST")
           gh release edit "$RELEASE_VER" --notes "$UPDATED_NOTES"
 
-  deploy:
-    name: Build & Deploy Docker Image to DOKS
-    needs: validate-and-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      version: ${{ needs.validate-and-release.outputs.version }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.validate-and-release.outputs.version }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to DigitalOcean Container Registry
-        uses: digitalocean/action-doctl@v2
-        with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-
-      - name: Authenticate doctl registry
-        run: doctl registry login
-
-      - name: Build and push SemVer Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: registry.digitalocean.com/calltelemetry/ct-review-bot:${{ needs.validate-and-release.outputs.version }}
-          cache-from: type=gha,mode=max,scope=bot
-          cache-to: type=gha,mode=max,scope=bot
-
-      - name: Configure K8s cluster kubeconfig
-        run: doctl kubernetes cluster kubeconfig save cluster-ny1
-
-      - name: Deploy image update to DOKS
-        run: |
-          kubectl set image deployment/ct-review-bot \
-            ct-review-bot=registry.digitalocean.com/calltelemetry/ct-review-bot:${{ needs.validate-and-release.outputs.version }} \
-            -n ct-review-system
-          kubectl rollout status deployment/ct-review-bot -n ct-review-system
-
   promote-rolling-v1:
     name: Promote tested v1 release
-    needs: deploy
-    if: startsWith(needs.deploy.outputs.version, 'v1.')
+    needs: validate-and-release
+    if: startsWith(needs.validate-and-release.outputs.version, 'v1.')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -214,13 +167,13 @@ jobs:
       - name: Checkout tested release
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.deploy.outputs.version }}
+          ref: ${{ needs.validate-and-release.outputs.version }}
           fetch-depth: 0
           fetch-tags: true
 
       - name: Promote only the tested release commit
         env:
-          RELEASE_TAG: ${{ needs.deploy.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate-and-release.outputs.version }}
         run: |
           set -euo pipefail
           TARGET_SHA="$(git rev-parse HEAD)"
