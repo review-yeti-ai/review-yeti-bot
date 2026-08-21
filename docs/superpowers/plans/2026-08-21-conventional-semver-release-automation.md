@@ -86,7 +86,7 @@
 - [x] **Step 1: Run `npm run test:release-version`, the workflow-config/contract tests, `npm run lint`, `npm run build`, and `git diff --check`.**
 - [x] **Step 2: Run the complete local test suite (`npm test`) and record the exact result: 323 files, 3,525 tests, 0 failures.**
 - [x] **Step 3: Inspect the final diff for accidental generated-output or secret changes.**
-- [ ] **Step 4: Push the feature branch and open a draft PR against the current official `main` with the exact base/head SHAs.**
+- [x] **Step 4: Push the feature branch and open a draft PR against the current official `main` with the exact base/head SHAs: PR #192.**
 - [ ] **Step 5: Wait for current-head required checks and Review Yeti quorum; do not merge or create another release tag from the feature branch.**
 
 ## Self-review
