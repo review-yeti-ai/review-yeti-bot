@@ -999,7 +999,7 @@ export async function executePersonaPanel(options: {
           throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
         }
         const result = await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId, primaryAuthoringModel);
-        return { persona, result };
+        return { persona, result, error: undefined };
       })
     );
 
@@ -1010,7 +1010,7 @@ export async function executePersonaPanel(options: {
       }
       const errorMsg = res.reason?.message || String(res.reason);
       console.error('SETTLED_ERROR:', persona.id, res.reason?.stack || errorMsg);
-      return { persona, error: errorMsg };
+      return { persona, result: undefined, error: errorMsg };
     });
     const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
     if (requiredFailures.length > 0) {
