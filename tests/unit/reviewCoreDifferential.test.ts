@@ -65,7 +65,7 @@ describe('canonical review contract differential', () => {
     expect(action.quorumSatisfied).toBe(false);
   });
 
-  it('does not BLOCK the panel when one provider lane fails and the others completed', () => {
+  it('fails closed when one provider lane fails even if the others completed', () => {
     const results = [
       { id: 'security', required: true, decision: 'APPROVE', findings: [] },
       { id: 'architecture', required: true, decision: 'ERROR', error: 'HTTP 404: No endpoints available', findings: [] },
@@ -78,9 +78,9 @@ describe('canonical review contract differential', () => {
     const app = computeAppVerdict({ lanes: results, expectedLanes: 5, changedFiles });
 
     expect(action).toEqual(app);
-    expect(action.verdict).toBe('SHIP');
-    expect(action.status).toBe('SHIP');
-    expect(action.quorumSatisfied).toBe(true);
+    expect(action.verdict).toBe('BLOCK');
+    expect(action.status).toBe('INCOMPLETE_REVIEW');
+    expect(action.quorumSatisfied).toBe(false);
     expect(action.completedPersonas).toBe(4);
   });
 
