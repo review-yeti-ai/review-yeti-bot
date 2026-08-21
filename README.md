@@ -277,6 +277,77 @@ template, see [Managed OpenRouter deployment](docs/OPENROUTER_TERRAFORM.md).
 The canonical fleet policy lives in the ct-meta OpenRouter skill; this repo
 does not apply infrastructure or store provider credentials.
 
+---
+
+## 💻 Running Locally via CLI
+
+You can run Review Yeti locally directly from your terminal to inspect diffs, test custom personas, or benchmark models without creating a GitHub Actions run.
+
+### 1. Run Review Pipeline on a Local Unified Diff
+
+Pass your OpenRouter API key and target diff file to run the full parallel persona panel and binding arbitration locally:
+
+```bash
+# 1. Export your OpenRouter API key
+export OPENROUTER_API_KEY="sk-or-v1-..."
+
+# 2. (Optional) Set model or base URL override
+export OPENROUTER_MODEL="google/gemini-3.7-flash:high"   # or deepseek/deepseek-v4-flash-0731:high
+export OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
+
+# 3. Run review against a diff file
+PR_DIFF_FILE="path/to/my_change.diff" \
+PR_NUMBER=123 \
+GITHUB_REPOSITORY="calltelemetry/ct-meta" \
+PR_HEAD_SHA="$(git rev-parse HEAD)" \
+PR_BASE_SHA="$(git rev-parse origin/main)" \
+node .github/workflows/pipelines/review-pipeline.js
+```
+
+### 2. Review Uncommitted Git Changes in Current Repo
+
+You can review changes in your current working branch directly against `main`:
+
+```bash
+# Generate diff of uncommitted/local branch changes
+git diff origin/main...HEAD > /tmp/current_changes.diff
+
+# Execute local Review Yeti review
+PR_DIFF_FILE=/tmp/current_changes.diff \
+PR_NUMBER=1 \
+GITHUB_REPOSITORY="JBJMLLC/ct-review-bot" \
+PR_HEAD_SHA="$(git rev-parse HEAD)" \
+PR_BASE_SHA="$(git rev-parse origin/main)" \
+OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+node .github/workflows/pipelines/review-pipeline.js
+```
+
+### 3. Run Live PR Review via GitHub CLI (`runLiveReview.ts`)
+
+Review any live GitHub pull request directly using `gh` CLI credentials:
+
+```bash
+OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+npx ts-node src/cli/runLiveReview.ts --pr=2119 --repo=calltelemetry/ct-meta
+```
+
+### 4. Run the 190-Scenario Release Benchmark Harness
+
+Execute the complete 190-scenario benchmark evaluation suite across all 4 production models:
+
+```bash
+# Offline cassette replay (zero network required, deterministic)
+node scripts/evaluate-release-benchmark.mjs --offline
+
+# Live evaluation across OpenRouter
+OPENROUTER_API_KEY="$OPENROUTER_API_KEY" node scripts/evaluate-release-benchmark.mjs --live
+
+# Generate Pareto Frontier SVG charts (Accuracy vs. Cost)
+node scripts/generate-benchmark-charts.mjs
+```
+
+---
+
 ## Optional: self-hosted dashboard service
 
 > **Not required to review pull requests.** The GitHub Action above needs none of this. The
@@ -305,6 +376,7 @@ Its REST endpoints:
 
 ## Documentation
 
+- **[Running Locally via CLI](docs/RUNNING_LOCALLY.md)** — how to run Review Yeti, live PR reviews, and evaluation benchmarks locally.
 - **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — full `.ct-review.yaml` and
   persona-file schema.
 - **[Architecture](docs/ARCHITECTURE.md)** — how the review pipeline is put together.
