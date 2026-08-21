@@ -86,6 +86,7 @@ describe('review pipeline cassette replay', () => {
           type: 'json_object',
         },
         temperature: 0.1,
+        max_tokens: '<redacted>',
       },
     });
     expect(interaction.response).toEqual({
