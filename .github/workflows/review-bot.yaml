@@ -41,8 +41,14 @@ jobs:
     # Soft timeout so a stuck provider fan-out cannot burn the full runner budget.
     timeout-minutes: 45
     env:
-      # Surface for the composite action + logs. Auto Router fails over to fixed DeepSeek below.
-      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto-beta' }}
+      # Surface for the composite action + logs.
+      # Pinned, not routed. `openrouter/auto-beta` is a router ALIAS that picks a different
+      # underlying model per request; the review key's model allowlist admits
+      # deepseek-v4-flash-0731. Measured 2026-08-20 run 32425334732: 18 auto-beta requests,
+      # 6 of them HTTP 404 because that request's pick fell outside the allowlist -- 5 lanes
+      # dead, verdict BLOCK. Pointing a non-deterministic router at a deterministic allowlist
+      # is the defect; the guardrail is correct and is deliberately NOT widened.
+      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
     steps:
       - name: Checkout Review Runner (this repository)
         uses: actions/checkout@v4
@@ -140,7 +146,7 @@ jobs:
           # testing, dependencies + style, documentation, accessibility, database, devops, i18n,
           # licensing). Override with vars.ACTIVE_PERSONAS for a narrower roster.
           personas: ${{ vars.ACTIVE_PERSONAS || 'all' }}
-          model: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto-beta' }}
+          model: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
           # Transient primary failures retry, then fall back to this model. Override with the repo var.
           openrouter-fallback-models: ${{ vars.OPENROUTER_FALLBACK_MODELS || 'deepseek/deepseek-v4-flash-0731' }}
           # Full safety ceiling by default — no artificial 24k throttle. Override via vars.MAX_DIFF_CHARS.
