@@ -71,6 +71,13 @@ jobs:
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
           node scripts/review-yeti-smoke.mjs
 
+      - name: Validate admitted transport handoff
+        working-directory: .exampleorg-review-actions
+        env:
+          TRANSPORT_PLAN_B64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
+          ALLOW_POLICY_SUBSET: 'true'
+        run: node scripts/validate-transport-handoff.mjs
+
       - name: Resolve Review Yeti release channel
         id: resolved
         env:
@@ -120,7 +127,7 @@ jobs:
           target-config: 'none'
           model: ${{ steps.smoke.outputs.resolved_model }}
           transports: ${{ steps.smoke.outputs.healthy_transports }}
-          transport-plan-b64: ${{ steps.policy.outputs.transport_plan_b64 }}
+          transport-plan-b64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           openrouter-ignore-providers: ${{ steps.policy.outputs.openrouter_ignore_providers }}
           openrouter-provider-routing: ${{ steps.policy.outputs.openrouter_provider_routing }}

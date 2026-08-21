@@ -22,7 +22,7 @@ function transport(name, overrides = {}) {
   };
 }
 
-function runValidator(policyTransports, handoffTransports = policyTransports, encodedPlan) {
+function runValidator(policyTransports, handoffTransports = policyTransports, encodedPlan, allowPolicySubset = false) {
   const tempDir = mkdtempSync(join(tmpdir(), 'ct-transport-handoff-'));
   const policyPath = join(tempDir, 'policy.json');
   writeFileSync(policyPath, JSON.stringify({ review_yeti: { transports: policyTransports } }));
@@ -35,6 +35,7 @@ function runValidator(policyTransports, handoffTransports = policyTransports, en
       REVIEW_YETI_POLICY_PATH: policyPath,
       TRANSPORT_PLAN_B64: encodedPlan
         ?? Buffer.from(JSON.stringify(handoffTransports), 'utf8').toString('base64'),
+      ALLOW_POLICY_SUBSET: String(allowPolicySubset),
     },
   });
   rmSync(tempDir, { recursive: true, force: true });
@@ -55,6 +56,23 @@ test('rejects a handoff whose order or content differs from policy', () => {
   const result = runValidator(transports, [...transports].reverse());
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /transport handoff does not exactly match policy/);
+});
+
+test('accepts only an exact ordered policy subset for post-smoke admission', () => {
+  const transports = [transport('primary'), transport('secondary'), transport('fallback')];
+  const admitted = [transports[0], transports[2]];
+  const accepted = runValidator(transports, admitted, undefined, true);
+  assert.equal(accepted.status, 0, `stdout=${accepted.stdout}\nstderr=${accepted.stderr}`);
+
+  for (const rejected of [
+    [...admitted].reverse(),
+    [{ ...transports[0], timeout_ms: 1 }],
+    [transport('unknown')],
+  ]) {
+    const result = runValidator(transports, rejected, undefined, true);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /admitted transport handoff is not an exact ordered subset of policy/);
+  }
 });
 
 test('rejects a noncanonical base64 handoff instead of silently normalizing it', () => {

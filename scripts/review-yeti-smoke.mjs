@@ -15,17 +15,17 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
-  quantizations: ['bf16', 'fp16'],
+  ignore: ['morph'],
   sort: 'throughput',
   preferred_min_throughput: { p90: 40 },
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
 });
 
-// Provider selectors freeze routing against an endpoint list that changes underneath us. Static
-// ignores have the same drift problem, so endpoint eligibility is left to OpenRouter's live
-// statistics and account guardrail. Rejecting only/order outright is deliberately stricter than
-// validating a duplicated list here: a stale copy would re-open exactly this hole.
+// Provider selectors freeze routing against an endpoint list that changes underneath us. The
+// policy may retain a narrowly-scoped account safety exclusion for a provider with a verified
+// outage, while all other endpoint eligibility remains OpenRouter's live decision. Rejecting
+// only/order outright is deliberately stricter than validating a duplicated allowlist here.
 const FORBIDDEN_ROUTING_SELECTORS = Object.freeze(['only', 'order']);
 
 export function validatePolicy(policy) {
@@ -103,7 +103,7 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must require full-precision quants, throughput floors, and fallback');
+    throw new Error('OpenRouter routing must delegate quantization, exclude only Morph, and keep throughput floors/fallbacks');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
@@ -381,6 +381,10 @@ export function selectHealthyTransports(transports, healthy) {
   return transports.filter((transport) => healthySet.has(transport.name));
 }
 
+export function encodeTransportPlan(transports) {
+  return Buffer.from(JSON.stringify(transports), 'utf8').toString('base64');
+}
+
 async function main() {
   const { results, healthy } = await runSmoke({
     timeoutMs: Number(process.env.REVIEW_YETI_SMOKE_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
@@ -406,6 +410,7 @@ async function main() {
       resolved_api_key_env: resolved.api_key_env,
       resolved_degraded: String(degraded),
       healthy_transports: JSON.stringify(healthyTransports),
+      healthy_transport_plan_b64: encodeTransportPlan(healthyTransports),
     };
     for (const [name, value] of Object.entries(outputs)) {
       appendFileSync(outputPath, `${name}=${value}\n`);

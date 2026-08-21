@@ -42,7 +42,12 @@ if (new Set(names).size !== names.length) {
 if (plan.some((entry) => entry?.stream !== true)) {
   throw new Error('all transports must stream');
 }
-if (JSON.stringify(plan) !== JSON.stringify(policyTransports)) {
+if (process.env.ALLOW_POLICY_SUBSET === 'true') {
+  const admittedPolicyTransports = policyTransports.filter((transport) => names.includes(transport.name));
+  if (JSON.stringify(plan) !== JSON.stringify(admittedPolicyTransports)) {
+    throw new Error('admitted transport handoff is not an exact ordered subset of policy');
+  }
+} else if (JSON.stringify(plan) !== JSON.stringify(policyTransports)) {
   throw new Error('transport handoff does not exactly match policy');
 }
 

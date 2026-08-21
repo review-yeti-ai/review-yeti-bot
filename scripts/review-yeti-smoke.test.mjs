@@ -6,6 +6,7 @@ import {
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
+  encodeTransportPlan,
   probeTransport,
   resolveTransport,
   runSmoke,
@@ -64,7 +65,7 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(buildRequest(transports[2]).reasoning, { effort: 'high' });
 });
 
-test('the committed OpenRouter fallback requires full-precision quants and throughput floors', () => {
+test('the committed OpenRouter fallback delegates quantization and keeps throughput floors', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const transports = validatePolicy(policy);
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
@@ -72,11 +73,11 @@ test('the committed OpenRouter fallback requires full-precision quants and throu
   assert.deepEqual(openrouter.provider_routing, EXPECTED_OPENROUTER_ROUTING);
   assert.equal(openrouter.provider_routing.allow_fallbacks, true);
   assert.equal(openrouter.provider_routing.sort, 'throughput');
-  assert.deepEqual(openrouter.provider_routing.quantizations, ['bf16', 'fp16']);
+  assert.equal(openrouter.provider_routing.quantizations, undefined);
   assert.deepEqual(openrouter.provider_routing.preferred_min_throughput, { p90: 40 });
   assert.deepEqual(openrouter.provider_routing.preferred_max_latency, { p99: 3 });
   assert.equal(openrouter.allow_banned_providers, undefined);
-  assert.equal(openrouter.provider_routing.ignore, undefined);
+  assert.deepEqual(openrouter.provider_routing.ignore, ['morph']);
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
@@ -303,13 +304,13 @@ test('resolveTransport fails over to openrouter-fallback when Fireworks is unhea
   assert.equal(resolved.name, 'openrouter-fallback');
 });
 
-test('resolveTransport prefers the healthy direct transport without statically excluding downstream providers', () => {
+test('resolveTransport keeps direct order while excluding only the verified Morph outage', () => {
   const transports = policyFixture().review_yeti.transports;
   for (const healthy of [['fireworks'], ['fireworks', 'openrouter-fallback']]) {
     assert.equal(resolveTransport(transports, healthy).name, 'fireworks');
   }
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
-  assert.equal(openrouter.provider_routing.ignore, undefined);
+  assert.deepEqual(openrouter.provider_routing.ignore, ['morph']);
 });
 
 test('resolveTransport returns null when nothing is healthy (caller must hard-fail, not run)', () => {
@@ -322,6 +323,10 @@ test('selectHealthyTransports removes providers that failed preflight while pres
   const selected = selectHealthyTransports(transports, ['openrouter-fallback', 'fireworks']);
 
   assert.deepEqual(selected.map((transport) => transport.name), ['fireworks', 'openrouter-fallback']);
+  assert.deepEqual(
+    JSON.parse(Buffer.from(encodeTransportPlan(selected), 'base64').toString('utf8')),
+    selected,
+  );
 });
 
 test('probe admission rejects a transport that misses the action TTFT budget', async () => {

@@ -60,14 +60,11 @@ jobs:
           grep -Fq '"name": "ollama"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
-          grep -Fq '"quantizations": ["bf16", "fp16"]' policy/review-yeti.json
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
-          if jq -e '.review_yeti.transports[] | select(.name == "openrouter-fallback") | .provider_routing | has("ignore")' policy/review-yeti.json >/dev/null; then
-            echo "::error::OpenRouter routing must not impose a static provider ignore list"
-            exit 1
-          fi
+          jq -e '.review_yeti.transports[] | select(.name == "openrouter-fallback") | .provider_routing.ignore == ["morph"]' policy/review-yeti.json >/dev/null
+          jq -e '.review_yeti.transports[] | select(.name == "openrouter-fallback") | .ignore_providers == ["morph"]' policy/review-yeti.json >/dev/null
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml

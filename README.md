@@ -112,9 +112,10 @@ The workflow references only the GitHub secret; neither policy nor workflow file
 credential value.
 
 The action starts each model turn at Fireworks and advances through the declared order when a
-transport fails. The OpenRouter entry requires compatible request parameters, full-precision
-quantizations, strict investigation output, and throughput-ranked routing while leaving endpoint
-eligibility to OpenRouter's live statistics and the account guardrail. Each caller must expose the
+transport fails. The OpenRouter entry requires compatible request parameters, strict investigation
+output, and throughput-ranked routing while delegating quantization and endpoint eligibility to
+OpenRouter's live policy except for the account-level Morph exclusion recorded after its verified
+timeout incident. Each caller must expose the
 three named environment variables through its inherited GitHub Actions secrets. Fireworks stays
 on the default serverless tier; Fireworks and
 OpenRouter use maximum reasoning, while Ollama uses its documented `high` setting. Each transport
