@@ -270,8 +270,9 @@ describe('reviewWithModel', () => {
   it('preserves the central streaming handoff and parses SSE findings', async () => {
     const calls: any[] = [];
     const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'checking the diff' } }] })}`,
       `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":' } }] })}`,
-      `data: ${JSON.stringify({ choices: [{ delta: { content: '[]}' } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: [{ type: 'text', text: '[]}' }] } }] })}`,
       'data: [DONE]',
       '',
     ].join('\n');
@@ -312,9 +313,32 @@ describe('reviewWithModel', () => {
     expect(res.findings).toEqual([]);
     expect(calls[0].body).toMatchObject({
       stream: true,
+      max_tokens: 1024,
       reasoning_effort: 'high',
       perf_metrics_in_response: true,
     });
+  });
+
+  it('accepts structured content arrays but never treats reasoning-only output as findings', async () => {
+    const arrayResponse = stubFetch('', {
+      payload: { choices: [{ message: { content: [{ type: 'text', text: '{"findings":[]}' }] } }] },
+    });
+    const arrayResult = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: arrayResponse.impl,
+      transports: [{ name: 'fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', apiKey: 'k', model: 'm' }],
+    });
+    expect(arrayResult.decision).toBe('APPROVE');
+    expect(arrayResult.findings).toEqual([]);
+
+    const reasoningOnly = stubFetch('', {
+      payload: { choices: [{ message: { content: [], reasoning: 'I checked the diff.' } }] },
+    });
+    const reasoningResult = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: reasoningOnly.impl,
+      transports: [{ name: 'fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', apiKey: 'k', model: 'm' }],
+    });
+    expect(reasoningResult.decision).toBe('ERROR');
+    expect(reasoningResult.findings).toEqual([]);
   });
 
   it('treats the streaming timeout as inactivity instead of total generation time', async () => {
@@ -491,6 +515,25 @@ describe('reviewWithModel', () => {
     const user = calls[0].body.messages.find((m: any) => m.role === 'user').content;
     expect(user.length).toBeLessThan(3_000);
     expect(user).toContain('truncated');
+  });
+
+  it('keeps the policy-sized 410,400-character prompt within a bounded completion budget', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    const huge = [{
+      path: 'src/api/user.ts',
+      patch: 'x'.repeat(410_400),
+      addedLines: [],
+      deletedLines: [],
+    }];
+
+    await reviewWithModel(securityPersona, huge, { repo: 'o/r' }, null, {
+      maxDiffChars: 410_400,
+      fetchImplementation: impl,
+    });
+
+    const user = calls[0].body.messages.find((m: any) => m.role === 'user').content;
+    expect(user.length).toBeLessThanOrEqual(412_000);
+    expect(calls[0].body.max_tokens).toBe(1024);
   });
 
   it('includes prior-turn session context in the prompt when present', async () => {
