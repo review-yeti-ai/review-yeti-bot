@@ -1153,7 +1153,30 @@ function isOpenRouterTransport(transport = {}) {
  * buffered, full-generation response.  Keep the non-streaming branch for legacy callers/tests,
  * but consume SSE deltas when the central handoff explicitly requests streaming.
  */
-async function readChatCompletionResponse(response, streamEnabled) {
+function streamInactivityError(timeoutMs) {
+  const error = new Error(`Streaming response stalled for ${timeoutMs}ms`);
+  error.name = 'TimeoutError';
+  return error;
+}
+
+async function withStreamInactivityTimeout(promise, timeoutMs, onTimeout) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(streamInactivityError(timeoutMs));
+          onTimeout?.();
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function readChatCompletionResponse(response, streamEnabled, inactivityTimeoutMs = 90_000) {
   const contentType = typeof response?.headers?.get === 'function'
     ? String(response.headers.get('content-type') || '').toLowerCase()
     : '';
@@ -1193,7 +1216,13 @@ async function readChatCompletionResponse(response, streamEnabled) {
     const decoder = new TextDecoder();
     try {
       while (true) {
-        const { value, done } = await reader.read();
+        const { value, done } = await withStreamInactivityTimeout(
+          reader.read(),
+          inactivityTimeoutMs,
+          () => {
+            void Promise.resolve(reader.cancel?.('stream inactivity timeout')).catch(() => {});
+          },
+        );
         if (done) break;
         if (value) consume(decoder.decode(value, { stream: true }));
       }
@@ -1202,7 +1231,7 @@ async function readChatCompletionResponse(response, streamEnabled) {
       reader.releaseLock?.();
     }
   } else if (typeof response.text === 'function') {
-    consume(await response.text(), true);
+    consume(await withStreamInactivityTimeout(response.text(), inactivityTimeoutMs), true);
   }
 
   if (chunks.length === 0) throw new Error('empty_sse');
@@ -1381,7 +1410,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
       while (fetchAttempts < maxFetchAttempts) {
         fetchAttempts++;
+        const streamAbortController = streamEnabled ? new AbortController() : null;
+        let responseHeaderTimer = null;
         try {
+          if (streamAbortController) {
+            responseHeaderTimer = setTimeout(
+              () => streamAbortController.abort(streamInactivityError(transportTimeoutMs)),
+              transportTimeoutMs,
+            );
+          }
           const response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
             method: 'POST',
             headers: {
@@ -1389,8 +1426,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               Authorization: `Bearer ${transportApiKey}`,
             },
             body: JSON.stringify(requestBody),
-            signal: AbortSignal.timeout(transportTimeoutMs),
+            signal: streamAbortController?.signal || AbortSignal.timeout(transportTimeoutMs),
           });
+          if (responseHeaderTimer) {
+            clearTimeout(responseHeaderTimer);
+            responseHeaderTimer = null;
+          }
 
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
@@ -1407,7 +1448,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
           }
 
-          const payload = await readChatCompletionResponse(response, streamEnabled);
+          // A streaming timeout is an inactivity budget, not a total generation
+          // budget. Once response headers arrive, each body read gets a fresh
+          // timeout so active reasoning/content deltas are never aborted merely
+          // because the full review takes longer than one timeout window.
+          const payload = await readChatCompletionResponse(
+            response,
+            streamEnabled,
+            transportTimeoutMs,
+          );
           const responseBase = {
             ...resultBase,
             model: resolveResponseModel(payload, requestModel),
@@ -1471,6 +1520,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
           return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
         } finally {
+          if (responseHeaderTimer) clearTimeout(responseHeaderTimer);
           if (heartbeatTimer) clearInterval(heartbeatTimer);
         }
       }
