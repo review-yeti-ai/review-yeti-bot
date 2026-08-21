@@ -6,6 +6,7 @@ const root = process.cwd();
 const workflowPath = path.join(root, '.github/workflows/release-please.yml');
 const configPath = path.join(root, 'release-please-config.json');
 const manifestPath = path.join(root, '.release-please-manifest.json');
+const packagePath = path.join(root, 'package.json');
 
 describe('Release Please configuration', () => {
   it('runs on main pushes with write permissions needed for a reviewed release PR', () => {
@@ -22,10 +23,11 @@ describe('Release Please configuration', () => {
   it('uses the Node strategy and records the last released semver baseline', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
     expect(config.packages['.']).toMatchObject({
       'release-type': 'node',
       'package-name': 'ct-review-bot',
     });
-    expect(manifest).toEqual({ '.': '1.8.5' });
+    expect(manifest).toEqual({ '.': packageJson.version });
   });
 });
