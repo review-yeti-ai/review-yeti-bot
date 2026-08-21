@@ -1,0 +1,185 @@
+{
+  "schemaVersion": "testing-charter-eval-v1",
+  "personaId": "testing",
+  "repetitions": 8,
+  "notes": [
+    "Seeded semantic test defects that the testing lane missed in production on 2026-08-19.",
+    "Each defect is self-contained: everything needed to resolve it is inside the supplied diff,",
+    "so a miss is a reasoning/attention failure, not a missing-evidence failure.",
+    "Clean fixtures are controls: a charter change that raises detection by making the lane",
+    "indiscriminate is not an improvement, so false positives are measured in the same run.",
+    "2026-08-19 corpus-expansion note: the original three defect fixtures above all target the",
+    "charter's newest 'deep' additions (vacuous default-value assertions, formatting-evadable",
+    "guards). None exercised the charter's original base Flag list -- exclusive/skipped markers",
+    "left active, or shared mutable state / execution-order dependence between tests -- which had",
+    "zero regression coverage in this matrix despite being two of the charter's four founding",
+    "rules. active-skip-marker-left-in-suite and shared-module-state-order-dependent-test close",
+    "that gap; each is paired with a near-miss clean control (table-driven-consolidation-",
+    "preserves-coverage, function-scoped-fixture-avoids-shared-state) shaped to trip a reviewer",
+    "that pattern-matches on surface signals ('fewer it() blocks', 'a module-level let') rather",
+    "than the actual rule."
+  ],
+  "fixtures": [
+    {
+      "id": "vacuous-default-value-test",
+      "category": "defect",
+      "title": "Recognise both accepted bot markers",
+      "summary": "A new test passes the fixture helper's own default marker, so it is identical to the sibling test and pins nothing.",
+      "expectedPaths": ["tests/test_marker_policy.py"],
+      "mustMatch": [
+        ["default", "identical", "duplicat", "same value", "same as", "equivalent", "no different", "already", "redundant"],
+        ["pins nothing", "asserts nothing", "vacuous", "would still pass", "still pass", "passes even", "does not test", "doesn't test", "no additional", "not actually", "tests nothing", "adds no", "same behaviour", "same behavior", "no new coverage"]
+      ],
+      "files": [
+        {
+          "path": "tests/conftest.py",
+          "patch": "@@ -1,10 +1,12 @@\n import re\n \n+# Markers the publisher is allowed to emit. \"ct-review-bot:v\" is retired and must be rejected.\n MARKER_RE = re.compile(r\"^review-yeti-bot:v\\d+$\")\n BOT_LOGIN_RE = re.compile(r\"^review-yeti-bot(?:\\[bot\\])?$\")\n \n \n-def marker_payload(marker=\"review-yeti-bot:v1\"):\n+def marker_payload(marker=\"review-yeti-bot:v1\", login=\"review-yeti-bot\"):\n     \"\"\"Build a publisher payload. `marker` defaults to the only marker we emit today.\"\"\"\n-    return {\"marker\": marker}\n+    return {\"marker\": marker, \"login\": login}\n"
+        },
+        {
+          "path": "src/marker_policy.py",
+          "patch": "@@ -1,6 +1,14 @@\n from conftest import MARKER_RE, BOT_LOGIN_RE\n \n \n def marker_is_recognized(payload):\n     return bool(MARKER_RE.match(payload[\"marker\"]))\n+\n+\n+def login_is_recognized(payload):\n+    return bool(BOT_LOGIN_RE.match(payload[\"login\"]))\n"
+        },
+        {
+          "path": "tests/test_marker_policy.py",
+          "patch": "@@ -1,8 +1,16 @@\n from conftest import marker_payload\n from src.marker_policy import marker_is_recognized\n \n \n def test_default_marker_is_recognized():\n     assert marker_is_recognized(marker_payload()) is True\n+\n+\n+def test_review_yeti_bot_marker_is_also_recognized():\n+    assert marker_is_recognized(marker_payload(marker=\"review-yeti-bot:v1\")) is True\n"
+        }
+      ]
+    },
+    {
+      "id": "format-evadable-absence-guard",
+      "category": "defect",
+      "title": "Guard against checking out the pull request base SHA",
+      "summary": "A security guard written as `not in` over a 4-line literal block, so reordering or reindenting the workflow options silently disables it.",
+      "expectedPaths": ["tests/test_workflow_guard.py"],
+      "mustMatch": [
+        ["reorder", "re-order", "order", "reindent", "re-indent", "indent", "whitespace", "format", "reformat", "rearrang", "exact text", "exact string", "literal block", "byte-for-byte", "verbatim"],
+        ["still pass", "would pass", "stay green", "silently", "evad", "bypass", "defeat", "not detect", "would not catch", "fails to catch", "no longer", "false sense", "trivially"]
+      ],
+      "files": [
+        {
+          "path": ".github/workflows/pr-review.yml",
+          "patch": "@@ -8,10 +8,11 @@ jobs:\n   review:\n     runs-on: ubuntu-latest\n     steps:\n       - uses: actions/checkout@v5\n         with:\n           persist-credentials: false\n+          fetch-depth: 0\n       - run: node ./bin/review.mjs\n"
+        },
+        {
+          "path": "tests/test_workflow_guard.py",
+          "patch": "@@ -1,6 +1,20 @@\n from pathlib import Path\n \n WORKFLOW = Path(\".github/workflows/pr-review.yml\").read_text()\n \n+# Checking out the pull request base SHA would run untrusted head content with\n+# base credentials. This must never appear in the review workflow.\n+FORBIDDEN_CHECKOUT = \"\"\"      - uses: actions/checkout@v5\n+        with:\n+          persist-credentials: false\n+          ref: ${{ github.event.pull_request.base.sha }}\n+\"\"\"\n+\n+\n+def test_workflow_never_checks_out_base_sha():\n+    assert FORBIDDEN_CHECKOUT not in WORKFLOW\n"
+        }
+      ]
+    },
+    {
+      "id": "dual-cause-diagnostic-named-for-one",
+      "category": "defect",
+      "title": "Reject publisher payloads with an unusable marker",
+      "summary": "Two distinct causes raise the same diagnostic, which names only the first; the added test pins that wording against the cause it actually describes, so the second cause is both untested and misdiagnosed.",
+      "expectedPaths": ["src/resolve_marker.js", "tests/resolveMarker.test.js"],
+      "mustMatch": [
+        ["two", "both", "second", "other branch", "other cause", "either", "each cause", "retired", "invalid marker", "second cause", "2 causes", "two causes"],
+        ["untested", "no test", "not covered", "uncovered", "only covers", "only tests", "misleading", "misdiagnos", "wrong message", "inaccurate", "same message", "same error", "indistinguishable", "cannot tell", "can't tell"]
+      ],
+      "files": [
+        {
+          "path": "src/resolve_marker.js",
+          "patch": "@@ -1,8 +1,20 @@\n const MARKER_RE = /^review-yeti-bot:v(\\d+)$/u;\n \n+/**\n+ * Resolve the marker version a publisher payload carries.\n+ * Rejects an absent body, and rejects the retired `ct-review-bot:v` marker.\n+ */\n export function resolveMarker(body) {\n-  return null;\n+  if (!body) {\n+    throw new Error('marker unusable: the pull request body is empty');\n+  }\n+  const match = body.match(MARKER_RE);\n+  if (!match) {\n+    throw new Error('marker unusable: the pull request body is empty');\n+  }\n+  return Number(match[1]);\n }\n"
+        },
+        {
+          "path": "tests/resolveMarker.test.js",
+          "patch": "@@ -1,6 +1,16 @@\n import { describe, it, expect } from 'vitest';\n import { resolveMarker } from '../src/resolve_marker.js';\n \n+describe('resolveMarker', () => {\n+  it('reads the version out of a well-formed marker', () => {\n+    expect(resolveMarker('review-yeti-bot:v3')).toBe(3);\n+  });\n+\n+  it('rejects an empty pull request body', () => {\n+    expect(() => resolveMarker('')).toThrow('the pull request body is empty');\n+  });\n+});\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-behavioural-guard",
+      "category": "clean",
+      "title": "Anchor the base-SHA guard on the semantic token",
+      "summary": "Control: the guard parses the workflow, anchors on every semantic form of a base ref, and asserts it inspected at least one checkout step so it cannot pass vacuously. Nothing to flag.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "tests/test_workflow_guard.py",
+          "patch": "@@ -1,10 +1,30 @@\n import yaml\n from pathlib import Path\n \n WORKFLOW = yaml.safe_load(Path(\".github/workflows/pr-review.yml\").read_text())\n \n+# Every expression GitHub offers for the base side of a pull request. A checkout that resolves\n+# any of them runs untrusted head content against base credentials.\n+BASE_REF_TOKENS = (\"base.sha\", \"base.ref\", \"base_ref\", \"base_sha\")\n+\n+\n+def checkout_steps():\n+    for job in WORKFLOW[\"jobs\"].values():\n+        for step in job.get(\"steps\", []):\n+            if str(step.get(\"uses\", \"\")).startswith(\"actions/checkout\"):\n+                yield step\n+\n+\n+def test_no_checkout_step_resolves_a_base_ref():\n+    inspected = 0\n+    for step in checkout_steps():\n+        inspected += 1\n+        ref = str(step.get(\"with\", {}).get(\"ref\", \"\"))\n+        for token in BASE_REF_TOKENS:\n+            assert token not in ref, f\"checkout step resolves a base ref via {token}: {ref}\"\n+    # Without this the loop passes on a workflow that checks out nothing at all.\n+    assert inspected > 0, \"no checkout step was inspected; the guard would pass vacuously\"\n"
+        }
+      ]
+    },
+    {
+      "id": "clean-rename-only",
+      "category": "clean",
+      "title": "Rename resolveMarker to readMarkerVersion",
+      "summary": "Control: a pure rename with the call site updated. The charter explicitly says not to demand tests for renames.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/resolve_marker.js",
+          "patch": "@@ -1,8 +1,8 @@\n const MARKER_RE = /^review-yeti-bot:v(\\d+)$/u;\n \n-export function resolveMarker(body) {\n+export function readMarkerVersion(body) {\n   const match = String(body || '').match(MARKER_RE);\n   return match ? Number(match[1]) : null;\n }\n"
+        },
+        {
+          "path": "src/publisher.js",
+          "patch": "@@ -1,7 +1,7 @@\n-import { resolveMarker } from './resolve_marker.js';\n+import { readMarkerVersion } from './resolve_marker.js';\n \n export function publisherVersion(body) {\n-  return resolveMarker(body);\n+  return readMarkerVersion(body);\n }\n"
+        }
+      ]
+    },
+    {
+      "id": "active-skip-marker-left-in-suite",
+      "category": "defect",
+      "title": "Isolate a flaky marker-routing case with .only while debugging",
+      "summary": "An exclusive `.only` marker lands on one test in a shared describe block, silently disabling its two siblings for every future run until someone notices and reverts it.",
+      "expectedPaths": ["tests/unit/markerRouting.test.ts"],
+      "mustMatch": [
+        ["only", ".only", "exclusive", "focus"],
+        ["sibling", "rest of the suite", "other test", "remaining test", "silently skip", "silently disable", "won't run", "will not run", "not run", "stop running", "stops running", "no longer run"]
+      ],
+      "files": [
+        {
+          "path": "tests/unit/markerRouting.test.ts",
+          "patch": "@@ -1,14 +1,14 @@\n import { describe, it, expect } from 'vitest';\n import { classifyMarker } from '../../src/markerRouting';\n \n describe('classifyMarker', () => {\n   it('routes v1 markers to the legacy lane', () => {\n     expect(classifyMarker('review-yeti-bot:v1')).toBe('legacy');\n   });\n \n   it('routes v2 markers to the bounded lane', () => {\n     expect(classifyMarker('review-yeti-bot:v2')).toBe('bounded');\n   });\n \n-  it('rejects a marker with no version suffix', () => {\n+  it.only('rejects a marker with no version suffix', () => {\n     expect(() => classifyMarker('review-yeti-bot')).toThrow();\n   });\n });\n"
+        }
+      ]
+    },
+    {
+      "id": "shared-module-state-order-dependent-test",
+      "category": "defect",
+      "title": "Add rate-limiter coverage for the two-call burst window",
+      "summary": "A new test file declares its limiter and an events log at module scope instead of per-test, so the third test only passes because the first two already ran and mutated that shared state first; running it alone or reordering the suite breaks it.",
+      "expectedPaths": ["tests/unit/rateLimiter.test.ts"],
+      "mustMatch": [
+        ["shared", "module-level", "module scope", "global state", "mutable state", "outside each test", "outside the test", "not reset", "no reset", "isn't reset", "never reset", "not cleared"],
+        ["order", "depends on", "dependent", "prior test", "previous test", "earlier test", "run in order", "execution order", "run first", "run before", "test order", "run alone", "run in isolation", "run by itself"]
+      ],
+      "files": [
+        {
+          "path": "tests/unit/rateLimiter.test.ts",
+          "patch": "@@ -0,0 +1,19 @@\n+import { describe, it, expect } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+const events = [];\n+const limiter = new RateLimiter({ max: 2 });\n+\n+describe('RateLimiter', () => {\n+  it('allows the first call', () => {\n+    events.push('first');\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    events.push('second');\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call because two calls already landed', () => {\n+    events.push('third');\n+    expect(limiter.allow('key')).toBe(false);\n+    expect(events).toEqual(['first', 'second', 'third']);\n+  });\n+});\n"
+        }
+      ]
+    },
+    {
+      "id": "table-driven-consolidation-preserves-coverage",
+      "category": "clean",
+      "title": "Consolidate the marker-routing cases into a table-driven test",
+      "summary": "Control: two separate it() blocks become one it.each() over the same two cases. Assertion count and coverage are identical; a reviewer that pattern-matches on 'fewer it() blocks' as a proxy for 'fewer tests' would false-positive here.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "tests/unit/markerRouting.test.ts",
+          "patch": "@@ -1,14 +1,12 @@\n import { describe, it, expect } from 'vitest';\n import { classifyMarker } from '../../src/markerRouting';\n \n describe('classifyMarker', () => {\n-  it('routes v1 markers to the legacy lane', () => {\n-    expect(classifyMarker('review-yeti-bot:v1')).toBe('legacy');\n-  });\n-\n-  it('routes v2 markers to the bounded lane', () => {\n-    expect(classifyMarker('review-yeti-bot:v2')).toBe('bounded');\n-  });\n+  it.each([\n+    ['review-yeti-bot:v1', 'legacy'],\n+    ['review-yeti-bot:v2', 'bounded'],\n+  ])('routes %s to the %s lane', (marker, lane) => {\n+    expect(classifyMarker(marker)).toBe(lane);\n+  });\n \n   it('rejects a marker with no version suffix', () => {\n     expect(() => classifyMarker('review-yeti-bot')).toThrow();\n   });\n });\n"
+        }
+      ]
+    },
+    {
+      "id": "function-scoped-fixture-avoids-shared-state",
+      "category": "clean",
+      "title": "Add rate-limiter coverage with a fresh instance per test",
+      "summary": "Control: same three cases as the paired defect fixture, but the limiter is constructed in beforeEach and the third test drives its own two setup calls instead of relying on the first two tests having already run. Order-independent by construction; nothing to flag.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "tests/unit/rateLimiter.test.ts",
+          "patch": "@@ -0,0 +1,20 @@\n+import { describe, it, expect, beforeEach } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+describe('RateLimiter', () => {\n+  let limiter;\n+\n+  beforeEach(() => {\n+    limiter = new RateLimiter({ max: 2 });\n+  });\n+\n+  it('allows the first call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call once the limit is reached', () => {\n+    limiter.allow('key');\n+    limiter.allow('key');\n+    expect(limiter.allow('key')).toBe(false);\n+  });\n+});\n"
+        }
+      ]
+    }
+  ]
+}
