@@ -23,12 +23,23 @@ export const DEFAULT_THRESHOLDS = {
   maxCostIncreasePct: 20.0,   // Cost surge > 20% without recall gain => FAIL
   disallowNewFn: true,        // Any new false negatives on common baseline => FAIL
   disallowNewFp: true,        // Any new false positives on common baseline => FAIL
+  maxOmittedFilesAllowed: 0,  // Zero-tolerance on omitted/dropped files (> 0 => FAIL)
+  minCoveragePct: 100.0,      // Minimum 100% file coverage (< 100.0% => FAIL)
+  disallowOmittedFiles: true, // Disallow any dropped files across all partitions
   strict: true,               // Exit 1 on regression in CLI
   warnOnly: false,            // Exit 0 on regression (alias for --no-strict)
   verbose: false,
 };
 
 export const DEFAULT_MODELS = [
+  'deepseek/deepseek-v4-flash-0731:high',
+  'openrouter/5.6-luna-high',
+  'qwen/qwen-3.8-27b:high',
+  'google/gemini-3.7-flash:high',
+];
+
+export const DEFAULT_V5_MODELS = [
+  'deepseek/deepseek-v4-flash-0731:low',
   'deepseek/deepseek-v4-flash-0731:high',
   'openrouter/5.6-luna-high',
   'qwen/qwen-3.8-27b:high',
@@ -46,9 +57,15 @@ export function normalizeModelIdentifier(model) {
     'openrouter/openai/gpt-5.6-luna': 'openrouter/5.6-luna-high',
     '5.6-luna-high': 'openrouter/5.6-luna-high',
     'deepseek/deepseek-v4-flash-0731': 'deepseek/deepseek-v4-flash-0731:high',
+    'deepseek-v4-flash-0731:high': 'deepseek/deepseek-v4-flash-0731:high',
+    'deepseek/deepseek-v4-flash-0731:low': 'deepseek/deepseek-v4-flash-0731:low',
+    'deepseek-v4-flash-0731:low': 'deepseek/deepseek-v4-flash-0731:low',
+    'deepseek-v4-flash:low': 'deepseek/deepseek-v4-flash-0731:low',
+    'accounts/fireworks/models/deepseek-v4-flash-0731': 'deepseek/deepseek-v4-flash-0731:low',
     'qwen/qwen3.8-27b:high': 'qwen/qwen-3.8-27b:high',
     'qwen/qwen-3.8-27b': 'qwen/qwen-3.8-27b:high',
     'google/gemini-3.7-flash': 'google/gemini-3.7-flash:high',
+    'gemini-3.7-flash:high': 'google/gemini-3.7-flash:high',
   };
   if (aliases[trimmed]) return aliases[trimmed];
   const lower = trimmed.toLowerCase();
@@ -68,11 +85,14 @@ export function areModelsEquivalent(m1, m2) {
   const n2 = normalizeModelIdentifier(m2);
   if (n1 === n2) return true;
 
-  const baseName = (m) =>
-    m
-      .replace(/^(openrouter\/|openai\/|google\/|deepseek\/|qwen\/)/, '')
+  const baseName = (m) => {
+    const norm = normalizeModelIdentifier(m);
+    if (norm.endsWith(':low')) return norm;
+    return norm
+      .replace(/^(openrouter\/|openai\/|google\/|deepseek\/|qwen\/|accounts\/fireworks\/models\/)/, '')
       .replace(/:high$/, '')
       .toLowerCase();
+  };
 
   return baseName(m1) === baseName(m2);
 }
@@ -184,6 +204,21 @@ export function parseCliArgs(argv = []) {
       options.thresholds.disallowNewFp = false;
     } else if (arg.startsWith('--disallow-new-fp=')) {
       options.thresholds.disallowNewFp = arg.slice('--disallow-new-fp='.length) === 'true';
+    } else if (arg.startsWith('--max-omitted-files=')) {
+      options.thresholds.maxOmittedFilesAllowed = Number(arg.slice('--max-omitted-files='.length));
+    } else if (arg === '--max-omitted-files' && i + 1 < args.length) {
+      options.thresholds.maxOmittedFilesAllowed = Number(args[++i]);
+    } else if (arg.startsWith('--min-coverage-pct=') || arg.startsWith('--min-coverage=')) {
+      const val = arg.split('=')[1];
+      options.thresholds.minCoveragePct = Number(val);
+    } else if ((arg === '--min-coverage-pct' || arg === '--min-coverage') && i + 1 < args.length) {
+      options.thresholds.minCoveragePct = Number(args[++i]);
+    } else if (arg === '--disallow-omitted-files') {
+      options.thresholds.disallowOmittedFiles = true;
+    } else if (arg === '--no-disallow-omitted-files' || arg === '--disallow-omitted-files=false') {
+      options.thresholds.disallowOmittedFiles = false;
+    } else if (arg.startsWith('--disallow-omitted-files=')) {
+      options.thresholds.disallowOmittedFiles = arg.slice('--disallow-omitted-files='.length) === 'true';
     } else if (arg === '--strict') {
       options.strict = true;
       options.thresholds.strict = true;
@@ -334,6 +369,23 @@ export function calculateDeltas(candSummary = {}, baseSummary = {}, options = {}
   const deltaFp = candFp - baseFp;
   const deltaFn = candFn - baseFn;
 
+  // Omitted Files & Coverage
+  const baseOmitted = Number(base.totalOmittedFiles ?? base.omittedFiles ?? 0);
+  const candOmitted = Number(cand.totalOmittedFiles ?? cand.omittedFiles ?? 0);
+  const deltaOmitted = candOmitted - baseOmitted;
+
+  const baseCoverage = Number(base.coveragePct ?? base.coveragePercentage ?? 100.0);
+  const candCoverage = Number(cand.coveragePct ?? cand.coveragePercentage ?? 100.0);
+  const deltaCoverage = Math.round((candCoverage - baseCoverage) * 10) / 10;
+
+  const basePartitions = Number(base.totalPartitions ?? base.partitionsCount ?? 1);
+  const candPartitions = Number(cand.totalPartitions ?? cand.partitionsCount ?? 1);
+  const deltaPartitions = candPartitions - basePartitions;
+
+  const baseCompactionPct = Number(base.avgCompactionReductionPct ?? base.compactionReductionPct ?? 0);
+  const candCompactionPct = Number(cand.avgCompactionReductionPct ?? cand.compactionReductionPct ?? 0);
+  const deltaCompactionPct = Math.round((candCompactionPct - baseCompactionPct) * 10) / 10;
+
   return {
     model: cand.model || base.model || 'unknown',
     status: 'PASS',
@@ -354,6 +406,12 @@ export function calculateDeltas(candSummary = {}, baseSummary = {}, options = {}
     totalFn: { baseline: baseFn, candidate: candFn, delta: deltaFn },
     newFnCount: Math.max(0, deltaFn),
     newFpCount: Math.max(0, deltaFp),
+    omittedFiles: { baseline: baseOmitted, candidate: candOmitted, delta: deltaOmitted },
+    coveragePct: { baseline: baseCoverage, candidate: candCoverage, delta: deltaCoverage },
+    partitionsCount: { baseline: basePartitions, candidate: candPartitions, delta: deltaPartitions },
+    compactionReductionPct: { baseline: baseCompactionPct, candidate: candCompactionPct, delta: deltaCompactionPct },
+    omittedFilesCount: candOmitted,
+    coveragePercent: candCoverage,
   };
 }
 
@@ -543,6 +601,20 @@ export function evaluateModelGate(modelDelta, thresholds = DEFAULT_THRESHOLDS) {
     violations.push(`New false positives: +${modelDelta.newFpCount}`);
   }
 
+  // Gate 9: Zero Omitted Files (Zero-Loss Guarantee)
+  const maxOmitted = Number(activeThresholds.maxOmittedFilesAllowed ?? 0);
+  const candOmitted = Number(modelDelta.omittedFiles?.candidate ?? modelDelta.omittedFilesCount ?? 0);
+  if (activeThresholds.disallowOmittedFiles && candOmitted > maxOmitted) {
+    violations.push(`Omitted files detected: ${candOmitted} (max permissible: ${maxOmitted}, 100% coverage required)`);
+  }
+
+  // Gate 10: 100% File Review Coverage Guarantee
+  const minCoverage = Number(activeThresholds.minCoveragePct ?? 100.0);
+  const candCoverage = Number(modelDelta.coveragePct?.candidate ?? modelDelta.coveragePercent ?? 100.0);
+  if (candCoverage < minCoverage - 0.001) {
+    violations.push(`Coverage drop below required minimum: ${candCoverage.toFixed(1)}% (minimum required: ${minCoverage.toFixed(1)}%)`);
+  }
+
   const passed = violations.length === 0;
   const status = passed ? 'PASS' : 'REGRESSION';
 
@@ -599,6 +671,9 @@ export function compareBaselines(candInput, baseInput, options = {}) {
   if (options.maxCostIncreasePct !== undefined) thresholds.maxCostIncreasePct = Number(options.maxCostIncreasePct);
   if (options.disallowNewFn !== undefined) thresholds.disallowNewFn = options.disallowNewFn === true || options.disallowNewFn === 'true';
   if (options.disallowNewFp !== undefined) thresholds.disallowNewFp = options.disallowNewFp === true || options.disallowNewFp === 'true';
+  if (options.maxOmittedFilesAllowed !== undefined) thresholds.maxOmittedFilesAllowed = Number(options.maxOmittedFilesAllowed);
+  if (options.minCoveragePct !== undefined) thresholds.minCoveragePct = Number(options.minCoveragePct);
+  if (options.disallowOmittedFiles !== undefined) thresholds.disallowOmittedFiles = options.disallowOmittedFiles === true || options.disallowOmittedFiles === 'true';
   if (options.strict !== undefined) thresholds.strict = options.strict;
   if (options.warnOnly !== undefined) thresholds.warnOnly = options.warnOnly;
 
@@ -896,6 +971,9 @@ export function formatMarkdownReport(comparison, options = {}) {
   md += `| **Max Cost Increase (without Recall gain)** | +${Number(thresholds.maxCostIncreasePct ?? 20).toFixed(1)}% | Cost Guard |\n`;
   md += `| **Disallow New False Negatives** | ${thresholds.disallowNewFn ? 'Enabled (0 new FN)' : 'Disabled'} | Defect Invariance |\n`;
   md += `| **Disallow New False Positives** | ${thresholds.disallowNewFp ? 'Enabled (0 new FP)' : 'Disabled'} | Noise Guard |\n`;
+  md += `| **Max Omitted Files Allowed** | ${thresholds.maxOmittedFilesAllowed ?? 0} (Zero Dropped Files) | Zero-Loss Guard |\n`;
+  md += `| **Min Review Coverage %** | ${Number(thresholds.minCoveragePct ?? 100.0).toFixed(1)}% | 100% Coverage Guard |\n`;
+  md += `| **Disallow Omitted Files** | ${thresholds.disallowOmittedFiles !== false ? 'Enabled (0 omitted)' : 'Disabled'} | Full Fidelity Guard |\n`;
   md += `| **Strict Mode** | ${thresholds.strict ? 'Enabled (Exit 1 on breach)' : 'Disabled (Warn Only)'} | CI Enforcement |\n\n`;
 
   return md;
@@ -939,6 +1017,9 @@ Mathematical Gate Threshold Overrides:
   --max-cost-increase-pct=<num> Max permissible cost surge % without recall gain (Default: 20.0)
   --disallow-new-fn[=bool]      Fail on any new false negatives (Default: true)
   --disallow-new-fp[=bool]      Fail on any new false positives (Default: true)
+  --max-omitted-files=<num>     Max permissible omitted files count (Default: 0)
+  --min-coverage-pct=<num>      Min permissible review coverage percentage (Default: 100.0)
+  --disallow-omitted-files[=b]  Disallow dropped files across partitions (Default: true)
 
 Execution Control:
   --strict                      Exit with code 1 on regression breaches (Default: true)
