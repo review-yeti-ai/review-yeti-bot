@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.8...v1.9.9) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** failover dead providers; do not BLOCK on provider lanes ([#217](https://github.com/review-yeti-ai/review-yeti-bot/issues/217)) ([577c936](https://github.com/review-yeti-ai/review-yeti-bot/commit/577c9365f4a88961ef0c4e6af2085a5c65a46174))
+* **review:** recover on admitted model route ([#221](https://github.com/review-yeti-ai/review-yeti-bot/issues/221)) ([f7a4f67](https://github.com/review-yeti-ai/review-yeti-bot/commit/f7a4f679857b84137deaa561a7767a750e17314d))
+
 ## [1.9.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.7...v1.9.8) (2026-08-21)
 
 
