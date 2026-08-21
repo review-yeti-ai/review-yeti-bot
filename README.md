@@ -376,6 +376,13 @@ Its REST endpoints:
 
 ## Documentation
 
+### Trusted Pi workflow runtime
+
+The optional `review-engine: pi-workflow` path installs the pinned Pi runtime from the small
+`pi-runtime/package-lock.json` manifest into an empty bounded prefix. It requires caller-provisioned Node 24, an exact
+`action-sha`, lifecycle scripts disabled during install, and source-bound build provenance before
+the wrapper is imported. `legacy` remains the default rollback path.
+
 - **[Running Locally via CLI](docs/RUNNING_LOCALLY.md)** — how to run Review Yeti, live PR reviews, and evaluation benchmarks locally.
 - **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — full `.ct-review.yaml` and
   persona-file schema.

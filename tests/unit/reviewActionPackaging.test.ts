@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { execFileSync } from 'child_process';
 import yaml from 'js-yaml';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -9,6 +10,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const actionPath = path.join(rootRepoDir, 'action.yml');
+const nodeVersionGuard = require(path.join(rootRepoDir, 'scripts/nodeVersionGuard.js'));
 
 describe('action.yml — installable GitHub Action contract', () => {
   it('exists at the repository root so `uses: OWNER/REPO@ref` resolves', () => {
@@ -38,6 +40,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('personas');
     expect(inputs).toContain('max-diff-chars');
     expect(inputs).toContain('github-token');
+    expect(inputs).toContain('review-engine');
+    expect(inputs).toContain('action-sha');
   });
 
   it('defaults github-token to the caller workflow token so no PAT is required', () => {
@@ -70,6 +74,159 @@ describe('action.yml — installable GitHub Action contract', () => {
     // --prefix keeps node_modules out of the checked-out repository being reviewed.
     expect(raw).toContain('--prefix');
   });
+});
+
+describe('Pi runtime packaging contract', () => {
+  it('tests the Pi Node boundary, including prerelease rejection', () => {
+    expect(nodeVersionGuard.isSupportedNodeVersion('22.18.9')).toBe(false);
+    expect(nodeVersionGuard.isSupportedNodeVersion('22.19.0')).toBe(true);
+    expect(nodeVersionGuard.isSupportedNodeVersion('24.0.0')).toBe(true);
+    expect(nodeVersionGuard.isSupportedNodeVersion('22.19.0-nightly.1')).toBe(false);
+  });
+
+  it('declares the pinned runtime roots as bundled dependencies', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
+    expect(manifest.bundledDependencies).toEqual([
+      '@quintinshaw/pi-dynamic-workflows',
+      '@earendil-works/pi-ai',
+      '@earendil-works/pi-coding-agent',
+      '@earendil-works/pi-tui',
+      'typebox',
+    ]);
+  });
+
+  it('keeps legacy as the default and wires the Pi install branch to the Action path', () => {
+    const action: any = yaml.load(fs.readFileSync(actionPath, 'utf8'));
+    const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
+    expect(manifest.engines.node).toBe('>=20.0.0');
+    expect(action.inputs['review-engine'].default).toBe('legacy');
+    expect(action.inputs['review-engine'].description).toMatch(/Node 24/i);
+    const raw = fs.readFileSync(actionPath, 'utf8');
+    expect(raw).toContain('install-action-runtime.mjs');
+    expect(raw).toContain('REVIEW_YETI_ACTION_SHA');
+  });
+  it('packs from a clean exact commit and an empty consumer resolves and attests the nested Pi closure', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-clean-pack-'));
+    const releaseDir = path.join(tempDir, 'release');
+    const packDir = path.join(tempDir, 'pack');
+    const consumerDir = path.join(tempDir, 'consumer');
+    fs.cpSync(rootRepoDir, releaseDir, {
+      recursive: true,
+      filter(source) {
+        const relative = path.relative(rootRepoDir, source);
+        const top = relative.split(path.sep)[0];
+        return !['.git', 'node_modules', 'dist'].includes(top);
+      },
+    });
+    fs.mkdirSync(packDir, { recursive: true });
+    fs.mkdirSync(consumerDir, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: releaseDir });
+    execFileSync('git', ['config', 'user.name', 'Review Yeti Test'], { cwd: releaseDir });
+    execFileSync('git', ['config', 'user.email', 'review-yeti-test@example.invalid'], { cwd: releaseDir });
+    execFileSync('git', ['add', '--all'], { cwd: releaseDir });
+    execFileSync('git', ['commit', '-q', '-m', 'clean release fixture'], { cwd: releaseDir });
+
+    const npmEnvironment = { ...process.env, NPM_CONFIG_USERCONFIG: os.devNull } as Record<string, string | undefined>;
+    for (const key of Object.keys(npmEnvironment)) {
+      if (/^npm_config_allow_scripts(?:_pin)?$/iu.test(key)) delete npmEnvironment[key];
+    }
+    execFileSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+      timeout: 360_000,
+    });
+    expect(execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: releaseDir, encoding: 'utf8' })).toBe('');
+    fs.writeFileSync(path.join(releaseDir, 'dirty-release-marker'), 'must reject');
+    expect(() => execFileSync(process.execPath, ['scripts/stage-publish-package.mjs', '--prepare-current'], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+    })).toThrow(/exact clean release commit/i);
+    fs.rmSync(path.join(releaseDir, 'dirty-release-marker'));
+    execFileSync('git', ['checkout', '--detach', '--quiet', 'HEAD'], { cwd: releaseDir });
+    expect(() => execFileSync(process.execPath, ['scripts/stage-publish-package.mjs', '--prepare-current'], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+    })).toThrow(/attached release branch/i);
+    execFileSync('git', ['switch', '--quiet', '-c', 'release-fixture'], { cwd: releaseDir });
+    const packed = execFileSync('npm', ['pack', '--pack-destination', packDir], {
+      cwd: releaseDir,
+      env: npmEnvironment,
+      encoding: 'utf8',
+      timeout: 360_000,
+    }).trim().split('\n').at(-1);
+    expect(packed).toMatch(/\.tgz$/u);
+    const tarball = path.join(packDir, String(packed));
+    fs.writeFileSync(path.join(consumerDir, 'package.json'), JSON.stringify({ name: 'ordinary-consumer', private: true }, null, 2));
+    execFileSync('npm', ['install', '--prefix', '.', tarball, '--ignore-scripts', '--no-audit', '--no-fund'], {
+      cwd: consumerDir,
+      env: npmEnvironment,
+      stdio: 'pipe',
+      timeout: 360_000,
+    });
+
+    const packageName = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8')).name;
+    const installedRoot = path.join(consumerDir, 'node_modules', packageName);
+    const nestedRuntime = path.join(installedRoot, 'node_modules', '@quintinshaw', 'pi-dynamic-workflows');
+    expect(fs.existsSync(path.join(nestedRuntime, 'package.json'))).toBe(true);
+    const provenanceApi = require(path.join(installedRoot, 'src/provenance/buildProvenance.js'));
+    const provenancePath = path.join(installedRoot, 'src/provenance/generated-build-provenance.json');
+    const consumerProvenance = provenanceApi.loadBuildProvenance(provenancePath);
+    expect(consumerProvenance).toEqual(expect.objectContaining({
+      schema: 'review-yeti-build-provenance.v1',
+      runtimeGraphDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    }));
+
+    const actionPrefix = path.join(tempDir, 'action-prefix');
+    execFileSync(process.execPath, [path.join(releaseDir, 'scripts/install-action-runtime.mjs')], {
+      cwd: releaseDir,
+      env: {
+        ...npmEnvironment,
+        GITHUB_ACTION_PATH: releaseDir,
+        NPM_PREFIX: actionPrefix,
+        REVIEW_YETI_ACTION_SHA: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: releaseDir, encoding: 'utf8' }).trim(),
+      },
+      stdio: 'pipe',
+      timeout: 180_000,
+    });
+    const hostedProvenance = provenanceApi.loadBuildProvenance(path.join(releaseDir, 'src/provenance/generated-build-provenance.json'));
+    const installedPiProvenance = provenanceApi.createBuildProvenance({
+      packageRoot: actionPrefix,
+      runtimeSourceRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: releaseDir, encoding: 'utf8' }).trim(),
+      requireNested: true,
+    });
+    // The application package has its own dependency graph (and may legally hoist optional
+    // peers), while the Action's Pi engine is deliberately installed from pi-runtime's exact
+    // lockfile. Compare the hosted receipt to that bounded runtime graph, not the consumer's
+    // ambient application graph.
+    expect(hostedProvenance.runtimeGraphDigest).toBe(installedPiProvenance.runtimeGraphDigest);
+
+  }, 360_000);
+
+  it('installs the lock-backed Pi runtime from an empty bounded prefix', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-pi-action-install-'));
+    const actionDir = path.join(tempDir, 'action');
+    const prefixDir = path.join(tempDir, 'prefix');
+    fs.mkdirSync(actionDir, { recursive: true });
+    for (const directory of ['src/review', 'src/pi', 'src/provenance']) {
+      fs.cpSync(path.join(rootRepoDir, directory), path.join(actionDir, directory), { recursive: true });
+    }
+    for (const relative of ['pi-runtime/package.json', 'pi-runtime/package-lock.json', 'scripts/install-action-runtime.mjs', 'scripts/generate-build-provenance.mjs']) {
+      const destination = path.join(actionDir, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(path.join(rootRepoDir, relative), destination);
+    }
+    const output = execFileSync(process.execPath, [path.join(actionDir, 'scripts/install-action-runtime.mjs')], {
+      cwd: tempDir,
+      env: { ...process.env, GITHUB_ACTION_PATH: actionDir, NPM_PREFIX: prefixDir, REVIEW_YETI_ACTION_SHA: 'e'.repeat(40) },
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    expect(output).toContain('Pi workflow runtime ok 3.7.0');
+    expect(fs.existsSync(path.join(actionDir, 'src/provenance/generated-build-provenance.json'))).toBe(true);
+  }, 130_000);
 });
 
 describe('writeStepOutputs', () => {
