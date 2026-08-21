@@ -58,7 +58,9 @@ jobs:
           personas: ${{ vars.ACTIVE_PERSONAS }}
           model: ${{ vars.OPENROUTER_MODEL || 'openrouter/auto' }}
           max-diff-chars: ${{ vars.MAX_DIFF_CHARS || '24000' }}
-          llm-api-key: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          # Keep the historical secret name working while accepting the repository's current
+          # canonical OPENROUTER_API_KEY secret. The value is never logged or copied to outputs.
+          llm-api-key: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY || secrets.OPENROUTER_API_KEY }}
           llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
