@@ -39,14 +39,14 @@ if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrou
 # Measured ablation 2026-08-20 (live, N=8 reps x 9 fixtures x 3 arms, errored runs counted as
 # failures): reasoning_effort=max scored recall 0.425 [0.29-0.58] with 25/72 errors, versus the
 # provider default (unset) at 0.750 [0.60-0.86] with 7/72 -- non-overlapping CIs and 3.5x the
-# failure rate. Fireworks and OpenRouter must therefore NOT pin it. Ollama stays 'high': that
-# specific value was never measured, so it is left alone rather than changed on inference.
-# Operator directive 2026-08-20: reasoning_effort 'high' on every transport.
-# The guard forbids only 'max', which is the measured-bad arm (ablation: recall 0.425
-# [0.29-0.58] with 25/72 errors, vs the provider default at 0.750 [0.60-0.86] with 7/72).
-# NOTE: 'high' itself was never measured -- the ablation covered none / unset / max only.
-if any(item.get('reasoning_effort') == 'max' for item in transports):
-    raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
+# failure rate. #99 then pinned 'high' on every transport without measuring it. Production
+# example-api Review Yeti on 2026-08-21 (PR 4472, SHA 858b121, run 32519052928) reproduced the
+# same class as issue review-yeti-ai/review-yeti-bot#112: fireworks empty_sse, ollama/openrouter
+# "no parseable findings JSON", architecture lane ERROR, verdict BLOCK with P0=P1=0. Format
+# recovery then streamed ~8 minutes because inactivity timeout resets on reasoning tokens.
+# Do not pin reasoning_effort at all. Unset is the only measured-good arm.
+if any(item.get('reasoning_effort') is not None for item in transports):
+    raise SystemExit("reasoning_effort must be unset; high reproduced empty_sse/unparseable JSON BLOCK (example-api#4472 2026-08-21); max is the measured worst arm")
 if transports[0].get('structured_output') != 'strict':
     raise SystemExit('Fireworks must use the strict investigation response schema')
 if transports[0].get('perf_metrics_in_response') is not True:
