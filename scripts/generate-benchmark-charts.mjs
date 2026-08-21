@@ -314,9 +314,6 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
   <text x="${padding.left + plotWidth / 2}" y="${height - 28}" text-anchor="middle" class="axis-label">Total Cost ($ USD per 190 PR Reviews) [Logarithmic Scale]</text>
   <text x="25" y="${padding.top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 25 ${padding.top + plotHeight / 2})" class="axis-label">Verdict Accuracy (%)</text>
 
-  <!-- Pareto Optimal Frontier Line -->
-  ${paretoPathD ? `<path d="${paretoPathD}" fill="none" stroke="#22c55e" stroke-width="3" stroke-dasharray="6,4" opacity="0.85" stroke-linecap="round" />` : ''}
-
   <!-- Data Points with Anti-Collision Labels -->
   ${dataPointsSvg}
 
@@ -341,7 +338,7 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
     <text x="34" y="122" class="legend-text">Qwen 3.8 27B</text>
     
     <line x1="12" y1="134" x2="203" y2="134" stroke="#334155" stroke-width="1" />
-    <circle cx="20" cy="148" r="5" fill="none" stroke="#22c55e" stroke-width="2" />
+    <circle cx="20" cy="148" r="6" fill="none" stroke="#22c55e" stroke-width="2" />
     <text x="34" y="152" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
   </g>
 </svg>`;
