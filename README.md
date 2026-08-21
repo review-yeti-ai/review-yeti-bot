@@ -346,6 +346,23 @@ OPENROUTER_API_KEY="$OPENROUTER_API_KEY" node scripts/evaluate-release-benchmark
 node scripts/generate-benchmark-charts.mjs
 ```
 
+### 5. Reviewed SemVer releases
+
+Merges to `main` are evaluated by Release Please using Conventional Commits. It
+opens a release PR instead of publishing directly from an ordinary merge:
+
+- `fix:` produces a patch release.
+- `feat:` produces a minor release.
+- `feat!:` or a `BREAKING CHANGE:` footer produces a major release.
+- `docs:`, `chore:`, `test:`, and `ci:` do not create a release.
+
+The release PR must pass the normal branch-protection and Review Yeti gates. When
+it is merged, Release Please creates an immutable `vMAJOR.MINOR.PATCH` tag. The
+single canonical tag workflow then runs the full test and benchmark gates,
+publishes the GitHub release and container image, and deploys it. Only after that
+workflow succeeds is the matching tested commit promoted to the rolling `v1`
+tag. The `v1` tag is never advanced by an ordinary `main` merge.
+
 ---
 
 ## Optional: self-hosted dashboard service
