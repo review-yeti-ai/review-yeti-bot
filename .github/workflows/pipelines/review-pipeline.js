@@ -16,6 +16,7 @@ const path = require('path');
 const { createHash } = require('crypto');
 const { spawnSync, execSync } = require('child_process');
 const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanitizeCanonicalFindings } = require('../../../src/review/reviewCore');
+const { applyFalsificationOutcomes, runFindingFalsification } = require('../../../src/review/findingFalsification');
 const {
   resolveOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,
@@ -2504,6 +2505,117 @@ function resolvePersonaRoster(payload = {}, localConfig = null, env = process.en
  * @param {number} [expectedPersonas] - How many personas were expected to run; quorum is degraded
  *   when fewer completed. Defaults to the number of results supplied.
  */
+/**
+ * Verified publication (src/review/findingFalsification.js): an independent falsification pass
+ * that gates which hypotheses reach the arbiter. Persona lanes are recall-oriented hypothesis
+ * generators; nothing between a lane and arbitration currently establishes causality for a
+ * finding. This stage fails CLOSED per finding: REFUTE, ABSTAIN, contract violations, and
+ * verifier provider failure all withhold the finding (recorded in the receipt, never silently),
+ * matching the contract that uncertainty must produce abstention, not publication.
+ * Config: review.finding_falsification (true | {limits: {...}}); default not_configured (OFF);
+ * env kill-switch REVIEW_YETI_FINDING_FALSIFICATION=false.
+ */
+function resolveFindingFalsificationPolicy({ localConfig, env = process.env } = {}) {
+  const disabled = (reason) => Object.freeze({ enabled: false, reason });
+  const configured = localConfig?.parsed?.review?.finding_falsification;
+  if (configured === undefined || configured === null) return disabled('not_configured');
+  if (configured === false) return disabled('disabled_by_config');
+  if (configured !== true && (typeof configured !== 'object' || Array.isArray(configured))) return disabled('invalid_config');
+  const settings = configured === true ? {} : configured;
+  if (settings.enabled === false) return disabled('disabled_by_config');
+  const envOverride = String(env.REVIEW_YETI_FINDING_FALSIFICATION ?? '').trim().toLowerCase();
+  if (envOverride === 'false') return disabled('disabled_by_env');
+  const limits = settings.limits && typeof settings.limits === 'object' && !Array.isArray(settings.limits) ? settings.limits : undefined;
+  return Object.freeze({ enabled: true, reason: 'configured', ...(limits ? { limits } : {}) });
+}
+
+/**
+ * Flattens per-lane findings into the index-parallel `{findings, locations}` pair
+ * runFindingFalsification and applyFalsificationOutcomes contract on.
+ */
+function flattenPersonaFindings(personaResults) {
+  const findings = [];
+  const locations = [];
+  (Array.isArray(personaResults) ? personaResults : []).forEach((lane, laneIndex) => {
+    (lane?.findings || []).forEach((finding, findingIndex) => {
+      findings.push(finding);
+      locations.push({ laneIndex, findingIndex });
+    });
+  });
+  return { findings, locations };
+}
+
+/**
+ * One buffered chat-completion turn for the falsification verifier, over the same transport
+ * plan the persona lanes resolve (resolveModelConfig / REVIEW_YETI_TRANSPORTS). Deliberately
+ * simpler than reviewWithModel: no streaming, no format recovery -- a failed turn returns
+ * `{ok: false}` and the falsification stage converts that into a withheld-on-abstention
+ * outcome (fail closed), so transport sophistication buys nothing here.
+ * Returns `{ok: true, content, usage}` on success.
+ */
+async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, options = {}) {
+  const cfg = { ...resolveModelConfig(), ...options };
+  const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
+  const transports = Array.isArray(cfg.transports) && cfg.transports.length > 0
+    ? cfg.transports
+    : [{ name: 'default', baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model }];
+  let lastError = null;
+  for (const transport of transports) {
+    if (signal?.aborted) throw new Error('falsification turn aborted');
+    const baseUrl = String(transport.baseUrl || cfg.baseUrl || '').replace(/\/+$/, '');
+    const apiKey = transport.apiKey || cfg.apiKey;
+    if (!baseUrl || !apiKey) continue;
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const deadlineMs = timeoutMs || transport.timeoutMs || 90_000;
+    const timer = setTimeout(onAbort, deadlineMs);
+    if (timer.unref) timer.unref();
+    try {
+      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: options.model || transport.model || cfg.model,
+          messages,
+          temperature: 0.1,
+          max_tokens: normalizeMaxOutputTokens(options.maxOutputTokens ?? transport.maxTokens, DEFAULT_MAX_OUTPUT_TOKENS),
+          response_format: { type: 'json_object' },
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        lastError = new Error(`falsification transport ${transport.name || 'default'}: HTTP ${response.status}`);
+        continue;
+      }
+      const payload = await response.json();
+      const content = payload?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string' || !content.trim()) {
+        lastError = new Error(`falsification transport ${transport.name || 'default'}: empty completion`);
+        continue;
+      }
+      const cost = extractResponseCost(payload);
+      return {
+        ok: true,
+        content,
+        usage: {
+          promptTokens: payload?.usage?.prompt_tokens,
+          completionTokens: payload?.usage?.completion_tokens,
+          totalTokens: payload?.usage?.total_tokens,
+          ...(Number.isFinite(Number(cost)) ? { costUSD: Number(cost) } : {}),
+        },
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      lastError = error;
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+  }
+  return { ok: false, error: lastError?.message || 'no falsification transport available' };
+}
+
 function computeArbitrationQuorumLegacy(personaResults, expectedPersonas = personaResults.length) {
   let p0Count = 0;
   let p1Count = 0;
@@ -3239,6 +3351,34 @@ async function main() {
       return;
     }
 
+    // Verified publication: the independent falsification gate (see
+    // resolveFindingFalsificationPolicy's doc comment). Runs strictly after the persona lanes
+    // (and their canonical sanitization) and strictly before arbitration, so the arbiter
+    // consumes only hypotheses that survived an adversarial verification attempt. Only the
+    // stage's own failure to RUN leaves findings untouched (config off, or the module itself
+    // throwing) -- a per-finding verifier failure inside a run is an abstention, and
+    // abstention withholds.
+    {
+      const falsificationPolicy = resolveFindingFalsificationPolicy({ localConfig, env: process.env });
+      if (falsificationPolicy.enabled && personaResults.some((lane) => (lane?.findings || []).length > 0)) {
+        try {
+          const { findings: flatFindings, locations } = flattenPersonaFindings(personaResults);
+          const falsificationResult = await runFindingFalsification({
+            findings: flatFindings,
+            changedFiles: reviewDiffFiles,
+            limits: falsificationPolicy.limits,
+            falsifyTurn: ({ messages, timeoutMs, signal }) =>
+              callFalsificationModelTurn({ messages, timeoutMs, signal }, modelConfig),
+          });
+          const applied = applyFalsificationOutcomes(personaResults, locations, falsificationResult);
+          personaResults = applied.personaResults;
+          console.log(`[Falsification] ${applied.confirmed} finding(s) confirmed, ${applied.refuted} refuted, ${applied.abstained} withheld on abstention (${falsificationResult.receipt.summary.unavailable} verifier-unavailable).`);
+        } catch (error) {
+          console.warn(`[Falsification] Stage unavailable (${error.message}); findings stand as reported.`);
+        }
+      }
+    }
+
     console.log('[Arbitration] Computing binding arbitration quorum...');
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
       changedFiles: reviewDiffFiles,
@@ -3333,6 +3473,9 @@ module.exports = {
   initMcpFleet,
   evaluatePersonaLane,
   computeArbitrationQuorum,
+  resolveFindingFalsificationPolicy,
+  flattenPersonaFindings,
+  callFalsificationModelTurn,
   formatPRComment,
   emitWorkflowAnnotations,
   writeStepSummary,
