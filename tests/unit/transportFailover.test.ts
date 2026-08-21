@@ -235,8 +235,8 @@ describe('Multi-Transport Fast Failover', () => {
 
     expect(result.decision).toBe('APPROVE');
     expect(requestBodies).toHaveLength(2);
-    expect(requestBodies[0].body.max_tokens).toBe(1024);
-    expect(requestBodies[1].body.max_tokens).toBe(1024);
+    expect(requestBodies[0].body.max_tokens).toBe(8192);
+    expect(requestBodies[1].body.max_tokens).toBe(8192);
     expect(requestBodies[0].body.reasoning_effort).toBe('high');
     expect(requestBodies[1].body.reasoning_effort).toBe('medium');
   });
