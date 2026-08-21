@@ -27,6 +27,7 @@ describe('Model Filtering & Provider Normalization Unit Tests', () => {
     expect(getProviderIdForModel('gemini-1.5-pro')).toBe('gemini');
     expect(getProviderIdForModel('agy/claude-opus-4-6-thinking')).toBe('agy');
     expect(getProviderIdForModel('synthetic/hf:moonshotai/Kimi-K3')).toBe('glm');
+    expect(getProviderIdForModel('opencode-go/glm-5.2')).toBe('glm');
     expect(getProviderIdForModel('codex/gpt-5.6-sol-high')).toBe('codex');
     expect(getProviderIdForModel('llama3.3')).toBe('ollama');
   });
