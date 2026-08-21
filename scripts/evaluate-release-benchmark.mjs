@@ -32,6 +32,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
+import {
+  generateParetoFrontierSVG,
+  generateMarkdownParetoSection,
+  extractModelPoints,
+} from './generate-benchmark-charts.mjs';
+
 const require = createRequire(import.meta.url);
 try {
   require('ts-node/register/transpile-only');
@@ -452,6 +458,7 @@ export function formatReleaseDigest(markdownContent, options = {}) {
     table || '*No executive summary table available.*',
     '',
     '### 📦 Evaluation Artifacts & Reports',
+    `- 📈 **Pareto Frontier Plotted Chart (.svg)**: [Download pareto-frontier-accuracy-vs-cost-${version}.svg](https://github.com/${repository}/releases/download/${version}/pareto-frontier-accuracy-vs-cost-${version}.svg)`,
     `- 📊 **Full Benchmark Report (.md)**: [Download model-benchmark-matrix-${version}.md](https://github.com/${repository}/releases/download/${version}/model-benchmark-matrix-${version}.md)`,
     `- 🔢 **Benchmark Matrix Schema (.json)**: [Download model-benchmark-matrix-${version}.json](https://github.com/${repository}/releases/download/${version}/model-benchmark-matrix-${version}.json)`,
     '',
@@ -585,13 +592,33 @@ export async function main(argv = process.argv) {
       baselinesDir,
       `model-benchmark-matrix-${options.saveBaseline}.md`
     );
+    const chartsDir = path.join(baselinesDir, 'charts');
+    if (!fs.existsSync(chartsDir)) {
+      fs.mkdirSync(chartsDir, { recursive: true });
+    }
+    const svgBaselinePath = path.join(
+      chartsDir,
+      `pareto-frontier-accuracy-vs-cost-${options.saveBaseline}.svg`
+    );
+    const svgLatestPath = path.join(
+      chartsDir,
+      `pareto-frontier-accuracy-vs-cost.svg`
+    );
+
+    const points = extractModelPoints(report.summary);
+    const paretoSvg = generateParetoFrontierSVG(points, `Pareto Frontier: Verdict Accuracy vs. Total Cost (${options.saveBaseline})`);
 
     fs.writeFileSync(jsonBaselinePath, jsonReport, 'utf8');
     fs.writeFileSync(mdBaselinePath, markdownReport, 'utf8');
+    fs.writeFileSync(svgBaselinePath, paretoSvg, 'utf8');
+    fs.writeFileSync(svgLatestPath, paretoSvg, 'utf8');
+
     if (!options.json) {
-      console.log(`[✓] Baseline matrix saved to:`);
+      console.log(`[✓] Baseline matrix & Pareto SVG chart saved to:`);
       console.log(`    - ${jsonBaselinePath}`);
-      console.log(`    - ${mdBaselinePath}\n`);
+      console.log(`    - ${mdBaselinePath}`);
+      console.log(`    - ${svgBaselinePath}`);
+      console.log(`    - ${svgLatestPath}\n`);
     }
   }
 

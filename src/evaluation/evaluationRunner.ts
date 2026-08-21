@@ -583,17 +583,27 @@ export interface ModelPricing {
 }
 
 export const MODEL_PRICING_TABLE: Record<string, ModelPricing> = {
+  'deepseek/deepseek-v4-flash-0731:low': { promptPer1M: 0.14, completionPer1M: 0.28 },
+  'deepseek/deepseek-v4-flash-0731:medium': { promptPer1M: 0.14, completionPer1M: 0.28 },
   'deepseek/deepseek-v4-flash-0731:high': { promptPer1M: 0.14, completionPer1M: 0.28 },
   'deepseek/deepseek-v4-flash-0731': { promptPer1M: 0.14, completionPer1M: 0.28 },
   'accounts/fireworks/models/deepseek-v4-flash-0731': { promptPer1M: 0.14, completionPer1M: 0.28 },
+  'openrouter/5.6-luna-low': { promptPer1M: 2.0, completionPer1M: 6.0 },
+  'openrouter/5.6-luna-medium': { promptPer1M: 2.0, completionPer1M: 6.0 },
   'openrouter/5.6-luna-high': { promptPer1M: 2.0, completionPer1M: 6.0 },
+  'openai/gpt-5.6-luna:low': { promptPer1M: 2.0, completionPer1M: 6.0 },
+  'openai/gpt-5.6-luna:medium': { promptPer1M: 2.0, completionPer1M: 6.0 },
   'openai/gpt-5.6-luna:high': { promptPer1M: 2.0, completionPer1M: 6.0 },
   'openai/gpt-5.6-luna': { promptPer1M: 2.0, completionPer1M: 6.0 },
   'openrouter/openai/gpt-5.6-luna': { promptPer1M: 2.0, completionPer1M: 6.0 },
+  'qwen/qwen-3.8-27b:low': { promptPer1M: 0.35, completionPer1M: 0.80 },
+  'qwen/qwen-3.8-27b:medium': { promptPer1M: 0.35, completionPer1M: 0.80 },
   'qwen/qwen-3.8-27b:high': { promptPer1M: 0.35, completionPer1M: 0.80 },
   'qwen/qwen-3.8-27b': { promptPer1M: 0.35, completionPer1M: 0.80 },
   'qwen/qwen3.8-27b:high': { promptPer1M: 0.35, completionPer1M: 0.80 },
   'qwen/qwen-2.5-coder-32b-instruct': { promptPer1M: 0.35, completionPer1M: 0.80 },
+  'google/gemini-3.7-flash:low': { promptPer1M: 0.15, completionPer1M: 0.60 },
+  'google/gemini-3.7-flash:medium': { promptPer1M: 0.15, completionPer1M: 0.60 },
   'google/gemini-3.7-flash:high': { promptPer1M: 0.15, completionPer1M: 0.60 },
   'google/gemini-3.7-flash': { promptPer1M: 0.15, completionPer1M: 0.60 },
   'openrouter/auto': { promptPer1M: 0.50, completionPer1M: 1.50 },
@@ -787,7 +797,32 @@ export interface SimulatedProfile {
 
 export function getSimulatedProfile(modelId: string): SimulatedProfile {
   const norm = normalizeOpenRouterModel(modelId).toLowerCase();
+  const isLow = norm.includes(':low') || norm.includes('-low');
+  const isMedium = norm.includes(':medium') || norm.includes(':med') || norm.includes('-medium') || norm.includes('-med');
+
   if (norm.includes('v4-flash') || norm.includes('deepseek')) {
+    if (isLow) {
+      return {
+        discoveryRate: 0.91,
+        fpProb: 0.0,
+        ttftBase: 95,
+        ttftVariance: 10,
+        turnDepth: 2,
+        promptFactor: 1.0,
+        completionFactor: 0.9,
+      };
+    }
+    if (isMedium) {
+      return {
+        discoveryRate: 0.96,
+        fpProb: 0.0,
+        ttftBase: 100,
+        ttftVariance: 12,
+        turnDepth: 2.5,
+        promptFactor: 1.02,
+        completionFactor: 1.05,
+      };
+    }
     return {
       discoveryRate: 1.0,
       fpProb: 0.0,
@@ -798,7 +833,30 @@ export function getSimulatedProfile(modelId: string): SimulatedProfile {
       completionFactor: 1.15,
     };
   }
+
   if (norm.includes('luna') || norm.includes('5.6-luna')) {
+    if (isLow) {
+      return {
+        discoveryRate: 0.95,
+        fpProb: 0.0,
+        ttftBase: 120,
+        ttftVariance: 15,
+        turnDepth: 2,
+        promptFactor: 1.05,
+        completionFactor: 1.0,
+      };
+    }
+    if (isMedium) {
+      return {
+        discoveryRate: 0.98,
+        fpProb: 0.0,
+        ttftBase: 128,
+        ttftVariance: 18,
+        turnDepth: 2.5,
+        promptFactor: 1.08,
+        completionFactor: 1.1,
+      };
+    }
     return {
       discoveryRate: 1.0,
       fpProb: 0.0,
@@ -809,7 +867,30 @@ export function getSimulatedProfile(modelId: string): SimulatedProfile {
       completionFactor: 1.2,
     };
   }
+
   if (norm.includes('qwen') || norm.includes('3.8-27b')) {
+    if (isLow) {
+      return {
+        discoveryRate: 0.88,
+        fpProb: 0.03,
+        ttftBase: 125,
+        ttftVariance: 15,
+        turnDepth: 2,
+        promptFactor: 1.0,
+        completionFactor: 0.9,
+      };
+    }
+    if (isMedium) {
+      return {
+        discoveryRate: 0.92,
+        fpProb: 0.02,
+        ttftBase: 132,
+        ttftVariance: 18,
+        turnDepth: 2.5,
+        promptFactor: 1.05,
+        completionFactor: 1.05,
+      };
+    }
     return {
       discoveryRate: 0.98,
       fpProb: 0.02,
@@ -820,7 +901,30 @@ export function getSimulatedProfile(modelId: string): SimulatedProfile {
       completionFactor: 1.2,
     };
   }
+
   if (norm.includes('3.7-flash') || norm.includes('gemini')) {
+    if (isLow) {
+      return {
+        discoveryRate: 0.94,
+        fpProb: 0.0,
+        ttftBase: 100,
+        ttftVariance: 10,
+        turnDepth: 2,
+        promptFactor: 1.0,
+        completionFactor: 0.95,
+      };
+    }
+    if (isMedium) {
+      return {
+        discoveryRate: 0.98,
+        fpProb: 0.0,
+        ttftBase: 108,
+        ttftVariance: 12,
+        turnDepth: 2.5,
+        promptFactor: 1.02,
+        completionFactor: 1.05,
+      };
+    }
     return {
       discoveryRate: 1.0,
       fpProb: 0.0,
@@ -831,6 +935,7 @@ export function getSimulatedProfile(modelId: string): SimulatedProfile {
       completionFactor: 1.15,
     };
   }
+
   return {
     discoveryRate: 0.95,
     fpProb: 0.05,
@@ -1431,8 +1536,12 @@ export function formatMarkdownReport(report: ComparativeBenchmarkReport): string
 
   for (const res of report.detailedResults) {
     const matchIcon = res.verdictMatch ? '✅' : '❌';
+    const f1 = typeof res.f1Score === 'number' ? res.f1Score.toFixed(2) : '0.00';
+    const snr = typeof res.snr === 'number' ? res.snr.toFixed(1) : '0.0';
+    const cost = typeof res.costUSD === 'number' ? res.costUSD.toFixed(4) : '0.0000';
+    const ttft = res.ttftMs ?? 0;
     lines.push(
-      `| \`${res.scenarioId}\` | \`${res.model}\` | ${res.category} | ${res.expectedVerdict} | ${res.verdict} | ${matchIcon} | ${res.tp} | ${res.fp} | ${res.fn} | ${res.f1Score.toFixed(2)} | ${res.snr.toFixed(1)} | ${res.ttftMs} | $${res.costUSD.toFixed(4)} |`
+      `| \`${res.scenarioId}\` | \`${res.model}\` | ${res.category} | ${res.expectedVerdict} | ${res.verdict} | ${matchIcon} | ${res.tp ?? 0} | ${res.fp ?? 0} | ${res.fn ?? 0} | ${f1} | ${snr} | ${ttft} | $${cost} |`
     );
   }
 

@@ -92,14 +92,16 @@ jobs:
           
           JSON_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.json"
           MD_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.md"
+          SVG_PATH="eval-baselines/charts/pareto-frontier-accuracy-vs-cost-${RELEASE_VER}.svg"
           
-          if [ ! -f "$JSON_PATH" ] || [ ! -f "$MD_PATH" ]; then
-            echo "::error::Benchmark baseline artifacts were not generated at expected paths."
+          if [ ! -f "$JSON_PATH" ] || [ ! -f "$MD_PATH" ] || [ ! -f "$SVG_PATH" ]; then
+            echo "::error::Benchmark baseline artifacts or Pareto chart were not generated at expected paths."
             exit 1
           fi
           
           echo "json_path=${JSON_PATH}" >> "$GITHUB_OUTPUT"
           echo "md_path=${MD_PATH}" >> "$GITHUB_OUTPUT"
+          echo "svg_path=${SVG_PATH}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure GitHub Release Exists
         env:
@@ -117,9 +119,10 @@ jobs:
           RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
           JSON_PATH: ${{ steps.benchmark.outputs.json_path }}
           MD_PATH: ${{ steps.benchmark.outputs.md_path }}
+          SVG_PATH: ${{ steps.benchmark.outputs.svg_path }}
         run: |
-          echo "Uploading $JSON_PATH and $MD_PATH to release $RELEASE_VER..."
-          gh release upload "$RELEASE_VER" "$JSON_PATH" "$MD_PATH" --clobber
+          echo "Uploading $JSON_PATH, $MD_PATH, and $SVG_PATH to release $RELEASE_VER..."
+          gh release upload "$RELEASE_VER" "$JSON_PATH" "$MD_PATH" "$SVG_PATH" --clobber
 
       - name: Embed Summary Benchmark Table into Release Notes
         env:
