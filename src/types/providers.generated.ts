@@ -36,14 +36,14 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "openai",
       "gpt"
     ],
-    "defaultModel": "gpt-4o",
+    "defaultModel": "openai/gpt-5.6-luna",
     "supportedModels": [
-      "gpt-4o",
-      "gpt-4o-mini",
-      "o1-mini",
-      "o3-mini",
       "openai/gpt-5.6-luna",
-      "openrouter/5.6-luna-high"
+      "openrouter/5.6-luna-high",
+      "gpt-5.6-sol",
+      "o3-mini",
+      "gpt-4o",
+      "gpt-4o-mini"
     ],
     "supportsCustomModels": true,
     "requiresApiKey": true
@@ -56,12 +56,13 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "claude",
       "anthropic"
     ],
-    "defaultModel": "claude-3-5-sonnet",
+    "defaultModel": "claude-3-7-sonnet",
     "supportedModels": [
-      "claude-3-5-sonnet",
       "claude-3-7-sonnet",
       "claude-5-sonnet",
-      "claude-opus-4-8"
+      "claude-opus-4-8",
+      "claude-3-5-sonnet",
+      "agy/claude-opus-4-6-thinking"
     ],
     "supportsCustomModels": false,
     "requiresApiKey": true
@@ -74,11 +75,13 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "gemini",
       "google"
     ],
-    "defaultModel": "gemini-1.5-pro",
+    "defaultModel": "google/gemini-3.7-flash:high",
     "supportedModels": [
-      "gemini-1.5-pro",
-      "gemini-2.0-flash",
-      "gemini-2.0-pro"
+      "google/gemini-3.7-flash:high",
+      "google/gemini-3.7-flash",
+      "google/gemini-2.5-pro",
+      "google/gemini-2.5-flash",
+      "gemini-1.5-pro"
     ],
     "supportsCustomModels": false,
     "requiresApiKey": true
@@ -105,11 +108,14 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
     "provenancePrefixes": [
       "deepseek"
     ],
-    "defaultModel": "deepseek-v3",
+    "defaultModel": "deepseek/deepseek-v4-flash-0731:high",
     "supportedModels": [
-      "deepseek-v3",
+      "deepseek/deepseek-v4-flash-0731:high",
+      "deepseek/deepseek-v4-flash-0731:low",
+      "accounts/fireworks/models/deepseek-v4-flash-0731",
+      "deepseek-v4-pro",
       "deepseek-r1",
-      "deepseek-v4-pro"
+      "deepseek-v3"
     ],
     "supportsCustomModels": true,
     "requiresApiKey": true
