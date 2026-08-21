@@ -129,6 +129,7 @@ const { buildDependencyRiskHints } = require('../../../src/review/dependencyRisk
 const { EVIDENCE_TOOLS, normalizeInvestigationLimits, DEFAULT_INVESTIGATION_LIMITS, HARD_INVESTIGATION_LIMITS } = require('../../../src/review/evidenceContracts');
 const { buildReviewEvent, buildReviewStartedEvent, deliverReviewEvent } = require('../../../src/reviewDashboard');
 const { buildRunReport, renderRunReportLine, writeRunReport } = require('../../../src/telemetry/runReport');
+const { renderStreamSummaryLine, renderTimeoutTraceSuffix, shouldRenderTimeout } = require('../../../src/telemetry/streamSummary');
 const { buildOverviewMessages, parseOverviewResponse, renderOverviewContextBlock, renderOverviewWalkthrough } = require('../../../src/review/prOverviewBrief');
 const { buildRebuttalMessages, parseRebuttalResponse, renderRebuttalReply, selectRebuttalCandidates } = require('../../../src/review/rebuttalRerun');
 const { applyConfirmationOutcomes, buildConfirmationMessages, parseConfirmationResponse, selectFindingsForConfirmation } = require('../../../src/review/crossModelConfirm');
@@ -1999,6 +2000,69 @@ async function callOpenRouterChat(fetchImpl, {
   // there is no buffered branch that can omit it.
   const t0 = Date.now();
   let streamRoute = { model: body.model, provider: defaultProvider, generationId: null };
+  // AttemptTrace (ct-meta docs/plans/2026-08-20-review-yeti-telemetry.md, design §4.1): the
+  // single frozen per-attempt record that makes a timeout self-explanatory without a repro. Built
+  // and mutated ONLY inside this function (design §4.2 rule 1, single-writer) and frozen via
+  // `freezeAttemptTrace()` immediately before every return below -- no downstream log site may
+  // synthesize or override a field here, only render what this function already decided.
+  const trace = {
+    t_headers_ms: null,
+    t_first_chunk_ms: null,
+    first_chunk_kind: 'none',
+    t_first_content_ms: null,
+    t_done_ms: null,
+    reasoning_ms: null,
+    reasoning_chars: 0,
+    content_chars: 0,
+    chunk_count: 0,
+    max_inter_chunk_gap_ms: null,
+    max_gap_at_ms: null,
+    stream_end_reason: 'not_started',
+    budget_exceeded: 'none',
+    ttft_budget_ms: ttftBudgetMs,
+    total_budget_ms: totalMs,
+    stall_budget_ms: stallBudgetMs,
+    provider_ttft_ms: null,
+  };
+  // Gap tracking is intentionally O(1): keep only the running max and when it happened, never a
+  // per-chunk log or array (design §7 cardinality: nothing per-chunk is ever emitted). The clock
+  // reference for the FIRST gap is `t_headers_ms`, not `t_first_chunk_ms` -- the operator's live
+  // probe that motivated this design measured its largest gap (768ms) as the headers-to-first-
+  // token span itself, so a slow-to-start-but-then-continuous stream must be attributable the same
+  // way a mid-stream stall would be.
+  let lastStreamEventAtMs = null;
+  const recordStreamGap = (elapsedNowMs) => {
+    if (lastStreamEventAtMs !== null) {
+      const gap = Math.max(0, elapsedNowMs - lastStreamEventAtMs);
+      if (trace.max_inter_chunk_gap_ms === null || gap > trace.max_inter_chunk_gap_ms) {
+        trace.max_inter_chunk_gap_ms = gap;
+        trace.max_gap_at_ms = elapsedNowMs;
+      }
+    }
+    lastStreamEventAtMs = elapsedNowMs;
+  };
+  // `budget_exceeded` is owned by the abort classifier alone (design §4.1 table): this mapping is
+  // applied at the two sites below that already compute a `timeoutPhase` from the precedence chain
+  // documented on `laneDeadlineSignal`/`totalAbort`, never invented independently. Correction to
+  // the design brief during implementation (main advanced past its verified 357258c snapshot): a
+  // 2026-08-20 fix replaced the fixed-total-duration abort with the resettable `stallController`
+  // below as the PRIMARY streaming-phase timeout, so `stall` is a real, distinct budget_exceeded
+  // value alongside `total` -- folding it into `total` would misreport which budget actually fired.
+  const mapTimeoutPhaseToBudgetExceeded = (phase) => {
+    if (phase === 'ttft') return 'ttft';
+    if (phase === 'stall') return 'stall';
+    if (phase === 'lane_deadline') return 'lane_deadline';
+    if (phase === 'response') return 'total';
+    return 'none';
+  };
+  // Derived fields are computed exactly once, in this one place, immediately before the trace
+  // leaves the function frozen -- never recomputed or reinterpreted downstream.
+  const freezeAttemptTrace = () => {
+    if (trace.first_chunk_kind === 'reasoning' && trace.t_first_chunk_ms !== null && trace.t_first_content_ms !== null) {
+      trace.reasoning_ms = Math.max(0, trace.t_first_content_ms - trace.t_first_chunk_ms);
+    }
+    return Object.freeze(trace);
+  };
   // TTFT: started at request dispatch (right here), cleared the moment the first SSE data chunk
   // parses. This is the fix for the core D1 bug — the stream path previously bound only to
   // totalAbort and had no connect-level budget at all, so a provider that accepted the
@@ -2047,6 +2111,12 @@ async function callOpenRouterChat(fetchImpl, {
       }),
       signal: requestAbort.signal,
     });
+    // Headers boundary (design §4.1): the operator's live probe measured this as the meaningful
+    // "is the provider even talking to us" boundary (768ms, distinct from first-parsed-chunk).
+    // `t0` above conflates connect+headers+first-chunk for the pre-existing TTFT metric; this is
+    // the dedicated field the gap tracker below also anchors its first comparison against.
+    trace.t_headers_ms = Math.max(0, Date.now() - t0);
+    lastStreamEventAtMs = trace.t_headers_ms;
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
@@ -2056,6 +2126,7 @@ async function callOpenRouterChat(fetchImpl, {
       } catch {
         /* raw */
       }
+      trace.stream_end_reason = 'http_error';
       return {
         ok: false,
         status: response.status,
@@ -2064,11 +2135,13 @@ async function callOpenRouterChat(fetchImpl, {
         content: '',
         usage: null,
         streamed: true,
+        attemptTrace: freezeAttemptTrace(),
       };
     }
 
     if (!(response.body && typeof response.body.getReader === 'function')) {
       console.warn(`${logPrefix} stream body is not readable; refusing buffered compatibility request`);
+      trace.stream_end_reason = 'stream_unreadable';
       return {
         ok: false,
         detail: 'stream_body_not_readable',
@@ -2077,6 +2150,7 @@ async function callOpenRouterChat(fetchImpl, {
         usage: null,
         streamed: true,
         partial: false,
+        attemptTrace: freezeAttemptTrace(),
       };
     }
 
@@ -2117,7 +2191,11 @@ async function callOpenRouterChat(fetchImpl, {
           // OpenAI-compatible SSE streams are complete at [DONE]. Do not read the underlying
           // socket again: some gateways close/reset it after the terminator, which used to turn
           // an already-complete response into a false response_timeout and trigger failover.
-          if (data === '[DONE]') break streamRead;
+          if (data === '[DONE]') {
+            trace.stream_end_reason = 'done_marker';
+            trace.t_done_ms = Math.max(0, Date.now() - t0);
+            break streamRead;
+          }
           let chunk;
           try {
             chunk = JSON.parse(data);
@@ -2142,7 +2220,15 @@ async function callOpenRouterChat(fetchImpl, {
           const deltaObj = chunk.choices?.[0]?.delta || {};
           const reasoningField = reasoningDeltaField(deltaObj);
           const elapsedNowMs = Math.max(0, Date.now() - t0);
+          // Every parsed chunk -- reasoning or content -- feeds the AttemptTrace's chunk_count and
+          // gap tracker (design §4.1: `max_inter_chunk_gap_ms` is "the single most valuable field",
+          // O(1), never per-chunk logged -- design §7).
+          trace.chunk_count += 1;
+          recordStreamGap(elapsedNowMs);
+          const firstChunkKind = reasoningField ? 'reasoning' : (typeof deltaObj.content === 'string' && deltaObj.content.length > 0 ? 'content' : 'other');
           if (firstChunk) {
+            trace.t_first_chunk_ms = elapsedNowMs;
+            trace.first_chunk_kind = firstChunkKind;
             // firstChunkKind is observability-only (see reasoningDeltaField's doc comment): the
             // TTFT clear above already happened unconditionally on ANY parsed chunk, reasoning or
             // content. Naming which kind arrived first turns a silent "TTFT_OK" into a log line an
@@ -2151,7 +2237,7 @@ async function callOpenRouterChat(fetchImpl, {
               elapsedMs: elapsedNowMs,
               ...streamRoute,
               totalBudgetMs: totalMs,
-              firstChunkKind: reasoningField ? 'reasoning' : (typeof deltaObj.content === 'string' && deltaObj.content.length > 0 ? 'content' : 'other'),
+              firstChunkKind,
             });
           } else if (reasoningField && elapsedNowMs - lastReasoningHeartbeatMs >= REASONING_HEARTBEAT_INTERVAL_MS) {
             lastReasoningHeartbeatMs = elapsedNowMs;
@@ -2162,18 +2248,35 @@ async function callOpenRouterChat(fetchImpl, {
           // `delta.content`/`message.content` alone; leaking reasoning prose in front of it would
           // break every JSON parse (a provider that inlines thinking as `<think>...</think>` text
           // INSIDE `delta.content` itself, rather than a separate field, is a distinct failure mode
-          // not fixed by this liveness check -- see REASONING_DELTA_FIELDS doc comment).
+          // not fixed by this liveness check -- see REASONING_DELTA_FIELDS doc comment). The trace
+          // accumulates reasoning CHAR COUNTS ONLY (never the text itself, design §9).
+          if (reasoningField) {
+            const reasoningValue = deltaObj[reasoningField];
+            const reasoningText = typeof reasoningValue === 'string' ? reasoningValue : (typeof reasoningValue?.text === 'string' ? reasoningValue.text : '');
+            trace.reasoning_chars += reasoningText.length;
+          }
           const delta = deltaObj.content;
-          if (typeof delta === 'string') content += delta;
+          if (typeof delta === 'string') {
+            content += delta;
+            if (delta.length > 0) {
+              trace.content_chars += delta.length;
+              if (trace.t_first_content_ms === null) trace.t_first_content_ms = elapsedNowMs;
+            }
+          }
           const msg = chunk.choices?.[0]?.message?.content;
           if (typeof msg === 'string' && msg.length > content.length) content = msg;
           if (chunk.usage) usage = chunk.usage;
           const providerPerformance = resolveProviderPerformance(chunk);
           if (providerPerformance.perfMetrics) perfMetrics = providerPerformance.perfMetrics;
-          if (providerPerformance.providerTtftMs !== undefined) providerTtftMs = providerPerformance.providerTtftMs;
+          if (providerPerformance.providerTtftMs !== undefined) {
+            providerTtftMs = providerPerformance.providerTtftMs;
+            trace.provider_ttft_ms = Number.isFinite(providerTtftMs) ? Math.max(0, Math.round(providerTtftMs)) : trace.provider_ttft_ms;
+          }
           if (chunk.error) {
             console.warn(`${logPrefix} mid-stream error (${provider}/${model}); refusing buffered compatibility request`);
             try { await reader.cancel(); } catch (_) {}
+            trace.stream_end_reason = 'mid_stream_error';
+            trace.t_done_ms = elapsedNowMs;
             return {
               ok: false,
               detail: 'stream_error',
@@ -2185,6 +2288,7 @@ async function callOpenRouterChat(fetchImpl, {
               usage,
               streamed: true,
               partial: sawChunk,
+              attemptTrace: freezeAttemptTrace(),
             };
           }
         }
@@ -2195,6 +2299,11 @@ async function callOpenRouterChat(fetchImpl, {
       // it routed to, so there is nothing legitimate to quarantine (operator directive: a TTFT
       // abort adds nothing to any ignore/ban set).
       if (!sawFirstChunk && ttftTimer.signal.aborted) {
+        // Headers were already received (we are inside the post-fetch read loop) but no SSE chunk
+        // ever parsed before the TTFT budget fired -- the connection opened and then went silent.
+        trace.stream_end_reason = 'abort';
+        trace.budget_exceeded = 'ttft';
+        trace.t_done_ms = Math.max(0, Date.now() - t0);
         return {
           ok: false,
           aborted: true,
@@ -2207,6 +2316,7 @@ async function callOpenRouterChat(fetchImpl, {
           usage,
           streamed: true,
           partial: false,
+          attemptTrace: freezeAttemptTrace(),
         };
       }
       if (stallController.signal.aborted || signal?.aborted || totalAbort.signal.aborted) {
@@ -2231,6 +2341,9 @@ async function callOpenRouterChat(fetchImpl, {
         const timeoutPhase = laneDeadlineSignal?.aborted
           ? 'lane_deadline'
           : (stallController.signal.aborted ? 'stall' : (totalAbort.signal.aborted ? 'response' : undefined));
+        trace.stream_end_reason = 'abort';
+        trace.budget_exceeded = mapTimeoutPhaseToBudgetExceeded(timeoutPhase);
+        trace.t_done_ms = Math.max(0, Date.now() - t0);
         return {
           ok: false,
           aborted: true,
@@ -2244,6 +2357,7 @@ async function callOpenRouterChat(fetchImpl, {
           usage,
           streamed: true,
           partial: sawChunk,
+          attemptTrace: freezeAttemptTrace(),
         };
       }
       const rawErrorMessage = String(err?.message || err);
@@ -2252,6 +2366,12 @@ async function callOpenRouterChat(fetchImpl, {
       if (/StreamReset|stream_id|remote_reset|ECONNRESET|aborted|timeout|network/i.test(rawErrorMessage)) {
         console.warn(`${logPrefix} stream read failed (${formatRouteLabel(streamRoute)}); refusing buffered compatibility request`);
       }
+      // Unclassified stream-read failure: none of the tracked abort signals (ttft/stall/lane
+      // deadline/total) fired, so this is a genuine transport-level break (e.g. a raw socket
+      // reset), not a budget expiry -- `budget_exceeded` stays `none`, honestly reflecting that no
+      // specific budget is known to have caused it.
+      trace.stream_end_reason = 'abort';
+      trace.t_done_ms = Math.max(0, Date.now() - t0);
       return {
         ok: false,
         aborted: true,
@@ -2263,6 +2383,7 @@ async function callOpenRouterChat(fetchImpl, {
         usage,
         streamed: true,
         partial: sawChunk,
+        attemptTrace: freezeAttemptTrace(),
       };
     } finally {
       clearTtftTimer();
@@ -2270,6 +2391,11 @@ async function callOpenRouterChat(fetchImpl, {
       try { await reader.cancel(); } catch (_) {}
     }
 
+    // The read loop exited via the outer `if (done) break;` rather than the `[DONE]` marker
+    // (`streamRead` label) above -- the reader closed on its own. `stream_end_reason` was only
+    // set to `done_marker` at the `[DONE]` handling site, so if that never ran, this is a clean-
+    // but-marker-less completion, not a fabricated `done_marker`.
+    if (trace.stream_end_reason === 'not_started') trace.stream_end_reason = 'reader_done';
     return {
       ok: true,
       model,
@@ -2280,6 +2406,7 @@ async function callOpenRouterChat(fetchImpl, {
       perfMetrics,
       providerTtftMs,
       streamed: true,
+      attemptTrace: freezeAttemptTrace(),
       payload: {
         id: generationId,
         model,
@@ -2291,6 +2418,12 @@ async function callOpenRouterChat(fetchImpl, {
     };
   } catch (err) {
     if (!sawFirstChunk && ttftTimer.signal.aborted) {
+      // This is the OUTER catch: `fetchImpl()` itself threw/aborted, so headers never arrived
+      // (`trace.t_headers_ms` is still null) -- distinct from the inner-catch ttft branch above,
+      // where headers were received but no chunk followed.
+      trace.stream_end_reason = 'not_started';
+      trace.budget_exceeded = 'ttft';
+      trace.t_done_ms = Math.max(0, Date.now() - t0);
       return {
         ok: false,
         aborted: true,
@@ -2298,6 +2431,7 @@ async function callOpenRouterChat(fetchImpl, {
         failureClass: 'ttft_timeout',
         ...streamRoute,
         content: '',
+        attemptTrace: freezeAttemptTrace(),
         usage: null,
         streamed: true,
         partial: false,
@@ -2312,11 +2446,19 @@ async function callOpenRouterChat(fetchImpl, {
       const timeoutPhase = laneDeadlineSignal?.aborted
         ? 'lane_deadline'
         : (totalAbort.signal.aborted ? 'response' : undefined);
-      return { ok: false, aborted: true, error: err, ...(timeoutPhase ? { timeoutPhase } : {}), ...streamRoute, content: '', usage: null, streamed: true, partial: false };
+      // Pre-headers abort (fetchImpl itself was aborted): headers never arrived.
+      trace.stream_end_reason = 'not_started';
+      trace.budget_exceeded = mapTimeoutPhaseToBudgetExceeded(timeoutPhase);
+      trace.t_done_ms = Math.max(0, Date.now() - t0);
+      return { ok: false, aborted: true, error: err, ...(timeoutPhase ? { timeoutPhase } : {}), ...streamRoute, content: '', usage: null, streamed: true, partial: false, attemptTrace: freezeAttemptTrace() };
     }
     const errorName = err?.name && /^[A-Za-z][A-Za-z0-9]*$/u.test(String(err.name)) ? String(err.name) : 'Error';
     const msg = `provider_request_failed:${errorName}`;
     console.warn(`${logPrefix} stream failed; refusing buffered compatibility request (${msg.slice(0, 100)})`);
+    // Generic pre-headers failure (DNS/TLS/connect error, no abort signal fired): honestly `none`
+    // -- no specific budget is known to have caused it.
+    trace.stream_end_reason = 'not_started';
+    trace.t_done_ms = Math.max(0, Date.now() - t0);
     return {
       ok: false,
       aborted: true,
@@ -2326,6 +2468,7 @@ async function callOpenRouterChat(fetchImpl, {
       usage: null,
       streamed: true,
       partial: false,
+      attemptTrace: freezeAttemptTrace(),
     };
   } finally {
     clearTtftTimer();
@@ -3222,6 +3365,32 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           generationId: result.generationId || null,
         };
 
+        // STREAM_SUMMARY (design §4.1): one line per attempt, ALWAYS -- success and failure --
+        // emitted here so no downstream branch (retry/break/return) below can skip it. Success
+        // finally leaves evidence: this is the fix for measured gap #3 (design §3), "a completed
+        // attempt leaves TTFT_OK and nothing else." Context fields are the attempt-loop coordinate
+        // this scope already resolved; the trace itself is exactly what `callOpenRouterChat`
+        // returned, unmodified (design §4.2 rule 1: this call site renders, it never synthesizes).
+        console.log(renderStreamSummaryLine({
+          trace: result.attemptTrace,
+          context: {
+            persona: String(persona.id || 'unknown').slice(0, 100),
+            model_index: modelIndex,
+            attempt,
+            transport: String(options.transportName || gateway.id || 'unknown').slice(0, 100),
+            provider: String(lastRoute.provider || unknownRouteProvider || 'unknown').slice(0, 100),
+            model: String(lastRoute.model || requestedModel || 'unknown').slice(0, 300),
+            generation_id: lastRoute.generationId ? String(lastRoute.generationId).slice(0, 200) : null,
+            http_status: Number.isSafeInteger(result.status) ? result.status : null,
+            queue_wait_ms: Number.isFinite(options.queueWaitMs) ? Math.max(0, Math.round(options.queueWaitMs)) : null,
+            queued_ahead_at_start: Number.isFinite(options.queuedAheadAtStart) ? Math.max(0, Math.round(options.queuedAheadAtStart)) : null,
+            prompt_chars: promptChars,
+            lane_deadline_ms: Number.isFinite(options.laneDeadlineMs) && options.laneDeadlineMs > 0 ? Math.round(options.laneDeadlineMs) : null,
+            prompt_tokens: Number.isFinite(result.usage?.prompt_tokens) ? Math.max(0, Math.round(result.usage.prompt_tokens)) : null,
+            completion_tokens: Number.isFinite(result.usage?.completion_tokens) ? Math.max(0, Math.round(result.usage.completion_tokens)) : null,
+          },
+        }));
+
         // Provider-routing is advisory at the network boundary, not a license to accept a route
         // that violates the trusted policy. OpenRouter may return a display name while its
         // request API expects a hyphenated slug (OpenInference/open-inference is one observed
@@ -3382,12 +3551,31 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 + ` persona=${persona.id} elapsed_ms=${elapsedMs}`,
               );
             }
+            // Contradiction tripwire (design §4.2 point 3): a completed [DONE] stream can never be
+            // labeled a timeout. This never SUPPRESSES the human-readable TIMEOUT line below (this
+            // branch is only reachable when `result.aborted` is already true, so the trace should
+            // already agree) -- it is defense-in-depth that surfaces a disagreement loudly instead
+            // of silently, exactly the shape of defect this design exists to make structurally
+            // hard to reintroduce (`stream=disabled`-while-streaming, TIMEOUT-on-completed-
+            // response).
+            if (!shouldRenderTimeout(result.attemptTrace)) {
+              console.warn(
+                `${modelLogPrefix} TELEMETRY_INVALID reason=timeout_trace_contradiction persona=${persona.id}`
+                + ` stream_end_reason=${result.attemptTrace?.stream_end_reason} budget_exceeded=${result.attemptTrace?.budget_exceeded}`,
+              );
+            }
+            // TIMEOUT autopsy (design §4.1): the existing human-readable line gains the same
+            // frozen AttemptTrace the STREAM_SUMMARY line above already rendered -- reading this
+            // one line answers which budget fired, whether the stream was ever silent
+            // (`max_inter_chunk_gap_ms`), where the time went, and how much reasoning vs content
+            // had streamed, without a repro.
             console.warn(
               `${modelLogPrefix} TIMEOUT phase=${phase} persona=${persona.id} requested=${requestedModel}`
               + ` resolved=${routeLabel} elapsed_ms=${elapsedMs}`
               + ` ttft_budget_ms=${ttftMs} total_budget_ms=${timeoutMs}`
               + ` attempt=${attempt}/${maxAttempts} generation=${lastRoute.generationId || 'none'}`
-              + ` status=${result.status || 'aborted'}`,
+              + ` status=${result.status || 'aborted'}`
+              + ` ${renderTimeoutTraceSuffix(result.attemptTrace)}`,
             );
             console.warn(`::warning::Model transport ${options.transportName || gateway.id} ${phase} timeout persona=${persona.id} elapsed_ms=${elapsedMs} route=${routeLabel}`);
             // Flattened retry (REL-271 D3/D4/D5): the attempt loop IS the retry now -- no bonus
@@ -3681,8 +3869,13 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
   const releaseStream = options.streamGate
     ? await options.streamGate.acquire(options.signal)
     : null;
-  if (streamGateWaitStartedAt !== null) {
-    const queueWaitMs = Date.now() - streamGateWaitStartedAt;
+  // Threaded into the STREAM_SUMMARY context below (design §4.1 field list: "queue_wait_ms /
+  // queued_ahead_at_start ... stream-gate acquire site (exists, rp:3834-3842)"). Previously only
+  // logged here and discarded; now also carried onto every attempt's AttemptTrace context so a
+  // lane that "timed out for no visible reason" is attributable in the SAME line as the rest of
+  // the trace, not a separate [StreamGate] log a reader has to correlate by hand.
+  const queueWaitMs = streamGateWaitStartedAt !== null ? Date.now() - streamGateWaitStartedAt : null;
+  if (queueWaitMs !== null) {
     // Only log when queueing actually happened (or the gate reports depth) -- an uncontended
     // acquire is the common case and would otherwise double the log volume for nothing.
     if (queueWaitMs > 0 || queuedAheadAtStart > 0) {
@@ -3711,6 +3904,8 @@ async function reviewWithTransports(persona, diffFiles, prContext, sessionContex
       providerTimeoutQuarantine: transport.quarantineOnTimeout,
       gatewayCompat: transport.compat,
       transportName: transport.name,
+      queueWaitMs,
+      queuedAheadAtStart,
     };
     const result = await reviewWithTransports.reviewWithModelImpl(persona, diffFiles, prContext, sessionContext, transportOptions);
     let failed = result?.ok === false || result?.decision === 'ERROR';
