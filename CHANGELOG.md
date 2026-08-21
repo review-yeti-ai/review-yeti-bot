@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.7...v1.9.8) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** use policy-safe format recovery model ([#218](https://github.com/review-yeti-ai/review-yeti-bot/issues/218)) ([a8d1357](https://github.com/review-yeti-ai/review-yeti-bot/commit/a8d1357bb71010411464134b52546be96fbbfd56))
+
 ## [1.9.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.6...v1.9.7) (2026-08-21)
 
 
