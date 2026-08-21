@@ -17,7 +17,6 @@ const { createHash } = require('crypto');
 const { spawnSync, execSync } = require('child_process');
 const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanitizeCanonicalFindings } = require('../../../src/review/reviewCore');
 const {
-  DEFAULT_OPENROUTER_REVIEW_POLICY,
   resolveOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,
 } = require('./openrouter-policy');
@@ -73,24 +72,6 @@ try {
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 const DEFAULT_PERSONA_CONCURRENCY = 3;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
-const FORMAT_RECOVERY_MODEL_PREFERENCE = Object.freeze([
-  'google/gemini-3.5-flash-lite',
-  'moonshotai/kimi-k2.6',
-  'tencent/hy3',
-  'z-ai/glm-5.1',
-  'openai/gpt-5.6-luna',
-]);
-
-function selectFormatRecoveryModel(requestOptions, currentModel) {
-  const allowedModels = requestOptions?.plugins
-    ?.find((plugin) => plugin?.id === 'auto-router')
-    ?.allowed_models || DEFAULT_OPENROUTER_REVIEW_POLICY.allowed_models;
-  const allowedSet = new Set(allowedModels);
-
-  return FORMAT_RECOVERY_MODEL_PREFERENCE.find(
-    (model) => model !== currentModel && allowedSet.has(model),
-  ) || allowedModels.find((model) => model !== currentModel) || currentModel;
-}
 
 function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURRENCY) {
   if (value === undefined || value === null || value === '') return DEFAULT_PERSONA_CONCURRENCY;
@@ -1648,21 +1629,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               formatRecoveryAttempted = true;
               // The final OpenRouter transport may be pinned to the same
               // reasoning-heavy model that already exhausted its answer
-              // budget on the direct transports. Recovery must change that
-              // failure domain without delegating to `openrouter/auto`: its
-              // curated pool can have no intersection with the central
-              // allowed-model fleet, producing a policy 404. Select a direct
-              // centrally admitted format-capable model instead and remove
-              // the auto-router-only plugin while retaining provider privacy.
+              // budget on the direct transports. Keep the already-admitted
+              // OpenRouter model: account guardrails can reject a different
+              // model even when the central fleet allows it. Disable optional
+              // reasoning so the bounded retry reserves its output budget for
+              // JSON, and remove the auto-router-only plugin while retaining
+              // the provider privacy policy.
               if (isOpenRouterTransport) {
-                requestBody.model = selectFormatRecoveryModel(requestOptions, requestBody.model);
                 delete requestBody.plugins;
               }
               requestBody.max_tokens = Math.max(
                 requestBody.max_tokens,
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
               );
-              if (isOpenRouterTransport) requestBody.reasoning = { effort: 'low' };
+              if (isOpenRouterTransport) requestBody.reasoning = { enabled: false };
               else requestBody.reasoning_effort = 'low';
               requestBody.messages[0].content += [
                 '',
@@ -1671,7 +1651,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 '- Keep reasoning brief and reserve output tokens for the final JSON object.',
                 '- Return only {"findings":[]} or the required findings object.',
               ].join('\n');
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once via ${requestBody.model} with low reasoning effort and a larger answer budget...`);
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once via the admitted ${requestBody.model} route with reasoning disabled and a larger answer budget...`);
               continue;
             }
             return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
