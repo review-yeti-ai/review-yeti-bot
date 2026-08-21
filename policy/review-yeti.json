@@ -41,11 +41,11 @@
         "stream": true,
         "structured_output": "strict",
         "quarantine_on_timeout": false,
-        "ignore_providers": ["morph"],
+        "ignore_providers": ["morph", "fireworks"],
         "provider_routing": {
           "allow_fallbacks": true,
           "require_parameters": true,
-          "ignore": ["morph"],
+          "ignore": ["morph", "fireworks"],
           "sort": "throughput",
           "preferred_min_throughput": {
             "p90": 40

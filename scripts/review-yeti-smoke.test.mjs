@@ -77,7 +77,7 @@ test('the committed OpenRouter fallback delegates quantization and keeps through
   assert.deepEqual(openrouter.provider_routing.preferred_min_throughput, { p90: 40 });
   assert.deepEqual(openrouter.provider_routing.preferred_max_latency, { p99: 3 });
   assert.equal(openrouter.allow_banned_providers, undefined);
-  assert.deepEqual(openrouter.provider_routing.ignore, ['morph']);
+  assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
@@ -304,13 +304,13 @@ test('resolveTransport fails over to openrouter-fallback when Fireworks is unhea
   assert.equal(resolved.name, 'openrouter-fallback');
 });
 
-test('resolveTransport keeps direct order while excluding only the verified Morph outage', () => {
+test('resolveTransport keeps direct order while excluding verified fallback providers', () => {
   const transports = policyFixture().review_yeti.transports;
   for (const healthy of [['fireworks'], ['fireworks', 'openrouter-fallback']]) {
     assert.equal(resolveTransport(transports, healthy).name, 'fireworks');
   }
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
-  assert.deepEqual(openrouter.provider_routing.ignore, ['morph']);
+  assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
 });
 
 test('resolveTransport returns null when nothing is healthy (caller must hard-fail, not run)', () => {

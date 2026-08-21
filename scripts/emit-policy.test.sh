@@ -73,8 +73,8 @@ if fallback.get('allow_banned_providers') is not None:
 if fallback.get('quarantine_on_timeout') is not False:
     raise SystemExit('OpenRouter must own timeout rerouting without dynamic provider bans')
 routing = fallback.get('provider_routing') or {}
-if routing.get('ignore') != ['morph']:
-    raise SystemExit('openrouter-fallback must exclude only the verified Morph outage')
+if routing.get('ignore') != ['morph', 'fireworks']:
+    raise SystemExit('openrouter-fallback must exclude the verified Morph and Fireworks outages')
 if routing.get('allow_fallbacks') is not True:
     raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
 if routing.get('sort') != 'throughput':
@@ -451,8 +451,8 @@ if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
 grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
-grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -Fx 'morph'
-grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["morph"]'
+grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -Fx 'morph,fireworks'
+grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["morph","fireworks"]'
 grep -qx 'v1' "$tmp_dir/valid.output"
 grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
