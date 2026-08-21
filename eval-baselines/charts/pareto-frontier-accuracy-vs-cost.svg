@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 620" width="1040" height="620">
+  <style>
+    .bg { fill: #0f172a; }
+    .title { fill: #f8fafc; font-family: system-ui, -apple-system, sans-serif; font-size: 21px; font-weight: 700; }
+    .subtitle { fill: #94a3b8; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; }
+    .axis-label { fill: #cbd5e1; font-family: system-ui, -apple-system, sans-serif; font-size: 13px; font-weight: 600; }
+    .legend-title { fill: #f8fafc; font-family: system-ui, -apple-system, sans-serif; font-size: 11.5px; font-weight: 700; }
+    .legend-text { fill: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; font-size: 11px; }
+  </style>
+
+  <!-- Background -->
+  <rect width="1040" height="620" rx="12" class="bg" />
+
+  <!-- Title & Subtitle -->
+  <text x="85" y="36" class="title">Pareto Frontier: Verdict Accuracy vs. Total Cost (test-v1)</text>
+  <text x="85" y="56" class="subtitle">Higher is better for Accuracy (Y), Lower is better for Cost (X) • Highlighted Halo = Pareto Optimal Frontier</text>
+
+  <!-- Axes & Grid -->
+  
+        <line x1="160.21536524960072" y1="75" x2="160.21536524960072" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+        <text x="160.21536524960072" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.02</text>
+      
+        <line x1="266.22546849451555" y1="75" x2="266.22546849451555" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+        <text x="266.22546849451555" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.03</text>
+      
+        <line x1="399.7824035616253" y1="75" x2="399.7824035616253" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+        <text x="399.7824035616253" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.05</text>
+      
+        <line x1="581.007872056141" y1="75" x2="581.007872056141" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+        <text x="581.007872056141" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.10</text>
+      
+        <line x1="762.2333405506565" y1="75" x2="762.2333405506565" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+        <text x="762.2333405506565" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.20</text>
+      
+        <line x1="943.4588090451718" y1="75" x2="943.4588090451718" y2="535" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+        <text x="943.4588090451718" y="557" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="middle">$0.40</text>
+      
+  
+      <line x1="85" y1="535" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="539" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">90%</text>
+    
+      <line x1="85" y1="455" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="459" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">92%</text>
+    
+      <line x1="85" y1="375" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="379" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">94%</text>
+    
+      <line x1="85" y1="295" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="299" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">96%</text>
+    
+      <line x1="85" y1="215" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="219" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">98%</text>
+    
+      <line x1="85" y1="135" x2="980" stroke="#334155" stroke-dasharray="2,2" stroke-width="1" />
+      <text x="70" y="139" fill="#94a3b8" font-size="12" font-family="system-ui, sans-serif" text-anchor="end">100%</text>
+    
+
+  <!-- Axis Lines -->
+  <line x1="85" y1="535" x2="980" stroke="#64748b" stroke-width="2" />
+  <line x1="85" y1="75" x2="85" y2="535" stroke="#64748b" stroke-width="2" />
+
+  <!-- Axis Titles -->
+  <text x="532.5" y="592" text-anchor="middle" class="axis-label">Total Cost ($ USD per 190 PR Reviews) [Logarithmic Scale]</text>
+  <text x="25" y="305" text-anchor="middle" transform="rotate(-90 25 305)" class="axis-label">Verdict Accuracy (%)</text>
+
+  <!-- Pareto Optimal Frontier Line -->
+  
+
+  <!-- Trajectory Lines between Low -> Medium -> High -->
+  
+
+  <!-- Data Points with Anti-Collision Labels -->
+  
+      <g class="model-point" data-model="deepseek/deepseek-v4-flash-0731:high">
+        <line x1="194.47310863599148" y1="135" x2="180.47310863599148" y2="121" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        <circle cx="194.47310863599148" cy="135" r="13" fill="none" stroke="#22c55e" stroke-width="2.5" opacity="0.9" filter="drop-shadow(0 0 4px #22c55e)" />
+        <circle cx="194.47310863599148" cy="135" r="8" fill="#60a5fa" stroke="#3b82f6" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="-86.32689136400847" y="107" width="262.79999999999995" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="180.47310863599148" y="120" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            deepseek/deepseek-v4-flash-0731:high
+          </text>
+          <text x="180.47310863599148" y="132" fill="#4ade80" font-size="9.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            100.0% | $0.0228
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="openrouter/5.6-luna-high">
+        <line x1="927.7675891131879" y1="135" x2="913.7675891131879" y2="111" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="927.7675891131879" cy="135" r="6" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="728.567589113188" y="97" width="181.2" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="913.7675891131879" y="110" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="end">
+            openrouter/5.6-luna-high
+          </text>
+          <text x="913.7675891131879" y="122" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="end">
+            100.0% | $0.3767
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="qwen/qwen-3.8-27b:high">
+        <line x1="452.62839498038204" y1="323.0000000000001" x2="466.62839498038204" y2="315.0000000000001" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="452.62839498038204" cy="323.0000000000001" r="6" fill="#a78bfa" stroke="#8b5cf6" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="462.62839498038204" y="301.0000000000001" width="167.6" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="466.62839498038204" y="314.0000000000001" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+            qwen/qwen-3.8-27b:high
+          </text>
+          <text x="466.62839498038204" y="326.0000000000001" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+            95.3% | $0.0612
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="google/gemini-3.7-flash:high">
+        <line x1="262.7159784229575" y1="135" x2="276.7159784229575" y2="121" stroke="#475569" stroke-width="1" stroke-dasharray="2,2" opacity="0.6" />
+        
+        <circle cx="262.7159784229575" cy="135" r="6" fill="#34d399" stroke="#10b981" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="272.7159784229575" y="107" width="208.4" height="28" rx="4" fill="#0f172a" fill-opacity="0.88" stroke="#334155" stroke-width="0.8" />
+          <text x="276.7159784229575" y="120" fill="#f8fafc" font-size="10.5" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+            google/gemini-3.7-flash:high
+          </text>
+          <text x="276.7159784229575" y="132" fill="#94a3b8" font-size="9.5" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+            100.0% | $0.0296
+          </text>
+        </g>
+      </g>
+    
+
+  <!-- Bottom-Right Legend Card -->
+  <g transform="translate(750, 370)">
+    <rect width="215" height="145" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
+    <text x="16" y="22" class="legend-title">MODEL FAMILIES</text>
+    
+    <circle cx="20" cy="40" r="5" fill="#60a5fa" stroke="#3b82f6" stroke-width="1.5" />
+    <text x="34" y="44" class="legend-text">DeepSeek V4 Flash</text>
+    
+    <circle cx="20" cy="62" r="5" fill="#34d399" stroke="#10b981" stroke-width="1.5" />
+    <text x="34" y="66" class="legend-text">Google Gemini 3.7 Flash</text>
+    
+    <circle cx="20" cy="84" r="5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5" />
+    <text x="34" y="88" class="legend-text">OpenRouter 5.6 Luna</text>
+    
+    <circle cx="20" cy="106" r="5" fill="#a78bfa" stroke="#8b5cf6" stroke-width="1.5" />
+    <text x="34" y="110" class="legend-text">Qwen 3.8 27B</text>
+    
+    <line x1="12" y1="120" x2="203" y2="120" stroke="#334155" stroke-width="1" />
+    <circle cx="20" cy="132" r="5" fill="none" stroke="#22c55e" stroke-width="2" />
+    <text x="34" y="136" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
+  </g>
+</svg>
