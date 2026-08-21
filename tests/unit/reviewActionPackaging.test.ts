@@ -125,10 +125,17 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(fs.existsSync(script)).toBe(true);
     const body = fs.readFileSync(script, 'utf-8');
     // Falls back only on the size cap; a 404 or auth failure must still fail loudly
-    // rather than hand the panel a silently empty diff.
+    // rather than hand the panel a silently empty diff. The fallback uses the
+    // immutable Git objects so API patch omissions and the 3000-file ceiling cannot
+    // create false complete coverage.
     expect(body).toContain('exceeded the maximum number of files');
-    expect(body).toContain('--paginate');
-    expect(body).toMatch(/pulls\/\$\{PR\}\/files|pulls\/.*\/files/);
+    expect(body).toContain('--filter=blob:none');
+    expect(body).toContain('merge-base');
+    expect(body).toContain('$BASE_SHA');
+    expect(body).toContain('$HEAD_SHA');
+    expect(body).not.toContain('/pulls/${PR}/files');
+    expect(fetchStep.run).toContain('steps.target.outputs.base_sha');
+    expect(fetchStep.run).toContain('steps.target.outputs.head_sha');
   });
 
   it('defaults github-token to the caller workflow token so no PAT is required', () => {

@@ -596,7 +596,9 @@ runs:
         bash "${{ github.action_path }}/scripts/fetch-pr-diff.sh" \
           "${{ steps.target.outputs.pr }}" \
           "${{ steps.target.outputs.repo }}" \
-          "${RUNNER_TEMP}/review-yeti.diff"
+          "${RUNNER_TEMP}/review-yeti.diff" \
+          "${{ steps.target.outputs.base_sha }}" \
+          "${{ steps.target.outputs.head_sha }}"
 
     # ── Node pipeline deps (js-yaml, @actions/cache) ──────────────────────────
     # Do NOT use actions/setup-node or actions/cache here. Consumer repos with
