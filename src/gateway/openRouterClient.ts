@@ -549,7 +549,7 @@ async function readWithTimeout<T>(
 async function readStreamingResponse(
   response: Response,
   requestedModel: string,
-  options?: { inactivityTimeoutMs?: number; persona?: string; providerId?: string }
+  options?: { inactivityTimeoutMs?: number; ttftTimeoutMs?: number; persona?: string; providerId?: string }
 ): Promise<any> {
   const reader = response.body?.getReader();
   if (!reader) return response.json();
@@ -566,8 +566,12 @@ async function readStreamingResponse(
   };
 
   const inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 45_000;
+  const ttftTimeoutMs = options?.ttftTimeoutMs && options.ttftTimeoutMs > 0
+    ? options.ttftTimeoutMs
+    : inactivityTimeoutMs;
   const personaLabel = options?.persona ? `[Persona: ${options.persona}] ` : '';
   let lastHeartbeatLog = Date.now();
+  let receivedFirstChunk = false;
 
   const consume = (line: string) => {
     const trimmed = line.trim();
@@ -599,14 +603,20 @@ async function readStreamingResponse(
   try {
     while (true) {
       const readPromise = reader.read();
+      const readTimeoutMs = receivedFirstChunk ? inactivityTimeoutMs : ttftTimeoutMs;
       const { done, value } = await readWithTimeout(
         readPromise,
-        inactivityTimeoutMs,
-        () => new OpenRouterConnectionError(
-          `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`
-        )
+        readTimeoutMs,
+        () => receivedFirstChunk
+          ? new OpenRouterConnectionError(
+              `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`
+            )
+          : new OpenRouterTimeoutError(
+              `Time to first streamed chunk exceeded ${Math.round(ttftTimeoutMs / 1000)}s`
+            )
       );
       if (done) break;
+      receivedFirstChunk = true;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
