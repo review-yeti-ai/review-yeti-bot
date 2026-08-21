@@ -1609,11 +1609,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 '- Reserve output tokens for the final JSON object.',
                 '- Return only {"findings":[]} or the required findings object.',
               ].join('\n');
-<<<<<<< Updated upstream
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once via ${requestBody.model} with low reasoning effort and a larger answer budget...`);
-=======
               console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once with preserved reasoning effort and a larger answer budget...`);
->>>>>>> Stashed changes
               continue;
             }
             return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
