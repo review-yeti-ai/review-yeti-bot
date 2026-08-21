@@ -172,13 +172,28 @@ inputs:
 outputs:
   verdict:
     description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely.'
-    value: ${{ steps.review.outputs.review-status }}
+    value: ${{ steps.review.outputs.verdict }}
   findings-count:
     description: 'Total findings across all personas.'
-    value: ${{ steps.review.outputs.total-findings }}
+    value: ${{ steps.review.outputs.findings-count }}
   review-status:
     description: 'Overall review outcome: SHIP, FIX_FIRST, or BLOCK.'
     value: ${{ steps.review.outputs.review-status }}
+  gate-decision:
+    description: 'Exact-head gate result: PASS or BLOCK.'
+    value: ${{ steps.review.outputs.gate-decision }}
+  merge-eligible:
+    description: 'Whether the exact-head review is eligible for merge.'
+    value: ${{ steps.review.outputs.merge-eligible }}
+  dispatch-reflection-status:
+    description: 'Provider dispatch reflection status for the exact-head run.'
+    value: ${{ steps.review.outputs.dispatch-reflection-status }}
+  provider-receipt-digest:
+    description: 'SHA-256 digest of the exact-head review receipt.'
+    value: ${{ steps.review.outputs.provider-receipt-digest }}
+  run-report-path:
+    description: 'Path to the exact-head review run report JSON.'
+    value: ${{ steps.review.outputs.run-report-path }}
   rationale:
     description: 'Executive rationale summarizing why this verdict was chosen.'
     value: ${{ steps.review.outputs.rationale }}
