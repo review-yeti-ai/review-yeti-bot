@@ -3,12 +3,12 @@ name: Release & Benchmark Publishing Pipeline
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version/tag (e.g. v1.8.4 or v2.0.0)'
-        required: false
+        description: 'Existing release tag to validate and deploy (e.g. v1.8.6)'
+        required: true
         type: string
       compare_baseline:
         description: 'Historical baseline to compare against'
@@ -31,17 +31,53 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      version: ${{ steps.resolve-version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: 'npm'
+
+      - name: Resolve release version
+        id: resolve-version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            RELEASE_VER="${GITHUB_REF#refs/tags/}"
+          else
+            RELEASE_VER="${{ inputs.version }}"
+          fi
+          echo "version=${RELEASE_VER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: ${RELEASE_VER}"
+
+      - name: Validate immutable release identity
+        env:
+          RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags --force
+          MAIN_SHA="$(git rev-parse origin/main)"
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          TAGGED_SHA="$(git rev-list -n 1 "${RELEASE_VER}^{commit}")"
+          TAG_REACHABLE=false
+          if git merge-base --is-ancestor "$TAGGED_SHA" "$MAIN_SHA"; then
+            TAG_REACHABLE=true
+          fi
+          node scripts/validate-release-version.mjs \
+            --tag "$RELEASE_VER" \
+            --package-version "$(node -p "require('./package.json').version")" \
+            --main-sha "$MAIN_SHA" \
+            --checked-out-sha "$CHECKED_OUT_SHA" \
+            --tagged-sha "$TAGGED_SHA" \
+            --tag-reachable-from-main "$TAG_REACHABLE"
 
       - name: Install dependencies
         run: npm ci
@@ -54,19 +90,6 @@ jobs:
           npm run test:unit
           npm run test:integration
 
-      - name: Resolve Release Version
-        id: resolve-version
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            RELEASE_VER="${{ inputs.version }}"
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            RELEASE_VER="${GITHUB_REF#refs/tags/}"
-          else
-            RELEASE_VER="v$(node -p "require('./package.json').version")"
-          fi
-          echo "version=${RELEASE_VER}" >> "$GITHUB_OUTPUT"
-          echo "Resolved release version: ${RELEASE_VER}"
-
       - name: Run Benchmark Evaluation & Automated Quality Gate
         id: benchmark
         env:
@@ -74,44 +97,34 @@ jobs:
           BASELINE_INPUT: ${{ inputs.compare_baseline }}
         run: |
           set -euo pipefail
-          
           BASELINE_PATH="${BASELINE_INPUT:-eval-baselines/model-benchmark-matrix-v2.json}"
           if [ ! -f "$BASELINE_PATH" ]; then
             BASELINE_PATH="eval-baselines/model-benchmark-matrix-v1.json"
           fi
-          
-          echo "Executing benchmark harness..."
-          echo "Version: ${RELEASE_VER}"
-          echo "Baseline: ${BASELINE_PATH}"
-          
           node scripts/evaluate-release-benchmark.mjs \
             --offline \
             --save-baseline="${RELEASE_VER}" \
             --compare-baseline="${BASELINE_PATH}" \
             --fail-on-regression
-          
           JSON_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.json"
           MD_PATH="eval-baselines/model-benchmark-matrix-${RELEASE_VER}.md"
           SVG_PATH="eval-baselines/charts/pareto-frontier-accuracy-vs-cost-${RELEASE_VER}.svg"
-          
           if [ ! -f "$JSON_PATH" ] || [ ! -f "$MD_PATH" ] || [ ! -f "$SVG_PATH" ]; then
             echo "::error::Benchmark baseline artifacts or Pareto chart were not generated at expected paths."
             exit 1
           fi
-          
-          echo "json_path=${JSON_PATH}" >> "$GITHUB_OUTPUT"
-          echo "md_path=${MD_PATH}" >> "$GITHUB_OUTPUT"
-          echo "svg_path=${SVG_PATH}" >> "$GITHUB_OUTPUT"
+          {
+            echo "json_path=${JSON_PATH}"
+            echo "md_path=${MD_PATH}"
+            echo "svg_path=${SVG_PATH}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Ensure GitHub Release Exists
         env:
           RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
         run: |
           if ! gh release view "$RELEASE_VER" >/dev/null 2>&1; then
-            echo "Creating release $RELEASE_VER..."
             gh release create "$RELEASE_VER" --title "Release $RELEASE_VER" --generate-notes
-          else
-            echo "Release $RELEASE_VER already exists."
           fi
 
       - name: Upload Benchmark Matrix Downloadable Assets
@@ -120,9 +133,7 @@ jobs:
           JSON_PATH: ${{ steps.benchmark.outputs.json_path }}
           MD_PATH: ${{ steps.benchmark.outputs.md_path }}
           SVG_PATH: ${{ steps.benchmark.outputs.svg_path }}
-        run: |
-          echo "Uploading $JSON_PATH, $MD_PATH, and $SVG_PATH to release $RELEASE_VER..."
-          gh release upload "$RELEASE_VER" "$JSON_PATH" "$MD_PATH" "$SVG_PATH" --clobber
+        run: gh release upload "$RELEASE_VER" "$JSON_PATH" "$MD_PATH" "$SVG_PATH" --clobber
 
       - name: Embed Summary Benchmark Table into Release Notes
         env:
@@ -130,14 +141,11 @@ jobs:
           MD_PATH: ${{ steps.benchmark.outputs.md_path }}
         run: |
           set -euo pipefail
-          
           BENCHMARK_DIGEST=$(node scripts/evaluate-release-benchmark.mjs \
             --extract-digest-from="${MD_PATH}" \
             --save-baseline="${RELEASE_VER}" \
-            --repository="${GITHUB_REPOSITORY:-calltelemetry/ct-review-bot}")
-          
+            --repository="${GITHUB_REPOSITORY:-review-yeti-ai/review-yeti-bot}")
           EXISTING_NOTES=$(gh release view "$RELEASE_VER" --json body -q .body 2>/dev/null || echo "")
-          
           UPDATED_NOTES=$(node -e "
             import('./scripts/evaluate-release-benchmark.mjs').then(({ mergeReleaseNotes }) => {
               const existing = process.argv[1] || '';
@@ -145,6 +153,84 @@ jobs:
               console.log(mergeReleaseNotes(existing, digest));
             });
           " "$EXISTING_NOTES" "$BENCHMARK_DIGEST")
-          
           gh release edit "$RELEASE_VER" --notes "$UPDATED_NOTES"
-          echo "Successfully embedded benchmark digest into release $RELEASE_VER notes."
+
+  deploy:
+    name: Build & Deploy Docker Image to DOKS
+    needs: validate-and-release
+    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ needs.validate-and-release.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-and-release.outputs.version }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DigitalOcean Container Registry
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Authenticate doctl registry
+        run: doctl registry login
+
+      - name: Build and push SemVer Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: registry.digitalocean.com/calltelemetry/ct-review-bot:${{ needs.validate-and-release.outputs.version }}
+          cache-from: type=gha,mode=max,scope=bot
+          cache-to: type=gha,mode=max,scope=bot
+
+      - name: Configure K8s cluster kubeconfig
+        run: doctl kubernetes cluster kubeconfig save cluster-ny1
+
+      - name: Deploy image update to DOKS
+        run: |
+          kubectl set image deployment/ct-review-bot \
+            ct-review-bot=registry.digitalocean.com/calltelemetry/ct-review-bot:${{ needs.validate-and-release.outputs.version }} \
+            -n ct-review-system
+          kubectl rollout status deployment/ct-review-bot -n ct-review-system
+
+  promote-rolling-v1:
+    name: Promote tested v1 release
+    needs: deploy
+    if: startsWith(needs.deploy.outputs.version, 'v1.')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tested release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.deploy.outputs.version }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Promote only the tested release commit
+        env:
+          RELEASE_TAG: ${{ needs.deploy.outputs.version }}
+        run: |
+          set -euo pipefail
+          TARGET_SHA="$(git rev-parse HEAD)"
+          TAGGED_SHA="$(git rev-list -n 1 "${RELEASE_TAG}^{commit}")"
+          [[ "$TARGET_SHA" == "$TAGGED_SHA" ]] || {
+            echo "::error::release checkout does not match its semver tag"
+            exit 1
+          }
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$TARGET_SHA" origin/main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -fa v1 "$TARGET_SHA" -m "Promote ${RELEASE_TAG} (${TARGET_SHA}) to v1"
+          git push origin v1 --force
