@@ -7,6 +7,7 @@
     "action.yml",
     ".github/workflows/pipelines/",
     "src/",
+    "dist/",
     "scripts/",
     "pi-runtime/",
     "README.md",
