@@ -19,14 +19,21 @@ describe('release workflow contract', () => {
     );
   });
 
-  it('validates identity before quality gates and keeps runtime deployment separate', () => {
+  it('validates identity before quality gates and contains no runtime deployment job', () => {
     const workflow = fs.readFileSync(canonicalPath, 'utf8');
     const validation = workflow.indexOf('validate-release-version.mjs');
     const build = workflow.indexOf('npm run build');
     expect(validation).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(validation);
+    expect(workflow).toContain('Execute Fast Quality Test Suite');
+    expect(workflow).toContain('Run Benchmark Evaluation & Automated Quality Gate');
+    expect(workflow).not.toMatch(/^\s*deploy:/mu);
+    expect(workflow).not.toContain('docker/build-push-action');
+    expect(workflow).not.toContain('validate and deploy');
+    expect(workflow).not.toMatch(/\bdeploy(?:ment)?\b/iu);
+    expect(workflow).not.toMatch(/packages:\s*write/u);
     expect(workflow).not.toContain('digitalocean/action-doctl');
-    expect(workflow).not.toContain('kubectl rollout status');
+    expect(workflow).not.toMatch(/\b(?:DOKS|DigitalOcean|doctl|kubectl)\b/u);
   });
 
   it('promotes rolling v1 only downstream of the canonical validated release job', () => {

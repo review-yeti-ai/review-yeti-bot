@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task with verification checkpoints.
 
-**Goal:** Turn merges to protected `main` into reviewed Conventional Commit release PRs, then publish and deploy only the immutable semver tag that has passed the existing release gates.
+**Goal:** Turn merges to protected `main` into reviewed Conventional Commit release PRs, then publish only the immutable semver tag that has passed the existing release gates.
 
-**Architecture:** Release Please watches `main` and opens a release PR that updates the Node package version and changelog from Conventional Commits. Merging that PR creates an immutable `vX.Y.Z` tag, which invokes one canonical benchmark/test/package/deploy workflow; only that successful workflow promotes the matching `v1` rolling tag. Existing `v1.8.5` is preserved as historical state, while future releases are guarded against package/tag drift.
+**Architecture:** Release Please watches `main` and opens a release PR that updates the Node package version and changelog from Conventional Commits. Merging that PR creates an immutable `vX.Y.Z` tag, which invokes one canonical benchmark/test/package-publication workflow; only that successful workflow promotes the matching `v1` rolling tag. Existing `v1.8.5` is preserved as historical state, while future releases are guarded against package/tag drift.
 
 **Tech Stack:** GitHub Actions, `googleapis/release-please-action@v4`, Node.js 24, npm lockfile, Vitest, shell/Node release guards.
 
-**Spec:** Approved in chat on 2026-08-21; the current repository already contains tag-triggered release/deploy and manual rolling-major workflows.
+**Spec:** Approved in chat on 2026-08-21; the current repository already contains tag-triggered release publication and manual rolling-major workflows.
 
 ## Global Constraints
 
@@ -16,7 +16,7 @@
 - Release PRs and the existing full required checks remain mandatory; no direct version commits or unreviewed deployment from ordinary `main` merges.
 - The existing `v1.8.5` tag is immutable historical state and is not force-moved by this change.
 - A future semver release must have a matching `package.json` version and must point at a commit reachable from `main`.
-- The rolling `v1` tag moves only after the canonical release workflow's tests, benchmark, artifact publication, and deployment complete successfully.
+- The rolling `v1` tag moves only after the canonical release workflow's tests, benchmark, and artifact publication complete successfully.
 - No credentials or release secrets are added to the repository.
 
 ---
@@ -66,13 +66,13 @@
 - Create: `tests/unit/releaseWorkflowContract.test.ts`
 
 **Interfaces:**
-- `release.yml` is the only semver tag publisher/deployer and triggers on `v*.*.*`; it validates the exact tag/package/commit contract before tests or deployment.
-- The release job invokes `scripts/validate-release-version.mjs` and promotes `v1` only after the benchmark, test suite, GitHub Release assets, image push, and Kubernetes rollout succeed.
+- `release.yml` is the only semver tag publisher and triggers on `v*.*.*`; it validates the exact tag/package/commit contract before tests or publication.
+- The release job invokes `scripts/validate-release-version.mjs` and promotes `v1` only after the benchmark, test suite, and GitHub Release assets succeed; runtime deployment is managed separately from this release gate.
 - Manual `update-major-tag.yml` remains available for recovery and retains exact-SHA/main ancestry checks; it cannot promote an unversioned commit without its explicit recovery input.
 
-- [x] **Step 1: Write static contract tests** proving the duplicate workflow is absent, the canonical workflow does not trigger on rolling `v1`, version validation precedes deployment, and rolling promotion is downstream of the release gate.
+- [x] **Step 1: Write static contract tests** proving the duplicate workflow is absent, the canonical workflow does not trigger on rolling `v1`, version validation precedes quality/publication gates, and rolling promotion is downstream of the release gate.
 - [x] **Step 2: Run the focused test and verify it fails against the current duplicate/tag-wildcard workflows.**
-- [x] **Step 3: Restrict `release.yml` to numeric semver tags, call the validator with exact tag and commit data, and add the gated rolling-`v1` promotion after deployment.**
+- [x] **Step 3: Restrict `release.yml` to numeric semver tags, call the validator with exact tag and commit data, and add the gated rolling-`v1` promotion after publication.**
 - [x] **Step 4: Delete `release-semver.yaml` and preserve the richer benchmark/artifact behavior from `release.yml`.**
 - [x] **Step 5: Run the focused contract tests, YAML parsing, and shell syntax checks.**
 - [x] **Step 6: Commit as `fix(release): consolidate semver publishing and gate v1 promotion`.**
@@ -91,7 +91,7 @@
 
 ## Self-review
 
-- The existing tag-triggered deployment is preserved, so release automation does not bypass the image/Kubernetes gates already in production.
-- The duplicate release workflow is removed, preventing two benchmark/deploy runs for one tag.
+- The release workflow remains limited to immutable tag validation, quality/benchmark gates, and GitHub Release asset publication; runtime deployment is not part of this workflow.
+- The duplicate release workflow is removed, preventing two benchmark/publication runs for one tag.
 - The pre-existing `v1.8.5` mismatch is explicitly fail-closed rather than silently rewritten; the next Release Please PR must establish the first package/tag-consistent release.
 - Static tests cover the exact workflow invariants because GitHub Actions behavior cannot be fully exercised locally.
