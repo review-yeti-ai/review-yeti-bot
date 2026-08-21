@@ -11,6 +11,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const actionPath = path.join(rootRepoDir, 'action.yml');
 const nodeVersionGuard = require(path.join(rootRepoDir, 'scripts/nodeVersionGuard.js'));
+const { isBoundedDirectory } = require(path.join(rootRepoDir, 'scripts/boundedDirectoryGuard.js'));
 
 describe('action.yml — installable GitHub Action contract', () => {
   it('exists at the repository root so `uses: OWNER/REPO@ref` resolves', () => {
@@ -77,6 +78,20 @@ describe('action.yml — installable GitHub Action contract', () => {
 });
 
 describe('Pi runtime packaging contract', () => {
+  it('rejects unsafe installer directory boundaries and accepts a disposable nested path', () => {
+    const root = path.parse(path.resolve(path.sep)).root;
+    expect(isBoundedDirectory(root)).toBe(false);
+    expect(isBoundedDirectory(os.homedir())).toBe(false);
+    expect(isBoundedDirectory('')).toBe(false);
+    expect(isBoundedDirectory('/a')).toBe(false);
+    expect(isBoundedDirectory(path.join(root, '1234567'))).toBe(false);
+    expect(isBoundedDirectory(path.join(root, '12345678'))).toBe(true);
+    expect(isBoundedDirectory(null as any)).toBe(false);
+    expect(isBoundedDirectory(42 as any)).toBe(false);
+    expect(isBoundedDirectory({} as any)).toBe(false);
+    expect(isBoundedDirectory(path.join(os.tmpdir(), 'review-yeti-pi-runtime-123'))).toBe(true);
+  });
+
   it('tests the Pi Node boundary, including prerelease rejection', () => {
     expect(nodeVersionGuard.isSupportedNodeVersion('22.18.9')).toBe(false);
     expect(nodeVersionGuard.isSupportedNodeVersion('22.19.0')).toBe(true);
@@ -216,6 +231,7 @@ describe('Pi runtime packaging contract', () => {
     for (const relative of [
       'pi-runtime/package.json',
       'pi-runtime/package-lock.json',
+      'scripts/boundedDirectoryGuard.js',
       'scripts/install-action-runtime.mjs',
       'scripts/generate-build-provenance.mjs',
       'scripts/nodeVersionGuard.js',

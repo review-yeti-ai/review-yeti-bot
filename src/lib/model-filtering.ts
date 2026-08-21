@@ -49,6 +49,13 @@ export function getProviderIdForModel(
     return 'openrouter';
   }
 
+  // Explicit namespaces are authoritative. Generated metadata can contain a
+  // model alias shared by another provider, so resolve the transport namespace
+  // before scanning its supported-model lists.
+  if (lower.startsWith('agy/')) return 'agy';
+  if (lower.startsWith('synthetic/') || lower.startsWith('opencode-go/')) return 'glm';
+  if (lower.startsWith('codex/')) return 'codex';
+
   // Check generated provider metadata
   for (const [pId, meta] of Object.entries(OMNIROUTE_GENERATED_PROVIDERS)) {
     if (meta.supportedModels.includes(canonicalModelId) || meta.defaultModel === canonicalModelId) {
