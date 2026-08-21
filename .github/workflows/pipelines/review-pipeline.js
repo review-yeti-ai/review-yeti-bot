@@ -1566,15 +1566,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
             const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
-            const isTrippable = response.status === 429 || response.status === 503 || response.status === 529 || detail.includes('cancelled') || detail.includes('overloaded') || detail.includes('queue');
-            if (isTrippable) {
-              circuitBreaker.trip(transportName, errMsg);
-            }
-            if (i < candidateTransports.length - 1 && isTrippable) {
+            circuitBreaker.trip(transportName, errMsg);
+            if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
               lastError = errMsg;
               fallbackAttempt++;
-              break; 
+              break;
             }
             return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
           }
@@ -1603,11 +1600,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
           if (payload?.error) {
             const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
-            const isTrippable = String(message).includes('cancelled') || String(message).includes('rate') || String(message).includes('queue') || String(message).includes('overloaded');
-            if (isTrippable) {
-              circuitBreaker.trip(transportName, message);
-            }
-            if (i < candidateTransports.length - 1 && isTrippable) {
+            circuitBreaker.trip(transportName, message);
+            if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
               lastError = message;
               fallbackAttempt++;
