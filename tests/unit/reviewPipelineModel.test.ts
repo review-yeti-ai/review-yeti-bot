@@ -218,6 +218,34 @@ describe('reviewWithModel', () => {
     });
   });
 
+  it('does not send OpenRouter routing fields to a direct provider transport', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      fetchImpl: impl,
+      transports: [
+        {
+          name: 'fireworks',
+          baseUrl: 'https://api.fireworks.ai/inference/v1',
+          apiKey: 'fw-key',
+          model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        },
+      ],
+      openRouterPolicy: {
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/auto',
+        allowed_models: ['openai/gpt-5.6-luna', 'z-ai/glm-5.1'],
+        data_collection: 'deny',
+        cost_quality_tradeoff: 5,
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.fireworks.ai/inference/v1/chat/completions');
+    expect(calls[0].body).not.toHaveProperty('plugins');
+    expect(calls[0].body).not.toHaveProperty('provider');
+  });
+
   it('marks a provider lane failure as ERROR so it cannot become a successful verdict', async () => {
     const { impl } = stubFetch('{"error":{"message":"provider lane failed"}}');
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
