@@ -7,13 +7,37 @@ branding:
   color: 'purple'
 
 inputs:
+  openrouter-api-key:
+    description: 'OpenRouter API key for multi-model routing.'
+    required: false
+    default: ''
+  fireworks-api-key:
+    description: 'Fireworks AI API key for fast direct inference.'
+    required: false
+    default: ''
+  ollama-api-key:
+    description: 'Ollama API key for Ollama Cloud or endpoint.'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Anthropic API key for direct Claude reviews.'
+    required: false
+    default: ''
+  gemini-api-key:
+    description: 'Google Gemini API key for direct Gemini reviews.'
+    required: false
+    default: ''
+  openai-api-key:
+    description: 'OpenAI API key for direct GPT reviews.'
+    required: false
+    default: ''
   api-key:
-    description: 'API key for LLM provider (alias for llm-api-key). Auto-discovers from environment if omitted.'
+    description: 'Generic API key alias (auto-maps to OpenRouter or default provider). Auto-discovers from environment if omitted.'
     required: false
     default: ''
   llm-api-key:
     description: >-
-      OpenRouter API key. Without it the action fails closed and posts no successful verdict.
+      Legacy OpenRouter API key input.
     required: false
     default: ''
   llm-base-url:
@@ -225,15 +249,21 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        OPENROUTER_API_KEY: ${{ inputs.api-key || inputs.llm-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key || inputs.api-key || inputs.llm-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
-        FIREWORKS_PR_REVIEW_API_KEY: ${{ env.FIREWORKS_PR_REVIEW_API_KEY }}
-        OLLAMA_PR_REVIEW_API_KEY: ${{ env.OLLAMA_PR_REVIEW_API_KEY }}
-        OPENROUTER_PR_REVIEW_API_KEY: ${{ env.OPENROUTER_PR_REVIEW_API_KEY }}
+        FIREWORKS_PR_REVIEW_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY }}
+        FIREWORKS_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_API_KEY }}
+        OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}
+        OLLAMA_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
+        GEMINI_API_KEY: ${{ inputs.gemini-api-key || env.GEMINI_API_KEY }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key || env.OPENAI_API_KEY }}
+        OPENROUTER_PR_REVIEW_API_KEY: ${{ inputs.openrouter-api-key || env.OPENROUTER_PR_REVIEW_API_KEY }}
         REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
         REVIEW_YETI_TRANSPORT_PLAN_B64: ${{ inputs.transport-plan-b64 }}
         CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
+        LINEAR_API_KEY: ${{ inputs.linear-api-key || env.LINEAR_API_KEY }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
         OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
