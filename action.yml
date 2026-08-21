@@ -72,19 +72,40 @@ inputs:
     description: 'Token used to read the diff and post the review comment. The default workflow token is sufficient for same-repository reviews.'
     required: false
     default: ${{ github.token }}
+  transports:
+    description: 'JSON array of healthy Review Yeti candidate transports.'
+    required: false
+    default: ''
+  transport-plan-b64:
+    description: 'Base64 encoded JSON transport plan.'
+    required: false
+    default: ''
+  context7-api-key:
+    description: 'Context7 API key for documentation evidence retrieval.'
+    required: false
+    default: ''
 
 outputs:
   verdict:
     description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely.'
-    value: ${{ steps.review.outputs.verdict }}
+    value: ${{ steps.review.outputs.review-status }}
   findings-count:
     description: 'Total findings across all personas.'
-    value: ${{ steps.review.outputs.findings-count }}
+    value: ${{ steps.review.outputs.total-findings }}
+  review-status:
+    description: 'Overall review outcome: SHIP, FIX_FIRST, or BLOCK.'
+    value: ${{ steps.review.outputs.review-status }}
+  rationale:
+    description: 'Executive rationale summarizing why this verdict was chosen.'
+    value: ${{ steps.review.outputs.rationale }}
+  total-findings:
+    description: 'Total findings across all evaluated reviewers.'
+    value: ${{ steps.review.outputs.total-findings }}
   p0-count:
-    description: 'Count of P0 (exploitable or data-losing) findings.'
+    description: 'Count of P0 (blocking) findings.'
     value: ${{ steps.review.outputs.p0-count }}
   p1-count:
-    description: 'Count of P1 (must fix before merge) findings.'
+    description: 'Count of P1 (high-priority) findings.'
     value: ${{ steps.review.outputs.p1-count }}
   p2-count:
     description: 'Count of P2 (nit) findings.'
@@ -144,9 +165,9 @@ runs:
       shell: bash
       run: npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 --no-save --no-audit --no-fund --silent
 
-    # Reviewer charters are prompts executed with the caller's API key. Reading them from the
-    # pull request's own checkout would let a pull request rewrite the instructions reviewing it,
-    # and declare as many reviewers as it likes. They are fetched from the base ref instead, over
+    # Fetch configuration from the target repository's trusted base ref (the branch the PR aims at).
+    # Reviewer charters are prompts run with the reviewer API key; they must not be injected by
+    # the pull request under review. We download .ct-review.yaml and persona files directly via
     # the API, into a directory the pull request cannot write to. This also means the caller does
     # not need to check the repository out at all.
     - name: Fetch reviewer configuration from the trusted base ref
@@ -203,6 +224,12 @@ runs:
         OPENROUTER_API_KEY: ${{ inputs.llm-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
+        FIREWORKS_PR_REVIEW_API_KEY: ${{ env.FIREWORKS_PR_REVIEW_API_KEY }}
+        OLLAMA_PR_REVIEW_API_KEY: ${{ env.OLLAMA_PR_REVIEW_API_KEY }}
+        OPENROUTER_PR_REVIEW_API_KEY: ${{ env.OPENROUTER_PR_REVIEW_API_KEY }}
+        REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
+        REVIEW_YETI_TRANSPORT_PLAN_B64: ${{ inputs.transport-plan-b64 }}
+        CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
         OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
