@@ -70,7 +70,7 @@
   <line x1="85" y1="75" x2="85" y2="535" stroke="#64748b" stroke-width="2" />
 
   <!-- Axis Titles -->
-  <text x="532.5" y="592" text-anchor="middle" class="axis-label">Total Cost ($ USD per 190 PR Reviews) [Logarithmic Scale]</text>
+  <text x="532.5" y="592" text-anchor="middle" class="axis-label">Total Cost ($ USD per 190 PR Reviews) [Linear Scale]</text>
   <text x="25" y="305" text-anchor="middle" transform="rotate(-90 25 305)" class="axis-label">Verdict Accuracy (%)</text>
 
   <!-- Data Points with Anti-Collision Labels -->
@@ -173,7 +173,7 @@
     
       <g class="model-point" data-model="claude-5-haiku:low">
         
-        <circle cx="271.15999999999997" cy="315.6153846153845" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
+        <circle cx="271.15999999999997" cy="315.6153846153845" r="6" fill="#f472b6" stroke="#ec4899" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
@@ -189,7 +189,7 @@
     
       <g class="model-point" data-model="claude-5-haiku:medium">
         
-        <circle cx="271.60749999999996" cy="202.3846153846152" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
+        <circle cx="271.60749999999996" cy="202.3846153846152" r="6" fill="#f472b6" stroke="#ec4899" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
@@ -205,7 +205,7 @@
     
       <g class="model-point" data-model="claude-5-haiku:high">
         
-        <circle cx="271.15999999999997" cy="315.6153846153845" r="6" fill="#22d3ee" stroke="#06b6d4" stroke-width="2" />
+        <circle cx="271.15999999999997" cy="315.6153846153845" r="6" fill="#f472b6" stroke="#ec4899" stroke-width="2" />
         
         <!-- Text Badge Container -->
         <g transform="translate(0, 0)">
@@ -215,6 +215,22 @@
           </text>
           <text x="285.15999999999997" y="345.6153846153845" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
             94.2% | $0.0832
+          </text>
+        </g>
+      </g>
+    
+      <g class="model-point" data-model="claude-5-sonnet">
+        
+        <circle cx="271.60749999999996" cy="223.6153846153847" r="6" fill="#fb7185" stroke="#f43f5e" stroke-width="2" />
+        
+        <!-- Text Badge Container -->
+        <g transform="translate(0, 0)">
+          <rect x="281.60749999999996" y="200.6153846153847" width="113.5" height="26" rx="4" fill="#0f172a" fill-opacity="0.92" stroke="#334155" stroke-width="0.8" />
+          <text x="285.60749999999996" y="212.6153846153847" fill="#f8fafc" font-size="10" font-weight="600" font-family="system-ui, sans-serif" text-anchor="start">
+            claude-5-sonnet
+          </text>
+          <text x="285.60749999999996" y="223.6153846153847" fill="#94a3b8" font-size="9" font-weight="400" font-family="system-ui, sans-serif" text-anchor="start">
+            96.8% | $0.0834
           </text>
         </g>
       </g>
@@ -317,8 +333,8 @@
     
 
   <!-- Bottom-Right Legend Card -->
-  <g transform="translate(750, 340)">
-    <rect width="215" height="165" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
+  <g transform="translate(750, 325)">
+    <rect width="215" height="185" rx="8" fill="#1e293b" fill-opacity="0.94" stroke="#475569" stroke-width="1.5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))" />
     <text x="16" y="20" class="legend-title">MODEL FAMILIES</text>
     
     <circle cx="20" cy="38" r="5" fill="#60a5fa" stroke="#3b82f6" stroke-width="1.5" />
@@ -330,14 +346,17 @@
     <circle cx="20" cy="78" r="5" fill="#f472b6" stroke="#ec4899" stroke-width="1.5" />
     <text x="34" y="82" class="legend-text">Anthropic Claude 5 Haiku</text>
 
-    <circle cx="20" cy="98" r="5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5" />
-    <text x="34" y="102" class="legend-text">OpenRouter 5.6 Luna</text>
+    <circle cx="20" cy="98" r="5" fill="#fb7185" stroke="#f43f5e" stroke-width="1.5" />
+    <text x="34" y="102" class="legend-text">Anthropic Claude 5 Sonnet</text>
+
+    <circle cx="20" cy="118" r="5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5" />
+    <text x="34" y="122" class="legend-text">OpenRouter 5.6 Luna</text>
     
-    <circle cx="20" cy="118" r="5" fill="#a78bfa" stroke="#8b5cf6" stroke-width="1.5" />
-    <text x="34" y="122" class="legend-text">Qwen 3.8 27B</text>
+    <circle cx="20" cy="138" r="5" fill="#a78bfa" stroke="#8b5cf6" stroke-width="1.5" />
+    <text x="34" y="142" class="legend-text">Qwen 3.8 27B</text>
     
-    <line x1="12" y1="134" x2="203" y2="134" stroke="#334155" stroke-width="1" />
-    <circle cx="20" cy="148" r="6" fill="none" stroke="#22c55e" stroke-width="2" />
-    <text x="34" y="152" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
+    <line x1="12" y1="154" x2="203" y2="154" stroke="#334155" stroke-width="1" />
+    <circle cx="20" cy="168" r="6" fill="none" stroke="#22c55e" stroke-width="2" />
+    <text x="34" y="172" class="legend-text" font-weight="600" fill="#4ade80">Pareto Optimal Frontier</text>
   </g>
 </svg>
