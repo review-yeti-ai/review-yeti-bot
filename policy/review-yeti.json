@@ -64,7 +64,7 @@
     "openrouter_max_attempts": "2",
     "stall_ms": "20000",
     "budget": {
-      "lane_deadline_ms": "900000",
+      "lane_deadline_ms": "1050000",
       "lane_overhead_ms": "120000",
       "lane_call_budget": "24",
       "max_investigation_turns": "2"
