@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.0...v1.9.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **review:** bound panel completions and fail over malformed lanes ([056e8fe](https://github.com/review-yeti-ai/review-yeti-bot/commit/056e8feec8388bc22b322b6245c19bcf1cf861a5))
+* **review:** bound panel completions and fail over unusable lanes ([43351ca](https://github.com/review-yeti-ai/review-yeti-bot/commit/43351cafe0fae1116bb3159427b42ddf1e0b6627))
+
 ## [1.9.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.8.5...v1.9.0) (2026-08-21)
 
 
