@@ -19,13 +19,17 @@ describe('Release Please configuration', () => {
     expect(workflow).toContain('target-branch: main');
   });
 
-  it('uses the Node strategy and records the last released semver baseline', () => {
+  it('uses the Node strategy and keeps a valid release manifest', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
     expect(config.packages['.']).toMatchObject({
       'release-type': 'node',
       'package-name': 'ct-review-bot',
     });
-    expect(manifest).toEqual({ '.': '1.8.5' });
+    expect(manifest).toHaveProperty('.', expect.stringMatching(/^\d+\.\d+\.\d+$/u));
+    // The first migration starts from the historical v1.8.5 tag. Thereafter
+    // Release Please advances the manifest with package.json on each release PR.
+    expect(manifest['.'] === '1.8.5' || manifest['.'] === packageVersion).toBe(true);
   });
 });
