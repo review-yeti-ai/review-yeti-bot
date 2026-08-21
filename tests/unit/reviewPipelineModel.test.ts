@@ -441,6 +441,66 @@ describe('reviewWithModel', () => {
     expect(res.error).toContain('Streaming response stalled');
   });
 
+  it('caps format-recovery streams by wall clock so reasoning tokens cannot hang the lane', async () => {
+    let calls = 0;
+    const sse = (chunks, { hang = false } = {}) => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({
+        async start(controller) {
+          for (const chunk of chunks) {
+            controller.enqueue(new TextEncoder().encode(
+              `data: ${JSON.stringify({ choices: [{ delta: chunk }] })}\n\n`,
+            ));
+          }
+          if (!hang) {
+            controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+            controller.close();
+            return;
+          }
+          try {
+            while (true) {
+              await new Promise((resolve) => setTimeout(resolve, 15));
+              controller.enqueue(new TextEncoder().encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'still thinking ' } }] })}\n\n`,
+              ));
+            }
+          } catch {
+            try { controller.close(); } catch { /* already cancelled */ }
+          }
+        },
+      }),
+    });
+
+    const streamFetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return sse([{ reasoning: 'prose that is not findings JSON' }]);
+      }
+      return sse([], { hang: true });
+    };
+
+    const started = Date.now();
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: streamFetch,
+      timeoutMs: 80,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'fireworks',
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        apiKey: 'fw-key',
+        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        stream: true,
+      }],
+    });
+
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(calls).toBe(2);
+    expect(res.decision).toBe('ERROR');
+    expect(res.error).toMatch(/total deadline|stalled/i);
+  });
+
   it('marks a provider lane failure as ERROR so it cannot become a successful verdict', async () => {
     const { impl } = stubFetch('{"error":{"message":"provider lane failed"}}');
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
