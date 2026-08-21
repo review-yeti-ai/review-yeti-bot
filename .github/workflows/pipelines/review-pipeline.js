@@ -983,6 +983,43 @@ function renderDiffForPrompt(diffFiles, maxDiffChars) {
 }
 
 /**
+ * Run-Scoped Transport Circuit Breaker.
+ * Tracks provider outages (HTTP 503/529, upstream cancellation, persistent rate limits)
+ * during a single review execution so subsequent persona lanes bypass failing transports immediately.
+ */
+class RunTransportCircuitBreaker {
+  constructor() {
+    this.tripped = new Set();
+    this.reasons = new Map();
+  }
+
+  trip(transportName, reason) {
+    if (!transportName) return;
+    this.tripped.add(transportName);
+    this.reasons.set(transportName, String(reason || 'unspecified failure'));
+    console.log(`[Circuit Breaker] Tripped transport '${transportName}' for current run: ${reason}`);
+  }
+
+  isTripped(transportName) {
+    return Boolean(transportName && this.tripped.has(transportName));
+  }
+
+  filterCandidates(transports) {
+    if (!Array.isArray(transports) || transports.length <= 1) return transports;
+    const healthy = transports.filter((t) => !this.isTripped(t.name || t.provider));
+    // If all are tripped, don't return empty array; return original so at least one attempt is made
+    return healthy.length > 0 ? healthy : transports;
+  }
+
+  reset() {
+    this.tripped.clear();
+    this.reasons.clear();
+  }
+}
+
+const globalRunCircuitBreaker = new RunTransportCircuitBreaker();
+
+/**
  * Evaluates one persona charter against the diff using an LLM.
  *
  * Never throws: a failed lane degrades to zero findings with an `error` set, so one bad persona
@@ -1061,7 +1098,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       requestOptions = buildOpenRouterRequestOptions(options.openRouterPolicy);
     }
 
-    const candidateTransports = Array.isArray(options.transports) && options.transports.length > 0
+    const allTransports = Array.isArray(options.transports) && options.transports.length > 0
       ? options.transports
       : [{
           baseUrl: requestOptions?.baseUrl || cfg.baseUrl,
@@ -1072,6 +1109,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           name: 'default',
           timeoutMs: options.timeoutMs || 90_000,
         }];
+
+    const circuitBreaker = options.circuitBreaker || globalRunCircuitBreaker;
+    const candidateTransports = circuitBreaker.filterCandidates(allTransports);
 
     let lastError = null;
 
@@ -1110,81 +1150,103 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       }, 15_000);
       if (heartbeatTimer?.unref) heartbeatTimer.unref();
 
-      try {
-        const response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${transportApiKey}`,
-          },
-          body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout(transportTimeoutMs),
-        });
+      let fetchAttempts = 0;
+      const maxFetchAttempts = 2;
 
-        if (!response.ok) {
-          const detail = await response.text().catch(() => '');
-          const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
-          // Check if retryable / queue failure for fallback
-          if (i < candidateTransports.length - 1 && (response.status === 429 || response.status === 503 || response.status === 500 || detail.includes('cancelled') || detail.includes('queue'))) {
-            console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
-            lastError = errMsg;
-            continue;
-          }
-          return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
-        }
+      while (fetchAttempts < maxFetchAttempts) {
+        fetchAttempts++;
+        try {
+          const response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${transportApiKey}`,
+            },
+            body: JSON.stringify(requestBody),
+            signal: AbortSignal.timeout(transportTimeoutMs),
+          });
 
-        const payload = await response.json();
-        const responseBase = {
-          ...resultBase,
-          model: resolveResponseModel(payload, requestModel),
-          provider: resolveResponseProvider(payload),
-          transport: transportName,
-          cost: extractResponseCost(payload),
-          ...extractResponseTokenUsage(payload),
-        };
-
-        if (payload?.error) {
-          const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
-          if (i < candidateTransports.length - 1 && (String(message).includes('cancelled') || String(message).includes('rate') || String(message).includes('queue'))) {
-            console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
-            lastError = message;
-            continue;
-          }
-          return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
-        }
-
-        const content = payload?.choices?.[0]?.message?.content;
-        if (typeof content === 'string') {
-          try {
-            const providerLane = JSON.parse(content);
-            if (providerLane?.error) {
-              const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
-              if (i < candidateTransports.length - 1) {
-                console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
-                lastError = message;
-                continue;
-              }
-              return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+          if (!response.ok) {
+            const detail = await response.text().catch(() => '');
+            const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
+            const isTrippable = response.status === 429 || response.status === 503 || response.status === 529 || detail.includes('cancelled') || detail.includes('overloaded') || detail.includes('queue');
+            if (isTrippable) {
+              circuitBreaker.trip(transportName, errMsg);
             }
-          } catch (_) {}
-        }
+            if (i < candidateTransports.length - 1 && isTrippable) {
+              console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
+              lastError = errMsg;
+              break; 
+            }
+            return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
+          }
 
-        const rawFindings = parseFindingsPayload(content);
-        if (rawFindings === null) {
-          return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
-        }
+          const payload = await response.json();
+          const responseBase = {
+            ...resultBase,
+            model: resolveResponseModel(payload, requestModel),
+            provider: resolveResponseProvider(payload),
+            transport: transportName,
+            cost: extractResponseCost(payload),
+            ...extractResponseTokenUsage(payload),
+          };
 
-        const findings = sanitizeFindings(rawFindings, diffFiles);
-        return { ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
-      } catch (err) {
-        lastError = err.message;
-        if (i < candidateTransports.length - 1) {
-          console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' exception (${err.message}); trying next transport...`);
-          continue;
+          if (payload?.error) {
+            const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
+            const isTrippable = String(message).includes('cancelled') || String(message).includes('rate') || String(message).includes('queue') || String(message).includes('overloaded');
+            if (isTrippable) {
+              circuitBreaker.trip(transportName, message);
+            }
+            if (i < candidateTransports.length - 1 && isTrippable) {
+              console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
+              lastError = message;
+              break;
+            }
+            return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+          }
+
+          const content = payload?.choices?.[0]?.message?.content;
+          if (typeof content === 'string') {
+            try {
+              const providerLane = JSON.parse(content);
+              if (providerLane?.error) {
+                const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
+                if (i < candidateTransports.length - 1) {
+                  circuitBreaker.trip(transportName, message);
+                  console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
+                  lastError = message;
+                  break;
+                }
+                return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+              }
+            } catch (_) {}
+          }
+
+          const rawFindings = parseFindingsPayload(content);
+          if (rawFindings === null) {
+            return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
+          }
+
+          const findings = sanitizeFindings(rawFindings, diffFiles);
+          return { ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
+        } catch (err) {
+          const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
+          if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
+            console.warn(`[Persona: ${persona.id}] Transient socket error on ${transportName} (${err.message}); retrying attempt ${fetchAttempts + 1}/${maxFetchAttempts}...`);
+            await new Promise((r) => setTimeout(r, 200));
+            continue;
+          }
+
+          lastError = err.message;
+          circuitBreaker.trip(transportName, err.message);
+          if (i < candidateTransports.length - 1) {
+            console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' exception (${err.message}); trying next transport...`);
+            break; 
+          }
+          return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
+        } finally {
+          if (heartbeatTimer) clearInterval(heartbeatTimer);
         }
-        return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
-      } finally {
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
       }
     }
 
@@ -2653,6 +2715,8 @@ module.exports = {
   formatPRComment,
   postOrOutputComment,
   isSubscriptionTransport,
+  RunTransportCircuitBreaker,
+  globalRunCircuitBreaker,
   isSubscriptionLane,
   calculateSafeDiffCapacity,
   getStaticModelContext,
