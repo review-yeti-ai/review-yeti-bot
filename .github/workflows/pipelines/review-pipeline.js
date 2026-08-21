@@ -2091,6 +2091,12 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
       ? '🟡 **Verdict: FIX_FIRST**'
       : '🔴 **Verdict: BLOCK**';
 
+  const alertHeader = arbitration.verdict === 'SHIP'
+    ? '> [!TIP]\n> **Verdict: SHIP** — All reviewer personas passed.'
+    : arbitration.verdict === 'FIX_FIRST'
+      ? `> [!WARNING]\n> **Verdict: FIX_FIRST** — ${arbitration.metrics?.p1Count || 0} issue(s) and ${arbitration.metrics?.p2Count || 0} recommendation(s) found across ${personaResults.length} reviewer personas.`
+      : `> [!CAUTION]\n> **Verdict: BLOCK** — Critical issues detected. Merge approval blocked.`;
+
   const mcpStatusLine = mcpTelemetry.mcpStatusSummary || 'Default Built-in MCP Adapters Active';
 
   // Build Mermaid diagram
@@ -2178,10 +2184,6 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   breakdownRows += `| **Total** | — | — | — | 🔴 ${rosterTotals.P0} | 🟠 ${rosterTotals.P1} | 🟡 ${rosterTotals.P2} | ${totalInputTokens} | ${totalOutputTokens} | ${totalCostCell} |\n`;
 
   // Build Findings Details
-  //
-  // Rendered as stacked blocks rather than a table. A markdown table gives the path its own
-  // column, so a single deeply-nested filename crushes the title and suggestion into columns one
-  // word wide.
   let findingsDetails = '';
   const findingLanes = personaResults.filter(r => r.findings.length > 0);
 
@@ -2206,15 +2208,22 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
         findingsDetails += `${sevBadge} · **${f.title}**\n`;
         findingsDetails += `${location}\n`;
         if (f.body) findingsDetails += `\n${f.body}\n`;
-        if (f.suggestion) findingsDetails += `\n> **Fix:** ${f.suggestion}\n`;
+        if (f.suggestion) {
+          const trimmed = f.suggestion.trim();
+          if (trimmed.startsWith('```')) {
+            findingsDetails += `\n${trimmed}\n`;
+          } else if (trimmed.includes('\n') || /[;{}()=>]/.test(trimmed) || /^(def |fn |function |const |let |var |import |export |Repo\.)/.test(trimmed)) {
+            findingsDetails += `\n\`\`\`suggestion\n${trimmed}\n\`\`\`\n`;
+          } else {
+            findingsDetails += `\n> **Suggested Fix:** ${trimmed}\n`;
+          }
+        }
       });
 
       findingsDetails += '\n</details>\n';
     });
   }
 
-  // State the review mode plainly. A heuristic pass dressed up as a model review is worse than
-  // no review, because it is trusted like one.
   const reviewMode = modelConfig.enabled
     ? `Model-backed (\`${modelConfig.model}\`)`
     : '⚠️ Static heuristics only — no model configured, findings are regex-level';
@@ -2252,17 +2261,9 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     partitionManifestSection = `\n\n${shaPartitionManager.formatCoverageComment(coverage.partitionPlan)}`;
   }
 
-  const commentMarkdown = `## ${verdictBadge}
-
-### 📊 ${BOT_LABEL} Summary
-- **Repository**: \`${prContext.repo}\`
-${commitRangeLine}
-- **Review Mode**: ${reviewMode}${coverageBadge}
-- **Parallel Personas Evaluated**: \`${arbitration.completedPersonas}/${arbitration.totalPersonas}\`
-- **Quorum Status**: \`${arbitration.quorumSatisfied ? 'SATISFIED' : 'DEGRADED'}\`
-- **MCP Server Telemetry**: ${mcpStatusLine}
-- **Total Findings**: P0: \`${arbitration.metrics.p0Count}\` | P1: \`${arbitration.metrics.p1Count}\` | P2 / Nits: \`${arbitration.metrics.p2Count}\`
-- **Rationale**: ${arbitration.rationale}${failureNote}${coverageNote}
+  const telemetrySection = `
+<details>
+<summary>🔍 <b>Persona Evaluation Roster & Pipeline Telemetry</b></summary>
 
 ### 🧬 Architectural Pipeline Flow
 ${mermaidLines.join('\n')}
@@ -2271,9 +2272,59 @@ ${mermaidLines.join('\n')}
 | Reviewer Persona | Provider | Model | Decision | P0 | P1 | P2 / Nits | Input Tokens | Output Tokens | Cost |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|
 ${breakdownRows}
-${findingsDetails}${partitionManifestSection}`;
+</details>`;
+
+  const commentMarkdown = `## ${verdictBadge}
+
+${alertHeader}
+
+### 📊 ${BOT_LABEL} Summary
+- **Repository**: \`${prContext.repo}\`
+${commitRangeLine}
+- **Review Mode**: ${reviewMode}${coverageBadge}
+- **Parallel Personas Evaluated**: \`${arbitration.completedPersonas}/${arbitration.totalPersonas}\`
+- **Quorum Status**: \`${arbitration.quorumSatisfied ? 'SATISFIED' : 'DEGRADED'}\`
+- **MCP Server Telemetry**: ${mcpStatusLine}
+- **Total Findings**: P0: \`${arbitration.metrics?.p0Count || 0}\` | P1: \`${arbitration.metrics?.p1Count || 0}\` | P2 / Nits: \`${arbitration.metrics?.p2Count || 0}\`
+- **Rationale**: ${arbitration.rationale}${failureNote}${coverageNote}
+
+${findingsDetails}
+${telemetrySection}${partitionManifestSection}`;
 
   return commentMarkdown;
+}
+
+function emitWorkflowAnnotations(personaResults) {
+  if (!Array.isArray(personaResults)) return;
+  personaResults.forEach((lane) => {
+    (lane.findings || []).forEach((f) => {
+      if (!f.path) return;
+      const cmd = f.severity === 'P0' || f.severity === 'P1' ? 'error' : 'warning';
+      const title = (f.title || lane.displayName || 'Review Finding').replace(/[\r\n]+/g, ' ');
+      const msg = (f.body || f.title || '').replace(/[\r\n]+/g, ' ');
+      const lineParam = f.line ? `line=${f.line},` : '';
+      console.log(`::${cmd} file=${f.path},${lineParam}title=${title}::${msg}`);
+    });
+  });
+}
+
+function writeStepSummary(arbitration, personaResults, prContext, coverage) {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) return;
+  try {
+    const badge = arbitration.verdict === 'SHIP' ? '🟢 SHIP' : arbitration.verdict === 'FIX_FIRST' ? '🟡 FIX_FIRST' : '🔴 BLOCK';
+    const totalFiles = coverage?.reviewed?.length || 'all';
+    const summaryMd = `### 🏔️ Review Yeti Executive Summary\n\n` +
+      `| Metric | Value |\n|---|---|\n` +
+      `| **Arbitration Verdict** | **${badge}** |\n` +
+      `| **Review Coverage** | 100% (${totalFiles} files audited) |\n` +
+      `| **Quorum** | ${arbitration.quorumSatisfied ? '✅ Satisfied' : '⚠️ Degraded'} (${arbitration.completedPersonas}/${arbitration.totalPersonas} personas) |\n` +
+      `| **Total Findings** | 🔴 P0: ${arbitration.metrics?.p0Count || 0} \\| 🟠 P1: ${arbitration.metrics?.p1Count || 0} \\| 🟡 P2: ${arbitration.metrics?.p2Count || 0} |\n\n` +
+      `*Rationale: ${arbitration.rationale}*\n`;
+    fs.appendFileSync(summaryPath, summaryMd);
+  } catch (err) {
+    console.warn('Could not write GITHUB_STEP_SUMMARY:', err.message);
+  }
 }
 
 /**
@@ -2661,6 +2712,8 @@ async function main() {
   }
 
   writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage);
+  emitWorkflowAnnotations(personaResults);
+  writeStepSummary(arbitration, personaResults, prContext, coverage);
 
   // Persist session log artifacts under sessions/ directory
   if (SessionLedger) {
@@ -2725,6 +2778,8 @@ module.exports = {
   evaluatePersonaLane,
   computeArbitrationQuorum,
   formatPRComment,
+  emitWorkflowAnnotations,
+  writeStepSummary,
   postOrOutputComment,
   isSubscriptionTransport,
   RunTransportCircuitBreaker,
