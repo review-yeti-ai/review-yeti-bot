@@ -35,6 +35,7 @@ export function parseModelIdentifier(rawModelId) {
   else if (family.includes('luna')) family = 'OpenRouter 5.6 Luna';
   else if (family.includes('gemini')) family = 'Google Gemini 3.7 Flash';
   else if (family.includes('qwen')) family = 'Qwen 3.8 27B';
+  else if (family.includes('haiku') || family.includes('claude')) family = 'Anthropic Claude 5 Haiku';
 
   return { exactModel: clean, family, effort };
 }
@@ -222,6 +223,12 @@ export function generateParetoFrontierSVG(points, title = 'Pareto Frontier: Verd
     'google/gemini-3.7-flash:low': { dx: 14, dy: 16, anchor: 'start' },
     'google/gemini-3.7-flash:medium': { dx: -14, dy: -6, anchor: 'end' },
     'google/gemini-3.7-flash:high': { dx: 14, dy: -14, anchor: 'start' },
+    'claude-5-haiku:low': { dx: 14, dy: -12, anchor: 'start' },
+    'claude-5-haiku:medium': { dx: -14, dy: 14, anchor: 'end' },
+    'claude-5-haiku:high': { dx: 14, dy: -14, anchor: 'start' },
+    'anthropic/claude-5-haiku:low': { dx: 14, dy: -12, anchor: 'start' },
+    'anthropic/claude-5-haiku:medium': { dx: -14, dy: 14, anchor: 'end' },
+    'anthropic/claude-5-haiku:high': { dx: 14, dy: -14, anchor: 'start' },
     'qwen/qwen-3.8-27b:low': { dx: 14, dy: 16, anchor: 'start' },
     'qwen/qwen-3.8-27b:medium': { dx: -14, dy: -14, anchor: 'end' },
     'qwen/qwen-3.8-27b:high': { dx: 14, dy: -8, anchor: 'start' },
