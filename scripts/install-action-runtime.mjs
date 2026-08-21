@@ -7,18 +7,18 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
+const { isBoundedDirectory } = createRequire(import.meta.url)('./boundedDirectoryGuard.js');
+
 function fail(message) {
   process.stderr.write(`Review Yeti Pi runtime install failed: ${message}\n`);
   process.exit(1);
 }
 
 function assertBoundedDirectory(directory, label) {
-  const resolved = path.resolve(directory || '');
-  const root = path.parse(resolved).root;
-  if (!directory || resolved === root || resolved === os.homedir() || resolved.length < root.length + 8) {
+  if (!isBoundedDirectory(directory)) {
     fail(`${label} is not a bounded directory`);
   }
-  return resolved;
+  return path.resolve(directory);
 }
 
 const { assertSupportedNodeVersion } = createRequire(import.meta.url)('./nodeVersionGuard.js');

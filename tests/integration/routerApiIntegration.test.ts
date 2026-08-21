@@ -1,12 +1,26 @@
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
-import { Readable, Writable } from 'stream';
+import { EventEmitter } from 'node:events';
+import { IncomingMessage } from 'node:http';
+import { Writable } from 'stream';
 import { createApp, providerPool } from '../../src/app';
 import { authService } from '../../src/dashboard/authService';
 
 async function dispatchPost(app: any, path: string, body: any, headers: Record<string, string> = {}) {
   const session = authService.login('admin', 'admin123');
-  const req: any = new Readable();
+  const socket: any = new EventEmitter();
+  socket.readable = true;
+  socket.readableHighWaterMark = 16 * 1024;
+  socket.destroyed = false;
+  socket.destroy = (error?: Error) => {
+    socket.destroyed = true;
+    socket.emit('close', error);
+    return socket;
+  };
+  socket.setTimeout = () => socket;
+
+  const req: any = new IncomingMessage(socket);
   req._read = () => {};
+  req.complete = true;
   req.method = 'POST';
   req.url = path;
 
@@ -58,6 +72,7 @@ async function dispatchPost(app: any, path: string, body: any, headers: Record<s
 
     app(req, res);
     setImmediate(() => {
+      req.complete = true;
       req.push(bodyBuffer);
       req.push(null);
     });
