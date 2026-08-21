@@ -10,8 +10,8 @@ const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/rev
 const { resolvePersonaRoster, PERSONA_CHARTERS, DEFAULT_PERSONA_IDS } = pipeline;
 const allIds = DEFAULT_PERSONA_IDS;
 
-/** Wraps a parsed .review-yeti.yaml body in the shape loadLocalRepoConfig returns. */
-const cfg = (parsed: any) => ({ file: '.review-yeti.yaml', parsed });
+/** Wraps a parsed .ct-review.yaml body in the shape loadLocalRepoConfig returns. */
+const cfg = (parsed: any) => ({ file: '.ct-review.yaml', parsed });
 
 const ids = (result: any) => result.personas.map((p: any) => p.id);
 

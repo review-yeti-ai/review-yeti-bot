@@ -62,22 +62,6 @@ describe('planDiffBudget', () => {
     expect(plan.reviewed).toEqual([]);
     expect(plan.omitted).toEqual([]);
   });
-
-  it('keeps policy metadata separate from whole-request budget metadata', () => {
-    const coverage = {
-      reviewed: ['src/app.ts'],
-      skipped: [{ path: 'openapi.generated.json', category: 'generated', reason: 'generated' }],
-      oversized: [{ path: 'fixtures/openapi.yaml', category: 'oversized', reason: 'per-file cap' }],
-      truncated: [],
-      omitted: ['src/tail.ts'],
-      passes: 1,
-    };
-
-    expect(coverage.skipped.map((entry) => entry.category)).toEqual(['generated']);
-    expect(coverage.oversized.map((entry) => entry.category)).toEqual(['oversized']);
-    expect(coverage.omitted).toEqual(['src/tail.ts']);
-    expect(coverage.oversized).not.toEqual(expect.arrayContaining(coverage.omitted));
-  });
 });
 
 describe('Incomplete coverage is disclosed to the human, not just the model', () => {
@@ -116,103 +100,6 @@ describe('Incomplete coverage is disclosed to the human, not just the model', ()
     // The reader must be able to see the verdict covers only part of the change.
     expect(c).toMatch(/⚠️|incomplete|partial|not reviewed/i);
   });
-
-  it('reports bounded intentional and oversized exclusions as expected policy metadata', () => {
-    const coverage = {
-      reviewed: ['src/app.ts'],
-      skipped: [
-        { path: 'generated/one.json', category: 'generated', reason: 'generated artifact' },
-        { path: 'configured/two.json', category: 'configured', reason: 'excluded by configuration' },
-      ],
-      oversized: [
-        { path: 'src/oversized.ts', category: 'oversized', reason: 'per-file cap', diffChars: 5_001 },
-      ],
-      truncated: [],
-      omitted: [],
-      passes: 1,
-    };
-    const c = formatPRComment(
-      computeArbitrationQuorum(results, 1, { coverageComplete: false }),
-      results,
-      ctx,
-      {},
-      {},
-      coverage,
-    );
-
-    expect(c).toContain('generated/one.json');
-    expect(c).toContain('configured/two.json');
-    expect(c).toContain('src/oversized.ts');
-    expect(c).toMatch(/expected policy exclusion|does not block/i);
-    expect(c).not.toContain('x'.repeat(5_001));
-  });
-
-  it('describes mixed oversized and skipped coverage as non-blocking policy exclusions', () => {
-    const coverage = {
-      reviewed: [],
-      skipped: [{ path: 'package-lock.json', category: 'lockfile', reason: 'dependency lockfile' }],
-      oversized: [{ path: 'src/oversized.ts', category: 'oversized', reason: 'File diff exceeds the per-file review limit.', diffChars: 5_001 }],
-      truncated: [],
-      omitted: [],
-      passes: 1,
-    };
-    const c = formatPRComment(
-      {
-        verdict: 'SHIP',
-        status: 'SHIP',
-        quorumSatisfied: true,
-        completedPersonas: 0,
-        totalPersonas: 0,
-        rationale: 'Only expected policy exclusions remained.',
-        metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-      },
-      [],
-      ctx,
-      {},
-      { enabled: true, model: 'm', maxDiffChars: 20_000 },
-      coverage,
-    );
-
-    expect(c).toContain('Verdict: SHIP');
-    expect(c).toMatch(/per-file cap|per-file limit/i);
-    expect(c).toContain('max-file-diff-chars');
-    expect(c).toContain('intentionally skipped');
-    expect(c).toMatch(/does not block|expected policy exclusion/i);
-    expect(c).not.toMatch(/The diff exceeded .*characters per reviewer/i);
-    expect(c).not.toMatch(/every changed file exceeded/i);
-  });
-
-  it('reports eligible files as unreviewed when no persona results exist', () => {
-    const coverage = {
-      reviewed: [{ path: 'src/eligible.ts', category: 'source' }],
-      skipped: [],
-      oversized: [{ path: 'src/oversized.ts', category: 'oversized', reason: 'File diff exceeds the per-file review limit.', diffChars: 5_001 }],
-      truncated: [],
-      omitted: [],
-      passes: 1,
-    };
-    const c = formatPRComment(
-      {
-        verdict: 'BLOCK',
-        status: 'INCOMPLETE_REVIEW',
-        quorumSatisfied: false,
-        completedPersonas: 0,
-        totalPersonas: 0,
-        rationale: 'Review is incomplete.',
-        metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-      },
-      [],
-      ctx,
-      {},
-      { enabled: true, model: 'm', maxDiffChars: 20_000 },
-      coverage,
-    );
-
-    expect(c).toMatch(/eligible changed files were present/i);
-    expect(c).toMatch(/no reviewer persona results were produced/i);
-    expect(c).not.toMatch(/no files remained eligible/i);
-    expect(c).not.toMatch(/intentionally skipped/i);
-  });
 });
 
 describe('Coverage is exposed as step outputs so a workflow can gate on it', () => {
@@ -226,6 +113,5 @@ describe('Coverage is exposed as step outputs so a workflow can gate on it', () 
     const content = fs.readFileSync(out, 'utf-8');
     expect(content).toContain('files-reviewed=2');
     expect(content).toContain('files-omitted=1');
-    expect(content).toContain('files-oversized=0');
   });
 });

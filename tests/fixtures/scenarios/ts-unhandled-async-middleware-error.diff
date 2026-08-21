@@ -1,0 +1,24 @@
+--- FILE: src/middleware/rateLimitMiddleware.ts ---
+diff --git a/src/middleware/rateLimitMiddleware.ts b/src/middleware/rateLimitMiddleware.ts
+@@ -1,5 +1,21 @@
+ import { Request, Response, NextFunction } from 'express';
+ import { RedisClient } from '../cache/redisClient';
+
+ export function createRateLimiter(redis: RedisClient, limit: number) {
+   const windowSeconds = 60;
++
++  // Defect: Async middleware without try/catch or wrapper leaves rejected promises unhandled
++  return async (req: Request, res: Response, next: NextFunction) => {
++    const key = `ratelimit:${req.ip}`;
++    // If Redis connection drops, unhandled rejection crashes request pipeline in Express 4
++    const count = await redis.incr(key);
++    if (count === 1) {
++      await redis.expire(key, windowSeconds);
++    }
++    if (count > limit) {
++      res.status(429).json({ error: 'Rate limit exceeded' });
++      return;
++    }
++    next();
++  };
++}

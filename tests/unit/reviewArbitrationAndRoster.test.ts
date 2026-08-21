@@ -9,30 +9,11 @@ const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/rev
 
 const { computeArbitrationQuorum, resolvePersonaRoster, PERSONA_CHARTERS, DEFAULT_PERSONA_IDS } = pipeline;
 
-/**
- * Builds persona results carrying a given number of findings at each severity.
- *
- * Each finding gets its own path (`src/app-${severity}-${i}.ts`), not just its own line on one
- * shared file: computeArbitration now clusters near-duplicate claims (claimSimilarity.compareClaims)
- * before counting severities, and compareClaims requires a path match before it even looks at claim
- * text. This suite is about how the blockP1/fixP2 *thresholds* scale with panel size for N genuinely
- * distinct findings -- giving every finding a distinct path keeps that guaranteed regardless of
- * title/body wording, decoupled from the separate dedup behavior pinned in
- * tests/unit/reviewArbitrationJudgment.test.ts. Before this fix, all findings of one severity shared
- * `src/app.ts` and near-identical boilerplate title/body text, which collapsed into a single
- * cluster once dedup landed and silently defeated every test below it (each asserted a count that
- * dedup would flatten to 1 no matter how large `n` was).
- */
+/** Builds persona results carrying a given number of findings at each severity. */
 function results(personaCount: number, sev: Record<string, number> = {}) {
   const findings: any[] = [];
   for (const [severity, n] of Object.entries(sev)) {
-    for (let i = 0; i < n; i++) findings.push({
-      severity,
-      path: `src/app-${severity}-${i + 1}.ts`,
-      line: i + 1,
-      title: `${severity} finding ${i + 1}`,
-      body: 'Evidence-backed review finding.',
-    });
+    for (let i = 0; i < n; i++) findings.push({ severity });
   }
   const out = Array.from({ length: personaCount }, () => ({ findings: [] as any[] }));
   out[0].findings = findings;

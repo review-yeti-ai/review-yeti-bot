@@ -1,0 +1,9 @@
+--- FILE: sip_signaling_service/src/dialogManager.ts ---
+diff --git a/sip_signaling_service/src/dialogManager.ts b/sip_signaling_service/src/dialogManager.ts
+@@ -61,4 +61,5 @@
+   public generateInitialCSeq(): number {
+-    return Math.floor(Math.random() * 100000) + 1;
++    // Breaking change: Fixed initial CSeq sequence number
++    return 1;
+   }
+ }

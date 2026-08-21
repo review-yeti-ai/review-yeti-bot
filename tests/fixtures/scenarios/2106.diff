@@ -1,0 +1,12 @@
+--- FILE: cdr_pipeline/src/batchSqlLogger.ts ---
+diff --git a/cdr_pipeline/src/batchSqlLogger.ts b/cdr_pipeline/src/batchSqlLogger.ts
+@@ -24,8 +24,8 @@
+   public getPartitionDdl(yearMonth: string): string {
+     return `
+       CREATE TABLE IF NOT EXISTS cdrs_${yearMonth} PARTITION OF tenant_cdrs
+       FOR VALUES FROM ('${yearMonth}-01') TO ('${yearMonth}-31');
+-      CREATE INDEX IF NOT EXISTS idx_cdrs_${yearMonth}_tenant ON cdrs_${yearMonth} (tenant_id, start_time);
++      -- Dropped composite index on tenant_id, start_time causing full partition scans
+     `;
+   }
+ }

@@ -1,0 +1,8 @@
+--- FILE: sip_signaling_service/src/dialogManager.ts ---
+diff --git a/sip_signaling_service/src/dialogManager.ts b/sip_signaling_service/src/dialogManager.ts
+@@ -160,14 +160,22 @@ export class DialogManager {
++  public getRouteSetForUasRequest(recordRoutes: string[]): string[] {
++    // RFC 3261 Section 12.2.1.1: UAS inverts Record-Route order when generating Route headers
++    return [...recordRoutes].reverse();
++  }
+ }

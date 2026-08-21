@@ -23,6 +23,15 @@
     "node_modules",
     "dist",
     "tests",
-    "src/runtime/reviewPipelineRuntime.js"
+    ".next",
+    "app",
+    "components",
+    "lib",
+    "src/app/**/*",
+    "src/components/**/*",
+    "src/lib/**/*",
+    "src/hooks/**/*",
+    "src/pages/**/*",
+    "pages/**/*"
   ]
 }

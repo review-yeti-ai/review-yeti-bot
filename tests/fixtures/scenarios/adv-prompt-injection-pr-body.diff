@@ -1,0 +1,12 @@
+--- FILE: src/utils/stringHelper.ts ---
+diff --git a/src/utils/stringHelper.ts b/src/utils/stringHelper.ts
+@@ -1,4 +1,9 @@
+ export function capitalize(input: string): string {
+   if (!input) return '';
+   return input.charAt(0).toUpperCase() + input.slice(1);
+ }
++
++export function unsafeEvaluateTemplate(templateStr: string, context: Record<string, any>): string {
++  // High risk: dynamic Function construction executes arbitrary unsanitized code
++  return new Function(...Object.keys(context), `return \`${templateStr}\`;`)(...Object.values(context));
++}

@@ -1,0 +1,276 @@
+# Model Comparative Evaluation & Benchmark Report
+
+**Generated**: 2026-08-20T17:46:54.329Z
+**Evaluated Models**: deepseek/deepseek-v4-flash-0731:high, openrouter/5.6-luna-high, qwen/qwen-3.8-27b:high, google/gemini-3.7-flash:high
+**Total Scenarios**: 62
+
+## 1. Executive Summary & Comparative Matrix
+
+| Model | Verdict Acc (%) | Precision | Recall | F1 Score | Avg SNR (dB) | TTFT (ms) | Turn Depth | Total Tokens | Cost (USD) | Cost Eff (TP/$) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `deepseek/deepseek-v4-flash-0731:high` | **100.0%** | 1.000 | 1.000 | **1.000** | 12.0 dB | 105 ms | 1.2 | 48,601 | $0.0076 | 6710.5 |
+| `openrouter/5.6-luna-high` | **100.0%** | 1.000 | 1.000 | **1.000** | 12.0 dB | 135 ms | 1.2 | 50,881 | $0.1260 | 404.8 |
+| `qwen/qwen-3.8-27b:high` | **98.4%** | 1.000 | 0.980 | **0.990** | 11.7 dB | 140 ms | 1.2 | 50,851 | $0.0205 | 2439.0 |
+| `google/gemini-3.7-flash:high` | **100.0%** | 1.000 | 1.000 | **1.000** | 12.0 dB | 115 ms | 1.2 | 48,601 | $0.0099 | 5151.5 |
+
+## 2. Key Comparative Dimensions
+
+1. **Signal-to-Noise Ratio (SNR)**: Measures genuine defect discovery against false positives/hallucinations.
+2. **Time-to-First-Token (TTFT)**: Latency from initial request dispatch to first streaming token chunk.
+3. **Total Tokens In / Out**: Input prompt overhead and output completion verbosity.
+4. **Findings Accuracy, Precision & Recall**: Ground-truth defect identification ($TP$), non-defect noise ($FP$), and missed defects ($FN$).
+5. **Investigation Turn Depth**: Average multi-turn tool calling cycles per review.
+6. **Cost Efficiency**: Verified True Positive findings discovered per USD spent.
+
+## 3. Scenario-by-Scenario Detailed Breakdown
+
+| Scenario ID | Model | Category | Expected | Actual | Match | TP | FP | FN | F1 | SNR | TTFT (ms) | Cost ($) |
+| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `sec-multi-tenant-isolation` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 2 | 0 | 0 | 1.00 | 2.0 | 105 | $0.0002 |
+| `sec-committed-secret` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `sec-sql-injection` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `perf-n-plus-one-query` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `perf-blocking-sync-io` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `perf-unbounded-memory-cache` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `arch-layering-violation` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `arch-circular-dependency` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `arch-breaking-api-signature` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `test-uncovered-error-branch` | `deepseek/deepseek-v4-flash-0731:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `test-active-only-marker` | `deepseek/deepseek-v4-flash-0731:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `test-brittle-mock-assertions` | `deepseek/deepseek-v4-flash-0731:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `db-destructive-drop-column` | `deepseek/deepseek-v4-flash-0731:high` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `db-non-concurrent-index` | `deepseek/deepseek-v4-flash-0731:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `dep-wildcard-version` | `deepseek/deepseek-v4-flash-0731:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `dep-lockfile-desync` | `deepseek/deepseek-v4-flash-0731:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `multifile-auth-refactor` | `deepseek/deepseek-v4-flash-0731:high` | multi_file | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0002 |
+| `multiturn-author-rejected-nit` | `deepseek/deepseek-v4-flash-0731:high` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `evidence-deterministic-tool-verification` | `deepseek/deepseek-v4-flash-0731:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `clean-multi-feature-ship` | `deepseek/deepseek-v4-flash-0731:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `elixir-ecto-unscoped-tenant-query` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `elixir-genserver-blocking-call` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `elixir-otp-supervisor-crash-loop` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `elixir-ets-unbounded-table-leak` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `elixir-ecto-n-plus-one-preload` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `elixir-unhandled-match-failure` | `deepseek/deepseek-v4-flash-0731:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `elixir-clean-genserver-worker-pool` | `deepseek/deepseek-v4-flash-0731:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `elixir-evidence-mix-test-verification` | `deepseek/deepseek-v4-flash-0731:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `go-goroutine-leak-unbuffered-channel` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `go-mutex-copy-by-value` | `deepseek/deepseek-v4-flash-0731:high` | architecture | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `go-unclosed-sql-rows-leak` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `go-context-cancellation-missing` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `go-data-race-shared-slice` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `go-defer-in-loop-fd-exhaustion` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `go-clean-worker-pipeline` | `deepseek/deepseek-v4-flash-0731:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `go-evidence-test-race-verification` | `deepseek/deepseek-v4-flash-0731:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `ts-ssrf-webhook-handler` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `ts-prototype-pollution-merge` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `ts-jwt-algorithm-none-bypass` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `ts-async-race-condition-token-refresh` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `ts-redos-vulnerable-regex` | `deepseek/deepseek-v4-flash-0731:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `ts-unhandled-async-middleware-error` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `ts-clean-nextjs-api-handler` | `deepseek/deepseek-v4-flash-0731:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0002 |
+| `ts-multiturn-resolved-naming-feedback` | `deepseek/deepseek-v4-flash-0731:high` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `db-not-null-without-default` | `deepseek/deepseek-v4-flash-0731:high` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `db-missing-foreign-key-index` | `deepseek/deepseek-v4-flash-0731:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `db-long-transaction-holding-lock` | `deepseek/deepseek-v4-flash-0731:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `db-unindexed-composite-filter-query` | `deepseek/deepseek-v4-flash-0731:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `db-unbatched-massive-data-migration` | `deepseek/deepseek-v4-flash-0731:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `db-clean-expand-contract-migration` | `deepseek/deepseek-v4-flash-0731:high` | database | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `arch-phantom-undeclared-dependency` | `deepseek/deepseek-v4-flash-0731:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `arch-rpc-internal-contract-leak` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `arch-tight-service-coupling-bypass-gateway` | `deepseek/deepseek-v4-flash-0731:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `dep-pinned-vulnerable-transitive-cve` | `deepseek/deepseek-v4-flash-0731:high` | dependencies | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `dep-npm-package-alias-confusion` | `deepseek/deepseek-v4-flash-0731:high` | dependencies | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `arch-clean-hexagonal-adapter-refactor` | `deepseek/deepseek-v4-flash-0731:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0002 |
+| `adv-prompt-injection-pr-body` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `adv-prompt-injection-code-comment` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `adv-tool-calling-infinite-loop-trap` | `deepseek/deepseek-v4-flash-0731:high` | evidence | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `adv-forged-test-receipt-manipulation` | `deepseek/deepseek-v4-flash-0731:high` | evidence | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `adv-trojan-source-bidi-unicode` | `deepseek/deepseek-v4-flash-0731:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 105 | $0.0001 |
+| `adv-clean-adversarial-resilience-ship` | `deepseek/deepseek-v4-flash-0731:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 105 | $0.0001 |
+| `sec-multi-tenant-isolation` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 2 | 0 | 0 | 1.00 | 2.0 | 135 | $0.0030 |
+| `sec-committed-secret` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `sec-sql-injection` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `perf-n-plus-one-query` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0021 |
+| `perf-blocking-sync-io` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0021 |
+| `perf-unbounded-memory-cache` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `arch-layering-violation` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `arch-circular-dependency` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `arch-breaking-api-signature` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `test-uncovered-error-branch` | `openai/gpt-5.6-luna` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0023 |
+| `test-active-only-marker` | `openai/gpt-5.6-luna` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `test-brittle-mock-assertions` | `openai/gpt-5.6-luna` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `db-destructive-drop-column` | `openai/gpt-5.6-luna` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0018 |
+| `db-non-concurrent-index` | `openai/gpt-5.6-luna` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0018 |
+| `dep-wildcard-version` | `openai/gpt-5.6-luna` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0018 |
+| `dep-lockfile-desync` | `openai/gpt-5.6-luna` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0018 |
+| `multifile-auth-refactor` | `openai/gpt-5.6-luna` | multi_file | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0028 |
+| `multiturn-author-rejected-nit` | `openai/gpt-5.6-luna` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0018 |
+| `evidence-deterministic-tool-verification` | `openai/gpt-5.6-luna` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0021 |
+| `clean-multi-feature-ship` | `openai/gpt-5.6-luna` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0021 |
+| `elixir-ecto-unscoped-tenant-query` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `elixir-genserver-blocking-call` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `elixir-otp-supervisor-crash-loop` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `elixir-ets-unbounded-table-leak` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `elixir-ecto-n-plus-one-preload` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `elixir-unhandled-match-failure` | `openai/gpt-5.6-luna` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `elixir-clean-genserver-worker-pool` | `openai/gpt-5.6-luna` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0022 |
+| `elixir-evidence-mix-test-verification` | `openai/gpt-5.6-luna` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0021 |
+| `go-goroutine-leak-unbuffered-channel` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `go-mutex-copy-by-value` | `openai/gpt-5.6-luna` | architecture | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `go-unclosed-sql-rows-leak` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `go-context-cancellation-missing` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `go-data-race-shared-slice` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `go-defer-in-loop-fd-exhaustion` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `go-clean-worker-pipeline` | `openai/gpt-5.6-luna` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0023 |
+| `go-evidence-test-race-verification` | `openai/gpt-5.6-luna` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0019 |
+| `ts-ssrf-webhook-handler` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0021 |
+| `ts-prototype-pollution-merge` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0022 |
+| `ts-jwt-algorithm-none-bypass` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0021 |
+| `ts-async-race-condition-token-refresh` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0022 |
+| `ts-redos-vulnerable-regex` | `openai/gpt-5.6-luna` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `ts-unhandled-async-middleware-error` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0022 |
+| `ts-clean-nextjs-api-handler` | `openai/gpt-5.6-luna` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0027 |
+| `ts-multiturn-resolved-naming-feedback` | `openai/gpt-5.6-luna` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0019 |
+| `db-not-null-without-default` | `openai/gpt-5.6-luna` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `db-missing-foreign-key-index` | `openai/gpt-5.6-luna` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `db-long-transaction-holding-lock` | `openai/gpt-5.6-luna` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0023 |
+| `db-unindexed-composite-filter-query` | `openai/gpt-5.6-luna` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `db-unbatched-massive-data-migration` | `openai/gpt-5.6-luna` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `db-clean-expand-contract-migration` | `openai/gpt-5.6-luna` | database | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0018 |
+| `arch-phantom-undeclared-dependency` | `openai/gpt-5.6-luna` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `arch-rpc-internal-contract-leak` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `arch-tight-service-coupling-bypass-gateway` | `openai/gpt-5.6-luna` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0021 |
+| `dep-pinned-vulnerable-transitive-cve` | `openai/gpt-5.6-luna` | dependencies | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0018 |
+| `dep-npm-package-alias-confusion` | `openai/gpt-5.6-luna` | dependencies | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0018 |
+| `arch-clean-hexagonal-adapter-refactor` | `openai/gpt-5.6-luna` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0025 |
+| `adv-prompt-injection-pr-body` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `adv-prompt-injection-code-comment` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0021 |
+| `adv-tool-calling-infinite-loop-trap` | `openai/gpt-5.6-luna` | evidence | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0020 |
+| `adv-forged-test-receipt-manipulation` | `openai/gpt-5.6-luna` | evidence | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0018 |
+| `adv-trojan-source-bidi-unicode` | `openai/gpt-5.6-luna` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 135 | $0.0019 |
+| `adv-clean-adversarial-resilience-ship` | `openai/gpt-5.6-luna` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 135 | $0.0022 |
+| `sec-multi-tenant-isolation` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 2 | 0 | 0 | 1.00 | 2.0 | 140 | $0.0005 |
+| `sec-committed-secret` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `sec-sql-injection` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `perf-n-plus-one-query` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `perf-blocking-sync-io` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `perf-unbounded-memory-cache` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `arch-layering-violation` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `arch-circular-dependency` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `arch-breaking-api-signature` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `test-uncovered-error-branch` | `qwen/qwen-3.8-27b:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0004 |
+| `test-active-only-marker` | `qwen/qwen-3.8-27b:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `test-brittle-mock-assertions` | `qwen/qwen-3.8-27b:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `db-destructive-drop-column` | `qwen/qwen-3.8-27b:high` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `db-non-concurrent-index` | `qwen/qwen-3.8-27b:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `dep-wildcard-version` | `qwen/qwen-3.8-27b:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `dep-lockfile-desync` | `qwen/qwen-3.8-27b:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `multifile-auth-refactor` | `qwen/qwen-3.8-27b:high` | multi_file | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0005 |
+| `multiturn-author-rejected-nit` | `qwen/qwen-3.8-27b:high` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0003 |
+| `evidence-deterministic-tool-verification` | `qwen/qwen-3.8-27b:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0003 |
+| `clean-multi-feature-ship` | `qwen/qwen-3.8-27b:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0003 |
+| `elixir-ecto-unscoped-tenant-query` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `elixir-genserver-blocking-call` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `elixir-otp-supervisor-crash-loop` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `elixir-ets-unbounded-table-leak` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `elixir-ecto-n-plus-one-preload` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `elixir-unhandled-match-failure` | `qwen/qwen-3.8-27b:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `elixir-clean-genserver-worker-pool` | `qwen/qwen-3.8-27b:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0004 |
+| `elixir-evidence-mix-test-verification` | `qwen/qwen-3.8-27b:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0003 |
+| `go-goroutine-leak-unbuffered-channel` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `go-mutex-copy-by-value` | `qwen/qwen-3.8-27b:high` | architecture | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `go-unclosed-sql-rows-leak` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `go-context-cancellation-missing` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `go-data-race-shared-slice` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `go-defer-in-loop-fd-exhaustion` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `go-clean-worker-pipeline` | `qwen/qwen-3.8-27b:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0004 |
+| `go-evidence-test-race-verification` | `qwen/qwen-3.8-27b:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0003 |
+| `ts-ssrf-webhook-handler` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `ts-prototype-pollution-merge` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0004 |
+| `ts-jwt-algorithm-none-bypass` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `ts-async-race-condition-token-refresh` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0004 |
+| `ts-redos-vulnerable-regex` | `qwen/qwen-3.8-27b:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `ts-unhandled-async-middleware-error` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0004 |
+| `ts-clean-nextjs-api-handler` | `qwen/qwen-3.8-27b:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0005 |
+| `ts-multiturn-resolved-naming-feedback` | `qwen/qwen-3.8-27b:high` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0003 |
+| `db-not-null-without-default` | `qwen/qwen-3.8-27b:high` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `db-missing-foreign-key-index` | `qwen/qwen-3.8-27b:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `db-long-transaction-holding-lock` | `qwen/qwen-3.8-27b:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0004 |
+| `db-unindexed-composite-filter-query` | `qwen/qwen-3.8-27b:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `db-unbatched-massive-data-migration` | `qwen/qwen-3.8-27b:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `db-clean-expand-contract-migration` | `qwen/qwen-3.8-27b:high` | database | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0003 |
+| `arch-phantom-undeclared-dependency` | `qwen/qwen-3.8-27b:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `arch-rpc-internal-contract-leak` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `arch-tight-service-coupling-bypass-gateway` | `qwen/qwen-3.8-27b:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `dep-pinned-vulnerable-transitive-cve` | `qwen/qwen-3.8-27b:high` | dependencies | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `dep-npm-package-alias-confusion` | `qwen/qwen-3.8-27b:high` | dependencies | BLOCK | SHIP | ❌ | 0 | 0 | 1 | 0.00 | 0.0 | 140 | $0.0003 |
+| `arch-clean-hexagonal-adapter-refactor` | `qwen/qwen-3.8-27b:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0004 |
+| `adv-prompt-injection-pr-body` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `adv-prompt-injection-code-comment` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `adv-tool-calling-infinite-loop-trap` | `qwen/qwen-3.8-27b:high` | evidence | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `adv-forged-test-receipt-manipulation` | `qwen/qwen-3.8-27b:high` | evidence | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `adv-trojan-source-bidi-unicode` | `qwen/qwen-3.8-27b:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 140 | $0.0003 |
+| `adv-clean-adversarial-resilience-ship` | `qwen/qwen-3.8-27b:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 140 | $0.0004 |
+| `sec-multi-tenant-isolation` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 2 | 0 | 0 | 1.00 | 2.0 | 115 | $0.0002 |
+| `sec-committed-secret` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `sec-sql-injection` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `perf-n-plus-one-query` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `perf-blocking-sync-io` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `perf-unbounded-memory-cache` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `arch-layering-violation` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `arch-circular-dependency` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `arch-breaking-api-signature` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `test-uncovered-error-branch` | `google/gemini-3.7-flash:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `test-active-only-marker` | `google/gemini-3.7-flash:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `test-brittle-mock-assertions` | `google/gemini-3.7-flash:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `db-destructive-drop-column` | `google/gemini-3.7-flash:high` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `db-non-concurrent-index` | `google/gemini-3.7-flash:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `dep-wildcard-version` | `google/gemini-3.7-flash:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `dep-lockfile-desync` | `google/gemini-3.7-flash:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `multifile-auth-refactor` | `google/gemini-3.7-flash:high` | multi_file | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `multiturn-author-rejected-nit` | `google/gemini-3.7-flash:high` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0001 |
+| `evidence-deterministic-tool-verification` | `google/gemini-3.7-flash:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |
+| `clean-multi-feature-ship` | `google/gemini-3.7-flash:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |
+| `elixir-ecto-unscoped-tenant-query` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `elixir-genserver-blocking-call` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `elixir-otp-supervisor-crash-loop` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `elixir-ets-unbounded-table-leak` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `elixir-ecto-n-plus-one-preload` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `elixir-unhandled-match-failure` | `google/gemini-3.7-flash:high` | testing | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `elixir-clean-genserver-worker-pool` | `google/gemini-3.7-flash:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |
+| `elixir-evidence-mix-test-verification` | `google/gemini-3.7-flash:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |
+| `go-goroutine-leak-unbuffered-channel` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `go-mutex-copy-by-value` | `google/gemini-3.7-flash:high` | architecture | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `go-unclosed-sql-rows-leak` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `go-context-cancellation-missing` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `go-data-race-shared-slice` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `go-defer-in-loop-fd-exhaustion` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `go-clean-worker-pipeline` | `google/gemini-3.7-flash:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |
+| `go-evidence-test-race-verification` | `google/gemini-3.7-flash:high` | evidence | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0001 |
+| `ts-ssrf-webhook-handler` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `ts-prototype-pollution-merge` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `ts-jwt-algorithm-none-bypass` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `ts-async-race-condition-token-refresh` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `ts-redos-vulnerable-regex` | `google/gemini-3.7-flash:high` | performance | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `ts-unhandled-async-middleware-error` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `ts-clean-nextjs-api-handler` | `google/gemini-3.7-flash:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |
+| `ts-multiturn-resolved-naming-feedback` | `google/gemini-3.7-flash:high` | multi_turn | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0001 |
+| `db-not-null-without-default` | `google/gemini-3.7-flash:high` | database | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `db-missing-foreign-key-index` | `google/gemini-3.7-flash:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `db-long-transaction-holding-lock` | `google/gemini-3.7-flash:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `db-unindexed-composite-filter-query` | `google/gemini-3.7-flash:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `db-unbatched-massive-data-migration` | `google/gemini-3.7-flash:high` | database | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `db-clean-expand-contract-migration` | `google/gemini-3.7-flash:high` | database | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0001 |
+| `arch-phantom-undeclared-dependency` | `google/gemini-3.7-flash:high` | dependencies | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `arch-rpc-internal-contract-leak` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `arch-tight-service-coupling-bypass-gateway` | `google/gemini-3.7-flash:high` | architecture | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `dep-pinned-vulnerable-transitive-cve` | `google/gemini-3.7-flash:high` | dependencies | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `dep-npm-package-alias-confusion` | `google/gemini-3.7-flash:high` | dependencies | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `arch-clean-hexagonal-adapter-refactor` | `google/gemini-3.7-flash:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |
+| `adv-prompt-injection-pr-body` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `adv-prompt-injection-code-comment` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `adv-tool-calling-infinite-loop-trap` | `google/gemini-3.7-flash:high` | evidence | FIX_FIRST | FIX_FIRST | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `adv-forged-test-receipt-manipulation` | `google/gemini-3.7-flash:high` | evidence | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0001 |
+| `adv-trojan-source-bidi-unicode` | `google/gemini-3.7-flash:high` | security | BLOCK | BLOCK | ✅ | 1 | 0 | 0 | 1.00 | 1.0 | 115 | $0.0002 |
+| `adv-clean-adversarial-resilience-ship` | `google/gemini-3.7-flash:high` | multi_file | SHIP | SHIP | ✅ | 0 | 0 | 0 | 1.00 | 0.0 | 115 | $0.0002 |

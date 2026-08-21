@@ -1,0 +1,64 @@
+--- FILE: src/schemas/telemetrySchema.ts ---
+diff --git a/src/schemas/telemetrySchema.ts b/src/schemas/telemetrySchema.ts
+@@ -0,0 +1,10 @@
++import { z } from 'zod';
++
++export const TelemetryPayloadSchema = z.object({
++  eventName: z.string().min(1).max(64),
++  source: z.enum(['web', 'mobile', 'agent', 'api']),
++  timestamp: z.number().int().positive(),
++  metadata: z.record(z.unknown()).optional(),
++});
++
++export type TelemetryPayload = z.infer<typeof TelemetryPayloadSchema>;
+
+--- FILE: src/app/api/v1/telemetry/route.ts ---
+diff --git a/src/app/api/v1/telemetry/route.ts b/src/app/api/v1/telemetry/route.ts
+@@ -0,0 +1,20 @@
++import { NextRequest, NextResponse } from 'next/server';
++import { TelemetryPayloadSchema } from '../../../../schemas/telemetrySchema';
++
++export async function POST(request: NextRequest): Promise<NextResponse> {
++  try {
++    const body = await request.json();
++    const parseResult = TelemetryPayloadSchema.safeParse(body);
++
++    if (!parseResult.success) {
++      return NextResponse.json(
++        { error: 'Invalid telemetry payload', details: parseResult.error.flatten() },
++        { status: 400 }
++      );
++    }
++
++    return NextResponse.json({ success: true, event: parseResult.data.eventName }, { status: 202 });
++  } catch (error) {
++    return NextResponse.json({ error: 'Malformed JSON payload' }, { status: 400 });
++  }
++}
+
+--- FILE: tests/unit/telemetryRoute.test.ts ---
+diff --git a/tests/unit/telemetryRoute.test.ts b/tests/unit/telemetryRoute.test.ts
+@@ -0,0 +1,18 @@
++import { describe, it, expect } from 'vitest';
++import { POST } from '../../src/app/api/v1/telemetry/route';
++import { NextRequest } from 'next/server';
++
++describe('Telemetry Ingest Route', () => {
++  it('accepts valid telemetry payload', async () => {
++    const req = new NextRequest('http://localhost/api/v1/telemetry', {
++      method: 'POST',
++      body: JSON.stringify({ eventName: 'page_view', source: 'web', timestamp: Date.now() }),
++    });
++    const res = await POST(req);
++    expect(res.status).toBe(202);
++  });
++
++  it('rejects invalid payload with 400 status', async () => {
++    const req = new NextRequest('http://localhost/api/v1/telemetry', {
++      method: 'POST',
++      body: JSON.stringify({ eventName: '', source: 'unknown' }),
++    });
++    const res = await POST(req);
++    expect(res.status).toBe(400);
++  });
++});

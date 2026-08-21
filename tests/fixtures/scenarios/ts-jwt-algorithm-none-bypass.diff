@@ -1,0 +1,20 @@
+--- FILE: src/auth/jwtValidator.ts ---
+diff --git a/src/auth/jwtValidator.ts b/src/auth/jwtValidator.ts
+@@ -1,5 +1,17 @@
+ import jwt from 'jsonwebtoken';
+ import { TokenPayload } from '../types/auth';
+
+ export class JwtValidator {
+   constructor(private readonly publicKey: string) {}
++
++  /**
++   * Verifies incoming JWT bearer token and decodes claims.
++   * Defect: Insecure algorithms option allows unsigned 'none' algorithm bypass.
++   */
++  verifyToken(token: string): TokenPayload {
++    // Critical: Permitting algorithm 'none' allows attackers to bypass signature verification entirely
++    return jwt.verify(token, this.publicKey, {
++      algorithms: ['RS256', 'none'] as any,
++    }) as TokenPayload;
++  }
++}

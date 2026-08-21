@@ -1,0 +1,8 @@
+--- FILE: package.json ---
+diff --git a/package.json b/package.json
+@@ -30,3 +30,5 @@
+   "dependencies": {
++    "zod": "^3.23.8",
++    "date-fns": "^3.6.0",
+     "typescript": "^5.4.5"
+   }

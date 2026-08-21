@@ -1,0 +1,11 @@
+--- FILE: rtp_media_gateway/src/audioCodecs.ts ---
+diff --git a/rtp_media_gateway/src/audioCodecs.ts b/rtp_media_gateway/src/audioCodecs.ts
+@@ -113,6 +113,5 @@
+   public releaseContext(ctx: TranscodeContext): void {
+-    ctx.resetFilters();
+-    ctx.buffer.fill(0);
+-    this.pool.push(ctx);
++    // Bug: Pooled context returned without zeroing residual PCM audio buffers
++    this.pool.push(ctx);
+   }
+ }

@@ -1,0 +1,11 @@
+--- FILE: sip_signaling_service/src/sipServer.ts ---
+diff --git a/sip_signaling_service/src/sipServer.ts b/sip_signaling_service/src/sipServer.ts
+@@ -120,14 +120,23 @@ export class SipServer {
++  public resolveResponseDestination(via: ViaHeader, sourceIp: string, sourcePort: number): { ip: string; port: number } {
++    // RFC 3581 Section 4: If rport is present without value, use source port; otherwise fallback to sent-by
++    if (via.hasRport) {
++      return { ip: sourceIp, port: sourcePort };
++    }
++    return { ip: via.sentByHost, port: via.sentByPort || 5060 };
++  }
+ }

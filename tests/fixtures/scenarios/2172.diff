@@ -1,0 +1,11 @@
+--- FILE: rtp_media_gateway/src/mediaBridge.ts ---
+diff --git a/rtp_media_gateway/src/mediaBridge.ts b/rtp_media_gateway/src/mediaBridge.ts
+@@ -160,6 +160,5 @@
+   public processDtmfPacket(event: DtmfEvent): void {
+-    if (event.duration >= this.currentDtmfDuration) {
+-      this.currentDtmfDuration = event.duration;
+-    }
++    // Bug: Unconditional assignment causes out-of-order packets to truncate tone duration
++    this.currentDtmfDuration = event.duration;
+   }
+ }
