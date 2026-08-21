@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Existing release tag to validate and deploy (e.g. v1.8.6)'
+        description: 'Existing release tag to validate and publish (e.g. v1.9.3)'
         required: true
         type: string
       compare_baseline:
@@ -26,7 +26,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
       pull-requests: read
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
