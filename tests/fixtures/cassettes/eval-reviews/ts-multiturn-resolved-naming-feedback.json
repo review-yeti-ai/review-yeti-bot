@@ -1,0 +1,149 @@
+{
+  "version": "1.0",
+  "scenarioId": "ts-multiturn-resolved-naming-feedback",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:21.450Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario ts-multiturn-resolved-naming-feedback (TypeScript Multi-Turn Resolved Feedback) under persona security",
+      "rawReasoning": "Searching repository references for src/services/billingAlertService.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for security analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"billingAlertService\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "billingAlertService"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061443_b2gibt",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "billingAlertService"
+          },
+          "startTime": 1787270061443,
+          "endTime": 1787270061447,
+          "durationMs": 4,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 18
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario ts-multiturn-resolved-naming-feedback (TypeScript Multi-Turn Resolved Feedback) under persona performance",
+      "rawReasoning": "Searching repository references for src/services/billingAlertService.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for performance analysis:\n{\"tool_calls\":[{\"name\":\"pi.fs.readFile\",\"arguments\":{\"path\":\"src/services/billingAlertService.ts\",\"startLine\":1,\"endLine\":15}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.fs.readFile",
+          "args": {
+            "path": "src/services/billingAlertService.ts",
+            "startLine": 1,
+            "endLine": 15
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061447_f97k4g",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.fs.readFile",
+          "args": {
+            "path": "src/services/billingAlertService.ts",
+            "startLine": 1,
+            "endLine": 15
+          },
+          "startTime": 1787270061447,
+          "endTime": 1787270061447,
+          "durationMs": 1,
+          "bytesRead": 0,
+          "filesScanned": 1,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 30,
+          "estimatedCompletionTokens": 19
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario ts-multiturn-resolved-naming-feedback (TypeScript Multi-Turn Resolved Feedback) under persona architecture",
+      "rawReasoning": "Searching repository references for src/services/billingAlertService.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for architecture analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"billingAlertService\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "billingAlertService"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061447_ozcyj9",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "billingAlertService"
+          },
+          "startTime": 1787270061447,
+          "endTime": 1787270061450,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 18
+        }
+      ]
+    },
+    {
+      "turn": 1,
+      "personaId": "testing",
+      "prompt": "Review request for scenario ts-multiturn-resolved-naming-feedback (TypeScript Multi-Turn Resolved Feedback) under persona testing",
+      "rawReasoning": "Completed testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    },
+    {
+      "turn": 1,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario ts-multiturn-resolved-naming-feedback (TypeScript Multi-Turn Resolved Feedback) under persona dependencies",
+      "rawReasoning": "Completed dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    }
+  ],
+  "finalArbitration": {
+    "verdict": "SHIP",
+    "confirmedFindings": [],
+    "rationale": "All 5 persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release."
+  },
+  "tokenUsage": {
+    "promptTokens": 5262,
+    "completionTokens": 220,
+    "reasoningTokens": 77,
+    "totalCostUSD": 0.0007982800000000001
+  },
+  "category": "multi_turn",
+  "scenarioName": "TypeScript Multi-Turn Resolved Feedback"
+}

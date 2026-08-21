@@ -42,6 +42,32 @@ try {
   } catch (_) {}
 }
 
+let diffCompactor = null;
+try {
+  diffCompactor = require('../../../src/pipeline/diffCompactor');
+} catch (_) {
+  try {
+    diffCompactor = require('../../src/pipeline/diffCompactor');
+  } catch (_) {
+    try {
+      diffCompactor = require('../../../dist/pipeline/diffCompactor');
+    } catch (_) {}
+  }
+}
+
+let shaPartitionManager = null;
+try {
+  shaPartitionManager = require('../../../src/pipeline/shaPartitionManager');
+} catch (_) {
+  try {
+    shaPartitionManager = require('../../src/pipeline/shaPartitionManager');
+  } catch (_) {
+    try {
+      shaPartitionManager = require('../../../dist/pipeline/shaPartitionManager');
+    } catch (_) {}
+  }
+}
+
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 
 // Whitelabel display name used in the posted comment. Override with BOT_NAME.
@@ -322,8 +348,8 @@ Severity: P1 for an incompatible licence obligation or a removed notice. P2 for 
 const DEFAULT_PERSONA_IDS = PERSONA_CHARTERS.filter((p) => p.defaultEnabled).map((p) => p.id);
 
 const SEVERITIES = ['P0', 'P1', 'P2'];
-const DEFAULT_MAX_DIFF_CHARS = 24_000;
-const ACTION_MAX_DIFF_CAP = 2_000_000;
+const DEFAULT_MAX_DIFF_CHARS = 410_400;
+const ACTION_MAX_DIFF_CAP = 10_000_000;
 const DEFAULT_SUBMODULE_POLICY = {
   mode: 'metadata_only',
   max_depth: 1,
@@ -334,6 +360,51 @@ const DEFAULT_SUBMODULE_POLICY = {
   allowed_hosts: ['github.com'],
   url_change: 'block',
 };
+
+function normalizeOpenRouterModel(model) {
+  const normalized = String(model || '').trim();
+  const aliases = {
+    'claude-opus-4-8': 'anthropic/claude-opus-4.8',
+    'claude/claude-opus-4-8': 'anthropic/claude-opus-4.8',
+    'agy/claude-opus-4-6-thinking': 'anthropic/claude-opus-4.8',
+    'grok-cli/grok-4.5': 'x-ai/grok-4.5',
+    'codex/gpt-5.6-sol-high': 'openai/gpt-5.6-sol',
+    'codex-gateway/gpt-5.6-sol-high': 'openai/gpt-5.6-sol',
+    'opencode-go/glm-5.2': 'z-ai/glm-5.2',
+    'synthetic/glm-5.2': 'z-ai/glm-5.2',
+    'synthetic-new/glm-5.2-high': 'z-ai/glm-5.2',
+    'glm-5.2': 'z-ai/glm-5.2',
+    'openrouter/5.6-luna-high': 'openai/gpt-5.6-luna',
+    '5.6-luna-high': 'openai/gpt-5.6-luna',
+  };
+  if (aliases[normalized]) return aliases[normalized];
+  if (normalized.startsWith('synthetic/')) return 'z-ai/glm-5.2';
+  if (normalized.startsWith('openrouter/')) {
+    const route = normalized.slice('openrouter/'.length);
+    return route === 'auto' ? normalized : route;
+  }
+  return normalized;
+}
+
+function getStaticModelContext(model) {
+  const normalized = normalizeOpenRouterModel(model || '');
+  const lower = normalized.toLowerCase();
+  if (lower.includes('gemini-2.5-pro') || lower.includes('gemini-1.5-pro')) return 2_097_152;
+  if (lower.includes('gemini-3.7-flash') || lower.includes('gemini-2.5-flash') || lower.includes('gemini-3.5-flash')) return 1_048_576;
+  if (lower.includes('claude') || lower.includes('opus') || lower.includes('kimi')) return 200_000;
+  return 128_000;
+}
+
+function calculateSafeDiffCapacity(modelOrTokens, options = {}) {
+  const contextTokens = typeof modelOrTokens === 'number'
+    ? modelOrTokens
+    : getStaticModelContext(modelOrTokens);
+  const systemPromptTokens = options.systemPromptTokens ?? 4000;
+  const toolReserveTokens = options.toolReserveTokens ?? 16000;
+  const charsPerToken = options.charsPerToken ?? 3.8;
+  const usableTokens = Math.max(0, contextTokens - systemPromptTokens - toolReserveTokens);
+  return Math.floor(usableTokens * charsPerToken);
+}
 
 /**
  * Resolves LLM endpoint configuration from the environment.
@@ -347,7 +418,8 @@ function resolveModelConfig(env = process.env) {
   const apiKey = env.OPENROUTER_API_KEY || '';
   const baseUrl = (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
   const model = env.OPENROUTER_MODEL || 'openrouter/auto';
-  const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || DEFAULT_MAX_DIFF_CHARS;
+  const dynamicDefaultDiff = calculateSafeDiffCapacity(model);
+  const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || dynamicDefaultDiff;
 
   return { enabled: Boolean(apiKey), apiKey, baseUrl, model, maxDiffChars };
 }
@@ -413,12 +485,14 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
   const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object'
     ? localConfig.parsed
     : (localConfig && typeof localConfig === 'object' ? localConfig : {});
+  const effectiveModel = env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731:low';
+  const dynamicDefaultDiff = calculateSafeDiffCapacity(effectiveModel);
   const limits = parsed.limits && typeof parsed.limits === 'object' ? parsed.limits : {};
   const configuredDiff = Number(limits.max_diff_bytes);
-  const policyDiff = Number.isFinite(configuredDiff) && configuredDiff > 0 ? configuredDiff : DEFAULT_MAX_DIFF_CHARS;
+  const policyDiff = Number.isFinite(configuredDiff) && configuredDiff > 0 ? configuredDiff : dynamicDefaultDiff;
   const envDiff = Number(env.MAX_DIFF_CHARS);
   const requestedDiff = Number.isFinite(envDiff) && envDiff > 0 ? Math.min(envDiff, policyDiff) : policyDiff;
-  const maxDiffChars = Math.max(1, Math.min(Number.isFinite(requestedDiff) ? requestedDiff : DEFAULT_MAX_DIFF_CHARS, ACTION_MAX_DIFF_CAP));
+  const maxDiffChars = Math.max(1, Math.min(Number.isFinite(requestedDiff) ? requestedDiff : dynamicDefaultDiff, ACTION_MAX_DIFF_CAP));
   const rawSubmodules = parsed.submodules && typeof parsed.submodules === 'object' ? parsed.submodules : {};
   const submodules = {
     ...DEFAULT_SUBMODULE_POLICY,
@@ -812,21 +886,34 @@ function planDiffBudget(diffFiles, maxDiffChars) {
   const omitted = [];
   if (!Array.isArray(diffFiles) || diffFiles.length === 0) return { text: '', reviewed, truncated, omitted };
 
-  const total = diffFiles.reduce((sum, file) => sum + String(file.patch || '').length, 0);
+  const effectiveFiles = diffFiles.map((file) => {
+    let patch = String(file.patch || '');
+    if (diffCompactor && diffCompactor.compactUnifiedDiff && patch.includes('@@')) {
+      try {
+        const compacted = diffCompactor.compactUnifiedDiff(patch);
+        if (compacted && compacted.compactedPatch) {
+          patch = compacted.compactedPatch;
+        }
+      } catch (_) {}
+    }
+    return { ...file, patch };
+  });
+
+  const total = effectiveFiles.reduce((sum, file) => sum + String(file.patch || '').length, 0);
   if (total <= maxDiffChars) {
     return {
-      text: diffFiles.map((file) => `\n--- FILE: ${file.path} ---\n${file.patch || ''}`).join(''),
-      reviewed: diffFiles.map((file) => file.path),
+      text: effectiveFiles.map((file) => `\n--- FILE: ${file.path} ---\n${file.patch || ''}`).join(''),
+      reviewed: effectiveFiles.map((file) => file.path),
       truncated,
       omitted,
     };
   }
 
-  const fairShare = Math.floor(maxDiffChars / diffFiles.length);
+  const fairShare = Math.floor(maxDiffChars / effectiveFiles.length);
   const perFile = Math.max(MIN_USEFUL_FILE_CHARS, fairShare);
   const capacity = Math.max(1, Math.floor(maxDiffChars / perFile));
   let text = '';
-  diffFiles.forEach((file, index) => {
+  effectiveFiles.forEach((file, index) => {
     if (index >= capacity) {
       omitted.push(file.path);
       return;
@@ -897,14 +984,31 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
   ].join('\n');
 
-  const coverage = planDiffBudget(diffFiles, maxDiffChars);
+  let diffContent = '';
+  let coverage = null;
+
+  if (options.partition && options.partitionPlan && shaPartitionManager) {
+    const manifestHeader = shaPartitionManager.formatPromptManifestHeader(options.partition, options.partitionPlan);
+    const partitionText = options.partition.files.map((file) => `\n--- FILE: ${file.path} ---\n${file.patch || ''}`).join('');
+    diffContent = `${manifestHeader}\nUnified diff under review:\n${partitionText}`;
+    coverage = {
+      text: partitionText,
+      reviewed: options.partition.files.map((f) => f.path),
+      truncated: [],
+      omitted: [],
+    };
+  } else {
+    coverage = planDiffBudget(diffFiles, maxDiffChars);
+    diffContent = `Unified diff under review:\n${coverage.text}`;
+  }
+
   const userPrompt = [
     `Repository: ${prContext.repo || 'unknown'}`,
     prContext.prNumber ? `Pull request: #${prContext.prNumber}` : '',
     prContext.title ? `Title: ${prContext.title}` : '',
+    prContext.baseSha && prContext.headSha ? `Commit SHA Range: ${prContext.baseSha}...${prContext.headSha}` : '',
     '',
-    'Unified diff under review:',
-    coverage.text,
+    diffContent,
   ].filter(Boolean).join('\n');
 
   try {
@@ -1946,12 +2050,28 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     ? `\n\n> ⚠️ **This verdict covers part of the change.** ${coverageParts.join(' ')}\n> The diff exceeded the per-reviewer budget of ${modelConfig.maxDiffChars || DEFAULT_MAX_DIFF_CHARS} characters.`
     : '';
 
+  const commitRangeLine = prContext.baseSha && prContext.headSha
+    ? `- **Commit SHA Range**: \`${prContext.baseSha.slice(0, 7)}...${prContext.headSha.slice(0, 7)}\``
+    : `- **Commit SHA**: \`${prContext.headSha ? prContext.headSha.slice(0, 7) : 'HEAD'}\``;
+
+  let coverageBadge = '';
+  if (coverage?.partitionPlan || (coverage?.partitionsCount && coverage.partitionsCount > 0)) {
+    const totalFiles = coverage.totalFiles || (coverage.reviewed ? coverage.reviewed.length : 0);
+    const partitionsCount = coverage.partitionsCount || (coverage.partitionPlan ? coverage.partitionPlan.partitions.length : 1);
+    coverageBadge = `\n- **Coverage**: 🟢 **100%** (${totalFiles}/${totalFiles} files reviewed across ${partitionsCount} partitions, 0 omitted)`;
+  }
+
+  let partitionManifestSection = '';
+  if (coverage?.partitionPlan && coverage.partitionsCount > 1 && shaPartitionManager && typeof shaPartitionManager.formatCoverageComment === 'function') {
+    partitionManifestSection = `\n\n${shaPartitionManager.formatCoverageComment(coverage.partitionPlan)}`;
+  }
+
   const commentMarkdown = `## ${verdictBadge}
 
 ### 📊 ${BOT_LABEL} Summary
 - **Repository**: \`${prContext.repo}\`
-- **Commit SHA**: \`${prContext.headSha.slice(0, 7)}\`
-- **Review Mode**: ${reviewMode}
+${commitRangeLine}
+- **Review Mode**: ${reviewMode}${coverageBadge}
 - **Parallel Personas Evaluated**: \`${arbitration.completedPersonas}/${arbitration.totalPersonas}\`
 - **Quorum Status**: \`${arbitration.quorumSatisfied ? 'SATISFIED' : 'DEGRADED'}\`
 - **MCP Server Telemetry**: ${mcpStatusLine}
@@ -1965,7 +2085,7 @@ ${mermaidLines.join('\n')}
 | Reviewer Persona | Provider | Model | Decision | P0 | P1 | P2 / Nits | Input Tokens | Output Tokens | Cost |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|
 ${breakdownRows}
-${findingsDetails}`;
+${findingsDetails}${partitionManifestSection}`;
 
   return commentMarkdown;
 }
@@ -2066,6 +2186,11 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
   if (!outputPath) return;
 
   const m = arbitration.metrics || {};
+  const totalFiles = coverage?.totalFiles ?? (coverage?.reviewed?.length || 0);
+  const omittedFiles = coverage?.omittedFilesCount ?? (coverage?.omitted?.length || 0);
+  const partitionsCount = coverage?.partitionsCount ?? (coverage?.partitionPlan ? coverage.partitionPlan.partitions.length : 1);
+  const coveragePct = coverage?.coveragePercent ?? (totalFiles > 0 && omittedFiles === 0 ? 100 : Math.round(((totalFiles - omittedFiles) / Math.max(1, totalFiles)) * 100));
+
   const lines = [
     `verdict=${arbitration.verdict}`,
     `findings-count=${m.totalFindings || 0}`,
@@ -2074,8 +2199,10 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     `p2-count=${m.p2Count || 0}`,
     `personas-completed=${arbitration.completedPersonas || 0}`,
     `personas-total=${arbitration.totalPersonas || 0}`,
-    `files-reviewed=${coverage?.reviewed?.length || 0}`,
-    `files-omitted=${coverage?.omitted?.length || 0}`,
+    `files-reviewed=${totalFiles}`,
+    `files-omitted=${omittedFiles}`,
+    `partitions-count=${partitionsCount}`,
+    `coverage-pct=${coveragePct}`,
   ];
 
   try {
@@ -2166,8 +2293,39 @@ async function main() {
   }
 
   const modelConfig = actionRuntime.modelConfig;
-  const coverage = planDiffBudget(reviewDiffFiles, modelConfig.maxDiffChars);
-  if (coverage.omitted.length > 0 || coverage.truncated.length > 0) {
+  const safeDiffCapacityChars = modelConfig.maxDiffChars || calculateSafeDiffCapacity(modelConfig.model || DEFAULT_MODEL) || DEFAULT_MAX_DIFF_CHARS;
+  const totalDiffChars = reviewDiffFiles.reduce((sum, file) => sum + String(file.patch || '').length, 0);
+
+  let partitionPlan = null;
+  if (shaPartitionManager && reviewDiffFiles.length > 0 && totalDiffChars > safeDiffCapacityChars) {
+    const baseSha = prContext.baseSha || 'HEAD~1';
+    const headSha = prContext.headSha || 'HEAD';
+    try {
+      partitionPlan = shaPartitionManager.createPartitionPlan(reviewDiffFiles, baseSha, headSha, safeDiffCapacityChars);
+      console.log(`[Partitioning] Total diff size (${totalDiffChars.toLocaleString()} chars) exceeds safe budget (${safeDiffCapacityChars.toLocaleString()} chars). Partitioned into ${partitionPlan.partitions.length} parallel review lanes (100% file coverage guarantee, 0 omitted).`);
+    } catch (err) {
+      console.warn(`[Partitioning] Failed to create partition plan: ${err.message}`);
+    }
+  }
+
+  let coverage = null;
+  if (partitionPlan && partitionPlan.partitions.length > 1) {
+    coverage = {
+      text: reviewDiffFiles.map((file) => `\n--- FILE: ${file.path} ---\n${file.patch || ''}`).join(''),
+      reviewed: reviewDiffFiles.map((file) => file.path),
+      truncated: [],
+      omitted: [],
+      totalFiles: reviewDiffFiles.length,
+      omittedFilesCount: 0,
+      partitionsCount: partitionPlan.partitions.length,
+      coveragePercent: 100,
+      partitionPlan,
+    };
+  } else {
+    coverage = planDiffBudget(reviewDiffFiles, modelConfig.maxDiffChars);
+  }
+
+  if (coverage.omitted && coverage.omitted.length > 0) {
     console.warn(`[Budget] Diff exceeds ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} omitted.`);
   }
   console.log(modelConfig.enabled
@@ -2221,10 +2379,59 @@ async function main() {
     };
   } else {
     if (modelConfig.enabled) {
-      console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
-      personaResults = await Promise.all(
-        enabledPersonas.map((persona) => reviewWithModel(persona, reviewDiffFiles, prContext, sessionContext, modelConfig))
-      );
+      if (partitionPlan && partitionPlan.partitions.length > 1) {
+        console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) across ${partitionPlan.partitions.length} partitions to ${modelConfig.model}...`);
+        const partitionRuns = await Promise.all(
+          partitionPlan.partitions.map(async (partition) => {
+            const partitionOptions = {
+              ...modelConfig,
+              partition,
+              partitionPlan,
+              maxDiffChars: safeDiffCapacityChars,
+            };
+            return Promise.all(
+              enabledPersonas.map((persona) =>
+                reviewWithModel(persona, partition.files, prContext, sessionContext, partitionOptions)
+              )
+            );
+          })
+        );
+
+        // Aggregate results per persona across partitions
+        personaResults = enabledPersonas.map((persona, pIdx) => {
+          const laneRuns = partitionRuns.map((pRun) => pRun[pIdx]);
+          const allFindings = laneRuns.flatMap((r) => r.findings || []);
+          const totalInputTokens = laneRuns.reduce((sum, r) => sum + (r.inputTokens || 0), 0);
+          const totalOutputTokens = laneRuns.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
+          const anyError = laneRuns.find((r) => r.decision === 'ERROR');
+          const baseRun = laneRuns[0] || {};
+
+          let totalCost = null;
+          const numericCosts = laneRuns.map((r) => normalizeCost(r.cost)).filter((c) => c !== null);
+          if (numericCosts.length === laneRuns.length) {
+            totalCost = numericCosts.reduce((sum, c) => sum + c, 0);
+          } else if (laneRuns.some((r) => isSubscriptionLane(r))) {
+            totalCost = 'Subscription';
+          }
+
+          return {
+            ...baseRun,
+            personaId: persona.id,
+            displayName: persona.name,
+            findings: allFindings,
+            inputTokens: totalInputTokens || null,
+            outputTokens: totalOutputTokens || null,
+            cost: totalCost,
+            decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
+            error: anyError ? anyError.error : undefined,
+          };
+        });
+      } else {
+        console.log(`[Parallel Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl}...`);
+        personaResults = await Promise.all(
+          enabledPersonas.map((persona) => reviewWithModel(persona, reviewDiffFiles, prContext, sessionContext, modelConfig))
+        );
+      }
 
       const failed = personaResults.filter((r) => r.decision === 'ERROR');
       for (const lane of failed) {
@@ -2335,6 +2542,9 @@ module.exports = {
   postOrOutputComment,
   isSubscriptionTransport,
   isSubscriptionLane,
+  calculateSafeDiffCapacity,
+  getStaticModelContext,
   formatCost,
+  shaPartitionManager,
   main,
 };

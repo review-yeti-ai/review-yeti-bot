@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   DEFAULT_THRESHOLDS,
   DEFAULT_MODELS,
+  DEFAULT_V5_MODELS,
   normalizeModelIdentifier,
   areModelsEquivalent,
   parseCliArgs,
@@ -24,6 +25,8 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
   const v1BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v1.json');
   const v2BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v2.json');
   const v3BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v3.json');
+  const v4BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v4.json');
+  const v5BaselinePath = path.join(rootRepoDir, 'eval-baselines/model-benchmark-matrix-v5.json');
   const tempDir = path.join(rootRepoDir, 'tests/fixtures/temp-benchmark-gate');
 
   beforeEach(() => {
@@ -221,6 +224,16 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       expect(parseCliArgs(['node', 'compare.mjs', '--help']).help).toBe(true);
       expect(parseCliArgs(['node', 'compare.mjs', '-h']).help).toBe(true);
     });
+
+    it('1.9 correctly normalizes and distinguishes deepseek low and high reasoning identifiers', () => {
+      expect(normalizeModelIdentifier('deepseek/deepseek-v4-flash-0731:low')).toBe('deepseek/deepseek-v4-flash-0731:low');
+      expect(normalizeModelIdentifier('deepseek-v4-flash-0731:low')).toBe('deepseek/deepseek-v4-flash-0731:low');
+      expect(normalizeModelIdentifier('accounts/fireworks/models/deepseek-v4-flash-0731')).toBe('deepseek/deepseek-v4-flash-0731:low');
+      expect(normalizeModelIdentifier('deepseek/deepseek-v4-flash-0731')).toBe('deepseek/deepseek-v4-flash-0731:high');
+      expect(areModelsEquivalent('deepseek/deepseek-v4-flash-0731:low', 'deepseek-v4-flash-0731:low')).toBe(true);
+      expect(areModelsEquivalent('deepseek/deepseek-v4-flash-0731:low', 'accounts/fireworks/models/deepseek-v4-flash-0731')).toBe(true);
+      expect(areModelsEquivalent('deepseek/deepseek-v4-flash-0731:low', 'deepseek/deepseek-v4-flash-0731:high')).toBe(false);
+    });
   });
 
   // =========================================================================
@@ -275,6 +288,23 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         expect(v3.summary[model]).toBeDefined();
         expect(v3.summary[model].totalScenarios).toBe(94);
       }
+    });
+
+    it('2.8 ingests canonical v5 baseline matrix JSON with 190 scenarios, 5 models, and 950 detailed results', () => {
+      expect(fs.existsSync(v5BaselinePath)).toBe(true);
+      const v5 = loadBenchmarkMatrix(v5BaselinePath);
+      expect(v5.version).toBe('v5');
+      expect(v5.models).toEqual(DEFAULT_V5_MODELS);
+      expect(v5.scenarios.length).toBe(190);
+      expect(v5.detailedResults.length).toBe(950);
+      for (const model of DEFAULT_V5_MODELS) {
+        expect(v5.summary[model]).toBeDefined();
+        expect(v5.summary[model].totalScenarios).toBe(190);
+      }
+      expect(v5.summary['deepseek/deepseek-v4-flash-0731:low'].verdictMatches).toBe(175);
+      expect(v5.summary['deepseek/deepseek-v4-flash-0731:low'].totalTp).toBe(136);
+      expect(v5.summary['deepseek/deepseek-v4-flash-0731:low'].totalFp).toBe(0);
+      expect(v5.summary['deepseek/deepseek-v4-flash-0731:low'].totalFn).toBe(14);
     });
   });
 
@@ -930,5 +960,137 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       expect(res.comparison.passed).toBe(true);
       expect(res.comparison.hasRegressions).toBe(false);
     });
+
+    it('7.12 verifies canonical Baseline v5 matrix against Baseline v4 matrix passes cleanly with 0 breaches and deepseek low skipped', async () => {
+      const res = await main([
+        'node',
+        'compare.mjs',
+        `--baseline=${v4BaselinePath}`,
+        `--candidate=${v5BaselinePath}`,
+        '--strict',
+      ]);
+      expect(res.exitCode).toBe(0);
+      expect(res.comparison.passed).toBe(true);
+      expect(res.comparison.hasRegressions).toBe(false);
+      expect(res.comparison.totalBreaches).toBe(0);
+      expect(res.comparison.modelDeltas['deepseek/deepseek-v4-flash-0731:low'].status).toBe('SKIPPED');
+      for (const model of ['deepseek/deepseek-v4-flash-0731:high', 'openrouter/5.6-luna-high', 'qwen/qwen-3.8-27b:high', 'google/gemini-3.7-flash:high']) {
+        expect(res.comparison.modelDeltas[model].status).toBe('PASS');
+        expect(res.comparison.modelDeltas[model].violations.length).toBe(0);
+      }
+    });
+
+    it('7.13 verifies canonical Baseline v5 matrix against itself passes 100% with exit code 0 and 0 breaches across all 5 models', async () => {
+      const res = await main([
+        'node',
+        'compare.mjs',
+        `--baseline=${v5BaselinePath}`,
+        `--candidate=${v5BaselinePath}`,
+        '--strict',
+      ]);
+      expect(res.exitCode).toBe(0);
+      expect(res.comparison.passed).toBe(true);
+      expect(res.comparison.hasRegressions).toBe(false);
+      expect(res.comparison.totalBreaches).toBe(0);
+      for (const d of res.comparison.summaryDeltas) {
+        expect(d.status).toBe('PASS');
+        expect(d.violations.length).toBe(0);
+      }
+    });
+
+    it('7.14 verifies candidate evaluation with Baseline v5 candidate outputs clean Markdown and JSON reports', async () => {
+      const mdOut = path.join(tempDir, 'v5-comparison-report.md');
+      const jsonOut = path.join(tempDir, 'v5-comparison-report.json');
+
+      const res = await main([
+        'node',
+        'compare.mjs',
+        `--baseline=${v5BaselinePath}`,
+        `--candidate=${v5BaselinePath}`,
+        `--output=${mdOut}`,
+        '--strict',
+      ]);
+
+      expect(res.exitCode).toBe(0);
+      expect(fs.existsSync(mdOut)).toBe(true);
+      const md = fs.readFileSync(mdOut, 'utf-8');
+      expect(md).toContain('ALL GATES PASSED (0 Breaches)');
+      expect(md).toContain('deepseek/deepseek-v4-flash-0731:low');
+    });
+  });
+
+  // =========================================================================
+  // SUITE 8: ZERO OMITTED FILES & 100% COVERAGE QUALITY GATES
+  // =========================================================================
+  describe('8. Zero Omitted Files & 100% Review Coverage Quality Gates', () => {
+    it('8.1 flags regression breach when candidate model contains omitted files', () => {
+      const base = createMockSummary({ totalScenarios: 10 });
+      const cand = createMockSummary({
+        totalScenarios: 10,
+        totalOmittedFiles: 2,
+        coveragePct: 80.0,
+      });
+
+      const deltas = calculateDeltas(cand, base);
+      expect(deltas.omittedFiles.candidate).toBe(2);
+      expect(deltas.coveragePct.candidate).toBe(80.0);
+
+      const gate = evaluateModelGate(deltas, { ...DEFAULT_THRESHOLDS, disallowOmittedFiles: true, maxOmittedFilesAllowed: 0 });
+      expect(gate.passed).toBe(false);
+      expect(gate.status).toBe('REGRESSION');
+      expect(gate.violations.some((v) => v.includes('Omitted files detected: 2'))).toBe(true);
+      expect(gate.violations.some((v) => v.includes('Coverage drop below required minimum: 80.0%'))).toBe(true);
+    });
+
+    it('8.2 passes cleanly when candidate achieves 100% coverage and 0 omitted files', () => {
+      const base = createMockSummary({ totalScenarios: 10, totalOmittedFiles: 0, coveragePct: 100.0 });
+      const cand = createMockSummary({ totalScenarios: 10, totalOmittedFiles: 0, coveragePct: 100.0 });
+
+      const deltas = calculateDeltas(cand, base);
+      expect(deltas.omittedFiles.candidate).toBe(0);
+      expect(deltas.coveragePct.candidate).toBe(100.0);
+
+      const gate = evaluateModelGate(deltas, DEFAULT_THRESHOLDS);
+      expect(gate.passed).toBe(true);
+      expect(gate.status).toBe('PASS');
+      expect(gate.violations.length).toBe(0);
+    });
+
+    it('8.3 respects custom --max-omitted-files and --min-coverage-pct CLI overrides', () => {
+      const base = createMockSummary({ totalScenarios: 10 });
+      const cand = createMockSummary({
+        totalScenarios: 10,
+        totalOmittedFiles: 1,
+        coveragePct: 95.0,
+      });
+
+      const deltas = calculateDeltas(cand, base);
+
+      // Default thresholds fail on 1 omitted file / 95% coverage
+      const strictGate = evaluateModelGate(deltas, DEFAULT_THRESHOLDS);
+      expect(strictGate.passed).toBe(false);
+
+      // Relaxed thresholds pass
+      const relaxedGate = evaluateModelGate(deltas, {
+        ...DEFAULT_THRESHOLDS,
+        maxOmittedFilesAllowed: 2,
+        minCoveragePct: 90.0,
+      });
+      expect(relaxedGate.passed).toBe(true);
+    });
+
+    it('8.4 parses --max-omitted-files, --min-coverage-pct, and --disallow-omitted-files in parseCliArgs', () => {
+      const options = parseCliArgs([
+        'node',
+        'compare.mjs',
+        '--max-omitted-files=3',
+        '--min-coverage-pct=92.5',
+        '--no-disallow-omitted-files',
+      ]);
+      expect(options.thresholds.maxOmittedFilesAllowed).toBe(3);
+      expect(options.thresholds.minCoveragePct).toBe(92.5);
+      expect(options.thresholds.disallowOmittedFiles).toBe(false);
+    });
   });
 });
+

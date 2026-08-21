@@ -72,6 +72,10 @@ export function parseCliArgs(argv) {
     offline: args.includes('--offline') || !args.includes('--live'),
     json: args.includes('--json'),
     failOnRegression: args.includes('--fail-on-regression'),
+    testPartitioning: args.includes('--test-partitioning'),
+    zeroOmissions: args.includes('--zero-omissions') || args.includes('--enforce-coverage'),
+    maxOmittedFilesAllowed: 0,
+    minCoveragePct: 100.0,
     formatDigest: args.includes('--format-digest'),
     extractDigestFrom: null,
     repository: process.env.GITHUB_REPOSITORY || null,
@@ -137,6 +141,14 @@ export function parseCliArgs(argv) {
       options.repository = arg.slice('--repository='.length).trim();
     } else if (arg === '--repository' && i + 1 < args.length) {
       options.repository = args[++i].trim();
+    } else if (arg.startsWith('--max-omitted-files=')) {
+      options.maxOmittedFilesAllowed = Number(arg.slice('--max-omitted-files='.length));
+    } else if (arg === '--max-omitted-files' && i + 1 < args.length) {
+      options.maxOmittedFilesAllowed = Number(args[++i]);
+    } else if (arg.startsWith('--min-coverage-pct=') || arg.startsWith('--min-coverage=')) {
+      options.minCoveragePct = Number(arg.split('=')[1]);
+    } else if ((arg === '--min-coverage-pct' || arg === '--min-coverage') && i + 1 < args.length) {
+      options.minCoveragePct = Number(args[++i]);
     }
   }
 
@@ -162,6 +174,10 @@ Options:
   --save-baseline=<version>     Persist matrix into eval-baselines/model-benchmark-matrix-<version>.json and .md
   --compare-baseline=<path>     Compare candidate results against baseline file
   --fail-on-regression          Exit with non-zero code if quality gate regressions detected
+  --test-partitioning           Benchmark oversized scenarios with zero-loss SHA partitioning
+  --zero-omissions              Enforce zero omitted files quality gate across all reviewed PRs
+  --max-omitted-files=<n>       Max permissible omitted files count (default: 0)
+  --min-coverage-pct=<n>        Min review coverage percentage (default: 100.0)
   --format-digest               Emit release notes benchmark digest to stdout
   --extract-digest-from=<path>  Extract and format release notes digest from existing markdown report
   --repository=<owner/repo>     GitHub repository name (defaults to GITHUB_REPOSITORY or calltelemetry/ct-review-bot)
@@ -339,6 +355,16 @@ export function evaluateRegressionGate(candidateReport, baselinePath) {
     const baseAvgCost = base.totalScenarios > 0 ? base.totalCostUSD / base.totalScenarios : 0;
     if (baseAvgCost > 0 && (candAvgCost - baseAvgCost) / baseAvgCost > 0.20 && dRecall <= 0) {
       violations.push(`Cost inflation without recall gain: +${Math.round(((candAvgCost - baseAvgCost) / baseAvgCost) * 100)}%`);
+    }
+
+    // Zero Omitted Files Quality Gate
+    const candOmitted = Number(cand.totalOmittedFiles ?? cand.omittedFiles ?? 0);
+    const candCoverage = Number(cand.coveragePct ?? cand.coveragePercentage ?? 100.0);
+    if (candOmitted > 0) {
+      violations.push(`Omitted files detected in review: ${candOmitted} (0 omitted files allowed, 100% coverage required)`);
+    }
+    if (candCoverage < 100.0) {
+      violations.push(`Coverage drop below 100%: ${candCoverage.toFixed(1)}% (100% coverage required)`);
     }
 
     const isRegression = violations.length > 0;

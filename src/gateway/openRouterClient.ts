@@ -98,20 +98,405 @@ export function normalizeOpenRouterModel(model: string): string {
   return normalized;
 }
 
-function estimateTokenCost(model: string, promptTokens: number, completionTokens: number): number {
-  let promptRate = 0.0015;
-  let completionRate = 0.003;
-  const lower = model.toLowerCase();
-  if (lower.includes('claude') || lower.includes('opus')) {
-    promptRate = 0.003;
-    completionRate = 0.015;
-  } else if (lower.includes('luna')) {
-    promptRate = 0.002;
-    completionRate = 0.006;
-  } else if (lower.includes('gpt') || lower.includes('codex')) {
-    promptRate = 0.0025;
-    completionRate = 0.01;
+export interface ModelMetadata {
+  id: string;
+  name: string;
+  contextLength: number;
+  contextTokens?: number;
+  maxCompletionTokens?: number;
+  promptCostPer1M: number;
+  completionCostPer1M: number;
+  promptCostPer1k?: number;
+  completionCostPer1k?: number;
+  supportsTools: boolean;
+  supportsReasoning?: boolean;
+}
+
+export interface SafeDiffCapacityResult {
+  contextTokens: number;
+  usableDiffTokens: number;
+  safeDiffChars: number;
+  systemPromptTokens: number;
+  toolReserveTokens: number;
+  charsPerToken: number;
+  valueOf(): number;
+  [Symbol.toPrimitive](hint?: string): number | string;
+  toString(): string;
+}
+
+export interface ResolveModelMetadataOptions {
+  baseUrl?: string;
+  fetchImplementation?: FetchImplementation;
+  ttlMs?: number;
+  timeoutMs?: number;
+}
+
+const metadataCache = new Map<string, { metadata: ModelMetadata; cachedAt: number }>();
+let inFlightModelsFetch: Promise<Map<string, ModelMetadata>> | null = null;
+const inFlightResolutions = new Map<string, Promise<ModelMetadata>>();
+
+export function clearModelMetadataCache(): void {
+  metadataCache.clear();
+  inFlightModelsFetch = null;
+  inFlightResolutions.clear();
+}
+
+export function getStaticModelMetadata(modelId: string): ModelMetadata {
+  const normalized = normalizeOpenRouterModel(modelId || '');
+  const lower = normalized.toLowerCase();
+
+  const build = (meta: {
+    id: string;
+    name: string;
+    contextLength: number;
+    maxCompletionTokens?: number;
+    promptCostPer1M: number;
+    completionCostPer1M: number;
+    supportsTools: boolean;
+    supportsReasoning?: boolean;
+  }): ModelMetadata => ({
+    ...meta,
+    contextTokens: meta.contextLength,
+    promptCostPer1k: meta.promptCostPer1M / 1000,
+    completionCostPer1k: meta.completionCostPer1M / 1000,
+  });
+
+  // 1. Google Gemini 2.5 Pro / 1.5 Pro (2M context = 2,097,152)
+  if (
+    lower.includes('gemini-2.5-pro') ||
+    lower.includes('gemini-1.5-pro') ||
+    lower.includes('gemini-pro')
+  ) {
+    return build({
+      id: normalized,
+      name: 'Google Gemini Pro',
+      contextLength: 2_097_152,
+      maxCompletionTokens: 65_536,
+      promptCostPer1M: 1.25,
+      completionCostPer1M: 5.0,
+      supportsTools: true,
+      supportsReasoning: true,
+    });
   }
+
+  // 2. Google Gemini 3.7 Flash / 2.5 Flash / 3.5 Flash Lite (1M context = 1,048,576)
+  if (
+    lower.includes('gemini-3.7-flash') ||
+    lower.includes('gemini-2.5-flash') ||
+    lower.includes('gemini-3.5-flash') ||
+    lower.includes('gemini-flash')
+  ) {
+    return build({
+      id: normalized,
+      name: 'Google Gemini Flash',
+      contextLength: 1_048_576,
+      maxCompletionTokens: 65_536,
+      promptCostPer1M: 0.15,
+      completionCostPer1M: 0.6,
+      supportsTools: true,
+      supportsReasoning: true,
+    });
+  }
+
+  // 3. Anthropic Claude 3.7 Sonnet / Opus 4.8 / 3.5 Sonnet / Haiku (200,000)
+  if (
+    lower.includes('claude') ||
+    lower.includes('opus') ||
+    lower.includes('sonnet') ||
+    lower.includes('haiku')
+  ) {
+    const isHaiku = lower.includes('haiku');
+    return build({
+      id: normalized,
+      name: isHaiku ? 'Anthropic Claude Haiku' : 'Anthropic Claude Sonnet / Opus',
+      contextLength: 200_000,
+      maxCompletionTokens: isHaiku ? 8_192 : 16_384,
+      promptCostPer1M: isHaiku ? 0.8 : 3.0,
+      completionCostPer1M: isHaiku ? 4.0 : 15.0,
+      supportsTools: true,
+      supportsReasoning: true,
+    });
+  }
+
+  // 4. Kimi K2.6 / K3 (200,000)
+  if (lower.includes('kimi')) {
+    return build({
+      id: normalized,
+      name: 'Moonshot Kimi',
+      contextLength: 200_000,
+      maxCompletionTokens: 8_192,
+      promptCostPer1M: 1.0,
+      completionCostPer1M: 3.0,
+      supportsTools: true,
+      supportsReasoning: true,
+    });
+  }
+
+  // 5. DeepSeek V4 Flash / V3 / R1 (128,000)
+  if (lower.includes('deepseek')) {
+    const isFlash = lower.includes('flash');
+    return build({
+      id: normalized,
+      name: isFlash ? 'DeepSeek V4 Flash' : 'DeepSeek V3 / R1',
+      contextLength: 128_000,
+      maxCompletionTokens: 8_192,
+      promptCostPer1M: isFlash ? 0.14 : 0.55,
+      completionCostPer1M: isFlash ? 0.28 : 2.19,
+      supportsTools: true,
+      supportsReasoning: true,
+    });
+  }
+
+  // 6. OpenRouter 5.6-Luna (128,000)
+  if (lower.includes('luna')) {
+    return build({
+      id: normalized,
+      name: 'OpenRouter 5.6 Luna',
+      contextLength: 128_000,
+      maxCompletionTokens: 16_384,
+      promptCostPer1M: 2.0,
+      completionCostPer1M: 6.0,
+      supportsTools: true,
+      supportsReasoning: true,
+    });
+  }
+
+  // 7. Qwen 3.8 / 2.5 (128,000)
+  if (lower.includes('qwen')) {
+    return build({
+      id: normalized,
+      name: 'Qwen 3.8 / 2.5',
+      contextLength: 128_000,
+      maxCompletionTokens: 8_192,
+      promptCostPer1M: 0.35,
+      completionCostPer1M: 0.8,
+      supportsTools: true,
+      supportsReasoning: true,
+    });
+  }
+
+  // 8. OpenAI GPT-4o / GPT-4o-mini / GPT-5.6-sol (128,000)
+  if (lower.includes('gpt-4o') || lower.includes('gpt-5.6-sol') || lower.includes('codex')) {
+    const isMini = lower.includes('mini');
+    return build({
+      id: normalized,
+      name: isMini ? 'OpenAI GPT-4o Mini' : 'OpenAI GPT-4o',
+      contextLength: 128_000,
+      maxCompletionTokens: 16_384,
+      promptCostPer1M: isMini ? 0.15 : 2.5,
+      completionCostPer1M: isMini ? 0.6 : 10.0,
+      supportsTools: true,
+      supportsReasoning: lower.includes('gpt-5.6-sol'),
+    });
+  }
+
+  // 9. GLM / Grok / HY3 / Fireworks DeepSeek
+  if (lower.includes('glm') || lower.includes('grok') || lower.includes('hy3') || lower.includes('fireworks')) {
+    return build({
+      id: normalized,
+      name: normalized,
+      contextLength: 128_000,
+      maxCompletionTokens: 8_192,
+      promptCostPer1M: 1.0,
+      completionCostPer1M: 2.0,
+      supportsTools: true,
+      supportsReasoning: false,
+    });
+  }
+
+  // 10. Universal Default Fallback (128,000)
+  return build({
+    id: normalized || 'openrouter/auto',
+    name: normalized || 'Universal Fallback',
+    contextLength: 128_000,
+    maxCompletionTokens: 8_192,
+    promptCostPer1M: 0.5,
+    completionCostPer1M: 1.5,
+    supportsTools: true,
+    supportsReasoning: false,
+  });
+}
+
+export async function resolveModelMetadata(
+  modelId: string,
+  apiKey?: string,
+  options?: ResolveModelMetadataOptions
+): Promise<ModelMetadata> {
+  const effectiveModel = normalizeOpenRouterModel(modelId || '');
+  const ttlMs = options?.ttlMs ?? 60 * 60 * 1000; // 1 hour TTL
+  const now = Date.now();
+
+  const cached = metadataCache.get(effectiveModel) ?? metadataCache.get(modelId);
+  if (cached && now - cached.cachedAt < ttlMs) {
+    return cached.metadata;
+  }
+
+  const existingInFlight = inFlightResolutions.get(effectiveModel);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const resolutionPromise = (async () => {
+    const key = apiKey || process.env.OPENROUTER_API_KEY || '';
+    const baseUrl = (options?.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+    const fetchImpl = options?.fetchImplementation || ((input, init) => globalThis.fetch(input, init));
+    const timeoutMs = options?.timeoutMs ?? 5000;
+
+    if (!key.trim()) {
+      const staticMeta = getStaticModelMetadata(modelId);
+      metadataCache.set(effectiveModel, { metadata: staticMeta, cachedAt: Date.now() });
+      return staticMeta;
+    }
+
+    try {
+      if (!inFlightModelsFetch) {
+        inFlightModelsFetch = (async () => {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            const headers: Record<string, string> = {
+              Accept: 'application/json',
+              Authorization: `Bearer ${key}`,
+            };
+            const response = await fetchImpl(`${baseUrl}/models`, {
+              method: 'GET',
+              headers,
+              signal: controller.signal,
+            });
+
+            if (!response.ok) {
+              return new Map<string, ModelMetadata>();
+            }
+
+            const body: any = await response.json();
+            const modelsMap = new Map<string, ModelMetadata>();
+            if (Array.isArray(body?.data)) {
+              for (const item of body.data) {
+                if (item?.id) {
+                  const id = String(item.id);
+                  const name = String(item.name || id);
+                  const contextLength = Number(
+                    item.context_length ||
+                    item.top_provider?.context_length ||
+                    item.per_request_limits?.prompt_tokens ||
+                    128_000
+                  );
+                  const maxCompletionTokens = Number(
+                    item.top_provider?.max_completion_tokens ||
+                    item.per_request_limits?.completion_tokens ||
+                    8192
+                  );
+                  const promptCostPer1M = item.pricing?.prompt
+                    ? parseFloat(String(item.pricing.prompt)) * 1_000_000
+                    : 0.5;
+                  const completionCostPer1M = item.pricing?.completion
+                    ? parseFloat(String(item.pricing.completion)) * 1_000_000
+                    : 1.5;
+
+                  const meta: ModelMetadata = {
+                    id,
+                    name,
+                    contextLength,
+                    contextTokens: contextLength,
+                    maxCompletionTokens,
+                    promptCostPer1M,
+                    completionCostPer1M,
+                    promptCostPer1k: promptCostPer1M / 1000,
+                    completionCostPer1k: completionCostPer1M / 1000,
+                    supportsTools: true,
+                    supportsReasoning: Boolean(item.architecture?.instruct_type || item.supports_reasoning),
+                  };
+                  modelsMap.set(id.toLowerCase(), meta);
+                }
+              }
+            }
+            return modelsMap;
+          } finally {
+            clearTimeout(timeout);
+          }
+        })();
+      }
+
+      const modelsMap = await inFlightModelsFetch;
+      const fetchTime = Date.now();
+      for (const [idLower, meta] of modelsMap.entries()) {
+        metadataCache.set(idLower, { metadata: meta, cachedAt: fetchTime });
+        metadataCache.set(meta.id, { metadata: meta, cachedAt: fetchTime });
+      }
+
+      const baseId = effectiveModel.split(':')[0];
+      const matchedMeta =
+        modelsMap.get(effectiveModel.toLowerCase()) ||
+        modelsMap.get(modelId.toLowerCase()) ||
+        modelsMap.get(baseId.toLowerCase()) ||
+        metadataCache.get(effectiveModel.toLowerCase())?.metadata;
+
+      if (matchedMeta) {
+        const resultMeta: ModelMetadata = {
+          ...matchedMeta,
+          id: effectiveModel,
+        };
+        metadataCache.set(effectiveModel, { metadata: resultMeta, cachedAt: fetchTime });
+        return resultMeta;
+      }
+
+      const staticMeta = getStaticModelMetadata(modelId);
+      metadataCache.set(effectiveModel, { metadata: staticMeta, cachedAt: fetchTime });
+      return staticMeta;
+    } catch (err) {
+      logger.warn('Failed to resolve dynamic model metadata from OpenRouter, falling back to static metadata', {
+        modelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      const staticMeta = getStaticModelMetadata(modelId);
+      metadataCache.set(effectiveModel, { metadata: staticMeta, cachedAt: Date.now() });
+      return staticMeta;
+    } finally {
+      inFlightModelsFetch = null;
+      inFlightResolutions.delete(effectiveModel);
+    }
+  })();
+
+  inFlightResolutions.set(effectiveModel, resolutionPromise);
+  return resolutionPromise;
+}
+
+export function calculateSafeDiffCapacity(
+  modelOrTokens: string | number,
+  options?: { systemPromptTokens?: number; toolReserveTokens?: number; charsPerToken?: number }
+): SafeDiffCapacityResult {
+  const contextTokens = typeof modelOrTokens === 'number'
+    ? modelOrTokens
+    : getStaticModelMetadata(modelOrTokens).contextLength;
+  const systemPromptTokens = options?.systemPromptTokens ?? 4000;
+  const toolReserveTokens = options?.toolReserveTokens ?? 16000;
+  const charsPerToken = options?.charsPerToken ?? 3.8;
+  const usableDiffTokens = Math.max(0, contextTokens - systemPromptTokens - toolReserveTokens);
+  const safeDiffChars = Math.floor(usableDiffTokens * charsPerToken);
+
+  return {
+    contextTokens,
+    usableDiffTokens,
+    safeDiffChars,
+    systemPromptTokens,
+    toolReserveTokens,
+    charsPerToken,
+    valueOf() {
+      return this.safeDiffChars;
+    },
+    [Symbol.toPrimitive](_hint?: string) {
+      return this.safeDiffChars;
+    },
+    toString() {
+      return String(this.safeDiffChars);
+    },
+  };
+}
+
+function estimateTokenCost(model: string, promptTokens: number, completionTokens: number): number {
+  const meta = getStaticModelMetadata(model);
+  const promptRate = meta.promptCostPer1k ?? (meta.promptCostPer1M / 1000);
+  const completionRate = meta.completionCostPer1k ?? (meta.completionCostPer1M / 1000);
   return Math.round(((promptTokens / 1000) * promptRate + (completionTokens / 1000) * completionRate) * 1_000_000) / 1_000_000;
 }
 

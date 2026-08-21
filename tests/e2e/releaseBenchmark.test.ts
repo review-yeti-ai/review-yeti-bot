@@ -38,6 +38,7 @@ import {
   Finding,
   ComparativeBenchmarkReport,
 } from '../../src/evaluation/evaluationRunner';
+import { compareBaselines } from '../../scripts/compare-release-baselines.mjs';
 
 const { changedLineNumbers, sanitizeFindings, computeArbitration } = require('../../src/review/reviewCore.js');
 
@@ -208,10 +209,20 @@ describe('Release Benchmark & Automated Regression Gate E2E Test Suite', () => {
   const tempDir = path.resolve(rootDir, 'node_modules/.cache/e2e-release-benchmark-test');
   const baselineV1Path = path.join(rootDir, 'eval-baselines/model-benchmark-matrix-v1.json');
   const baselineV3Path = path.join(rootDir, 'eval-baselines/model-benchmark-matrix-v3.json');
+  const baselineV4Path = path.join(rootDir, 'eval-baselines/model-benchmark-matrix-v4.json');
+  const baselineV5Path = path.join(rootDir, 'eval-baselines/model-benchmark-matrix-v5.json');
   const scenarioFixturesDir = path.join(rootDir, 'tests/fixtures/scenarios');
   const workspaceRoot = path.join(rootDir, 'tests/fixtures/workspaces/telecom-call-engine');
 
   const APPROVED_4_MODELS = [
+    'deepseek/deepseek-v4-flash-0731:high',
+    'openrouter/5.6-luna-high',
+    'qwen/qwen-3.8-27b:high',
+    'google/gemini-3.7-flash:high',
+  ];
+
+  const APPROVED_5_MODELS = [
+    'deepseek/deepseek-v4-flash-0731:low',
     'deepseek/deepseek-v4-flash-0731:high',
     'openrouter/5.6-luna-high',
     'qwen/qwen-3.8-27b:high',
@@ -1056,6 +1067,65 @@ describe('Release Benchmark & Automated Regression Gate E2E Test Suite', () => {
       const gateVsV1 = evaluateQualityGate(v1, v4, { maxCostSurgePct: 35.0 });
       expect(gateVsV1.passed).toBe(true);
       expect(gateVsV1.violations.length).toBe(0);
+    });
+
+    it('WORKFLOW_4.8 — Canonical Baseline v5 Artifact Verification & Regression Quality Gate Passes', () => {
+      expect(fs.existsSync(baselineV5Path)).toBe(true);
+      const v5MdPath = path.resolve(__dirname, '../../eval-baselines/model-benchmark-matrix-v5.md');
+      expect(fs.existsSync(v5MdPath)).toBe(true);
+      expect(fs.existsSync(baselineV4Path)).toBe(true);
+
+      const v5 = JSON.parse(fs.readFileSync(baselineV5Path, 'utf8'));
+      expect(v5.version).toBe('v5');
+      expect(v5.models).toEqual(APPROVED_5_MODELS);
+      expect(v5.scenarios.length).toBe(190);
+      expect(v5.detailedResults.length).toBe(950);
+
+      // Verify deepseek low empirical summary
+      const dLow = v5.summary['deepseek/deepseek-v4-flash-0731:low'];
+      expect(dLow).toBeDefined();
+      expect(dLow.totalScenarios).toBe(190);
+      expect(dLow.verdictMatches).toBe(175);
+      expect(dLow.verdictAccuracy).toBeCloseTo(92.1, 1);
+      expect(dLow.totalTp).toBe(136);
+      expect(dLow.totalFp).toBe(0);
+      expect(dLow.totalFn).toBe(14);
+      expect(dLow.precision).toBe(1.0);
+      expect(dLow.recall).toBeCloseTo(0.907, 3);
+      expect(dLow.f1Score).toBeCloseTo(0.951, 3);
+      expect(dLow.avgSnrDb).toBeCloseTo(10.7, 1);
+      expect(dLow.avgTtftMs).toBe(95);
+      expect(dLow.totalTokens).toBe(1140232);
+      expect(dLow.totalCostUSD).toBeCloseTo(0.1699, 4);
+
+      // Verify all 5 models have entries in summary
+      for (const model of APPROVED_5_MODELS) {
+        expect(v5.summary[model]).toBeDefined();
+        expect(v5.summary[model].totalScenarios).toBe(190);
+      }
+
+      const v5Md = fs.readFileSync(v5MdPath, 'utf8');
+      expect(v5Md).toContain('# Model Comparative Evaluation & Benchmark Report');
+      expect(v5Md).toContain('**Total Scenarios**: 190');
+      expect(v5Md).toContain('deepseek/deepseek-v4-flash-0731:low');
+      expect(v5Md).toContain('92.1%');
+
+      // Quality Gate Self-Comparison (v5 vs v5) via compare-release-baselines script
+      const selfComparison = compareBaselines(baselineV5Path, baselineV5Path, { strict: true });
+      expect(selfComparison.passed).toBe(true);
+      expect(selfComparison.hasRegressions).toBe(false);
+      expect(selfComparison.totalBreaches).toBe(0);
+      for (const d of selfComparison.summaryDeltas) {
+        expect(d.status).toBe('PASS');
+        expect(d.violations.length).toBe(0);
+      }
+
+      // Quality Gate Comparison vs v4 (v5 candidate vs v4 baseline)
+      const v4Comparison = compareBaselines(baselineV5Path, baselineV4Path, { strict: true });
+      expect(v4Comparison.passed).toBe(true);
+      expect(v4Comparison.hasRegressions).toBe(false);
+      expect(v4Comparison.totalBreaches).toBe(0);
+      expect(v4Comparison.modelDeltas['deepseek/deepseek-v4-flash-0731:low'].status).toBe('SKIPPED');
     });
   });
 });

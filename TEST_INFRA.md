@@ -1,41 +1,36 @@
-# E2E Test Infra: Review Yeti Benchmark Suite Expansion
+# E2E Test Infra: Dynamic Context Management & Compaction
 
 ## Test Philosophy
-- Opaque-box, requirement-driven. No dependency on implementation internals.
-- Methodology: Category-Partition + Boundary Value Analysis (BVA) + Pairwise Combinatorial Testing + Real-World Workload Testing.
-- Strict IP verification and zero proprietary leaking.
+- Opaque-box, requirement-driven verification of context window discovery, diff compaction, multi-turn sliding history, and zero-loss commit SHA partitioning.
+- Methodology: Category-Partition + BVA + Pairwise Combinatorial + Workload Testing.
 
-## Feature Inventory & Test Coverage
-| # | Feature | Source (Requirement) | Tier 1 (Feature) | Tier 2 (Boundary) | Tier 3 (Cross-Feature) | Tier 4 (Workload) |
-|---|---------|----------------------|:----------------:|:-----------------:|:---------------------:|:-----------------:|
-| 1 | Telecom Workspace Architecture (SIP, RTP, CDR, PBX) | ORIGINAL_REQUEST §R1 | 5 | 5 | ✓ | ✓ |
-| 2 | Scenario Catalog Expansion (≥188 Scenarios) | ORIGINAL_REQUEST §R2 | 5 | 5 | ✓ | ✓ |
-| 3 | Needle-in-a-Haystack Refactor Diffs (300–1500 lines) | ORIGINAL_REQUEST §R2.1 | 5 | 5 | ✓ | ✓ |
-| 4 | Cross-Module Architectural Breakages | ORIGINAL_REQUEST §R2.2 | 5 | 5 | ✓ | ✓ |
-| 5 | Distributed Concurrency Race Scenarios | ORIGINAL_REQUEST §R2.3 | 5 | 5 | ✓ | ✓ |
-| 6 | False Positive / Hallucination Trap PRs | ORIGINAL_REQUEST §R2.4 | 5 | 5 | ✓ | ✓ |
-| 7 | Workspace Tool Calling (`file_read`, `code_search`, `symbol_lookup`) | ORIGINAL_REQUEST §R3 | 5 | 5 | ✓ | ✓ |
-| 8 | Multi-Turn Runner Modes (Live + Replay) | ORIGINAL_REQUEST §R3 | 5 | 5 | ✓ | ✓ |
-| 9 | Release Baseline v4 Matrix Generation | ORIGINAL_REQUEST §R4 | 5 | 5 | ✓ | ✓ |
-| 10 | Regression Quality Gate Verification | ORIGINAL_REQUEST §R4 | 5 | 5 | ✓ | ✓ |
+## Feature Inventory & Coverage Mapping
+| # | Feature | Source (Requirement) | Tier 1 (Coverage) | Tier 2 (Boundary/Edge) | Tier 3 (Cross-Feature) | Tier 4 (Real-World) |
+|---|---------|----------------------|:-----------------:|:----------------------:|:----------------------:|:-------------------:|
+| 1 | Dynamic Model Context Window Discovery | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 2 | Safe Diff Capacity Calculator ($C_{safe}$) | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 3 | Config Schema Boundary Expansion | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 4 | Removal of Static Truncation Caps | ORIGINAL_REQUEST §R1 | 5 cases | 5 cases | ✓ | ✓ |
+| 5 | Unified Diff Context Compactor ($\pm 3$) | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 6 | Line Number Invariance (`changedLineNumbers`) | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 7 | Minified / Bloat & Whitespace Compactor | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 8 | Sliding Multi-Turn History Compactor | ORIGINAL_REQUEST §R2 | 5 cases | 5 cases | ✓ | ✓ |
+| 9 | Commit SHA Range Header Injection | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 10 | Zero-Loss File Partitioning Engine | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 11 | Parallel Partition Execution & Aggregation | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 12 | PR Comment Coverage Telemetry Badge | ORIGINAL_REQUEST §R3 | 5 cases | 5 cases | ✓ | ✓ |
+| 13 | Evaluation Harness Augmentation | ORIGINAL_REQUEST §R4 | 5 cases | 5 cases | ✓ | ✓ |
+| 14 | Baseline Quality Gate Coverage Enforcement | ORIGINAL_REQUEST §R4 | 5 cases | 5 cases | ✓ | ✓ |
+| 15 | Context Management Feature Docs | ORIGINAL_REQUEST §R4 | 5 cases | 5 cases | ✓ | ✓ |
+| 16 | E2E Dual-Track Verification & Audit | Acceptance Criteria | 5 cases | 5 cases | ✓ | ✓ |
 
 ## Test Architecture
-- Test runners: `npx vitest run tests/e2e/releaseBenchmark.test.ts`, `node scripts/compare-release-baselines.mjs`, `node scripts/evaluate-release-benchmark.mjs --offline`
-- Scenario fixture format: Standard unified diff `.diff` files in `tests/fixtures/scenarios/`
-- Workspace root: `tests/fixtures/workspaces/telecom-call-engine/`
-
-## Real-World Application Scenarios (Tier 4)
-| # | Scenario | Features Exercised | Complexity |
-|---|----------|--------------------|------------|
-| 1 | Full-Cycle Telecom Call Flow with Multi-Turn Review | F1, F3, F4, F7, F8 | High |
-| 2 | High-Concurrency Attended Transfer under Load | F1, F5, F7, F8 | High |
-| 3 | Large-Scale CDR Billing Engine Refactor Needle Hunt | F1, F3, F7, F8 | High |
-| 4 | Clean Idempotent PBX Trunk Lease Rebalancing Trap | F1, F4, F6, F7, F8 | High |
-| 5 | End-to-End Baseline v4 Release Lifecycle & Gate Validation | F2, F9, F10 | Extreme |
+- Unit Tests: `tests/unit/openRouterClient.test.ts`, `tests/unit/config.test.ts`, `tests/unit/diffCompactor.test.ts`, `tests/unit/turnHistoryManager.test.ts`, `tests/unit/shaPartitionManager.test.ts`, `tests/unit/contextManagementDocs.test.ts`.
+- Integration & E2E Tests: `tests/e2e/contextManagementE2E.test.ts`, `tests/e2e/sandboxedPipelineHarness.test.ts`.
+- Quality Gate Verification: `scripts/compare-release-baselines.mjs`, `scripts/evaluate-release-benchmark.mjs`.
 
 ## Coverage Thresholds
-- Tier 1: ≥5 test cases per feature (50 total)
-- Tier 2: ≥5 boundary test cases per feature (50 total)
-- Tier 3: Pairwise coverage of major feature interactions (10+ tests)
-- Tier 4: ≥5 realistic end-to-end workload application scenarios
-- Tier 5: Adversarial coverage hardening and gap elimination
+- Tier 1: ≥5 per feature (80+ test cases)
+- Tier 2: ≥5 per feature across boundaries (80+ test cases)
+- Tier 3: Pairwise combinations of compaction + partitioning + multi-turn + large repos
+- Tier 4: Realistic monolithic repo workloads (50+ files, 1500+ lines, 5 persona multi-turn turns)

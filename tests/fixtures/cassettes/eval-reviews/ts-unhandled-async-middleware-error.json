@@ -1,0 +1,149 @@
+{
+  "version": "1.0",
+  "scenarioId": "ts-unhandled-async-middleware-error",
+  "model": "deepseek/deepseek-v4-flash-0731:low",
+  "recordedAt": "2026-08-20T23:54:21.434Z",
+  "diffBudgetChars": 24000,
+  "interactions": [
+    {
+      "turn": 2,
+      "personaId": "security",
+      "prompt": "Review request for scenario ts-unhandled-async-middleware-error (TypeScript Unhandled Async Express Error) under persona security",
+      "rawReasoning": "Searching repository references for src/middleware/rateLimitMiddleware.ts\nCompleted security evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for security analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"rateLimitMiddleware\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "rateLimitMiddleware"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061427_50q0z2",
+          "personaId": "security",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "rateLimitMiddleware"
+          },
+          "startTime": 1787270061427,
+          "endTime": 1787270061430,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 18
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "performance",
+      "prompt": "Review request for scenario ts-unhandled-async-middleware-error (TypeScript Unhandled Async Express Error) under persona performance",
+      "rawReasoning": "Searching repository references for src/middleware/rateLimitMiddleware.ts\nCompleted performance evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for performance analysis:\n{\"tool_calls\":[{\"name\":\"pi.fs.readFile\",\"arguments\":{\"path\":\"src/middleware/rateLimitMiddleware.ts\",\"startLine\":1,\"endLine\":15}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.fs.readFile",
+          "args": {
+            "path": "src/middleware/rateLimitMiddleware.ts",
+            "startLine": 1,
+            "endLine": 15
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061431_vpgoed",
+          "personaId": "performance",
+          "turn": 1,
+          "toolName": "pi.fs.readFile",
+          "args": {
+            "path": "src/middleware/rateLimitMiddleware.ts",
+            "startLine": 1,
+            "endLine": 15
+          },
+          "startTime": 1787270061431,
+          "endTime": 1787270061431,
+          "durationMs": 1,
+          "bytesRead": 0,
+          "filesScanned": 1,
+          "resultCount": 1,
+          "status": "success",
+          "estimatedPromptTokens": 30,
+          "estimatedCompletionTokens": 20
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "personaId": "architecture",
+      "prompt": "Review request for scenario ts-unhandled-async-middleware-error (TypeScript Unhandled Async Express Error) under persona architecture",
+      "rawReasoning": "Searching repository references for src/middleware/rateLimitMiddleware.ts\nCompleted architecture evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Checking code context for architecture analysis:\n{\"tool_calls\":[{\"name\":\"pi.symbol.lookup\",\"arguments\":{\"symbol\":\"rateLimitMiddleware\"}}]}\nAnalysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [
+        {
+          "name": "pi.symbol.lookup",
+          "args": {
+            "symbol": "rateLimitMiddleware"
+          }
+        }
+      ],
+      "toolReceipts": [
+        {
+          "callId": "call_1787270061431_rn6vi5",
+          "personaId": "architecture",
+          "turn": 1,
+          "toolName": "pi.symbol.lookup",
+          "args": {
+            "symbol": "rateLimitMiddleware"
+          },
+          "startTime": 1787270061431,
+          "endTime": 1787270061434,
+          "durationMs": 3,
+          "bytesRead": 163430,
+          "filesScanned": 43,
+          "resultCount": 0,
+          "status": "success",
+          "estimatedPromptTokens": 19,
+          "estimatedCompletionTokens": 18
+        }
+      ]
+    },
+    {
+      "turn": 1,
+      "personaId": "testing",
+      "prompt": "Review request for scenario ts-unhandled-async-middleware-error (TypeScript Unhandled Async Express Error) under persona testing",
+      "rawReasoning": "Completed testing evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    },
+    {
+      "turn": 1,
+      "personaId": "dependencies",
+      "prompt": "Review request for scenario ts-unhandled-async-middleware-error (TypeScript Unhandled Async Express Error) under persona dependencies",
+      "rawReasoning": "Completed dependencies evaluation against domain charter and deep reasoning protocol.",
+      "rawResponse": "Analysis complete.\n```json\n{\n  \"decision\": \"APPROVE\",\n  \"findings\": []\n}\n```",
+      "toolCalls": [],
+      "toolReceipts": []
+    }
+  ],
+  "finalArbitration": {
+    "verdict": "SHIP",
+    "confirmedFindings": [],
+    "rationale": "All 5 persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release."
+  },
+  "tokenUsage": {
+    "promptTokens": 5518,
+    "completionTokens": 220,
+    "reasoningTokens": 77,
+    "totalCostUSD": 0.0008341199999999998
+  },
+  "category": "architecture",
+  "scenarioName": "TypeScript Unhandled Async Express Error"
+}
