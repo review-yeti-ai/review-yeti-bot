@@ -24,6 +24,8 @@ describe('release workflow contract', () => {
     expect(build).toBeGreaterThan(validation);
     expect(workflow).toContain('docker/build-push-action');
     expect(workflow).toContain('kubectl rollout status');
+    expect(workflow).toMatch(/deploy:[\s\S]*runs-on: ubuntu-latest/u);
+    expect(workflow).toContain('Promotion remains downstream of this deploy job.');
   });
 
   it('promotes rolling v1 only downstream of the canonical release and deployment jobs', () => {

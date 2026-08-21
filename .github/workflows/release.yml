@@ -158,7 +158,11 @@ jobs:
   deploy:
     name: Build & Deploy Docker Image to DOKS
     needs: validate-and-release
-    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
+    # Use a GitHub-hosted runner for the release-critical deploy path. The former
+    # Blacksmith ARM pool can leave a fully validated release queued indefinitely;
+    # this job already builds the linux/amd64 image and the doctl/kubectl toolchain
+    # is architecture-neutral. Promotion remains downstream of this deploy job.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
