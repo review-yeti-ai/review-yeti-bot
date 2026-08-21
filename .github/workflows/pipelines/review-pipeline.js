@@ -415,7 +415,7 @@ function calculateSafeDiffCapacity(modelOrTokens, options = {}) {
  * @returns {{enabled: boolean, apiKey: string, baseUrl: string, model: string, maxDiffChars: number}}
  */
 function resolveModelConfig(env = process.env) {
-  const apiKey = env.OPENROUTER_API_KEY || '';
+  const apiKey = env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || env.OPENROUTER_API_KEY || '';
   const baseUrl = (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
   const model = env.OPENROUTER_MODEL || 'openrouter/auto';
   const dynamicDefaultDiff = calculateSafeDiffCapacity(model);
@@ -435,7 +435,18 @@ function resolveModelConfig(env = process.env) {
   let transports = Array.isArray(rawTransports)
     ? rawTransports.map((t) => {
         const keyEnv = t.api_key_env || t.apiKeyEnv;
-        const resolvedKey = (keyEnv && env[keyEnv]) || env.OPENROUTER_API_KEY || '';
+        let resolvedKey = keyEnv ? env[keyEnv] : '';
+        if (!resolvedKey) {
+          const nameLower = String(t.name || t.provider || '').toLowerCase();
+          const urlLower = String(t.base_url || t.baseUrl || '').toLowerCase();
+          if (nameLower.includes('fireworks') || urlLower.includes('fireworks.ai')) {
+            resolvedKey = env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY || '';
+          } else if (nameLower.includes('ollama') || urlLower.includes('ollama.com') || urlLower.includes('ollama.ai')) {
+            resolvedKey = env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY || '';
+          } else {
+            resolvedKey = env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || env.OPENROUTER_API_KEY || '';
+          }
+        }
         return {
           name: t.name || t.provider || 'default',
           baseUrl: (t.base_url || t.baseUrl || baseUrl).replace(/\/+$/, ''),
@@ -1097,6 +1108,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const elapsedSec = Math.round((Date.now() - startMs) / 1000);
         console.log(`[Persona: ${persona.id}] Awaiting model response from ${requestModel} via ${transportName} (${elapsedSec}s elapsed)...`);
       }, 15_000);
+      if (heartbeatTimer?.unref) heartbeatTimer.unref();
 
       try {
         const response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
