@@ -36,8 +36,9 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "openai",
       "gpt"
     ],
-    "defaultModel": "openai/gpt-5.6-luna",
+    "defaultModel": "openai/gpt-5.6-luna:high",
     "supportedModels": [
+      "openai/gpt-5.6-luna:high",
       "openai/gpt-5.6-luna",
       "openrouter/5.6-luna-high",
       "gpt-5.6-sol",
@@ -56,8 +57,10 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "claude",
       "anthropic"
     ],
-    "defaultModel": "claude-3-7-sonnet",
+    "defaultModel": "claude-5-haiku:high",
     "supportedModels": [
+      "claude-5-haiku:high",
+      "claude-5-haiku",
       "claude-3-7-sonnet",
       "claude-5-sonnet",
       "claude-opus-4-8",
