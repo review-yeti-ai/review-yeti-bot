@@ -41,7 +41,7 @@ async function loadPiWorkflowRuntime(options = {}) {
 }
 
 function assertRunId(value, label) {
-  if (!RUN_ID.test(String(value || ''))) throw new TypeError(`${label} must be an explicit stable workflow run ID`);
+  if (typeof value !== 'string' || !RUN_ID.test(value)) throw new TypeError(`${label} must be an explicit stable workflow run ID`);
 }
 
 function resolveRuntimeProvenance(options) {

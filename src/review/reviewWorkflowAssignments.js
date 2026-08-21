@@ -45,7 +45,7 @@ function assertClosedObject(value, allowed, label) {
 }
 
 function assertDigest(value, label) {
-  if (!SHA256.test(String(value || ''))) throw new TypeError(`${label} must be a lowercase SHA-256 digest`);
+  if (typeof value !== 'string' || !SHA256.test(value)) throw new TypeError(`${label} must be a lowercase SHA-256 digest`);
 }
 
 function assertSafeId(value, label) {

@@ -125,6 +125,8 @@ describe('Review Yeti Pi workflow assignments', () => {
       .toThrow(/at least one pass/i);
     expect(() => createReviewWorkflowAssignments({ policyDigest: 'not-a-digest', manifestDigest, personas: [security] }))
       .toThrow(/policyDigest/i);
+    expect(() => createReviewWorkflowAssignments({ policyDigest: { toString: () => policyDigest }, manifestDigest, personas: [security] } as any))
+      .toThrow(/policyDigest/i);
   });
 
   it('requires closed top-level object schemas for Pi structured results', () => {

@@ -125,6 +125,8 @@ describe('trusted Pi dynamic review workflow', () => {
     await expect(runDynamicReviewWorkflow(common)).rejects.toThrow(/null result/i);
     await expect(runDynamicReviewWorkflow({ ...common, runtime: { runWorkflow: async () => ({}), WorkflowAgent: class {} } })).rejects.toThrow(/missing results/i);
     await expect(runDynamicReviewWorkflow({ ...common, runId: '' })).rejects.toThrow(/runId/i);
+    await expect(runDynamicReviewWorkflow({ ...common, runId: { toString: () => 'review:stable' } })).rejects.toThrow(/runId/i);
+    await expect(runDynamicReviewWorkflow({ ...common, resumeFromRunId: { toString: () => 'review:stable:0' } })).rejects.toThrow(/resumeFromRunId/i);
     await expect(runDynamicReviewWorkflow({ ...common, deadlineMs: Infinity })).rejects.toThrow(/deadline/i);
   });
 });

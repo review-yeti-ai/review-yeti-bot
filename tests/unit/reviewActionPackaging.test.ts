@@ -190,19 +190,32 @@ describe('Pi runtime packaging contract', () => {
       && !entry.path.endsWith('/@earendil-works/pi-tui')
       && !entry.path.endsWith('/typebox'));
     expect(transitive).toBeTruthy();
-    const transitiveManifestPath = path.join(installedRoot, transitive.path, 'package.json');
+    const transitivePath = path.join(installedRoot, transitive.path);
+    const transitiveBackup = path.join(tempDir, 'transitive-backup');
+    fs.cpSync(transitivePath, transitiveBackup, { recursive: true });
+    const transitiveManifestPath = path.join(transitivePath, 'package.json');
     const transitiveManifest = JSON.parse(fs.readFileSync(transitiveManifestPath, 'utf8'));
     transitiveManifest.__tampered = true;
     fs.writeFileSync(transitiveManifestPath, `${JSON.stringify(transitiveManifest)}\n`);
     expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
       .toThrow(/runtime graph/i);
 
-    fs.appendFileSync(path.join(nestedRuntime, 'README.md'), '\ntampered\n');
+    fs.rmSync(transitivePath, { recursive: true, force: true });
     expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
-      .toThrow(/runtime graph/i);
-    fs.renameSync(nestedRuntime, path.join(consumerDir, 'hoisted-pi-runtime'));
+      .toThrow(/missing|nested bundle|runtime graph/i);
+    fs.cpSync(transitiveBackup, transitivePath, { recursive: true });
+
+    fs.rmSync(transitivePath, { recursive: true, force: true });
+    fs.mkdirSync(transitivePath, { recursive: true });
+    fs.writeFileSync(path.join(transitivePath, 'package.json'), JSON.stringify({ name: 'substituted-runtime', version: '0.0.0' }));
     expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
-      .toThrow(/missing|nested bundle/i);
+      .toThrow(/runtime graph|mismatch/i);
+    fs.rmSync(transitivePath, { recursive: true, force: true });
+    fs.cpSync(transitiveBackup, transitivePath, { recursive: true });
+
+    fs.renameSync(transitivePath, path.join(tempDir, 'hoisted-transitive'));
+    expect(() => provenanceApi.verifyBuildProvenance({ packageRoot: installedRoot, provenance, requireNested: true }))
+      .toThrow(/missing|nested bundle|runtime graph/i);
   }, 180_000);
   });
 
