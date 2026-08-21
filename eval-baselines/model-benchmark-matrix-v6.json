@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-08-21T15:30:35.377Z",
+  "timestamp": "2026-08-21T19:39:24.421Z",
   "models": [
     "deepseek/deepseek-v4-flash-0731:low",
     "deepseek/deepseek-v4-flash-0731:medium",
@@ -101600,5 +101600,5 @@
       "findings": []
     }
   ],
-  "version": "v1.8.4"
+  "version": "v1.9.6"
 }

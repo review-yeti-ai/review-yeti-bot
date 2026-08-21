@@ -2,12 +2,14 @@ name: Release & Benchmark Publishing Pipeline
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Existing release tag to validate and publish (e.g. v1.9.3)'
+        description: 'Existing release tag to validate and publish (e.g. v1.9.6)'
         required: true
         type: string
       compare_baseline:
@@ -52,8 +54,15 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             RELEASE_VER="${GITHUB_REF#refs/tags/}"
-          else
+          elif [[ -n "${{ inputs.version }}" ]]; then
             RELEASE_VER="${{ inputs.version }}"
+          else
+            PKG_VER="$(node -p "require('./package.json').version")"
+            RELEASE_VER="v${PKG_VER}"
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -fa "$RELEASE_VER" -m "Release $RELEASE_VER"
+            git push origin "$RELEASE_VER" --force || true
           fi
           echo "version=${RELEASE_VER}" >> "$GITHUB_OUTPUT"
           echo "Resolved release version: ${RELEASE_VER}"
