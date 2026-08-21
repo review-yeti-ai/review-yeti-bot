@@ -379,6 +379,10 @@ const DEFAULT_PERSONA_IDS = PERSONA_CHARTERS.filter((p) => p.defaultEnabled).map
 const SEVERITIES = ['P0', 'P1', 'P2'];
 const DEFAULT_MAX_DIFF_CHARS = 410_400;
 const ACTION_MAX_DIFF_CAP = 10_000_000;
+// Review responses are intentionally small structured findings objects. Keeping the completion
+// budget bounded makes the live panel request match the bounded smoke probe and prevents a
+// reasoning provider from spending the entire transport deadline on an unbounded tail.
+const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
 const DEFAULT_SUBMODULE_POLICY = {
   mode: 'metadata_only',
   max_depth: 1,
@@ -511,6 +515,7 @@ function resolveModelConfig(env = process.env) {
           reasoningEffort: t.reasoning_effort || t.reasoningEffort,
           structuredOutput: t.structured_output || t.structuredOutput,
           perfMetricsInResponse: t.perf_metrics_in_response === true || t.perfMetricsInResponse === true,
+          maxTokens: t.max_tokens || t.maxTokens || t.max_output_tokens || t.maxOutputTokens,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
         };
       }).filter((t) => Boolean(t.apiKey))
@@ -1144,6 +1149,37 @@ function isOpenRouterTransport(transport = {}) {
   return name.includes('openrouter') || baseUrl === 'https://openrouter.ai/api/v1';
 }
 
+const REASONING_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * Keep the explicitly configured reasoning level for the first transport attempt, then make
+ * provider failover progressively cheaper/faster. A provider that has already timed out (or
+ * returned unusable output) should not receive the same expensive request shape on the next
+ * transport. This remains fail-closed: a lower-effort fallback still must return parseable
+ * findings JSON before a lane can succeed.
+ */
+function downgradeReasoningEffort(effort, fallbackAttempt = 0) {
+  const normalized = String(effort || '').trim().toLowerCase();
+  const index = REASONING_EFFORT_LEVELS.indexOf(normalized);
+  if (index === -1 || fallbackAttempt <= 0) return effort;
+  return REASONING_EFFORT_LEVELS[Math.max(0, index - fallbackAttempt)];
+}
+
+function normalizeMaxOutputTokens(value, fallback = DEFAULT_MAX_OUTPUT_TOKENS) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function contentFragments(value) {
+  if (typeof value === 'string') return [value];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) => {
+    if (typeof part === 'string') return [part];
+    if (part && typeof part.text === 'string') return [part.text];
+    return [];
+  });
+}
+
 /**
  * Read an OpenAI-compatible completion while preserving the transport's streaming contract.
  *
@@ -1200,10 +1236,10 @@ async function readChatCompletionResponse(response, streamEnabled, inactivityTim
         const payload = JSON.parse(data);
         latest = payload;
         const choice = payload?.choices?.[0];
-        const delta = choice?.delta?.content;
-        const message = choice?.message?.content;
-        if (typeof delta === 'string') chunks.push(delta);
-        else if (typeof message === 'string') chunks.push(message);
+        const delta = contentFragments(choice?.delta?.content);
+        const message = contentFragments(choice?.message?.content);
+        if (delta.length > 0) chunks.push(...delta);
+        else if (message.length > 0) chunks.push(...message);
       } catch (_) {
         // Providers may terminate a stream with a partial final SSE frame. The
         // completed content accumulated so far remains valid and is parsed below.
@@ -1349,6 +1385,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     const candidateTransports = circuitBreaker.filterCandidates(allTransports);
 
     let lastError = null;
+    let fallbackAttempt = 0;
 
     for (let i = 0; i < candidateTransports.length; i++) {
       const transport = candidateTransports[i];
@@ -1372,11 +1409,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           { role: 'user', content: userPrompt },
         ],
         temperature: 0.1,
+        max_tokens: normalizeMaxOutputTokens(
+          transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens,
+        ),
         response_format: { type: 'json_object' },
       };
       if (streamEnabled) requestBody.stream = true;
 
-      const reasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
+      const configuredReasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
+      const reasoningEffort = downgradeReasoningEffort(configuredReasoningEffort, fallbackAttempt);
       if (reasoningEffort) {
         if (isOpenRouterTransport) requestBody.reasoning = { effort: reasoningEffort };
         else requestBody.reasoning_effort = reasoningEffort;
@@ -1443,6 +1484,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             if (i < candidateTransports.length - 1 && isTrippable) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
               lastError = errMsg;
+              fallbackAttempt++;
               break; 
             }
             return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
@@ -1475,13 +1517,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             if (i < candidateTransports.length - 1 && isTrippable) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
               lastError = message;
+              fallbackAttempt++;
               break;
             }
             return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
           }
 
-          const content = payload?.choices?.[0]?.message?.content;
-          if (typeof content === 'string') {
+          const content = contentFragments(payload?.choices?.[0]?.message?.content).join('');
+          if (content) {
             try {
               const providerLane = JSON.parse(content);
               if (providerLane?.error) {
@@ -1490,6 +1533,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                   circuitBreaker.trip(transportName, message);
                   console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
                   lastError = message;
+                  fallbackAttempt++;
                   break;
                 }
                 return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
@@ -1499,6 +1543,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
           const rawFindings = parseFindingsPayload(content);
           if (rawFindings === null) {
+            if (i < candidateTransports.length - 1) {
+              lastError = 'Model response contained no parseable findings JSON.';
+              console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned no parseable findings JSON; trying next transport...`);
+              fallbackAttempt++;
+              break;
+            }
             return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
           }
 
@@ -1516,6 +1566,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           circuitBreaker.trip(transportName, err.message);
           if (i < candidateTransports.length - 1) {
             console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' exception (${err.message}); trying next transport...`);
+            fallbackAttempt++;
             break; 
           }
           return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
@@ -3089,6 +3140,7 @@ module.exports = {
   PERSONA_CHARTERS,
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
+  DEFAULT_MAX_OUTPUT_TOKENS,
   parseDiff,
   abbreviatePath,
   getPRDiffAndContext,
@@ -3103,6 +3155,7 @@ module.exports = {
   planDiffBudget,
   reviewWithModel,
   parseFindingsPayload,
+  downgradeReasoningEffort,
   sanitizeFindings,
   loadLocalRepoConfig,
   writeStepOutputs,
