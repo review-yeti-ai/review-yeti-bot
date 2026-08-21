@@ -103,6 +103,27 @@ describe('resolveModelConfig', () => {
     expect(cfg.transports[2].name).toBe('openai');
     expect(cfg.transports[2].model).toBe('openai/gpt-5.6-luna:high');
   });
+
+  it('retains central stream and reasoning fields in an explicit transport plan', () => {
+    const cfg = resolveModelConfig({
+      FIREWORKS_PR_REVIEW_API_KEY: 'fw-key',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([{
+        name: 'fireworks',
+        base_url: 'https://api.fireworks.ai/inference/v1',
+        api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY',
+        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        stream: true,
+        reasoning_effort: 'high',
+        perf_metrics_in_response: true,
+      }]),
+    });
+
+    expect(cfg.transports[0]).toMatchObject({
+      stream: true,
+      reasoningEffort: 'high',
+      perfMetricsInResponse: true,
+    });
+  });
 });
 
 describe('reviewWithModel', () => {
@@ -244,6 +265,56 @@ describe('reviewWithModel', () => {
     expect(calls[0].url).toBe('https://api.fireworks.ai/inference/v1/chat/completions');
     expect(calls[0].body).not.toHaveProperty('plugins');
     expect(calls[0].body).not.toHaveProperty('provider');
+  });
+
+  it('preserves the central streaming handoff and parses SSE findings', async () => {
+    const calls: any[] = [];
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":' } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '[]}' } }] })}`,
+      'data: [DONE]',
+      '',
+    ].join('\n');
+    // Exercise the real ReadableStream path and split the first JSON frame in
+    // the middle of a line. A parser that treats each read as a complete SSE
+    // event silently drops this frame and returns malformed findings.
+    const splitAt = sse.indexOf('findings') + 4;
+    const streamFetch = async (_url: string, init: any) => {
+      calls.push({ init, body: JSON.parse(init.body) });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(sse.slice(0, splitAt)));
+            controller.enqueue(new TextEncoder().encode(sse.slice(splitAt)));
+            controller.close();
+          },
+        }),
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: streamFetch,
+      transports: [{
+        name: 'fireworks',
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        apiKey: 'fw-key',
+        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        stream: true,
+        reasoning_effort: 'high',
+        perf_metrics_in_response: true,
+      }],
+    });
+
+    expect(res.decision).toBe('APPROVE');
+    expect(res.findings).toEqual([]);
+    expect(calls[0].body).toMatchObject({
+      stream: true,
+      reasoning_effort: 'high',
+      perf_metrics_in_response: true,
+    });
   });
 
   it('marks a provider lane failure as ERROR so it cannot become a successful verdict', async () => {
