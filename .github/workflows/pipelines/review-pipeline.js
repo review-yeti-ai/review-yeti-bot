@@ -72,6 +72,10 @@ try {
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 const DEFAULT_PERSONA_CONCURRENCY = 3;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
+// A recovery request gets a fresh generation budget. Allow one additional
+// transport window for a provider that is streaming validly but slowly, while
+// keeping the retry bounded so malformed or reasoning-only output remains fail-closed.
+const DEFAULT_FORMAT_RECOVERY_MAX_WALL_CLOCK_MS = 180_000;
 
 function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURRENCY) {
   if (value === undefined || value === null || value === '') return DEFAULT_PERSONA_CONCURRENCY;
@@ -1549,6 +1553,23 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       let fetchAttempts = 0;
       const maxFetchAttempts = 2;
       let formatRecoveryAttempted = false;
+      const prepareDirectFormatRecovery = () => {
+        if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
+        formatRecoveryAttempted = true;
+        requestBody.max_tokens = Math.max(
+          requestBody.max_tokens,
+          DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
+        );
+        requestBody.reasoning_effort = 'none';
+        requestBody.messages[0].content += [
+          '',
+          'FORMAT RECOVERY:',
+          '- Your prior response did not contain parseable findings JSON.',
+          '- Disable reasoning and return only {"findings":[]} or the required findings object.',
+        ].join('\n');
+        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once with reasoning disabled before failover...`);
+        return true;
+      };
 
       while (fetchAttempts < maxFetchAttempts) {
         fetchAttempts++;
@@ -1599,7 +1620,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             response,
             streamEnabled,
             transportTimeoutMs,
-            formatRecoveryAttempted ? transportTimeoutMs : 0,
+            formatRecoveryAttempted
+              ? Math.min(DEFAULT_FORMAT_RECOVERY_MAX_WALL_CLOCK_MS, transportTimeoutMs * 2)
+              : 0,
           );
           const responseBase = {
             ...resultBase,
@@ -1650,6 +1673,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           // remains fail-closed and follows the normal transport recovery path.
           const rawFindings = parseFindingsPayload(content) ?? parseFindingsPayload(reasoning);
           if (rawFindings === null) {
+            // Direct reasoning providers can spend the first completion budget on
+            // thought tokens and return no final JSON. Give the same admitted
+            // transport one bounded, reasoning-disabled format-recovery attempt
+            // before abandoning it for a different provider. This keeps a healthy
+            // Ollama/Fireworks lane useful without accepting malformed output.
+            if (prepareDirectFormatRecovery()) continue;
             if (i < candidateTransports.length - 1) {
               lastError = 'Model response contained no parseable findings JSON.';
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned no parseable findings JSON; trying next transport...`);
@@ -1674,6 +1703,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
               );
               if (isOpenRouterTransport) requestBody.reasoning = { enabled: false };
+              else if (isDirectReasoning) requestBody.reasoning_effort = 'none';
               else requestBody.reasoning_effort = 'low';
               requestBody.messages[0].content += [
                 '',
@@ -1692,6 +1722,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           return { ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
         } catch (err) {
           const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
+          const isUnusableDirectOutput = /empty_sse|Streaming response exceeded total deadline/i.test(err.message || '');
+          if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
             console.warn(`[Persona: ${persona.id}] Transient socket error on ${transportName} (${err.message}); retrying attempt ${fetchAttempts + 1}/${maxFetchAttempts}...`);
             await new Promise((r) => setTimeout(r, 200));
