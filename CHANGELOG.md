@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.9.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.3...v1.9.4) (2026-08-21)
+
+
+### Bug Fixes
+
+* **release:** check out dispatched tag ([ae43414](https://github.com/review-yeti-ai/review-yeti-bot/commit/ae4341466669a81cde567fde63d785433b033fa4))
+* **release:** check out dispatched tag ([97cc5e7](https://github.com/review-yeti-ai/review-yeti-bot/commit/97cc5e72613e9e664e2cb48d8c26e93bedeaed5b))
+* **release:** decouple action promotion from DOKS ([fca1a88](https://github.com/review-yeti-ai/review-yeti-bot/commit/fca1a88b6813f475332e245bb77b49e5638ac044))
+* **release:** decouple action promotion from DOKS ([cf4a91b](https://github.com/review-yeti-ai/review-yeti-bot/commit/cf4a91b32ca938cba58ae3d9c67d5be1e98826a1))
+* **release:** remove obsolete doks deployment contract ([deb6f0c](https://github.com/review-yeti-ai/review-yeti-bot/commit/deb6f0c402c4c1fdaecbc25bfaa60cbaadc0a63d))
+* **release:** remove obsolete DOKS deployment contract ([a440814](https://github.com/review-yeti-ai/review-yeti-bot/commit/a4408146ab109ed61b90c72f003b98ba9812a0ba))
+
 ## [1.9.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.2...v1.9.3) (2026-08-21)
 
 
