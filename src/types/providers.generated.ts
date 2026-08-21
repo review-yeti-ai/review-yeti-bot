@@ -82,9 +82,8 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
     "supportedModels": [
       "google/gemini-3.7-flash:high",
       "google/gemini-3.7-flash",
-      "google/gemini-2.5-pro",
-      "google/gemini-2.5-flash",
-      "gemini-1.5-pro"
+      "google/gemini-3.6-flash",
+      "google/gemini-2.5-pro"
     ],
     "supportsCustomModels": false,
     "requiresApiKey": true
