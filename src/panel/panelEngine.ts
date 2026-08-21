@@ -557,7 +557,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         const isCodeReading = ['view_file', 'read_file', 'get_diff'].includes(tName);
         const isMiller = tName === 'miller';
         const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code'].includes(tName);
-        const readOnlyMcpNames = new Set(['fetch_docs', 'context7_search', 'mcp_context7_query']);
+        const readOnlyMcpNames = new Set(['fetch_docs', 'context7_search', 'mcp_context7_query', 'linear_get_issue']);
         const isMcp = readOnlyMcpNames.has(tName);
 
         const isAllowed = isCodeReading || isMiller || isSearching || isMcp;
