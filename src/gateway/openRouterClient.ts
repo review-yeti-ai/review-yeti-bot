@@ -725,7 +725,7 @@ export class OpenRouterClient implements ReviewModelClient {
 
       return { model, content, usage, costUSD, raw: data };
     } catch (error: any) {
-      if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError || error instanceof ProviderQueueStallError) throw error;
+      if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError || error instanceof UpstreamCapacityRejectionError) throw error;
       if (error?.name === 'AbortError' || controller.signal.aborted) {
         throw new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`);
       }
