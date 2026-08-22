@@ -4,7 +4,14 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Also build and deploy to the cluster (main only)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ct-review-system-${{ github.ref }}
@@ -16,7 +23,7 @@ env:
 
 jobs:
   test:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,18 +47,16 @@ jobs:
 
       - run: npm ci
       
-      # This replaces two steps that between them never ran a full suite:
+      # Runs on pull_request, on push to main, and on manual dispatch.
       #
-      #   `npm run test:changed || npm run test:unit` — `vitest run --changed=main`
-      #   exits 0 when it selects no files ("No test files found, exiting with code
-      #   0"), so the `||` fallback never fired and the job reported success having
-      #   executed zero tests.
-      #
-      #   `npm run test:unit && test:integration && test:e2e`, gated on
-      #   `github.event_name == 'push'` — unreachable, because this workflow has no
-      #   `push:` trigger. Adding one is deliberately left out of this change: the
-      #   build-and-deploy job below is gated on the same condition and would start
-      #   deploying on every merge.
+      # History: this replaced `npm run test:changed || npm run test:unit`, which
+      # never ran anything — `vitest run --changed=main` exits 0 when it selects no
+      # files, so the `||` fallback never fired and the job reported success having
+      # executed zero tests (#234). Its sibling step was gated on
+      # `github.event_name == 'push'` while the workflow had no `push:` trigger, so
+      # main was never verified after merge either. The trigger is added here, and
+      # build-and-deploy is re-gated below so that adding it does not silently start
+      # deploying on every merge.
       - name: Run Full Test Suite
         run: npm test
 
@@ -60,7 +65,12 @@ jobs:
 
   build-and-deploy:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Deploy is opt-in, never automatic. This job has never run: it was gated on
+    # `push` while the workflow had no `push:` trigger. Now that push to main runs
+    # the suite, an unchanged condition would have started deploying on every merge.
+    # Requiring an explicit dispatch input keeps deploy exactly as manual as it has
+    # been in practice, while making it reachable on purpose rather than dead code.
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
     runs-on: blacksmith-2vcpu-ubuntu-2204-arm
     permissions:
       contents: read
