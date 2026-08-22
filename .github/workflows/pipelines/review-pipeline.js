@@ -391,10 +391,13 @@ const ACTION_MAX_DIFF_CAP = 10_000_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
 // Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
 // still caps the complete generated sequence (reasoning plus the final JSON).
-// A 1,024-token cap is routinely consumed by high-effort reasoning before the
-// structured answer is emitted. Keep OpenRouter's bounded default unchanged,
-// while giving explicitly admitted direct transports enough room to finish.
-const DEFAULT_DIRECT_MAX_OUTPUT_TOKENS = 8_192;
+// Keep an 8,192-token structured-output target and reserve three times that
+// amount on the wire so high-effort reasoning cannot consume the answer budget.
+// OpenRouter keeps its separate bounded default and privacy-policy contract.
+const DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS = 8_192;
+const DIRECT_GENERATION_BUDGET_MULTIPLIER = 3;
+const DEFAULT_DIRECT_MAX_OUTPUT_TOKENS =
+  DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS * DIRECT_GENERATION_BUDGET_MULTIPLIER;
 const DEFAULT_SUBMODULE_POLICY = {
   mode: 'metadata_only',
   max_depth: 1,
@@ -3486,6 +3489,8 @@ module.exports = {
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
   DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS,
+  DIRECT_GENERATION_BUDGET_MULTIPLIER,
   DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
   parseDiff,
   abbreviatePath,

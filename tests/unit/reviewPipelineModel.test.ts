@@ -127,6 +127,13 @@ describe('resolveModelConfig', () => {
 });
 
 describe('reviewWithModel', () => {
+  it('reserves a three-times direct generation budget for the structured output target', () => {
+    expect(pipeline.DIRECT_GENERATION_BUDGET_MULTIPLIER).toBe(3);
+    expect(pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS).toBe(
+      pipeline.DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS * 3,
+    );
+  });
+
   it('posts the persona charter as the system prompt to the chat completions endpoint', async () => {
     const { impl, calls } = stubFetch(validFindings);
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
@@ -313,13 +320,13 @@ describe('reviewWithModel', () => {
     expect(res.findings).toEqual([]);
     expect(calls[0].body).toMatchObject({
       stream: true,
-      max_tokens: 8192,
+      max_tokens: 24576,
       reasoning_effort: 'high',
       perf_metrics_in_response: true,
     });
   });
 
-  it('reserves a direct-provider completion budget for high-reasoning JSON on a full-size diff', async () => {
+  it('reserves a three-times direct-provider generation budget for high-reasoning JSON on a full-size diff', async () => {
     const calls: any[] = [];
     const sse = [
       `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'reviewing the complete diff' } }] })}`,
@@ -360,7 +367,7 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.messages.find((m: any) => m.role === 'user').content.length).toBeLessThanOrEqual(412_000);
     expect(calls[0].body).toMatchObject({
       stream: true,
-      max_tokens: 8192,
+      max_tokens: 24576,
       reasoning_effort: 'high',
       response_format: { type: 'json_object' },
     });
