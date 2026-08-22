@@ -235,9 +235,9 @@ describe('Multi-Transport Fast Failover', () => {
 
     expect(result.decision).toBe('APPROVE');
     expect(requestBodies).toHaveLength(3);
-    expect(requestBodies[0].body.max_tokens).toBe(8192);
-    expect(requestBodies[1].body.max_tokens).toBe(8192);
-    expect(requestBodies[2].body.max_tokens).toBe(8192);
+    expect(requestBodies[0].body.max_tokens).toBe(24576);
+    expect(requestBodies[1].body.max_tokens).toBe(24576);
+    expect(requestBodies[2].body.max_tokens).toBe(24576);
     expect(requestBodies[0].body.reasoning_effort).toBe('high');
     expect(requestBodies[1].body.reasoning_effort).toBe('none');
     expect(requestBodies[2].body.reasoning_effort).toBe('medium');
@@ -285,8 +285,8 @@ describe('Multi-Transport Fast Failover', () => {
     expect(result.decision).toBe('APPROVE');
     expect(result.transport).toBe('fireworks');
     expect(requestBodies).toHaveLength(2);
-    expect(requestBodies[0]).toMatchObject({ max_tokens: 8192, reasoning_effort: 'high' });
-    expect(requestBodies[1]).toMatchObject({ max_tokens: 8192, reasoning_effort: 'none' });
+    expect(requestBodies[0]).toMatchObject({ max_tokens: 24576, reasoning_effort: 'high' });
+    expect(requestBodies[1]).toMatchObject({ max_tokens: 24576, reasoning_effort: 'none' });
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
