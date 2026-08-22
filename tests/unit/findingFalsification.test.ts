@@ -61,6 +61,18 @@ describe('normalizeFalsificationLimits', () => {
     expect(capped.maxCandidates).toBeLessThanOrEqual(DEFAULT_FALSIFICATION_LIMITS.maxCandidates);
     expect(capped.maxCalls).toBeLessThanOrEqual(capped.maxCandidates);
   });
+
+  it('covers the measured reasoning-verdict tail per call while hard-bounding the stage wall clock', () => {
+    // 2026-08-21 measurement: 9 of 27 hypotheses timed out at the old 60s per-call cap and
+    // were withheld unverified. The per-call default must cover that tail; the stage budget,
+    // not the per-call cap, is what bounds worst-case lane latency.
+    const limits = normalizeFalsificationLimits({});
+    expect(limits.timeoutMs).toBe(180_000);
+    expect(limits.stageBudgetMs).toBe(300_000);
+    const maxed = normalizeFalsificationLimits({ timeoutMs: 10_000_000, stageBudgetMs: 10_000_000 });
+    expect(maxed.timeoutMs).toBe(300_000);
+    expect(maxed.stageBudgetMs).toBe(900_000);
+  });
 });
 
 describe('buildFalsificationMessages', () => {
@@ -119,6 +131,58 @@ describe('runFindingFalsification', () => {
     expect(attempts).toBe(2);
     expect(result.outcomes[0].verdict).toBe('ABSTAIN');
     expect(result.outcomes[0].reason).toBe('verifier_unavailable');
+  });
+
+  it('records a per-call deadline collision as verifier_timeout, distinct from provider failure', async () => {
+    const result = await runFindingFalsification({
+      findings: [finding()],
+      changedFiles,
+      falsifyTurn: async () => ({ ok: false, error: 'timed out after 180000ms', timedOut: true }),
+    });
+    expect(result.outcomes[0].verdict).toBe('ABSTAIN');
+    expect(result.outcomes[0].reason).toBe('verifier_timeout');
+    expect(result.receipt.summary).toMatchObject({ timedOut: 1, unavailable: 0, neverVerified: 1 });
+  });
+
+  it('passes the effective per-call timeout (never more than the remaining stage budget) to the verifier turn', async () => {
+    const seenTimeouts: number[] = [];
+    await runFindingFalsification({
+      findings: [finding()],
+      changedFiles,
+      falsifyTurn: async ({ timeoutMs }: { timeoutMs: number }) => {
+        seenTimeouts.push(timeoutMs);
+        return confirmResponse();
+      },
+    });
+    expect(seenTimeouts).toEqual([180_000]);
+    const cappedByBudget: number[] = [];
+    await runFindingFalsification({
+      findings: [finding()],
+      changedFiles,
+      limits: { stageBudgetMs: 5_000 },
+      falsifyTurn: async ({ timeoutMs }: { timeoutMs: number }) => {
+        cappedByBudget.push(timeoutMs);
+        return confirmResponse();
+      },
+    });
+    expect(cappedByBudget.length).toBe(1);
+    expect(cappedByBudget[0]).toBeLessThanOrEqual(5_000);
+  });
+
+  it('abstains with stage_budget_exhausted, without calling the verifier, once the stage wall clock is spent', async () => {
+    let calls = 0;
+    const result = await runFindingFalsification({
+      findings: [finding({ title: 'a' }), finding({ title: 'b' })],
+      changedFiles,
+      limits: { stageBudgetMs: 1 },
+      falsifyTurn: async () => {
+        calls += 1;
+        return confirmResponse();
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.outcomes.map((outcome) => outcome.reason)).toEqual(['stage_budget_exhausted', 'stage_budget_exhausted']);
+    expect(result.receipt.summary).toMatchObject({ budgetExhausted: 2, neverVerified: 2, confirmed: 0 });
   });
 
   it('rejects unknown response fields via the corrective path', async () => {
@@ -196,5 +260,20 @@ describe('applyFalsificationOutcomes', () => {
     expect(applied.refuted).toBe(1);
     expect(applied.abstained).toBe(1);
     expect(applied.confirmed).toBe(1);
+    // A model that examined the claim and said ABSTAIN is not "never verified".
+    expect(applied.neverVerified).toBe(0);
+  });
+
+  it('reports never-verified withholdings separately from examined abstentions', async () => {
+    const lanes = [{ personaId: 'testing', findings: [finding({ title: 'unreached' })] }];
+    const result = await runFindingFalsification({
+      findings: lanes[0].findings,
+      changedFiles,
+      falsifyTurn: async () => ({ ok: false, error: 'timed out after 180000ms', timedOut: true }),
+    });
+    const applied = applyFalsificationOutcomes(lanes, [{ laneIndex: 0, findingIndex: 0 }], result);
+    expect(applied.abstained).toBe(1);
+    expect(applied.neverVerified).toBe(1);
+    expect(applied.personaResults[0].findings).toEqual([]);
   });
 });
