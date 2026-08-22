@@ -21,9 +21,13 @@ const { canonicalJson } = require('./reviewCore');
  *     any of the three is an abstention.
  *   - Uncertainty produces abstention, not publication. REFUTE and ABSTAIN both withhold.
  *     Verifier infrastructure failure (provider outage, timeout, malformed output after one
- *     corrective re-ask) also withholds, recorded distinctly as `verifier_unavailable` /
- *     `contract_incomplete` so the caller can surface "withheld, unverified" instead of
- *     silently converting an unexamined hypothesis into either a verdict or an approval.
+ *     corrective re-ask) also withholds, recorded distinctly -- `verifier_timeout` (verdict
+ *     did not finish inside the per-call cap), `verifier_unavailable` (provider failure),
+ *     `stage_budget_exhausted` (stage wall-clock deadline hit before the call could start),
+ *     `contract_incomplete` (malformed output twice) -- so the caller can surface "withheld,
+ *     never verified" as its own class instead of silently converting an unexamined
+ *     hypothesis into either a rejection or an approval. The receipt's `summary.neverVerified`
+ *     aggregates exactly that class.
  *
  * Like every publication stage in this pipeline, it can only narrow the candidate set --
  * it cannot create, merge, split, reword, or re-severity findings.
@@ -38,16 +42,47 @@ const CONFIRM_REQUIRED_KEYS = ['violated_invariant', 'failure_path', 'benign_exp
 // maxCandidates covers three lanes at the ≤3-findings-per-lane output contract, plus headroom
 // for carried findings. Everything past the call budget abstains -- fail closed, never publish
 // an unexamined hypothesis.
+//
+// Latency budget design (measured 2026-08-21, eval-baselines/verified-publication-three-arm-2026-08-21.md):
+// the original 60s per-call cap was shorter than a buffered reasoning-model verdict's latency
+// tail -- 9 of 27 hypotheses timed out and were withheld, which is indistinguishable from
+// refutation in the published outcome. A per-call cap alone never actually bounded the stage
+// (12 calls x up to 3 attempts x 60s was already ~36 minutes of theoretical exposure); what
+// bounds the stage is `stageBudgetMs`, a wall-clock deadline for the whole pass. Per-call
+// generosity and stage boundedness are therefore decoupled: the per-call default (180s) covers
+// the measured verdict tail of the same model class whose buffered lane fetches need a 300s
+// cap, and the stage budget guarantees the review lane can never hang regardless of
+// configuration. Every limit remains clamped at HARD_FALSIFICATION_LIMITS -- config can tune
+// downward or up to the hard ceiling, never past it.
 const DEFAULT_FALSIFICATION_LIMITS = Object.freeze({
   maxCandidates: 12,
   maxCalls: 12,
   maxTokens: 128_000,
   concurrency: 3,
-  timeoutMs: 60_000,
+  timeoutMs: 180_000,
+  stageBudgetMs: 300_000,
 });
-const HARD_FALSIFICATION_LIMITS = Object.freeze({ ...DEFAULT_FALSIFICATION_LIMITS });
+const HARD_FALSIFICATION_LIMITS = Object.freeze({
+  ...DEFAULT_FALSIFICATION_LIMITS,
+  timeoutMs: 300_000,
+  stageBudgetMs: 900_000,
+});
 const MAX_DIFF_CHARS = 24_000;
 const MAX_FIELD_CHARS = 1_200;
+// A verifier call with less stage budget than this remaining is never started: no real model
+// verdict completes in under a second, so starting one only burns a call slot.
+const MIN_USEFUL_CALL_MS = 1_000;
+// Abstention reasons that mean "this hypothesis was never actually verified" (as opposed to
+// examined-and-refuted or examined-and-undecidable). Receipts must keep these distinguishable:
+// a reviewer reading "withheld" needs to know whether the claim was rejected or simply never
+// finished checking.
+const NEVER_VERIFIED_REASONS = Object.freeze(new Set([
+  'verifier_timeout',
+  'verifier_unavailable',
+  'stage_budget_exhausted',
+  'call_budget_exhausted',
+  'cancelled',
+]));
 
 function boundedInteger(value, fallback, hardMax) {
   const parsed = Number(value);
@@ -61,6 +96,7 @@ function normalizeFalsificationLimits(input = {}) {
     maxTokens: boundedInteger(input.maxTokens, DEFAULT_FALSIFICATION_LIMITS.maxTokens, HARD_FALSIFICATION_LIMITS.maxTokens),
     concurrency: boundedInteger(input.concurrency, DEFAULT_FALSIFICATION_LIMITS.concurrency, HARD_FALSIFICATION_LIMITS.concurrency),
     timeoutMs: boundedInteger(input.timeoutMs, DEFAULT_FALSIFICATION_LIMITS.timeoutMs, HARD_FALSIFICATION_LIMITS.timeoutMs),
+    stageBudgetMs: boundedInteger(input.stageBudgetMs, DEFAULT_FALSIFICATION_LIMITS.stageBudgetMs, HARD_FALSIFICATION_LIMITS.stageBudgetMs),
   };
   limits.maxCalls = Math.min(limits.maxCalls, limits.maxCandidates);
   limits.concurrency = Math.min(limits.concurrency, limits.maxCalls);
@@ -218,14 +254,18 @@ function responseUsage(response) {
   };
 }
 
-async function callOnce({ falsifyTurn, finding, messages, limits, signal, attempt }) {
+async function callOnce({ falsifyTurn, finding, messages, limits, signal, attempt, deadlineAt }) {
   if (signal?.aborted) return { kind: 'cancelled' };
+  // Effective per-call timeout is the smaller of the per-call cap and the remaining stage
+  // budget: a call that could not finish before the stage deadline is never started.
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs < MIN_USEFUL_CALL_MS) return { kind: 'budget' };
   try {
     const response = await falsifyTurn({
       finding: structuredClone(hypothesisCarrier(finding)),
       messages,
       attempt,
-      timeoutMs: limits.timeoutMs,
+      timeoutMs: Math.min(limits.timeoutMs, remainingMs),
       signal,
     });
     return { kind: 'response', response };
@@ -240,22 +280,25 @@ async function callOnce({ falsifyTurn, finding, messages, limits, signal, attemp
  * only), one corrective re-ask (contract violation only). Every failure mode lands on
  * abstention; nothing here can convert a failure into publication.
  */
-async function falsifyOne({ falsifyTurn, finding, changedFiles, limits, signal, usageRows }) {
+async function falsifyOne({ falsifyTurn, finding, changedFiles, limits, signal, usageRows, deadlineAt }) {
   let messages = buildFalsificationMessages({ finding, changedFiles });
   let transportRetried = false;
   let correctiveAsked = false;
   let attempt = 0;
+  let sawTimeout = false;
   for (;;) {
     attempt += 1;
-    const settled = await callOnce({ falsifyTurn, finding, messages, limits, signal, attempt });
+    const settled = await callOnce({ falsifyTurn, finding, messages, limits, signal, attempt, deadlineAt });
     if (settled.kind === 'cancelled') return abstain('cancelled');
+    if (settled.kind === 'budget') return abstain(sawTimeout ? 'verifier_timeout' : 'stage_budget_exhausted');
     if (settled.kind === 'error' || !settled.response || settled.response.ok !== true) {
       if (settled.kind === 'response' && settled.response) usageRows.push(responseUsage(settled.response));
+      if (settled.kind === 'response' && settled.response?.timedOut === true) sawTimeout = true;
       if (!transportRetried) {
         transportRetried = true;
         continue;
       }
-      return abstain('verifier_unavailable');
+      return abstain(sawTimeout ? 'verifier_timeout' : 'verifier_unavailable');
     }
     usageRows.push(responseUsage(settled.response));
     try {
@@ -306,6 +349,10 @@ async function runFindingFalsification(input = {}) {
   const budget = Math.min(order.length, limits.maxCalls, limits.maxCandidates);
   const outcomes = new Array(source.length);
   const usageRows = [];
+  // The stage-level wall clock: the one bound that holds regardless of per-call timeout,
+  // attempt count, or configuration. Hypotheses that cannot start (or finish) before this
+  // deadline abstain with a distinct reason instead of stalling the review lane.
+  const deadlineAt = Date.now() + limits.stageBudgetMs;
   let cursor = 0;
   async function worker() {
     while (cursor < budget) {
@@ -318,6 +365,7 @@ async function runFindingFalsification(input = {}) {
         limits,
         signal: input.signal,
         usageRows,
+        deadlineAt,
       });
     }
   }
@@ -336,6 +384,12 @@ async function runFindingFalsification(input = {}) {
       refuted: rows.filter((row) => row.verdict === 'REFUTE').length,
       abstained: rows.filter((row) => row.verdict === 'ABSTAIN').length,
       unavailable: rows.filter((row) => row.reason === 'verifier_unavailable').length,
+      timedOut: rows.filter((row) => row.reason === 'verifier_timeout').length,
+      budgetExhausted: rows.filter((row) => row.reason === 'stage_budget_exhausted').length,
+      // "Withheld without ever being verified" -- the count a reviewer-facing surface must
+      // report separately from refutations, so an unchecked claim is never presented as a
+      // rejected one.
+      neverVerified: rows.filter((row) => NEVER_VERIFIED_REASONS.has(row.reason)).length,
     }),
     usage: aggregateUsage(usageRows),
   });
@@ -358,6 +412,7 @@ function applyFalsificationOutcomes(personaResults, locations, falsificationResu
   let confirmed = 0;
   let refuted = 0;
   let abstained = 0;
+  let neverVerified = 0;
   (Array.isArray(locations) ? locations : []).forEach((location, index) => {
     const verdict = falsificationResult?.outcomes?.[index];
     if (!verdict) return;
@@ -367,6 +422,7 @@ function applyFalsificationOutcomes(personaResults, locations, falsificationResu
     }
     if (verdict.verdict === 'REFUTE') refuted += 1;
     else abstained += 1;
+    if (NEVER_VERIFIED_REASONS.has(verdict.reason)) neverVerified += 1;
     if (!removeByLane.has(location.laneIndex)) removeByLane.set(location.laneIndex, []);
     removeByLane.get(location.laneIndex).push(location.findingIndex);
   });
@@ -377,7 +433,7 @@ function applyFalsificationOutcomes(personaResults, locations, falsificationResu
       lane.findings.splice(findingIndex, 1);
     }
   }
-  return { personaResults: results, confirmed, refuted, abstained };
+  return { personaResults: results, confirmed, refuted, abstained, neverVerified };
 }
 
 module.exports = {
