@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.10.0...v1.10.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **ci:** verify main after merge without arming the deploy job ([#237](https://github.com/review-yeti-ai/review-yeti-bot/issues/237)) ([5ff23f3](https://github.com/review-yeti-ai/review-yeti-bot/commit/5ff23f33b9250fee21030ca8f5373fdd103bd2bb))
+* **release:** stop force-moving published release tags on every merge ([#239](https://github.com/review-yeti-ai/review-yeti-bot/issues/239)) ([55e4295](https://github.com/review-yeti-ai/review-yeti-bot/commit/55e429502a7568ac7ba203f5409fa3c4b65d60e4))
+
 ## [1.10.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.12...v1.10.0) (2026-08-22)
 
 
