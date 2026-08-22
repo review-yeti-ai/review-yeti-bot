@@ -315,7 +315,7 @@ export async function runLanesArm({ matrix, armId, charter, persona, repetitions
 export async function verifyCandidateRows({ rows, matrix, falsifyTurnFactory, armId = 'verified', concurrency = 3 }) {
   const fixturesById = new Map(matrix.fixtures.map((fixture) => [fixture.id, fixture]));
   const verifiedRows = [];
-  const verifierStats = { rowsVerified: 0, hypotheses: 0, confirmed: 0, refuted: 0, abstained: 0, unavailable: 0, verifierLatencyMs: 0, usage: { promptTokens: 0, completionTokens: 0, costUSD: 0 } };
+  const verifierStats = { rowsVerified: 0, hypotheses: 0, confirmed: 0, refuted: 0, abstained: 0, unavailable: 0, timedOut: 0, budgetExhausted: 0, neverVerified: 0, verifierLatencyMs: 0, usage: { promptTokens: 0, completionTokens: 0, costUSD: 0 } };
   const perRowOutcomes = [];
   for (const row of rows) {
     const fixture = fixturesById.get(row.fixtureId);
@@ -343,6 +343,9 @@ export async function verifyCandidateRows({ rows, matrix, falsifyTurnFactory, ar
       verifierStats.refuted += result.receipt.summary.refuted;
       verifierStats.abstained += result.receipt.summary.abstained;
       verifierStats.unavailable += result.receipt.summary.unavailable;
+      verifierStats.timedOut += result.receipt.summary.timedOut;
+      verifierStats.budgetExhausted += result.receipt.summary.budgetExhausted;
+      verifierStats.neverVerified += result.receipt.summary.neverVerified;
       verifierStats.verifierLatencyMs += verifierLatencyMs;
       verifierStats.usage.promptTokens += Number(verifierUsage.promptTokens || 0);
       verifierStats.usage.completionTokens += Number(verifierUsage.completionTokens || 0);
@@ -437,13 +440,26 @@ async function main() {
     return 0;
   }
   if (command === 'report') {
+    const shardPaths = String(argument('--rows', '')).split(',').map((token) => token.trim()).filter(Boolean);
     const rows = readShards(argument('--rows', ''));
     const arms = [...new Set(rows.map((row) => row.arm))];
+    // Carry per-hypothesis verdicts and verifier stats from verify shards into the committed
+    // artifact: the 2026-08-21 report dropped them, and the timeout-vs-refute attribution had
+    // to be reconstructed from latency fingerprints. Never again.
+    const verifierStats = [];
+    const perRowOutcomes = [];
+    for (const shard of shardPaths) {
+      const parsed = JSON.parse(fs.readFileSync(path.resolve(root, shard), 'utf8'));
+      if (parsed.verifierStats) verifierStats.push({ arm: parsed.arm, ...parsed.verifierStats });
+      if (Array.isArray(parsed.perRowOutcomes)) perRowOutcomes.push(...parsed.perRowOutcomes.map((entry) => ({ arm: parsed.arm, ...entry })));
+    }
     const report = {
       schemaVersion: 'verified-publication-report-v1',
       fixture: path.relative(root, fixturePath),
       arms: arms.map((armId) => armReport(rows, armId)),
       perFixture: summarizePerFixture(rows, matrix.fixtures),
+      ...(verifierStats.length > 0 ? { verifierStats } : {}),
+      ...(perRowOutcomes.length > 0 ? { perRowOutcomes } : {}),
     };
     if (outPath) fs.writeFileSync(path.resolve(root, outPath), `${JSON.stringify({ ...report, rows }, null, 2)}\n`);
     console.log(JSON.stringify(report, null, 2));
