@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveFindingFalsificationPolicy } from '../../.github/workflows/pipelines/review-pipeline';
+import { callFalsificationModelTurn, resolveFindingFalsificationPolicy } from '../../.github/workflows/pipelines/review-pipeline';
 
 function localConfig(value: unknown) {
   return { parsed: { review: { finding_falsification: value } } };
@@ -22,5 +22,34 @@ describe('resolveFindingFalsificationPolicy', () => {
   it('honors the environment kill-switch', () => {
     const policy = resolveFindingFalsificationPolicy({ localConfig: localConfig(true), env: { REVIEW_YETI_FINDING_FALSIFICATION: 'false' } });
     expect(policy).toMatchObject({ enabled: false, reason: 'disabled_by_env' });
+  });
+});
+
+describe('callFalsificationModelTurn', () => {
+  it('marks its own deadline firing as timedOut so the stage can classify it as verifier_timeout', async () => {
+    const result = await callFalsificationModelTurn(
+      { messages: [{ role: 'user', content: 'x' }], timeoutMs: 20 },
+      {
+        transports: [{ name: 'slow', baseUrl: 'https://example.invalid/v1', apiKey: 'k', model: 'm' }],
+        fetchImplementation: (_url: string, init: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+          }),
+      },
+    );
+    expect(result).toMatchObject({ ok: false, timedOut: true });
+    expect(String((result as { error?: string }).error)).toContain('timed out after 20ms');
+  });
+
+  it('does not mark a plain transport failure as timedOut', async () => {
+    const result = await callFalsificationModelTurn(
+      { messages: [{ role: 'user', content: 'x' }], timeoutMs: 5_000 },
+      {
+        transports: [{ name: 'down', baseUrl: 'https://example.invalid/v1', apiKey: 'k', model: 'm' }],
+        fetchImplementation: () => Promise.reject(new Error('connection refused')),
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect((result as { timedOut?: boolean }).timedOut).toBeUndefined();
   });
 });
