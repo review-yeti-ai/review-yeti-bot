@@ -20,7 +20,7 @@
     "build": "npm run build:frontend && npm run build:backend",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "pretest": "node scripts/ensure-static-assets.js",
+    "pretest": "npm run test:artifacts",
     "test": "vitest run",
     "test:changed": "vitest run --changed=main",
     "test:frontend": "vitest run tests/unit/appStaticServ.test.ts tests/unit/dashboard*.test.ts tests/integration/dashboard*.test.ts",
@@ -41,7 +41,13 @@
     "postpack": "node scripts/stage-publish-package.mjs --clean-current",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "clean:frontend": "node scripts/clean-frontend.js"
+    "clean:frontend": "node scripts/clean-frontend.js",
+    "pretest:unit": "npm run test:artifacts",
+    "pretest:integration": "npm run test:artifacts",
+    "pretest:e2e": "npm run test:artifacts",
+    "pretest:replay": "npm run test:artifacts",
+    "pretest:changed": "npm run test:artifacts",
+    "test:artifacts": "node scripts/ensure-static-assets.js && node scripts/ensure-pipeline-build.js"
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",
