@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.10.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.12...v1.10.0) (2026-08-22)
+
+
+### Features
+
+* **review:** verified publication gate — falsification stage [NO-SHIP: acceptance failed] ([#159](https://github.com/review-yeti-ai/review-yeti-bot/issues/159)) ([f5b8c24](https://github.com/review-yeti-ai/review-yeti-bot/commit/f5b8c240030c77fdeb77aefc8fb8844e621c20eb))
+
+
+### Bug Fixes
+
+* **ci:** actually run the test suite on pull requests ([#234](https://github.com/review-yeti-ai/review-yeti-bot/issues/234)) ([5618b9b](https://github.com/review-yeti-ai/review-yeti-bot/commit/5618b9bb3dd80614b19c2d3162a58cbc6440e466))
+* **pipeline:** ambient GitHub event must not overwrite an explicit PR head ([#235](https://github.com/review-yeti-ai/review-yeti-bot/issues/235)) ([c9aeec3](https://github.com/review-yeti-ai/review-yeti-bot/commit/c9aeec33066c719673dc1ee1382ca92068e008e8))
+* **review:** falsification stage — decouple per-call verdict timeout from stage boundedness [re-measured: still NO-SHIP on recall] ([#233](https://github.com/review-yeti-ai/review-yeti-bot/issues/233)) ([e93a622](https://github.com/review-yeti-ai/review-yeti-bot/commit/e93a622a38a2a57f85f4fafaa1b188b0e502106d))
+* **review:** reserve triple direct generation budget ([1d9d592](https://github.com/review-yeti-ai/review-yeti-bot/commit/1d9d592c8c6bd52952ad59628dec981568e22ed1))
+* **test:** build dist/pipeline before tests so cassette replay is deterministic ([#231](https://github.com/review-yeti-ai/review-yeti-bot/issues/231)) ([7ef0ffa](https://github.com/review-yeti-ai/review-yeti-bot/commit/7ef0ffaed3bc76f70712f06a8cfce5aa0065cf36))
+
 ## [1.9.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.9.11...v1.9.12) (2026-08-21)
 
 
