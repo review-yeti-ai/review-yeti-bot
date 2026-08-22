@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 
 // Resolve path to root repository .github/workflows/pipelines/review-pipeline.js
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -654,6 +655,103 @@ index 123456..789abc 100644
         expect(ctx.diffText).toContain('src/api/user.ts');
       } finally {
         process.env.PR_DIFF = originalEnv;
+      }
+    });
+
+    it('8b. Explicit head/base/title survive an ambient pull_request event', () => {
+      // The runner's own event describes the PR that *triggered* the run, not necessarily the PR
+      // under review. Step 3 of getPRDiffAndContext used to overwrite headSha/baseSha/title from
+      // that event unconditionally, so an exact-head dispatch silently reviewed and published
+      // against the runner's head instead of the requested one. prNumber and repo were already
+      // guarded; these three were not.
+      const originalDiff = process.env.PR_DIFF;
+      const originalEventPath = process.env.GITHUB_EVENT_PATH;
+      const eventFile = path.join(os.tmpdir(), `ryb-ambient-event-${process.pid}.json`);
+      try {
+        fs.writeFileSync(
+          eventFile,
+          JSON.stringify({
+            pull_request: {
+              number: 999,
+              head: { sha: 'ambientheadsha0000' },
+              base: { sha: 'ambientbasesha0000' },
+              title: 'Ambient Event Title',
+            },
+          }),
+        );
+        process.env.GITHUB_EVENT_PATH = eventFile;
+        process.env.PR_DIFF = JSON.stringify({
+          diff: 'diff --git a/src/api/user.ts b/src/api/user.ts\n+ const x = 1;\n',
+          prNumber: 42,
+          repo: 'custom/repo',
+          headSha: 'cafebabe1234',
+          baseSha: 'deadbeef5678',
+          title: 'Custom JSON Title',
+        });
+
+        const ctx = pipeline.getPRDiffAndContext();
+
+        expect(ctx.headSha).toBe('cafebabe1234');
+        expect(ctx.baseSha).toBe('deadbeef5678');
+        expect(ctx.title).toBe('Custom JSON Title');
+        expect(ctx.repo).toBe('custom/repo');
+        expect(ctx.prNumber).toBe('42');
+      } finally {
+        process.env.PR_DIFF = originalDiff;
+        if (originalEventPath === undefined) delete process.env.GITHUB_EVENT_PATH;
+        else process.env.GITHUB_EVENT_PATH = originalEventPath;
+        try {
+          fs.unlinkSync(eventFile);
+        } catch (_) {
+          /* best effort */
+        }
+      }
+    });
+
+    it('8c. Ambient event still fills in head/base/title when the caller named none', () => {
+      // The guard must not turn into "ignore the event" — with no explicit input, the event is the
+      // only correct source (GITHUB_SHA is the merge commit on pull_request, not the head).
+      const originalDiff = process.env.PR_DIFF;
+      const originalEventPath = process.env.GITHUB_EVENT_PATH;
+      const originalHeadSha = process.env.PR_HEAD_SHA;
+      const originalBaseSha = process.env.PR_BASE_SHA;
+      const eventFile = path.join(os.tmpdir(), `ryb-ambient-event-only-${process.pid}.json`);
+      try {
+        fs.writeFileSync(
+          eventFile,
+          JSON.stringify({
+            pull_request: {
+              number: 999,
+              head: { sha: 'ambientheadsha0000' },
+              base: { sha: 'ambientbasesha0000' },
+              title: 'Ambient Event Title',
+            },
+          }),
+        );
+        process.env.GITHUB_EVENT_PATH = eventFile;
+        delete process.env.PR_DIFF;
+        delete process.env.PR_HEAD_SHA;
+        delete process.env.PR_BASE_SHA;
+
+        const ctx = pipeline.getPRDiffAndContext();
+
+        expect(ctx.headSha).toBe('ambientheadsha0000');
+        expect(ctx.baseSha).toBe('ambientbasesha0000');
+        expect(ctx.title).toBe('Ambient Event Title');
+      } finally {
+        if (originalDiff === undefined) delete process.env.PR_DIFF;
+        else process.env.PR_DIFF = originalDiff;
+        if (originalEventPath === undefined) delete process.env.GITHUB_EVENT_PATH;
+        else process.env.GITHUB_EVENT_PATH = originalEventPath;
+        if (originalHeadSha === undefined) delete process.env.PR_HEAD_SHA;
+        else process.env.PR_HEAD_SHA = originalHeadSha;
+        if (originalBaseSha === undefined) delete process.env.PR_BASE_SHA;
+        else process.env.PR_BASE_SHA = originalBaseSha;
+        try {
+          fs.unlinkSync(eventFile);
+        } catch (_) {
+          /* best effort */
+        }
       }
     });
 
