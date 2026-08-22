@@ -1,9 +1,12 @@
 name: Release & Benchmark Publishing Pipeline
 
 on:
+  # Tag pushes only. This pipeline validates and publishes an *existing* release;
+  # it has no meaning on an ordinary merge, where the checked-out commit is by
+  # definition not the tagged commit. Running it on `branches: [main]` made it
+  # fail on every merge (10 red runs on 2026-08-22 alone) and, worse, drove the
+  # force-tag path removed below.
   push:
-    branches:
-      - main
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -57,12 +60,15 @@ jobs:
           elif [[ -n "${{ inputs.version }}" ]]; then
             RELEASE_VER="${{ inputs.version }}"
           else
-            PKG_VER="$(node -p "require('./package.json').version")"
-            RELEASE_VER="v${PKG_VER}"
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git tag -fa "$RELEASE_VER" -m "Release $RELEASE_VER"
-            git push origin "$RELEASE_VER" --force || true
+            # Previously this branch derived a version from package.json and ran
+            # `git tag -fa` + `git push --force`, i.e. it force-moved an already
+            # published release tag onto the current commit on every push to main.
+            # The `|| true` hid the outcome, and the immutability check below runs
+            # *after* the mutation, so a successful force-push would have moved the
+            # tag and then validated the moved tag as correct. Tags are created by
+            # release-please; this pipeline must only ever consume them.
+            echo "::error::No release tag in scope. This workflow runs on a v*.*.* tag push or a workflow_dispatch with an explicit existing tag; it never creates or moves tags." >&2
+            exit 1
           fi
           echo "version=${RELEASE_VER}" >> "$GITHUB_OUTPUT"
           echo "Resolved release version: ${RELEASE_VER}"
