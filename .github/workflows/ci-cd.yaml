@@ -40,18 +40,20 @@ jobs:
 
       - run: npm ci
       
-      - name: Detect Changed Files & Run Relative Tests
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "Running relative test suite for pull request..."
-          npm run test:changed || npm run test:unit
-          
-      - name: Run Full Test Suite on Push to Main
-        if: github.event_name == 'push'
-        run: |
-          npm run test:unit
-          npm run test:integration
-          npm run test:e2e
+      # This replaces two steps that between them never ran a full suite:
+      #
+      #   `npm run test:changed || npm run test:unit` — `vitest run --changed=main`
+      #   exits 0 when it selects no files ("No test files found, exiting with code
+      #   0"), so the `||` fallback never fired and the job reported success having
+      #   executed zero tests.
+      #
+      #   `npm run test:unit && test:integration && test:e2e`, gated on
+      #   `github.event_name == 'push'` — unreachable, because this workflow has no
+      #   `push:` trigger. Adding one is deliberately left out of this change: the
+      #   build-and-deploy job below is gated on the same condition and would start
+      #   deploying on every merge.
+      - name: Run Full Test Suite
+        run: npm test
 
       - name: Verify TypeScript Build
         run: npm run build
