@@ -2560,6 +2560,7 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
     ? cfg.transports
     : [{ name: 'default', baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model }];
   let lastError = null;
+  let timedOut = false;
   for (const transport of transports) {
     if (signal?.aborted) throw new Error('falsification turn aborted');
     const baseUrl = String(transport.baseUrl || cfg.baseUrl || '').replace(/\/+$/, '');
@@ -2567,9 +2568,18 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
     if (!baseUrl || !apiKey) continue;
     const controller = new AbortController();
     const onAbort = () => controller.abort();
+    // Distinguish "our own per-call deadline fired" from every other failure: the
+    // falsification stage records the former as verifier_timeout (a latency-budget
+    // collision) and the latter as verifier_unavailable (provider weather). Conflating
+    // them cost a full NO-SHIP diagnosis cycle in the 2026-08-21 measurement.
+    let deadlineFired = false;
+    const onDeadline = () => {
+      deadlineFired = true;
+      onAbort();
+    };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     const deadlineMs = timeoutMs || transport.timeoutMs || 90_000;
-    const timer = setTimeout(onAbort, deadlineMs);
+    const timer = setTimeout(onDeadline, deadlineMs);
     if (timer.unref) timer.unref();
     try {
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -2607,13 +2617,18 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
       };
     } catch (error) {
       if (signal?.aborted) throw error;
-      lastError = error;
+      if (deadlineFired) {
+        timedOut = true;
+        lastError = new Error(`falsification transport ${transport.name || 'default'}: timed out after ${deadlineMs}ms`);
+      } else {
+        lastError = error;
+      }
     } finally {
       clearTimeout(timer);
       if (signal) signal.removeEventListener('abort', onAbort);
     }
   }
-  return { ok: false, error: lastError?.message || 'no falsification transport available' };
+  return { ok: false, error: lastError?.message || 'no falsification transport available', ...(timedOut ? { timedOut: true } : {}) };
 }
 
 function computeArbitrationQuorumLegacy(personaResults, expectedPersonas = personaResults.length) {
@@ -3372,7 +3387,8 @@ async function main() {
           });
           const applied = applyFalsificationOutcomes(personaResults, locations, falsificationResult);
           personaResults = applied.personaResults;
-          console.log(`[Falsification] ${applied.confirmed} finding(s) confirmed, ${applied.refuted} refuted, ${applied.abstained} withheld on abstention (${falsificationResult.receipt.summary.unavailable} verifier-unavailable).`);
+          const falsificationSummary = falsificationResult.receipt.summary;
+          console.log(`[Falsification] ${applied.confirmed} finding(s) confirmed, ${applied.refuted} refuted, ${applied.abstained} withheld on abstention (${falsificationSummary.neverVerified} never verified: ${falsificationSummary.timedOut} verifier-timeout, ${falsificationSummary.unavailable} verifier-unavailable, ${falsificationSummary.budgetExhausted} stage-budget).`);
         } catch (error) {
           console.warn(`[Falsification] Stage unavailable (${error.message}); findings stand as reported.`);
         }

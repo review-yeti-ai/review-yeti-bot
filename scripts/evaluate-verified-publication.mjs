@@ -437,13 +437,26 @@ async function main() {
     return 0;
   }
   if (command === 'report') {
+    const shardPaths = String(argument('--rows', '')).split(',').map((token) => token.trim()).filter(Boolean);
     const rows = readShards(argument('--rows', ''));
     const arms = [...new Set(rows.map((row) => row.arm))];
+    // Carry per-hypothesis verdicts and verifier stats from verify shards into the committed
+    // artifact: the 2026-08-21 report dropped them, and the timeout-vs-refute attribution had
+    // to be reconstructed from latency fingerprints. Never again.
+    const verifierStats = [];
+    const perRowOutcomes = [];
+    for (const shard of shardPaths) {
+      const parsed = JSON.parse(fs.readFileSync(path.resolve(root, shard), 'utf8'));
+      if (parsed.verifierStats) verifierStats.push({ arm: parsed.arm, ...parsed.verifierStats });
+      if (Array.isArray(parsed.perRowOutcomes)) perRowOutcomes.push(...parsed.perRowOutcomes.map((entry) => ({ arm: parsed.arm, ...entry })));
+    }
     const report = {
       schemaVersion: 'verified-publication-report-v1',
       fixture: path.relative(root, fixturePath),
       arms: arms.map((armId) => armReport(rows, armId)),
       perFixture: summarizePerFixture(rows, matrix.fixtures),
+      ...(verifierStats.length > 0 ? { verifierStats } : {}),
+      ...(perRowOutcomes.length > 0 ? { perRowOutcomes } : {}),
     };
     if (outPath) fs.writeFileSync(path.resolve(root, outPath), `${JSON.stringify({ ...report, rows }, null, 2)}\n`);
     console.log(JSON.stringify(report, null, 2));
