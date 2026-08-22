@@ -1815,6 +1815,16 @@ function getPRDiffAndContext() {
   let title = 'Automated PR Review';
   let eventData = null;
 
+  // Explicit inputs (PR_HEAD_SHA / PR_BASE_SHA, or a PR_DIFF JSON payload) name the pull request
+  // actually under review. The ambient GitHub event describes the run that *triggered* the runner,
+  // which is a different pull request whenever the bot is dispatched at a specific head — the same
+  // asymmetry PR_REPO already documents at step 6. prNumber and repo are guarded against that
+  // clobber; headSha, baseSha and title were not. Track what a caller named explicitly so step 3
+  // can refine the derived defaults without overwriting a caller's intent.
+  let headShaExplicit = Boolean(process.env.PR_HEAD_SHA);
+  let baseShaExplicit = Boolean(process.env.PR_BASE_SHA);
+  let titleExplicit = false;
+
   // 1. Prefer a file boundary for real action runs. Passing a large unified diff through an
   // environment variable counts toward execve's argument limit and fails on large PRs.
   if (process.env.PR_DIFF_FILE && fs.existsSync(process.env.PR_DIFF_FILE)) {
@@ -1832,9 +1842,18 @@ function getPRDiffAndContext() {
         if (parsed.diff) diffText = parsed.diff;
         if (parsed.prNumber) prNumber = String(parsed.prNumber);
         if (parsed.repo) repo = parsed.repo;
-        if (parsed.headSha) headSha = parsed.headSha;
-        if (parsed.baseSha) baseSha = parsed.baseSha;
-        if (parsed.title) title = parsed.title;
+        if (parsed.headSha) {
+          headSha = parsed.headSha;
+          headShaExplicit = true;
+        }
+        if (parsed.baseSha) {
+          baseSha = parsed.baseSha;
+          baseShaExplicit = true;
+        }
+        if (parsed.title) {
+          title = parsed.title;
+          titleExplicit = true;
+        }
       } catch (_) {
         diffText = raw;
       }
@@ -1852,13 +1871,15 @@ function getPRDiffAndContext() {
         if (!prNumber && eventData.pull_request.number) {
           prNumber = String(eventData.pull_request.number);
         }
-        if (eventData.pull_request.head && eventData.pull_request.head.sha) {
+        // Ambient event data fills in derived defaults, but must never overwrite a value the
+        // caller named explicitly (see the precedence note above).
+        if (!headShaExplicit && eventData.pull_request.head && eventData.pull_request.head.sha) {
           headSha = eventData.pull_request.head.sha;
         }
-        if (eventData.pull_request.base && eventData.pull_request.base.sha) {
+        if (!baseShaExplicit && eventData.pull_request.base && eventData.pull_request.base.sha) {
           baseSha = eventData.pull_request.base.sha;
         }
-        if (eventData.pull_request.title) {
+        if (!titleExplicit && eventData.pull_request.title) {
           title = eventData.pull_request.title;
         }
       }
