@@ -786,6 +786,16 @@ async function fetchActionSubmoduleUrlsAtRef(parentRepository, ref, options = {}
   }
 }
 
+function hasActionSubmoduleCandidate(file) {
+  const transition = parseGitlinkPatch(file?.patch);
+  return isGitlinkMode(file) || Boolean(transition.oldSha || transition.newSha);
+}
+
+function mergeActionSubmoduleUrls(localUrls, exactRefUrls) {
+  // Exact target-repository metadata is authoritative over a local fallback.
+  return { ...(localUrls || {}), ...(exactRefUrls || {}) };
+}
+
 function hasPinnedGitlinkTransition(file) {
   const oldSha = typeof file.oldSha === 'string' ? file.oldSha.trim() : '';
   const newSha = typeof file.newSha === 'string' ? file.newSha.trim() : '';
@@ -3248,24 +3258,21 @@ async function main() {
     return;
   }
 
-  const hasSubmoduleCandidate = diffFiles.some((file) => {
-    const transition = parseGitlinkPatch(file.patch);
-    return isGitlinkMode(file) || Boolean(transition.oldSha || transition.newSha);
-  });
+  const hasSubmoduleCandidate = diffFiles.some(hasActionSubmoduleCandidate);
   const [remoteBaseSubmoduleUrls, remoteHeadSubmoduleUrls] = hasSubmoduleCandidate
     ? await Promise.all([
         fetchActionSubmoduleUrlsAtRef(prContext.repo, prContext.baseSha),
         fetchActionSubmoduleUrlsAtRef(prContext.repo, prContext.headSha),
       ])
     : [{}, {}];
-  const baseSubmoduleUrls = {
-    ...loadActionSubmoduleUrls(configRoot, prContext.repo),
-    ...remoteBaseSubmoduleUrls,
-  };
-  const submoduleUrls = {
-    ...loadActionSubmoduleUrls(process.cwd(), prContext.repo),
-    ...remoteHeadSubmoduleUrls,
-  };
+  const baseSubmoduleUrls = mergeActionSubmoduleUrls(
+    loadActionSubmoduleUrls(configRoot, prContext.repo),
+    remoteBaseSubmoduleUrls,
+  );
+  const submoduleUrls = mergeActionSubmoduleUrls(
+    loadActionSubmoduleUrls(process.cwd(), prContext.repo),
+    remoteHeadSubmoduleUrls,
+  );
   const submoduleReview = applyActionSubmodulePolicy(diffFiles, actionPolicy.submodules, { baseSubmoduleUrls, submoduleUrls, parentRepository: prContext.repo });
   if (hasSubmoduleCandidate) {
     const resolvedBase = Object.keys(baseSubmoduleUrls).length;
@@ -3562,6 +3569,8 @@ module.exports = {
   applyActionSubmodulePolicy,
   parseActionSubmoduleUrls,
   fetchActionSubmoduleUrlsAtRef,
+  hasActionSubmoduleCandidate,
+  mergeActionSubmoduleUrls,
   planDiffBudget,
   reviewWithModel,
   parseFindingsPayload,

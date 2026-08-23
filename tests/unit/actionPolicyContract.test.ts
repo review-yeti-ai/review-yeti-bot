@@ -127,6 +127,7 @@ describe('Action v4 policy boundary', () => {
     const files = pipeline.parseDiff(diff);
     expect(files).toHaveLength(1);
     expect(files[0]).toMatchObject({ path: 'proto', mode: '160000', isSubmodule: true });
+    expect(pipeline.hasActionSubmoduleCandidate(files[0])).toBe(true);
 
     const urls = { proto: 'git@github.com:calltelemetry/proto.git' };
     const result = pipeline.applyActionSubmodulePolicy(files, {
@@ -145,6 +146,27 @@ describe('Action v4 policy boundary', () => {
     expect(result.files[0]).toMatchObject({
       oldSha: '5d6846bd0ea53b003b2247b9fe21d52109af3745',
       newSha: '20fd8fbf7a2d53f97d5edfcc07387debdea62794',
+    });
+  });
+
+  it('detects mode-only gitlinks and ignores ordinary files as metadata fetch candidates', () => {
+    expect(pipeline.hasActionSubmoduleCandidate({ path: 'vendor/new', newMode: '160000' })).toBe(true);
+    expect(pipeline.hasActionSubmoduleCandidate({
+      path: 'docs/submodules.md',
+      patch: 'diff --git a/docs/submodules.md b/docs/submodules.md\n+ordinary documentation',
+    })).toBe(false);
+  });
+
+  it('makes exact-ref target metadata authoritative over stale local checkout metadata', () => {
+    expect(pipeline.mergeActionSubmoduleUrls(
+      {
+        proto: 'git@github.com:calltelemetry/stale-proto.git',
+        retained: 'git@github.com:calltelemetry/retained.git',
+      },
+      { proto: 'git@github.com:calltelemetry/proto.git' },
+    )).toEqual({
+      proto: 'git@github.com:calltelemetry/proto.git',
+      retained: 'git@github.com:calltelemetry/retained.git',
     });
   });
 
