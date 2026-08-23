@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const root = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -168,6 +169,67 @@ describe('Action v4 policy boundary', () => {
       proto: 'git@github.com:calltelemetry/proto.git',
       retained: 'git@github.com:calltelemetry/retained.git',
     });
+  });
+
+  it('resolves distinct exact base and head refs and routes them into policy metadata', async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-gitlinks-'));
+    const baseRoot = path.join(temp, 'base');
+    const headRoot = path.join(temp, 'head');
+    fs.mkdirSync(baseRoot);
+    fs.mkdirSync(headRoot);
+    fs.writeFileSync(path.join(baseRoot, '.gitmodules'), '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/stale.git\n');
+
+    const baseRef = 'a'.repeat(40);
+    const headRef = 'b'.repeat(40);
+    const refs: string[] = [];
+    const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/proto.git\n';
+    try {
+      const metadata = await pipeline.resolveActionSubmoduleMetadata([
+        { path: 'proto', mode: '160000', oldSha: 'c'.repeat(40), newSha: 'd'.repeat(40) },
+      ], {
+        parentRepository: 'calltelemetry/cisco-cdr',
+        baseRef,
+        headRef,
+        baseRoot,
+        headRoot,
+      }, {
+        fetchImplementation: async (url: string) => {
+          refs.push(new URL(url).searchParams.get('ref') || '');
+          return {
+            ok: true,
+            json: async () => ({
+              type: 'file',
+              encoding: 'base64',
+              content: Buffer.from(gitmodules).toString('base64'),
+            }),
+          };
+        },
+      });
+
+      expect(refs).toEqual([baseRef, headRef]);
+      expect(metadata).toEqual({
+        hasCandidate: true,
+        baseUrls: { proto: 'git@github.com:calltelemetry/proto.git' },
+        headUrls: { proto: 'git@github.com:calltelemetry/proto.git' },
+      });
+      const result = pipeline.applyActionSubmodulePolicy([
+        { path: 'proto', mode: '160000', oldSha: 'c'.repeat(40), newSha: 'd'.repeat(40) },
+      ], {
+        mode: 'metadata_only',
+        require_pinned_commit: true,
+        missing_access: 'block',
+        allowed_hosts: ['github.com'],
+        allowed_repositories: [],
+        url_change: 'block',
+      }, {
+        baseSubmoduleUrls: metadata.baseUrls,
+        submoduleUrls: metadata.headUrls,
+        parentRepository: 'calltelemetry/cisco-cdr',
+      });
+      expect(result.coverageComplete).toBe(true);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it('keeps exact-ref metadata fetch failures fail-closed', async () => {

@@ -796,6 +796,27 @@ function mergeActionSubmoduleUrls(localUrls, exactRefUrls) {
   return { ...(localUrls || {}), ...(exactRefUrls || {}) };
 }
 
+async function resolveActionSubmoduleMetadata(diffFiles, context, options = {}) {
+  const hasCandidate = (Array.isArray(diffFiles) ? diffFiles : []).some(hasActionSubmoduleCandidate);
+  const [remoteBaseUrls, remoteHeadUrls] = hasCandidate
+    ? await Promise.all([
+        fetchActionSubmoduleUrlsAtRef(context.parentRepository, context.baseRef, options),
+        fetchActionSubmoduleUrlsAtRef(context.parentRepository, context.headRef, options),
+      ])
+    : [{}, {}];
+  return {
+    hasCandidate,
+    baseUrls: mergeActionSubmoduleUrls(
+      loadActionSubmoduleUrls(context.baseRoot, context.parentRepository),
+      remoteBaseUrls,
+    ),
+    headUrls: mergeActionSubmoduleUrls(
+      loadActionSubmoduleUrls(context.headRoot, context.parentRepository),
+      remoteHeadUrls,
+    ),
+  };
+}
+
 function hasPinnedGitlinkTransition(file) {
   const oldSha = typeof file.oldSha === 'string' ? file.oldSha.trim() : '';
   const newSha = typeof file.newSha === 'string' ? file.newSha.trim() : '';
@@ -3258,23 +3279,17 @@ async function main() {
     return;
   }
 
-  const hasSubmoduleCandidate = diffFiles.some(hasActionSubmoduleCandidate);
-  const [remoteBaseSubmoduleUrls, remoteHeadSubmoduleUrls] = hasSubmoduleCandidate
-    ? await Promise.all([
-        fetchActionSubmoduleUrlsAtRef(prContext.repo, prContext.baseSha),
-        fetchActionSubmoduleUrlsAtRef(prContext.repo, prContext.headSha),
-      ])
-    : [{}, {}];
-  const baseSubmoduleUrls = mergeActionSubmoduleUrls(
-    loadActionSubmoduleUrls(configRoot, prContext.repo),
-    remoteBaseSubmoduleUrls,
-  );
-  const submoduleUrls = mergeActionSubmoduleUrls(
-    loadActionSubmoduleUrls(process.cwd(), prContext.repo),
-    remoteHeadSubmoduleUrls,
-  );
+  const submoduleMetadata = await resolveActionSubmoduleMetadata(diffFiles, {
+    parentRepository: prContext.repo,
+    baseRef: prContext.baseSha,
+    headRef: prContext.headSha,
+    baseRoot: configRoot,
+    headRoot: process.cwd(),
+  });
+  const baseSubmoduleUrls = submoduleMetadata.baseUrls;
+  const submoduleUrls = submoduleMetadata.headUrls;
   const submoduleReview = applyActionSubmodulePolicy(diffFiles, actionPolicy.submodules, { baseSubmoduleUrls, submoduleUrls, parentRepository: prContext.repo });
-  if (hasSubmoduleCandidate) {
+  if (submoduleMetadata.hasCandidate) {
     const resolvedBase = Object.keys(baseSubmoduleUrls).length;
     const resolvedHead = Object.keys(submoduleUrls).length;
     console.log(`[Submodules] Exact-ref metadata entries: base=${resolvedBase}, head=${resolvedHead}; coverage=${submoduleReview.coverageComplete ? 'complete' : 'incomplete'}.`);
@@ -3571,6 +3586,7 @@ module.exports = {
   fetchActionSubmoduleUrlsAtRef,
   hasActionSubmoduleCandidate,
   mergeActionSubmoduleUrls,
+  resolveActionSubmoduleMetadata,
   planDiffBudget,
   reviewWithModel,
   parseFindingsPayload,
