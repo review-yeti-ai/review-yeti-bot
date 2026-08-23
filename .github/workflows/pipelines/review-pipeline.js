@@ -708,15 +708,8 @@ function parseGitlinkPatch(patch) {
   return result;
 }
 
-function loadActionSubmoduleUrls(repoRoot, parentRepository) {
-  const filePath = path.resolve(repoRoot, '.gitmodules');
-  if (!fs.existsSync(filePath)) return {};
-  let content;
-  try {
-    content = fs.readFileSync(filePath, 'utf8');
-  } catch (_) {
-    return {};
-  }
+function parseActionSubmoduleUrls(content, parentRepository) {
+  if (typeof content !== 'string' || !content.trim()) return {};
   const result = Object.create(null);
   let current;
   const flush = () => {
@@ -748,6 +741,80 @@ function loadActionSubmoduleUrls(repoRoot, parentRepository) {
   }
   flush();
   return result;
+}
+
+function loadActionSubmoduleUrls(repoRoot, parentRepository) {
+  const filePath = path.resolve(repoRoot, '.gitmodules');
+  if (!fs.existsSync(filePath)) return {};
+  try {
+    return parseActionSubmoduleUrls(fs.readFileSync(filePath, 'utf8'), parentRepository);
+  } catch (_) {
+    return {};
+  }
+}
+
+async function fetchActionSubmoduleUrlsAtRef(parentRepository, ref, options = {}) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(String(parentRepository || ''))) return {};
+  if (!/^[0-9a-f]{40}$/iu.test(String(ref || ''))) return {};
+
+  const fetchImpl = options.fetchImplementation || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') return {};
+  const token = options.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  try {
+    const response = await fetchImpl(
+      `https://api.github.com/repos/${parentRepository}/contents/.gitmodules?ref=${encodeURIComponent(ref)}`,
+      {
+        headers,
+        signal: options.signal || AbortSignal.timeout(options.timeoutMs || 10_000),
+      },
+    );
+    if (!response?.ok) return {};
+    const payload = await response.json();
+    if (payload?.type !== 'file' || payload?.encoding !== 'base64' || typeof payload?.content !== 'string') return {};
+    const content = Buffer.from(payload.content.replace(/\s+/gu, ''), 'base64').toString('utf8');
+    return parseActionSubmoduleUrls(content, parentRepository);
+  } catch (_) {
+    // Missing or inaccessible metadata remains fail-closed in
+    // applyActionSubmodulePolicy when the repository policy requires it.
+    return {};
+  }
+}
+
+function hasActionSubmoduleCandidate(file) {
+  const transition = parseGitlinkPatch(file?.patch);
+  return isGitlinkMode(file) || Boolean(transition.oldSha || transition.newSha);
+}
+
+function mergeActionSubmoduleUrls(localUrls, exactRefUrls) {
+  // Exact target-repository metadata is authoritative over a local fallback.
+  return { ...(localUrls || {}), ...(exactRefUrls || {}) };
+}
+
+async function resolveActionSubmoduleMetadata(diffFiles, context, options = {}) {
+  const hasCandidate = (Array.isArray(diffFiles) ? diffFiles : []).some(hasActionSubmoduleCandidate);
+  const [remoteBaseUrls, remoteHeadUrls] = hasCandidate
+    ? await Promise.all([
+        fetchActionSubmoduleUrlsAtRef(context.parentRepository, context.baseRef, options),
+        fetchActionSubmoduleUrlsAtRef(context.parentRepository, context.headRef, options),
+      ])
+    : [{}, {}];
+  return {
+    hasCandidate,
+    baseUrls: mergeActionSubmoduleUrls(
+      loadActionSubmoduleUrls(context.baseRoot, context.parentRepository),
+      remoteBaseUrls,
+    ),
+    headUrls: mergeActionSubmoduleUrls(
+      loadActionSubmoduleUrls(context.headRoot, context.parentRepository),
+      remoteHeadUrls,
+    ),
+  };
 }
 
 function hasPinnedGitlinkTransition(file) {
@@ -3212,9 +3279,21 @@ async function main() {
     return;
   }
 
-  const baseSubmoduleUrls = loadActionSubmoduleUrls(configRoot, prContext.repo);
-  const submoduleUrls = loadActionSubmoduleUrls(process.cwd(), prContext.repo);
+  const submoduleMetadata = await resolveActionSubmoduleMetadata(diffFiles, {
+    parentRepository: prContext.repo,
+    baseRef: prContext.baseSha,
+    headRef: prContext.headSha,
+    baseRoot: configRoot,
+    headRoot: process.cwd(),
+  });
+  const baseSubmoduleUrls = submoduleMetadata.baseUrls;
+  const submoduleUrls = submoduleMetadata.headUrls;
   const submoduleReview = applyActionSubmodulePolicy(diffFiles, actionPolicy.submodules, { baseSubmoduleUrls, submoduleUrls, parentRepository: prContext.repo });
+  if (submoduleMetadata.hasCandidate) {
+    const resolvedBase = Object.keys(baseSubmoduleUrls).length;
+    const resolvedHead = Object.keys(submoduleUrls).length;
+    console.log(`[Submodules] Exact-ref metadata entries: base=${resolvedBase}, head=${resolvedHead}; coverage=${submoduleReview.coverageComplete ? 'complete' : 'incomplete'}.`);
+  }
   const reviewDiffFiles = submoduleReview.files;
   if (reviewDiffFiles.length === 0) {
     console.log('[Payload] All changed files were excluded by the trusted submodule policy; no model verdict was posted.');
@@ -3503,6 +3582,11 @@ module.exports = {
   resolveActionReviewRuntime,
   resolveActionReviewPolicy,
   applyActionSubmodulePolicy,
+  parseActionSubmoduleUrls,
+  fetchActionSubmoduleUrlsAtRef,
+  hasActionSubmoduleCandidate,
+  mergeActionSubmoduleUrls,
+  resolveActionSubmoduleMetadata,
   planDiffBudget,
   reviewWithModel,
   parseFindingsPayload,
