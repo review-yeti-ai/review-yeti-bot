@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const root = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -66,6 +67,191 @@ describe('Action v4 policy boundary', () => {
       submoduleUrls: { 'vendor/lib': 'https://github.com/calltelemetry/ct-pr-operator.git' },
     });
     expect(result.coverageComplete).toBe(true);
+  });
+
+  it('fetches exact-ref gitmodule origins for target repositories not checked out by the action', async () => {
+    const calls: Array<{ url: string; init: any }> = [];
+    const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/proto.git\n';
+    const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
+      'calltelemetry/cisco-cdr',
+      'a'.repeat(40),
+      {
+        token: 'test-token',
+        fetchImplementation: async (url: string, init: any) => {
+          calls.push({ url, init });
+          return {
+            ok: true,
+            json: async () => ({
+              type: 'file',
+              encoding: 'base64',
+              content: Buffer.from(gitmodules).toString('base64'),
+            }),
+          };
+        },
+      },
+    );
+
+    expect(urls).toEqual({ proto: 'git@github.com:calltelemetry/proto.git' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain('/repos/calltelemetry/cisco-cdr/contents/.gitmodules?ref=');
+    expect(calls[0].init.headers.Authorization).toBe('Bearer test-token');
+
+    const result = pipeline.applyActionSubmodulePolicy([
+      {
+        path: 'proto',
+        mode: '160000',
+        oldSha: 'b'.repeat(40),
+        newSha: 'c'.repeat(40),
+      },
+    ], {
+      mode: 'metadata_only',
+      require_pinned_commit: true,
+      allowed_hosts: ['github.com'],
+      allowed_repositories: [],
+    }, {
+      baseSubmoduleUrls: urls,
+      submoduleUrls: urls,
+    });
+    expect(result.coverageComplete).toBe(true);
+  });
+
+  it('keeps a standard same-mode gitlink diff complete after exact-ref metadata resolution', async () => {
+    const diff = [
+      'diff --git a/proto b/proto',
+      'index 5d6846bd0e..20fd8fbf7a 160000',
+      '--- a/proto',
+      '+++ b/proto',
+      '@@ -1 +1 @@',
+      '-Subproject commit 5d6846bd0ea53b003b2247b9fe21d52109af3745',
+      '+Subproject commit 20fd8fbf7a2d53f97d5edfcc07387debdea62794',
+    ].join('\n');
+    const files = pipeline.parseDiff(diff);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ path: 'proto', mode: '160000', isSubmodule: true });
+    expect(pipeline.hasActionSubmoduleCandidate(files[0])).toBe(true);
+
+    const urls = { proto: 'git@github.com:calltelemetry/proto.git' };
+    const result = pipeline.applyActionSubmodulePolicy(files, {
+      mode: 'metadata_only',
+      require_pinned_commit: true,
+      missing_access: 'block',
+      allowed_hosts: ['github.com'],
+      allowed_repositories: [],
+      url_change: 'block',
+    }, {
+      baseSubmoduleUrls: urls,
+      submoduleUrls: urls,
+      parentRepository: 'calltelemetry/cisco-cdr',
+    });
+    expect(result.coverageComplete).toBe(true);
+    expect(result.files[0]).toMatchObject({
+      oldSha: '5d6846bd0ea53b003b2247b9fe21d52109af3745',
+      newSha: '20fd8fbf7a2d53f97d5edfcc07387debdea62794',
+    });
+  });
+
+  it('detects mode-only gitlinks and ignores ordinary files as metadata fetch candidates', () => {
+    expect(pipeline.hasActionSubmoduleCandidate({ path: 'vendor/new', newMode: '160000' })).toBe(true);
+    expect(pipeline.hasActionSubmoduleCandidate({
+      path: 'docs/submodules.md',
+      patch: 'diff --git a/docs/submodules.md b/docs/submodules.md\n+ordinary documentation',
+    })).toBe(false);
+  });
+
+  it('makes exact-ref target metadata authoritative over stale local checkout metadata', () => {
+    expect(pipeline.mergeActionSubmoduleUrls(
+      {
+        proto: 'git@github.com:calltelemetry/stale-proto.git',
+        retained: 'git@github.com:calltelemetry/retained.git',
+      },
+      { proto: 'git@github.com:calltelemetry/proto.git' },
+    )).toEqual({
+      proto: 'git@github.com:calltelemetry/proto.git',
+      retained: 'git@github.com:calltelemetry/retained.git',
+    });
+  });
+
+  it('resolves distinct exact base and head refs and routes them into policy metadata', async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-gitlinks-'));
+    const baseRoot = path.join(temp, 'base');
+    const headRoot = path.join(temp, 'head');
+    fs.mkdirSync(baseRoot);
+    fs.mkdirSync(headRoot);
+    fs.writeFileSync(path.join(baseRoot, '.gitmodules'), '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/stale.git\n');
+
+    const baseRef = 'a'.repeat(40);
+    const headRef = 'b'.repeat(40);
+    const refs: string[] = [];
+    const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/proto.git\n';
+    try {
+      const metadata = await pipeline.resolveActionSubmoduleMetadata([
+        { path: 'proto', mode: '160000', oldSha: 'c'.repeat(40), newSha: 'd'.repeat(40) },
+      ], {
+        parentRepository: 'calltelemetry/cisco-cdr',
+        baseRef,
+        headRef,
+        baseRoot,
+        headRoot,
+      }, {
+        fetchImplementation: async (url: string) => {
+          refs.push(new URL(url).searchParams.get('ref') || '');
+          return {
+            ok: true,
+            json: async () => ({
+              type: 'file',
+              encoding: 'base64',
+              content: Buffer.from(gitmodules).toString('base64'),
+            }),
+          };
+        },
+      });
+
+      expect(refs).toEqual([baseRef, headRef]);
+      expect(metadata).toEqual({
+        hasCandidate: true,
+        baseUrls: { proto: 'git@github.com:calltelemetry/proto.git' },
+        headUrls: { proto: 'git@github.com:calltelemetry/proto.git' },
+      });
+      const result = pipeline.applyActionSubmodulePolicy([
+        { path: 'proto', mode: '160000', oldSha: 'c'.repeat(40), newSha: 'd'.repeat(40) },
+      ], {
+        mode: 'metadata_only',
+        require_pinned_commit: true,
+        missing_access: 'block',
+        allowed_hosts: ['github.com'],
+        allowed_repositories: [],
+        url_change: 'block',
+      }, {
+        baseSubmoduleUrls: metadata.baseUrls,
+        submoduleUrls: metadata.headUrls,
+        parentRepository: 'calltelemetry/cisco-cdr',
+      });
+      expect(result.coverageComplete).toBe(true);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps exact-ref metadata fetch failures fail-closed', async () => {
+    const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
+      'calltelemetry/cisco-cdr',
+      'a'.repeat(40),
+      { fetchImplementation: async () => ({ ok: false, status: 404 }) },
+    );
+    expect(urls).toEqual({});
+
+    const result = pipeline.applyActionSubmodulePolicy([
+      { path: 'proto', mode: '160000', oldSha: 'b'.repeat(40), newSha: 'c'.repeat(40) },
+    ], {
+      mode: 'metadata_only',
+      require_pinned_commit: true,
+      allowed_hosts: ['github.com'],
+      allowed_repositories: [],
+    }, {
+      baseSubmoduleUrls: urls,
+      submoduleUrls: urls,
+    });
+    expect(result.coverageComplete).toBe(false);
   });
 
   it('parses HTTPS submodule origins with credentials and ports as URLs', () => {
