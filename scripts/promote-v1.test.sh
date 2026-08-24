@@ -78,29 +78,100 @@ set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
 case " $* " in
   *" fetch "*) exit 0 ;;
-  *" push "*) printf 'pushed\n' ;;
+  *" push "*)
+    if [[ "$*" == *":refs/tags/v1"* && "${FAKE_TAG_DELETE_FAIL:-}" == true ]]; then
+      echo "simulated legacy tag deletion failure" >&2
+      exit 1
+    fi
+    if [[ "$*" == *":refs/heads/v1"* && "${FAKE_BRANCH_PUSH_FAIL:-}" == true ]]; then
+      echo "simulated v1 branch update failure" >&2
+      exit 1
+    fi
+    printf 'pushed\n'
+    ;;
   *"refs/heads/v1 "*)
     if [[ "${FAKE_TAG_ONLY:-}" == true ]]; then exit 2; fi
-    printf 'old123\trefs/heads/v1\n'
+    printf '%s\trefs/heads/v1\n' "${FAKE_V1_SHA:-old123}"
     ;;
   *"refs/tags/v1 "*)
     if [[ "${FAKE_TAG_ONLY:-}" == true ]]; then printf 'old123\trefs/tags/v1\n'; else exit 2; fi
     ;;
   *" rev-parse refs/remotes/origin/main "*) printf '%s\n' "${FAKE_MAIN_SHA:-source123}" ;;
-  *" rev-parse refs/remotes/origin/v1 "*) printf 'old123\n' ;;
+  *" rev-parse refs/remotes/origin/v1 "*) printf '%s\n' "${FAKE_V1_SHA:-old123}" ;;
   *" rev-parse refs/tags/v1-legacy^{} "*) printf 'old123\n' ;;
-  *" merge-base "*) exit 0 ;;
+  *" merge-base "*)
+    if [[ "${FAKE_DIVERGED:-}" == true ]]; then exit 1; fi
+    exit 0
+    ;;
   *) echo "unexpected fake git call: $*" >&2; exit 1 ;;
 esac
 FAKE_GIT
 chmod +x "$tmp_dir/bin/git"
 
+fast_forward_log="$tmp_dir/fast-forward.log"
 PATH="$tmp_dir/bin:$PATH" \
   GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+  FAKE_LOG="$fast_forward_log" \
   GITHUB_STEP_SUMMARY="$tmp_dir/summary" \
   "$repo_root/scripts/promote-v1.sh"
 
 grep -Fq 'Originating PR: #42' "$tmp_dir/summary"
+grep -Fxq 'merge-base --is-ancestor old123 source123' "$fast_forward_log"
+grep -Fxq 'push origin source123:refs/heads/v1' "$fast_forward_log"
+if grep -Eq 'push .*HEAD|push .*codex/' "$fast_forward_log"; then
+  echo "promotion must use the exact candidate SHA, not the ambient checkout" >&2
+  exit 1
+fi
+
+# A divergent active channel must fail before any ref update.
+divergence_log="$tmp_dir/divergence.log"
+if divergence_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_DIVERGED=true FAKE_LOG="$divergence_log" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected divergent v1 promotion to fail" >&2
+  exit 1
+fi
+grep -Fq 'Refusing non-fast-forward v1 promotion from old123 to source123' <<<"$divergence_output"
+if grep -Fq 'push ' "$divergence_log"; then
+  echo "divergent promotion attempted a ref update" >&2
+  exit 1
+fi
+
+# An already-promoted candidate is an idempotent success and performs no write.
+idempotent_log="$tmp_dir/idempotent.log"
+idempotent_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_V1_SHA=source123 FAKE_LOG="$idempotent_log" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+grep -Fq 'Review Yeti v1 already points to source123' <<<"$idempotent_output"
+if grep -Fq 'push ' "$idempotent_log"; then
+  echo "idempotent promotion attempted a ref update" >&2
+  exit 1
+fi
+
+# A rejected branch update must not print a success receipt or attempt another
+# ref update. This is the non-partial branch-only failure case.
+failed_branch_log="$tmp_dir/failed-branch.log"
+if failed_branch_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_BRANCH_PUSH_FAIL=true FAKE_LOG="$failed_branch_log" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected rejected v1 branch update to fail" >&2
+  exit 1
+fi
+grep -Fq 'simulated v1 branch update failure' <<<"$failed_branch_output"
+if grep -Fq 'Promoted Review Yeti v1' <<<"$failed_branch_output"; then
+  echo "failed v1 branch update reported promotion success" >&2
+  exit 1
+fi
+[[ "$(grep -c '^push ' "$failed_branch_log")" -eq 1 ]]
 
 if output="$({
   PATH="$tmp_dir/bin:$PATH" \
@@ -128,6 +199,25 @@ fi
 printf '%s\n' "$tag_only_output"
 grep -Fq 'Promoted Review Yeti v1' <<<"$tag_only_output"
 grep -Fq 'Removed legacy Review Yeti v1 tag' <<<"$tag_only_output"
+
+# Characterize the incomplete legacy migration that Rank 1B must repair. The
+# current implementation updates the branch and then deletes the tag in a
+# second push. If that deletion fails, the script exits non-zero but has already
+# emitted a success line and may have partially changed the active channel.
+partial_update_log="$tmp_dir/partial-update.log"
+if partial_update_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_TAG_ONLY=true FAKE_TAG_DELETE_FAIL=true FAKE_LOG="$partial_update_log" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected failed legacy tag deletion to fail the promotion" >&2
+  exit 1
+fi
+grep -Fq 'Promoted Review Yeti v1' <<<"$partial_update_output"
+grep -Fq 'simulated legacy tag deletion failure' <<<"$partial_update_output"
+grep -Fxq 'push origin source123:refs/heads/v1' "$partial_update_log"
+grep -Fxq 'push origin :refs/tags/v1' "$partial_update_log"
 
 pending_marker="$tmp_dir/pending-marker"
 pending_output="$({
@@ -193,5 +283,160 @@ if [[ "$unreviewed_rc" -eq 0 ]]; then
   exit 1
 fi
 grep -Fq 'Required central check did not pass' <<<"$unreviewed_output"
+
+# The dry-run audit uses exact, caller-supplied old/new SHAs and local refs only.
+# It must model fast-forward, idempotent rerun, divergence, stale expected-old,
+# and rollback inputs without fetching, pushing, or requiring credentials.
+audit_bin="$tmp_dir/audit-bin"
+mkdir -p "$audit_bin"
+cat >"$audit_bin/git" <<'FAKE_AUDIT_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >> "${FAKE_LOG:?}"
+case " $* " in
+  *" rev-parse --verify refs/remotes/origin/main^{commit} "*)
+    if [[ "${AUDIT_MAIN_MISSING:-}" == true ]]; then exit 1; fi
+    printf '%s\n' "$AUDIT_MAIN_SHA"
+    ;;
+  *" rev-parse --verify refs/remotes/origin/v1^{commit} "*) printf '%s\n' "$AUDIT_V1_SHA" ;;
+  *" rev-parse --verify ${AUDIT_SOURCE_SHA}^{commit} "*) printf '%s\n' "$AUDIT_SOURCE_SHA" ;;
+  *" rev-parse --verify ${AUDIT_EXPECTED_OLD_SHA}^{commit} "*) printf '%s\n' "$AUDIT_EXPECTED_OLD_SHA" ;;
+  *" merge-base --is-ancestor "*)
+    if [[ "${AUDIT_DIVERGED:-}" == true ]]; then exit 1; fi
+    exit 0
+    ;;
+  *) echo "unexpected fake audit git call: $*" >&2; exit 1 ;;
+esac
+FAKE_AUDIT_GIT
+chmod +x "$audit_bin/git"
+
+audit_old_sha=1111111111111111111111111111111111111111
+audit_new_sha=2222222222222222222222222222222222222222
+audit_log="$tmp_dir/audit-fast-forward.log"
+audit_output="$({
+  PATH="$audit_bin:$PATH" \
+    GH_TOKEN=credential-sentinel-must-not-appear \
+    SOURCE_SHA="$audit_new_sha" EXPECTED_OLD_V1_SHA="$audit_old_sha" \
+    AUDIT_MAIN_SHA="$audit_new_sha" AUDIT_V1_SHA="$audit_old_sha" \
+    AUDIT_SOURCE_SHA="$audit_new_sha" AUDIT_EXPECTED_OLD_SHA="$audit_old_sha" \
+    FAKE_LOG="$audit_log" \
+    "$repo_root/scripts/audit-v1-promotion.sh"
+} 2>&1)"
+grep -Fxq "expected_old_ref=refs/heads/v1" <<<"$audit_output"
+grep -Fxq 'ref_snapshot=local-only' <<<"$audit_output"
+grep -Fxq 'remote_access=false' <<<"$audit_output"
+grep -Fxq "expected_old_sha=$audit_old_sha" <<<"$audit_output"
+grep -Fxq "expected_new_ref=refs/heads/v1" <<<"$audit_output"
+grep -Fxq "expected_new_sha=$audit_new_sha" <<<"$audit_output"
+grep -Fxq 'relation=fast-forward' <<<"$audit_output"
+grep -Fxq 'eligible=true' <<<"$audit_output"
+grep -Fxq 'rollback_strategy=create-reviewed-revert-on-main-then-promote' <<<"$audit_output"
+grep -Fxq "rollback_from_sha=$audit_new_sha" <<<"$audit_output"
+grep -Fxq "rollback_baseline_sha=$audit_old_sha" <<<"$audit_output"
+grep -Fxq 'direct_ref_rewind_allowed=false' <<<"$audit_output"
+grep -Fxq 'write_performed=false' <<<"$audit_output"
+if grep -Fq 'credential-sentinel-must-not-appear' <<<"$audit_output"; then
+  echo "read-only audit exposed credential content" >&2
+  exit 1
+fi
+if grep -Eq 'fetch|ls-remote|push|token|credential' "$audit_log"; then
+  echo "read-only audit attempted remote access or exposed a credential field" >&2
+  exit 1
+fi
+
+audit_idempotent_log="$tmp_dir/audit-idempotent.log"
+audit_idempotent_output="$({
+  PATH="$audit_bin:$PATH" \
+    SOURCE_SHA="$audit_new_sha" EXPECTED_OLD_V1_SHA="$audit_new_sha" \
+    AUDIT_MAIN_SHA="$audit_new_sha" AUDIT_V1_SHA="$audit_new_sha" \
+    AUDIT_SOURCE_SHA="$audit_new_sha" AUDIT_EXPECTED_OLD_SHA="$audit_new_sha" \
+    FAKE_LOG="$audit_idempotent_log" \
+    "$repo_root/scripts/audit-v1-promotion.sh"
+} 2>&1)"
+grep -Fxq 'relation=idempotent' <<<"$audit_idempotent_output"
+grep -Fxq 'write_performed=false' <<<"$audit_idempotent_output"
+
+audit_stale_candidate_main_sha=3333333333333333333333333333333333333333
+audit_stale_candidate_log="$tmp_dir/audit-stale-candidate.log"
+if audit_stale_candidate_output="$({
+  PATH="$audit_bin:$PATH" \
+    SOURCE_SHA="$audit_new_sha" EXPECTED_OLD_V1_SHA="$audit_old_sha" \
+    AUDIT_MAIN_SHA="$audit_stale_candidate_main_sha" AUDIT_V1_SHA="$audit_old_sha" \
+    AUDIT_SOURCE_SHA="$audit_new_sha" AUDIT_EXPECTED_OLD_SHA="$audit_old_sha" \
+    FAKE_LOG="$audit_stale_candidate_log" \
+    "$repo_root/scripts/audit-v1-promotion.sh"
+} 2>&1)"; then
+  echo "expected stale candidate audit to refuse promotion" >&2
+  exit 1
+fi
+grep -Fxq "main_sha=$audit_stale_candidate_main_sha" <<<"$audit_stale_candidate_output"
+grep -Fxq "candidate_sha=$audit_new_sha" <<<"$audit_stale_candidate_output"
+grep -Fxq 'relation=stale-candidate' <<<"$audit_stale_candidate_output"
+grep -Fxq 'eligible=false' <<<"$audit_stale_candidate_output"
+grep -Fxq 'write_performed=false' <<<"$audit_stale_candidate_output"
+
+audit_diverged_log="$tmp_dir/audit-diverged.log"
+if audit_diverged_output="$({
+  PATH="$audit_bin:$PATH" \
+    SOURCE_SHA="$audit_new_sha" EXPECTED_OLD_V1_SHA="$audit_old_sha" \
+    AUDIT_MAIN_SHA="$audit_new_sha" AUDIT_V1_SHA="$audit_old_sha" \
+    AUDIT_SOURCE_SHA="$audit_new_sha" AUDIT_EXPECTED_OLD_SHA="$audit_old_sha" \
+    AUDIT_DIVERGED=true FAKE_LOG="$audit_diverged_log" \
+    "$repo_root/scripts/audit-v1-promotion.sh"
+} 2>&1)"; then
+  echo "expected divergent audit to refuse promotion" >&2
+  exit 1
+fi
+grep -Fxq 'relation=diverged' <<<"$audit_diverged_output"
+grep -Fxq 'eligible=false' <<<"$audit_diverged_output"
+grep -Fxq 'write_performed=false' <<<"$audit_diverged_output"
+
+audit_observed_sha=3333333333333333333333333333333333333333
+audit_stale_log="$tmp_dir/audit-stale.log"
+if audit_stale_output="$({
+  PATH="$audit_bin:$PATH" \
+    SOURCE_SHA="$audit_new_sha" EXPECTED_OLD_V1_SHA="$audit_old_sha" \
+    AUDIT_MAIN_SHA="$audit_new_sha" AUDIT_V1_SHA="$audit_observed_sha" \
+    AUDIT_SOURCE_SHA="$audit_new_sha" AUDIT_EXPECTED_OLD_SHA="$audit_old_sha" \
+    FAKE_LOG="$audit_stale_log" \
+    "$repo_root/scripts/audit-v1-promotion.sh"
+} 2>&1)"; then
+  echo "expected stale old-ref audit to refuse promotion" >&2
+  exit 1
+fi
+grep -Fxq "observed_old_sha=$audit_observed_sha" <<<"$audit_stale_output"
+grep -Fxq "expected_old_sha=$audit_old_sha" <<<"$audit_stale_output"
+grep -Fxq 'relation=stale-old-ref' <<<"$audit_stale_output"
+grep -Fxq 'write_performed=false' <<<"$audit_stale_output"
+
+# Malformed exact-SHA inputs and missing local refs fail before eligibility is
+# evaluated. These guards keep the audit from accepting ambiguous coordinates.
+invalid_sha_log="$tmp_dir/audit-invalid-sha.log"
+if invalid_sha_output="$({
+  PATH="$audit_bin:$PATH" \
+    SOURCE_SHA=not-an-exact-sha EXPECTED_OLD_V1_SHA="$audit_old_sha" \
+    FAKE_LOG="$invalid_sha_log" \
+    "$repo_root/scripts/audit-v1-promotion.sh"
+} 2>&1)"; then
+  echo "expected malformed candidate SHA to fail the audit" >&2
+  exit 1
+fi
+grep -Fq 'SOURCE_SHA must be an exact lowercase 40-character commit SHA' <<<"$invalid_sha_output"
+[[ ! -s "$invalid_sha_log" ]]
+
+missing_ref_log="$tmp_dir/audit-missing-ref.log"
+if missing_ref_output="$({
+  PATH="$audit_bin:$PATH" \
+    SOURCE_SHA="$audit_new_sha" EXPECTED_OLD_V1_SHA="$audit_old_sha" \
+    AUDIT_MAIN_SHA="$audit_new_sha" AUDIT_V1_SHA="$audit_old_sha" \
+    AUDIT_SOURCE_SHA="$audit_new_sha" AUDIT_EXPECTED_OLD_SHA="$audit_old_sha" \
+    AUDIT_MAIN_MISSING=true FAKE_LOG="$missing_ref_log" \
+    "$repo_root/scripts/audit-v1-promotion.sh"
+} 2>&1)"; then
+  echo "expected missing local main ref to fail the audit" >&2
+  exit 1
+fi
+grep -Fq 'Cannot resolve refs/remotes/origin/main to a commit from the local ref snapshot' <<<"$missing_ref_output"
 
 echo "promote-v1 behavioral contract passed"
