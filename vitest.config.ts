@@ -65,11 +65,6 @@ export default defineConfig({
     ],
     cacheDir: 'node_modules/.vitest',
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: false,
-      },
-    },
     fileParallelism: false,
     isolate: true,
     coverage: {
