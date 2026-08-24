@@ -556,7 +556,8 @@ grep -Fq 'Cannot resolve refs/remotes/origin/main to a commit from the local ref
 grep -Fq 'EXPECTED_OLD_V1_SHA: ${{ steps.expected-v1.outputs.sha }}' "$repo_root/.github/workflows/promote-v1.yml"
 # shellcheck disable=SC2016
 grep -Fq 'PROMOTION_RECEIPT_PATH: ${{ runner.temp }}/review-yeti-v1-promotion-receipt.json' "$repo_root/.github/workflows/promote-v1.yml"
-grep -Fq 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' "$repo_root/.github/workflows/promote-v1.yml"
+grep -Fq 'actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0' "$repo_root/.github/workflows/promote-v1.yml"
+grep -Fq 'actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
 
 echo "promote-v1 behavioral contract passed"
