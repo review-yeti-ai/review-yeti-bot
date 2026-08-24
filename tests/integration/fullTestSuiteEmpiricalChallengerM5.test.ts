@@ -7,19 +7,15 @@ describe('Milestone 5 Empirical Challenger: Full Test Suite & Isolation Harness'
   const projectRoot = path.resolve(__dirname, '../../');
   const testsDir = path.join(projectRoot, 'tests');
 
-  describe('1. Process Isolation Verification (poolOptions.forks.singleFork: false)', () => {
-    it('vitest.config.ts sets pool to forks', () => {
+  describe('1. Process Isolation Verification under Vitest 4', () => {
+    it('vitest.config.ts uses top-level pool controls without deprecated poolOptions', () => {
       expect(config.test?.pool).toBe('forks');
+      expect(config.test?.fileParallelism).toBe(false);
+      expect(config.test?.isolate).toBe(true);
+      expect((config.test as any)?.poolOptions).toBeUndefined();
     });
 
-    it('vitest.config.ts sets poolOptions.forks.singleFork to false', () => {
-      const poolOptions = config.test?.poolOptions as any;
-      expect(poolOptions).toBeDefined();
-      expect(poolOptions.forks).toBeDefined();
-      expect(poolOptions.forks.singleFork).toBe(false);
-    });
-
-    it('verifies process isolation parameters and singleFork configuration', () => {
+    it('verifies process isolation parameters', () => {
       expect(config.test?.fileParallelism).toBe(false);
       // Verify that process environment is isolated and process PID is accessible
       expect(process.pid).toBeGreaterThan(0);

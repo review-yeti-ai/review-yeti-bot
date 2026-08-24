@@ -55,18 +55,18 @@ describe('Milestone 5 Empirical Challenger 1: Build Cleanliness, Process Isolati
     });
   });
 
-  describe('2. Process Isolation under Vitest Execution (singleFork: false)', () => {
+  describe('2. Process Isolation under Vitest 4 Execution', () => {
     it('vitest.config.ts sets pool to forks', () => {
       const rawConfig = (config as any).test ? config : (config as any).default || config;
       expect(rawConfig.test?.pool).toBe('forks');
     });
 
-    it('vitest.config.ts configures poolOptions.forks.singleFork to false', () => {
+    it('vitest.config.ts uses top-level pool controls without deprecated poolOptions', () => {
       const rawConfig = (config as any).test ? config : (config as any).default || config;
-      const poolOptions = rawConfig.test?.poolOptions as any;
-      expect(poolOptions).toBeDefined();
-      expect(poolOptions.forks).toBeDefined();
-      expect(poolOptions.forks.singleFork).toBe(false);
+      expect(rawConfig.test?.pool).toBe('forks');
+      expect(rawConfig.test?.fileParallelism).toBe(false);
+      expect(rawConfig.test?.isolate).toBe(true);
+      expect(rawConfig.test?.poolOptions).toBeUndefined();
     });
 
     it('verifies process environment isolation and absence of environment leakage', () => {
