@@ -616,6 +616,31 @@ describe('reviewWithModel', () => {
     expect(res.outputTokens).toBe(20);
   });
 
+  it('characterizes alternate provider-reported token and cost fields before receipt promotion', async () => {
+    const { impl } = stubFetch(JSON.stringify({ findings: [] }), {
+      payload: {
+        usage: {
+          total_cost: '0.0081',
+          input_tokens: '101',
+          outputTokens: '22',
+        },
+        choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+      },
+    });
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      model: 'openrouter/auto',
+      fetchImpl: impl,
+    });
+
+    // The lane result captures these provider fields today. Rank 3D will
+    // decide separately how, and when, to persist them in the run report.
+    expect(res.cost).toBe(0.0081);
+    expect(res.inputTokens).toBe(101);
+    expect(res.outputTokens).toBe(22);
+  });
+
   it('parses findings wrapped in a markdown code fence', async () => {
     const { impl } = stubFetch('Sure!\n```json\n' + validFindings + '\n```\n');
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
