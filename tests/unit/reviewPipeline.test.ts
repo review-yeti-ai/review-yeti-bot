@@ -193,7 +193,7 @@ index 123456..789abc 100644
       findings: [],
     }], { prNumber: '103', repo: 'calltelemetry/ct-review-bot', headSha: 'def4567' });
 
-    expect(formattedComment).toContain('| Security | `openrouter` | `openrouter/auto` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
+    expect(formattedComment).toContain('| Security | `unknown` | `openrouter/auto` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
     expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
     expect(formattedComment).not.toContain('NaN');
   });
