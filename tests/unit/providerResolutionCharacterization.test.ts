@@ -16,10 +16,11 @@ const diffFiles = [{
   deletedLines: [],
 }];
 
-function responseFor(payload: any) {
+function responseFor(payload: any, options: { ok?: boolean; status?: number } = {}) {
   return {
-    ok: true,
-    status: 200,
+    ok: options.ok !== false,
+    status: options.status || 200,
+    text: async () => JSON.stringify(payload),
     json: async () => ({
       choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
       ...payload,
@@ -27,14 +28,14 @@ function responseFor(payload: any) {
   };
 }
 
-async function reviewPayload(payload: any) {
+async function reviewPayload(payload: any, responseOptions: { ok?: boolean; status?: number } = {}) {
   return reviewWithModel(
     securityPersona,
     diffFiles,
     { repo: 'o/r', prNumber: 1 },
     null,
     {
-      fetchImplementation: async () => responseFor(payload),
+      fetchImplementation: async () => responseFor(payload, responseOptions),
       circuitBreaker: new RunTransportCircuitBreaker(),
       transports: [{
         name: 'fireworks',
@@ -47,14 +48,12 @@ async function reviewPayload(payload: any) {
 }
 
 describe('provider identity receipt characterization', () => {
-  it('preserves the current openrouter fallback when a direct provider omits provider metadata', async () => {
-    // This test records the existing behavior only. It intentionally does not
-    // change transport selection or repair the known receipt attribution gap.
+  it('uses the configured direct transport when the provider omits provider metadata', async () => {
     const result = await reviewPayload({ model: 'accounts/fireworks/models/deepseek-v4-flash-0731' });
 
     expect(result.decision).toBe('APPROVE');
     expect(result.transport).toBe('fireworks');
-    expect(result.provider).toBe('openrouter');
+    expect(result.provider).toBe('fireworks');
   });
 
   it('uses usage.provider when the upstream response reports its serving provider', async () => {
@@ -66,5 +65,33 @@ describe('provider identity receipt characterization', () => {
     expect(result.decision).toBe('APPROVE');
     expect(result.transport).toBe('fireworks');
     expect(result.provider).toBe('Google Vertex AI');
+  });
+
+  it('keeps the configured direct transport on an HTTP failure receipt', async () => {
+    const result = await reviewPayload({ error: { message: 'upstream unavailable' } }, { ok: false, status: 503 });
+
+    expect(result.decision).toBe('ERROR');
+    expect(result.transport).toBe('fireworks');
+    expect(result.provider).toBe('fireworks');
+  });
+
+  it('retains endpoint-derived OpenRouter identity for the default OpenRouter transport', async () => {
+    const result = await reviewWithModel(
+      securityPersona,
+      diffFiles,
+      { repo: 'o/r', prNumber: 1 },
+      null,
+      {
+        apiKey: 'or-key',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/auto',
+        fetchImplementation: async () => responseFor({ model: 'openrouter/auto' }),
+        circuitBreaker: new RunTransportCircuitBreaker(),
+      },
+    );
+
+    expect(result.decision).toBe('APPROVE');
+    expect(result.transport).toBe('default');
+    expect(result.provider).toBe('openrouter');
   });
 });
