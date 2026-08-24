@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Review Runner (this repository)
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       # "Central repo controls all personas and settings and each repo can override with a local
       # file." On the dispatch path the workspace holds this repository, so the target's override
@@ -75,7 +75,7 @@ jobs:
       # repository fails on detached PR checkouts and cannot work for a cross-repo target.
       - name: Upload Session Ledger
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: session-ledger-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           path: |
