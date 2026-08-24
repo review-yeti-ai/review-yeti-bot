@@ -4,7 +4,7 @@
     "repository": "review-yeti-ai/review-yeti-bot",
     "action_channel": "v1",
     "action_channel_pattern": "^v[0-9]+(\\.[0-9]+){0,2}$",
-    "personas": "security,performance,architecture,testing,dependencies",
+    "personas": "security,performance,architecture,testing,dependencies,licensing",
     "transports": [
       {
         "name": "fireworks",
