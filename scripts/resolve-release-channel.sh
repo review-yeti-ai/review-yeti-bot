@@ -20,6 +20,7 @@ ref_json="$(gh api "repos/${REVIEW_YETI_REPOSITORY}/git/ref/tags/${REVIEW_YETI_A
   exit 1
 }
 
+ref_sha="$(jq -r '.object.sha' <<<"$ref_json")"
 resolved_sha="$(resolve_review_yeti_ref_sha "$ref_json")"
 
 [[ "$resolved_sha" =~ $sha_re ]] || {
@@ -27,6 +28,12 @@ resolved_sha="$(resolve_review_yeti_ref_sha "$ref_json")"
   exit 1
 }
 
+[[ "$ref_sha" =~ $sha_re ]] || {
+  echo "::error::Release channel resolved to an invalid ref object"
+  exit 1
+}
+
 printf 'sha<<CT_REVIEW_RESOLVED_SHA\n%s\nCT_REVIEW_RESOLVED_SHA\n' "$resolved_sha" >> "$GITHUB_OUTPUT"
+printf 'ref_sha<<CT_REVIEW_RESOLVED_REF_SHA\n%s\nCT_REVIEW_RESOLVED_REF_SHA\n' "$ref_sha" >> "$GITHUB_OUTPUT"
 printf 'channel<<CT_REVIEW_ACTION_CHANNEL\n%s\nCT_REVIEW_ACTION_CHANNEL\n' "$REVIEW_YETI_ACTION_CHANNEL" >> "$GITHUB_OUTPUT"
-echo "Resolved ${REVIEW_YETI_REPOSITORY}@${REVIEW_YETI_ACTION_CHANNEL} to ${resolved_sha}."
+echo "Resolved ${REVIEW_YETI_REPOSITORY}@${REVIEW_YETI_ACTION_CHANNEL} ref ${ref_sha} to ${resolved_sha}."
