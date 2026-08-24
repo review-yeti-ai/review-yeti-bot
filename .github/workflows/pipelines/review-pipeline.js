@@ -1010,10 +1010,16 @@ function resolveResponseModel(payload, fallbackModel) {
       : fallbackModel;
 }
 
-function resolveResponseProvider(payload) {
+function resolveConfiguredProvider(transport, transportName, transportBaseUrl) {
+  return normalizeResponseProvider(transport?.provider)
+    || (transportName && transportName !== 'default' ? normalizeResponseProvider(transportName) : null)
+    || (String(transportBaseUrl || '').toLowerCase().includes('openrouter.ai') ? 'openrouter' : null);
+}
+
+function resolveResponseProvider(payload, configuredProvider) {
   return normalizeResponseProvider(payload?.provider)
     || normalizeResponseProvider(payload?.usage?.provider)
-    || 'openrouter';
+    || normalizeResponseProvider(configuredProvider);
 }
 
 function extractResponseCost(payload) {
@@ -1482,7 +1488,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     personaId: persona.id,
     displayName: persona.name,
     model: cfg.model,
-    provider: 'openrouter',
+    provider: null,
     cost: null,
     inputTokens: null,
     outputTokens: null,
@@ -1578,6 +1584,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const transportBaseUrl = (transport.baseUrl || transport.base_url || cfg.baseUrl).replace(/\/+$/, '');
       const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
       const streamEnabled = transport.stream === true;
+      const configuredProvider = resolveConfiguredProvider(transport, transportName, transportBaseUrl);
       const isOpenRouterTransport =
         String(transport.provider || '').toLowerCase() === 'openrouter' ||
         String(transport.compat || '').toLowerCase() === 'openrouter' ||
@@ -1586,7 +1593,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const configuredMaxOutputTokens =
         transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens;
 
-      resultBase = { ...resultBase, model: requestModel, transport: transportName };
+      resultBase = {
+        ...resultBase,
+        model: requestModel,
+        provider: configuredProvider,
+        transport: transportName,
+      };
 
       const requestBody = {
         model: requestModel,
@@ -1710,7 +1722,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const responseBase = {
             ...resultBase,
             model: resolveResponseModel(payload, requestModel),
-            provider: resolveResponseProvider(payload),
+            provider: resolveResponseProvider(payload, configuredProvider),
             transport: transportName,
             cost: extractResponseCost(payload),
             ...extractResponseTokenUsage(payload),
@@ -2866,7 +2878,7 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     }
 
     const icon = res.decision === 'APPROVE' ? '✅' : '⚠️';
-    const provider = escapeMarkdownTableCell(res.provider || 'openrouter');
+    const provider = escapeMarkdownTableCell(res.provider || res.transport || 'unknown');
     const model = escapeMarkdownTableCell(res.model || modelConfig.model || DEFAULT_MODEL);
     const inputTokens = normalizeTokenCount(res.inputTokens);
     if (inputTokens !== null) {
