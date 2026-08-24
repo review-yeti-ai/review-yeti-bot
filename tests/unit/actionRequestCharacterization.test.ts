@@ -1,0 +1,330 @@
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const root = path.resolve(__dirname, '../..');
+const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
+const fixturePath = path.join(root, 'tests/fixtures/review-yeti/rank2a-execution-plan.fixture.json');
+const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+
+const FIXTURE_SOURCE = Object.freeze({
+  repository: 'calltelemetry/ct-review-actions',
+  commit: '48ce1578adfc540ff4571b55abf7dbbeb286c27f',
+  digest: '25f23b8d71beea214be5bb7f13c711a6c348b1dd5df1d2eed128b0c559365ee5',
+});
+
+const BASE_URL_BY_CLASS: Record<string, string> = Object.freeze({
+  'direct-fireworks-openai-compatible': 'https://api.fireworks.ai/inference/v1',
+  'direct-ollama-cloud-openai-compatible': 'https://ollama.com/v1',
+  'openrouter-gateway': 'https://openrouter.ai/api/v1',
+});
+
+const KEY_ENV_BY_NAME: Record<string, string> = Object.freeze({
+  fireworks: 'FIXTURE_FIREWORKS_KEY',
+  ollama: 'FIXTURE_OLLAMA_KEY',
+  'openrouter-fallback': 'FIXTURE_OPENROUTER_KEY',
+});
+
+function canonicalJson(value: any): string | undefined {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hydrateTransportForAction(transport: any) {
+  const baseUrl = BASE_URL_BY_CLASS[transport.base_url_class];
+  const apiKeyEnv = KEY_ENV_BY_NAME[transport.name];
+  if (!baseUrl || !apiKeyEnv) throw new Error(`unapproved fixture transport ${transport.name}`);
+
+  return {
+    name: transport.name,
+    base_url: baseUrl,
+    api_key_env: apiKeyEnv,
+    model: transport.model,
+    compat: transport.compatibility_mode,
+    timeout_ms: transport.timeouts.request_ms,
+    connect_timeout_ms: transport.timeouts.connect_ms,
+    stream: transport.streaming,
+    ...(transport.structured_output === 'runtime-default-uncharacterized'
+      ? {}
+      : { structured_output: transport.structured_output }),
+    perf_metrics_in_response: transport.request_extensions.perf_metrics_in_response,
+    reasoning_effort: transport.reasoning.effort,
+    ...(transport.quarantine.on_timeout === 'runtime-default-uncharacterized'
+      ? {}
+      : { quarantine_on_timeout: transport.quarantine.on_timeout }),
+    ignore_providers: transport.routing.ignore_providers,
+    ...(transport.routing.provider ? { provider_routing: transport.routing.provider } : {}),
+  };
+}
+
+function resolveFixtureRuntime() {
+  const transportInputs = fixture.plan.transports.map(hydrateTransportForAction);
+  return pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+    REVIEW_YETI_TRANSPORTS: JSON.stringify(transportInputs),
+    FIXTURE_FIREWORKS_KEY: 'fixture-fireworks-key',
+    FIXTURE_OLLAMA_KEY: 'fixture-ollama-key',
+    FIXTURE_OPENROUTER_KEY: 'fixture-openrouter-key',
+    OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+    OPENROUTER_MODEL: 'openrouter/auto',
+    OPENROUTER_DATA_COLLECTION: 'deny',
+  });
+}
+
+// Mirrors scripts/review-yeti-smoke.mjs::buildRequest at FIXTURE_SOURCE.commit. Keeping this
+// adapter local avoids a cross-repository runtime dependency; the pinned digest and exhaustive
+// disposition check make unclassified fixture changes fail closed.
+function smokeBodyFromFixture(transport: any) {
+  const body: Record<string, any> = {
+    model: transport.model,
+    messages: [
+      { role: 'system', content: '<smoke-system-prompt>' },
+      { role: 'user', content: '<smoke-user-prompt>' },
+    ],
+    temperature: 0,
+    max_tokens: 128,
+    stream: transport.streaming,
+    response_format: { type: 'json_object' },
+  };
+  if (transport.routing.provider) body.provider = transport.routing.provider;
+  if (transport.reasoning.effort !== 'runtime-default-uncharacterized') {
+    if (transport.reasoning.wire_shape === 'reasoning.effort') {
+      body.reasoning = { effort: transport.reasoning.effort };
+    } else {
+      body.reasoning_effort = transport.reasoning.effort;
+    }
+  }
+  if (transport.request_extensions.perf_metrics_in_response) body.perf_metrics_in_response = true;
+  return body;
+}
+
+function endpointClass(url: string) {
+  const baseUrl = url.replace(/\/chat\/completions$/, '');
+  return Object.entries(BASE_URL_BY_CLASS).find(([, candidate]) => candidate === baseUrl)?.[0] || 'unclassified';
+}
+
+function successfulStream(model: string) {
+  const payload = [
+    `data: ${JSON.stringify({ model, choices: [{ delta: { content: '{"findings":[]}' } }] })}`,
+    'data: [DONE]',
+    '',
+  ].join('\n');
+  return new Response(payload, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
+async function capturePanelRequests() {
+  const runtime = resolveFixtureRuntime();
+  const captured: Record<string, any> = {};
+
+  for (const transport of runtime.modelConfig.transports) {
+    pipeline.globalRunCircuitBreaker.reset();
+    const result = await pipeline.reviewWithModel(
+      { id: 'testing', name: 'Testing Specialist', charter: 'Check tests.' },
+      [{ path: 'src/example.ts', patch: '@@ -0,0 +1 @@\n+export const value = 1;' }],
+      { repo: 'fixture/repository', prNumber: '1' },
+      null,
+      {
+        ...runtime.modelConfig,
+        transports: [transport],
+        fetchImplementation: async (url: string, init: any) => {
+          const body = JSON.parse(init.body);
+          captured[transport.name] = {
+            endpoint_class: endpointClass(url),
+            method: init.method,
+            headers: {
+              authorization: init.headers.Authorization ? '<redacted>' : '<missing>',
+              'content-type': init.headers['Content-Type'],
+            },
+            timeout_ms: transport.timeoutMs,
+            body: {
+              ...body,
+              messages: body.messages.map((message: any) => ({
+                role: message.role,
+                content: message.role === 'system' ? '<panel-system-prompt>' : '<panel-user-prompt>',
+              })),
+            },
+          };
+          return successfulStream(transport.model);
+        },
+      },
+    );
+    expect(result).toMatchObject({ decision: 'APPROVE', findings: [], transport: transport.name });
+  }
+
+  return { runtime, captured };
+}
+
+function leafPaths(value: any, prefix = ''): string[] {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [prefix];
+    return value.flatMap((entry, index) => leafPaths(entry, `${prefix}[${index}]`));
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return [prefix];
+    return entries.flatMap(([key, entry]) => leafPaths(entry, prefix ? `${prefix}.${key}` : key));
+  }
+  return [prefix];
+}
+
+function normalizePlanPath(pathValue: string) {
+  return pathValue.replace(/\[\d+\]/g, '[*]');
+}
+
+function dispositionFor(pathValue: string): string | null {
+  if (/^(schema|policy_schema|release_channel|transport_order\[\*\]|lane\.)/.test(pathValue)) return 'workflow-owned';
+  if (/^transports\[\*\]\.(name|model|timeouts\.request_ms|streaming|reasoning\.effort|request_extensions\.perf_metrics_in_response)$/.test(pathValue)) return 'consumed';
+  if (pathValue === 'transports[*].base_url_class') return 'test-hydrated-and-consumed';
+  if (/^transports\[\*\]\.(compatibility_mode|structured_output|reasoning\.wire_shape|routing\.mode)$/.test(pathValue)) return 'runtime-derived-or-hardcoded-parity';
+  if (/^transports\[\*\]\.(privacy\.data_collection|routing\.provider\.data_collection)$/.test(pathValue)) return 'translated-via-action-policy';
+  if (/^transports\[\*\]\.retry\.(max_attempts|classification)$/.test(pathValue)) return 'runtime-owned-uncharacterized';
+  if (/^transports\[\*\]\.(timeouts\.(connect_ms|stall_ms|ttft_ms)|routing\.ignore_providers(?:\[\*\])?|routing\.provider(?:\.(?!data_collection).+)?|quarantine\.on_timeout)$/.test(pathValue)) return 'dropped-by-runtime-mapper';
+  return null;
+}
+
+describe('CallTelemetry Rank 2A execution plan through the real Action request path', () => {
+  it('pins the credential-free central fixture to its reviewed source and normalized digest', () => {
+    expect(fixture.schema).toBe('calltelemetry.review-execution-plan-fixture.v1');
+    expect(fixture.normalized_plan_sha256).toBe(FIXTURE_SOURCE.digest);
+    expect(createHash('sha256').update(canonicalJson(fixture.plan)!).digest('hex')).toBe(FIXTURE_SOURCE.digest);
+    expect(FIXTURE_SOURCE).toEqual({
+      repository: 'calltelemetry/ct-review-actions',
+      commit: '48ce1578adfc540ff4571b55abf7dbbeb286c27f',
+      digest: '25f23b8d71beea214be5bb7f13c711a6c348b1dd5df1d2eed128b0c559365ee5',
+    });
+  });
+
+  it('accounts for every fixture leaf and locks only the remaining dropped field families', () => {
+    const paths = [...new Set(leafPaths(fixture.plan).map(normalizePlanPath))].sort();
+    expect(paths.filter((entry) => dispositionFor(entry) === null)).toEqual([]);
+    expect(paths.filter((entry) => dispositionFor(entry) === 'dropped-by-runtime-mapper')).toEqual([
+      'transports[*].quarantine.on_timeout',
+      'transports[*].routing.ignore_providers',
+      'transports[*].routing.ignore_providers[*]',
+      'transports[*].routing.provider',
+      'transports[*].routing.provider.allow_fallbacks',
+      'transports[*].routing.provider.ignore[*]',
+      'transports[*].routing.provider.preferred_max_latency.p99',
+      'transports[*].routing.provider.preferred_min_throughput.p90',
+      'transports[*].routing.provider.require_parameters',
+      'transports[*].routing.provider.sort',
+      'transports[*].timeouts.connect_ms',
+      'transports[*].timeouts.stall_ms',
+      'transports[*].timeouts.ttft_ms',
+    ]);
+  });
+
+  it('snapshots the final credential-free request shape for every configured transport', async () => {
+    const { captured } = await capturePanelRequests();
+    const common = (model: string, maxTokens: number) => ({
+      model,
+      messages: [
+        { role: 'system', content: '<panel-system-prompt>' },
+        { role: 'user', content: '<panel-user-prompt>' },
+      ],
+      temperature: 0.1,
+      max_tokens: maxTokens,
+      response_format: { type: 'json_object' },
+      stream: true,
+    });
+
+    expect(captured).toEqual({
+      fireworks: {
+        endpoint_class: 'direct-fireworks-openai-compatible',
+        method: 'POST',
+        headers: { authorization: '<redacted>', 'content-type': 'application/json' },
+        timeout_ms: 120000,
+        body: {
+          ...common('accounts/fireworks/models/deepseek-v4-flash-0731', 24576),
+          reasoning_effort: 'high',
+          perf_metrics_in_response: true,
+        },
+      },
+      ollama: {
+        endpoint_class: 'direct-ollama-cloud-openai-compatible',
+        method: 'POST',
+        headers: { authorization: '<redacted>', 'content-type': 'application/json' },
+        timeout_ms: 90000,
+        body: {
+          ...common('deepseek-v4-flash:cloud', 24576),
+          reasoning_effort: 'high',
+        },
+      },
+      'openrouter-fallback': {
+        endpoint_class: 'openrouter-gateway',
+        method: 'POST',
+        headers: { authorization: '<redacted>', 'content-type': 'application/json' },
+        timeout_ms: 90000,
+        body: {
+          ...common('deepseek/deepseek-v4-flash-0731', 1024),
+          reasoning: { effort: 'high' },
+          plugins: [{
+            id: 'auto-router',
+            allowed_models: [
+              'openai/gpt-5.6-luna',
+              'moonshotai/kimi-k2.6',
+              'tencent/hy3',
+              'z-ai/glm-5.1',
+              'google/gemini-3.5-flash-lite',
+            ],
+            cost_quality_tradeoff: 7,
+          }],
+          provider: { data_collection: 'deny' },
+        },
+      },
+    });
+  });
+
+  it('proves OpenRouter-only fields never reach Fireworks or Ollama', async () => {
+    const { captured } = await capturePanelRequests();
+    for (const name of ['fireworks', 'ollama']) {
+      expect(captured[name].body).not.toHaveProperty('provider');
+      expect(captured[name].body).not.toHaveProperty('plugins');
+    }
+    expect(captured['openrouter-fallback'].body).toHaveProperty('provider');
+    expect(captured['openrouter-fallback'].body).toHaveProperty('plugins');
+  });
+
+  it('categorizes smoke/panel semantic parity and the remaining OpenRouter routing drift', async () => {
+    const { captured } = await capturePanelRequests();
+    const parity = Object.fromEntries(fixture.plan.transports.map((transport: any) => {
+      const smoke = smokeBodyFromFixture(transport);
+      const panel = captured[transport.name].body;
+      return [transport.name, {
+        model: smoke.model === panel.model ? 'equal' : 'different',
+        response_format: canonicalJson(smoke.response_format) === canonicalJson(panel.response_format) ? 'equal' : 'different',
+        stream: smoke.stream === panel.stream ? 'equal' : 'different',
+        reasoning: canonicalJson(smoke.reasoning ?? smoke.reasoning_effort) === canonicalJson(panel.reasoning ?? panel.reasoning_effort) ? 'equal' : 'different',
+        perf_metrics_in_response: canonicalJson(smoke.perf_metrics_in_response) === canonicalJson(panel.perf_metrics_in_response) ? 'equal' : 'different',
+        provider: canonicalJson(smoke.provider) === canonicalJson(panel.provider) ? 'equal' : 'different',
+        plugins: smoke.plugins === undefined && panel.plugins !== undefined ? 'panel-only' : 'equal',
+        temperature: smoke.temperature === panel.temperature ? 'equal' : 'prompt-specific-difference',
+        max_tokens: smoke.max_tokens === panel.max_tokens ? 'equal' : 'prompt-specific-difference',
+      }];
+    }));
+
+    expect(parity).toEqual({
+      fireworks: {
+        model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
+        perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'equal',
+        temperature: 'prompt-specific-difference', max_tokens: 'prompt-specific-difference',
+      },
+      ollama: {
+        model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
+        perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'equal',
+        temperature: 'prompt-specific-difference', max_tokens: 'prompt-specific-difference',
+      },
+      'openrouter-fallback': {
+        model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
+        perf_metrics_in_response: 'equal', provider: 'different', plugins: 'panel-only',
+        temperature: 'prompt-specific-difference', max_tokens: 'prompt-specific-difference',
+      },
+    });
+  });
+});
