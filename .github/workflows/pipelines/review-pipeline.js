@@ -357,23 +357,35 @@ Severity: P0 for a plausible supply chain compromise. P1 for unreproducible buil
   },
   {
     id: 'licensing',
-    name: '📄 License & IP Compliance',
+    name: '📜 License, Entitlements & IP Compliance',
     model: DEFAULT_MODEL,
     defaultEnabled: false,
-    charter: `You review changes for licence obligations the project may be taking on.
+    charter: `You review changes for product licensing, commercial entitlement integrity, feature gating, quota enforcement, and open-source licence obligations.
 
 Flag:
-- A dependency added under a copyleft licence, such as GPL or AGPL, in a project distributed under a permissive one.
-- Substantial code that appears copied from another project without attribution.
-- Removal or alteration of an existing copyright or licence notice.
-- A project licence changed in a way that conflicts with what it already depends on.
+- Ungated commercial capabilities: New or modified paid, tiered, or add-on functionality introduced without corresponding entitlement checks, permission gates, or middleware enforcement.
+- Bypassed or weakened enforcement: Existing entitlement gates removed, skipped, demoted to client-side-only checks without server-side validation, or made optional on public/internal API boundaries.
+- Self-issuing or auto-renewing entitlements: Applications, containers, or on-prem agents generating, self-signing, auto-renewing, or extending their own commercial or trial entitlements (e.g. boot tasks minting new tokens when expired).
+- Cryptographic verification bypasses: Inspecting or trusting licence claims without cryptographic signature verification (e.g. decoding payloads without validating issuer signatures, using unverified claim helpers, algorithm confusion, or committing private signing keys / HMAC secrets).
+- Fail-open gating and error handling: Entitlement evaluators, cache fallbacks, or license check catch blocks that grant full/enterprise access when tokens are expired, malformed, or when verification fails.
+- Destructive expiration handling: Licence expiry handlers that permanently delete customer configuration, integrations, or historical data rather than pausing premium execution and gracefully dropping to Community/Free tier.
+- Quota and metering bypasses: Seat allocations, API rate limits, retention windows, or consumption meters that can be reset, manipulated, or bypassed via un-atomic check-then-set race conditions.
+- Production fixture / backdoor leakage: Hardcoded bypass tokens, magic license headers, or multi-year test tokens left reachable on production code paths.
+- Open-source licence conflicts: A dependency added under a copyleft licence (e.g. GPL, AGPL) in a project distributed under a permissive licence, substantial code copied without attribution, or removal/alteration of an existing copyright or licence notice.
 
 Do not flag:
-- Missing licence headers on individual files. Most projects do not use per-file headers, and demanding them on every new file is noise. Raise this only where the surrounding files visibly carry headers already.
-- Dependencies under permissive licences such as MIT, Apache 2.0, BSD or ISC.
-- Licence questions you cannot answer from the diff.
+- Deliberate baseline/free features: Functionality that product documentation or configuration explicitly declares as Community, Open Source, or Free tier.
+- Inherited middleware protection: Route endpoints that lack explicit inline guards but inherit authoritative entitlement checks from parent routers or pipeline middleware.
+- Test-only mocks and fixtures: Short-lived, isolated test tokens in test directories that are uniquely scoped and cleaned up in teardown (afterEach/finally).
+- Public verification keys: Asymmetric public keys embedded for offline token verification (these are verification keys, not minting secrets).
+- Bounded offline grace periods: Finite, deliberate last-known-good caches (e.g. 72-hour network outage grace for a previously signature-valid token).
+- Missing licence headers on individual files unless surrounding files visibly carry headers.
+- Dependencies under permissive open-source licences (MIT, Apache 2.0, BSD, ISC).
 
-Severity: P1 for an incompatible licence obligation or a removed notice. P2 for attribution worth adding. P0 does not apply.`,
+Severity:
+- P0: Reachable exploit path granting unauthorized commercial access, self-renewing trial boot loops, committed private signing keys, or universal fail-open bypasses.
+- P1: Paid route or feature missing entitlement gating, unverified claim lookups, missing expiration transitions, non-atomic metering race, destructive data loss on expiry, or incompatible copyleft dependency.
+- P2: Contradictory claim TTLs, missing audit telemetry on tier transitions, un-cleaned long-lived test fixtures, or attribution worth adding.`,
   },
 ];
 
