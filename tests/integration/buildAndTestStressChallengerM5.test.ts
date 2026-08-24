@@ -149,7 +149,10 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
       const configContent = fs.readFileSync(vitestConfigPath, 'utf8');
 
       expect(configContent).toContain("pool: 'forks'");
-      expect(configContent).toContain('singleFork: false');
+      expect(configContent).toContain('fileParallelism: false');
+      expect(configContent).toContain('isolate: true');
+      expect(configContent).not.toContain('poolOptions');
+      expect(configContent).not.toContain('singleFork');
     });
   });
 });
