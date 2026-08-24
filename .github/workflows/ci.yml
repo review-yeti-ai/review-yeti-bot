@@ -21,10 +21,13 @@ jobs:
       - name: Validate policy and scripts
         run: |
           node --check scripts/emit-policy.mjs
+          node --check scripts/emit-execution-plan.mjs
+          node --check scripts/emit-execution-plan.test.mjs
           node --check scripts/validate-transport-handoff.mjs
           node --check scripts/review-yeti-local.mjs
           node --check scripts/review-yeti-mcp.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
+          node scripts/emit-execution-plan.mjs --check
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
           bash -n scripts/validate-review-request.sh
           bash -n scripts/validate-caller-workflow.sh
@@ -51,6 +54,7 @@ jobs:
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output"
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
           node --test scripts/review-yeti-smoke.test.mjs
+          node --test scripts/emit-execution-plan.test.mjs
           node --test scripts/validate-transport-handoff.test.mjs
           node --test scripts/review-yeti-local.test.mjs
           node --test scripts/review-yeti-mcp.test.mjs

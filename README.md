@@ -251,3 +251,15 @@ The Review Yeti bot is selected by the platform release channel (`action_channel
 tag target and main reachability, then executes the checked-out action. There is no
 per-repository SHA override or emergency bypass; changes advance through the central channel's
 reviewed promotion. See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.
+
+The credential-free execution-plan fixture records the provider behavior that central policy
+claims to configure without exposing endpoint URLs or credential environment names. It marks
+runtime-owned retry/default behavior as uncharacterized instead of inventing a value. Validate
+the committed normalized plan and digest with:
+
+```bash
+node scripts/emit-execution-plan.mjs --check
+```
+
+Unknown policy keys and unclassified endpoint families fail this check. The fixture is
+characterization evidence only; the production workflow does not consume it.
