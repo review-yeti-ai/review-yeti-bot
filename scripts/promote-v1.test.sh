@@ -19,16 +19,16 @@ case "$request" in
     printf 'main\n'
     ;;
   *"repos/exampleorg/example-review-actions/commits/main --jq"*)
-    printf '%s\n' "${FAKE_MAIN_SHA:-source123}"
+    printf '%s\n' "${FAKE_MAIN_SHA:-2222222222222222222222222222222222222222}"
     ;;
-  *"repos/exampleorg/example-review-actions/commits/source123 --jq .sha"*)
-    printf 'source123\n'
+  *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222 --jq .sha"*)
+    printf '2222222222222222222222222222222222222222\n'
     ;;
-  *"repos/exampleorg/example-review-actions/commits/source123/pulls?per_page=100"*)
-    printf '[[{"number":42,"base":{"ref":"main"},"head":{"sha":"head123"},"merge_commit_sha":"source123","merged_at":"2026-08-19T15:00:00Z"}]]\n'
+  *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222/pulls?per_page=100"*)
+    printf '[[{"number":42,"base":{"ref":"main"},"head":{"sha":"head123"},"merge_commit_sha":"2222222222222222222222222222222222222222","merged_at":"2026-08-19T15:00:00Z"}]]\n'
     ;;
-  *"repos/exampleorg/example-review-actions/commits/source123/check-runs?per_page=100"*)
-    printf '{"check_runs":[{"name":"validate","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:01:00Z"}]}\n'
+  *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222/check-runs?per_page=100"*)
+    printf '{"check_runs":[{"id":11,"name":"validate","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:01:00Z"}]}\n'
     ;;
   *"repos/exampleorg/example-review-actions/pulls/42/commits?per_page=100"*)
     printf '[[{"sha":"oldhead1"},{"sha":"head123"}]]\n'
@@ -60,7 +60,7 @@ case "$request" in
       touch "$FAKE_PENDING_MARKER"
       printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"in_progress","conclusion":null,"completed_at":null}]}\n'
     else
-      printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+      printf '{"check_runs":[{"id":21,"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
     fi
     ;;
   *)
@@ -79,6 +79,10 @@ printf '%s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
 case " $* " in
   *" fetch "*) exit 0 ;;
   *" push "*)
+    if [[ "${FAKE_MAIN_LEASE_FAIL:-}" == true ]]; then
+      echo "simulated main lease rejection" >&2
+      exit 1
+    fi
     if [[ "$*" == *":refs/tags/v1"* && "${FAKE_TAG_DELETE_FAIL:-}" == true ]]; then
       echo "simulated legacy tag deletion failure" >&2
       exit 1
@@ -90,15 +94,15 @@ case " $* " in
     printf 'pushed\n'
     ;;
   *"refs/heads/v1 "*)
-    if [[ "${FAKE_TAG_ONLY:-}" == true ]]; then exit 2; fi
-    printf '%s\trefs/heads/v1\n' "${FAKE_V1_SHA:-old123}"
+    if [[ "${FAKE_TAG_ONLY:-}" == true || "${FAKE_NO_V1:-}" == true ]]; then exit 2; fi
+    printf '%s\trefs/heads/v1\n' "${FAKE_V1_SHA:-1111111111111111111111111111111111111111}"
     ;;
   *"refs/tags/v1 "*)
-    if [[ "${FAKE_TAG_ONLY:-}" == true ]]; then printf 'old123\trefs/tags/v1\n'; else exit 2; fi
+    if [[ "${FAKE_TAG_ONLY:-}" == true ]]; then printf '1111111111111111111111111111111111111111\trefs/tags/v1\n'; else exit 2; fi
     ;;
-  *" rev-parse refs/remotes/origin/main "*) printf '%s\n' "${FAKE_MAIN_SHA:-source123}" ;;
-  *" rev-parse refs/remotes/origin/v1 "*) printf '%s\n' "${FAKE_V1_SHA:-old123}" ;;
-  *" rev-parse refs/tags/v1-legacy^{} "*) printf 'old123\n' ;;
+  *" rev-parse refs/remotes/origin/main "*) printf '%s\n' "${FAKE_MAIN_SHA:-2222222222222222222222222222222222222222}" ;;
+  *" rev-parse refs/remotes/origin/v1 "*) printf '%s\n' "${FAKE_V1_SHA:-1111111111111111111111111111111111111111}" ;;
+  *" rev-parse refs/tags/v1-legacy^{} "*) printf '1111111111111111111111111111111111111111\n' ;;
   *" merge-base "*)
     if [[ "${FAKE_DIVERGED:-}" == true ]]; then exit 1; fi
     exit 0
@@ -108,18 +112,61 @@ esac
 FAKE_GIT
 chmod +x "$tmp_dir/bin/git"
 
+export EXPECTED_OLD_V1_SHA=1111111111111111111111111111111111111111
+export GITHUB_ACTOR=test-operator
+export PROMOTION_RECEIPT_PATH="$tmp_dir/promotion-receipt.json"
+
+if malformed_source_output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test SOURCE_SHA=short \
+    GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected malformed source SHA to fail" >&2
+  exit 1
+fi
+grep -Fq 'SOURCE_SHA must be an exact lowercase 40-character commit SHA' <<<"$malformed_source_output"
+
+if malformed_old_output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    SOURCE_SHA=2222222222222222222222222222222222222222 \
+    EXPECTED_OLD_V1_SHA=short GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected malformed old v1 SHA to fail" >&2
+  exit 1
+fi
+grep -Fq "EXPECTED_OLD_V1_SHA must be an exact lowercase 40-character commit SHA or 'absent'" <<<"$malformed_old_output"
+
 fast_forward_log="$tmp_dir/fast-forward.log"
 PATH="$tmp_dir/bin:$PATH" \
-  GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+  GH_TOKEN=credential-sentinel-must-not-appear SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
   FAKE_LOG="$fast_forward_log" \
   GITHUB_STEP_SUMMARY="$tmp_dir/summary" \
   "$repo_root/scripts/promote-v1.sh"
 
 grep -Fq 'Originating PR: #42' "$tmp_dir/summary"
-grep -Fxq 'merge-base --is-ancestor old123 source123' "$fast_forward_log"
-grep -Fxq 'push origin source123:refs/heads/v1' "$fast_forward_log"
+grep -Fxq 'merge-base --is-ancestor 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222' "$fast_forward_log"
+grep -Fxq 'push --atomic --force-with-lease=refs/heads/main:2222222222222222222222222222222222222222 --force-with-lease=refs/heads/v1:1111111111111111111111111111111111111111 origin 2222222222222222222222222222222222222222:refs/heads/main 2222222222222222222222222222222222222222:refs/heads/v1' "$fast_forward_log"
 if grep -Eq 'push .*HEAD|push .*codex/' "$fast_forward_log"; then
   echo "promotion must use the exact candidate SHA, not the ambient checkout" >&2
+  exit 1
+fi
+jq -e '
+  .schema == "exampleorg.review-yeti-v1-promotion-receipt.v1" and
+  .actor == "test-operator" and
+  .release.source_sha == "2222222222222222222222222222222222222222" and
+  .release.pr_number == 42 and
+  .validation.validate_check_run_id == 11 and
+  .validation.review_check_run_id == 21 and
+  (.validation.digest | test("^[0-9a-f]{64}$")) and
+  .refs.expected_old_v1_sha == "1111111111111111111111111111111111111111" and
+  .refs.new_v1_sha == "2222222222222222222222222222222222222222" and
+  .rollback.direct_ref_rewind_allowed == false and
+  .result == "promoted" and
+  .write_performed == true
+' "$PROMOTION_RECEIPT_PATH" >/dev/null
+if grep -Fq 'credential-sentinel-must-not-appear' "$PROMOTION_RECEIPT_PATH"; then
+  echo "promotion receipt exposed credential content" >&2
   exit 1
 fi
 
@@ -127,14 +174,14 @@ fi
 divergence_log="$tmp_dir/divergence.log"
 if divergence_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     FAKE_DIVERGED=true FAKE_LOG="$divergence_log" \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"; then
   echo "expected divergent v1 promotion to fail" >&2
   exit 1
 fi
-grep -Fq 'Refusing non-fast-forward v1 promotion from old123 to source123' <<<"$divergence_output"
+grep -Fq 'Refusing non-fast-forward v1 promotion from 1111111111111111111111111111111111111111 to 2222222222222222222222222222222222222222' <<<"$divergence_output"
 if grep -Fq 'push ' "$divergence_log"; then
   echo "divergent promotion attempted a ref update" >&2
   exit 1
@@ -144,22 +191,23 @@ fi
 idempotent_log="$tmp_dir/idempotent.log"
 idempotent_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
-    FAKE_V1_SHA=source123 FAKE_LOG="$idempotent_log" \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    EXPECTED_OLD_V1_SHA=2222222222222222222222222222222222222222 FAKE_V1_SHA=2222222222222222222222222222222222222222 FAKE_LOG="$idempotent_log" \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"
-grep -Fq 'Review Yeti v1 already points to source123' <<<"$idempotent_output"
+grep -Fq 'Review Yeti v1 already points to 2222222222222222222222222222222222222222' <<<"$idempotent_output"
 if grep -Fq 'push ' "$idempotent_log"; then
   echo "idempotent promotion attempted a ref update" >&2
   exit 1
 fi
+jq -e '.result == "already-promoted" and .write_performed == false' "$PROMOTION_RECEIPT_PATH" >/dev/null
 
 # A rejected branch update must not print a success receipt or attempt another
 # ref update. This is the non-partial branch-only failure case.
 failed_branch_log="$tmp_dir/failed-branch.log"
 if failed_branch_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     FAKE_BRANCH_PUSH_FAIL=true FAKE_LOG="$failed_branch_log" \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"; then
@@ -173,9 +221,52 @@ if grep -Fq 'Promoted Review Yeti v1' <<<"$failed_branch_output"; then
 fi
 [[ "$(grep -c '^push ' "$failed_branch_log")" -eq 1 ]]
 
+# A stale caller-supplied old ref fails before any remote write.
+stale_expected_log="$tmp_dir/stale-expected.log"
+if stale_expected_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 \
+    EXPECTED_OLD_V1_SHA=3333333333333333333333333333333333333333 \
+    GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_LOG="$stale_expected_log" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected stale old v1 input to fail" >&2
+  exit 1
+fi
+grep -Fq 'Expected v1 at 3333333333333333333333333333333333333333, but observed 1111111111111111111111111111111111111111' <<<"$stale_expected_output"
+if grep -Fq 'push ' "$stale_expected_log"; then
+  echo "stale expected old ref attempted a push" >&2
+  exit 1
+fi
+
+# The no-op main refspec shares the atomic transaction. A main lease rejection
+# therefore fails without a success receipt or a partially updated v1.
+main_lease_log="$tmp_dir/main-lease.log"
+main_lease_receipt="$tmp_dir/main-lease-receipt.json"
+if main_lease_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 \
+    GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_MAIN_LEASE_FAIL=true FAKE_LOG="$main_lease_log" \
+    PROMOTION_RECEIPT_PATH="$main_lease_receipt" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected moved main lease to reject the atomic promotion" >&2
+  exit 1
+fi
+grep -Fq 'simulated main lease rejection' <<<"$main_lease_output"
+if grep -Fq 'Promoted Review Yeti v1' <<<"$main_lease_output"; then
+  echo "main lease rejection reported promotion success" >&2
+  exit 1
+fi
+[[ "$(grep -c '^push ' "$main_lease_log")" -eq 1 ]]
+grep -Fq -- '--force-with-lease=refs/heads/main:2222222222222222222222222222222222222222' "$main_lease_log"
+[[ ! -e "$main_lease_receipt" ]]
+
 if output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     FAKE_MAIN_SHA=other123 \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"; then
@@ -187,7 +278,7 @@ grep -Fq 'current main tip' <<<"$output"
 set +e
 tag_only_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     FAKE_TAG_ONLY=true FAKE_LOG="$tmp_dir/git.log" "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"
 tag_only_rc=$?
@@ -198,31 +289,51 @@ if [[ "$tag_only_rc" -ne 0 ]]; then
 fi
 printf '%s\n' "$tag_only_output"
 grep -Fq 'Promoted Review Yeti v1' <<<"$tag_only_output"
-grep -Fq 'Removed legacy Review Yeti v1 tag' <<<"$tag_only_output"
+grep -Fq 'Removed legacy Review Yeti v1 tag in the same atomic promotion' <<<"$tag_only_output"
+grep -Fxq 'push --atomic --force-with-lease=refs/heads/main:2222222222222222222222222222222222222222 --force-with-lease=refs/heads/v1: --force-with-lease=refs/tags/v1:1111111111111111111111111111111111111111 origin 2222222222222222222222222222222222222222:refs/heads/main 2222222222222222222222222222222222222222:refs/heads/v1 :refs/tags/v1' "$tmp_dir/git.log"
 
-# Characterize the incomplete legacy migration that Rank 1B must repair. The
-# current implementation updates the branch and then deletes the tag in a
-# second push. If that deletion fails, the script exits non-zero but has already
-# emitted a success line and may have partially changed the active channel.
+# First initialization requires an explicit absent expectation and a lease that
+# rejects creation if another actor creates v1 before the atomic push.
+initialize_log="$tmp_dir/initialize.log"
+initialize_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 \
+    EXPECTED_OLD_V1_SHA=absent GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_NO_V1=true FAKE_LOG="$initialize_log" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+grep -Fq 'Promoted Review Yeti v1 from <uninitialized>' <<<"$initialize_output"
+grep -Fxq 'push --atomic --force-with-lease=refs/heads/main:2222222222222222222222222222222222222222 --force-with-lease=refs/heads/v1: origin 2222222222222222222222222222222222222222:refs/heads/main 2222222222222222222222222222222222222222:refs/heads/v1' "$initialize_log"
+
+# A legacy migration is one atomic push. If the remote rejects the tag deletion,
+# the script reports no success and cannot have moved only the branch.
 partial_update_log="$tmp_dir/partial-update.log"
+partial_receipt="$tmp_dir/partial-receipt.json"
 if partial_update_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     FAKE_TAG_ONLY=true FAKE_TAG_DELETE_FAIL=true FAKE_LOG="$partial_update_log" \
+    PROMOTION_RECEIPT_PATH="$partial_receipt" \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"; then
   echo "expected failed legacy tag deletion to fail the promotion" >&2
   exit 1
 fi
-grep -Fq 'Promoted Review Yeti v1' <<<"$partial_update_output"
 grep -Fq 'simulated legacy tag deletion failure' <<<"$partial_update_output"
-grep -Fxq 'push origin source123:refs/heads/v1' "$partial_update_log"
-grep -Fxq 'push origin :refs/tags/v1' "$partial_update_log"
+if grep -Fq 'Promoted Review Yeti v1' <<<"$partial_update_output"; then
+  echo "failed atomic migration reported promotion success" >&2
+  exit 1
+fi
+[[ "$(grep -c '^push ' "$partial_update_log")" -eq 1 ]]
+grep -Fq -- '--atomic' "$partial_update_log"
+grep -Fq '2222222222222222222222222222222222222222:refs/heads/v1' "$partial_update_log"
+grep -Fq ':refs/tags/v1' "$partial_update_log"
+[[ ! -e "$partial_receipt" ]]
 
 pending_marker="$tmp_dir/pending-marker"
 pending_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     PROMOTION_WAIT_SECONDS=2 PROMOTION_POLL_SECONDS=0 \
     FAKE_PENDING_ONCE=true FAKE_PENDING_MARKER="$pending_marker" \
     "$repo_root/scripts/promote-v1.sh"
@@ -237,7 +348,7 @@ stale_marker="$tmp_dir/stale-marker"
 set +e
 stale_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     PROMOTION_WAIT_SECONDS=2 PROMOTION_POLL_SECONDS=0 \
     FAKE_STALE_THEN_FRESH=true FAKE_STALE_MARKER="$stale_marker" \
     "$repo_root/scripts/promote-v1.sh"
@@ -257,7 +368,7 @@ grep -Fq 'Promoted Review Yeti v1' <<<"$stale_output"
 # review with a loud warning instead of stranding the promotion.
 stranded_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     FAKE_HEAD_RED=true FAKE_EARLIER_GREEN=true \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"
@@ -270,7 +381,7 @@ grep -Fq 'Promoted Review Yeti v1' <<<"$stranded_output"
 set +e
 unreviewed_output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test SOURCE_SHA=source123 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
     PROMOTION_WAIT_SECONDS=2 PROMOTION_POLL_SECONDS=0 \
     FAKE_HEAD_RED=true \
     "$repo_root/scripts/promote-v1.sh"
@@ -438,5 +549,14 @@ if missing_ref_output="$({
   exit 1
 fi
 grep -Fq 'Cannot resolve refs/remotes/origin/main to a commit from the local ref snapshot' <<<"$missing_ref_output"
+
+# The hosted entry point must pass the audited old ref and retain the immutable
+# receipt. The promoter independently rejects a wrong resolver result.
+# shellcheck disable=SC2016
+grep -Fq 'EXPECTED_OLD_V1_SHA: ${{ steps.expected-v1.outputs.sha }}' "$repo_root/.github/workflows/promote-v1.yml"
+# shellcheck disable=SC2016
+grep -Fq 'PROMOTION_RECEIPT_PATH: ${{ runner.temp }}/review-yeti-v1-promotion-receipt.json' "$repo_root/.github/workflows/promote-v1.yml"
+grep -Fq 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' "$repo_root/.github/workflows/promote-v1.yml"
+grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
 
 echo "promote-v1 behavioral contract passed"

@@ -65,8 +65,35 @@ jobs:
           ref: ${{ steps.source.outputs.sha }}
           fetch-depth: 0
 
+      - name: Resolve expected v1 SHA
+        id: expected-v1
+        shell: bash
+        run: |
+          branch_sha="$(git ls-remote origin refs/heads/v1 | awk 'NR == 1 { print $1 }')"
+          tag_ref_sha="$(git ls-remote origin refs/tags/v1 | awk 'NR == 1 { print $1 }')"
+          tag_commit_sha="$(git ls-remote origin 'refs/tags/v1^{}' | awk 'NR == 1 { print $1 }')"
+          if [[ -n "$tag_ref_sha" && -z "$tag_commit_sha" ]]; then
+            tag_commit_sha="$tag_ref_sha"
+          fi
+          if [[ -n "$branch_sha" && -n "$tag_commit_sha" && "$branch_sha" != "$tag_commit_sha" ]]; then
+            echo "::error::Ambiguous v1 refs: branch $branch_sha and legacy tag $tag_commit_sha diverge."
+            exit 1
+          fi
+          expected_old_sha="${branch_sha:-${tag_commit_sha:-absent}}"
+          echo "sha=$expected_old_sha" >> "$GITHUB_OUTPUT"
+
       - name: Promote v1 after central checks
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          EXPECTED_OLD_V1_SHA: ${{ steps.expected-v1.outputs.sha }}
+          PROMOTION_RECEIPT_PATH: ${{ runner.temp }}/review-yeti-v1-promotion-receipt.json
         run: scripts/promote-v1.sh
+
+      - name: Upload immutable promotion receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: review-yeti-v1-promotion-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/review-yeti-v1-promotion-receipt.json
+          if-no-files-found: error
+          retention-days: 90

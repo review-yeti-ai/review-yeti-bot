@@ -38,7 +38,11 @@ policy and workflow changes are actually exercised; fork PRs remain on trusted `
 development line passes validation and the originating central PR has a successful Review Yeti
 check. Consumer repositories never update a SHA, branch, tag, or claim when policy or budgets
 change. Promotion is fast-forward-only, so the previous `v1` tip remains in branch history as
-the rollback record; revert the corresponding change on `main` to roll back automatically.
+the rollback record. The workflow captures the exact old `v1`, then performs one atomic push
+leased against both that ref and the validated `main` tip. Ref movement rejects the whole
+operation. A successful or idempotent run uploads a receipt containing the actor, release and
+check-run identities, validation digest, old/new SHAs, and rollback baseline. Revert the
+corresponding change on `main` and promote that new descendant to roll back; never rewind `v1`.
 
 The central policy selects the Review Yeti action by the single `v1` release channel. The reusable
 workflow resolves that channel to the exact commit for each run, checks out that commit (never the
@@ -71,7 +75,9 @@ The migration is complete once `refs/heads/v1` exists; the legacy tag must not b
 
 1. Merge a change through the central repository's self-review on `main`.
 2. The promotion workflow verifies the central validation workflow and originating Review Yeti check.
-3. The promotion workflow fast-forwards the `v1` branch to the merged `main` commit.
+3. The promotion workflow atomically compare-and-swaps the `v1` branch to the merged `main`
+   commit and records an immutable receipt. A legacy `v1` tag, if present, is removed in the
+   same transaction.
 4. New consumer PRs automatically use the new policy; no consumer PR or body stamp is required.
 
 The central policy is intentionally boring: changes are reviewed by the trusted development line,

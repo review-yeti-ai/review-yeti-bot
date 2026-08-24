@@ -3,8 +3,19 @@ set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${SOURCE_SHA:?SOURCE_SHA is required}"
+: "${EXPECTED_OLD_V1_SHA:?EXPECTED_OLD_V1_SHA is required}"
+
+if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "::error::SOURCE_SHA must be an exact lowercase 40-character commit SHA."
+  exit 1
+fi
+if [[ ! "$EXPECTED_OLD_V1_SHA" =~ ^[0-9a-f]{40}$ && "$EXPECTED_OLD_V1_SHA" != absent ]]; then
+  echo "::error::EXPECTED_OLD_V1_SHA must be an exact lowercase 40-character commit SHA or 'absent'."
+  exit 1
+fi
 
 repository="${GITHUB_REPOSITORY:-exampleorg/example-review-actions}"
+actor="${GITHUB_ACTOR:-unknown}"
 default_branch="$(gh api "repos/${repository}" --jq '.default_branch // empty')"
 [[ "$default_branch" == main ]] || {
   echo "::error::Review Yeti v1 promotion requires main as the default branch."
@@ -76,6 +87,11 @@ require_success() {
     conclusion="$(jq -r '.conclusion // empty' <<<"$latest")"
 
     if [[ "$status" == completed && "$conclusion" == success ]]; then
+      required_check_id="$(jq -r '.id // empty' <<<"$latest")"
+      [[ "$required_check_id" =~ ^[0-9]+$ ]] || {
+        echo "::error::Required central check for ${coordinate} has no immutable check-run id."
+        exit 1
+      }
       return 0
     fi
 
@@ -93,6 +109,7 @@ require_success() {
 
 require_success "$source_check_runs" validate "source ${SOURCE_SHA}" \
   "repos/${repository}/commits/${SOURCE_SHA}/check-runs?per_page=100"
+validate_check_id="$required_check_id"
 
 # The Review Yeti check lives on a PR head, and heads move: an update-branch
 # right before merge (or a merge landing while the re-review is in flight)
@@ -103,8 +120,10 @@ require_success "$source_check_runs" validate "source ${SOURCE_SHA}" \
 # green review with a loud warning. A pull request with NO green review on
 # any commit still refuses — a deliberately unreviewed merge stays stranded.
 green_review_sha=""
+green_review_check_id=""
 if jq -e '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last // {} | select(.status == "completed" and .conclusion == "success")' >/dev/null <<<"$pr_check_runs"; then
   green_review_sha="$pr_head"
+  green_review_check_id="$(jq -r '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last | .id' <<<"$pr_check_runs")"
 else
   # Fail-soft walk: any API/parse hiccup here simply falls through to the
   # original exact-head requirement below — the fallback can only rescue,
@@ -116,6 +135,7 @@ else
     [[ -n "$candidate_runs" ]] || continue
     if jq -e '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last // {} | select(.status == "completed" and .conclusion == "success")' >/dev/null 2>&1 <<<"$candidate_runs"; then
       green_review_sha="$candidate"
+      green_review_check_id="$(jq -r '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last | .id' <<<"$candidate_runs")"
       echo "::warning::PR #${pr_number} head ${pr_head} has no green Review Yeti check; accepting the green review on earlier PR commit ${candidate} (head moved before its re-review completed)."
       break
     fi
@@ -124,19 +144,28 @@ fi
 if [[ -z "$green_review_sha" ]]; then
   require_success "$pr_check_runs" 'review / Review Yeti' "PR #${pr_number} head ${pr_head}" \
     "repos/${repository}/commits/${pr_head}/check-runs?per_page=100"
+  green_review_sha="$pr_head"
+  green_review_check_id="$required_check_id"
 fi
+
+[[ "$green_review_check_id" =~ ^[0-9]+$ ]] || {
+  echo "::error::Review Yeti evidence has no immutable check-run id."
+  exit 1
+}
 
 old_v1=""
 branch_exists=false
 tag_exists=false
+legacy_tag_ref_sha=""
 if git ls-remote --exit-code origin refs/heads/v1 >/dev/null 2>&1; then
   branch_exists=true
   git fetch --no-tags origin refs/heads/v1:refs/remotes/origin/v1
   old_v1="$(git rev-parse refs/remotes/origin/v1)"
 fi
 
-if git ls-remote --exit-code origin refs/tags/v1 >/dev/null 2>&1; then
+if tag_ref="$(git ls-remote --exit-code origin refs/tags/v1 2>/dev/null)"; then
   tag_exists=true
+  legacy_tag_ref_sha="$(awk 'NR == 1 { print $1 }' <<<"$tag_ref")"
   git fetch --no-tags origin refs/tags/v1:refs/tags/v1-legacy
   legacy_v1="$(git rev-parse refs/tags/v1-legacy^{})"
   if [[ "$branch_exists" == true && "$legacy_v1" != "$old_v1" ]]; then
@@ -146,6 +175,16 @@ if git ls-remote --exit-code origin refs/tags/v1 >/dev/null 2>&1; then
   old_v1="${old_v1:-$legacy_v1}"
 fi
 
+if [[ "$EXPECTED_OLD_V1_SHA" == absent ]]; then
+  [[ -z "$old_v1" ]] || {
+    echo "::error::Expected v1 to be absent, but it currently resolves to ${old_v1}; refusing stale promotion."
+    exit 1
+  }
+elif [[ "$old_v1" != "$EXPECTED_OLD_V1_SHA" ]]; then
+  echo "::error::Expected v1 at ${EXPECTED_OLD_V1_SHA}, but observed ${old_v1:-<absent>}; refusing stale promotion."
+  exit 1
+fi
+
 if [[ -n "$old_v1" ]]; then
   git merge-base --is-ancestor "$old_v1" "$SOURCE_SHA" || {
     echo "::error::Refusing non-fast-forward v1 promotion from ${old_v1} to ${SOURCE_SHA}."
@@ -153,16 +192,94 @@ if [[ -n "$old_v1" ]]; then
   }
 fi
 
-if [[ "$old_v1" == "$SOURCE_SHA" && "$branch_exists" == true ]]; then
+validation_payload="$(jq -cn \
+  --arg repository "$repository" \
+  --arg source_sha "$SOURCE_SHA" \
+  --argjson pr_number "$pr_number" \
+  --arg pr_head_sha "$pr_head" \
+  --arg review_sha "$green_review_sha" \
+  --argjson validate_check_run_id "$validate_check_id" \
+  --argjson review_check_run_id "$green_review_check_id" \
+  '{repository:$repository,source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha,review_sha:$review_sha,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id}')"
+
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
+validation_digest="$(printf '%s' "$validation_payload" | sha256)"
+receipt_path="${PROMOTION_RECEIPT_PATH:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/review-yeti-v1-promotion-receipt.json}"
+
+prepare_receipt() {
+  local result="$1"
+  local write_performed="$2"
+  local promoted_at
+
+  promoted_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  prepared_receipt_tmp="${receipt_path}.prepared.$$"
+  mkdir -p "$(dirname "$receipt_path")"
+  jq -n \
+    --arg actor "$actor" \
+    --arg promoted_at "$promoted_at" \
+    --arg repository "$repository" \
+    --arg source_sha "$SOURCE_SHA" \
+    --argjson pr_number "$pr_number" \
+    --arg pr_head_sha "$pr_head" \
+    --arg review_sha "$green_review_sha" \
+    --argjson validate_check_run_id "$validate_check_id" \
+    --argjson review_check_run_id "$green_review_check_id" \
+    --arg validation_digest "$validation_digest" \
+    --arg expected_old_v1_sha "$EXPECTED_OLD_V1_SHA" \
+    --arg observed_old_v1_sha "${old_v1:-absent}" \
+    --arg new_v1_sha "$SOURCE_SHA" \
+    --arg result "$result" \
+    --argjson write_performed "$write_performed" \
+    '{schema:"exampleorg.review-yeti-v1-promotion-receipt.v1",actor:$actor,promoted_at:$promoted_at,repository:$repository,release:{source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha},validation:{review_sha:$review_sha,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id,digest:$validation_digest},refs:{expected_old_v1_sha:$expected_old_v1_sha,observed_old_v1_sha:$observed_old_v1_sha,new_v1_sha:$new_v1_sha},rollback:{strategy:"create-reviewed-revert-on-main-then-promote",baseline_sha:$observed_old_v1_sha,direct_ref_rewind_allowed:false},result:$result,write_performed:$write_performed}' \
+    >"$prepared_receipt_tmp"
+}
+
+publish_receipt() {
+  mv "$prepared_receipt_tmp" "$receipt_path"
+}
+
+if [[ "$old_v1" == "$SOURCE_SHA" && "$branch_exists" == true && "$tag_exists" == false ]]; then
+  prepare_receipt already-promoted false
+  publish_receipt
   echo "Review Yeti v1 already points to ${SOURCE_SHA}."
 else
-  git push origin "${SOURCE_SHA}:refs/heads/v1"
-  echo "Promoted Review Yeti v1 from ${old_v1:-<uninitialized>} to ${SOURCE_SHA} via PR #${pr_number}."
-fi
+  push_args=(
+    push
+    --atomic
+    "--force-with-lease=refs/heads/main:${SOURCE_SHA}"
+  )
+  if [[ "$branch_exists" == true ]]; then
+    push_args+=("--force-with-lease=refs/heads/v1:${EXPECTED_OLD_V1_SHA}")
+  else
+    push_args+=("--force-with-lease=refs/heads/v1:")
+  fi
+  if [[ "$tag_exists" == true ]]; then
+    push_args+=("--force-with-lease=refs/tags/v1:${legacy_tag_ref_sha}")
+  fi
+  push_args+=(origin "${SOURCE_SHA}:refs/heads/main" "${SOURCE_SHA}:refs/heads/v1")
+  if [[ "$tag_exists" == true ]]; then
+    push_args+=(':refs/tags/v1')
+  fi
 
-if [[ "$tag_exists" == true ]]; then
-  git push origin ':refs/tags/v1'
-  echo "Removed legacy Review Yeti v1 tag after branch promotion."
+  # The no-op main refspec and its lease put the final main-tip assertion in
+  # the same server-side atomic transaction as the v1 update. Any movement of
+  # main, v1, or the legacy tag rejects the entire push before a ref changes.
+  # Construct the complete receipt before that transaction so a successful
+  # push has only a same-directory atomic rename left to publish it.
+  prepare_receipt promoted true
+  git "${push_args[@]}"
+  publish_receipt
+  echo "Promoted Review Yeti v1 from ${old_v1:-<uninitialized>} to ${SOURCE_SHA} via PR #${pr_number}."
+  if [[ "$tag_exists" == true ]]; then
+    echo "Removed legacy Review Yeti v1 tag in the same atomic promotion."
+  fi
 fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -172,6 +289,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "- Originating PR: #${pr_number}"
     echo "- Previous v1: \`${old_v1:-<uninitialized>}\`"
     echo "- New v1: \`${SOURCE_SHA}\`"
-    echo "- Mode: fast-forward only"
+    echo "- Validation digest: \`${validation_digest}\`"
+    echo "- Receipt: \`${receipt_path}\`"
+    echo "- Mode: atomic compare-and-swap, fast-forward only"
   } >>"$GITHUB_STEP_SUMMARY"
 fi
