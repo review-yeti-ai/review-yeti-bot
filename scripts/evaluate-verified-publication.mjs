@@ -96,6 +96,41 @@ export function gradeFindings(fixture, findings, errored) {
   };
 }
 
+const TELEMETRY_LABEL_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,63}$/iu;
+const TELEMETRY_RESERVED_LABELS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function safeTelemetryLabel(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!TELEMETRY_LABEL_PATTERN.test(normalized) || TELEMETRY_RESERVED_LABELS.has(normalized)) return null;
+  return normalized;
+}
+
+/**
+ * Retain only bounded, schema-shaped lane telemetry for offline qualification artifacts.
+ * Provider response bodies and exception text stay in the lane runner only; this output is
+ * consumed by the central qualification receipt, which aggregates it again before publication.
+ */
+export function captureLaneTelemetry(result = {}) {
+  const telemetry = {};
+  for (const key of ['provider', 'transport', 'failureClass', 'errorCode']) {
+    const value = safeTelemetryLabel(result[key]);
+    if (value) telemetry[key] = value;
+  }
+  const responseStatus = Number(result.responseStatus);
+  if (Number.isInteger(responseStatus) && responseStatus >= 100 && responseStatus <= 599) {
+    telemetry.responseStatus = responseStatus;
+  }
+  const attemptCount = Number(result.attemptCount);
+  if (Number.isInteger(attemptCount) && attemptCount >= 0 && attemptCount <= 100) {
+    telemetry.attemptCount = attemptCount;
+  }
+  if (Array.isArray(result.retryReasons)) {
+    const retryReasons = result.retryReasons.map(safeTelemetryLabel).filter(Boolean).slice(0, 8);
+    if (retryReasons.length > 0) telemetry.retryReasons = retryReasons;
+  }
+  return telemetry;
+}
+
 /** Wilson 95% interval, matching the retired harness's own reporting. */
 export function wilson(hits, total) {
   if (!total) return null;
@@ -298,7 +333,7 @@ export async function runLanesArm({ matrix, armId, charter, persona, repetitions
       usage: rowUsage(result),
       error: result?.error,
       model: result?.model,
-      provider: result?.provider,
+      ...captureLaneTelemetry(result),
       ...graded,
       findingTitles: findings.map((finding) => `${finding.path}:${finding.line} ${finding.title}`),
       findingsDetail: findings,
