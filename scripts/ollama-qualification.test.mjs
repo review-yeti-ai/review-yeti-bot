@@ -16,6 +16,7 @@ import {
   classifyFailure,
   runQualification,
   summarizeEvaluation,
+  summarizeFixtureOutcomes,
   validateQualificationInput,
   verifyPullRequest,
 } from './ollama-qualification.mjs';
@@ -211,10 +212,74 @@ test('evaluation summary reports only bounded aggregate evidence', () => {
     failure_classes_by_provider: {},
     response_statuses: {},
     error_codes: {},
+    fixture_outcomes: [
+      { fixture_id: 'row-1', category: 'defect', outcome: 'detected', latency_ms: 100 },
+      { fixture_id: 'row-2', category: 'clean', outcome: 'clean', latency_ms: 200 },
+    ],
     latency_ms_median: 100,
     latency_ms_p95: 200,
     cost_usd: 0.3,
   });
+});
+
+test('fixture outcomes retain bounded routing evidence without findings or provider text', () => {
+  const outcomes = summarizeFixtureOutcomes([
+    {
+      fixtureId: 'dual-cause-diagnostic-named-for-one',
+      category: 'defect',
+      detected: false,
+      errored: false,
+      latencyMs: 12_345,
+      provider: 'Ollama',
+      transport: 'ollama',
+      attemptCount: 2,
+      retryReasons: ['timeout', 'provider_error'],
+      error: 'do not retain this response text',
+    },
+    {
+      fixtureId: 'clean-rename-only',
+      category: 'clean',
+      falsePositive: true,
+      errored: false,
+      responseStatus: 200,
+      errorCode: 'not-an-error',
+    },
+    {
+      fixtureId: '__proto__',
+      category: 'defect',
+      detected: false,
+      errored: true,
+      responseStatus: 404,
+      errorCode: 'not_found_error',
+    },
+  ]);
+  assert.deepEqual(outcomes, [
+    {
+      fixture_id: 'dual-cause-diagnostic-named-for-one',
+      category: 'defect',
+      outcome: 'miss',
+      latency_ms: 12_345,
+      provider: 'ollama',
+      transport: 'ollama',
+      attempt_count: 2,
+      retry_reasons: ['timeout', 'provider_error'],
+    },
+    {
+      fixture_id: 'clean-rename-only',
+      category: 'clean',
+      outcome: 'false_positive',
+      response_status: '200',
+      error_code: 'not-an-error',
+    },
+    {
+      fixture_id: 'row-3',
+      category: 'defect',
+      outcome: 'error',
+      response_status: '404',
+      error_code: 'not_found_error',
+    },
+  ]);
+  assert.equal(JSON.stringify(outcomes).includes('response text'), false);
 });
 
 test('failure classification is coarse and never copies provider error text', () => {

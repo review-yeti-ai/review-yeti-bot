@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
-export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v1';
+export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v2';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
 export const CANDIDATE_PROFILE = 'ollama-evaluation';
 export const BASELINE_PROFILE = 'current-production';
@@ -176,6 +176,56 @@ function incrementNestedCount(target, key, label) {
   bucket[label] = (bucket[label] || 0) + 1;
 }
 
+function safeLatency(value) {
+  const latency = Number(value);
+  return Number.isSafeInteger(latency) && latency >= 0 && latency <= 600_000 ? latency : null;
+}
+
+function safeAttemptCount(value) {
+  const attempts = Number(value);
+  return Number.isSafeInteger(attempts) && attempts >= 0 && attempts <= 100 ? attempts : null;
+}
+
+function safeRetryReasons(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((reason) => safeDiagnosticLabel(reason, '')).filter(Boolean).slice(0, 8);
+}
+
+/**
+ * Preserve enough per-fixture evidence to explain quality variance without retaining findings,
+ * prompts, response bodies, or provider exception text.  Fixture ids and transport labels are
+ * bounded allowlisted-shaped strings; outcome is derived from the already graded booleans.
+ */
+export function summarizeFixtureOutcomes(rows = []) {
+  return rows.slice(0, 64).map((row, index) => {
+    const category = row.category === 'defect' || row.category === 'clean' ? row.category : 'unknown';
+    const outcome = row.errored
+      ? 'error'
+      : category === 'defect'
+        ? (row.detected ? 'detected' : 'miss')
+        : category === 'clean'
+          ? (row.falsePositive ? 'false_positive' : 'clean')
+          : 'unknown';
+    const fixtureId = safeDiagnosticLabel(row.fixtureId, `row-${index + 1}`);
+    const result = { fixture_id: fixtureId, category, outcome };
+    const latency = safeLatency(row.latencyMs);
+    if (latency !== null) result.latency_ms = latency;
+    const provider = safeDiagnosticLabel(row.provider, '');
+    if (provider) result.provider = provider;
+    const transport = safeDiagnosticLabel(row.transport, '');
+    if (transport) result.transport = transport;
+    const responseStatus = safeDiagnosticStatus(row.responseStatus);
+    if (responseStatus) result.response_status = responseStatus;
+    const errorCode = safeDiagnosticLabel(row.errorCode, '');
+    if (errorCode) result.error_code = errorCode;
+    const attemptCount = safeAttemptCount(row.attemptCount);
+    if (attemptCount !== null) result.attempt_count = attemptCount;
+    const retryReasons = safeRetryReasons(row.retryReasons);
+    if (retryReasons.length > 0) result.retry_reasons = retryReasons;
+    return result;
+  });
+}
+
 export function summarizeEvaluation(payload, exitCode) {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const defects = rows.filter((row) => row.category === 'defect');
@@ -214,6 +264,7 @@ export function summarizeEvaluation(payload, exitCode) {
     failure_classes_by_provider: failureClassesByProvider,
     response_statuses: responseStatuses,
     error_codes: errorCodes,
+    fixture_outcomes: summarizeFixtureOutcomes(rows),
     latency_ms_median: percentile(latencies, 0.5),
     latency_ms_p95: percentile(latencies, 0.95),
     cost_usd: numericCosts.length === rows.length ? Number(numericCosts.reduce((sum, cost) => sum + cost, 0).toFixed(6)) : null,
