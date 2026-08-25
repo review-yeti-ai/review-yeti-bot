@@ -147,6 +147,14 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         generationIdDigest: 'a'.repeat(64),
         routerAttempt: 1,
         recoveryAction: 'bounded_retry',
+        outputShape: 'direct_json_object',
+        finishReason: 'stop',
+        responseMode: 'buffered',
+        findingsSource: 'content',
+        contentPresent: true,
+        reasoningPresent: false,
+        contentSizeBucket: 'tiny',
+        reasoningSizeBucket: 'empty',
         apiKey: SECRET_VALUES[0],
         prompt: SECRET_VALUES[2],
       },
@@ -162,7 +170,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     ], EXACT_HEAD);
 
     expect(receipt).toMatchObject({
-      schemaVersion: 'review-provider-telemetry-v1',
+      schemaVersion: 'review-provider-telemetry-v2',
       repository: EXACT_HEAD.repo,
       prNumber: 17,
       baseSha: EXACT_HEAD.baseSha,
@@ -188,6 +196,14 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         generationIdDigest: 'a'.repeat(64),
         routerAttempt: 1,
         recoveryAction: 'bounded_retry',
+        outputShape: 'direct_json_object',
+        finishReason: 'stop',
+        responseMode: 'buffered',
+        findingsSource: 'content',
+        contentPresent: true,
+        reasoningPresent: false,
+        contentSizeBucket: 'tiny',
+        reasoningSizeBucket: 'empty',
       },
       {
         personaId: 'performance',
@@ -208,6 +224,14 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         generationIdDigest: null,
         routerAttempt: null,
         recoveryAction: null,
+        outputShape: null,
+        finishReason: 'missing',
+        responseMode: null,
+        findingsSource: null,
+        contentPresent: false,
+        reasoningPresent: false,
+        contentSizeBucket: null,
+        reasoningSizeBucket: null,
       },
     ]);
 
@@ -238,7 +262,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     const receiptJson = fs.readFileSync(result.path, 'utf-8');
     expect(result.digest).toBe(createHash('sha256').update(receiptJson, 'utf-8').digest('hex'));
     expect(JSON.parse(receiptJson)).toMatchObject({
-      schemaVersion: 'review-provider-telemetry-v1',
+      schemaVersion: 'review-provider-telemetry-v2',
       baseSha: EXACT_HEAD.baseSha,
       headSha: EXACT_HEAD.headSha,
     });

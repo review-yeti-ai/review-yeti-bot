@@ -7,7 +7,14 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 
-const { reviewWithModel, resolveModelConfig, PERSONA_CHARTERS } = pipeline;
+const {
+  analyzeFindingsPayload,
+  normalizeModelFinishReason,
+  responseSizeBucket,
+  reviewWithModel,
+  resolveModelConfig,
+  PERSONA_CHARTERS,
+} = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
 const testingPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'testing');
 
@@ -46,6 +53,33 @@ const validFindings = JSON.stringify({
       suggestion: 'Scope the lookup by orgId.',
     },
   ],
+});
+
+describe('bounded model output-shape telemetry', () => {
+  it.each([
+    ['{"findings":[]}', 'direct_json_object'],
+    ['[]', 'direct_json_array'],
+    ['```json\n{"findings":[]}\n```', 'fenced_json_object'],
+    ['```json\n[]\n```', 'fenced_json_array'],
+    ['Result: {"findings":[]} done.', 'embedded_json_object'],
+    ['{"answer":[]}', 'valid_json_wrong_shape'],
+    ['{"findings":[', 'truncated_json'],
+    ['review completed without a JSON result', 'no_json'],
+    ['', 'empty_content'],
+  ])('classifies %j without retaining response text', (content, outputShape) => {
+    const analysis = analyzeFindingsPayload(content);
+    expect(analysis.outputShape).toBe(outputShape);
+    expect(Object.keys(analysis).sort()).toEqual(['findings', 'outputShape']);
+  });
+
+  it('normalizes finish reasons and response sizes to closed buckets', () => {
+    expect(normalizeModelFinishReason('stop')).toBe('stop');
+    expect(normalizeModelFinishReason('provider_secret_detail')).toBe('other');
+    expect(normalizeModelFinishReason()).toBe('missing');
+    expect(responseSizeBucket('')).toBe('empty');
+    expect(responseSizeBucket('x'.repeat(257))).toBe('small');
+    expect(responseSizeBucket('x'.repeat(16_385))).toBe('oversize');
+  });
 });
 
 describe('resolveModelConfig', () => {
@@ -458,6 +492,16 @@ describe('reviewWithModel', () => {
     });
     expect(arrayResult.decision).toBe('APPROVE');
     expect(arrayResult.findings).toEqual([]);
+    expect(arrayResult).toMatchObject({
+      outputShape: 'direct_json_object',
+      finishReason: 'missing',
+      responseMode: 'buffered',
+      findingsSource: 'content',
+      contentPresent: true,
+      reasoningPresent: false,
+      contentSizeBucket: 'tiny',
+      reasoningSizeBucket: 'empty',
+    });
 
     const reasoningOnly = stubFetch('', {
       payload: { choices: [{ message: { content: [], reasoning: 'I checked the diff.' } }] },
@@ -468,6 +512,12 @@ describe('reviewWithModel', () => {
     });
     expect(reasoningResult.decision).toBe('ERROR');
     expect(reasoningResult.findings).toEqual([]);
+    expect(reasoningResult).toMatchObject({
+      outputShape: 'no_json',
+      findingsSource: 'none',
+      contentPresent: false,
+      reasoningPresent: true,
+    });
   });
 
   it('parses a complete findings object carried in a streamed reasoning delta', async () => {
@@ -504,6 +554,13 @@ describe('reviewWithModel', () => {
     });
 
     expect(result.decision).toBe('APPROVE');
+    expect(result).toMatchObject({
+      outputShape: 'direct_json_object',
+      responseMode: 'stream',
+      findingsSource: 'reasoning',
+      contentPresent: false,
+      reasoningPresent: true,
+    });
     expect(result.findings).toEqual([]);
   });
 

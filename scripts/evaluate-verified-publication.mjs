@@ -98,6 +98,14 @@ export function gradeFindings(fixture, findings, errored) {
 
 const TELEMETRY_LABEL_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,63}$/iu;
 const TELEMETRY_RESERVED_LABELS = new Set(['__proto__', 'constructor', 'prototype']);
+const TELEMETRY_ENUMS = Object.freeze({
+  outputShape: new Set(['direct_json_object', 'direct_json_array', 'fenced_json_object', 'fenced_json_array', 'embedded_json_object', 'valid_json_wrong_shape', 'truncated_json', 'no_json', 'empty_content']),
+  finishReason: new Set(['stop', 'length', 'content_filter', 'tool_calls', 'other', 'missing']),
+  responseMode: new Set(['stream', 'buffered']),
+  findingsSource: new Set(['content', 'reasoning', 'none']),
+  contentSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
+  reasoningSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
+});
 
 function safeTelemetryLabel(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
@@ -127,6 +135,12 @@ export function captureLaneTelemetry(result = {}) {
   if (Array.isArray(result.retryReasons)) {
     const retryReasons = result.retryReasons.map(safeTelemetryLabel).filter(Boolean).slice(0, 8);
     if (retryReasons.length > 0) telemetry.retryReasons = retryReasons;
+  }
+  for (const [key, allowedValues] of Object.entries(TELEMETRY_ENUMS)) {
+    if (allowedValues.has(result[key])) telemetry[key] = result[key];
+  }
+  for (const key of ['contentPresent', 'reasoningPresent']) {
+    if (typeof result[key] === 'boolean') telemetry[key] = result[key];
   }
   return telemetry;
 }
