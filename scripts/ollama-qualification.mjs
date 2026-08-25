@@ -184,7 +184,12 @@ export function summarizeEvaluation(payload, exitCode) {
   for (const row of rows.filter((entry) => entry.errored)) {
     const label = classifyFailure(row);
     failureClasses[label] = (failureClasses[label] || 0) + 1;
-    incrementNestedCount(failureClassesByProvider, safeDiagnosticLabel(row.provider), label);
+    // Direct transports may not return a provider name on an error. Preserve the configured
+    // transport as the bounded attribution fallback so a 404/401 cannot be reported only as
+    // "unknown" in the qualification receipt.
+    const provider = safeDiagnosticLabel(row.provider, '');
+    const transport = safeDiagnosticLabel(row.transport, '');
+    incrementNestedCount(failureClassesByProvider, provider || transport || 'unknown', label);
     const status = safeDiagnosticStatus(row.responseStatus);
     if (status) responseStatuses[status] = (responseStatuses[status] || 0) + 1;
     const errorCode = safeDiagnosticLabel(row.errorCode, '');

@@ -198,6 +198,17 @@ test('failure classification is coarse and never copies provider error text', ()
   assert.deepEqual(summary.error_codes, { upstream_error: 1 });
   assert.equal(JSON.stringify(summary).includes('token-secret'), false);
 
+  const transportFallback = summarizeEvaluation({ rows: [{
+    category: 'defect',
+    errored: true,
+    transport: 'Ollama',
+    responseStatus: 404,
+    errorCode: 'not_found_error',
+  }] }, 0);
+  assert.deepEqual(transportFallback.failure_classes_by_provider, { ollama: { provider_error: 1 } });
+  assert.deepEqual(transportFallback.response_statuses, { '404': 1 });
+  assert.deepEqual(transportFallback.error_codes, { not_found_error: 1 });
+
   const hostile = summarizeEvaluation({ rows: [{
     category: 'clean',
     errored: true,
