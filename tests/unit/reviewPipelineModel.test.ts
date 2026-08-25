@@ -309,6 +309,52 @@ describe('reviewWithModel', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].body.temperature).toBe(0);
+    expect(calls[0].body.seed).toBeTypeOf('number');
+  });
+
+  it('keeps the Ollama seed stable for identical evidence and changes it with the reviewed source', async () => {
+    const ollama = { name: 'ollama', model: 'deepseek-v4-flash:cloud' };
+    const baseContext = { repo: 'o/r', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), prNumber: 'candidate-arm' };
+    const seed = pipeline.deriveOllamaRequestSeed(ollama, 'https://ollama.com/v1', securityPersona, diffFiles, baseContext);
+    const pairedArmSeed = pipeline.deriveOllamaRequestSeed(
+      ollama,
+      'https://ollama.com/v1',
+      securityPersona,
+      diffFiles,
+      { ...baseContext, prNumber: 'baseline-arm', title: 'ignored arm label' },
+    );
+
+    expect(seed).toBe(pairedArmSeed);
+    expect(seed).toBeGreaterThanOrEqual(0);
+    expect(seed).toBeLessThanOrEqual(0x7fffffff);
+    expect(pipeline.deriveOllamaRequestSeed(
+      ollama,
+      'https://ollama.com/v1',
+      securityPersona,
+      [{ ...diffFiles[0], patch: `${diffFiles[0].patch}\n+changed();` }],
+      baseContext,
+    )).not.toBe(seed);
+    expect(pipeline.deriveOllamaRequestSeed(
+      { name: 'fireworks', model: 'm' },
+      'https://api.fireworks.ai/inference/v1',
+      securityPersona,
+      diffFiles,
+      baseContext,
+    )).toBeNull();
+  });
+
+  it('never sends the Ollama seed to Fireworks or OpenRouter', async () => {
+    for (const transport of [
+      { name: 'fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', apiKey: 'k', model: 'm' },
+      { name: 'openrouter-fallback', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k', model: 'm', provider: { data_collection: 'deny' } },
+    ]) {
+      const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+      await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) }, null, {
+        transports: [transport],
+        fetchImpl: impl,
+      });
+      expect(calls[0].body).not.toHaveProperty('seed');
+    }
   });
 
   it('keeps the auto-router plugin payload when policy uses a canonical model override', async () => {
