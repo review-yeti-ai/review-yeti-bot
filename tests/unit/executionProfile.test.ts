@@ -68,6 +68,87 @@ describe('canonical execution-profile contract', () => {
     expect(() => normalizeProfile({ ...base, timeouts: { ...base.timeouts, request_ms: 1 } })).toThrow(/request_ms/i);
   });
 
+  it('covers each profile contract rejection family before any runtime wiring', () => {
+    const copy = (id: string) => {
+      const profile = JSON.parse(JSON.stringify(resolveExecutionProfile(id)));
+      delete profile.profile_digest;
+      return profile;
+    };
+    const reject = (profile: any, pattern: RegExp) => expect(() => normalizeProfile(profile)).toThrow(pattern);
+
+    const transport = copy('openrouter-primary');
+    transport.transport = 'fireworks';
+    reject(transport, /wrong transport/i);
+
+    const baseClass = copy('openrouter-primary');
+    baseClass.base_url_class = 'direct-fireworks-openai-compatible';
+    reject(baseClass, /OpenRouter gateway/i);
+
+    const fireworksClass = copy('fireworks-breakglass');
+    fireworksClass.base_url_class = 'openrouter-gateway';
+    reject(fireworksClass, /Fireworks direct/i);
+
+    const ollamaClass = copy('ollama-evaluation');
+    ollamaClass.base_url_class = 'openrouter-gateway';
+    reject(ollamaClass, /Ollama direct/i);
+
+    const structured = copy('openrouter-primary');
+    structured.structured_output = 'ignored';
+    reject(structured, /structured_output/i);
+
+    const reasoningEffort = copy('openrouter-primary');
+    reasoningEffort.reasoning.effort = 'low';
+    reject(reasoningEffort, /reasoning effort/i);
+
+    const reasoningWire = copy('openrouter-primary');
+    reasoningWire.reasoning.wire_shape = 'reasoning_effort';
+    reject(reasoningWire, /OpenRouter.*reasoning/i);
+
+    const directWire = copy('fireworks-breakglass');
+    directWire.reasoning.wire_shape = 'reasoning.effort';
+    reject(directWire, /Direct.*reasoning/i);
+
+    const extension = copy('openrouter-primary');
+    extension.request_extensions.perf_metrics_in_response = 'true';
+    reject(extension, /perf_metrics_in_response/i);
+
+    const routingMode = copy('openrouter-primary');
+    routingMode.routing.mode = 'direct';
+    reject(routingMode, /gateway-delegated/i);
+
+    const directRouting = copy('fireworks-breakglass');
+    directRouting.routing.mode = 'gateway-delegated';
+    reject(directRouting, /direct routing/i);
+
+    const ignoreProviders = copy('openrouter-primary');
+    ignoreProviders.routing.ignore_providers = ['fireworks', 3];
+    reject(ignoreProviders, /ignore_providers/i);
+
+    const providerKeys = copy('openrouter-primary');
+    providerKeys.routing.provider.extra = true;
+    reject(providerKeys, /provider.*unknown/i);
+
+    const providerPrivacy = copy('openrouter-primary');
+    providerPrivacy.routing.provider.data_collection = 'allow';
+    reject(providerPrivacy, /provider data collection/i);
+
+    const privacy = copy('openrouter-primary');
+    privacy.privacy.data_collection = 'allow';
+    reject(privacy, /privacy/i);
+
+    const retry = copy('openrouter-primary');
+    retry.retry.max_attempts = 3;
+    reject(retry, /retry contract/i);
+
+    const quarantine = copy('openrouter-primary');
+    quarantine.quarantine.on_timeout = 'unexpected';
+    reject(quarantine, /quarantine/i);
+
+    const active = copy('fireworks-breakglass');
+    active.active = true;
+    reject(active, /inactive/i);
+  });
+
   it('is validation-only in this slice: profile selection does not mutate the registry', () => {
     const before = JSON.stringify(EXECUTION_PROFILES);
     const candidate = resolveExecutionProfile('fireworks-breakglass');
