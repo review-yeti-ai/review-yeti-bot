@@ -261,11 +261,16 @@ function loadMatrix(argv = process.argv) {
   return { matrix, fixturePath };
 }
 
-function buildModelOptions(argv = process.argv) {
+export function buildModelOptions(argv = process.argv) {
   const model = argument('--model', process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731', argv);
   const maxTokens = resolveEvalMaxTokens({ argv, bounded: true, fallback: 4_096 });
+  const configuredTransports = pipeline.resolveModelConfig().transports;
   return {
     model,
+    // The production reviewWithModel boundary only consumes an explicit options.transports
+    // handoff. Preserve the central env-resolved plan here; otherwise qualification silently
+    // collapses to the first transport as an unnamed buffered "default" request.
+    transports: configuredTransports,
     // 300s, not the pipeline's 90s transport default: lanes here are buffered (non-streaming)
     // single fetches against a reasoning model whose median full-review completion is ~65-75s
     // with a long tail. Measured 2026-08-21: a 90s cap converted 28-30 of 72 rows per arm into
