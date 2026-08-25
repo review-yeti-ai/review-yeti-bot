@@ -5,8 +5,8 @@ const root = path.resolve(__dirname, '../..');
 const profileModule = require(path.join(root, '.github/workflows/pipelines/execution-profile.js'));
 
 const {
-  EXECUTION_PROFILES,
   PROFILE_SCHEMA_VERSION,
+  getExecutionProfiles,
   normalizeProfile,
   resolveExecutionProfile,
 } = profileModule;
@@ -14,12 +14,13 @@ const {
 describe('canonical execution-profile contract', () => {
   it('loads exactly the three pre-approved profiles with stable digests', () => {
     expect(PROFILE_SCHEMA_VERSION).toBe(1);
-    expect(Object.keys(EXECUTION_PROFILES).sort()).toEqual([
+    const profiles = getExecutionProfiles();
+    expect(Object.keys(profiles).sort()).toEqual([
       'fireworks-breakglass',
       'ollama-evaluation',
       'openrouter-primary',
     ]);
-    expect(Object.isFrozen(EXECUTION_PROFILES)).toBe(true);
+    expect(Object.isFrozen(profiles)).toBe(true);
 
     const openrouter = resolveExecutionProfile();
     expect(openrouter).toMatchObject({
@@ -150,10 +151,11 @@ describe('canonical execution-profile contract', () => {
   });
 
   it('is validation-only in this slice: profile selection does not mutate the registry', () => {
-    const before = JSON.stringify(EXECUTION_PROFILES);
+    const profiles = getExecutionProfiles();
+    const before = JSON.stringify(profiles);
     const candidate = resolveExecutionProfile('fireworks-breakglass');
 
     expect(candidate.id).toBe('fireworks-breakglass');
-    expect(JSON.stringify(EXECUTION_PROFILES)).toBe(before);
+    expect(JSON.stringify(profiles)).toBe(before);
   });
 });

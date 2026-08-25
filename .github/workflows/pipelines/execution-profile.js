@@ -142,19 +142,25 @@ function loadExecutionProfileManifest() {
   return Object.freeze(profiles);
 }
 
-const EXECUTION_PROFILES = loadExecutionProfileManifest();
+let executionProfiles = null;
+
+function getExecutionProfiles() {
+  if (!executionProfiles) executionProfiles = loadExecutionProfileManifest();
+  return executionProfiles;
+}
 
 function resolveExecutionProfile(profileId) {
-  if (profileId === undefined || profileId === null || profileId === '') return EXECUTION_PROFILES['openrouter-primary'];
+  const profiles = getExecutionProfiles();
+  if (profileId === undefined || profileId === null || profileId === '') return profiles['openrouter-primary'];
   if (typeof profileId !== 'string' || profileId.trim() === '') {
     throw new Error('execution profile selection must be an allowlisted profile identifier, not JSON');
   }
-  return EXECUTION_PROFILES[normalizeProfileId(profileId)];
+  return profiles[normalizeProfileId(profileId)];
 }
 
 module.exports = {
-  EXECUTION_PROFILES,
   PROFILE_SCHEMA_VERSION,
+  getExecutionProfiles,
   loadExecutionProfileManifest,
   normalizeProfile,
   resolveExecutionProfile,
