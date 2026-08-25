@@ -1012,10 +1012,18 @@ const TELEMETRY_OUTCOME_CLASSES = new Set([
   'http_5xx',
   'timeout',
   'transient_socket',
+  'provider_rate_limit',
   'provider_error',
   'malformed_output',
   'unknown',
 ]);
+
+const TELEMETRY_RECOVERY_ACTIONS = new Set([
+  'bounded_retry',
+  'model_fallback',
+]);
+
+const OPENROUTER_MAX_RETRY_AFTER_MS = 5_000;
 
 function normalizeTelemetryAttemptCount(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -1039,6 +1047,23 @@ function normalizeTelemetryOutcomeClass(value) {
 function normalizeTelemetryRetryReasons(value) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map(normalizeTelemetryOutcomeClass).filter(Boolean))].slice(0, 8);
+}
+
+function normalizeTelemetryRecoveryAction(value) {
+  const normalized = normalizeTelemetryIdentifier(value);
+  return normalized && TELEMETRY_RECOVERY_ACTIONS.has(normalized) ? normalized : null;
+}
+
+function normalizeTelemetryErrorCode(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._:-]{0,63}$/u.test(normalized)) return null;
+  return normalized;
+}
+
+function normalizeTelemetryStatus(value) {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric >= 100 && numeric <= 599 ? numeric : null;
 }
 
 function normalizeTelemetryIdentifier(value) {
@@ -1117,6 +1142,63 @@ function classifyTelemetryTransportError(error) {
   if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
   return 'unknown';
+}
+
+function parseRetryAfterMs(response) {
+  const raw = typeof response?.headers?.get === 'function'
+    ? response.headers.get('retry-after')
+    : response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'];
+  if (raw === null || raw === undefined || String(raw).trim() === '') return 0;
+  const value = String(raw).trim();
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(OPENROUTER_MAX_RETRY_AFTER_MS, Math.floor(seconds * 1_000));
+  }
+  const dateMs = Date.parse(value);
+  if (!Number.isFinite(dateMs)) return 0;
+  return Math.min(OPENROUTER_MAX_RETRY_AFTER_MS, Math.max(0, dateMs - Date.now()));
+}
+
+function resolveOpenRouterErrorCode(payload) {
+  return normalizeTelemetryErrorCode(
+    payload?.error?.code
+      || payload?.error?.type
+      || payload?.code
+      || payload?.type,
+  );
+}
+
+function matchAllowedModelInError(message, allowedModels = []) {
+  const text = String(message || '');
+  return allowedModels.find((model) => text.includes(model)) || null;
+}
+
+function prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message) {
+  const configuredModels = requestOptions?.plugins?.find((plugin) => plugin?.id === 'auto-router')?.allowed_models;
+  if (!Array.isArray(configuredModels) || configuredModels.length < 2) return false;
+  const failedModel = matchAllowedModelInError(
+    [message, payload?.error?.metadata?.model, payload?.model].filter(Boolean).join(' '),
+    configuredModels,
+  );
+  if (!failedModel) return false;
+  const fallbackModels = configuredModels.filter((model) => model !== failedModel);
+  if (fallbackModels.length === 0) return false;
+
+  // OpenRouter's `models` extension performs model-level fallback on rate limits
+  // and downtime. Pin the failed model as the primary for this recovery request,
+  // then walk the remaining policy-approved models. Remove auto-router-only
+  // fields and optional reasoning so every fallback candidate can satisfy the
+  // structured JSON contract.
+  requestBody.model = failedModel;
+  requestBody.models = fallbackModels;
+  delete requestBody.plugins;
+  delete requestBody.reasoning;
+  delete requestBody.reasoning_effort;
+  requestBody.provider = {
+    ...(requestBody.provider || {}),
+    require_parameters: true,
+  };
+  return true;
 }
 
 function extractResponseCost(payload) {
@@ -1579,11 +1661,17 @@ async function readChatCompletionResponse(
 async function reviewWithModel(persona, diffFiles, prContext, sessionContext, options = {}) {
   const cfg = { ...resolveModelConfig(), ...options };
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
+  const sleep = options.sleepImplementation || options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
   const laneStartMs = Date.now();
   let attemptCount = 0;
   let failureClass = null;
   const retryReasons = [];
+  let responseStatus = null;
+  let errorCode = null;
+  let generationIdDigest = null;
+  let routerAttempt = null;
+  let recoveryAction = null;
   const noteRetryReason = (reason) => {
     const normalized = normalizeTelemetryOutcomeClass(reason);
     if (normalized && !retryReasons.includes(normalized) && retryReasons.length < 8) retryReasons.push(normalized);
@@ -1594,6 +1682,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     latencyMs: normalizeTelemetryDuration(Date.now() - laneStartMs),
     retryReasons: [...retryReasons],
     failureClass: normalizeTelemetryOutcomeClass(finalFailureClass),
+    responseStatus: normalizeTelemetryStatus(responseStatus),
+    errorCode: normalizeTelemetryErrorCode(errorCode),
+    generationIdDigest,
+    routerAttempt: normalizeTelemetryAttemptCount(routerAttempt),
+    recoveryAction: normalizeTelemetryRecoveryAction(recoveryAction),
   });
   let requestOptions = null;
   let resultBase = {
@@ -1760,6 +1853,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       let fetchAttempts = 0;
       const maxFetchAttempts = 2;
       let formatRecoveryAttempted = false;
+      let providerRecoveryAttempted = false;
       const prepareDirectFormatRecovery = () => {
         if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
@@ -1796,6 +1890,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${transportApiKey}`,
+              ...(isOpenRouterTransport ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
             },
             body: JSON.stringify(requestBody),
             signal: streamAbortController?.signal || AbortSignal.timeout(transportTimeoutMs),
@@ -1805,12 +1900,41 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             responseHeaderTimer = null;
           }
 
+          responseStatus = normalizeTelemetryStatus(response.status);
+          const generationId = typeof response?.headers?.get === 'function'
+            ? response.headers.get('x-generation-id') || response.headers.get('x-request-id')
+            : null;
+          generationIdDigest = hashTelemetryIdentifier(generationId);
+
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
             const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
             const outcomeClass = classifyTelemetryHttpFailure(response.status);
             noteRetryReason(outcomeClass);
             failureClass = outcomeClass;
+            try {
+              const parsedDetail = JSON.parse(detail);
+              errorCode = resolveOpenRouterErrorCode(parsedDetail);
+              if (isOpenRouterTransport && !providerRecoveryAttempted &&
+                (outcomeClass === 'http_429' || outcomeClass === 'http_5xx' || outcomeClass === 'timeout') &&
+                prepareOpenRouterModelFallback(requestBody, requestOptions, parsedDetail, detail)) {
+                providerRecoveryAttempted = true;
+                recoveryAction = 'model_fallback';
+                const retryAfterMs = parseRetryAfterMs(response);
+                if (retryAfterMs > 0) await sleep(retryAfterMs);
+                continue;
+              }
+            } catch (_) {
+              // Non-JSON edge errors remain classified by HTTP status and may
+              // still take the bounded same-request retry below.
+            }
+            if (isOpenRouterTransport && !providerRecoveryAttempted && fetchAttempts < maxFetchAttempts && (outcomeClass === 'http_429' || outcomeClass === 'http_5xx' || outcomeClass === 'timeout')) {
+              providerRecoveryAttempted = true;
+              recoveryAction = 'bounded_retry';
+              const retryAfterMs = parseRetryAfterMs(response);
+              if (retryAfterMs > 0) await sleep(retryAfterMs);
+              continue;
+            }
             circuitBreaker.trip(transportName, errMsg);
             if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
@@ -1836,6 +1960,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               ? Math.min(DEFAULT_FORMAT_RECOVERY_MAX_WALL_CLOCK_MS, transportTimeoutMs * 2)
               : 0,
           );
+          const payloadErrorCode = resolveOpenRouterErrorCode(payload);
+          if (payloadErrorCode) errorCode = payloadErrorCode;
+          if (payload?.openrouter_metadata?.attempt !== undefined) routerAttempt = payload.openrouter_metadata.attempt;
           const responseBase = {
             ...resultBase,
             model: resolveResponseModel(payload, requestModel),
@@ -1847,8 +1974,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
           if (payload?.error) {
             const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
-            noteRetryReason('provider_error');
-            failureClass = 'provider_error';
+            const providerFailureClass = /rate.?limit|quota|capacity|overload/i.test(`${payload.error.code || ''} ${message}`)
+              ? 'provider_rate_limit'
+              : 'provider_error';
+            noteRetryReason(providerFailureClass);
+            failureClass = providerFailureClass;
+            if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
+              prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message)) {
+              providerRecoveryAttempted = true;
+              recoveryAction = 'model_fallback';
+              continue;
+            }
             circuitBreaker.trip(transportName, message);
             if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
@@ -1869,8 +2005,18 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               const providerLane = JSON.parse(content);
               if (providerLane?.error) {
                 const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
-                noteRetryReason('provider_error');
-                failureClass = 'provider_error';
+                const providerFailureClass = /rate.?limit|quota|capacity|overload/i.test(`${providerLane.error.code || ''} ${message}`)
+                  ? 'provider_rate_limit'
+                  : 'provider_error';
+                errorCode = resolveOpenRouterErrorCode(providerLane);
+                noteRetryReason(providerFailureClass);
+                failureClass = providerFailureClass;
+                if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
+                  prepareOpenRouterModelFallback(requestBody, requestOptions, providerLane, message)) {
+                  providerRecoveryAttempted = true;
+                  recoveryAction = 'model_fallback';
+                  continue;
+                }
                 if (i < candidateTransports.length - 1) {
                   circuitBreaker.trip(transportName, message);
                   console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
@@ -3208,7 +3354,7 @@ function postOrOutputComment(commentBody, prContext, options = {}) {
           `repos/${prContext.repo}/issues/${prNumber}/comments?per_page=100`,
           '--paginate',
           '--jq',
-          '.[].body',
+          '.[] | [.id, .body] | @tsv',
         ], {
           encoding: 'utf-8',
           env: process.env,
@@ -3218,9 +3364,39 @@ function postOrOutputComment(commentBody, prContext, options = {}) {
           console.warn(`[Publish] ${error}`);
           return { success: false, postedViaGh: false, error };
         }
-        if (String(existing.stdout || '').includes(marker)) {
-          console.log(`[Publish] Exact-head review marker already exists for PR #${prNumber}; skipping duplicate.`);
-          return { success: true, postedViaGh: true, deduplicated: true };
+        const matchingComment = String(existing.stdout || '')
+          .split(/\r?\n/u)
+          .map((line) => {
+            const separator = line.indexOf('\t');
+            return separator === -1
+              ? { id: null, body: line }
+              : { id: line.slice(0, separator), body: line.slice(separator + 1) };
+          })
+          .find((comment) => comment.body.includes(marker));
+        if (matchingComment) {
+          if (!matchingComment.id) {
+            console.log(`[Publish] Exact-head review marker already exists for PR #${prNumber}; skipping duplicate.`);
+            return { success: true, postedViaGh: true, deduplicated: true };
+          }
+
+          const updated = commandRunner('gh', [
+            'api',
+            `repos/${prContext.repo}/issues/comments/${matchingComment.id}`,
+            '--method',
+            'PATCH',
+            '--field',
+            `body=${bodyToPublish}`,
+          ], {
+            encoding: 'utf-8',
+            env: process.env,
+          });
+          if (!updated || updated.status !== 0) {
+            const error = `gh api could not update the existing review marker: ${updated?.stderr || updated?.stdout || 'unknown error'}`;
+            console.warn(`[Publish] ${error}`);
+            return { success: false, postedViaGh: false, error };
+          }
+          console.log(`[Publish] Updated exact-head review marker for PR #${prNumber}.`);
+          return { success: true, postedViaGh: true, updated: true };
         }
       }
 
@@ -3338,6 +3514,11 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       latencyMs: normalizeTelemetryDuration(result.latencyMs),
       retryReasons: normalizeTelemetryRetryReasons(result.retryReasons),
       failureClass: normalizeTelemetryOutcomeClass(result.failureClass),
+      responseStatus: normalizeTelemetryStatus(result.responseStatus),
+      errorCode: normalizeTelemetryErrorCode(result.errorCode),
+      generationIdDigest: normalizeTelemetryIdentifier(result.generationIdDigest),
+      routerAttempt: normalizeTelemetryAttemptCount(result.routerAttempt),
+      recoveryAction: normalizeTelemetryRecoveryAction(result.recoveryAction),
     };
   });
 
@@ -3634,6 +3815,7 @@ async function main() {
           const totalLatencyMs = laneRuns.reduce((sum, r) => sum + (normalizeTelemetryDuration(r.latencyMs) || 0), 0);
           const retryReasons = normalizeTelemetryRetryReasons(laneRuns.flatMap((r) => Array.isArray(r.retryReasons) ? r.retryReasons : []));
           const anyError = laneRuns.find((r) => r.decision === 'ERROR');
+          const lastRun = laneRuns.at(-1) || {};
           const baseRun = laneRuns[0] || {};
 
           let totalCost = null;
@@ -3656,6 +3838,11 @@ async function main() {
             latencyMs: totalLatencyMs,
             retryReasons,
             failureClass: anyError ? (normalizeTelemetryOutcomeClass(anyError.failureClass) || 'unknown') : null,
+            responseStatus: normalizeTelemetryStatus(anyError?.responseStatus ?? lastRun.responseStatus),
+            errorCode: normalizeTelemetryErrorCode(anyError?.errorCode ?? lastRun.errorCode),
+            generationIdDigest: normalizeTelemetryIdentifier(lastRun.generationIdDigest),
+            routerAttempt: normalizeTelemetryAttemptCount(lastRun.routerAttempt),
+            recoveryAction: normalizeTelemetryRecoveryAction(laneRuns.find((r) => r.recoveryAction)?.recoveryAction),
             decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
             error: anyError ? anyError.error : undefined,
           };
@@ -3675,6 +3862,11 @@ async function main() {
       }
       if (failed.length === personaResults.length) {
         console.error('[Review] Every persona lane failed. Refusing to post a verdict derived from zero completed reviews.');
+        const failedArbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
+          changedFiles: reviewDiffFiles,
+        });
+        const failedTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
+        writeStepOutputs(failedArbitration, process.env.GITHUB_OUTPUT, coverage, null, failedTelemetry);
         process.exitCode = 1;
         return;
       }
