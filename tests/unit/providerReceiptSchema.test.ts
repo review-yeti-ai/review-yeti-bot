@@ -200,4 +200,29 @@ describe('Rank 3D provider telemetry receipt schema', () => {
       headSha: EXACT_HEAD.headSha,
     });
   });
+
+  it('omits empty, overlong, and control-character identifiers', () => {
+    const receipt = pipeline.buildProviderTelemetryReceipt([{
+      personaId: ' ',
+      transport: 'openrouter\nworkflow-injection',
+      provider: 'p'.repeat(201),
+      model: '',
+      inputTokens: 1,
+      outputTokens: 2,
+      cost: 0,
+    }], EXACT_HEAD);
+
+    expect(receipt.lanes[0]).toMatchObject({
+      personaId: '',
+      configuredTransport: null,
+      resolvedProvider: null,
+      model: null,
+      inputTokens: 1,
+      outputTokens: 2,
+      reportedCost: 0,
+      costStatus: 'reported',
+    });
+    expect(JSON.stringify(receipt)).not.toContain('workflow-injection');
+    expect(JSON.stringify(receipt)).not.toContain('p'.repeat(201));
+  });
 });
