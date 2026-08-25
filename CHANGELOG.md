@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.11.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.10.1...v1.11.0) (2026-08-25)
+
+
+### Features
+
+* **config:** add execution profile request parity ([#253](https://github.com/review-yeti-ai/review-yeti-bot/issues/253)) ([233d21c](https://github.com/review-yeti-ai/review-yeti-bot/commit/233d21c1549090ef09155c1b0a47175a3ad8d43c))
+* **config:** validate canonical execution profiles ([#252](https://github.com/review-yeti-ai/review-yeti-bot/issues/252)) ([0417f5c](https://github.com/review-yeti-ai/review-yeti-bot/commit/0417f5cba2e4bf854f6d17666e72ceb932db8d25))
+* expand licensing persona to enforce commercial entitlement integrity ([#245](https://github.com/review-yeti-ai/review-yeti-bot/issues/245)) ([5184547](https://github.com/review-yeti-ai/review-yeti-bot/commit/51845470af0262145457fa0e3b7211e032b48c70))
+* **receipts:** add provider telemetry receipt ([9ed68b7](https://github.com/review-yeti-ai/review-yeti-bot/commit/9ed68b716e2eac8cca6cf458a8b9aafccca259f4))
+* **receipts:** record provider outcome telemetry ([#251](https://github.com/review-yeti-ai/review-yeti-bot/issues/251)) ([8b1a91b](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b1a91b2b4c9161df9d4462d38442f290508a089))
+
+
+### Bug Fixes
+
+* bound OpenRouter review recovery and telemetry ([3249d95](https://github.com/review-yeti-ai/review-yeti-bot/commit/3249d95f104344c444d9b251f2315c85ac7822fc))
+* cap Ollama request concurrency ([#261](https://github.com/review-yeti-ai/review-yeti-bot/issues/261)) ([e309780](https://github.com/review-yeti-ai/review-yeti-bot/commit/e309780b6ffe7848032100357ec26a6b3a30b78d))
+* **receipts:** attribute provider from configured transport ([#248](https://github.com/review-yeti-ai/review-yeti-bot/issues/248)) ([9b91407](https://github.com/review-yeti-ai/review-yeti-bot/commit/9b91407526af4b201b29fd512721a868ea9e2265))
+* **review:** resolve exact gitlink metadata ([#240](https://github.com/review-yeti-ai/review-yeti-bot/issues/240)) ([64bfc55](https://github.com/review-yeti-ai/review-yeti-bot/commit/64bfc5532503871ef1f783fc3ce3bc25d1ec69b1))
+
 ## [1.10.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.10.0...v1.10.1) (2026-08-22)
 
 
