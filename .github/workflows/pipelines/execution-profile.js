@@ -31,6 +31,13 @@ function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
 }
 
+function deepFreeze(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+
 function rejectUnknownKeys(value, allowedKeys, label) {
   assertPlainObject(value, label);
   const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.includes(key));
@@ -126,7 +133,12 @@ function profileFingerprint(profile) {
 }
 
 function loadExecutionProfileManifest() {
-  const manifest = JSON.parse(fs.readFileSync(PROFILE_MANIFEST_PATH, 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(PROFILE_MANIFEST_PATH, 'utf8'), (key, value) => {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      throw new Error(`execution profile manifest contains a forbidden key: ${key}`);
+    }
+    return value;
+  });
   assertPlainObject(manifest, 'execution profile manifest');
   rejectUnknownKeys(manifest, ['schema_version', 'profiles'], 'execution profile manifest');
   if (manifest.schema_version !== PROFILE_SCHEMA_VERSION) throw new Error(`execution profile schema_version must be ${PROFILE_SCHEMA_VERSION}`);
@@ -136,7 +148,7 @@ function loadExecutionProfileManifest() {
   for (const rawProfile of manifest.profiles) {
     const normalized = normalizeProfile(rawProfile);
     if (Object.prototype.hasOwnProperty.call(profiles, normalized.id)) throw new Error(`execution profile ${normalized.id} is duplicated`);
-    profiles[normalized.id] = Object.freeze({ ...normalized, profile_digest: profileFingerprint(normalized) });
+    profiles[normalized.id] = deepFreeze({ ...normalized, profile_digest: profileFingerprint(normalized) });
   }
   for (const id of PROFILE_IDS) if (!Object.prototype.hasOwnProperty.call(profiles, id)) throw new Error(`execution profile manifest is missing ${id}`);
   return Object.freeze(profiles);

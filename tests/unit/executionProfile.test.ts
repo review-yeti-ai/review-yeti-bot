@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
+const fs = require('fs');
 
 const root = path.resolve(__dirname, '../..');
 const profileModule = require(path.join(root, '.github/workflows/pipelines/execution-profile.js'));
@@ -7,6 +8,7 @@ const profileModule = require(path.join(root, '.github/workflows/pipelines/execu
 const {
   PROFILE_SCHEMA_VERSION,
   getExecutionProfiles,
+  loadExecutionProfileManifest,
   normalizeProfile,
   resolveExecutionProfile,
 } = profileModule;
@@ -21,6 +23,13 @@ describe('canonical execution-profile contract', () => {
       'openrouter-primary',
     ]);
     expect(Object.isFrozen(profiles)).toBe(true);
+    expect(Object.isFrozen(profiles['openrouter-primary'].timeouts)).toBe(true);
+    expect(Object.isFrozen(profiles['openrouter-primary'].reasoning)).toBe(true);
+    expect(Object.isFrozen(profiles['openrouter-primary'].routing)).toBe(true);
+    expect(Object.isFrozen(profiles['openrouter-primary'].routing.ignore_providers)).toBe(true);
+    expect(Object.isFrozen(profiles['openrouter-primary'].privacy)).toBe(true);
+    expect(Object.isFrozen(profiles['openrouter-primary'].retry)).toBe(true);
+    expect(Object.isFrozen(profiles['openrouter-primary'].quarantine)).toBe(true);
 
     const openrouter = resolveExecutionProfile();
     expect(openrouter).toMatchObject({
@@ -157,5 +166,18 @@ describe('canonical execution-profile contract', () => {
 
     expect(candidate.id).toBe('fireworks-breakglass');
     expect(JSON.stringify(profiles)).toBe(before);
+    expect(() => {
+      (candidate.timeouts as any).request_ms = 1;
+    }).toThrow(TypeError);
+    expect(candidate.timeouts.request_ms).toBe(120000);
+  });
+
+  it('rejects prototype-pollution keys in manifest JSON before normalization', () => {
+    const readFileSync = vi.spyOn(fs, 'readFileSync').mockReturnValue('{"__proto__":{"polluted":true}}' as any);
+    try {
+      expect(() => loadExecutionProfileManifest()).toThrow(/forbidden key.*__proto__/i);
+    } finally {
+      readFileSync.mockRestore();
+    }
   });
 });
