@@ -3271,6 +3271,15 @@ function writeProviderTelemetryReceipt(personaResults, prContext, outputDirector
   };
 }
 
+function writeProviderTelemetryReceiptBestEffort(personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP) {
+  try {
+    return writeProviderTelemetryReceipt(personaResults, prContext, outputDirectory);
+  } catch (error) {
+    console.warn(`[Telemetry] Could not write provider telemetry receipt: ${error.message}`);
+    return null;
+  }
+}
+
 function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null, providerTelemetry = null) {
   if (!outputPath) return;
 
@@ -3626,12 +3635,7 @@ async function main() {
   }
 
   const runReport = writeRunReport(arbitration, personaResults, prContext);
-  let providerTelemetry = null;
-  try {
-    providerTelemetry = writeProviderTelemetryReceipt(personaResults, prContext);
-  } catch (error) {
-    console.warn(`[Telemetry] Could not write provider telemetry receipt: ${error.message}`);
-  }
+  const providerTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
   writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry);
   emitWorkflowAnnotations(personaResults);
   writeStepSummary(arbitration, personaResults, prContext, coverage);
@@ -3709,6 +3713,7 @@ module.exports = {
   writeRunReport,
   buildProviderTelemetryReceipt,
   writeProviderTelemetryReceipt,
+  writeProviderTelemetryReceiptBestEffort,
   initMcpFleet,
   evaluatePersonaLane,
   computeArbitrationQuorum,

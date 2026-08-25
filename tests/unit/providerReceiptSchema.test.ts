@@ -241,4 +241,12 @@ describe('Rank 3D provider telemetry receipt schema', () => {
 
     expect(result.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-unknown-unknown.json'));
   });
+
+  it('contains telemetry write failures without failing the review contract', () => {
+    const outputFile = path.join(os.tmpdir(), `ct-provider-telemetry-output-${Date.now()}`);
+    fs.writeFileSync(outputFile, 'not a directory');
+
+    expect(pipeline.writeProviderTelemetryReceiptBestEffort([], EXACT_HEAD, outputFile)).toBeNull();
+    fs.unlinkSync(outputFile);
+  });
 });
