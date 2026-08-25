@@ -11,6 +11,7 @@ import {
   CANDIDATE_PROFILE,
   FIXTURE_IDS,
   buildArmEnvironment,
+  buildBaselineQualityGate,
   buildCandidateQualityGate,
   buildQualificationReceipt,
   buildTransportHandoff,
@@ -38,6 +39,8 @@ const DEFECT_FIXTURE_IDS = new Set([
   'dual-cause-diagnostic-named-for-one',
   'active-skip-marker-left-in-suite',
   'shared-module-state-order-dependent-test',
+  'elixir-second-error-cause-untested',
+  'java-fixed-sleep-for-asynchronous-state',
 ]);
 
 function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = {}) {
@@ -149,7 +152,9 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
   assert.equal(receipt.publication, 'none');
   assert.equal(receipt.provider_mutation, 'none');
   assert.equal(receipt.promotion_gate, 'manual_review_required');
+  assert.equal(receipt.baseline_quality_gate.passed, true);
   assert.equal(receipt.candidate_quality_gate.passed, true);
+  assert.equal(receipt.candidate_not_worse_on_defect_recall, true);
   assert.equal(receipt.candidate_eligible_for_next_step, true);
   assert.equal(JSON.stringify(receipt).includes('secret'), false);
   assert.equal(JSON.stringify(receipt).includes('findingsDetail'), false);
@@ -198,6 +203,37 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
   assert.equal(malformedRecovery.candidate_quality_gate.observed_malformed_output_recoveries, 1);
   assert.equal(malformedRecovery.candidate_eligible_for_next_step, false);
 
+  const baselineFalsePositive = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: makeArm(BASELINE_PROFILE, { falsePositives: ['clean-rename-only'] }),
+    candidate: makeArm(CANDIDATE_PROFILE),
+    runId: 'quality-baseline-false-positive',
+  });
+  assert.equal(baselineFalsePositive.baseline_quality_gate.passed, false);
+  assert.equal(baselineFalsePositive.candidate_eligible_for_next_step, false);
+
+  const improvedCandidate = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: makeArm(BASELINE_PROFILE, { missed: ['vacuous-default-value-test'] }),
+    candidate: makeArm(CANDIDATE_PROFILE),
+    runId: 'quality-candidate-improvement',
+  });
+  assert.equal(improvedCandidate.baseline_quality_gate.passed, true);
+  assert.equal(improvedCandidate.candidate_not_worse_on_defect_recall, true);
+  assert.equal(improvedCandidate.candidate_eligible_for_next_step, true);
+
+  const recallRegression = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: makeArm(BASELINE_PROFILE),
+    candidate: makeArm(CANDIDATE_PROFILE, { missed: ['vacuous-default-value-test'] }),
+    runId: 'quality-recall-regression',
+  });
+  assert.equal(recallRegression.candidate_not_worse_on_defect_recall, false);
+  assert.equal(recallRegression.candidate_eligible_for_next_step, false);
+
   const missingFixtureEvidence = makeArm(CANDIDATE_PROFILE);
   missingFixtureEvidence.fixture_outcomes = missingFixtureEvidence.fixture_outcomes.slice(1);
   assert.equal(buildCandidateQualityGate(missingFixtureEvidence).fixture_set_complete, false);
@@ -211,6 +247,11 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
   unexpectedFixtureEvidence.fixture_outcomes[0] = { ...unexpectedFixtureEvidence.fixture_outcomes[0], fixture_id: 'unexpected-fixture' };
   assert.equal(buildCandidateQualityGate(unexpectedFixtureEvidence).fixture_set_complete, false);
   assert.equal(buildCandidateQualityGate(unexpectedFixtureEvidence).passed, false);
+
+  const missingBaselineEvidence = makeArm(BASELINE_PROFILE);
+  missingBaselineEvidence.fixture_outcomes = missingBaselineEvidence.fixture_outcomes.slice(1);
+  assert.equal(buildBaselineQualityGate(missingBaselineEvidence).fixture_set_complete, false);
+  assert.equal(buildQualificationReceipt({ input, policy, baseline: missingBaselineEvidence, candidate: makeArm(CANDIDATE_PROFILE) }).candidate_eligible_for_next_step, false);
 });
 
 test('evaluation summary reports only bounded aggregate evidence', () => {

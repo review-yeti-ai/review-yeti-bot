@@ -136,7 +136,7 @@ budget, a fifteen-minute (900s) lane deadline with a two-minute non-generation r
 When an operator wants evidence for moving more work to Ollama, use the manually dispatched
 `One-time Ollama qualification` workflow. It requires the exact target repository, PR number,
 base/head SHAs, and the exact `review-yeti-bot` commit, then verifies those coordinates again
-through the GitHub API before starting any model request. It runs nine fixed fixtures once through
+through the GitHub API before starting any model request. It runs thirteen fixed fixtures once through
 the current production transport plan and once through an Ollama-only candidate in parallel.
 
 This is a bounded evidence run, not a canary or a review trigger: it has no schedule, pull-request
@@ -148,9 +148,10 @@ completed candidate is only eligible for the next
 manual decision—the provider order and `v1` consumer path remain unchanged until a separate,
 reviewed control-plane change is approved.
 
-Candidate eligibility fails closed unless all five defect fixtures are detected, all four clean
-fixtures remain clean, every expected fixture has bounded outcome evidence, and no row needed a
-`malformed_output` recovery. Transport completion or partial recall is not qualification evidence.
+Candidate eligibility fails closed unless all seven defect fixtures are detected, all six clean
+fixtures remain clean in both arms, every expected fixture has bounded outcome evidence, the
+candidate has no `malformed_output` recovery, and candidate recall does not regress from the
+baseline. Transport completion or partial recall is not qualification evidence.
 
 - **timeout_ms = 120000 for Fireworks, 90000 for Ollama and the OpenRouter fallback.** Since
   `review-yeti-bot` PR #163, an actively-streaming response is never aborted by a duration cap --

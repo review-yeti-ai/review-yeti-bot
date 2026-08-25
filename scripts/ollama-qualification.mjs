@@ -30,6 +30,10 @@ const FIXTURE_CONTRACT = Object.freeze([
   ['shared-module-state-order-dependent-test', 'defect'],
   ['table-driven-consolidation-preserves-coverage', 'clean'],
   ['function-scoped-fixture-avoids-shared-state', 'clean'],
+  ['elixir-second-error-cause-untested', 'defect'],
+  ['elixir-both-error-causes-covered', 'clean'],
+  ['java-fixed-sleep-for-asynchronous-state', 'defect'],
+  ['java-condition-wait-for-asynchronous-state', 'clean'],
 ]);
 export const FIXTURE_IDS = Object.freeze(FIXTURE_CONTRACT.map(([fixtureId]) => fixtureId));
 const EXPECTED_FIXTURE_CATEGORIES = new Map(FIXTURE_CONTRACT);
@@ -318,12 +322,46 @@ export function buildCandidateQualityGate(candidate = {}) {
   };
 }
 
+export function buildBaselineQualityGate(baseline = {}) {
+  const outcomes = Array.isArray(baseline.fixture_outcomes) ? baseline.fixture_outcomes : [];
+  const fixtureIds = outcomes.map((entry) => String(entry?.fixture_id || ''));
+  const uniqueFixtureIds = new Set(fixtureIds);
+  const fixtureSetComplete = fixtureIds.length === FIXTURE_IDS.length
+    && uniqueFixtureIds.size === FIXTURE_IDS.length
+    && FIXTURE_IDS.every((fixtureId) => uniqueFixtureIds.has(fixtureId));
+  const fixtureOutcomesValid = outcomes.every((entry) => {
+    const fixtureId = String(entry?.fixture_id || '');
+    const expectedCategory = EXPECTED_FIXTURE_CATEGORIES.get(fixtureId);
+    if (expectedCategory === 'defect') {
+      return entry?.category === 'defect' && (entry?.outcome === 'detected' || entry?.outcome === 'miss');
+    }
+    return expectedCategory === 'clean' && entry?.category === 'clean' && entry?.outcome === 'clean';
+  });
+  const passed = baseline.rows === FIXTURE_IDS.length
+    && baseline.defect_runs === EXPECTED_DEFECT_RUNS
+    && baseline.clean_runs === EXPECTED_CLEAN_RUNS
+    && baseline.false_positive_runs === 0
+    && fixtureSetComplete
+    && fixtureOutcomesValid;
+  return {
+    required_rows: FIXTURE_IDS.length,
+    required_clean_false_positives: 0,
+    fixture_set_complete: fixtureSetComplete,
+    passed,
+  };
+}
+
 export function buildQualificationReceipt({ input, policy, baseline, candidate, now = new Date().toISOString(), runId = 'manual' }) {
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
   const complete = baseline.status === 'completed' && candidate.status === 'completed'
     && baseline.errored_runs === 0 && candidate.errored_runs === 0;
+  const baselineQualityGate = buildBaselineQualityGate(baseline);
   const candidateQualityGate = buildCandidateQualityGate(candidate);
-  const candidateQualityEligible = complete && candidateQualityGate.passed;
+  const candidateNotWorseOnDefectRecall = Number(candidate.detected_defect_runs) >= Number(baseline.detected_defect_runs);
+  const candidateQualityEligible = complete
+    && baselineQualityGate.passed
+    && candidateQualityGate.passed
+    && candidateNotWorseOnDefectRecall;
   return {
     schema: QUALIFICATION_SCHEMA,
     mode: 'one-time-parallel-qualification',
@@ -344,7 +382,9 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
     publication: 'none',
     provider_mutation: 'none',
     promotion_gate: 'manual_review_required',
+    baseline_quality_gate: baselineQualityGate,
     candidate_quality_gate: candidateQualityGate,
+    candidate_not_worse_on_defect_recall: candidateNotWorseOnDefectRecall,
     candidate_eligible_for_next_step: candidateQualityEligible,
     arms: { baseline, candidate },
   };
