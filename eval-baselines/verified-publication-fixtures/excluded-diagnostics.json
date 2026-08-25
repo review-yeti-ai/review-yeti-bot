@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "testing-charter-excluded-diagnostics-v1",
+  "excludedFromQualification": true,
+  "fixtures": [
+    {
+      "id": "function-scoped-fixture-single-call-mislabeled-second",
+      "reason": "The test named as a second-call case invokes the limiter only once. A finding about missing two-call coverage is valid, so this cannot be graded as a clean control.",
+      "supersededBy": "function-scoped-fixture-avoids-shared-state",
+      "files": [
+        {
+          "path": "tests/unit/rateLimiter.test.ts",
+          "patch": "@@ -0,0 +1,20 @@\n+import { describe, it, expect, beforeEach } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+describe('RateLimiter', () => {\n+  let limiter;\n+\n+  beforeEach(() => {\n+    limiter = new RateLimiter({ max: 2 });\n+  });\n+\n+  it('allows the first call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call once the limit is reached', () => {\n+    limiter.allow('key');\n+    limiter.allow('key');\n+    expect(limiter.allow('key')).toBe(false);\n+  });\n+});\n"
+        }
+      ]
+    }
+  ]
+}
