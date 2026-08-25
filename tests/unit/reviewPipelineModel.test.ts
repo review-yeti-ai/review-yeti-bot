@@ -217,6 +217,25 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.plugins[0].allowed_models).toHaveLength(5);
   });
 
+  it('uses deterministic sampling for Ollama while preserving the existing gateway temperature', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'k',
+        model: 'deepseek-v4-flash:cloud',
+        stream: false,
+        reasoning_effort: 'high',
+      }],
+      fetchImpl: impl,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.temperature).toBe(0);
+  });
+
   it('keeps the auto-router plugin payload when policy uses a canonical model override', async () => {
     const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
 
