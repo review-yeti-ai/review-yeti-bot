@@ -6,7 +6,7 @@
 
 **Architecture:** Release Please watches `main` and opens a release PR that updates the Node package version and changelog from Conventional Commits. Merging that PR creates an immutable `vX.Y.Z` tag, which invokes one canonical benchmark/test/package-publication workflow; only that successful workflow promotes the matching `v1` rolling tag. Existing `v1.8.5` is preserved as historical state, while future releases are guarded against package/tag drift.
 
-**Tech Stack:** GitHub Actions, `googleapis/release-please-action@v4`, Node.js 24, npm lockfile, Vitest, shell/Node release guards.
+**Tech Stack:** GitHub Actions, `googleapis/release-please-action@v5`, Node.js 24, npm lockfile, Vitest, shell/Node release guards.
 
 **Spec:** Approved in chat on 2026-08-21; the current repository already contains tag-triggered release publication and manual rolling-major workflows.
 
