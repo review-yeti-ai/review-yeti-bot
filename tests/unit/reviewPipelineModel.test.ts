@@ -9,6 +9,7 @@ const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/rev
 
 const { reviewWithModel, resolveModelConfig, PERSONA_CHARTERS } = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
+const testingPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'testing');
 
 const diffFiles = [
   {
@@ -146,6 +147,46 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.model).toBe('m');
     const system = calls[0].body.messages.find((m: any) => m.role === 'system').content;
     expect(system).toContain(securityPersona.charter);
+  });
+
+  it('matches the prompt to the tool-free request contract', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(testingPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+    });
+
+    const body = calls[0].body;
+    const system = body.messages.find((message: any) => message.role === 'system').content;
+    expect(body).not.toHaveProperty('tools');
+    expect(body).not.toHaveProperty('tool_choice');
+    expect(system).toContain('No tools are attached to this request');
+    expect(system).not.toContain('Tool Guidance');
+    for (const advertisedTool of ['read_file', 'code_search', 'symbol_lookup', 'context7_search', 'fetch_docs']) {
+      expect(system).not.toContain(advertisedTool);
+    }
+  });
+
+  it('keeps evaluation answers and grading vocabulary out of the runtime testing prompt', async () => {
+    const matrix = JSON.parse(fs.readFileSync(
+      path.join(rootRepoDir, 'eval-baselines/verified-publication-fixtures/evaluation-matrix.json'),
+      'utf8',
+    ));
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(testingPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+    });
+
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    for (const fixture of matrix.fixtures) {
+      expect(system).not.toContain(fixture.id);
+      expect(system).not.toContain(fixture.title);
+      expect(system).not.toContain(fixture.summary);
+      for (const expectedPath of fixture.expectedPaths) expect(system).not.toContain(expectedPath);
+      for (const rubricGroup of fixture.mustMatch) {
+        expect(system).not.toContain(JSON.stringify(rubricGroup));
+        expect(system).not.toContain(rubricGroup.join('|'));
+      }
+    }
   });
 
   it('uses the canonical fetchImplementation boundary and fails closed on malformed provider JSON', async () => {
