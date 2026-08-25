@@ -1,0 +1,101 @@
+name: One-time Ollama qualification
+
+# This workflow is intentionally manual and isolated. It is never a consumer review trigger,
+# never a canary, and never a scheduled/recurring monitor. It has read-only permissions and the
+# qualification script runs both arms without a GitHub comment, check, review verdict, or merge
+# decision. The current-production arm remains authoritative for any operator decision.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type QUALIFY to authorize one bounded comparison'
+        required: true
+        type: string
+      repository:
+        description: 'Immutable target repository, owner/name'
+        required: true
+        type: string
+      pr_number:
+        description: 'Target pull request number'
+        required: true
+        type: string
+      base_sha:
+        description: 'Exact target PR base commit SHA'
+        required: true
+        type: string
+      head_sha:
+        description: 'Exact target PR head commit SHA'
+        required: true
+        type: string
+      bot_sha:
+        description: 'Exact review-yeti-bot commit SHA to qualify'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  qualify:
+    name: Paired Ollama evidence (no publication)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      QUALIFY_CONFIRM: ${{ inputs.confirm }}
+      QUALIFY_REPOSITORY: ${{ inputs.repository }}
+      QUALIFY_PR_NUMBER: ${{ inputs.pr_number }}
+      QUALIFY_BASE_SHA: ${{ inputs.base_sha }}
+      QUALIFY_HEAD_SHA: ${{ inputs.head_sha }}
+      QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
+      QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
+      QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+      OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
+      OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+    steps:
+      - name: Checkout central qualification tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: example-review-actions
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - name: Checkout exact Review Yeti action commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: review-yeti-ai/review-yeti-bot
+          ref: ${{ inputs.bot_sha }}
+          path: review-yeti-bot
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install isolated qualification dependencies
+        working-directory: review-yeti-bot
+        run: npm ci --ignore-scripts --no-audit --no-fund --silent
+
+      - name: Run bounded paired qualification
+        id: qualification
+        continue-on-error: true
+        working-directory: example-review-actions
+        run: node scripts/ollama-qualification.mjs
+
+      - name: Upload sanitized qualification receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: ollama-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ollama-qualification/ollama-qualification-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: State the non-authoritative boundary
+        if: always()
+        run: |
+          echo 'Qualification was read-only evidence only.'
+          echo 'The current production review path remained authoritative; no comment, check, verdict, merge, or provider mutation was permitted.'

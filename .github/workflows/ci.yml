@@ -26,6 +26,7 @@ jobs:
           node --check scripts/validate-transport-handoff.mjs
           node --check scripts/review-yeti-local.mjs
           node --check scripts/review-yeti-mcp.mjs
+          node --check scripts/ollama-qualification.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           node scripts/emit-execution-plan.mjs --check
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
@@ -58,6 +59,7 @@ jobs:
           node --test scripts/validate-transport-handoff.test.mjs
           node --test scripts/review-yeti-local.test.mjs
           node --test scripts/review-yeti-mcp.test.mjs
+          node --test scripts/ollama-qualification.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
@@ -80,6 +82,14 @@ jobs:
           grep -Fq 'max-diff-chars:' .github/workflows/review-yeti.yml
           grep -Fq 'personas:' .github/workflows/review-yeti.yml
           grep -Fq 'context7-api-key:' .github/workflows/review-yeti.yml
+          test -f .github/workflows/ollama-qualification.yml
+          grep -Fq 'workflow_dispatch:' .github/workflows/ollama-qualification.yml
+          if grep -Eq '^  (schedule|pull_request|pull_request_target|repository_dispatch):' .github/workflows/ollama-qualification.yml; then
+            echo "::error::Ollama qualification must remain manual and non-recurring"
+            exit 1
+          fi
+          grep -Fq 'publication=none' scripts/ollama-qualification.mjs
+          grep -Fq 'authoritative_arm: '\''baseline'\''' scripts/ollama-qualification.mjs
           grep -Fq 'healthy_transports' .github/workflows/review-yeti.yml
           grep -Fq 'transport-plan-b64:' .github/workflows/review-yeti.yml
           grep -Fq 'transport_plan_b64' scripts/emit-policy.mjs
