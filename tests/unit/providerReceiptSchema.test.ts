@@ -27,6 +27,17 @@ function collectKeys(value: unknown, prefix = ''): string[] {
   return Object.entries(value).flatMap(([key, entry]) => collectKeys(entry, prefix ? `${prefix}.${key}` : key));
 }
 
+function withRunnerTemp<T>(directory: string, callback: () => T): T {
+  const previous = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = directory;
+  try {
+    return callback();
+  } finally {
+    if (previous === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = previous;
+  }
+}
+
 describe('Rank 3A provider receipt schema and redaction contract', () => {
   it('keeps the existing receipt identity exact-head bound and versioned', () => {
     const report = pipeline.buildReviewRunReport(
@@ -183,7 +194,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
 
   it('writes an exact-head telemetry receipt with a stable digest', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-provider-telemetry-'));
-    const result = pipeline.writeProviderTelemetryReceipt([
+    const result = withRunnerTemp(directory, () => pipeline.writeProviderTelemetryReceipt([
       {
         personaId: 'security',
         transport: 'openrouter',
@@ -193,7 +204,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         outputTokens: 22,
         cost: 0.0081,
       },
-    ], EXACT_HEAD, directory);
+    ], EXACT_HEAD, directory));
 
     expect(result.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-17-bbbbbbbbbbbb.json'));
     expect(result.digest).toMatch(/^[0-9a-f]{64}$/);
@@ -233,11 +244,11 @@ describe('Rank 3D provider telemetry receipt schema', () => {
 
   it('does not allow exact-head metadata to escape the telemetry output directory', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-provider-telemetry-'));
-    const result = pipeline.writeProviderTelemetryReceipt([], {
+    const result = withRunnerTemp(directory, () => pipeline.writeProviderTelemetryReceipt([], {
       ...EXACT_HEAD,
       prNumber: '../../outside',
       headSha: '../head',
-    }, directory);
+    }, directory));
 
     expect(result.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-unknown-unknown.json'));
   });
@@ -246,7 +257,20 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     const outputFile = path.join(os.tmpdir(), `ct-provider-telemetry-output-${Date.now()}`);
     fs.writeFileSync(outputFile, 'not a directory');
 
-    expect(pipeline.writeProviderTelemetryReceiptBestEffort([], EXACT_HEAD, outputFile)).toBeNull();
+    expect(withRunnerTemp(path.dirname(outputFile), () =>
+      pipeline.writeProviderTelemetryReceiptBestEffort([], EXACT_HEAD, outputFile))).toBeNull();
     fs.unlinkSync(outputFile);
+  });
+
+  it('refuses telemetry writes when no runner temp boundary is available', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-provider-telemetry-'));
+    const previous = process.env.RUNNER_TEMP;
+    delete process.env.RUNNER_TEMP;
+    try {
+      expect(pipeline.writeProviderTelemetryReceipt([], EXACT_HEAD, directory)).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = previous;
+    }
   });
 });

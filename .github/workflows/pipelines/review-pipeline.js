@@ -1038,6 +1038,12 @@ function safeReceiptPathToken(value) {
   return /^[A-Za-z0-9_-]{1,128}$/.test(token) ? token : 'unknown';
 }
 
+function isWithinDirectory(candidate, parent) {
+  const candidatePath = path.resolve(candidate);
+  const parentPath = path.resolve(parent);
+  return candidatePath === parentPath || candidatePath.startsWith(`${parentPath}${path.sep}`);
+}
+
 function resolveResponseModel(payload, fallbackModel) {
   return typeof payload?.model === 'string' && payload.model.trim()
     ? payload.model.trim()
@@ -3255,7 +3261,8 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
 }
 
 function writeProviderTelemetryReceipt(personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP) {
-  if (!outputDirectory) return null;
+  const runnerTemp = String(process.env.RUNNER_TEMP || '').trim();
+  if (!outputDirectory || !runnerTemp || !isWithinDirectory(outputDirectory, runnerTemp)) return null;
 
   const receipt = buildProviderTelemetryReceipt(personaResults, prContext);
   const receiptPath = path.join(
