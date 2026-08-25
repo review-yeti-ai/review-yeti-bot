@@ -68,27 +68,11 @@ describe('canonical execution-profile contract', () => {
     expect(() => normalizeProfile({ ...base, timeouts: { ...base.timeouts, request_ms: 1 } })).toThrow(/request_ms/i);
   });
 
-  it('is validation-only in this slice: profile selection does not mutate the current transport plan', () => {
-    const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
-    const baseline = pipeline.resolveModelConfig({
-      OPENROUTER_API_KEY: 'or-key',
-      REVIEW_YETI_TRANSPORTS: JSON.stringify([{
-        name: 'openrouter',
-        base_url: 'https://openrouter.ai/api/v1',
-        api_key_env: 'OPENROUTER_API_KEY',
-        model: 'openrouter/auto',
-        stream: true,
-      }]),
-    });
+  it('is validation-only in this slice: profile selection does not mutate the registry', () => {
+    const before = JSON.stringify(EXECUTION_PROFILES);
     const candidate = resolveExecutionProfile('fireworks-breakglass');
 
     expect(candidate.id).toBe('fireworks-breakglass');
-    expect(baseline.transports).toHaveLength(1);
-    expect(baseline.transports[0]).toMatchObject({
-      name: 'openrouter',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
-      stream: true,
-    });
+    expect(JSON.stringify(EXECUTION_PROFILES)).toBe(before);
   });
 });
