@@ -251,6 +251,13 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     }, directory));
 
     expect(result.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-unknown-unknown.json'));
+
+    const valid = withRunnerTemp(directory, () => pipeline.writeProviderTelemetryReceipt([], {
+      ...EXACT_HEAD,
+      prNumber: '007',
+      headSha: 'c'.repeat(40),
+    }, directory));
+    expect(valid.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-007-cccccccccccc.json'));
   });
 
   it('contains telemetry write failures without failing the review contract', () => {
