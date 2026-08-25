@@ -1004,6 +1004,43 @@ function normalizeResponseProvider(provider) {
 
 const TELEMETRY_IDENTIFIER_MAX_LENGTH = 200;
 
+// These values are deliberately closed and descriptive.  Provider messages,
+// URLs, headers, and request content must never cross the telemetry boundary.
+const TELEMETRY_OUTCOME_CLASSES = new Set([
+  'http_429',
+  'http_4xx',
+  'http_5xx',
+  'timeout',
+  'transient_socket',
+  'provider_error',
+  'malformed_output',
+  'unknown',
+]);
+
+function normalizeTelemetryAttemptCount(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return Math.min(100, Math.floor(numeric));
+}
+
+function normalizeTelemetryDuration(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return Math.min(86_400_000, Math.floor(numeric));
+}
+
+function normalizeTelemetryOutcomeClass(value) {
+  const normalized = normalizeTelemetryIdentifier(value);
+  return normalized && TELEMETRY_OUTCOME_CLASSES.has(normalized) ? normalized : null;
+}
+
+function normalizeTelemetryRetryReasons(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(normalizeTelemetryOutcomeClass).filter(Boolean))].slice(0, 8);
+}
+
 function normalizeTelemetryIdentifier(value) {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
@@ -1062,6 +1099,24 @@ function resolveResponseProvider(payload, configuredProvider) {
   return normalizeResponseProvider(payload?.provider)
     || normalizeResponseProvider(payload?.usage?.provider)
     || normalizeResponseProvider(configuredProvider);
+}
+
+function classifyTelemetryHttpFailure(status) {
+  const code = Number(status);
+  if (!Number.isFinite(code)) return 'unknown';
+  if (code === 408 || code === 504) return 'timeout';
+  if (code === 429) return 'http_429';
+  if (code >= 400 && code < 500) return 'http_4xx';
+  if (code >= 500 && code < 600) return 'http_5xx';
+  return 'unknown';
+}
+
+function classifyTelemetryTransportError(error) {
+  const message = String(error?.message || error || '');
+  if (/AbortError|aborted|timeout|deadline|stalled/i.test(message)) return 'timeout';
+  if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
+  if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
+  return 'unknown';
 }
 
 function extractResponseCost(payload) {
@@ -1525,6 +1580,21 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const cfg = { ...resolveModelConfig(), ...options };
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
+  const laneStartMs = Date.now();
+  let attemptCount = 0;
+  let failureClass = null;
+  const retryReasons = [];
+  const noteRetryReason = (reason) => {
+    const normalized = normalizeTelemetryOutcomeClass(reason);
+    if (normalized && !retryReasons.includes(normalized) && retryReasons.length < 8) retryReasons.push(normalized);
+  };
+  const withTelemetry = (base, finalFailureClass = failureClass) => ({
+    ...base,
+    attemptCount,
+    latencyMs: normalizeTelemetryDuration(Date.now() - laneStartMs),
+    retryReasons: [...retryReasons],
+    failureClass: normalizeTelemetryOutcomeClass(finalFailureClass),
+  });
   let requestOptions = null;
   let resultBase = {
     personaId: persona.id,
@@ -1693,6 +1763,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const prepareDirectFormatRecovery = () => {
         if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
+        noteRetryReason('malformed_output');
         requestBody.max_tokens = Math.max(
           requestBody.max_tokens,
           DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
@@ -1710,6 +1781,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
       while (fetchAttempts < maxFetchAttempts) {
         fetchAttempts++;
+        attemptCount++;
         const streamAbortController = streamEnabled ? new AbortController() : null;
         let responseHeaderTimer = null;
         try {
@@ -1736,6 +1808,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
             const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
+            const outcomeClass = classifyTelemetryHttpFailure(response.status);
+            noteRetryReason(outcomeClass);
+            failureClass = outcomeClass;
             circuitBreaker.trip(transportName, errMsg);
             if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
@@ -1743,7 +1818,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               fallbackAttempt++;
               break;
             }
-            return { ...resultBase, decision: 'ERROR', findings: [], error: errMsg };
+            return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: errMsg });
           }
 
           // A streaming timeout is an inactivity budget, not a total generation
@@ -1772,6 +1847,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
           if (payload?.error) {
             const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
+            noteRetryReason('provider_error');
+            failureClass = 'provider_error';
             circuitBreaker.trip(transportName, message);
             if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
@@ -1779,7 +1856,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               fallbackAttempt++;
               break;
             }
-            return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+            return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` });
           }
 
           const message = payload?.choices?.[0]?.message || {};
@@ -1792,6 +1869,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               const providerLane = JSON.parse(content);
               if (providerLane?.error) {
                 const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
+                noteRetryReason('provider_error');
+                failureClass = 'provider_error';
                 if (i < candidateTransports.length - 1) {
                   circuitBreaker.trip(transportName, message);
                   console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
@@ -1799,7 +1878,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                   fallbackAttempt++;
                   break;
                 }
-                return { ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` };
+                return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` });
               }
             } catch (_) {}
           }
@@ -1810,6 +1889,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           // remains fail-closed and follows the normal transport recovery path.
           const rawFindings = parseFindingsPayload(content) ?? parseFindingsPayload(reasoning);
           if (rawFindings === null) {
+            noteRetryReason('malformed_output');
+            failureClass = 'malformed_output';
             // Direct reasoning providers can spend the first completion budget on
             // thought tokens and return no final JSON. Give the same admitted
             // transport one bounded, reasoning-disabled format-recovery attempt
@@ -1852,29 +1933,32 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once via the admitted ${requestBody.model} route with reasoning disabled and a larger answer budget...`);
               continue;
             }
-            return { ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' };
+            return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' });
           }
 
           const findings = sanitizeFindings(rawFindings, diffFiles);
-          return { ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage };
+          return withTelemetry({ ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage }, null);
         } catch (err) {
           const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
           const isUnusableDirectOutput = /empty_sse|Streaming response exceeded total deadline/i.test(err.message || '');
           if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
+            noteRetryReason('transient_socket');
             console.warn(`[Persona: ${persona.id}] Transient socket error on ${transportName} (${err.message}); retrying attempt ${fetchAttempts + 1}/${maxFetchAttempts}...`);
             await new Promise((r) => setTimeout(r, 200));
             continue;
           }
 
           lastError = err.message;
+          failureClass = classifyTelemetryTransportError(err);
+          if (failureClass !== 'unknown') noteRetryReason(failureClass);
           circuitBreaker.trip(transportName, err.message);
           if (i < candidateTransports.length - 1) {
             console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' exception (${err.message}); trying next transport...`);
             fallbackAttempt++;
             break; 
           }
-          return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
+          return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: err.message });
         } finally {
           if (responseHeaderTimer) clearTimeout(responseHeaderTimer);
           if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -1882,9 +1966,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       }
     }
 
-    return { ...resultBase, decision: 'ERROR', findings: [], error: lastError || 'All transports failed' };
+    failureClass = failureClass || 'unknown';
+    return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: lastError || 'All transports failed' });
   } catch (err) {
-    return { ...resultBase, decision: 'ERROR', findings: [], error: err.message };
+    failureClass = classifyTelemetryTransportError(err);
+    if (failureClass !== 'unknown') noteRetryReason(failureClass);
+    return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: err.message });
   }
 }
 
@@ -3247,6 +3334,10 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       reportedCost,
       reportedCostCurrency: null,
       costStatus: reportedCost === null ? 'unavailable' : 'reported',
+      attemptCount: normalizeTelemetryAttemptCount(result.attemptCount),
+      latencyMs: normalizeTelemetryDuration(result.latencyMs),
+      retryReasons: normalizeTelemetryRetryReasons(result.retryReasons),
+      failureClass: normalizeTelemetryOutcomeClass(result.failureClass),
     };
   });
 
@@ -3539,6 +3630,9 @@ async function main() {
           const allFindings = laneRuns.flatMap((r) => r.findings || []);
           const totalInputTokens = laneRuns.reduce((sum, r) => sum + (r.inputTokens || 0), 0);
           const totalOutputTokens = laneRuns.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
+          const totalAttempts = laneRuns.reduce((sum, r) => sum + (normalizeTelemetryAttemptCount(r.attemptCount) || 0), 0);
+          const totalLatencyMs = laneRuns.reduce((sum, r) => sum + (normalizeTelemetryDuration(r.latencyMs) || 0), 0);
+          const retryReasons = normalizeTelemetryRetryReasons(laneRuns.flatMap((r) => Array.isArray(r.retryReasons) ? r.retryReasons : []));
           const anyError = laneRuns.find((r) => r.decision === 'ERROR');
           const baseRun = laneRuns[0] || {};
 
@@ -3558,6 +3652,10 @@ async function main() {
             inputTokens: totalInputTokens || null,
             outputTokens: totalOutputTokens || null,
             cost: totalCost,
+            attemptCount: totalAttempts,
+            latencyMs: totalLatencyMs,
+            retryReasons,
+            failureClass: anyError ? (normalizeTelemetryOutcomeClass(anyError.failureClass) || 'unknown') : null,
             decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
             error: anyError ? anyError.error : undefined,
           };
