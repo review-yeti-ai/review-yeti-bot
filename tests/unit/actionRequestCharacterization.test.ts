@@ -253,6 +253,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         timeout_ms: 90000,
         body: {
           ...common('deepseek-v4-flash:cloud', 24576, 0),
+          seed: 144208749,
           reasoning_effort: 'high',
         },
       },
@@ -287,6 +288,9 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
       expect(captured[name].body).not.toHaveProperty('provider');
       expect(captured[name].body).not.toHaveProperty('plugins');
     }
+    expect(captured.fireworks.body).not.toHaveProperty('seed');
+    expect(captured['openrouter-fallback'].body).not.toHaveProperty('seed');
+    expect(captured.ollama.body.seed).toBe(144208749);
     expect(captured['openrouter-fallback'].body).toHaveProperty('provider');
     expect(captured['openrouter-fallback'].body).toHaveProperty('plugins');
   });
