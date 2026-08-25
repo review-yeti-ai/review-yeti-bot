@@ -17,7 +17,11 @@
     "that gap; each is paired with a near-miss clean control (table-driven-consolidation-",
     "preserves-coverage, function-scoped-fixture-avoids-shared-state) shaped to trip a reviewer",
     "that pattern-matches on surface signals ('fewer it() blocks', 'a module-level let') rather",
-    "than the actual rule."
+    "than the actual rule.",
+    "2026-08-25 holdout expansion: paired Elixir branch-coverage and Java asynchronous-wait",
+    "fixtures exercise the same causal review principles in different languages and test",
+    "frameworks. Their identifiers and grading vocabulary are evaluation-only and are never",
+    "included in the testing persona's runtime instructions."
   ],
   "fixtures": [
     {
@@ -139,6 +143,7 @@
     {
       "id": "shared-module-state-order-dependent-test",
       "category": "defect",
+      "metamorphicGroup": "rate-limiter-isolation",
       "title": "Add rate-limiter coverage for the two-call burst window",
       "summary": "A new test file declares its limiter and an events log at module scope instead of per-test, so the third test only passes because the first two already ran and mutated that shared state first; running it alone or reordering the suite breaks it.",
       "expectedPaths": ["tests/unit/rateLimiter.test.ts"],
@@ -170,6 +175,7 @@
     {
       "id": "function-scoped-fixture-avoids-shared-state",
       "category": "clean",
+      "metamorphicGroup": "rate-limiter-isolation",
       "title": "Add rate-limiter coverage with a fresh instance per test",
       "summary": "Control: same three cases as the paired defect fixture, but the limiter is constructed in beforeEach and the third test drives its own two setup calls instead of relying on the first two tests having already run. Order-independent by construction; nothing to flag.",
       "expectedPaths": [],
@@ -177,7 +183,85 @@
       "files": [
         {
           "path": "tests/unit/rateLimiter.test.ts",
-          "patch": "@@ -0,0 +1,20 @@\n+import { describe, it, expect, beforeEach } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+describe('RateLimiter', () => {\n+  let limiter;\n+\n+  beforeEach(() => {\n+    limiter = new RateLimiter({ max: 2 });\n+  });\n+\n+  it('allows the first call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call once the limit is reached', () => {\n+    limiter.allow('key');\n+    limiter.allow('key');\n+    expect(limiter.allow('key')).toBe(false);\n+  });\n+});\n"
+          "patch": "@@ -0,0 +1,23 @@\n+import { describe, it, expect, beforeEach } from 'vitest';\n+import { RateLimiter } from '../../src/rateLimiter';\n+\n+describe('RateLimiter', () => {\n+  let limiter;\n+\n+  beforeEach(() => {\n+    limiter = new RateLimiter({ max: 2 });\n+  });\n+\n+  it('allows the first call', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('allows the second call for the same key', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+    expect(limiter.allow('key')).toBe(true);\n+  });\n+\n+  it('blocks the third call once the limit is reached', () => {\n+    expect(limiter.allow('key')).toBe(true);\n+    expect(limiter.allow('key')).toBe(true);\n+    expect(limiter.allow('key')).toBe(false);\n+  });\n+});\n"
+        }
+      ]
+    },
+    {
+      "id": "elixir-second-error-cause-untested",
+      "category": "defect",
+      "evaluationRole": "holdout",
+      "metamorphicGroup": "elixir-branch-completeness",
+      "title": "Return distinct errors for absent and blank webhook targets",
+      "summary": "The changed function introduces separate absent-target and blank-target branches, but the new tests exercise only the absent case, leaving the blank branch and its distinct diagnostic unproved.",
+      "expectedPaths": ["test/webhook_target_test.exs"],
+      "mustMatch": [
+        ["blank", "empty string", "empty target", "second branch", "other branch", "distinct branch"],
+        ["untested", "not covered", "missing test", "no test", "only covers", "only tests"]
+      ],
+      "files": [
+        {
+          "path": "lib/webhook_target.ex",
+          "patch": "@@ -1,5 +1,9 @@\n defmodule WebhookTarget do\n+  def resolve(nil), do: {:error, :missing_target}\n+  def resolve(%{target: \"\"}), do: {:error, :blank_target}\n+\n   def resolve(%{target: target}) do\n     {:ok, String.trim(target)}\n   end\n end\n"
+        },
+        {
+          "path": "test/webhook_target_test.exs",
+          "patch": "@@ -1,7 +1,11 @@\n defmodule WebhookTargetTest do\n   use ExUnit.Case, async: true\n \n+  test \"rejects a missing target\" do\n+    assert WebhookTarget.resolve(nil) == {:error, :missing_target}\n+  end\n+\n   test \"normalizes a configured target\" do\n     assert WebhookTarget.resolve(%{target: \"  ops  \"}) == {:ok, \"ops\"}\n   end\n end\n"
+        }
+      ]
+    },
+    {
+      "id": "elixir-both-error-causes-covered",
+      "category": "clean",
+      "evaluationRole": "holdout",
+      "metamorphicGroup": "elixir-branch-completeness",
+      "title": "Cover both invalid webhook target forms",
+      "summary": "Control: the changed function introduces two distinct invalid-input branches and the table-driven test exercises both causes and their separate diagnostics.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "lib/webhook_target.ex",
+          "patch": "@@ -1,5 +1,9 @@\n defmodule WebhookTarget do\n+  def resolve(nil), do: {:error, :missing_target}\n+  def resolve(%{target: \"\"}), do: {:error, :blank_target}\n+\n   def resolve(%{target: target}) do\n     {:ok, String.trim(target)}\n   end\n end\n"
+        },
+        {
+          "path": "test/webhook_target_test.exs",
+          "patch": "@@ -1,7 +1,16 @@\n defmodule WebhookTargetTest do\n   use ExUnit.Case, async: true\n \n+  for {input, reason} <- [\n+        {nil, :missing_target},\n+        {%{target: \"\"}, :blank_target}\n+      ] do\n+    test \"rejects invalid target as #{reason}\" do\n+      assert WebhookTarget.resolve(unquote(Macro.escape(input))) ==\n+               {:error, unquote(reason)}\n+    end\n+  end\n+\n   test \"normalizes a configured target\" do\n     assert WebhookTarget.resolve(%{target: \"  ops  \"}) == {:ok, \"ops\"}\n   end\n end\n"
+        }
+      ]
+    },
+    {
+      "id": "java-fixed-sleep-for-asynchronous-state",
+      "category": "defect",
+      "evaluationRole": "holdout",
+      "metamorphicGroup": "java-async-observation",
+      "title": "Verify that asynchronous cache refresh completes",
+      "summary": "The new asynchronous test waits an arbitrary fixed number of milliseconds before asserting, so it can fail on a slower runner and wastes time on a faster one instead of waiting for the required condition.",
+      "expectedPaths": ["src/test/java/example/CacheRefresherTest.java"],
+      "mustMatch": [
+        ["sleep", "fixed delay", "arbitrary delay", "timing", "milliseconds"],
+        ["flaky", "slow runner", "race", "nondetermin", "condition", "eventually", "poll", "timeout"]
+      ],
+      "files": [
+        {
+          "path": "src/test/java/example/CacheRefresherTest.java",
+          "patch": "@@ -1,8 +1,15 @@\n class CacheRefresherTest {\n+  @Test\n+  void refreshCompletesInTheBackground() throws Exception {\n+    CacheRefresher refresher = new CacheRefresher();\n+\n+    refresher.refreshAsync();\n+    Thread.sleep(25);\n+\n+    assertTrue(refresher.isReady());\n+  }\n }\n"
+        }
+      ]
+    },
+    {
+      "id": "java-condition-wait-for-asynchronous-state",
+      "category": "clean",
+      "evaluationRole": "holdout",
+      "metamorphicGroup": "java-async-observation",
+      "title": "Wait for asynchronous cache refresh by condition",
+      "summary": "Control: the asynchronous test polls the observable readiness condition within a bounded timeout, completing promptly when ready without depending on a fixed sleep duration.",
+      "expectedPaths": [],
+      "mustMatch": [],
+      "files": [
+        {
+          "path": "src/test/java/example/CacheRefresherTest.java",
+          "patch": "@@ -1,8 +1,15 @@\n class CacheRefresherTest {\n+  @Test\n+  void refreshCompletesInTheBackground() {\n+    CacheRefresher refresher = new CacheRefresher();\n+\n+    refresher.refreshAsync();\n+\n+    await()\n+        .atMost(Duration.ofSeconds(2))\n+        .until(refresher::isReady);\n+  }\n }\n"
         }
       ]
     }
