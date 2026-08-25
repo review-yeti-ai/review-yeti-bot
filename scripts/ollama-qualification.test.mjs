@@ -11,6 +11,7 @@ import {
   CANDIDATE_PROFILE,
   FIXTURE_IDS,
   buildArmEnvironment,
+  buildCandidateQualityGate,
   buildQualificationReceipt,
   buildTransportHandoff,
   classifyFailure,
@@ -31,6 +32,37 @@ const input = {
   botSha: 'c'.repeat(40),
   botRoot: '/tmp/review-yeti-bot',
 };
+const DEFECT_FIXTURE_IDS = new Set([
+  'vacuous-default-value-test',
+  'format-evadable-absence-guard',
+  'dual-cause-diagnostic-named-for-one',
+  'active-skip-marker-left-in-suite',
+  'shared-module-state-order-dependent-test',
+]);
+
+function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = {}) {
+  const missedIds = new Set(missed);
+  const falsePositiveIds = new Set(falsePositives);
+  const malformedIds = new Set(malformed);
+  return FIXTURE_IDS.map((fixtureId, index) => {
+    const defect = DEFECT_FIXTURE_IDS.has(fixtureId);
+    return {
+      fixtureId,
+      category: defect ? 'defect' : 'clean',
+      detected: defect && !missedIds.has(fixtureId),
+      falsePositive: !defect && falsePositiveIds.has(fixtureId),
+      errored: false,
+      latencyMs: 10 + index,
+      usage: { costUSD: 0 },
+      attemptCount: malformedIds.has(fixtureId) ? 2 : 1,
+      retryReasons: malformedIds.has(fixtureId) ? ['malformed_output'] : [],
+    };
+  });
+}
+
+function makeArm(profile, options = {}) {
+  return { profile, ...summarizeEvaluation({ rows: makeFixtureRows(options) }, 0) };
+}
 
 test('qualification input is fail-closed and requires immutable coordinates', () => {
   assert.deepEqual(validateQualificationInput(input).prNumber, 119);
@@ -109,87 +141,76 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
     policy,
     runId: '123',
     now: '2026-08-25T00:00:00.000Z',
-    baseline: {
-      profile: BASELINE_PROFILE,
-      exit_code: 0,
-      status: 'completed',
-      rows: 3,
-      errored_runs: 0,
-      defect_runs: 2,
-      detected_defect_runs: 1,
-      clean_runs: 1,
-      false_positive_runs: 0,
-      failure_classes: {},
-      failure_classes_by_provider: {},
-      response_statuses: {},
-      error_codes: {},
-      latency_ms_median: 100,
-      latency_ms_p95: 200,
-      cost_usd: 0.01,
-    },
-    candidate: {
-      profile: CANDIDATE_PROFILE,
-      exit_code: 0,
-      status: 'completed',
-      rows: 3,
-      errored_runs: 0,
-      defect_runs: 2,
-      detected_defect_runs: 2,
-      clean_runs: 1,
-      false_positive_runs: 0,
-      latency_ms_median: 90,
-      latency_ms_p95: 180,
-      cost_usd: 0,
-    },
+    baseline: makeArm(BASELINE_PROFILE),
+    candidate: makeArm(CANDIDATE_PROFILE),
   });
   assert.deepEqual(receipt.fixture_ids, FIXTURE_IDS);
   assert.equal(receipt.authoritative_arm, 'baseline');
   assert.equal(receipt.publication, 'none');
   assert.equal(receipt.provider_mutation, 'none');
   assert.equal(receipt.promotion_gate, 'manual_review_required');
+  assert.equal(receipt.candidate_quality_gate.passed, true);
   assert.equal(receipt.candidate_eligible_for_next_step, true);
   assert.equal(JSON.stringify(receipt).includes('secret'), false);
   assert.equal(JSON.stringify(receipt).includes('findingsDetail'), false);
 });
 
 test('receipt eligibility fails closed on candidate quality regressions', () => {
-  const makeArm = (overrides = {}) => ({
-    profile: CANDIDATE_PROFILE,
-    exit_code: 0,
-    status: 'completed',
-    rows: 9,
-    errored_runs: 0,
-    defect_runs: 5,
-    detected_defect_runs: 4,
-    clean_runs: 4,
-    false_positive_runs: 0,
-    failure_classes: {},
-    failure_classes_by_provider: {},
-    response_statuses: {},
-    error_codes: {},
-    ...overrides,
-  });
-  const base = makeArm({ profile: BASELINE_PROFILE, detected_defect_runs: 5 });
-  const clean = buildQualificationReceipt({ input, policy, baseline: base, candidate: makeArm(), runId: 'quality-pass' });
+  const base = makeArm(BASELINE_PROFILE);
+  const clean = buildQualificationReceipt({ input, policy, baseline: base, candidate: makeArm(CANDIDATE_PROFILE), runId: 'quality-pass' });
   assert.equal(clean.candidate_eligible_for_next_step, true);
 
   const falsePositive = buildQualificationReceipt({
     input,
     policy,
     baseline: base,
-    candidate: makeArm({ false_positive_runs: 1 }),
+    candidate: makeArm(CANDIDATE_PROFILE, { falsePositives: ['function-scoped-fixture-avoids-shared-state'] }),
     runId: 'quality-false-positive',
   });
   assert.equal(falsePositive.candidate_eligible_for_next_step, false);
 
-  const noDetection = buildQualificationReceipt({
+  const missedDefect = buildQualificationReceipt({
     input,
     policy,
     baseline: base,
-    candidate: makeArm({ detected_defect_runs: 0 }),
-    runId: 'quality-no-detection',
+    candidate: makeArm(CANDIDATE_PROFILE, { missed: ['vacuous-default-value-test'] }),
+    runId: 'quality-missed-defect',
   });
-  assert.equal(noDetection.candidate_eligible_for_next_step, false);
+  assert.equal(missedDefect.candidate_eligible_for_next_step, false);
+
+  const noDetections = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: base,
+    candidate: makeArm(CANDIDATE_PROFILE, { missed: [...DEFECT_FIXTURE_IDS] }),
+    runId: 'quality-no-detections',
+  });
+  assert.equal(noDetections.arms.candidate.detected_defect_runs, 0);
+  assert.equal(noDetections.candidate_eligible_for_next_step, false);
+
+  const malformedRecovery = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: base,
+    candidate: makeArm(CANDIDATE_PROFILE, { malformed: ['shared-module-state-order-dependent-test'] }),
+    runId: 'quality-malformed-recovery',
+  });
+  assert.equal(malformedRecovery.candidate_quality_gate.observed_malformed_output_recoveries, 1);
+  assert.equal(malformedRecovery.candidate_eligible_for_next_step, false);
+
+  const missingFixtureEvidence = makeArm(CANDIDATE_PROFILE);
+  missingFixtureEvidence.fixture_outcomes = missingFixtureEvidence.fixture_outcomes.slice(1);
+  assert.equal(buildCandidateQualityGate(missingFixtureEvidence).fixture_set_complete, false);
+  assert.equal(buildQualificationReceipt({ input, policy, baseline: base, candidate: missingFixtureEvidence }).candidate_eligible_for_next_step, false);
+
+  const malformedCategoryEvidence = makeArm(CANDIDATE_PROFILE);
+  malformedCategoryEvidence.fixture_outcomes[0] = { ...malformedCategoryEvidence.fixture_outcomes[0], category: 'unknown' };
+  assert.equal(buildCandidateQualityGate(malformedCategoryEvidence).passed, false);
+
+  const unexpectedFixtureEvidence = makeArm(CANDIDATE_PROFILE);
+  unexpectedFixtureEvidence.fixture_outcomes[0] = { ...unexpectedFixtureEvidence.fixture_outcomes[0], fixture_id: 'unexpected-fixture' };
+  assert.equal(buildCandidateQualityGate(unexpectedFixtureEvidence).fixture_set_complete, false);
+  assert.equal(buildCandidateQualityGate(unexpectedFixtureEvidence).passed, false);
 });
 
 test('evaluation summary reports only bounded aggregate evidence', () => {
@@ -340,11 +361,7 @@ test('runQualification verifies first, then starts exactly two bounded arms in p
     const arm = args[args.indexOf('--arm') + 1];
     const output = args[args.indexOf('--out') + 1];
     starts.push({ arm, transportPlan: JSON.parse(options.env.REVIEW_YETI_TRANSPORTS) });
-    writeFileSync(output, JSON.stringify({ rows: [
-      { category: 'defect', detected: true, errored: false, latencyMs: 10, usage: { costUSD: 0 } },
-      { category: 'clean', falsePositive: false, errored: false, latencyMs: 20, usage: { costUSD: 0 } },
-      { category: 'defect', detected: true, errored: false, latencyMs: 30, usage: { costUSD: 0 } },
-    ] }));
+    writeFileSync(output, JSON.stringify({ rows: makeFixtureRows() }));
     queueMicrotask(() => child.emit('close', 0));
     return child;
   };

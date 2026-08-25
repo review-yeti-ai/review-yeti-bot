@@ -20,17 +20,21 @@ export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v2';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
 export const CANDIDATE_PROFILE = 'ollama-evaluation';
 export const BASELINE_PROFILE = 'current-production';
-export const FIXTURE_IDS = Object.freeze([
-  'vacuous-default-value-test',
-  'format-evadable-absence-guard',
-  'dual-cause-diagnostic-named-for-one',
-  'clean-behavioural-guard',
-  'clean-rename-only',
-  'active-skip-marker-left-in-suite',
-  'shared-module-state-order-dependent-test',
-  'table-driven-consolidation-preserves-coverage',
-  'function-scoped-fixture-avoids-shared-state',
+const FIXTURE_CONTRACT = Object.freeze([
+  ['vacuous-default-value-test', 'defect'],
+  ['format-evadable-absence-guard', 'defect'],
+  ['dual-cause-diagnostic-named-for-one', 'defect'],
+  ['clean-behavioural-guard', 'clean'],
+  ['clean-rename-only', 'clean'],
+  ['active-skip-marker-left-in-suite', 'defect'],
+  ['shared-module-state-order-dependent-test', 'defect'],
+  ['table-driven-consolidation-preserves-coverage', 'clean'],
+  ['function-scoped-fixture-avoids-shared-state', 'clean'],
 ]);
+export const FIXTURE_IDS = Object.freeze(FIXTURE_CONTRACT.map(([fixtureId]) => fixtureId));
+const EXPECTED_FIXTURE_CATEGORIES = new Map(FIXTURE_CONTRACT);
+const EXPECTED_DEFECT_RUNS = FIXTURE_CONTRACT.filter(([, category]) => category === 'defect').length;
+const EXPECTED_CLEAN_RUNS = FIXTURE_IDS.length - EXPECTED_DEFECT_RUNS;
 
 const SHA_PATTERN = /^[a-f0-9]{40,64}$/iu;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
@@ -279,13 +283,47 @@ function readEvaluation(pathname, exitCode) {
   }
 }
 
+export function buildCandidateQualityGate(candidate = {}) {
+  const outcomes = Array.isArray(candidate.fixture_outcomes) ? candidate.fixture_outcomes : [];
+  const fixtureIds = outcomes.map((entry) => String(entry?.fixture_id || ''));
+  const uniqueFixtureIds = new Set(fixtureIds);
+  const fixtureSetComplete = fixtureIds.length === FIXTURE_IDS.length
+    && uniqueFixtureIds.size === FIXTURE_IDS.length
+    && FIXTURE_IDS.every((fixtureId) => uniqueFixtureIds.has(fixtureId));
+  const malformedOutputRecoveries = outcomes.filter((entry) => (
+    Array.isArray(entry?.retry_reasons) && entry.retry_reasons.includes('malformed_output')
+  )).length;
+  const fixtureOutcomesComplete = outcomes.every((entry) => {
+    const fixtureId = String(entry?.fixture_id || '');
+    const expectedCategory = EXPECTED_FIXTURE_CATEGORIES.get(fixtureId);
+    const expectedOutcome = expectedCategory === 'defect' ? 'detected' : 'clean';
+    return expectedCategory !== undefined && entry?.category === expectedCategory && entry?.outcome === expectedOutcome;
+  });
+  const passed = candidate.rows === FIXTURE_IDS.length
+    && candidate.defect_runs === EXPECTED_DEFECT_RUNS
+    && candidate.detected_defect_runs === EXPECTED_DEFECT_RUNS
+    && candidate.clean_runs === EXPECTED_CLEAN_RUNS
+    && candidate.false_positive_runs === 0
+    && fixtureSetComplete
+    && fixtureOutcomesComplete
+    && malformedOutputRecoveries === 0;
+  return {
+    required_rows: FIXTURE_IDS.length,
+    required_defect_detections: EXPECTED_DEFECT_RUNS,
+    required_clean_false_positives: 0,
+    required_malformed_output_recoveries: 0,
+    fixture_set_complete: fixtureSetComplete,
+    observed_malformed_output_recoveries: malformedOutputRecoveries,
+    passed,
+  };
+}
+
 export function buildQualificationReceipt({ input, policy, baseline, candidate, now = new Date().toISOString(), runId = 'manual' }) {
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
   const complete = baseline.status === 'completed' && candidate.status === 'completed'
     && baseline.errored_runs === 0 && candidate.errored_runs === 0;
-  const candidateQualityEligible = complete
-    && candidate.detected_defect_runs > 0
-    && candidate.false_positive_runs === 0;
+  const candidateQualityGate = buildCandidateQualityGate(candidate);
+  const candidateQualityEligible = complete && candidateQualityGate.passed;
   return {
     schema: QUALIFICATION_SCHEMA,
     mode: 'one-time-parallel-qualification',
@@ -306,6 +344,7 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
     publication: 'none',
     provider_mutation: 'none',
     promotion_gate: 'manual_review_required',
+    candidate_quality_gate: candidateQualityGate,
     candidate_eligible_for_next_step: candidateQualityEligible,
     arms: { baseline, candidate },
   };
