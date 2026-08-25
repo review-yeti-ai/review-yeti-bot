@@ -61,6 +61,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(outputs).toContain('gate-decision');
     expect(outputs).toContain('merge-eligible');
     expect(outputs).toContain('run-report-path');
+    expect(outputs).toContain('provider-telemetry-digest');
+    expect(outputs).toContain('provider-telemetry-path');
     expect(outputs).toContain('review-dispatch-reflection-status');
     expect(outputs).toContain('review-dispatch-provider-receipt-digest');
   });
@@ -284,6 +286,25 @@ describe('writeStepOutputs', () => {
 
   it('is a no-op when no output path is provided, so local runs do not throw', () => {
     expect(() => writeStepOutputs(arbitration, undefined)).not.toThrow();
+  });
+
+  it('emits telemetry receipt outputs without changing the central gate outputs', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ct-out-')), 'out.txt');
+    writeStepOutputs(arbitration, file, null, {
+      digest: 'a'.repeat(64),
+      path: '/tmp/review-yeti-run-report.json',
+    }, {
+      digest: 'b'.repeat(64),
+      path: '/tmp/review-yeti-provider-telemetry.json',
+    });
+    const content = fs.readFileSync(file, 'utf-8');
+
+    expect(content).toContain('provider-receipt-digest=' + 'a'.repeat(64));
+    expect(content).toContain('run-report-path=/tmp/review-yeti-run-report.json');
+    expect(content).toContain('provider-telemetry-digest=' + 'b'.repeat(64));
+    expect(content).toContain('provider-telemetry-path=/tmp/review-yeti-provider-telemetry.json');
+    expect(content).toContain('gate-decision=BLOCK');
+    expect(content).toContain('merge-eligible=false');
   });
 
   it('writes an exact-head run report and receipt digest for the central gate', () => {

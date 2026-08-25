@@ -210,6 +210,12 @@ outputs:
   run-report-path:
     description: 'Path to the exact-head review run report JSON.'
     value: ${{ steps.review.outputs.run-report-path }}
+  provider-telemetry-digest:
+    description: 'SHA-256 digest of the reporting-only provider telemetry receipt.'
+    value: ${{ steps.review.outputs.provider-telemetry-digest }}
+  provider-telemetry-path:
+    description: 'Path to the reporting-only provider telemetry receipt JSON.'
+    value: ${{ steps.review.outputs.provider-telemetry-path }}
   rationale:
     description: 'Executive rationale summarizing why this verdict was chosen.'
     value: ${{ steps.review.outputs.rationale }}
