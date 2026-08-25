@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -136,7 +137,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         model: 'Bearer gh-app-installation-secret',
         inputTokens: 'not-a-number',
         outputTokens: null,
-        cost: 'Subscription',
+        cost: 'generic-secret-value',
       },
     ], EXACT_HEAD);
 
@@ -176,6 +177,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     for (const secret of SECRET_VALUES) expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain('sk-live-provider-secret');
     expect(serialized).not.toContain('Bearer gh-app-installation-secret');
+    expect(serialized).not.toContain('generic-secret-value');
     expect(serialized).not.toContain('openai/gpt-5.6-luna');
   });
 
@@ -195,7 +197,9 @@ describe('Rank 3D provider telemetry receipt schema', () => {
 
     expect(result.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-17-bbbbbbbbbbbb.json'));
     expect(result.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(JSON.parse(fs.readFileSync(result.path, 'utf-8'))).toMatchObject({
+    const receiptJson = fs.readFileSync(result.path, 'utf-8');
+    expect(result.digest).toBe(createHash('sha256').update(receiptJson, 'utf-8').digest('hex'));
+    expect(JSON.parse(receiptJson)).toMatchObject({
       schemaVersion: 'review-provider-telemetry-v1',
       baseSha: EXACT_HEAD.baseSha,
       headSha: EXACT_HEAD.headSha,
@@ -225,5 +229,16 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     });
     expect(JSON.stringify(receipt)).not.toContain('workflow-injection');
     expect(JSON.stringify(receipt)).not.toContain('p'.repeat(201));
+  });
+
+  it('does not allow exact-head metadata to escape the telemetry output directory', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-provider-telemetry-'));
+    const result = pipeline.writeProviderTelemetryReceipt([], {
+      ...EXACT_HEAD,
+      prNumber: '../../outside',
+      headSha: '../head',
+    }, directory);
+
+    expect(result.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-unknown-unknown.json'));
   });
 });

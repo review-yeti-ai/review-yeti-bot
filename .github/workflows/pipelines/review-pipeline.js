@@ -1033,6 +1033,11 @@ function hashTelemetryIdentifier(value) {
   return normalized ? createHash('sha256').update(normalized, 'utf-8').digest('hex') : null;
 }
 
+function safeReceiptPathToken(value) {
+  const token = String(value ?? 'unknown').trim();
+  return /^[A-Za-z0-9_-]{1,128}$/.test(token) ? token : 'unknown';
+}
+
 function resolveResponseModel(payload, fallbackModel) {
   return typeof payload?.model === 'string' && payload.model.trim()
     ? payload.model.trim()
@@ -3255,7 +3260,7 @@ function writeProviderTelemetryReceipt(personaResults, prContext, outputDirector
   const receipt = buildProviderTelemetryReceipt(personaResults, prContext);
   const receiptPath = path.join(
     outputDirectory,
-    `review-yeti-provider-telemetry-${String(prContext.prNumber || 'unknown')}-${String(prContext.headSha || 'unknown').slice(0, 12)}.json`,
+    `review-yeti-provider-telemetry-${safeReceiptPathToken(prContext.prNumber)}-${safeReceiptPathToken(prContext.headSha).slice(0, 12)}.json`,
   );
   const receiptJson = `${JSON.stringify(receipt, null, 2)}\n`;
   fs.writeFileSync(receiptPath, receiptJson, 'utf-8');
