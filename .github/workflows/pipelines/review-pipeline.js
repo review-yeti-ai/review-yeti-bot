@@ -72,6 +72,8 @@ try {
 
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 const DEFAULT_PERSONA_CONCURRENCY = 3;
+const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 16;
+const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 // A recovery request gets a fresh generation budget. Allow one additional
 // transport window for a provider that is streaming validly but slowly, while
@@ -104,6 +106,48 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   await Promise.all(Array.from({ length: limit }, () => worker()));
   return results;
 }
+
+class AsyncSemaphore {
+  constructor(limit) {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('semaphore limit must be a positive integer');
+    this.limit = limit;
+    this.active = 0;
+    this.waiters = [];
+  }
+
+  async acquire(timeoutMs) {
+    if (this.active >= this.limit) {
+      await new Promise((resolve, reject) => {
+        const waiter = { resolve, timer: null };
+        waiter.timer = setTimeout(() => {
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          reject(new Error('ollama_capacity_wait_timeout'));
+        }, timeoutMs);
+        this.waiters.push(waiter);
+      });
+    } else {
+      this.active += 1;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.waiters.shift();
+      if (next) {
+        clearTimeout(next.timer);
+        next.resolve();
+      } else {
+        this.active -= 1;
+      }
+    };
+  }
+}
+
+// This process-local ceiling prevents an unsafe persona/partition override from driving one
+// action job past the measured Ollama Cloud burst boundary. It does not coordinate separate
+// GitHub jobs; the normal review default remains three concurrent persona lanes.
+const ollamaRequestSemaphore = new AsyncSemaphore(OLLAMA_MAX_IN_FLIGHT_REQUESTS);
 
 // Whitelabel display name used in the posted comment. Override with BOT_NAME.
 const BOT_LABEL = process.env.BOT_NAME || 'AI Review Panel';
@@ -1898,7 +1942,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         attemptCount++;
         const streamAbortController = streamEnabled ? new AbortController() : null;
         let responseHeaderTimer = null;
+        let releaseOllamaCapacity = null;
         try {
+          if (isOllamaTransport(transport, transportBaseUrl)) {
+            releaseOllamaCapacity = await ollamaRequestSemaphore.acquire(OLLAMA_CAPACITY_WAIT_TIMEOUT_MS);
+          }
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
               () => streamAbortController.abort(streamInactivityError(transportTimeoutMs)),
@@ -2126,6 +2174,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
           return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: err.message });
         } finally {
+          if (releaseOllamaCapacity) releaseOllamaCapacity();
           if (responseHeaderTimer) clearTimeout(responseHeaderTimer);
           if (heartbeatTimer) clearInterval(heartbeatTimer);
         }
@@ -3999,6 +4048,9 @@ module.exports = {
   PERSONA_CHARTERS,
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
+  OLLAMA_MAX_IN_FLIGHT_REQUESTS,
+  OLLAMA_CAPACITY_WAIT_TIMEOUT_MS,
+  AsyncSemaphore,
   DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS,
   DIRECT_GENERATION_BUDGET_MULTIPLIER,
