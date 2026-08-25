@@ -222,13 +222,13 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
 
   it('snapshots the final credential-free request shape for every configured transport', async () => {
     const { captured } = await capturePanelRequests();
-    const common = (model: string, maxTokens: number) => ({
+    const common = (model: string, maxTokens: number, temperature = 0.1) => ({
       model,
       messages: [
         { role: 'system', content: '<panel-system-prompt>' },
         { role: 'user', content: '<panel-user-prompt>' },
       ],
-      temperature: 0.1,
+      temperature,
       max_tokens: maxTokens,
       response_format: { type: 'json_object' },
       stream: true,
@@ -252,7 +252,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         headers: { authorization: '<redacted>', 'content-type': 'application/json' },
         timeout_ms: 90000,
         body: {
-          ...common('deepseek-v4-flash:cloud', 24576),
+          ...common('deepseek-v4-flash:cloud', 24576, 0),
           reasoning_effort: 'high',
         },
       },
@@ -318,7 +318,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
       ollama: {
         model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
         perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'equal',
-        temperature: 'prompt-specific-difference', max_tokens: 'prompt-specific-difference',
+        temperature: 'equal', max_tokens: 'prompt-specific-difference',
       },
       'openrouter-fallback': {
         model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
