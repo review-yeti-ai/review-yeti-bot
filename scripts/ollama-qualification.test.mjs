@@ -13,6 +13,7 @@ import {
   buildArmEnvironment,
   buildQualificationReceipt,
   buildTransportHandoff,
+  classifyFailure,
   runQualification,
   summarizeEvaluation,
   validateQualificationInput,
@@ -117,6 +118,7 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
       detected_defect_runs: 1,
       clean_runs: 1,
       false_positive_runs: 0,
+      failure_classes: {},
       latency_ms_median: 100,
       latency_ms_p95: 200,
       cost_usd: 0.01,
@@ -162,10 +164,23 @@ test('evaluation summary reports only bounded aggregate evidence', () => {
     detected_defect_runs: 1,
     clean_runs: 1,
     false_positive_runs: 0,
+    failure_classes: {},
     latency_ms_median: 100,
     latency_ms_p95: 200,
     cost_usd: 0.3,
   });
+});
+
+test('failure classification is coarse and never copies provider error text', () => {
+  assert.equal(classifyFailure({ error: 'HTTP 429 rate_limit_exceeded for secret-model' }), 'rate_limit');
+  assert.equal(classifyFailure({ error: 'upstream 503 service unavailable' }), 'upstream_5xx');
+  assert.equal(classifyFailure({ error: 'socket timed out while connecting' }), 'timeout_or_connect');
+  assert.equal(classifyFailure({ error: 'invalid findings JSON' }), 'invalid_output');
+  assert.equal(classifyFailure({ error: 'ECONNRESET from provider' }), 'network');
+  assert.equal(classifyFailure({ error: 'provider refused request' }), 'provider_error');
+  const summary = summarizeEvaluation({ rows: [{ category: 'defect', errored: true, error: 'api-key token-secret provider failed' }] }, 0);
+  assert.deepEqual(summary.failure_classes, { auth: 1 });
+  assert.equal(JSON.stringify(summary).includes('token-secret'), false);
 });
 
 test('runQualification verifies first, then starts exactly two bounded arms in parallel', async () => {

@@ -141,6 +141,18 @@ function percentile(sorted, fraction) {
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)];
 }
 
+export function classifyFailure(row = {}) {
+  const text = `${row.error || ''} ${row.failureClass || ''} ${row.errorCode || ''}`.toLowerCase();
+  if (!text.trim()) return 'unknown_error';
+  if (/401|403|unauthori[sz]ed|forbidden|api.?key|credential/u.test(text)) return 'auth';
+  if (/429|rate.?limit|quota|capacity|throttl/u.test(text)) return 'rate_limit';
+  if (/5\d\d|upstream|bad.?gateway|service.?unavailable/u.test(text)) return 'upstream_5xx';
+  if (/timeout|timed.?out|abort|stall|connect/u.test(text)) return 'timeout_or_connect';
+  if (/parse|json|structured|findings|format|empty.?response/u.test(text)) return 'invalid_output';
+  if (/fetch|network|socket|econn|enotfound|dns|tls/u.test(text)) return 'network';
+  return 'provider_error';
+}
+
 export function summarizeEvaluation(payload, exitCode) {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const defects = rows.filter((row) => row.category === 'defect');
@@ -148,6 +160,11 @@ export function summarizeEvaluation(payload, exitCode) {
   const latencies = rows.map((row) => Number(row.latencyMs)).filter(Number.isFinite).sort((a, b) => a - b);
   const numericCosts = rows.map((row) => Number(row.usage?.costUSD)).filter(Number.isFinite);
   const erroredRuns = rows.filter((row) => row.errored).length;
+  const failureClasses = {};
+  for (const row of rows.filter((entry) => entry.errored)) {
+    const label = classifyFailure(row);
+    failureClasses[label] = (failureClasses[label] || 0) + 1;
+  }
   return {
     exit_code: exitCode,
     status: exitCode === 0 && rows.length > 0 ? 'completed' : 'failed',
@@ -157,6 +174,7 @@ export function summarizeEvaluation(payload, exitCode) {
     detected_defect_runs: defects.filter((row) => row.detected).length,
     clean_runs: clean.length,
     false_positive_runs: clean.filter((row) => row.falsePositive).length,
+    failure_classes: failureClasses,
     latency_ms_median: percentile(latencies, 0.5),
     latency_ms_p95: percentile(latencies, 0.95),
     cost_usd: numericCosts.length === rows.length ? Number(numericCosts.reduce((sum, cost) => sum + cost, 0).toFixed(6)) : null,
@@ -258,7 +276,10 @@ async function main() {
     runId: process.env.GITHUB_RUN_ID || 'manual',
   });
   console.log(`[Ollama qualification] receipt=${result.receiptPath} digest=${result.digest}`);
-  console.log(`[Ollama qualification] baseline=${result.receipt.arms.baseline.status} candidate=${result.receipt.arms.candidate.status} authoritative=baseline publication=none`);
+  console.log(`[Ollama qualification] baseline=${result.receipt.arms.baseline.status} candidate=${result.receipt.arms.candidate.status} `
+    + `baseline_failure_classes=${JSON.stringify(result.receipt.arms.baseline.failure_classes)} `
+    + `candidate_failure_classes=${JSON.stringify(result.receipt.arms.candidate.failure_classes)} `
+    + 'authoritative=baseline publication=none');
   if (process.env.GITHUB_OUTPUT) {
     writeFileSync(process.env.GITHUB_OUTPUT, [
       `receipt-path=${result.receiptPath}`,
