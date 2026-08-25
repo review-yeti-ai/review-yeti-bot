@@ -177,7 +177,11 @@ describe('review pipeline cassette replay', () => {
     const first = await runOnce();
     const second = await runOnce();
 
-    expect(first.result).toEqual(second.result);
+    // Latency is an observation, not part of the deterministic replay result.
+    // Keep the equality assertion focused on provider response and verdict data
+    // so a 0/1 ms scheduling difference cannot make the replay suite flaky.
+    const withoutLatency = ({ latencyMs, ...result }: any) => result;
+    expect(withoutLatency(first.result)).toEqual(withoutLatency(second.result));
     expect(first.arbitration).toEqual(second.arbitration);
     expect(first.comment).toBe(second.comment);
     expect(cassette.observedFingerprints).toHaveLength(2);
