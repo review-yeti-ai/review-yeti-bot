@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "id": "openrouter-primary",
+      "transport": "openrouter",
+      "base_url_class": "openrouter-gateway",
+      "model": "openrouter/auto",
+      "compatibility_mode": "openrouter",
+      "timeouts": { "connect_ms": 30000, "request_ms": 90000, "stall_ms": 20000, "ttft_ms": 30000 },
+      "streaming": true,
+      "structured_output": "strict",
+      "reasoning": { "effort": "high", "wire_shape": "reasoning.effort" },
+      "request_extensions": { "perf_metrics_in_response": false },
+      "routing": { "mode": "gateway-delegated", "ignore_providers": [], "provider": { "data_collection": "deny" } },
+      "privacy": { "data_collection": "deny" },
+      "retry": { "max_attempts": 2, "classification": "runtime-owned-uncharacterized" },
+      "quarantine": { "on_timeout": false },
+      "active": true
+    },
+    {
+      "id": "fireworks-breakglass",
+      "transport": "fireworks",
+      "base_url_class": "direct-fireworks-openai-compatible",
+      "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
+      "compatibility_mode": "openai",
+      "timeouts": { "connect_ms": 15000, "request_ms": 120000, "stall_ms": 20000, "ttft_ms": 30000 },
+      "streaming": true,
+      "structured_output": "strict",
+      "reasoning": { "effort": "high", "wire_shape": "reasoning_effort" },
+      "request_extensions": { "perf_metrics_in_response": true },
+      "routing": { "mode": "direct", "ignore_providers": [], "provider": null },
+      "privacy": { "data_collection": "not-declared" },
+      "retry": { "max_attempts": 2, "classification": "runtime-owned-uncharacterized" },
+      "quarantine": { "on_timeout": "runtime-default-uncharacterized" },
+      "active": false
+    },
+    {
+      "id": "ollama-evaluation",
+      "transport": "ollama",
+      "base_url_class": "direct-ollama-cloud-openai-compatible",
+      "model": "deepseek-v4-flash:cloud",
+      "compatibility_mode": "openai",
+      "timeouts": { "connect_ms": 30000, "request_ms": 90000, "stall_ms": 20000, "ttft_ms": 30000 },
+      "streaming": true,
+      "structured_output": "runtime-default-uncharacterized",
+      "reasoning": { "effort": "high", "wire_shape": "reasoning_effort" },
+      "request_extensions": { "perf_metrics_in_response": false },
+      "routing": { "mode": "direct", "ignore_providers": [], "provider": null },
+      "privacy": { "data_collection": "not-declared" },
+      "retry": { "max_attempts": 2, "classification": "runtime-owned-uncharacterized" },
+      "quarantine": { "on_timeout": "runtime-default-uncharacterized" },
+      "active": false
+    }
+  ]
+}
