@@ -191,6 +191,31 @@ function responseContent(payload) {
   return content;
 }
 
+const SAFE_ERROR_CODE = /^[a-z0-9][a-z0-9._:-]{0,63}$/iu;
+
+function safeErrorCode(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return SAFE_ERROR_CODE.test(normalized) ? normalized : null;
+}
+
+// Keep provider diagnostics bounded and structured. Never copy provider messages, URLs, or
+// response bodies into logs or outputs: those fields can contain secrets or arbitrary user text.
+export function classifyHttpFailure(status, payload = {}) {
+  const providerError = payload?.error;
+  const errorCode = safeErrorCode(
+    typeof providerError === 'object' && providerError !== null
+      ? (providerError.code ?? providerError.type)
+      : null,
+  );
+  let failureClass = 'provider_error';
+  if (status === 401 || status === 403) failureClass = 'auth';
+  else if (status === 404) failureClass = 'not_found';
+  else if (status === 408) failureClass = 'timeout_or_connect';
+  else if (status === 429) failureClass = 'rate_limit';
+  else if (status >= 500 && status <= 599) failureClass = 'upstream_5xx';
+  return { failureClass, errorCode };
+}
+
 async function readChatCompletion(response) {
   const contentType = typeof response.headers?.get === 'function'
     ? (response.headers.get('content-type') || '')
@@ -252,10 +277,19 @@ export async function probeTransport(
     timeout = setTimeout(() => controller.abort(), Math.max(1, timeoutMs - measuredTtftMs));
 
     if (!response.ok) {
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        // A non-JSON error is still classified by HTTP status; body text is intentionally ignored.
+      }
+      const { failureClass, errorCode } = classifyHttpFailure(response.status, payload);
       return {
         name: transport.name,
         status: 'unhealthy',
         code: `http_${response.status}`,
+        failure_class: failureClass,
+        ...(errorCode ? { error_code: errorCode } : {}),
         http: response.status,
         elapsed_ms: elapsed(),
         ttft_ms: measuredTtftMs,
@@ -289,6 +323,7 @@ export async function probeTransport(
       code: error?.name === 'AbortError'
         ? (timeoutStage === 'ttft' ? 'ttft_timeout' : 'timeout')
         : 'request_error',
+      failure_class: error?.name === 'AbortError' ? 'timeout_or_connect' : 'network',
       elapsed_ms: elapsed(),
     };
   } finally {
@@ -330,7 +365,9 @@ export async function runSmoke({
     const timing = result.elapsed_ms != null ? ` elapsed_ms=${result.elapsed_ms}` : '';
     const http = result.http != null ? ` http=${result.http}` : '';
     const ttft = result.ttft_ms != null ? ` ttft_ms=${result.ttft_ms}` : '';
-    log(`[Review Yeti smoke] ${result.name}: ${result.status}${timing}${http}${ttft}${result.code ? ` (${result.code})` : ''}`);
+    const failure = result.failure_class ? ` failure_class=${result.failure_class}` : '';
+    const errorCode = result.error_code ? ` error_code=${result.error_code}` : '';
+    log(`[Review Yeti smoke] ${result.name}: ${result.status}${timing}${http}${ttft}${failure}${errorCode}${result.code ? ` (${result.code})` : ''}`);
   }
 
   const healthy = results.filter((result) => result.status === 'healthy').map((result) => result.name);

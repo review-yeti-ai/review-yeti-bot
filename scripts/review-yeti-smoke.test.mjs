@@ -6,6 +6,7 @@ import {
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
+  classifyHttpFailure,
   encodeTransportPlan,
   probeTransport,
   resolveTransport,
@@ -182,6 +183,49 @@ test('the smoke suite keeps healthy transports usable when an optional fallback 
 
   assert.deepEqual(result.healthy, ['fireworks', 'ollama']);
   assert.equal(logs.some((line) => line.includes('unhealthy optional transport(s): openrouter-fallback (http_401)')), true);
+});
+
+test('the smoke suite keeps bounded auth and model-not-found diagnostics without provider text', async () => {
+  assert.deepEqual(classifyHttpFailure(401, { error: { code: 'unauthorized', message: 'secret-token' } }), {
+    failureClass: 'auth',
+    errorCode: 'unauthorized',
+  });
+  assert.deepEqual(classifyHttpFailure(404, { error: { code: 'not_found_error', message: 'model secret-model' } }), {
+    failureClass: 'not_found',
+    errorCode: 'not_found_error',
+  });
+
+  const logs = [];
+  const result = await runSmoke({
+    policy: policyFixture(),
+    env: { OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret', OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret' },
+    fetchImpl: async (url) => {
+      if (url.startsWith('https://ollama.test/')) {
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({ error: { code: 'not_found_error', message: 'model secret-model' } }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }) };
+    },
+    log: (line) => logs.push(line),
+  });
+
+  const ollama = result.results.find((entry) => entry.name === 'ollama');
+  assert.deepEqual(ollama, {
+    name: 'ollama',
+    status: 'unhealthy',
+    code: 'http_404',
+    failure_class: 'not_found',
+    error_code: 'not_found_error',
+    http: 404,
+    elapsed_ms: ollama.elapsed_ms,
+    ttft_ms: ollama.ttft_ms,
+  });
+  assert.equal(logs.join('\n').includes('secret-model'), false);
+  assert.equal(logs.join('\n').includes('ollama: unhealthy'), true);
+  assert.deepEqual(result.healthy, ['openrouter-fallback']);
 });
 
 test('the smoke suite treats missing keys as unavailable and still accepts a healthy fallback', async () => {
