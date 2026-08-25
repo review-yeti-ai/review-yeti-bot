@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  captureLaneTelemetry,
   findingMatchesFixture,
   gradeFindings,
   verifyCandidateRows,
@@ -71,6 +72,27 @@ const confirmFields = {
 };
 
 describe('grading mirror', () => {
+  it('retains only bounded lane telemetry and rejects prototype labels', () => {
+    expect(captureLaneTelemetry({
+      provider: 'Ollama',
+      transport: 'ollama',
+      failureClass: 'provider_error',
+      responseStatus: 503,
+      errorCode: 'upstream_error',
+      attemptCount: 2,
+      retryReasons: ['http_5xx', 'not a label', '__proto__'],
+      error: 'raw provider response must not be copied',
+    })).toEqual({
+      provider: 'ollama',
+      transport: 'ollama',
+      failureClass: 'provider_error',
+      responseStatus: 503,
+      errorCode: 'upstream_error',
+      attemptCount: 2,
+      retryReasons: ['http_5xx'],
+    });
+  });
+
   it('matches the harness contract: anchored path AND every concept group', () => {
     expect(findingMatchesFixture(matchingFinding(), fixture)).toBe(true);
     expect(findingMatchesFixture({ ...matchingFinding(), path: 'src/other.js' }, fixture)).toBe(false);
