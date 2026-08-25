@@ -138,6 +138,10 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         inputTokens: '101',
         outputTokens: 22,
         cost: '0.0081',
+        attemptCount: 2,
+        latencyMs: 37,
+        retryReasons: ['transient_socket', 'transient_socket', 'not-allowed'],
+        failureClass: null,
         apiKey: SECRET_VALUES[0],
         prompt: SECRET_VALUES[2],
       },
@@ -170,6 +174,10 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reportedCost: 0.0081,
         reportedCostCurrency: null,
         costStatus: 'reported',
+        attemptCount: 2,
+        latencyMs: 37,
+        retryReasons: ['transient_socket'],
+        failureClass: null,
       },
       {
         personaId: 'performance',
@@ -181,6 +189,10 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reportedCost: null,
         reportedCostCurrency: null,
         costStatus: 'unavailable',
+        attemptCount: null,
+        latencyMs: null,
+        retryReasons: [],
+        failureClass: null,
       },
     ]);
 
@@ -226,6 +238,10 @@ describe('Rank 3D provider telemetry receipt schema', () => {
       inputTokens: 1,
       outputTokens: 2,
       cost: 0,
+      attemptCount: 'not-a-number',
+      latencyMs: -1,
+      retryReasons: ['provider_error', 'secret-reason', 'malformed_output', 'provider_error'],
+      failureClass: 'not-a-class',
     }], EXACT_HEAD);
 
     expect(receipt.lanes[0]).toMatchObject({
@@ -237,6 +253,10 @@ describe('Rank 3D provider telemetry receipt schema', () => {
       outputTokens: 2,
       reportedCost: 0,
       costStatus: 'reported',
+      attemptCount: null,
+      latencyMs: null,
+      retryReasons: ['provider_error', 'malformed_output'],
+      failureClass: null,
     });
     expect(JSON.stringify(receipt)).not.toContain('workflow-injection');
     expect(JSON.stringify(receipt)).not.toContain('p'.repeat(201));
