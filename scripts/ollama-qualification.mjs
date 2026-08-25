@@ -153,6 +153,23 @@ export function classifyFailure(row = {}) {
   return 'provider_error';
 }
 
+function safeDiagnosticLabel(value, fallback = 'unknown') {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._:-]{0,63}$/u.test(normalized)) return fallback;
+  if (normalized === '__proto__' || normalized === 'constructor' || normalized === 'prototype') return fallback;
+  return normalized;
+}
+
+function safeDiagnosticStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? String(status) : null;
+}
+
+function incrementNestedCount(target, key, label) {
+  const bucket = Object.prototype.hasOwnProperty.call(target, key) ? target[key] : (target[key] = {});
+  bucket[label] = (bucket[label] || 0) + 1;
+}
+
 export function summarizeEvaluation(payload, exitCode) {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const defects = rows.filter((row) => row.category === 'defect');
@@ -161,9 +178,17 @@ export function summarizeEvaluation(payload, exitCode) {
   const numericCosts = rows.map((row) => Number(row.usage?.costUSD)).filter(Number.isFinite);
   const erroredRuns = rows.filter((row) => row.errored).length;
   const failureClasses = {};
+  const failureClassesByProvider = {};
+  const responseStatuses = {};
+  const errorCodes = {};
   for (const row of rows.filter((entry) => entry.errored)) {
     const label = classifyFailure(row);
     failureClasses[label] = (failureClasses[label] || 0) + 1;
+    incrementNestedCount(failureClassesByProvider, safeDiagnosticLabel(row.provider), label);
+    const status = safeDiagnosticStatus(row.responseStatus);
+    if (status) responseStatuses[status] = (responseStatuses[status] || 0) + 1;
+    const errorCode = safeDiagnosticLabel(row.errorCode, '');
+    if (errorCode) errorCodes[errorCode] = (errorCodes[errorCode] || 0) + 1;
   }
   return {
     exit_code: exitCode,
@@ -175,6 +200,9 @@ export function summarizeEvaluation(payload, exitCode) {
     clean_runs: clean.length,
     false_positive_runs: clean.filter((row) => row.falsePositive).length,
     failure_classes: failureClasses,
+    failure_classes_by_provider: failureClassesByProvider,
+    response_statuses: responseStatuses,
+    error_codes: errorCodes,
     latency_ms_median: percentile(latencies, 0.5),
     latency_ms_p95: percentile(latencies, 0.95),
     cost_usd: numericCosts.length === rows.length ? Number(numericCosts.reduce((sum, cost) => sum + cost, 0).toFixed(6)) : null,
@@ -279,6 +307,8 @@ async function main() {
   console.log(`[Ollama qualification] baseline=${result.receipt.arms.baseline.status} candidate=${result.receipt.arms.candidate.status} `
     + `baseline_failure_classes=${JSON.stringify(result.receipt.arms.baseline.failure_classes)} `
     + `candidate_failure_classes=${JSON.stringify(result.receipt.arms.candidate.failure_classes)} `
+    + `baseline_failure_providers=${JSON.stringify(result.receipt.arms.baseline.failure_classes_by_provider)} `
+    + `candidate_failure_providers=${JSON.stringify(result.receipt.arms.candidate.failure_classes_by_provider)} `
     + 'authoritative=baseline publication=none');
   if (process.env.GITHUB_OUTPUT) {
     writeFileSync(process.env.GITHUB_OUTPUT, [

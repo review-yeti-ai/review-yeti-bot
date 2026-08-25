@@ -119,6 +119,9 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
       clean_runs: 1,
       false_positive_runs: 0,
       failure_classes: {},
+      failure_classes_by_provider: {},
+      response_statuses: {},
+      error_codes: {},
       latency_ms_median: 100,
       latency_ms_p95: 200,
       cost_usd: 0.01,
@@ -165,6 +168,9 @@ test('evaluation summary reports only bounded aggregate evidence', () => {
     clean_runs: 1,
     false_positive_runs: 0,
     failure_classes: {},
+    failure_classes_by_provider: {},
+    response_statuses: {},
+    error_codes: {},
     latency_ms_median: 100,
     latency_ms_p95: 200,
     cost_usd: 0.3,
@@ -178,9 +184,31 @@ test('failure classification is coarse and never copies provider error text', ()
   assert.equal(classifyFailure({ error: 'invalid findings JSON' }), 'invalid_output');
   assert.equal(classifyFailure({ error: 'ECONNRESET from provider' }), 'network');
   assert.equal(classifyFailure({ error: 'provider refused request' }), 'provider_error');
-  const summary = summarizeEvaluation({ rows: [{ category: 'defect', errored: true, error: 'api-key token-secret provider failed' }] }, 0);
+  const summary = summarizeEvaluation({ rows: [{
+    category: 'defect',
+    errored: true,
+    error: 'api-key token-secret provider failed',
+    provider: 'Ollama',
+    responseStatus: 502,
+    errorCode: 'upstream_error',
+  }] }, 0);
   assert.deepEqual(summary.failure_classes, { auth: 1 });
+  assert.deepEqual(summary.failure_classes_by_provider, { ollama: { auth: 1 } });
+  assert.deepEqual(summary.response_statuses, { '502': 1 });
+  assert.deepEqual(summary.error_codes, { upstream_error: 1 });
   assert.equal(JSON.stringify(summary).includes('token-secret'), false);
+
+  const hostile = summarizeEvaluation({ rows: [{
+    category: 'clean',
+    errored: true,
+    provider: '__proto__',
+    responseStatus: 99,
+    errorCode: 'not a safe label',
+  }] }, 1);
+  assert.deepEqual(hostile.failure_classes_by_provider, { unknown: { provider_error: 1 } });
+  assert.deepEqual(hostile.response_statuses, {});
+  assert.deepEqual(hostile.error_codes, {});
+  assert.equal(Object.prototype.polluted, undefined);
 });
 
 test('runQualification verifies first, then starts exactly two bounded arms in parallel', async () => {
