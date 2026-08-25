@@ -1291,6 +1291,26 @@ function isDirectReasoningTransport(transport = {}, baseUrl = '') {
 }
 
 /**
+ * Direct Ollama qualification showed fixture-level result variance at the existing 0.1
+ * sampling temperature. Keep the current OpenRouter/Fireworks request contract unchanged,
+ * but make the explicitly named Ollama route deterministic so a future manual promotion is
+ * measured against a stable generation setting.
+ */
+function isOllamaTransport(transport = {}, baseUrl = '') {
+  const text = [
+    transport.provider,
+    transport.name,
+    transport.model,
+    baseUrl,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return /(?:^|[\s/:._-])ollama(?:$|[\s/:._-])/i.test(text);
+}
+
+function resolveTransportTemperature(transport = {}, baseUrl = '') {
+  return isOllamaTransport(transport, baseUrl) ? 0 : 0.1;
+}
+
+/**
  * Determines whether a persona evaluation result ran on an unmetered or subscription transport.
  *
  * @param {object} res Persona result object
@@ -1811,7 +1831,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.1,
+        temperature: resolveTransportTemperature(transport, transportBaseUrl),
         max_tokens: normalizeMaxOutputTokens(
           configuredMaxOutputTokens,
           isDirectReasoning ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS : DEFAULT_MAX_OUTPUT_TOKENS,
@@ -4023,6 +4043,8 @@ module.exports = {
   postOrOutputComment,
   isSubscriptionTransport,
   isDirectReasoningTransport,
+  isOllamaTransport,
+  resolveTransportTemperature,
   RunTransportCircuitBreaker,
   globalRunCircuitBreaker,
   isSubscriptionLane,
