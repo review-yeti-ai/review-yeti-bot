@@ -591,6 +591,85 @@ describe('reviewWithModel', () => {
     expect(res.findings[0].severity).toBe('P1');
     expect(res.findings[0].path).toBe('src/api/user.ts');
     expect(res.decision).toBe('FINDINGS');
+    expect(res.attemptCount).toBe(1);
+    expect(Number.isInteger(res.latencyMs)).toBe(true);
+    expect(res.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(res.retryReasons).toEqual([]);
+    expect(res.failureClass).toBeNull();
+  });
+
+  it('records bounded retry telemetry without changing the successful lane outcome', async () => {
+    let calls = 0;
+    const fetchImplementation = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNRESET');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [] }) } }] }),
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{ name: 'fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', apiKey: 'k', model: 'm' }],
+    });
+
+    expect(calls).toBe(2);
+    expect(res.decision).toBe('APPROVE');
+    expect(res.attemptCount).toBe(2);
+    expect(res.retryReasons).toEqual(['transient_socket']);
+    expect(res.failureClass).toBeNull();
+  });
+
+  it('records a sanitized failover reason while leaving a recovered lane successful', async () => {
+    let calls = 0;
+    const fetchImplementation = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 429,
+          text: async () => 'provider secret and request details',
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [] }) } }] }),
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [
+        { name: 'fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', apiKey: 'k1', model: 'm1' },
+        { name: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k2', model: 'm2' },
+      ],
+    });
+
+    expect(res.decision).toBe('APPROVE');
+    expect(res.attemptCount).toBe(2);
+    expect(res.retryReasons).toEqual(['http_429']);
+    expect(res.failureClass).toBeNull();
+    expect(JSON.stringify(res.retryReasons)).not.toContain('provider secret');
+  });
+
+  it('classifies a final malformed response without persisting provider text', async () => {
+    const { impl } = stubFetch('not findings JSON');
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: impl,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{ name: 'fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', apiKey: 'k', model: 'm' }],
+    });
+
+    expect(res.decision).toBe('ERROR');
+    expect(res.attemptCount).toBe(2);
+    expect(res.retryReasons).toEqual(['malformed_output']);
+    expect(res.failureClass).toBe('malformed_output');
+    expect(res.error).toBe('Model response contained no parseable findings JSON.');
   });
 
   it('returns response model, provider, and reported usage cost metadata', async () => {
@@ -690,6 +769,9 @@ describe('reviewWithModel', () => {
     });
     expect(res.findings).toEqual([]);
     expect(res.error).toContain('429');
+    expect(res.attemptCount).toBe(1);
+    expect(res.retryReasons).toEqual(['http_429']);
+    expect(res.failureClass).toBe('http_429');
   });
 
   it('truncates oversized diffs to the configured character budget', async () => {
