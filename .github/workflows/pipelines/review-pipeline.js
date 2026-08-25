@@ -1010,7 +1010,7 @@ function normalizeTelemetryIdentifier(value) {
   if (!normalized || normalized.length > TELEMETRY_IDENTIFIER_MAX_LENGTH) return null;
   if (/[\x00-\x1F\x7F]/.test(normalized)) return null;
   // Provider/model identifiers are useful telemetry, but credential-shaped values are not.
-  if (/^(?:bearer\s|sk-[a-z0-9]|gh[ps]_|github_pat_|xox[baprs]-)/i.test(normalized)) return null;
+  if (/(?:^|[^a-z0-9])(?:bearer\s+|sk-(?:proj-)?|gh[ps]_|github_pat_|xox[baprs]-)[a-z0-9]/i.test(normalized)) return null;
   return normalized;
 }
 

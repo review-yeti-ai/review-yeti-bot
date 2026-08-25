@@ -134,7 +134,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         personaId: 'performance',
         transport: 'default',
         provider: 'sk-live-provider-secret',
-        model: 'Bearer gh-app-installation-secret',
+        model: 'gpt-sk-proj-1234567890',
         inputTokens: 'not-a-number',
         outputTokens: null,
         cost: 'generic-secret-value',
@@ -176,7 +176,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     const serialized = JSON.stringify(receipt);
     for (const secret of SECRET_VALUES) expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain('sk-live-provider-secret');
-    expect(serialized).not.toContain('Bearer gh-app-installation-secret');
+    expect(serialized).not.toContain('gpt-sk-proj-1234567890');
     expect(serialized).not.toContain('generic-secret-value');
     expect(serialized).not.toContain('openai/gpt-5.6-luna');
   });
