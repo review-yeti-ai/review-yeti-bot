@@ -995,33 +995,130 @@ function assertCurrentPullRequest(prContext, options = {}) {
   return snapshot;
 }
 
+const FINDINGS_OUTPUT_SHAPES = new Set([
+  'direct_json_object',
+  'direct_json_array',
+  'fenced_json_object',
+  'fenced_json_array',
+  'embedded_json_object',
+  'valid_json_wrong_shape',
+  'truncated_json',
+  'no_json',
+  'empty_content',
+]);
+
+const MODEL_FINISH_REASONS = new Set(['stop', 'length', 'content_filter', 'tool_calls']);
+const RESPONSE_MODES = new Set(['stream', 'buffered']);
+const FINDINGS_SOURCES = new Set(['content', 'reasoning', 'none']);
+const RESPONSE_SIZE_BUCKETS = new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']);
+
+function findingsArray(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.findings)) return parsed.findings;
+  return null;
+}
+
+function looksLikeTruncatedJson(content) {
+  let candidate = String(content || '').trim().replace(/^```(?:json)?\s*/iu, '');
+  if (!candidate.startsWith('{') && !candidate.startsWith('[')) return false;
+
+  let objectDepth = 0;
+  let arrayDepth = 0;
+  let inString = false;
+  let escaped = false;
+  for (const character of candidate) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === '{') objectDepth++;
+    else if (character === '}') objectDepth--;
+    else if (character === '[') arrayDepth++;
+    else if (character === ']') arrayDepth--;
+  }
+  return inString || objectDepth > 0 || arrayDepth > 0;
+}
+
 /**
- * Extracts a findings array from a model response, tolerating prose and markdown fences.
- * Returns null when nothing parseable is present.
+ * Extracts findings while reporting only a closed, content-free description of the wire shape.
+ * Candidate ordering deliberately matches the legacy parser: fenced, direct, then embedded.
  */
-function parseFindingsPayload(content) {
-  if (!content || typeof content !== 'string') return null;
+function analyzeFindingsPayload(content) {
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    return { findings: null, outputShape: 'empty_content' };
+  }
 
   const candidates = [];
-  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) candidates.push(fenced[1]);
-  candidates.push(content);
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/iu);
+  if (fenced) candidates.push({ value: fenced[1], location: 'fenced' });
+  candidates.push({ value: content, location: 'direct' });
 
-  // Fall back to the outermost brace-delimited object embedded in prose.
   const firstBrace = content.indexOf('{');
   const lastBrace = content.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace > firstBrace) {
-    candidates.push(content.slice(firstBrace, lastBrace + 1));
+    candidates.push({ value: content.slice(firstBrace, lastBrace + 1), location: 'embedded' });
   }
 
+  let parsedJson = false;
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate.trim());
-      if (Array.isArray(parsed)) return parsed;
-      if (Array.isArray(parsed?.findings)) return parsed.findings;
+      const parsed = JSON.parse(candidate.value.trim());
+      parsedJson = true;
+      const findings = findingsArray(parsed);
+      if (findings === null) continue;
+      const container = Array.isArray(parsed) ? 'array' : 'object';
+      return {
+        findings,
+        outputShape: candidate.location === 'embedded'
+          ? 'embedded_json_object'
+          : `${candidate.location}_json_${container}`,
+      };
     } catch (_) {}
   }
-  return null;
+
+  if (parsedJson) return { findings: null, outputShape: 'valid_json_wrong_shape' };
+  if (looksLikeTruncatedJson(content)) return { findings: null, outputShape: 'truncated_json' };
+  return { findings: null, outputShape: 'no_json' };
+}
+
+function parseFindingsPayload(content) {
+  return analyzeFindingsPayload(content).findings;
+}
+
+function normalizeFindingsOutputShape(value) {
+  return FINDINGS_OUTPUT_SHAPES.has(value) ? value : null;
+}
+
+function normalizeModelFinishReason(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return 'missing';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'missing' || normalized === 'other') return normalized;
+  return MODEL_FINISH_REASONS.has(normalized) ? normalized : 'other';
+}
+
+function normalizeResponseMode(value) {
+  return RESPONSE_MODES.has(value) ? value : null;
+}
+
+function normalizeFindingsSource(value) {
+  return FINDINGS_SOURCES.has(value) ? value : null;
+}
+
+function responseSizeBucket(content) {
+  const length = typeof content === 'string' ? content.length : 0;
+  if (length === 0) return 'empty';
+  if (length <= 256) return 'tiny';
+  if (length <= 1_024) return 'small';
+  if (length <= 4_096) return 'medium';
+  if (length <= 16_384) return 'large';
+  return 'oversize';
+}
+
+function normalizeResponseSizeBucket(value) {
+  return RESPONSE_SIZE_BUCKETS.has(value) ? value : null;
 }
 
 /**
@@ -1745,6 +1842,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   let generationIdDigest = null;
   let routerAttempt = null;
   let recoveryAction = null;
+  let outputShape = null;
+  let finishReason = 'missing';
+  let responseMode = null;
+  let findingsSource = 'none';
+  let contentPresent = false;
+  let reasoningPresent = false;
+  let contentSizeBucket = 'empty';
+  let reasoningSizeBucket = 'empty';
   const noteRetryReason = (reason) => {
     const normalized = normalizeTelemetryOutcomeClass(reason);
     if (normalized && !retryReasons.includes(normalized) && retryReasons.length < 8) retryReasons.push(normalized);
@@ -1760,6 +1865,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     generationIdDigest,
     routerAttempt: normalizeTelemetryAttemptCount(routerAttempt),
     recoveryAction: normalizeTelemetryRecoveryAction(recoveryAction),
+    outputShape: normalizeFindingsOutputShape(outputShape),
+    finishReason: normalizeModelFinishReason(finishReason),
+    responseMode: normalizeResponseMode(responseMode),
+    findingsSource: normalizeFindingsSource(findingsSource),
+    contentPresent: contentPresent === true,
+    reasoningPresent: reasoningPresent === true,
+    contentSizeBucket: normalizeResponseSizeBucket(contentSizeBucket),
+    reasoningSizeBucket: normalizeResponseSizeBucket(reasoningSizeBucket),
   });
   let requestOptions = null;
   let resultBase = {
@@ -1948,6 +2061,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       while (fetchAttempts < maxFetchAttempts) {
         fetchAttempts++;
         attemptCount++;
+        // Describe only the current response attempt. Cross-attempt instability is
+        // represented separately by the closed retryReasons set.
+        outputShape = null;
+        finishReason = 'missing';
+        responseMode = streamEnabled ? 'stream' : 'buffered';
+        findingsSource = 'none';
+        contentPresent = false;
+        reasoningPresent = false;
+        contentSizeBucket = 'empty';
+        reasoningSizeBucket = 'empty';
         const streamAbortController = streamEnabled ? new AbortController() : null;
         let responseHeaderTimer = null;
         let releaseOllamaCapacity = null;
@@ -2076,6 +2199,13 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const reasoning = reasoningFragments(
             message.reasoning ?? message.reasoning_content,
           ).join('');
+          finishReason = normalizeModelFinishReason(
+            payload?.choices?.[0]?.finish_reason ?? payload?.choices?.[0]?.finishReason,
+          );
+          contentPresent = content.length > 0;
+          reasoningPresent = reasoning.length > 0;
+          contentSizeBucket = responseSizeBucket(content);
+          reasoningSizeBucket = responseSizeBucket(reasoning);
           if (content) {
             try {
               const providerLane = JSON.parse(content);
@@ -2109,7 +2239,22 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           // delta and leave assistant content empty.  Accept that alternate wire shape
           // only when it is itself a complete findings payload; prose or partial thought
           // remains fail-closed and follows the normal transport recovery path.
-          const rawFindings = parseFindingsPayload(content) ?? parseFindingsPayload(reasoning);
+          const contentAnalysis = analyzeFindingsPayload(content);
+          const reasoningAnalysis = analyzeFindingsPayload(reasoning);
+          const selectedAnalysis = contentAnalysis.findings !== null
+            ? contentAnalysis
+            : reasoningAnalysis.findings !== null
+              ? reasoningAnalysis
+              : contentAnalysis.outputShape !== 'empty_content'
+                ? contentAnalysis
+                : reasoningAnalysis;
+          const rawFindings = selectedAnalysis.findings;
+          outputShape = selectedAnalysis.outputShape;
+          findingsSource = contentAnalysis.findings !== null
+            ? 'content'
+            : reasoningAnalysis.findings !== null
+              ? 'reasoning'
+              : 'none';
           if (rawFindings === null) {
             noteRetryReason('malformed_output');
             failureClass = 'malformed_output';
@@ -3596,11 +3741,19 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       generationIdDigest: normalizeTelemetryIdentifier(result.generationIdDigest),
       routerAttempt: normalizeTelemetryAttemptCount(result.routerAttempt),
       recoveryAction: normalizeTelemetryRecoveryAction(result.recoveryAction),
+      outputShape: normalizeFindingsOutputShape(result.outputShape),
+      finishReason: normalizeModelFinishReason(result.finishReason),
+      responseMode: normalizeResponseMode(result.responseMode),
+      findingsSource: normalizeFindingsSource(result.findingsSource),
+      contentPresent: result.contentPresent === true,
+      reasoningPresent: result.reasoningPresent === true,
+      contentSizeBucket: normalizeResponseSizeBucket(result.contentSizeBucket),
+      reasoningSizeBucket: normalizeResponseSizeBucket(result.reasoningSizeBucket),
     };
   });
 
   return {
-    schemaVersion: 'review-provider-telemetry-v1',
+    schemaVersion: 'review-provider-telemetry-v2',
     repository: prContext.repo,
     prNumber: Number(prContext.prNumber),
     baseSha: prContext.baseSha,
@@ -3920,6 +4073,14 @@ async function main() {
             generationIdDigest: normalizeTelemetryIdentifier(lastRun.generationIdDigest),
             routerAttempt: normalizeTelemetryAttemptCount(lastRun.routerAttempt),
             recoveryAction: normalizeTelemetryRecoveryAction(laneRuns.find((r) => r.recoveryAction)?.recoveryAction),
+            outputShape: normalizeFindingsOutputShape(lastRun.outputShape),
+            finishReason: normalizeModelFinishReason(lastRun.finishReason),
+            responseMode: normalizeResponseMode(lastRun.responseMode),
+            findingsSource: normalizeFindingsSource(lastRun.findingsSource),
+            contentPresent: laneRuns.some((r) => r.contentPresent === true),
+            reasoningPresent: laneRuns.some((r) => r.reasoningPresent === true),
+            contentSizeBucket: normalizeResponseSizeBucket(lastRun.contentSizeBucket),
+            reasoningSizeBucket: normalizeResponseSizeBucket(lastRun.reasoningSizeBucket),
             decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
             error: anyError ? anyError.error : undefined,
           };
@@ -4081,7 +4242,10 @@ module.exports = {
   resolveActionSubmoduleMetadata,
   planDiffBudget,
   reviewWithModel,
+  analyzeFindingsPayload,
   parseFindingsPayload,
+  normalizeModelFinishReason,
+  responseSizeBucket,
   downgradeReasoningEffort,
   sanitizeFindings,
   loadLocalRepoConfig,
