@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const root = path.resolve(__dirname, '../..');
@@ -110,5 +112,92 @@ describe('Rank 3A provider receipt schema and redaction contract', () => {
     expect(JSON.stringify(report)).toContain(SECRET_VALUES[2]);
     expect(JSON.stringify(report)).toContain(SECRET_VALUES[3]);
     expect(report.lanes[0]).not.toHaveProperty('error');
+  });
+});
+
+describe('Rank 3D provider telemetry receipt schema', () => {
+  it('persists bounded provider metadata and reported usage without changing the gate report', () => {
+    const receipt = pipeline.buildProviderTelemetryReceipt([
+      {
+        personaId: 'security',
+        transport: 'openrouter',
+        provider: 'openrouter',
+        model: 'openai/gpt-5.6-luna',
+        inputTokens: '101',
+        outputTokens: 22,
+        cost: '0.0081',
+        apiKey: SECRET_VALUES[0],
+        prompt: SECRET_VALUES[2],
+      },
+      {
+        personaId: 'performance',
+        transport: 'default',
+        provider: 'sk-live-provider-secret',
+        model: 'Bearer gh-app-installation-secret',
+        inputTokens: 'not-a-number',
+        outputTokens: null,
+        cost: 'Subscription',
+      },
+    ], EXACT_HEAD);
+
+    expect(receipt).toMatchObject({
+      schemaVersion: 'review-provider-telemetry-v1',
+      repository: EXACT_HEAD.repo,
+      prNumber: 17,
+      baseSha: EXACT_HEAD.baseSha,
+      headSha: EXACT_HEAD.headSha,
+    });
+    expect(receipt.lanes).toEqual([
+      {
+        personaId: 'security',
+        configuredTransport: 'openrouter',
+        resolvedProvider: 'openrouter',
+        model: 'openai/gpt-5.6-luna',
+        inputTokens: 101,
+        outputTokens: 22,
+        reportedCost: 0.0081,
+        reportedCostCurrency: null,
+        costStatus: 'reported',
+      },
+      {
+        personaId: 'performance',
+        configuredTransport: 'default',
+        resolvedProvider: null,
+        model: null,
+        inputTokens: null,
+        outputTokens: null,
+        reportedCost: null,
+        reportedCostCurrency: null,
+        costStatus: 'unavailable',
+      },
+    ]);
+
+    const serialized = JSON.stringify(receipt);
+    for (const secret of SECRET_VALUES) expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain('sk-live-provider-secret');
+    expect(serialized).not.toContain('Bearer gh-app-installation-secret');
+  });
+
+  it('writes an exact-head telemetry receipt with a stable digest', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-provider-telemetry-'));
+    const result = pipeline.writeProviderTelemetryReceipt([
+      {
+        personaId: 'security',
+        transport: 'openrouter',
+        provider: 'openrouter',
+        model: 'openai/gpt-5.6-luna',
+        inputTokens: 101,
+        outputTokens: 22,
+        cost: 0.0081,
+      },
+    ], EXACT_HEAD, directory);
+
+    expect(result.path).toBe(path.join(directory, 'review-yeti-provider-telemetry-17-bbbbbbbbbbbb.json'));
+    expect(result.digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(fs.readFileSync(result.path, 'utf-8'))).toMatchObject({
+      schemaVersion: 'review-provider-telemetry-v1',
+      baseSha: EXACT_HEAD.baseSha,
+      headSha: EXACT_HEAD.headSha,
+    });
   });
 });

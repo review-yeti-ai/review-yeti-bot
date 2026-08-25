@@ -1002,6 +1002,18 @@ function normalizeResponseProvider(provider) {
   return null;
 }
 
+const TELEMETRY_IDENTIFIER_MAX_LENGTH = 200;
+
+function normalizeTelemetryIdentifier(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > TELEMETRY_IDENTIFIER_MAX_LENGTH) return null;
+  if (/[\x00-\x1F\x7F]/.test(normalized)) return null;
+  // Provider/model identifiers are useful telemetry, but credential-shaped values are not.
+  if (/^(?:bearer\s|sk-[a-z0-9]|gh[ps]_|github_pat_|xox[baprs]-)/i.test(normalized)) return null;
+  return normalized;
+}
+
 function resolveResponseModel(payload, fallbackModel) {
   return typeof payload?.model === 'string' && payload.model.trim()
     ? payload.model.trim()
@@ -3192,7 +3204,50 @@ function writeRunReport(arbitration, personaResults, prContext, outputDirectory 
   };
 }
 
-function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null) {
+function buildProviderTelemetryReceipt(personaResults, prContext) {
+  const lanes = (Array.isArray(personaResults) ? personaResults : []).map((result) => {
+    const reportedCost = normalizeCost(result.cost);
+    return {
+      personaId: normalizeTelemetryIdentifier(result.personaId) || '',
+      configuredTransport: normalizeTelemetryIdentifier(result.transport),
+      resolvedProvider: normalizeTelemetryIdentifier(result.provider),
+      model: normalizeTelemetryIdentifier(result.model),
+      inputTokens: normalizeTokenCount(result.inputTokens),
+      outputTokens: normalizeTokenCount(result.outputTokens),
+      reportedCost,
+      reportedCostCurrency: null,
+      costStatus: reportedCost === null ? 'unavailable' : 'reported',
+    };
+  });
+
+  return {
+    schemaVersion: 'review-provider-telemetry-v1',
+    repository: prContext.repo,
+    prNumber: Number(prContext.prNumber),
+    baseSha: prContext.baseSha,
+    headSha: prContext.headSha,
+    lanes,
+  };
+}
+
+function writeProviderTelemetryReceipt(personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP) {
+  if (!outputDirectory) return null;
+
+  const receipt = buildProviderTelemetryReceipt(personaResults, prContext);
+  const receiptPath = path.join(
+    outputDirectory,
+    `review-yeti-provider-telemetry-${String(prContext.prNumber || 'unknown')}-${String(prContext.headSha || 'unknown').slice(0, 12)}.json`,
+  );
+  const receiptJson = `${JSON.stringify(receipt, null, 2)}\n`;
+  fs.writeFileSync(receiptPath, receiptJson, 'utf-8');
+
+  return {
+    path: receiptPath,
+    digest: createHash('sha256').update(receiptJson, 'utf-8').digest('hex'),
+  };
+}
+
+function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null, providerTelemetry = null) {
   if (!outputPath) return;
 
   const m = arbitration.metrics || {};
@@ -3211,6 +3266,8 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     `dispatch-reflection-status=${runReport ? 'complete' : ''}`,
     `provider-receipt-digest=${runReport?.digest || ''}`,
     `run-report-path=${runReport?.path || ''}`,
+    `provider-telemetry-digest=${providerTelemetry?.digest || ''}`,
+    `provider-telemetry-path=${providerTelemetry?.path || ''}`,
     `rationale=${rationale}`,
     `findings-count=${m.totalFindings || 0}`,
     `total-findings=${m.totalFindings || 0}`,
@@ -3545,7 +3602,13 @@ async function main() {
   }
 
   const runReport = writeRunReport(arbitration, personaResults, prContext);
-  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport);
+  let providerTelemetry = null;
+  try {
+    providerTelemetry = writeProviderTelemetryReceipt(personaResults, prContext);
+  } catch (error) {
+    console.warn(`[Telemetry] Could not write provider telemetry receipt: ${error.message}`);
+  }
+  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry);
   emitWorkflowAnnotations(personaResults);
   writeStepSummary(arbitration, personaResults, prContext, coverage);
 
@@ -3620,6 +3683,8 @@ module.exports = {
   writeStepOutputs,
   buildReviewRunReport,
   writeRunReport,
+  buildProviderTelemetryReceipt,
+  writeProviderTelemetryReceipt,
   initMcpFleet,
   evaluatePersonaLane,
   computeArbitrationQuorum,
