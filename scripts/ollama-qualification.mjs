@@ -22,8 +22,14 @@ export const CANDIDATE_PROFILE = 'ollama-evaluation';
 export const BASELINE_PROFILE = 'current-production';
 export const FIXTURE_IDS = Object.freeze([
   'vacuous-default-value-test',
+  'format-evadable-absence-guard',
+  'dual-cause-diagnostic-named-for-one',
   'clean-behavioural-guard',
+  'clean-rename-only',
   'active-skip-marker-left-in-suite',
+  'shared-module-state-order-dependent-test',
+  'table-driven-consolidation-preserves-coverage',
+  'function-scoped-fixture-avoids-shared-state',
 ]);
 
 const SHA_PATTERN = /^[a-f0-9]{40,64}$/iu;

@@ -2,8 +2,9 @@ name: One-time Ollama qualification
 
 # This workflow is intentionally manual and isolated. It is never a consumer review trigger,
 # never a canary, and never a scheduled/recurring monitor. It has read-only permissions and the
-# qualification script runs both arms without a GitHub comment, check, review verdict, or merge
-# decision. The current-production arm remains authoritative for any operator decision.
+# qualification script runs both arms over the committed nine-fixture matrix without a GitHub
+# comment, check, review verdict, or merge decision. The current-production arm remains
+# authoritative for any operator decision.
 on:
   workflow_dispatch:
     inputs:
