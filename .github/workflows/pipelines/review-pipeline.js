@@ -1014,6 +1014,25 @@ function normalizeTelemetryIdentifier(value) {
   return normalized;
 }
 
+function normalizeTelemetryProvider(value) {
+  const normalized = normalizeTelemetryIdentifier(value);
+  if (!normalized) return null;
+  const provider = normalized.toLowerCase().replace(/[_\s]+/g, '-');
+  if (/^openrouter(?:-.+)?$/.test(provider)) return 'openrouter';
+  if (/^(?:direct-)?fireworks(?:-.+)?$/.test(provider)) return 'fireworks';
+  if (/^ollama(?:-.+)?$/.test(provider)) return 'ollama';
+  if (/^anthropic(?:-.+)?$/.test(provider)) return 'anthropic';
+  if (/^(?:google|gemini)(?:-.+)?$/.test(provider)) return 'gemini';
+  if (/^openai(?:-.+)?$/.test(provider)) return 'openai';
+  if (provider === 'default') return 'default';
+  return null;
+}
+
+function hashTelemetryIdentifier(value) {
+  const normalized = normalizeTelemetryIdentifier(value);
+  return normalized ? createHash('sha256').update(normalized, 'utf-8').digest('hex') : null;
+}
+
 function resolveResponseModel(payload, fallbackModel) {
   return typeof payload?.model === 'string' && payload.model.trim()
     ? payload.model.trim()
@@ -3209,9 +3228,9 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
     const reportedCost = normalizeCost(result.cost);
     return {
       personaId: normalizeTelemetryIdentifier(result.personaId) || '',
-      configuredTransport: normalizeTelemetryIdentifier(result.transport),
-      resolvedProvider: normalizeTelemetryIdentifier(result.provider),
-      model: normalizeTelemetryIdentifier(result.model),
+      configuredTransport: normalizeTelemetryProvider(result.transport),
+      resolvedProvider: normalizeTelemetryProvider(result.provider),
+      modelDigest: hashTelemetryIdentifier(result.model),
       inputTokens: normalizeTokenCount(result.inputTokens),
       outputTokens: normalizeTokenCount(result.outputTokens),
       reportedCost,

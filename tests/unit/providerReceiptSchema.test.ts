@@ -152,7 +152,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         personaId: 'security',
         configuredTransport: 'openrouter',
         resolvedProvider: 'openrouter',
-        model: 'openai/gpt-5.6-luna',
+        modelDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         inputTokens: 101,
         outputTokens: 22,
         reportedCost: 0.0081,
@@ -163,7 +163,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         personaId: 'performance',
         configuredTransport: 'default',
         resolvedProvider: null,
-        model: null,
+        modelDigest: null,
         inputTokens: null,
         outputTokens: null,
         reportedCost: null,
@@ -176,6 +176,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     for (const secret of SECRET_VALUES) expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain('sk-live-provider-secret');
     expect(serialized).not.toContain('Bearer gh-app-installation-secret');
+    expect(serialized).not.toContain('openai/gpt-5.6-luna');
   });
 
   it('writes an exact-head telemetry receipt with a stable digest', () => {
@@ -216,7 +217,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
       personaId: '',
       configuredTransport: null,
       resolvedProvider: null,
-      model: null,
+      modelDigest: null,
       inputTokens: 1,
       outputTokens: 2,
       reportedCost: 0,
