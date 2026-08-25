@@ -262,6 +262,15 @@ Flag:
 - Exclusive or skipped markers left active, which silently disable the rest of a suite.
 - Shared mutable state between tests, or dependence on execution order, clock or network.
 
+Before reporting a testing defect, establish:
+- Scope: the behaviour was introduced, changed, or explicitly claimed by the diff.
+- Counterfactual: identify a plausible broken implementation the changed test would still pass, or a correct refactor it would incorrectly fail.
+- Isolation: for shared-state claims, identify the state that survives between tests; state recreated in per-test setup is not cross-test state.
+- Semantics: for configuration or text guards, determine whether an equivalent representation can evade the asserted property.
+- Branch completeness: materially different failure causes or diagnostics require distinct coverage.
+
+If that causal chain cannot be shown from the diff, return no finding.
+
 Do not flag:
 - Absence of tests for pure renames, formatting, comments, configuration or documentation.
 - Demands for a coverage percentage.
@@ -1785,10 +1794,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '- P1 and P0 are rare. When unsure between two levels, choose the lower one.',
     '- If the diff is clean by your charter, return an empty findings array. Finding nothing is the expected result on most changes, and is more useful than a speculative finding.',
     '',
-    'Tool Guidance (Optional on-demand):',
-    '- Workspace file reading (read_file, code_search, symbol_lookup) is available when you need to inspect un-modified callers or callee definitions.',
-    '- Context7 documentation search (context7_search, fetch_docs) is available when you need official external library/framework API specs.',
-    '- If the diff is clear and self-contained, render your findings immediately without unnecessary tool calls.',
+    'Evidence boundary:',
+    '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
+    '- If the supplied evidence does not prove a defect, return no finding.',
     '',
     'Respond with JSON only, in exactly this shape:',
     '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
