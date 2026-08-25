@@ -81,5 +81,6 @@ jobs:
           path: |
             sessions/
             review-comment.md
+            ${{ steps.review.outputs.provider-telemetry-path }}
           if-no-files-found: ignore
           retention-days: 14

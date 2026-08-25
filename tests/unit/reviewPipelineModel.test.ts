@@ -574,12 +574,137 @@ describe('reviewWithModel', () => {
     const { impl } = stubFetch('{"error":{"message":"provider lane failed"}}');
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
       apiKey: 'k',
+      baseUrl: 'https://llm.test/v1',
       fetchImpl: impl,
     });
 
     expect(res.decision).toBe('ERROR');
     expect(res.findings).toEqual([]);
     expect(res.error).toContain('Provider returned an error payload');
+  });
+
+  it('uses the policy-approved model fallback when OpenRouter returns an upstream rate-limit payload', async () => {
+    const calls: any[] = [];
+    const manifest = require(path.join(rootRepoDir, 'src/config/openrouter-review-policy.json'));
+    const fetchImplementation = async (url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url, body, headers: init.headers });
+      if (calls.length === 1) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'x-generation-id': 'gen-rate-limited' }),
+          json: async () => ({
+            error: {
+              code: 'rate_limit_exceeded',
+              message: 'openai/gpt-5.6-luna is temporarily rate-limited upstream',
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'x-generation-id': 'gen-recovered' }),
+        json: async () => ({
+          model: 'z-ai/glm-5.1',
+          openrouter_metadata: { attempt: 2 },
+          choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+        }),
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      model: 'openrouter/auto',
+      openRouterPolicy: manifest,
+      fetchImplementation,
+      sleepImplementation: async () => {},
+    });
+
+    expect(res).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      attemptCount: 2,
+      retryReasons: ['provider_rate_limit'],
+      failureClass: null,
+      errorCode: 'rate_limit_exceeded',
+      recoveryAction: 'model_fallback',
+      routerAttempt: 2,
+    });
+    expect(res.generationIdDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].headers['X-OpenRouter-Metadata']).toBe('enabled');
+    expect(calls[1].body).toMatchObject({
+      model: 'openai/gpt-5.6-luna',
+      models: ['moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.1', 'google/gemini-3.5-flash-lite'],
+      provider: { data_collection: 'deny', require_parameters: true },
+      response_format: { type: 'json_object' },
+    });
+    expect(calls[1].body).not.toHaveProperty('plugins');
+    expect(calls[1].body).not.toHaveProperty('reasoning');
+  });
+
+  it('does not retry a non-capacity provider error payload', async () => {
+    const manifest = require(path.join(rootRepoDir, 'src/config/openrouter-review-policy.json'));
+    let calls = 0;
+    const fetchImplementation = async () => {
+      calls += 1;
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({ error: { code: 'invalid_request', message: 'openai/gpt-5.6-luna rejected this unsupported request shape' } }),
+        };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      model: 'openrouter/auto',
+      openRouterPolicy: manifest,
+      fetchImplementation,
+    });
+
+    expect(calls).toBe(1);
+    expect(res.decision).toBe('ERROR');
+    expect(res.failureClass).toBe('provider_error');
+    expect(res.errorCode).toBe('invalid_request');
+    expect(res.recoveryAction).toBeNull();
+  });
+
+  it('honors a bounded Retry-After on a transient OpenRouter HTTP 429', async () => {
+    const calls: any[] = [];
+    const sleeps: number[] = [];
+    const fetchImplementation = async (_url: string, init: any) => {
+      calls.push(JSON.parse(init.body));
+      if (calls.length === 1) {
+        return {
+          ok: false,
+          status: 429,
+          headers: new Headers({ 'retry-after': '30' }),
+          text: async () => 'rate limited',
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [] }) } }] }),
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      model: 'openrouter/auto',
+      fetchImplementation,
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+    });
+
+    expect(res.decision).toBe('APPROVE');
+    expect(res.attemptCount).toBe(2);
+    expect(res.retryReasons).toEqual(['http_429']);
+    expect(res.recoveryAction).toBe('bounded_retry');
+    expect(sleeps).toEqual([5_000]);
   });
 
   it('returns structured findings parsed from the model response', async () => {
@@ -765,7 +890,7 @@ describe('reviewWithModel', () => {
   it('surfaces an error instead of throwing when the endpoint rejects the request', async () => {
     const { impl } = stubFetch('', { ok: false, status: 429 });
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
-      apiKey: 'k', fetchImpl: impl,
+      apiKey: 'k', baseUrl: 'https://llm.test/v1', fetchImpl: impl,
     });
     expect(res.findings).toEqual([]);
     expect(res.error).toContain('429');

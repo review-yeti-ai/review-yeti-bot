@@ -301,7 +301,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     expect(result).toEqual({ success: true, postedViaGh: true });
     expect(commands[0]).toMatchObject({
       executable: 'gh',
-      args: ['api', 'repos/calltelemetry/ct-review-bot/issues/42/comments?per_page=100', '--paginate', '--jq', '.[].body'],
+      args: ['api', 'repos/calltelemetry/ct-review-bot/issues/42/comments?per_page=100', '--paginate', '--jq', '.[] | [.id, .body] | @tsv'],
     });
     expect(commands[1]).toMatchObject({
       executable: 'gh',
@@ -332,6 +332,41 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
 
     expect(result).toMatchObject({ success: true, postedViaGh: true, deduplicated: true });
     expect(commands).toHaveLength(1);
+  });
+
+  it('updates the existing exact-head action comment on a later terminal rerun', () => {
+    const commands: string[][] = [];
+    const commandRunner = (_executable: string, args: string[]) => {
+      commands.push(args);
+      if (args[0] === 'api' && args[1].includes('/comments?')) {
+        return {
+          status: 0,
+          stdout: '123\told BLOCK body <!-- ct-review-bot:v1:calltelemetry/ct-review-bot#42:exact-head:action -->',
+          stderr: '',
+        };
+      }
+      if (args[0] === 'api' && args[1].endsWith('/comments/123')) {
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      throw new Error('unexpected publish command');
+    };
+
+    const result = pipeline.postOrOutputComment('new SHIP body', {
+      prNumber: '42',
+      repo: 'calltelemetry/ct-review-bot',
+      headSha: 'exact-head',
+    }, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: true, updated: true });
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toEqual([
+      'api',
+      'repos/calltelemetry/ct-review-bot/issues/comments/123',
+      '--method',
+      'PATCH',
+      '--field',
+      expect.stringContaining('body=new SHIP body'),
+    ]);
   });
 
   it('fails closed when gh cannot publish a PR comment', () => {
@@ -456,5 +491,9 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
       expect(source).toContain('CT_REVIEW_OPENROUTER_API_KEY');
       expect(source).not.toContain('secrets.OPENROUTER_API_KEY');
     });
+  });
+
+  it('retains the redacted provider telemetry receipt as a workflow artifact', () => {
+    expect(workflow).toContain('${{ steps.review.outputs.provider-telemetry-path }}');
   });
 });
