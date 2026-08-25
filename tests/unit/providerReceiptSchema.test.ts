@@ -142,6 +142,11 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         latencyMs: 37,
         retryReasons: ['transient_socket', 'transient_socket', 'not-allowed'],
         failureClass: null,
+        responseStatus: 200,
+        errorCode: 'provider_unavailable',
+        generationIdDigest: 'a'.repeat(64),
+        routerAttempt: 1,
+        recoveryAction: 'bounded_retry',
         apiKey: SECRET_VALUES[0],
         prompt: SECRET_VALUES[2],
       },
@@ -178,6 +183,11 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         latencyMs: 37,
         retryReasons: ['transient_socket'],
         failureClass: null,
+        responseStatus: 200,
+        errorCode: 'provider_unavailable',
+        generationIdDigest: 'a'.repeat(64),
+        routerAttempt: 1,
+        recoveryAction: 'bounded_retry',
       },
       {
         personaId: 'performance',
@@ -193,6 +203,11 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         latencyMs: null,
         retryReasons: [],
         failureClass: null,
+        responseStatus: null,
+        errorCode: null,
+        generationIdDigest: null,
+        routerAttempt: null,
+        recoveryAction: null,
       },
     ]);
 
@@ -242,6 +257,11 @@ describe('Rank 3D provider telemetry receipt schema', () => {
       latencyMs: -1,
       retryReasons: ['provider_error', 'secret-reason', 'malformed_output', 'provider_error'],
       failureClass: 'not-a-class',
+      responseStatus: 700,
+      errorCode: 'not a valid code',
+      generationIdDigest: 'b'.repeat(64),
+      routerAttempt: 'not-a-number',
+      recoveryAction: 'not-a-recovery',
     }], EXACT_HEAD);
 
     expect(receipt.lanes[0]).toMatchObject({
@@ -257,6 +277,11 @@ describe('Rank 3D provider telemetry receipt schema', () => {
       latencyMs: null,
       retryReasons: ['provider_error', 'malformed_output'],
       failureClass: null,
+      responseStatus: null,
+      errorCode: null,
+      generationIdDigest: 'b'.repeat(64),
+      routerAttempt: null,
+      recoveryAction: null,
     });
     expect(JSON.stringify(receipt)).not.toContain('workflow-injection');
     expect(JSON.stringify(receipt)).not.toContain('p'.repeat(201));
