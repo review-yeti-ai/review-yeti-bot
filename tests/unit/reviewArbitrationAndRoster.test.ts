@@ -119,4 +119,14 @@ describe('Built-in charters are written as reviewer instructions', () => {
       expect(p.charter, `persona ${p.id}`).not.toContain('Kubernetes');
     }
   });
+
+  it('requires causal evidence before the testing reviewer reports a defect', () => {
+    const testing = PERSONA_CHARTERS.find((persona) => persona.id === 'testing');
+    expect(testing?.charter).toContain('Scope:');
+    expect(testing?.charter).toContain('Counterfactual:');
+    expect(testing?.charter).toContain('Isolation:');
+    expect(testing?.charter).toContain('Semantics:');
+    expect(testing?.charter).toContain('Branch completeness:');
+    expect(testing?.charter).toContain('If that causal chain cannot be shown from the diff, return no finding.');
+  });
 });
