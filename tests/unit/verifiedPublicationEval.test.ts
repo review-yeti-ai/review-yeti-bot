@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   buildModelOptions,
@@ -26,6 +28,15 @@ const cleanFixture = {
   mustMatch: [],
   files: [{ path: 'src/app.js', patch: '@@ -1,2 +1,2 @@\n-a\n+b' }],
 };
+
+const evaluationMatrix = JSON.parse(fs.readFileSync(
+  path.resolve(process.cwd(), 'eval-baselines/verified-publication-fixtures/evaluation-matrix.json'),
+  'utf8',
+));
+const excludedDiagnostics = JSON.parse(fs.readFileSync(
+  path.resolve(process.cwd(), 'eval-baselines/verified-publication-fixtures/excluded-diagnostics.json'),
+  'utf8',
+));
 
 function matchingFinding() {
   return {
@@ -73,6 +84,63 @@ const confirmFields = {
 };
 
 describe('grading mirror', () => {
+  it('keeps active qualification fixtures unique, gradeable, and separate from excluded diagnostics', () => {
+    const ids = evaluationMatrix.fixtures.map((entry: { id: string }) => entry.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(excludedDiagnostics.excludedFromQualification).toBe(true);
+    for (const fixtureEntry of evaluationMatrix.fixtures) {
+      expect(['defect', 'clean']).toContain(fixtureEntry.category);
+      if (fixtureEntry.category === 'defect') {
+        expect(fixtureEntry.expectedPaths.length).toBeGreaterThan(0);
+        expect(fixtureEntry.mustMatch.length).toBeGreaterThan(0);
+      } else {
+        expect(fixtureEntry.expectedPaths).toEqual([]);
+        expect(fixtureEntry.mustMatch).toEqual([]);
+      }
+    }
+    for (const excluded of excludedDiagnostics.fixtures) {
+      expect(ids).not.toContain(excluded.id);
+    }
+  });
+
+  it('pairs every metamorphic group with one defect and one clean control', () => {
+    const groups = new Map<string, string[]>();
+    for (const fixtureEntry of evaluationMatrix.fixtures) {
+      if (!fixtureEntry.metamorphicGroup) continue;
+      const categories = groups.get(fixtureEntry.metamorphicGroup) || [];
+      categories.push(fixtureEntry.category);
+      groups.set(fixtureEntry.metamorphicGroup, categories);
+    }
+    expect(groups.size).toBeGreaterThanOrEqual(3);
+    for (const categories of groups.values()) {
+      expect(categories.sort()).toEqual(['clean', 'defect']);
+    }
+  });
+
+  it('makes the clean rate-limiter cases prove their own call counts', () => {
+    const fixtureEntry = evaluationMatrix.fixtures.find(
+      (entry: { id: string }) => entry.id === 'function-scoped-fixture-avoids-shared-state',
+    );
+    const patchText = fixtureEntry.files[0].patch;
+    expect(patchText).toContain("it('allows the second call for the same key'");
+    expect(patchText).toContain("expect(limiter.allow('key')).toBe(true);\n+    expect(limiter.allow('key')).toBe(true);");
+    expect(patchText).toContain("expect(limiter.allow('key')).toBe(false);");
+  });
+
+  it('keeps holdouts cross-language and out of the excluded diagnostic set', () => {
+    const holdouts = evaluationMatrix.fixtures.filter(
+      (entry: { evaluationRole?: string }) => entry.evaluationRole === 'holdout',
+    );
+    expect(holdouts.map((entry: { id: string }) => entry.id)).toEqual([
+      'elixir-second-error-cause-untested',
+      'elixir-both-error-causes-covered',
+      'java-fixed-sleep-for-asynchronous-state',
+      'java-condition-wait-for-asynchronous-state',
+    ]);
+    expect(holdouts.some((entry: { files: Array<{ path: string }> }) => entry.files.some((file) => file.path.endsWith('.exs')))).toBe(true);
+    expect(holdouts.some((entry: { files: Array<{ path: string }> }) => entry.files.some((file) => file.path.endsWith('.java')))).toBe(true);
+  });
+
   it('preserves the env-resolved transport handoff for live qualification calls', () => {
     const previousTransports = process.env.REVIEW_YETI_TRANSPORTS;
     const previousOllamaKey = process.env.OLLAMA_PR_REVIEW_API_KEY;
