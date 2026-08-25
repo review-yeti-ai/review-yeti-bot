@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildModelOptions,
   captureLaneTelemetry,
   findingMatchesFixture,
   gradeFindings,
@@ -72,6 +73,36 @@ const confirmFields = {
 };
 
 describe('grading mirror', () => {
+  it('preserves the env-resolved transport handoff for live qualification calls', () => {
+    const previousTransports = process.env.REVIEW_YETI_TRANSPORTS;
+    const previousOllamaKey = process.env.OLLAMA_PR_REVIEW_API_KEY;
+    process.env.REVIEW_YETI_TRANSPORTS = JSON.stringify([{
+      name: 'ollama',
+      base_url: 'https://ollama.test/v1',
+      api_key_env: 'OLLAMA_PR_REVIEW_API_KEY',
+      model: 'deepseek-v4-flash:cloud',
+      stream: true,
+      timeout_ms: 90000,
+    }]);
+    process.env.OLLAMA_PR_REVIEW_API_KEY = 'qualification-secret';
+    try {
+      const options = buildModelOptions(['node', 'evaluate-verified-publication.mjs']);
+      expect(options.transports).toHaveLength(1);
+      expect(options.transports[0]).toMatchObject({
+        name: 'ollama',
+        baseUrl: 'https://ollama.test/v1',
+        model: 'deepseek-v4-flash:cloud',
+        apiKey: 'qualification-secret',
+        stream: true,
+      });
+    } finally {
+      if (previousTransports === undefined) delete process.env.REVIEW_YETI_TRANSPORTS;
+      else process.env.REVIEW_YETI_TRANSPORTS = previousTransports;
+      if (previousOllamaKey === undefined) delete process.env.OLLAMA_PR_REVIEW_API_KEY;
+      else process.env.OLLAMA_PR_REVIEW_API_KEY = previousOllamaKey;
+    }
+  });
+
   it('retains only bounded lane telemetry and rejects prototype labels', () => {
     expect(captureLaneTelemetry({
       provider: 'Ollama',
