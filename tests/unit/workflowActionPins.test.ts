@@ -9,6 +9,10 @@ const requiredPins = new Map([
   ['actions/setup-node', 'a0853c24544627f65ddf259abe73b1d18a591444'],
   ['actions/cache', 'caa296126883cff596d87d8935842f9db880ef25'],
   ['actions/upload-artifact', 'b7c566a772e6b6bfb58ed0dc250532a479d7789f'],
+  ['docker/setup-buildx-action', '37fe631027851001ddb9b187196cc803df7f5f0e'],
+  ['docker/build-push-action', '53b7df96c91f9c12dcc8a07bcb9ccacbed38856'],
+  ['digitalocean/action-doctl', '3cb3953159719656269e044e0e24ca16dd2a690f'],
+  ['googleapis/release-please-action', '45996ed1f6d02564a971a2fa1b5860e934307cf7'],
 ]);
 
 describe('workflow action runtime pins', () => {
@@ -21,7 +25,7 @@ describe('workflow action runtime pins', () => {
     for (const workflowFile of workflowFiles) {
       const workflow = fs.readFileSync(path.join(workflowDirectory, workflowFile), 'utf8');
       const references = workflow.matchAll(
-        /uses:\s*['"]?(actions\/(?:checkout|setup-node|cache|upload-artifact))@([^'"\s#]+)/gu,
+        /uses:\s*['"]?((?:actions\/(?:checkout|setup-node|cache|upload-artifact)|docker\/(?:setup-buildx-action|build-push-action)|digitalocean\/action-doctl|googleapis\/release-please-action))@([^'"\s#]+)/gu,
       );
 
       for (const [, action, reference] of references) {

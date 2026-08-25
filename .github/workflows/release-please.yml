@@ -19,8 +19,9 @@ jobs:
     name: Open or update release PR
     runs-on: ubuntu-latest
     steps:
-      # v4.4.1; pin the action to an immutable commit instead of a moving tag.
-      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
+      # v5.0.0 uses the Node 24 action runtime; pin the action to an immutable
+      # commit instead of a moving tag.
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           # The organization currently disables PR creation by GITHUB_TOKEN.
           # Keep the built-in token as a fallback for repositories where that

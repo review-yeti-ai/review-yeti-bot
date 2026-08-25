@@ -115,7 +115,7 @@ describe('Pi runtime packaging contract', () => {
   it('keeps legacy as the default and wires the Pi install branch to the Action path', () => {
     const action: any = yaml.load(fs.readFileSync(actionPath, 'utf8'));
     const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
-    expect(manifest.engines.node).toBe('>=20.0.0');
+    expect(manifest.engines.node).toBe('>=24.0.0');
     expect(action.inputs['review-engine'].default).toBe('legacy');
     expect(action.inputs['review-engine'].description).toMatch(/Node 24/i);
     const raw = fs.readFileSync(actionPath, 'utf8');
