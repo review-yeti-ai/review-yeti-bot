@@ -180,6 +180,14 @@ describe('grading mirror', () => {
       errorCode: 'upstream_error',
       attemptCount: 2,
       retryReasons: ['http_5xx', 'not a label', '__proto__'],
+      outputShape: 'direct_json_object',
+      finishReason: 'length',
+      responseMode: 'stream',
+      findingsSource: 'reasoning',
+      contentPresent: false,
+      reasoningPresent: true,
+      contentSizeBucket: 'empty',
+      reasoningSizeBucket: 'tiny',
       error: 'raw provider response must not be copied',
     })).toEqual({
       provider: 'ollama',
@@ -189,7 +197,28 @@ describe('grading mirror', () => {
       errorCode: 'upstream_error',
       attemptCount: 2,
       retryReasons: ['http_5xx'],
+      outputShape: 'direct_json_object',
+      finishReason: 'length',
+      responseMode: 'stream',
+      findingsSource: 'reasoning',
+      contentPresent: false,
+      reasoningPresent: true,
+      contentSizeBucket: 'empty',
+      reasoningSizeBucket: 'tiny',
     });
+  });
+
+  it('drops arbitrary values at the output telemetry boundary', () => {
+    expect(captureLaneTelemetry({
+      outputShape: 'secret-response-shape',
+      finishReason: 'secret-finish-detail',
+      responseMode: 'scheduled-canary',
+      findingsSource: '__proto__',
+      contentPresent: 'true',
+      reasoningPresent: 1,
+      contentSizeBucket: '12345',
+      reasoningSizeBucket: 'raw-length-98765',
+    })).toEqual({});
   });
 
   it('matches the harness contract: anchored path AND every concept group', () => {
