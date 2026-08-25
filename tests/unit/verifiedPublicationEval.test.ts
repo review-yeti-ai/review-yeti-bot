@@ -212,7 +212,7 @@ describe('grading mirror', () => {
     expect(captureLaneTelemetry({
       outputShape: 'secret-response-shape',
       finishReason: 'secret-finish-detail',
-      responseMode: 'scheduled-canary',
+      responseMode: 'unbounded-mode',
       findingsSource: '__proto__',
       contentPresent: 'true',
       reasoningPresent: 1,

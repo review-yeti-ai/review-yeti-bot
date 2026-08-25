@@ -1461,6 +1461,32 @@ function resolveTransportTemperature(transport = {}, baseUrl = '') {
 }
 
 /**
+ * Produce a stable, provider-supported seed for Ollama without coupling paired
+ * qualification arms to their synthetic PR labels. The seed contains no source
+ * text: source paths and patches are reduced to a digest before the final hash.
+ */
+function deriveOllamaRequestSeed(transport = {}, baseUrl = '', persona = {}, diffFiles = [], prContext = {}) {
+  if (!isOllamaTransport(transport, baseUrl)) return null;
+  const diffDigest = createHash('sha256');
+  for (const file of Array.isArray(diffFiles) ? diffFiles : []) {
+    diffDigest.update(String(file?.path || ''), 'utf-8');
+    diffDigest.update('\0', 'utf-8');
+    diffDigest.update(String(file?.patch || ''), 'utf-8');
+    diffDigest.update('\0', 'utf-8');
+  }
+  const seedMaterial = JSON.stringify([
+    'review-yeti-ollama-seed-v1',
+    String(prContext?.repo || ''),
+    String(prContext?.baseSha || ''),
+    String(prContext?.headSha || ''),
+    String(persona?.id || ''),
+    String(transport?.model || ''),
+    diffDigest.digest('hex'),
+  ]);
+  return createHash('sha256').update(seedMaterial, 'utf-8').digest().readUInt32BE(0) & 0x7fffffff;
+}
+
+/**
  * Determines whether a persona evaluation result ran on an unmetered or subscription transport.
  *
  * @param {object} res Persona result object
@@ -2003,6 +2029,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         ),
         response_format: { type: 'json_object' },
       };
+      const ollamaSeed = deriveOllamaRequestSeed(transport, transportBaseUrl, persona, diffFiles, prContext);
+      if (ollamaSeed !== null) requestBody.seed = ollamaSeed;
       if (streamEnabled) requestBody.stream = true;
 
       const configuredReasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
@@ -4269,6 +4297,7 @@ module.exports = {
   isDirectReasoningTransport,
   isOllamaTransport,
   resolveTransportTemperature,
+  deriveOllamaRequestSeed,
   RunTransportCircuitBreaker,
   globalRunCircuitBreaker,
   isSubscriptionLane,
