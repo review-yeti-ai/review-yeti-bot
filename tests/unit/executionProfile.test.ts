@@ -14,11 +14,12 @@ const {
 describe('canonical execution-profile contract', () => {
   it('loads exactly the three pre-approved profiles with stable digests', () => {
     expect(PROFILE_SCHEMA_VERSION).toBe(1);
-    expect([...EXECUTION_PROFILES.keys()].sort()).toEqual([
+    expect(Object.keys(EXECUTION_PROFILES).sort()).toEqual([
       'fireworks-breakglass',
       'ollama-evaluation',
       'openrouter-primary',
     ]);
+    expect(Object.isFrozen(EXECUTION_PROFILES)).toBe(true);
 
     const openrouter = resolveExecutionProfile();
     expect(openrouter).toMatchObject({
@@ -52,7 +53,9 @@ describe('canonical execution-profile contract', () => {
   });
 
   it('rejects arbitrary JSON and unknown profile identifiers', () => {
-    expect(() => resolveExecutionProfile('{"id":"fireworks-breakglass"}')).toThrow(/allowlisted|JSON/i);
+    expect(() => resolveExecutionProfile('{"id":"fireworks-breakglass"}')).toThrow(/one of|allowlisted|JSON/i);
+    expect(() => resolveExecutionProfile('["fireworks-breakglass"]')).toThrow(/one of|allowlisted|JSON/i);
+    expect(() => resolveExecutionProfile('  ')).toThrow(/allowlisted|JSON/i);
     expect(() => resolveExecutionProfile('unknown-profile')).toThrow(/one of|defined/i);
   });
 

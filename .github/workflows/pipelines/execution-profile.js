@@ -132,24 +132,24 @@ function loadExecutionProfileManifest() {
   if (manifest.schema_version !== PROFILE_SCHEMA_VERSION) throw new Error(`execution profile schema_version must be ${PROFILE_SCHEMA_VERSION}`);
   if (!Array.isArray(manifest.profiles) || manifest.profiles.length !== PROFILE_IDS.size) throw new Error(`execution profile manifest must contain exactly ${PROFILE_IDS.size} profiles`);
 
-  const profiles = new Map();
+  const profiles = {};
   for (const rawProfile of manifest.profiles) {
     const normalized = normalizeProfile(rawProfile);
-    if (profiles.has(normalized.id)) throw new Error(`execution profile ${normalized.id} is duplicated`);
-    profiles.set(normalized.id, Object.freeze({ ...normalized, profile_digest: profileFingerprint(normalized) }));
+    if (Object.prototype.hasOwnProperty.call(profiles, normalized.id)) throw new Error(`execution profile ${normalized.id} is duplicated`);
+    profiles[normalized.id] = Object.freeze({ ...normalized, profile_digest: profileFingerprint(normalized) });
   }
-  for (const id of PROFILE_IDS) if (!profiles.has(id)) throw new Error(`execution profile manifest is missing ${id}`);
+  for (const id of PROFILE_IDS) if (!Object.prototype.hasOwnProperty.call(profiles, id)) throw new Error(`execution profile manifest is missing ${id}`);
   return Object.freeze(profiles);
 }
 
 const EXECUTION_PROFILES = loadExecutionProfileManifest();
 
 function resolveExecutionProfile(profileId) {
-  if (profileId === undefined || profileId === null || profileId === '') return EXECUTION_PROFILES.get('openrouter-primary');
-  if (typeof profileId !== 'string' || profileId.trim() === '' || profileId.trim().startsWith('{') || profileId.trim().startsWith('[')) {
+  if (profileId === undefined || profileId === null || profileId === '') return EXECUTION_PROFILES['openrouter-primary'];
+  if (typeof profileId !== 'string' || profileId.trim() === '') {
     throw new Error('execution profile selection must be an allowlisted profile identifier, not JSON');
   }
-  return EXECUTION_PROFILES.get(normalizeProfileId(profileId));
+  return EXECUTION_PROFILES[normalizeProfileId(profileId)];
 }
 
 module.exports = {
