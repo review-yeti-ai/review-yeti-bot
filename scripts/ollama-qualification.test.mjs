@@ -151,6 +151,46 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
   assert.equal(JSON.stringify(receipt).includes('findingsDetail'), false);
 });
 
+test('receipt eligibility fails closed on candidate quality regressions', () => {
+  const makeArm = (overrides = {}) => ({
+    profile: CANDIDATE_PROFILE,
+    exit_code: 0,
+    status: 'completed',
+    rows: 9,
+    errored_runs: 0,
+    defect_runs: 5,
+    detected_defect_runs: 4,
+    clean_runs: 4,
+    false_positive_runs: 0,
+    failure_classes: {},
+    failure_classes_by_provider: {},
+    response_statuses: {},
+    error_codes: {},
+    ...overrides,
+  });
+  const base = makeArm({ profile: BASELINE_PROFILE, detected_defect_runs: 5 });
+  const clean = buildQualificationReceipt({ input, policy, baseline: base, candidate: makeArm(), runId: 'quality-pass' });
+  assert.equal(clean.candidate_eligible_for_next_step, true);
+
+  const falsePositive = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: base,
+    candidate: makeArm({ false_positive_runs: 1 }),
+    runId: 'quality-false-positive',
+  });
+  assert.equal(falsePositive.candidate_eligible_for_next_step, false);
+
+  const noDetection = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: base,
+    candidate: makeArm({ detected_defect_runs: 0 }),
+    runId: 'quality-no-detection',
+  });
+  assert.equal(noDetection.candidate_eligible_for_next_step, false);
+});
+
 test('evaluation summary reports only bounded aggregate evidence', () => {
   const summary = summarizeEvaluation({
     rows: [

@@ -232,6 +232,9 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
   const complete = baseline.status === 'completed' && candidate.status === 'completed'
     && baseline.errored_runs === 0 && candidate.errored_runs === 0;
+  const candidateQualityEligible = complete
+    && candidate.detected_defect_runs > 0
+    && candidate.false_positive_runs === 0;
   return {
     schema: QUALIFICATION_SCHEMA,
     mode: 'one-time-parallel-qualification',
@@ -252,7 +255,7 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
     publication: 'none',
     provider_mutation: 'none',
     promotion_gate: 'manual_review_required',
-    candidate_eligible_for_next_step: complete,
+    candidate_eligible_for_next_step: candidateQualityEligible,
     arms: { baseline, candidate },
   };
 }
