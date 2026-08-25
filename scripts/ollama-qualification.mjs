@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
-export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v2';
+export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v3';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
 export const CANDIDATE_PROFILE = 'ollama-evaluation';
 export const BASELINE_PROFILE = 'current-production';
@@ -51,6 +51,11 @@ const PROFILE_KEY_NAMES = Object.freeze([
   'OPENROUTER_PR_REVIEW_API_KEY',
   'OPENROUTER_API_KEY',
 ]);
+const OUTPUT_SHAPES = new Set(['direct_json_object', 'direct_json_array', 'fenced_json_object', 'fenced_json_array', 'embedded_json_object', 'valid_json_wrong_shape', 'truncated_json', 'no_json', 'empty_content']);
+const FINISH_REASONS = new Set(['stop', 'length', 'content_filter', 'tool_calls', 'other', 'missing']);
+const RESPONSE_MODES = new Set(['stream', 'buffered']);
+const FINDINGS_SOURCES = new Set(['content', 'reasoning', 'none']);
+const RESPONSE_SIZE_BUCKETS = new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']);
 
 function positiveInteger(value, label) {
   const parsed = Number(value);
@@ -199,6 +204,14 @@ function safeRetryReasons(value) {
   return value.map((reason) => safeDiagnosticLabel(reason, '')).filter(Boolean).slice(0, 8);
 }
 
+function safeDiagnosticEnum(value, allowedValues) {
+  return typeof value === 'string' && allowedValues.has(value) ? value : null;
+}
+
+function incrementCount(target, value) {
+  if (value) target[value] = (target[value] || 0) + 1;
+}
+
 /**
  * Preserve enough per-fixture evidence to explain quality variance without retaining findings,
  * prompts, response bodies, or provider exception text.  Fixture ids and transport labels are
@@ -230,6 +243,20 @@ export function summarizeFixtureOutcomes(rows = []) {
     if (attemptCount !== null) result.attempt_count = attemptCount;
     const retryReasons = safeRetryReasons(row.retryReasons);
     if (retryReasons.length > 0) result.retry_reasons = retryReasons;
+    const outputShape = safeDiagnosticEnum(row.outputShape, OUTPUT_SHAPES);
+    if (outputShape) result.output_shape = outputShape;
+    const finishReason = safeDiagnosticEnum(row.finishReason, FINISH_REASONS);
+    if (finishReason) result.finish_reason = finishReason;
+    const responseMode = safeDiagnosticEnum(row.responseMode, RESPONSE_MODES);
+    if (responseMode) result.response_mode = responseMode;
+    const findingsSource = safeDiagnosticEnum(row.findingsSource, FINDINGS_SOURCES);
+    if (findingsSource) result.findings_source = findingsSource;
+    if (typeof row.contentPresent === 'boolean') result.content_present = row.contentPresent;
+    if (typeof row.reasoningPresent === 'boolean') result.reasoning_present = row.reasoningPresent;
+    const contentSizeBucket = safeDiagnosticEnum(row.contentSizeBucket, RESPONSE_SIZE_BUCKETS);
+    if (contentSizeBucket) result.content_size_bucket = contentSizeBucket;
+    const reasoningSizeBucket = safeDiagnosticEnum(row.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS);
+    if (reasoningSizeBucket) result.reasoning_size_bucket = reasoningSizeBucket;
     return result;
   });
 }
@@ -245,6 +272,20 @@ export function summarizeEvaluation(payload, exitCode) {
   const failureClassesByProvider = {};
   const responseStatuses = {};
   const errorCodes = {};
+  const outputShapes = {};
+  const finishReasons = {};
+  const responseModes = {};
+  const findingsSources = {};
+  const contentSizeBuckets = {};
+  const reasoningSizeBuckets = {};
+  for (const row of rows) {
+    incrementCount(outputShapes, safeDiagnosticEnum(row.outputShape, OUTPUT_SHAPES));
+    incrementCount(finishReasons, safeDiagnosticEnum(row.finishReason, FINISH_REASONS));
+    incrementCount(responseModes, safeDiagnosticEnum(row.responseMode, RESPONSE_MODES));
+    incrementCount(findingsSources, safeDiagnosticEnum(row.findingsSource, FINDINGS_SOURCES));
+    incrementCount(contentSizeBuckets, safeDiagnosticEnum(row.contentSizeBucket, RESPONSE_SIZE_BUCKETS));
+    incrementCount(reasoningSizeBuckets, safeDiagnosticEnum(row.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS));
+  }
   for (const row of rows.filter((entry) => entry.errored)) {
     const label = classifyFailure(row);
     failureClasses[label] = (failureClasses[label] || 0) + 1;
@@ -272,6 +313,12 @@ export function summarizeEvaluation(payload, exitCode) {
     failure_classes_by_provider: failureClassesByProvider,
     response_statuses: responseStatuses,
     error_codes: errorCodes,
+    output_shapes: outputShapes,
+    finish_reasons: finishReasons,
+    response_modes: responseModes,
+    findings_sources: findingsSources,
+    content_size_buckets: contentSizeBuckets,
+    reasoning_size_buckets: reasoningSizeBuckets,
     fixture_outcomes: summarizeFixtureOutcomes(rows),
     latency_ms_median: percentile(latencies, 0.5),
     latency_ms_p95: percentile(latencies, 0.95),
@@ -303,6 +350,27 @@ export function buildCandidateQualityGate(candidate = {}) {
     const expectedOutcome = expectedCategory === 'defect' ? 'detected' : 'clean';
     return expectedCategory !== undefined && entry?.category === expectedCategory && entry?.outcome === expectedOutcome;
   });
+  const outputTelemetryComplete = outcomes.every((entry) => (
+    OUTPUT_SHAPES.has(entry?.output_shape)
+    && FINISH_REASONS.has(entry?.finish_reason)
+    && RESPONSE_MODES.has(entry?.response_mode)
+    && FINDINGS_SOURCES.has(entry?.findings_source)
+    && typeof entry?.content_present === 'boolean'
+    && typeof entry?.reasoning_present === 'boolean'
+    && RESPONSE_SIZE_BUCKETS.has(entry?.content_size_bucket)
+    && RESPONSE_SIZE_BUCKETS.has(entry?.reasoning_size_bucket)
+  ));
+  const stableCandidateOutputs = outputTelemetryComplete && outcomes.every((entry) => {
+    const sourcePresent = entry.findings_source === 'content'
+      ? entry.content_present === true && entry.content_size_bucket !== 'empty'
+      : entry.findings_source === 'reasoning'
+        ? entry.reasoning_present === true && entry.reasoning_size_bucket !== 'empty'
+        : false;
+    return entry.output_shape === 'direct_json_object'
+      && entry.finish_reason === 'stop'
+      && entry.response_mode === 'stream'
+      && sourcePresent;
+  });
   const passed = candidate.rows === FIXTURE_IDS.length
     && candidate.defect_runs === EXPECTED_DEFECT_RUNS
     && candidate.detected_defect_runs === EXPECTED_DEFECT_RUNS
@@ -310,13 +378,19 @@ export function buildCandidateQualityGate(candidate = {}) {
     && candidate.false_positive_runs === 0
     && fixtureSetComplete
     && fixtureOutcomesComplete
-    && malformedOutputRecoveries === 0;
+    && malformedOutputRecoveries === 0
+    && stableCandidateOutputs;
   return {
     required_rows: FIXTURE_IDS.length,
     required_defect_detections: EXPECTED_DEFECT_RUNS,
     required_clean_false_positives: 0,
     required_malformed_output_recoveries: 0,
     fixture_set_complete: fixtureSetComplete,
+    output_telemetry_complete: outputTelemetryComplete,
+    required_output_shape: 'direct_json_object',
+    required_finish_reason: 'stop',
+    required_response_mode: 'stream',
+    stable_candidate_outputs: stableCandidateOutputs,
     observed_malformed_output_recoveries: malformedOutputRecoveries,
     passed,
   };

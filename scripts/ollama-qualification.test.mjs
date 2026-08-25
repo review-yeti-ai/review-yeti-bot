@@ -59,6 +59,14 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
       usage: { costUSD: 0 },
       attemptCount: malformedIds.has(fixtureId) ? 2 : 1,
       retryReasons: malformedIds.has(fixtureId) ? ['malformed_output'] : [],
+      outputShape: 'direct_json_object',
+      finishReason: 'stop',
+      responseMode: 'stream',
+      findingsSource: 'content',
+      contentPresent: true,
+      reasoningPresent: false,
+      contentSizeBucket: 'tiny',
+      reasoningSizeBucket: 'empty',
     };
   });
 }
@@ -154,6 +162,8 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
   assert.equal(receipt.promotion_gate, 'manual_review_required');
   assert.equal(receipt.baseline_quality_gate.passed, true);
   assert.equal(receipt.candidate_quality_gate.passed, true);
+  assert.equal(receipt.candidate_quality_gate.output_telemetry_complete, true);
+  assert.equal(receipt.candidate_quality_gate.stable_candidate_outputs, true);
   assert.equal(receipt.candidate_not_worse_on_defect_recall, true);
   assert.equal(receipt.candidate_eligible_for_next_step, true);
   assert.equal(JSON.stringify(receipt).includes('secret'), false);
@@ -202,6 +212,21 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
   });
   assert.equal(malformedRecovery.candidate_quality_gate.observed_malformed_output_recoveries, 1);
   assert.equal(malformedRecovery.candidate_eligible_for_next_step, false);
+
+  const wrappedOutput = makeArm(CANDIDATE_PROFILE);
+  wrappedOutput.fixture_outcomes[0] = { ...wrappedOutput.fixture_outcomes[0], output_shape: 'fenced_json_object' };
+  const wrappedReceipt = buildQualificationReceipt({ input, policy, baseline: base, candidate: wrappedOutput });
+  assert.equal(wrappedReceipt.candidate_quality_gate.output_telemetry_complete, true);
+  assert.equal(wrappedReceipt.candidate_quality_gate.stable_candidate_outputs, false);
+  assert.equal(wrappedReceipt.candidate_eligible_for_next_step, false);
+
+  const truncatedCompletion = makeArm(CANDIDATE_PROFILE);
+  truncatedCompletion.fixture_outcomes[0] = { ...truncatedCompletion.fixture_outcomes[0], finish_reason: 'length' };
+  assert.equal(buildCandidateQualityGate(truncatedCompletion).stable_candidate_outputs, false);
+
+  const missingOutputTelemetry = makeArm(CANDIDATE_PROFILE);
+  delete missingOutputTelemetry.fixture_outcomes[0].content_size_bucket;
+  assert.equal(buildCandidateQualityGate(missingOutputTelemetry).output_telemetry_complete, false);
 
   const baselineFalsePositive = buildQualificationReceipt({
     input,
@@ -274,6 +299,12 @@ test('evaluation summary reports only bounded aggregate evidence', () => {
     failure_classes_by_provider: {},
     response_statuses: {},
     error_codes: {},
+    output_shapes: {},
+    finish_reasons: {},
+    response_modes: {},
+    findings_sources: {},
+    content_size_buckets: {},
+    reasoning_size_buckets: {},
     fixture_outcomes: [
       { fixture_id: 'row-1', category: 'defect', outcome: 'detected', latency_ms: 100 },
       { fixture_id: 'row-2', category: 'clean', outcome: 'clean', latency_ms: 200 },
@@ -296,6 +327,14 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
       transport: 'ollama',
       attemptCount: 2,
       retryReasons: ['timeout', 'provider_error'],
+      outputShape: 'direct_json_object',
+      finishReason: 'stop',
+      responseMode: 'stream',
+      findingsSource: 'reasoning',
+      contentPresent: false,
+      reasoningPresent: true,
+      contentSizeBucket: 'empty',
+      reasoningSizeBucket: 'tiny',
       error: 'do not retain this response text',
     },
     {
@@ -325,6 +364,14 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
       transport: 'ollama',
       attempt_count: 2,
       retry_reasons: ['timeout', 'provider_error'],
+      output_shape: 'direct_json_object',
+      finish_reason: 'stop',
+      response_mode: 'stream',
+      findings_source: 'reasoning',
+      content_present: false,
+      reasoning_present: true,
+      content_size_bucket: 'empty',
+      reasoning_size_bucket: 'tiny',
     },
     {
       fixture_id: 'clean-rename-only',
@@ -342,6 +389,23 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
     },
   ]);
   assert.equal(JSON.stringify(outcomes).includes('response text'), false);
+});
+
+test('fixture output telemetry accepts only exact bounded enums and booleans', () => {
+  const [outcome] = summarizeFixtureOutcomes([{
+    fixtureId: 'clean-rename-only',
+    category: 'clean',
+    falsePositive: false,
+    outputShape: 'raw-secret-shape',
+    finishReason: 'raw-secret-finish',
+    responseMode: 'unbounded-mode',
+    findingsSource: '__proto__',
+    contentPresent: 'true',
+    reasoningPresent: 1,
+    contentSizeBucket: '12345',
+    reasoningSizeBucket: 'raw-length',
+  }]);
+  assert.deepEqual(outcome, { fixture_id: 'clean-rename-only', category: 'clean', outcome: 'clean' });
 });
 
 test('failure classification is coarse and never copies provider error text', () => {
