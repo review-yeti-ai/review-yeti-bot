@@ -1002,6 +1002,48 @@ function normalizeResponseProvider(provider) {
   return null;
 }
 
+const TELEMETRY_IDENTIFIER_MAX_LENGTH = 200;
+
+function normalizeTelemetryIdentifier(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > TELEMETRY_IDENTIFIER_MAX_LENGTH) return null;
+  if (/[\x00-\x1F\x7F]/.test(normalized)) return null;
+  // Provider/model identifiers are useful telemetry, but credential-shaped values are not.
+  if (/(?:^|[^a-z0-9])(?:bearer\s+|sk-(?:proj-)?|gh[ps]_|github_pat_|xox[baprs]-)[a-z0-9]/i.test(normalized)) return null;
+  return normalized;
+}
+
+function normalizeTelemetryProvider(value) {
+  const normalized = normalizeTelemetryIdentifier(value);
+  if (!normalized) return null;
+  const provider = normalized.toLowerCase().replace(/[_\s]+/g, '-');
+  if (/^openrouter(?:-.+)?$/.test(provider)) return 'openrouter';
+  if (/^(?:direct-)?fireworks(?:-.+)?$/.test(provider)) return 'fireworks';
+  if (/^ollama(?:-.+)?$/.test(provider)) return 'ollama';
+  if (/^anthropic(?:-.+)?$/.test(provider)) return 'anthropic';
+  if (/^(?:google|gemini)(?:-.+)?$/.test(provider)) return 'gemini';
+  if (/^openai(?:-.+)?$/.test(provider)) return 'openai';
+  if (provider === 'default') return 'default';
+  return null;
+}
+
+function hashTelemetryIdentifier(value) {
+  const normalized = normalizeTelemetryIdentifier(value);
+  return normalized ? createHash('sha256').update(normalized, 'utf-8').digest('hex') : null;
+}
+
+function safeReceiptPathToken(value) {
+  const token = String(value ?? 'unknown').trim();
+  return /^[A-Za-z0-9_-]{1,128}$/.test(token) ? token : 'unknown';
+}
+
+function isWithinDirectory(candidate, parent) {
+  const candidatePath = path.resolve(candidate);
+  const parentPath = path.resolve(parent);
+  return candidatePath === parentPath || candidatePath.startsWith(`${parentPath}${path.sep}`);
+}
+
 function resolveResponseModel(payload, fallbackModel) {
   return typeof payload?.model === 'string' && payload.model.trim()
     ? payload.model.trim()
@@ -3192,7 +3234,60 @@ function writeRunReport(arbitration, personaResults, prContext, outputDirectory 
   };
 }
 
-function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null) {
+function buildProviderTelemetryReceipt(personaResults, prContext) {
+  const lanes = (Array.isArray(personaResults) ? personaResults : []).map((result) => {
+    const reportedCost = normalizeCost(result.cost);
+    return {
+      personaId: normalizeTelemetryIdentifier(result.personaId) || '',
+      configuredTransport: normalizeTelemetryProvider(result.transport),
+      resolvedProvider: normalizeTelemetryProvider(result.provider),
+      modelDigest: hashTelemetryIdentifier(result.model),
+      inputTokens: normalizeTokenCount(result.inputTokens),
+      outputTokens: normalizeTokenCount(result.outputTokens),
+      reportedCost,
+      reportedCostCurrency: null,
+      costStatus: reportedCost === null ? 'unavailable' : 'reported',
+    };
+  });
+
+  return {
+    schemaVersion: 'review-provider-telemetry-v1',
+    repository: prContext.repo,
+    prNumber: Number(prContext.prNumber),
+    baseSha: prContext.baseSha,
+    headSha: prContext.headSha,
+    lanes,
+  };
+}
+
+function writeProviderTelemetryReceipt(personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP) {
+  const runnerTemp = String(process.env.RUNNER_TEMP || '').trim();
+  if (!outputDirectory || !runnerTemp || !isWithinDirectory(outputDirectory, runnerTemp)) return null;
+
+  const receipt = buildProviderTelemetryReceipt(personaResults, prContext);
+  const receiptPath = path.join(
+    outputDirectory,
+    `review-yeti-provider-telemetry-${safeReceiptPathToken(prContext.prNumber)}-${safeReceiptPathToken(prContext.headSha).slice(0, 12)}.json`,
+  );
+  const receiptJson = `${JSON.stringify(receipt, null, 2)}\n`;
+  fs.writeFileSync(receiptPath, receiptJson, 'utf-8');
+
+  return {
+    path: receiptPath,
+    digest: createHash('sha256').update(receiptJson, 'utf-8').digest('hex'),
+  };
+}
+
+function writeProviderTelemetryReceiptBestEffort(personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP) {
+  try {
+    return writeProviderTelemetryReceipt(personaResults, prContext, outputDirectory);
+  } catch (error) {
+    console.warn(`[Telemetry] Could not write provider telemetry receipt: ${error.message}`);
+    return null;
+  }
+}
+
+function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null, providerTelemetry = null) {
   if (!outputPath) return;
 
   const m = arbitration.metrics || {};
@@ -3211,6 +3306,8 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     `dispatch-reflection-status=${runReport ? 'complete' : ''}`,
     `provider-receipt-digest=${runReport?.digest || ''}`,
     `run-report-path=${runReport?.path || ''}`,
+    `provider-telemetry-digest=${providerTelemetry?.digest || ''}`,
+    `provider-telemetry-path=${providerTelemetry?.path || ''}`,
     `rationale=${rationale}`,
     `findings-count=${m.totalFindings || 0}`,
     `total-findings=${m.totalFindings || 0}`,
@@ -3545,7 +3642,8 @@ async function main() {
   }
 
   const runReport = writeRunReport(arbitration, personaResults, prContext);
-  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport);
+  const providerTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
+  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry);
   emitWorkflowAnnotations(personaResults);
   writeStepSummary(arbitration, personaResults, prContext, coverage);
 
@@ -3620,6 +3718,9 @@ module.exports = {
   writeStepOutputs,
   buildReviewRunReport,
   writeRunReport,
+  buildProviderTelemetryReceipt,
+  writeProviderTelemetryReceipt,
+  writeProviderTelemetryReceiptBestEffort,
   initMcpFleet,
   evaluatePersonaLane,
   computeArbitrationQuorum,
