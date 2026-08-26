@@ -121,6 +121,7 @@ function successfulStream(model: string) {
 async function capturePanelRequests() {
   const runtime = resolveFixtureRuntime();
   const captured: Record<string, any> = {};
+  const contracts: Record<string, any> = {};
 
   for (const transport of runtime.modelConfig.transports) {
     pipeline.globalRunCircuitBreaker.reset();
@@ -155,9 +156,10 @@ async function capturePanelRequests() {
       },
     );
     expect(result).toMatchObject({ decision: 'APPROVE', findings: [], transport: transport.name });
+    contracts[transport.name] = result.outputContract;
   }
 
-  return { runtime, captured };
+  return { runtime, captured, contracts };
 }
 
 function leafPaths(value: any, prefix = ''): string[] {
@@ -221,7 +223,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
   });
 
   it('snapshots the final credential-free request shape for every configured transport', async () => {
-    const { captured } = await capturePanelRequests();
+    const { captured, contracts } = await capturePanelRequests();
     const common = (model: string, maxTokens: number, temperature = 0.1) => ({
       model,
       messages: [
@@ -278,6 +280,26 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
           }],
           provider: { data_collection: 'deny' },
         },
+      },
+    });
+    expect(contracts).toEqual({
+      fireworks: {
+        policyDeclared: 'json_object',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
+      },
+      ollama: {
+        policyDeclared: 'unknown',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
+      },
+      'openrouter-fallback': {
+        policyDeclared: 'json_object',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
       },
     });
   });

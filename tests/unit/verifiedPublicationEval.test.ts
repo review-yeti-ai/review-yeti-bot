@@ -188,6 +188,12 @@ describe('grading mirror', () => {
       reasoningPresent: true,
       contentSizeBucket: 'empty',
       reasoningSizeBucket: 'tiny',
+      outputContract: {
+        policyDeclared: 'json_object',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
+      },
       responseAttempts: [{
         attempt: 1,
         outcome: 'malformed_output',
@@ -207,6 +213,12 @@ describe('grading mirror', () => {
         reasoningPresent: true,
         contentSizeBucket: 'empty',
         reasoningSizeBucket: 'small',
+        outputContract: {
+          policyDeclared: 'json_object',
+          requestObserved: 'json_object',
+          providerSupported: 'unreported',
+          terminalParsed: false,
+        },
         rawResponse: 'must not survive',
       }, {
         attempt: 2,
@@ -230,6 +242,12 @@ describe('grading mirror', () => {
       reasoningPresent: true,
       contentSizeBucket: 'empty',
       reasoningSizeBucket: 'tiny',
+      outputContract: {
+        policyDeclared: 'json_object',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
+      },
       responseAttempts: [{
         attempt: 1,
         outcome: 'malformed_output',
@@ -249,6 +267,12 @@ describe('grading mirror', () => {
         reasoningPresent: true,
         contentSizeBucket: 'empty',
         reasoningSizeBucket: 'small',
+        outputContract: {
+          policyDeclared: 'json_object',
+          requestObserved: 'json_object',
+          providerSupported: 'unreported',
+          terminalParsed: false,
+        },
       }],
     });
   });
@@ -263,7 +287,20 @@ describe('grading mirror', () => {
       reasoningPresent: 1,
       contentSizeBucket: '12345',
       reasoningSizeBucket: 'raw-length-98765',
-    })).toEqual({});
+      outputContract: {
+        policyDeclared: 'secret',
+        requestObserved: 'canary',
+        providerSupported: 'raw',
+        terminalParsed: 1,
+      },
+    })).toEqual({
+      outputContract: {
+        policyDeclared: 'unknown',
+        requestObserved: 'unknown',
+        providerSupported: 'unreported',
+        terminalParsed: false,
+      },
+    });
   });
 
   it('matches the harness contract: anchored path AND every concept group', () => {
