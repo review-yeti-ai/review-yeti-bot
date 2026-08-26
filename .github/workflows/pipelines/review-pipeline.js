@@ -1344,6 +1344,7 @@ function normalizeTelemetryProvider(value) {
   if (!normalized) return null;
   const provider = normalized.toLowerCase().replace(/[_\s]+/g, '-');
   if (/^openrouter(?:-.+)?$/.test(provider)) return 'openrouter';
+  if (provider === 'openinference') return 'openinference';
   if (/^(?:direct-)?fireworks(?:-.+)?$/.test(provider)) return 'fireworks';
   if (/^ollama(?:-.+)?$/.test(provider)) return 'ollama';
   if (/^anthropic(?:-.+)?$/.test(provider)) return 'anthropic';
