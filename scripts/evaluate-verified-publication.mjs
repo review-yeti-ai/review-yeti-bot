@@ -106,6 +106,8 @@ const TELEMETRY_ENUMS = Object.freeze({
   contentSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
   reasoningSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
 });
+const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_validated_json', 'unknown']);
+const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
 const ATTEMPT_OUTCOMES = new Set(['parsed', 'malformed_output', 'http_error', 'provider_error', 'transport_error']);
 const ATTEMPT_PROVIDERS = new Set(['fireworks', 'ollama', 'openrouter', 'anthropic', 'gemini', 'openai', 'default']);
 const ATTEMPT_FAILURE_CLASSES = new Set([
@@ -131,6 +133,16 @@ function safeTelemetryLabel(value) {
 function safeBoundedInteger(value, minimum, maximum) {
   const numeric = Number(value);
   return Number.isInteger(numeric) && numeric >= minimum && numeric <= maximum ? numeric : null;
+}
+
+function captureOutputContract(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    policyDeclared: OUTPUT_CONTRACT_MODES.has(value.policyDeclared) ? value.policyDeclared : 'unknown',
+    requestObserved: OUTPUT_CONTRACT_MODES.has(value.requestObserved) ? value.requestObserved : 'unknown',
+    providerSupported: OUTPUT_CONTRACT_SUPPORT.has(value.providerSupported) ? value.providerSupported : 'unreported',
+    terminalParsed: value.terminalParsed === true,
+  };
 }
 
 function captureResponseAttempts(value) {
@@ -159,6 +171,8 @@ function captureResponseAttempts(value) {
     for (const key of ['contentPresent', 'reasoningPresent']) {
       if (typeof entry[key] === 'boolean') captured[key] = entry[key];
     }
+    const outputContract = captureOutputContract(entry.outputContract);
+    if (outputContract) captured.outputContract = outputContract;
     return captured;
   }).filter(Boolean);
 }
@@ -192,6 +206,8 @@ export function captureLaneTelemetry(result = {}) {
   for (const key of ['contentPresent', 'reasoningPresent']) {
     if (typeof result[key] === 'boolean') telemetry[key] = result[key];
   }
+  const outputContract = captureOutputContract(result.outputContract);
+  if (outputContract) telemetry.outputContract = outputContract;
   const responseAttempts = captureResponseAttempts(result.responseAttempts);
   if (responseAttempts.length > 0) telemetry.responseAttempts = responseAttempts;
   return telemetry;
