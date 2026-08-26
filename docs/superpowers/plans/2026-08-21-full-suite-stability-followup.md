@@ -1,5 +1,10 @@
 # Full Suite Stability Follow-up Implementation Plan
 
+> [!WARNING]
+> **Historical plan; non-authoritative.** This records a point-in-time proposal, not current runtime,
+> provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the repository-wide Node/Vitest suite deterministic and green after the Pi runtime merge while preserving the exact Review Yeti and hosted-test contracts.
