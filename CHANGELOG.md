@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.12.0...v1.13.0) (2026-08-26)
+
+
+### Features
+
+* **telemetry:** record output contract provenance ([#276](https://github.com/review-yeti-ai/review-yeti-bot/issues/276)) ([9bd00c4](https://github.com/review-yeti-ai/review-yeti-bot/commit/9bd00c487809dbd81a6a6f5e64566bec76353c9c))
+
 ## [1.12.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.11.0...v1.12.0) (2026-08-26)
 
 
