@@ -1,12 +1,18 @@
 # 💻 Running Review Yeti Locally via CLI
 
+> [!IMPORTANT]
+> **Public Action development guide.** Local execution validates the checked-out bot bytes; it is
+> not proof of the released `v1` channel or a CallTelemetry fleet review. Provider examples are
+> direct local configuration, not fleet policy. See
+> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 This guide provides step-by-step instructions for executing the Review Yeti review pipeline, live PR reviews, and evaluation benchmarks locally from your workstation without relying on GitHub Actions.
 
 ---
 
 ## 1. Prerequisites
 
-- **Node.js**: v18.0.0 or higher
+- **Node.js**: v24, matching the package and release workflows
 - **GitHub CLI (`gh`)**: (Optional, required only for fetching live pull request context)
 - **OpenRouter API Key**: Exported as `OPENROUTER_API_KEY` (or compatible OpenAI-compatible LLM endpoint)
 
@@ -30,7 +36,7 @@ git diff origin/main...HEAD > /tmp/my_feature.diff
 # 2. Execute local Review Yeti review pipeline
 PR_DIFF_FILE=/tmp/my_feature.diff \
 PR_NUMBER=1 \
-GITHUB_REPOSITORY="calltelemetry/ct-review-bot" \
+GITHUB_REPOSITORY="review-yeti-ai/review-yeti-bot" \
 PR_HEAD_SHA="$(git rev-parse HEAD)" \
 PR_BASE_SHA="$(git rev-parse origin/main)" \
 OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
@@ -66,9 +72,10 @@ npx ts-node src/cli/runLiveReview.ts --pr=2119 --repo=calltelemetry/ct-meta
 
 ---
 
-## 5. Option D: Run Evaluation Benchmark Harness
+## 5. Option D: Run the evaluation benchmark harness
 
-To run the 190-scenario telecom benchmark evaluation suite locally:
+Run the checked-in benchmark matrix locally. Treat the baseline artifacts as the authority for the
+current scenario and model counts:
 
 ```bash
 # 1. Run offline deterministic evaluation (zero network calls, uses recorded VCR cassettes)
