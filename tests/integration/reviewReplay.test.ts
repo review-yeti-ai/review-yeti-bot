@@ -177,9 +177,9 @@ describe('review pipeline cassette replay', () => {
     const first = await runOnce();
     const second = await runOnce();
 
-    // Latency is an observation, not part of the deterministic replay result.
-    // Keep the equality assertion focused on provider response and verdict data
-    // so a 0/1 ms scheduling difference cannot make the replay suite flaky.
+    // Review-level and per-attempt latency are observations, not deterministic replay data.
+    // Keep the equality assertion focused on provider response and verdict data so a 0/1 ms
+    // scheduling difference cannot make the replay suite flaky.
     const withoutObservedLatency = ({ latencyMs, responseAttempts, ...result }: any) => ({
       ...result,
       responseAttempts: Array.isArray(responseAttempts)
