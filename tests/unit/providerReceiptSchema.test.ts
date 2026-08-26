@@ -155,6 +155,12 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reasoningPresent: false,
         contentSizeBucket: 'tiny',
         reasoningSizeBucket: 'empty',
+        outputContract: {
+          policyDeclared: 'json_object',
+          requestObserved: 'json_object',
+          providerSupported: 'unreported',
+          terminalParsed: true,
+        },
         responseAttempts: [{
           attempt: 1,
           outcome: 'malformed_output',
@@ -174,6 +180,12 @@ describe('Rank 3D provider telemetry receipt schema', () => {
           reasoningPresent: true,
           contentSizeBucket: 'empty',
           reasoningSizeBucket: 'small',
+          outputContract: {
+            policyDeclared: 'json_object',
+            requestObserved: 'json_object',
+            providerSupported: 'unreported',
+            terminalParsed: false,
+          },
           completion: SECRET_VALUES[3],
         }],
         apiKey: SECRET_VALUES[0],
@@ -191,7 +203,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     ], EXACT_HEAD);
 
     expect(receipt).toMatchObject({
-      schemaVersion: 'review-provider-telemetry-v3',
+      schemaVersion: 'review-provider-telemetry-v4',
       repository: EXACT_HEAD.repo,
       prNumber: 17,
       baseSha: EXACT_HEAD.baseSha,
@@ -225,6 +237,12 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reasoningPresent: false,
         contentSizeBucket: 'tiny',
         reasoningSizeBucket: 'empty',
+        outputContract: {
+          policyDeclared: 'json_object',
+          requestObserved: 'json_object',
+          providerSupported: 'unreported',
+          terminalParsed: true,
+        },
         responseAttempts: [{
           attempt: 1,
           outcome: 'malformed_output',
@@ -244,6 +262,12 @@ describe('Rank 3D provider telemetry receipt schema', () => {
           reasoningPresent: true,
           contentSizeBucket: 'empty',
           reasoningSizeBucket: 'small',
+          outputContract: {
+            policyDeclared: 'json_object',
+            requestObserved: 'json_object',
+            providerSupported: 'unreported',
+            terminalParsed: false,
+          },
         }],
       },
       {
@@ -273,6 +297,12 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reasoningPresent: false,
         contentSizeBucket: null,
         reasoningSizeBucket: null,
+        outputContract: {
+          policyDeclared: 'unknown',
+          requestObserved: 'unknown',
+          providerSupported: 'unreported',
+          terminalParsed: false,
+        },
         responseAttempts: [],
       },
     ]);
@@ -304,7 +334,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     const receiptJson = fs.readFileSync(result.path, 'utf-8');
     expect(result.digest).toBe(createHash('sha256').update(receiptJson, 'utf-8').digest('hex'));
     expect(JSON.parse(receiptJson)).toMatchObject({
-      schemaVersion: 'review-provider-telemetry-v3',
+      schemaVersion: 'review-provider-telemetry-v4',
       baseSha: EXACT_HEAD.baseSha,
       headSha: EXACT_HEAD.headSha,
     });
