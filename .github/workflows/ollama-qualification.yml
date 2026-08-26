@@ -1,10 +1,10 @@
-name: One-time Ollama qualification
+name: One-time Fireworks/Ollama comparison
 
 # This workflow is intentionally manual and isolated. It is never a consumer review trigger,
 # never a canary, and never a scheduled/recurring monitor. It has read-only permissions and the
-# qualification script runs both arms over the committed thirteen-fixture matrix without a GitHub
-# comment, check, review verdict, or merge decision. The current-production arm remains
-# authoritative for any operator decision.
+# comparison script runs both provider-pinned arms over the same committed thirteen-fixture matrix,
+# current testing charter, and synthetic prompt identity without a GitHub comment, check, review
+# verdict, or merge decision. Production remains the only authoritative review path.
 on:
   workflow_dispatch:
     inputs:
@@ -39,9 +39,9 @@ permissions:
 
 jobs:
   qualify:
-    name: Paired Ollama evidence (no publication)
+    name: Paired Fireworks/Ollama evidence (no publication)
     runs-on: ubuntu-latest
-    # Thirteen candidate fixtures run serially, and each medium-reasoning request
+    # Thirteen fixtures per arm run serially, and each high-reasoning request
     # has a 150-second inactivity window plus one bounded format-recovery turn.
     # This job deadline adds no calls; it only ensures a fail-closed receipt can
     # still be written when several fixtures consume their declared windows.
@@ -87,7 +87,6 @@ jobs:
 
       - name: Run bounded paired qualification
         id: qualification
-        continue-on-error: true
         working-directory: example-review-actions
         run: node scripts/ollama-qualification.mjs
 
@@ -104,4 +103,4 @@ jobs:
         if: always()
         run: |
           echo 'Qualification was read-only evidence only.'
-          echo 'The current production review path remained authoritative; no comment, check, verdict, merge, or provider mutation was permitted.'
+          echo 'Production remained authoritative; neither comparison arm could comment, check, decide, merge, or mutate provider state.'

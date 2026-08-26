@@ -9,7 +9,10 @@ import path from 'node:path';
 import {
   BASELINE_PROFILE,
   CANDIDATE_PROFILE,
-  CANDIDATE_TIMEOUT_MS,
+  COMPARISON_EVALUATION_ARM,
+  COMPARISON_MAX_OUTPUT_TOKENS,
+  COMPARISON_REASONING_EFFORT,
+  COMPARISON_TIMEOUT_MS,
   FIXTURE_IDS,
   QUALIFICATION_SCHEMA,
   buildArmEnvironment,
@@ -46,7 +49,16 @@ const DEFECT_FIXTURE_IDS = new Set([
   'java-fixed-sleep-for-asynchronous-state',
 ]);
 
-function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = {}) {
+function makeFixtureRows({
+  missed = [],
+  falsePositives = [],
+  malformed = [],
+  provider = 'ollama',
+  transport = provider,
+  reasoningEffort = COMPARISON_REASONING_EFFORT,
+  maxOutputTokens = COMPARISON_MAX_OUTPUT_TOKENS,
+  finishReason = 'stop',
+} = {}) {
   const missedIds = new Set(missed);
   const falsePositiveIds = new Set(falsePositives);
   const malformedIds = new Set(malformed);
@@ -63,7 +75,7 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
       attemptCount: malformedIds.has(fixtureId) ? 2 : 1,
       retryReasons: malformedIds.has(fixtureId) ? ['malformed_output'] : [],
       outputShape: 'direct_json_object',
-      finishReason: 'stop',
+      finishReason,
       responseMode: 'stream',
       findingsSource: 'content',
       contentPresent: true,
@@ -74,14 +86,14 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
         ? [{
             attempt: 1,
             outcome: 'malformed_output',
-            provider: 'ollama',
-            transport: 'ollama',
+            provider,
+            transport,
             latencyMs: 90_000,
             responseStatus: 200,
             failureClass: 'malformed_output',
-            reasoningEffort: 'medium',
-            maxOutputTokens: 49_152,
-            outputTokens: 49_152,
+            reasoningEffort,
+            maxOutputTokens,
+            outputTokens: maxOutputTokens,
             outputShape: 'no_json',
             finishReason: 'length',
             responseMode: 'stream',
@@ -93,15 +105,15 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
           }, {
             attempt: 2,
             outcome: 'parsed',
-            provider: 'ollama',
-            transport: 'ollama',
+            provider,
+            transport,
             latencyMs: 1_000,
             responseStatus: 200,
             reasoningEffort: 'none',
-            maxOutputTokens: 49_152,
+            maxOutputTokens,
             outputTokens: 12,
             outputShape: 'direct_json_object',
-            finishReason: 'stop',
+            finishReason,
             responseMode: 'stream',
             findingsSource: 'content',
             contentPresent: true,
@@ -112,15 +124,15 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
         : [{
             attempt: 1,
             outcome: 'parsed',
-            provider: 'ollama',
-            transport: 'ollama',
+            provider,
+            transport,
             latencyMs: 10 + index,
             responseStatus: 200,
-            reasoningEffort: 'medium',
-            maxOutputTokens: 49_152,
+            reasoningEffort,
+            maxOutputTokens,
             outputTokens: 12,
             outputShape: 'direct_json_object',
-            finishReason: 'stop',
+            finishReason,
             responseMode: 'stream',
             findingsSource: 'content',
             contentPresent: true,
@@ -133,7 +145,8 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
 }
 
 function makeArm(profile, options = {}) {
-  return { profile, ...summarizeEvaluation({ rows: makeFixtureRows(options) }, 0) };
+  const transport = profile === BASELINE_PROFILE ? 'fireworks' : 'ollama';
+  return { profile, ...summarizeEvaluation({ rows: makeFixtureRows({ provider: transport, transport, ...options }) }, 0) };
 }
 
 test('qualification input is fail-closed and requires immutable coordinates', () => {
@@ -145,23 +158,74 @@ test('qualification input is fail-closed and requires immutable coordinates', ()
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
 });
 
-test('only the explicit Ollama candidate profile narrows the current policy', () => {
+test('hosted comparison remains manual-only and fails the job on integrity errors', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/ollama-qualification.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /^\s{2}workflow_dispatch:\s*$/mu);
+  assert.doesNotMatch(workflow, /^\s{2}(schedule|pull_request|pull_request_target|repository_dispatch|workflow_run):/mu);
+  assert.doesNotMatch(workflow, /continue-on-error:\s*true/u);
+  assert.match(workflow, /if:\s*always\(\)/u);
+});
+
+test('comparison profiles pin one direct provider under the same bounded contract', () => {
   const baseline = buildTransportHandoff(policy, BASELINE_PROFILE);
   const candidate = buildTransportHandoff(policy, CANDIDATE_PROFILE);
-  assert.equal(CANDIDATE_PROFILE, 'ollama-medium-150s-49152-evaluation');
-  assert.deepEqual(baseline.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
+  assert.equal(BASELINE_PROFILE, 'fireworks-high-150s-24576-control');
+  assert.equal(CANDIDATE_PROFILE, 'ollama-high-150s-24576-evaluation');
+  assert.deepEqual(baseline.map((transport) => transport.name), ['fireworks']);
   assert.deepEqual(candidate.map((transport) => transport.name), ['ollama']);
-  assert.equal(candidate[0].timeout_ms, CANDIDATE_TIMEOUT_MS);
-  assert.equal(candidate[0].reasoning_effort, 'medium');
-  assert.equal(candidate[0].max_tokens, 49_152);
-  assert.equal(baseline.find((transport) => transport.name === 'ollama').max_tokens, undefined);
+  for (const [transport] of [baseline, candidate]) {
+    assert.equal(transport.timeout_ms, COMPARISON_TIMEOUT_MS);
+    assert.equal(transport.connect_timeout_ms, 30_000);
+    assert.equal(transport.reasoning_effort, COMPARISON_REASONING_EFFORT);
+    assert.equal(transport.max_tokens, COMPARISON_MAX_OUTPUT_TOKENS);
+    assert.equal(transport.stream, true);
+  }
+  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'fireworks').timeout_ms, 120_000);
+  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'fireworks').connect_timeout_ms, 15_000);
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').timeout_ms, 90_000);
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').max_tokens, undefined);
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').reasoning_effort, 'high');
   assert.throws(() => buildTransportHandoff(policy, 'openrouter-primary'), /unsupported qualification profile/u);
 });
 
-test('candidate child environment removes unrelated provider credentials', () => {
+test('each comparison child receives only its selected provider credential', () => {
+  const baseEnv = {
+    FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+    OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
+    OPENROUTER_API_KEY: 'openrouter-secret',
+    GITHUB_TOKEN: 'github-secret',
+    QUALIFICATION_GH_TOKEN: 'qualification-token',
+    GITHUB_EVENT_PATH: '/tmp/event.json',
+  };
+  const candidateEnvironment = buildArmEnvironment({
+    baseEnv,
+    handoff: buildTransportHandoff(policy, CANDIDATE_PROFILE),
+    arm: 'candidate',
+    botSha: input.botSha,
+    fixturePath: '/tmp/evaluation-matrix.json',
+  });
+  const baselineEnvironment = buildArmEnvironment({
+    baseEnv,
+    handoff: buildTransportHandoff(policy, BASELINE_PROFILE),
+    arm: 'baseline',
+    botSha: input.botSha,
+    fixturePath: '/tmp/evaluation-matrix.json',
+  });
+  assert.equal(candidateEnvironment.OLLAMA_PR_REVIEW_API_KEY, 'ollama-secret');
+  assert.equal(candidateEnvironment.FIREWORKS_PR_REVIEW_API_KEY, undefined);
+  assert.equal(candidateEnvironment.OPENROUTER_API_KEY, undefined);
+  assert.equal(baselineEnvironment.FIREWORKS_PR_REVIEW_API_KEY, 'fireworks-secret');
+  assert.equal(baselineEnvironment.OLLAMA_PR_REVIEW_API_KEY, undefined);
+  assert.equal(baselineEnvironment.OPENROUTER_API_KEY, undefined);
+  for (const environment of [baselineEnvironment, candidateEnvironment]) {
+    assert.equal(environment.GITHUB_TOKEN, undefined);
+    assert.equal(environment.QUALIFICATION_GH_TOKEN, undefined);
+    assert.equal(environment.GITHUB_EVENT_PATH, undefined);
+    assert.equal(environment.VITEST, 'true');
+  }
+});
+
+test('comparison child environment never accepts an unselected fallback credential', () => {
   const handoff = buildTransportHandoff(policy, CANDIDATE_PROFILE);
   const environment = buildArmEnvironment({
     baseEnv: {
@@ -215,7 +279,7 @@ test('exact-head verification rejects drift without exposing response data', asy
   );
 });
 
-test('receipt is sanitized, baseline-authoritative, and never a promotion decision', () => {
+test('receipt is sanitized, symmetric, and never a provider or promotion decision', () => {
   const receipt = buildQualificationReceipt({
     input,
     policy,
@@ -226,7 +290,18 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
   });
   assert.deepEqual(receipt.fixture_ids, FIXTURE_IDS);
   assert.equal(receipt.schema, QUALIFICATION_SCHEMA);
-  assert.equal(receipt.authoritative_arm, 'baseline');
+  assert.equal(receipt.authoritative_arm, 'none');
+  assert.equal(receipt.production_authority, 'unchanged');
+  assert.equal(receipt.activation_authorized, false);
+  assert.equal(receipt.single_run_decision, 'evidence_only');
+  assert.equal(receipt.minimum_independent_runs_for_decision, 3);
+  assert.equal(receipt.independent_runs_in_receipt, 1);
+  assert.deepEqual(receipt.prompt_contract, {
+    evaluator_arm: COMPARISON_EVALUATION_ARM,
+    charter: 'current-testing',
+    synthetic_prompt_identity_equal: true,
+    exact_bot_sha_bound: true,
+  });
   assert.deepEqual(receipt.implementation_refs, {
     central_action_sha: input.centralSha,
     review_yeti_bot_sha: input.botSha,
@@ -234,26 +309,44 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
   assert.equal(receipt.publication, 'none');
   assert.equal(receipt.provider_mutation, 'none');
   assert.equal(receipt.promotion_gate, 'manual_review_required');
+  assert.equal(receipt.comparison_integrity_gate.passed, true);
   assert.equal(receipt.baseline_quality_gate.passed, true);
   assert.equal(receipt.candidate_quality_gate.passed, true);
+  assert.equal(receipt.baseline_quality_gate.first_attempt_contract_observed, true);
+  assert.equal(receipt.baseline_quality_gate.required_transport, 'fireworks');
+  assert.equal(receipt.baseline_quality_gate.required_first_attempt_reasoning_effort, 'high');
+  assert.equal(receipt.baseline_quality_gate.required_first_attempt_max_output_tokens, 24_576);
   assert.equal(receipt.candidate_quality_gate.output_telemetry_complete, true);
   assert.equal(receipt.candidate_quality_gate.response_attempt_telemetry_complete, true);
   assert.equal(receipt.candidate_quality_gate.response_attempt_telemetry_consistent, true);
-  assert.equal(receipt.candidate_quality_gate.required_first_attempt_reasoning_effort, 'medium');
-  assert.equal(receipt.candidate_quality_gate.required_first_attempt_max_output_tokens, 49_152);
-  assert.equal(receipt.candidate_quality_gate.request_contract_observed, true);
-  assert.equal(receipt.candidate_quality_gate.stable_candidate_outputs, true);
+  assert.equal(receipt.candidate_quality_gate.required_first_attempt_reasoning_effort, 'high');
+  assert.equal(receipt.candidate_quality_gate.required_first_attempt_max_output_tokens, 24_576);
+  assert.equal(receipt.candidate_quality_gate.first_attempt_contract_observed, true);
+  assert.equal(receipt.candidate_quality_gate.terminal_parseability_complete, true);
   assert.equal(receipt.candidate_not_worse_on_defect_recall, true);
-  assert.equal(receipt.candidate_eligible_for_next_step, true);
-  assert.deepEqual(receipt.candidate_request_contract, {
-    transport: 'ollama',
-    timeout_ms: CANDIDATE_TIMEOUT_MS,
+  assert.equal(receipt.candidate_quality_eligible_for_aggregate, true);
+  assert.deepEqual(receipt.common_request_contract, {
+    timeout_ms: COMPARISON_TIMEOUT_MS,
     connect_timeout_ms: 30_000,
-    reasoning_effort: 'medium',
-    max_output_tokens: 49_152,
+    reasoning_effort: COMPARISON_REASONING_EFFORT,
+    max_output_tokens: COMPARISON_MAX_OUTPUT_TOKENS,
+    stream: true,
     repetitions: 1,
     concurrency: 1,
   });
+  assert.equal(receipt.baseline_request_contract.transport, 'fireworks');
+  assert.equal(receipt.candidate_request_contract.transport, 'ollama');
+  assert.equal(receipt.baseline_request_contract.model_sha256.length, 64);
+  assert.equal(receipt.candidate_request_contract.model_sha256.length, 64);
+  assert.deepEqual(receipt.route_sampling_residual, {
+    comparison_scope: 'configured_operational_routes',
+    same_sampler_claim_allowed: false,
+    contract: 'provider_specific_defaults_from_exact_bot_sha',
+    values_observed_in_receipt: false,
+  });
+  assert.deepEqual(receipt.contract_evidence.handoff_only_not_runtime_observed, ['timeout_ms', 'connect_timeout_ms', 'model_sha256']);
+  assert.equal(receipt.planned_primary_requests_per_arm, FIXTURE_IDS.length);
+  assert.equal(receipt.max_model_attempts_per_arm, FIXTURE_IDS.length * 2);
   assert.equal(JSON.stringify(receipt).includes('secret'), false);
   assert.equal(JSON.stringify(receipt).includes('findingsDetail'), false);
 });
@@ -261,7 +354,7 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
 test('receipt eligibility fails closed on candidate quality regressions', () => {
   const base = makeArm(BASELINE_PROFILE);
   const clean = buildQualificationReceipt({ input, policy, baseline: base, candidate: makeArm(CANDIDATE_PROFILE), runId: 'quality-pass' });
-  assert.equal(clean.candidate_eligible_for_next_step, true);
+  assert.equal(clean.candidate_quality_eligible_for_aggregate, true);
 
   const falsePositive = buildQualificationReceipt({
     input,
@@ -270,7 +363,7 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
     candidate: makeArm(CANDIDATE_PROFILE, { falsePositives: ['function-scoped-fixture-avoids-shared-state'] }),
     runId: 'quality-false-positive',
   });
-  assert.equal(falsePositive.candidate_eligible_for_next_step, false);
+  assert.equal(falsePositive.candidate_quality_eligible_for_aggregate, false);
 
   const missedDefect = buildQualificationReceipt({
     input,
@@ -279,7 +372,7 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
     candidate: makeArm(CANDIDATE_PROFILE, { missed: ['vacuous-default-value-test'] }),
     runId: 'quality-missed-defect',
   });
-  assert.equal(missedDefect.candidate_eligible_for_next_step, false);
+  assert.equal(missedDefect.candidate_quality_eligible_for_aggregate, false);
 
   const noDetections = buildQualificationReceipt({
     input,
@@ -289,7 +382,7 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
     runId: 'quality-no-detections',
   });
   assert.equal(noDetections.arms.candidate.detected_defect_runs, 0);
-  assert.equal(noDetections.candidate_eligible_for_next_step, false);
+  assert.equal(noDetections.candidate_quality_eligible_for_aggregate, false);
 
   const malformedRecovery = buildQualificationReceipt({
     input,
@@ -299,18 +392,18 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
     runId: 'quality-malformed-recovery',
   });
   assert.equal(malformedRecovery.candidate_quality_gate.observed_malformed_output_recoveries, 1);
-  assert.equal(malformedRecovery.candidate_eligible_for_next_step, false);
+  assert.equal(malformedRecovery.candidate_quality_eligible_for_aggregate, false);
 
   const wrappedOutput = makeArm(CANDIDATE_PROFILE);
   wrappedOutput.fixture_outcomes[0] = { ...wrappedOutput.fixture_outcomes[0], output_shape: 'fenced_json_object' };
   const wrappedReceipt = buildQualificationReceipt({ input, policy, baseline: base, candidate: wrappedOutput });
   assert.equal(wrappedReceipt.candidate_quality_gate.output_telemetry_complete, true);
-  assert.equal(wrappedReceipt.candidate_quality_gate.stable_candidate_outputs, false);
-  assert.equal(wrappedReceipt.candidate_eligible_for_next_step, false);
+  assert.equal(wrappedReceipt.candidate_quality_gate.terminal_parseability_complete, false);
+  assert.equal(wrappedReceipt.candidate_quality_eligible_for_aggregate, false);
 
   const truncatedCompletion = makeArm(CANDIDATE_PROFILE);
   truncatedCompletion.fixture_outcomes[0] = { ...truncatedCompletion.fixture_outcomes[0], finish_reason: 'length' };
-  assert.equal(buildCandidateQualityGate(truncatedCompletion).stable_candidate_outputs, false);
+  assert.equal(buildCandidateQualityGate(truncatedCompletion).terminal_parseability_complete, false);
 
   const missingOutputTelemetry = makeArm(CANDIDATE_PROFILE);
   delete missingOutputTelemetry.fixture_outcomes[0].content_size_bucket;
@@ -332,14 +425,33 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
   assert.equal(buildCandidateQualityGate(inconsistentAttemptTelemetry).passed, false);
 
   const ignoredTokenOverride = makeArm(CANDIDATE_PROFILE);
-  ignoredTokenOverride.fixture_outcomes[0].response_attempts[0].max_output_tokens = 24_576;
-  assert.equal(buildCandidateQualityGate(ignoredTokenOverride).request_contract_observed, false);
+  ignoredTokenOverride.fixture_outcomes[0].response_attempts[0].max_output_tokens = 49_152;
+  assert.equal(buildCandidateQualityGate(ignoredTokenOverride).first_attempt_contract_observed, false);
   assert.equal(buildCandidateQualityGate(ignoredTokenOverride).passed, false);
 
   const ignoredReasoningOverride = makeArm(CANDIDATE_PROFILE);
-  ignoredReasoningOverride.fixture_outcomes[0].response_attempts[0].reasoning_effort = 'high';
-  assert.equal(buildCandidateQualityGate(ignoredReasoningOverride).request_contract_observed, false);
+  ignoredReasoningOverride.fixture_outcomes[0].response_attempts[0].reasoning_effort = 'medium';
+  assert.equal(buildCandidateQualityGate(ignoredReasoningOverride).first_attempt_contract_observed, false);
   assert.equal(buildCandidateQualityGate(ignoredReasoningOverride).passed, false);
+
+  const candidateProviderFallback = makeArm(CANDIDATE_PROFILE);
+  candidateProviderFallback.fixture_outcomes[0].response_attempts[0].provider = 'fireworks';
+  assert.equal(buildCandidateQualityGate(candidateProviderFallback).first_attempt_contract_observed, false);
+  assert.equal(buildCandidateQualityGate(candidateProviderFallback).passed, false);
+
+  const baselineProviderFallback = makeArm(BASELINE_PROFILE);
+  baselineProviderFallback.fixture_outcomes[0].response_attempts[0].transport = 'ollama';
+  assert.equal(buildBaselineQualityGate(baselineProviderFallback).first_attempt_contract_observed, false);
+  assert.equal(buildBaselineQualityGate(baselineProviderFallback).passed, false);
+
+  const baselineMalformedRecovery = makeArm(BASELINE_PROFILE, { malformed: ['shared-module-state-order-dependent-test'] });
+  assert.equal(buildBaselineQualityGate(baselineMalformedRecovery).observed_malformed_output_recoveries, 1);
+  assert.equal(buildBaselineQualityGate(baselineMalformedRecovery).passed, false);
+
+  const baselineMissingFinish = makeArm(BASELINE_PROFILE, { finishReason: 'missing' });
+  assert.equal(buildBaselineQualityGate(baselineMissingFinish).terminal_parseability_complete, true);
+  assert.equal(buildBaselineQualityGate(baselineMissingFinish).finish_reason_telemetry_complete, false);
+  assert.equal(buildBaselineQualityGate(baselineMissingFinish).passed, true);
 
   const baselineFalsePositive = buildQualificationReceipt({
     input,
@@ -349,7 +461,8 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
     runId: 'quality-baseline-false-positive',
   });
   assert.equal(baselineFalsePositive.baseline_quality_gate.passed, false);
-  assert.equal(baselineFalsePositive.candidate_eligible_for_next_step, false);
+  assert.equal(baselineFalsePositive.comparison_integrity_gate.passed, true);
+  assert.equal(baselineFalsePositive.candidate_quality_eligible_for_aggregate, true);
 
   const improvedCandidate = buildQualificationReceipt({
     input,
@@ -358,9 +471,10 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
     candidate: makeArm(CANDIDATE_PROFILE),
     runId: 'quality-candidate-improvement',
   });
-  assert.equal(improvedCandidate.baseline_quality_gate.passed, true);
+  assert.equal(improvedCandidate.baseline_quality_gate.passed, false);
+  assert.equal(improvedCandidate.comparison_integrity_gate.passed, true);
   assert.equal(improvedCandidate.candidate_not_worse_on_defect_recall, true);
-  assert.equal(improvedCandidate.candidate_eligible_for_next_step, true);
+  assert.equal(improvedCandidate.candidate_quality_eligible_for_aggregate, true);
 
   const recallRegression = buildQualificationReceipt({
     input,
@@ -370,16 +484,39 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
     runId: 'quality-recall-regression',
   });
   assert.equal(recallRegression.candidate_not_worse_on_defect_recall, false);
-  assert.equal(recallRegression.candidate_eligible_for_next_step, false);
+  assert.equal(recallRegression.candidate_quality_eligible_for_aggregate, false);
 
   const missingFixtureEvidence = makeArm(CANDIDATE_PROFILE);
   missingFixtureEvidence.fixture_outcomes = missingFixtureEvidence.fixture_outcomes.slice(1);
   assert.equal(buildCandidateQualityGate(missingFixtureEvidence).fixture_set_complete, false);
-  assert.equal(buildQualificationReceipt({ input, policy, baseline: base, candidate: missingFixtureEvidence }).candidate_eligible_for_next_step, false);
+  assert.equal(buildQualificationReceipt({ input, policy, baseline: base, candidate: missingFixtureEvidence }).candidate_quality_eligible_for_aggregate, false);
 
   const malformedCategoryEvidence = makeArm(CANDIDATE_PROFILE);
   malformedCategoryEvidence.fixture_outcomes[0] = { ...malformedCategoryEvidence.fixture_outcomes[0], category: 'unknown' };
+  assert.equal(buildCandidateQualityGate(malformedCategoryEvidence).fixture_categories_valid, false);
+  assert.equal(buildCandidateQualityGate(malformedCategoryEvidence).integrity_passed, false);
   assert.equal(buildCandidateQualityGate(malformedCategoryEvidence).passed, false);
+
+  const swappedBaselineCategories = makeArm(BASELINE_PROFILE);
+  const defectIndex = swappedBaselineCategories.fixture_outcomes.findIndex((entry) => entry.category === 'defect');
+  const cleanIndex = swappedBaselineCategories.fixture_outcomes.findIndex((entry) => entry.category === 'clean');
+  swappedBaselineCategories.fixture_outcomes[defectIndex] = {
+    ...swappedBaselineCategories.fixture_outcomes[defectIndex],
+    category: 'clean',
+  };
+  swappedBaselineCategories.fixture_outcomes[cleanIndex] = {
+    ...swappedBaselineCategories.fixture_outcomes[cleanIndex],
+    category: 'defect',
+  };
+  const swappedCategoryReceipt = buildQualificationReceipt({
+    input,
+    policy,
+    baseline: swappedBaselineCategories,
+    candidate: makeArm(CANDIDATE_PROFILE),
+  });
+  assert.equal(swappedCategoryReceipt.baseline_quality_gate.fixture_categories_valid, false);
+  assert.equal(swappedCategoryReceipt.baseline_quality_gate.integrity_passed, false);
+  assert.equal(swappedCategoryReceipt.comparison_integrity_gate.passed, false);
 
   const unexpectedFixtureEvidence = makeArm(CANDIDATE_PROFILE);
   unexpectedFixtureEvidence.fixture_outcomes[0] = { ...unexpectedFixtureEvidence.fixture_outcomes[0], fixture_id: 'unexpected-fixture' };
@@ -389,7 +526,7 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
   const missingBaselineEvidence = makeArm(BASELINE_PROFILE);
   missingBaselineEvidence.fixture_outcomes = missingBaselineEvidence.fixture_outcomes.slice(1);
   assert.equal(buildBaselineQualityGate(missingBaselineEvidence).fixture_set_complete, false);
-  assert.equal(buildQualificationReceipt({ input, policy, baseline: missingBaselineEvidence, candidate: makeArm(CANDIDATE_PROFILE) }).candidate_eligible_for_next_step, false);
+  assert.equal(buildQualificationReceipt({ input, policy, baseline: missingBaselineEvidence, candidate: makeArm(CANDIDATE_PROFILE) }).candidate_quality_eligible_for_aggregate, false);
 });
 
 test('evaluation summary reports only bounded aggregate evidence', () => {
@@ -430,8 +567,21 @@ test('evaluation summary reports only bounded aggregate evidence', () => {
     ],
     latency_ms_median: 100,
     latency_ms_p95: 200,
+    token_telemetry_status: 'unavailable',
+    prompt_tokens: null,
+    completion_tokens: null,
+    cost_telemetry_status: 'complete',
     cost_usd: 0.3,
   });
+});
+
+test('zero-valued provider usage is marked unavailable instead of comparable pricing', () => {
+  const summary = summarizeEvaluation({ rows: makeFixtureRows() }, 0);
+  assert.equal(summary.token_telemetry_status, 'unavailable');
+  assert.equal(summary.prompt_tokens, null);
+  assert.equal(summary.completion_tokens, null);
+  assert.equal(summary.cost_telemetry_status, 'unavailable');
+  assert.equal(summary.cost_usd, null);
 });
 
 test('fixture outcomes retain bounded routing evidence without findings or provider text', () => {
@@ -630,10 +780,12 @@ test('runQualification verifies first, then starts exactly two bounded arms in p
   });
   const spawnImpl = (_command, args, options) => {
     const child = new EventEmitter();
-    const arm = args[args.indexOf('--arm') + 1];
+    const evaluatorArm = args[args.indexOf('--arm') + 1];
+    const logicalArm = options.env.QUALIFICATION_ARM;
     const output = args[args.indexOf('--out') + 1];
-    starts.push({ arm, transportPlan: JSON.parse(options.env.REVIEW_YETI_TRANSPORTS) });
-    writeFileSync(output, JSON.stringify({ rows: makeFixtureRows() }));
+    const transportPlan = JSON.parse(options.env.REVIEW_YETI_TRANSPORTS);
+    starts.push({ logicalArm, evaluatorArm, transportPlan });
+    writeFileSync(output, JSON.stringify({ rows: makeFixtureRows({ provider: transportPlan[0].name, transport: transportPlan[0].name }) }));
     queueMicrotask(() => child.emit('close', 0));
     return child;
   };
@@ -648,16 +800,18 @@ test('runQualification verifies first, then starts exactly two bounded arms in p
       now: '2026-08-25T00:00:00.000Z',
       runId: 'test-run',
     });
-    assert.deepEqual(starts.map((entry) => entry.arm).sort(), ['baseline', 'candidate']);
-    assert.deepEqual(starts.find((entry) => entry.arm === 'candidate').transportPlan.map((transport) => transport.name), ['ollama']);
-    assert.equal(starts.find((entry) => entry.arm === 'candidate').transportPlan[0].timeout_ms, CANDIDATE_TIMEOUT_MS);
-    assert.equal(starts.find((entry) => entry.arm === 'candidate').transportPlan[0].max_tokens, 49_152);
-    assert.equal(starts.find((entry) => entry.arm === 'candidate').transportPlan[0].reasoning_effort, 'medium');
-    assert.equal(starts.find((entry) => entry.arm === 'baseline').transportPlan.find((transport) => transport.name === 'ollama').timeout_ms, 90_000);
-    assert.equal(starts.find((entry) => entry.arm === 'baseline').transportPlan.find((transport) => transport.name === 'ollama').max_tokens, undefined);
-    assert.equal(starts.find((entry) => entry.arm === 'baseline').transportPlan.find((transport) => transport.name === 'ollama').reasoning_effort, 'high');
-    assert.deepEqual(starts.find((entry) => entry.arm === 'baseline').transportPlan.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
-    assert.equal(result.receipt.candidate_eligible_for_next_step, true);
+    assert.deepEqual(starts.map((entry) => entry.logicalArm).sort(), ['baseline', 'candidate']);
+    assert.deepEqual(starts.map((entry) => entry.evaluatorArm), [COMPARISON_EVALUATION_ARM, COMPARISON_EVALUATION_ARM]);
+    assert.deepEqual(starts.find((entry) => entry.logicalArm === 'candidate').transportPlan.map((transport) => transport.name), ['ollama']);
+    assert.deepEqual(starts.find((entry) => entry.logicalArm === 'baseline').transportPlan.map((transport) => transport.name), ['fireworks']);
+    for (const entry of starts) {
+      assert.equal(entry.transportPlan[0].timeout_ms, COMPARISON_TIMEOUT_MS);
+      assert.equal(entry.transportPlan[0].connect_timeout_ms, 30_000);
+      assert.equal(entry.transportPlan[0].max_tokens, COMPARISON_MAX_OUTPUT_TOKENS);
+      assert.equal(entry.transportPlan[0].reasoning_effort, COMPARISON_REASONING_EFFORT);
+    }
+    assert.equal(result.receipt.comparison_integrity_gate.passed, true);
+    assert.equal(result.receipt.candidate_quality_eligible_for_aggregate, true);
     assert.match(result.receiptPath, /ollama-qualification-receipt\.json$/u);
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
@@ -671,10 +825,10 @@ test('runQualification records failed child arms and withholds candidate eligibi
     status: 200,
     json: async () => ({ base: { sha: input.baseSha }, head: { sha: input.headSha } }),
   });
-  const spawnImpl = (_command, args) => {
+  const spawnImpl = (_command, args, options) => {
     const child = new EventEmitter();
-    const arm = args[args.indexOf('--arm') + 1];
-    if (arm === 'baseline') {
+    const logicalArm = options.env.QUALIFICATION_ARM;
+    if (logicalArm === 'baseline') {
       const output = args[args.indexOf('--out') + 1];
       writeFileSync(output, JSON.stringify({ rows: [
         { category: 'defect', detected: true, errored: false, latencyMs: 10, usage: { costUSD: 0 } },
@@ -690,7 +844,8 @@ test('runQualification records failed child arms and withholds candidate eligibi
     assert.equal(result.receipt.arms.baseline.status, 'completed');
     assert.equal(result.receipt.arms.candidate.status, 'failed');
     assert.equal(result.receipt.arms.candidate.exit_code, 1);
-    assert.equal(result.receipt.candidate_eligible_for_next_step, false);
+    assert.equal(result.receipt.comparison_integrity_gate.passed, false);
+    assert.equal(result.receipt.candidate_quality_eligible_for_aggregate, false);
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }

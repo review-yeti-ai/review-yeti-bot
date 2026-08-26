@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * One-time, read-only Ollama qualification.
+ * One-time, read-only Fireworks/Ollama operational-route comparison.
  *
  * This command is deliberately not part of the reusable review workflow. It verifies one
- * immutable PR coordinate, then runs a small paired fixture set through the current production
- * transport plan and an Ollama-only plan in parallel. Neither arm can publish a comment, check,
- * review verdict, merge decision, or provider mutation. The baseline remains authoritative.
+ * immutable PR coordinate, then runs the same paired fixture set and prompt identity through one
+ * Fireworks-only plan and one Ollama-only plan in parallel. Neither arm can publish a comment,
+ * check, review verdict, merge decision, or provider mutation. Production remains authoritative.
  */
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -16,13 +16,18 @@ import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
-export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v5';
+export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v6';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
-export const CANDIDATE_PROFILE = 'ollama-medium-150s-49152-evaluation';
-export const BASELINE_PROFILE = 'current-production';
-export const CANDIDATE_TIMEOUT_MS = 150_000;
-export const CANDIDATE_MAX_OUTPUT_TOKENS = 49_152;
-export const CANDIDATE_REASONING_EFFORT = 'medium';
+export const BASELINE_PROFILE = 'fireworks-high-150s-24576-control';
+export const CANDIDATE_PROFILE = 'ollama-high-150s-24576-evaluation';
+export const COMPARISON_EVALUATION_ARM = 'candidate';
+export const COMPARISON_TIMEOUT_MS = 150_000;
+export const COMPARISON_CONNECT_TIMEOUT_MS = 30_000;
+export const COMPARISON_MAX_OUTPUT_TOKENS = 24_576;
+export const COMPARISON_REASONING_EFFORT = 'high';
+const COMPARISON_REPETITIONS = 1;
+const COMPARISON_CONCURRENCY = 1;
+const MAX_MODEL_ATTEMPTS_PER_PRIMARY = 2;
 const FIXTURE_CONTRACT = Object.freeze([
   ['vacuous-default-value-test', 'defect'],
   ['format-evadable-absence-guard', 'defect'],
@@ -112,18 +117,22 @@ export function validateQualificationInput(input = {}) {
 
 export function buildTransportHandoff(policy, profile) {
   const transports = validatePolicy(policy);
-  if (profile === BASELINE_PROFILE) return transports.map((transport) => ({ ...transport }));
-  if (profile === CANDIDATE_PROFILE) {
-    const ollama = transports.find((transport) => transport.name === 'ollama');
-    if (!ollama) throw new Error('policy does not define the Ollama transport');
-    return [{
-      ...ollama,
-      timeout_ms: CANDIDATE_TIMEOUT_MS,
-      max_tokens: CANDIDATE_MAX_OUTPUT_TOKENS,
-      reasoning_effort: CANDIDATE_REASONING_EFFORT,
-    }];
-  }
-  throw new Error(`unsupported qualification profile: ${profile}`);
+  const transportName = profile === BASELINE_PROFILE
+    ? 'fireworks'
+    : profile === CANDIDATE_PROFILE
+      ? 'ollama'
+      : null;
+  if (!transportName) throw new Error(`unsupported qualification profile: ${profile}`);
+  const selected = transports.find((transport) => transport.name === transportName);
+  if (!selected) throw new Error(`policy does not define the ${transportName} transport`);
+  return [{
+    ...selected,
+    timeout_ms: COMPARISON_TIMEOUT_MS,
+    connect_timeout_ms: COMPARISON_CONNECT_TIMEOUT_MS,
+    max_tokens: COMPARISON_MAX_OUTPUT_TOKENS,
+    reasoning_effort: COMPARISON_REASONING_EFFORT,
+    stream: true,
+  }];
 }
 
 export async function verifyPullRequest({ repository, prNumber, baseSha, headSha, token, fetchImpl = globalThis.fetch }) {
@@ -347,7 +356,21 @@ export function summarizeEvaluation(payload, exitCode) {
   const defects = rows.filter((row) => row.category === 'defect');
   const clean = rows.filter((row) => row.category === 'clean');
   const latencies = rows.map((row) => Number(row.latencyMs)).filter(Number.isFinite).sort((a, b) => a - b);
-  const numericCosts = rows.map((row) => Number(row.usage?.costUSD)).filter(Number.isFinite);
+  const positivePromptTokens = rows.map((row) => Number(row.usage?.promptTokens)).filter((value) => Number.isFinite(value) && value > 0);
+  const positiveCompletionTokens = rows.map((row) => Number(row.usage?.completionTokens)).filter((value) => Number.isFinite(value) && value > 0);
+  const positiveCosts = rows.map((row) => Number(row.usage?.costUSD)).filter((value) => Number.isFinite(value) && value > 0);
+  const tokenTelemetryStatus = rows.length > 0
+    && positivePromptTokens.length === rows.length
+    && positiveCompletionTokens.length === rows.length
+    ? 'complete'
+    : positivePromptTokens.length > 0 || positiveCompletionTokens.length > 0
+      ? 'partial'
+      : 'unavailable';
+  const costTelemetryStatus = rows.length > 0 && positiveCosts.length === rows.length
+    ? 'complete'
+    : positiveCosts.length > 0
+      ? 'partial'
+      : 'unavailable';
   const erroredRuns = rows.filter((row) => row.errored).length;
   const failureClasses = {};
   const failureClassesByProvider = {};
@@ -427,7 +450,17 @@ export function summarizeEvaluation(payload, exitCode) {
     fixture_outcomes: summarizeFixtureOutcomes(rows),
     latency_ms_median: percentile(latencies, 0.5),
     latency_ms_p95: percentile(latencies, 0.95),
-    cost_usd: numericCosts.length === rows.length ? Number(numericCosts.reduce((sum, cost) => sum + cost, 0).toFixed(6)) : null,
+    token_telemetry_status: tokenTelemetryStatus,
+    prompt_tokens: tokenTelemetryStatus === 'complete'
+      ? positivePromptTokens.reduce((sum, value) => sum + value, 0)
+      : null,
+    completion_tokens: tokenTelemetryStatus === 'complete'
+      ? positiveCompletionTokens.reduce((sum, value) => sum + value, 0)
+      : null,
+    cost_telemetry_status: costTelemetryStatus,
+    cost_usd: costTelemetryStatus === 'complete'
+      ? Number(positiveCosts.reduce((sum, cost) => sum + cost, 0).toFixed(6))
+      : null,
   };
 }
 
@@ -439,13 +472,16 @@ function readEvaluation(pathname, exitCode) {
   }
 }
 
-export function buildCandidateQualityGate(candidate = {}) {
-  const outcomes = Array.isArray(candidate.fixture_outcomes) ? candidate.fixture_outcomes : [];
+function buildArmQualityGate(arm = {}, expectedProfile, expectedTransport) {
+  const outcomes = Array.isArray(arm.fixture_outcomes) ? arm.fixture_outcomes : [];
   const fixtureIds = outcomes.map((entry) => String(entry?.fixture_id || ''));
   const uniqueFixtureIds = new Set(fixtureIds);
   const fixtureSetComplete = fixtureIds.length === FIXTURE_IDS.length
     && uniqueFixtureIds.size === FIXTURE_IDS.length
     && FIXTURE_IDS.every((fixtureId) => uniqueFixtureIds.has(fixtureId));
+  const fixtureCategoriesValid = outcomes.every((entry) => (
+    EXPECTED_FIXTURE_CATEGORIES.get(String(entry?.fixture_id || '')) === entry?.category
+  ));
   const malformedOutputRecoveries = outcomes.filter((entry) => (
     Array.isArray(entry?.response_attempts)
       && entry.response_attempts.some((attempt) => attempt?.outcome === 'malformed_output')
@@ -470,11 +506,12 @@ export function buildCandidateQualityGate(candidate = {}) {
     const attempts = Array.isArray(entry?.response_attempts) ? entry.response_attempts : [];
     const lastAttempt = attempts.at(-1);
     return attempts.length >= 1
-      && attempts.length <= MAX_RESPONSE_ATTEMPTS
+      && attempts.length <= MAX_MODEL_ATTEMPTS_PER_PRIMARY
       && attempts.every((attempt, index) => (
         attempt?.attempt === index + 1
         && RESPONSE_ATTEMPT_OUTCOMES.has(attempt?.outcome)
-        && attempt?.transport === 'ollama'
+        && attempt?.provider === expectedTransport
+        && attempt?.transport === expectedTransport
         && Number.isSafeInteger(attempt?.latency_ms)
         && attempt.latency_ms >= 0
         && RESPONSE_ATTEMPT_REASONING_EFFORTS.has(attempt?.reasoning_effort)
@@ -507,99 +544,117 @@ export function buildCandidateQualityGate(candidate = {}) {
     const retriedMalformedOutput = attempts.some((attempt) => attempt.outcome === 'malformed_output');
     return retriedMalformedOutput === (Array.isArray(entry.retry_reasons) && entry.retry_reasons.includes('malformed_output'));
   });
-  const requestContractObserved = responseAttemptTelemetryComplete
-    && candidate.profile === CANDIDATE_PROFILE
+  const firstAttemptContractObserved = responseAttemptTelemetryComplete
+    && arm.profile === expectedProfile
     && outcomes.every((entry) => (
-      entry.response_attempts[0]?.reasoning_effort === CANDIDATE_REASONING_EFFORT
-      && entry.response_attempts[0]?.max_output_tokens === CANDIDATE_MAX_OUTPUT_TOKENS
+      entry.response_attempts[0]?.provider === expectedTransport
+      && entry.response_attempts[0]?.transport === expectedTransport
+      && entry.response_attempts[0]?.reasoning_effort === COMPARISON_REASONING_EFFORT
+      && entry.response_attempts[0]?.max_output_tokens === COMPARISON_MAX_OUTPUT_TOKENS
     ));
-  const stableCandidateOutputs = outputTelemetryComplete && responseAttemptTelemetryComplete && outcomes.every((entry) => {
+  const terminalParseabilityComplete = responseAttemptTelemetryComplete && outcomes.every((entry) => {
+    const lastAttempt = entry.response_attempts.at(-1);
     const sourcePresent = entry.findings_source === 'content'
       ? entry.content_present === true && entry.content_size_bucket !== 'empty'
       : entry.findings_source === 'reasoning'
         ? entry.reasoning_present === true && entry.reasoning_size_bucket !== 'empty'
         : false;
-    return entry.output_shape === 'direct_json_object'
-      && entry.finish_reason === 'stop'
+    return lastAttempt?.outcome === 'parsed'
+      && entry.output_shape === 'direct_json_object'
       && entry.response_mode === 'stream'
       && sourcePresent;
   });
-  const passed = candidate.rows === FIXTURE_IDS.length
-    && candidate.defect_runs === EXPECTED_DEFECT_RUNS
-    && candidate.detected_defect_runs === EXPECTED_DEFECT_RUNS
-    && candidate.clean_runs === EXPECTED_CLEAN_RUNS
-    && candidate.false_positive_runs === 0
+  const finishReasonTelemetryComplete = responseAttemptTelemetryComplete && outcomes.every((entry) => (
+    entry.response_attempts.every((attempt) => attempt.finish_reason !== 'missing')
+  ));
+  const integrityPassed = arm.status === 'completed'
+    && arm.exit_code === 0
+    && arm.rows === FIXTURE_IDS.length
+    && arm.errored_runs === 0
+    && arm.defect_runs === EXPECTED_DEFECT_RUNS
+    && arm.clean_runs === EXPECTED_CLEAN_RUNS
+    && fixtureSetComplete
+    && fixtureCategoriesValid
+    && outputTelemetryComplete
+    && attemptTelemetryConsistent
+    && firstAttemptContractObserved
+    && terminalParseabilityComplete;
+  const passed = integrityPassed
+    && arm.detected_defect_runs === EXPECTED_DEFECT_RUNS
+    && arm.false_positive_runs === 0
     && fixtureSetComplete
     && fixtureOutcomesComplete
     && malformedOutputRecoveries === 0
-    && attemptTelemetryConsistent
-    && requestContractObserved
-    && stableCandidateOutputs;
+    && terminalParseabilityComplete;
   return {
+    required_profile: expectedProfile,
+    required_transport: expectedTransport,
     required_rows: FIXTURE_IDS.length,
     required_defect_detections: EXPECTED_DEFECT_RUNS,
     required_clean_false_positives: 0,
     required_malformed_output_recoveries: 0,
     fixture_set_complete: fixtureSetComplete,
+    fixture_categories_valid: fixtureCategoriesValid,
     output_telemetry_complete: outputTelemetryComplete,
     response_attempt_telemetry_complete: responseAttemptTelemetryComplete,
     response_attempt_telemetry_consistent: attemptTelemetryConsistent,
-    required_first_attempt_reasoning_effort: CANDIDATE_REASONING_EFFORT,
-    required_first_attempt_max_output_tokens: CANDIDATE_MAX_OUTPUT_TOKENS,
-    request_contract_observed: requestContractObserved,
+    required_first_attempt_reasoning_effort: COMPARISON_REASONING_EFFORT,
+    required_first_attempt_max_output_tokens: COMPARISON_MAX_OUTPUT_TOKENS,
+    first_attempt_contract_observed: firstAttemptContractObserved,
     required_output_shape: 'direct_json_object',
-    required_finish_reason: 'stop',
     required_response_mode: 'stream',
-    stable_candidate_outputs: stableCandidateOutputs,
+    terminal_parseability_complete: terminalParseabilityComplete,
+    finish_reason_telemetry_complete: finishReasonTelemetryComplete,
     observed_malformed_output_recoveries: malformedOutputRecoveries,
+    integrity_passed: integrityPassed,
     passed,
   };
 }
 
+export function buildCandidateQualityGate(candidate = {}) {
+  return buildArmQualityGate(candidate, CANDIDATE_PROFILE, 'ollama');
+}
+
 export function buildBaselineQualityGate(baseline = {}) {
-  const outcomes = Array.isArray(baseline.fixture_outcomes) ? baseline.fixture_outcomes : [];
-  const fixtureIds = outcomes.map((entry) => String(entry?.fixture_id || ''));
-  const uniqueFixtureIds = new Set(fixtureIds);
-  const fixtureSetComplete = fixtureIds.length === FIXTURE_IDS.length
-    && uniqueFixtureIds.size === FIXTURE_IDS.length
-    && FIXTURE_IDS.every((fixtureId) => uniqueFixtureIds.has(fixtureId));
-  const fixtureOutcomesValid = outcomes.every((entry) => {
-    const fixtureId = String(entry?.fixture_id || '');
-    const expectedCategory = EXPECTED_FIXTURE_CATEGORIES.get(fixtureId);
-    if (expectedCategory === 'defect') {
-      return entry?.category === 'defect' && (entry?.outcome === 'detected' || entry?.outcome === 'miss');
-    }
-    return expectedCategory === 'clean' && entry?.category === 'clean' && entry?.outcome === 'clean';
-  });
-  const passed = baseline.rows === FIXTURE_IDS.length
-    && baseline.defect_runs === EXPECTED_DEFECT_RUNS
-    && baseline.clean_runs === EXPECTED_CLEAN_RUNS
-    && baseline.false_positive_runs === 0
-    && fixtureSetComplete
-    && fixtureOutcomesValid;
-  return {
-    required_rows: FIXTURE_IDS.length,
-    required_clean_false_positives: 0,
-    fixture_set_complete: fixtureSetComplete,
-    passed,
-  };
+  return buildArmQualityGate(baseline, BASELINE_PROFILE, 'fireworks');
 }
 
 export function buildQualificationReceipt({ input, policy, baseline, candidate, now = new Date().toISOString(), runId = 'manual' }) {
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
-  const complete = baseline.status === 'completed' && candidate.status === 'completed'
-    && baseline.errored_runs === 0 && candidate.errored_runs === 0;
   const baselineQualityGate = buildBaselineQualityGate(baseline);
   const candidateQualityGate = buildCandidateQualityGate(candidate);
+  const comparisonIntegrityGate = {
+    baseline_integrity_passed: baselineQualityGate.integrity_passed,
+    candidate_integrity_passed: candidateQualityGate.integrity_passed,
+    prompt_contract_equal: true,
+    exact_bot_sha_bound: SHA_PATTERN.test(String(input.botSha || '')),
+    passed: baselineQualityGate.integrity_passed
+      && candidateQualityGate.integrity_passed
+      && SHA_PATTERN.test(String(input.botSha || '')),
+  };
   const candidateNotWorseOnDefectRecall = Number(candidate.detected_defect_runs) >= Number(baseline.detected_defect_runs);
-  const candidateQualityEligible = complete
-    && baselineQualityGate.passed
+  const candidateQualityEligibleForAggregate = comparisonIntegrityGate.passed
     && candidateQualityGate.passed
     && candidateNotWorseOnDefectRecall;
+  const baselineTransport = buildTransportHandoff(policy, BASELINE_PROFILE)[0];
   const candidateTransport = buildTransportHandoff(policy, CANDIDATE_PROFILE)[0];
+  const commonRequestContract = {
+    timeout_ms: COMPARISON_TIMEOUT_MS,
+    connect_timeout_ms: COMPARISON_CONNECT_TIMEOUT_MS,
+    reasoning_effort: COMPARISON_REASONING_EFFORT,
+    max_output_tokens: COMPARISON_MAX_OUTPUT_TOKENS,
+    stream: true,
+    repetitions: COMPARISON_REPETITIONS,
+    concurrency: COMPARISON_CONCURRENCY,
+  };
+  const armRequestContract = (transport) => ({
+    transport: transport.name,
+    model_sha256: createHash('sha256').update(String(transport.model || '')).digest('hex'),
+    ...commonRequestContract,
+  });
   return {
     schema: QUALIFICATION_SCHEMA,
-    mode: 'one-time-parallel-qualification',
+    mode: 'one-time-manual-provider-comparison',
     created_at: now,
     run_id: String(runId),
     exact_target: {
@@ -615,25 +670,43 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
     policy_sha256: policyDigest,
     baseline_profile: BASELINE_PROFILE,
     candidate_profile: CANDIDATE_PROFILE,
-    candidate_request_contract: {
-      transport: 'ollama',
-      timeout_ms: candidateTransport.timeout_ms,
-      connect_timeout_ms: candidateTransport.connect_timeout_ms,
-      reasoning_effort: candidateTransport.reasoning_effort,
-      max_output_tokens: candidateTransport.max_tokens,
-      repetitions: 1,
-      concurrency: 1,
+    prompt_contract: {
+      evaluator_arm: COMPARISON_EVALUATION_ARM,
+      charter: 'current-testing',
+      synthetic_prompt_identity_equal: true,
+      exact_bot_sha_bound: true,
+    },
+    common_request_contract: commonRequestContract,
+    contract_evidence: {
+      attempt_observed: ['provider', 'transport', 'reasoning_effort', 'max_output_tokens', 'response_mode'],
+      handoff_only_not_runtime_observed: ['timeout_ms', 'connect_timeout_ms', 'model_sha256'],
+      prompt_identity: 'central_spawn_contract',
+    },
+    baseline_request_contract: armRequestContract(baselineTransport),
+    candidate_request_contract: armRequestContract(candidateTransport),
+    route_sampling_residual: {
+      comparison_scope: 'configured_operational_routes',
+      same_sampler_claim_allowed: false,
+      contract: 'provider_specific_defaults_from_exact_bot_sha',
+      values_observed_in_receipt: false,
     },
     fixture_ids: [...FIXTURE_IDS],
-    max_requests_per_arm: FIXTURE_IDS.length,
-    authoritative_arm: 'baseline',
+    planned_primary_requests_per_arm: FIXTURE_IDS.length * COMPARISON_REPETITIONS,
+    max_model_attempts_per_arm: FIXTURE_IDS.length * COMPARISON_REPETITIONS * MAX_MODEL_ATTEMPTS_PER_PRIMARY,
+    minimum_independent_runs_for_decision: 3,
+    independent_runs_in_receipt: 1,
+    authoritative_arm: 'none',
+    production_authority: 'unchanged',
+    activation_authorized: false,
+    single_run_decision: 'evidence_only',
     publication: 'none',
     provider_mutation: 'none',
     promotion_gate: 'manual_review_required',
+    comparison_integrity_gate: comparisonIntegrityGate,
     baseline_quality_gate: baselineQualityGate,
     candidate_quality_gate: candidateQualityGate,
     candidate_not_worse_on_defect_recall: candidateNotWorseOnDefectRecall,
-    candidate_eligible_for_next_step: candidateQualityEligible,
+    candidate_quality_eligible_for_aggregate: candidateQualityEligibleForAggregate,
     arms: { baseline, candidate },
   };
 }
@@ -664,8 +737,8 @@ export async function runQualification({
     const env = buildArmEnvironment({ baseEnv: process.env, handoff, arm, botSha: validated.botSha, fixturePath: fixture });
     const args = [
       path.join(validated.botRoot, 'scripts/evaluate-verified-publication.mjs'),
-      'lanes', '--arm', arm, '--fixture', fixture, '--fixtures', FIXTURE_IDS.join(','),
-      '--repetitions', '1', '--concurrency', '1', '--out', output,
+      'lanes', '--arm', COMPARISON_EVALUATION_ARM, '--fixture', fixture, '--fixtures', FIXTURE_IDS.join(','),
+      '--repetitions', String(COMPARISON_REPETITIONS), '--concurrency', String(COMPARISON_CONCURRENCY), '--out', output,
     ];
     return runChild({ command: process.execPath, args, cwd: validated.botRoot, env, spawnImpl })
       .then(({ exitCode }) => ({ arm, profile, output, exitCode }));
@@ -696,26 +769,27 @@ async function main() {
     outputDir: process.env.RUNNER_TEMP,
     runId: process.env.GITHUB_RUN_ID || 'manual',
   });
-  console.log(`[Ollama qualification] receipt=${result.receiptPath} digest=${result.digest}`);
-  console.log(`[Ollama qualification] baseline=${result.receipt.arms.baseline.status} candidate=${result.receipt.arms.candidate.status} `
+  console.log(`[Fireworks/Ollama comparison] receipt=${result.receiptPath} digest=${result.digest}`);
+  console.log(`[Fireworks/Ollama comparison] baseline=${result.receipt.arms.baseline.status} candidate=${result.receipt.arms.candidate.status} `
     + `baseline_failure_classes=${JSON.stringify(result.receipt.arms.baseline.failure_classes)} `
     + `candidate_failure_classes=${JSON.stringify(result.receipt.arms.candidate.failure_classes)} `
     + `baseline_failure_providers=${JSON.stringify(result.receipt.arms.baseline.failure_classes_by_provider)} `
     + `candidate_failure_providers=${JSON.stringify(result.receipt.arms.candidate.failure_classes_by_provider)} `
-    + 'authoritative=baseline publication=none');
+    + 'authoritative=none production-authority=unchanged publication=none');
   if (process.env.GITHUB_OUTPUT) {
     writeFileSync(process.env.GITHUB_OUTPUT, [
       `receipt-path=${result.receiptPath}`,
       `receipt-digest=${result.digest}`,
-      `candidate-eligible=${String(result.receipt.candidate_eligible_for_next_step)}`,
+      `comparison-integrity=${String(result.receipt.comparison_integrity_gate.passed)}`,
+      `candidate-quality-eligible-for-aggregate=${String(result.receipt.candidate_quality_eligible_for_aggregate)}`,
     ].join('\n') + '\n', { flag: 'a' });
   }
-  if (!result.receipt.candidate_eligible_for_next_step) process.exitCode = 1;
+  if (!result.receipt.comparison_integrity_gate.passed) process.exitCode = 1;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   main().catch((error) => {
-    console.error(`::error::Ollama qualification failed: ${error.message}`);
+    console.error(`::error::Fireworks/Ollama comparison failed: ${error.message}`);
     process.exitCode = 1;
   });
 }

@@ -84,12 +84,17 @@ jobs:
           grep -Fq 'context7-api-key:' .github/workflows/review-yeti.yml
           test -f .github/workflows/ollama-qualification.yml
           grep -Fq 'workflow_dispatch:' .github/workflows/ollama-qualification.yml
-          if grep -Eq '^  (schedule|pull_request|pull_request_target|repository_dispatch):' .github/workflows/ollama-qualification.yml; then
-            echo "::error::Ollama qualification must remain manual and non-recurring"
+          if grep -Eq '^  (schedule|pull_request|pull_request_target|repository_dispatch|workflow_run):' .github/workflows/ollama-qualification.yml; then
+            echo "::error::Fireworks/Ollama comparison must remain manual and non-recurring"
             exit 1
           fi
           grep -Fq 'publication=none' scripts/ollama-qualification.mjs
-          grep -Fq 'authoritative_arm: '\''baseline'\''' scripts/ollama-qualification.mjs
+          grep -Fq 'authoritative_arm: '\''none'\''' scripts/ollama-qualification.mjs
+          grep -Fq 'production_authority: '\''unchanged'\''' scripts/ollama-qualification.mjs
+          if grep -Fq 'continue-on-error: true' .github/workflows/ollama-qualification.yml; then
+            echo "::error::comparison integrity failures must fail the workflow"
+            exit 1
+          fi
           grep -Fq 'healthy_transports' .github/workflows/review-yeti.yml
           grep -Fq 'transport-plan-b64:' .github/workflows/review-yeti.yml
           grep -Fq 'transport_plan_b64' scripts/emit-policy.mjs
