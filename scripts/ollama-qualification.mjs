@@ -16,10 +16,11 @@ import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
-export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v3';
+export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v4';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
-export const CANDIDATE_PROFILE = 'ollama-evaluation';
+export const CANDIDATE_PROFILE = 'ollama-high-150s-evaluation';
 export const BASELINE_PROFILE = 'current-production';
+export const CANDIDATE_TIMEOUT_MS = 150_000;
 const FIXTURE_CONTRACT = Object.freeze([
   ['vacuous-default-value-test', 'defect'],
   ['format-evadable-absence-guard', 'defect'],
@@ -56,6 +57,21 @@ const FINISH_REASONS = new Set(['stop', 'length', 'content_filter', 'tool_calls'
 const RESPONSE_MODES = new Set(['stream', 'buffered']);
 const FINDINGS_SOURCES = new Set(['content', 'reasoning', 'none']);
 const RESPONSE_SIZE_BUCKETS = new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']);
+const RESPONSE_ATTEMPT_OUTCOMES = new Set(['parsed', 'malformed_output', 'http_error', 'provider_error', 'transport_error']);
+const RESPONSE_ATTEMPT_PROVIDERS = new Set(['fireworks', 'ollama', 'openrouter', 'anthropic', 'gemini', 'openai', 'default']);
+const RESPONSE_ATTEMPT_FAILURE_CLASSES = new Set([
+  'http_429',
+  'http_4xx',
+  'http_5xx',
+  'timeout',
+  'transient_socket',
+  'provider_rate_limit',
+  'provider_error',
+  'malformed_output',
+  'unknown',
+]);
+const RESPONSE_ATTEMPT_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'missing', 'other']);
+const MAX_RESPONSE_ATTEMPTS = 8;
 
 function positiveInteger(value, label) {
   const parsed = Number(value);
@@ -71,7 +87,7 @@ export function validateQualificationInput(input = {}) {
     throw new Error('repository must be owner/name');
   }
   const prNumber = positiveInteger(input.prNumber, 'prNumber');
-  for (const [label, value] of [['baseSha', input.baseSha], ['headSha', input.headSha], ['botSha', input.botSha]]) {
+  for (const [label, value] of [['baseSha', input.baseSha], ['headSha', input.headSha], ['botSha', input.botSha], ['centralSha', input.centralSha]]) {
     if (!SHA_PATTERN.test(String(value || ''))) throw new Error(`${label} must be a full commit SHA`);
   }
   if (String(input.baseSha).toLowerCase() === String(input.headSha).toLowerCase()) {
@@ -80,7 +96,16 @@ export function validateQualificationInput(input = {}) {
   if (!input.botRoot || !path.isAbsolute(String(input.botRoot))) {
     throw new Error('botRoot must be an absolute checkout path');
   }
-  return { ...input, repository: String(input.repository), prNumber, baseSha: String(input.baseSha), headSha: String(input.headSha), botSha: String(input.botSha), botRoot: String(input.botRoot) };
+  return {
+    ...input,
+    repository: String(input.repository),
+    prNumber,
+    baseSha: String(input.baseSha),
+    headSha: String(input.headSha),
+    botSha: String(input.botSha),
+    centralSha: String(input.centralSha),
+    botRoot: String(input.botRoot),
+  };
 }
 
 export function buildTransportHandoff(policy, profile) {
@@ -89,7 +114,7 @@ export function buildTransportHandoff(policy, profile) {
   if (profile === CANDIDATE_PROFILE) {
     const ollama = transports.find((transport) => transport.name === 'ollama');
     if (!ollama) throw new Error('policy does not define the Ollama transport');
-    return [{ ...ollama }];
+    return [{ ...ollama, timeout_ms: CANDIDATE_TIMEOUT_MS }];
   }
   throw new Error(`unsupported qualification profile: ${profile}`);
 }
@@ -199,6 +224,11 @@ function safeAttemptCount(value) {
   return Number.isSafeInteger(attempts) && attempts >= 0 && attempts <= 100 ? attempts : null;
 }
 
+function safeTokenCount(value) {
+  const tokens = Number(value);
+  return Number.isSafeInteger(tokens) && tokens >= 0 && tokens <= 1_000_000 ? tokens : null;
+}
+
 function safeRetryReasons(value) {
   if (!Array.isArray(value)) return [];
   return value.map((reason) => safeDiagnosticLabel(reason, '')).filter(Boolean).slice(0, 8);
@@ -206,6 +236,48 @@ function safeRetryReasons(value) {
 
 function safeDiagnosticEnum(value, allowedValues) {
   return typeof value === 'string' && allowedValues.has(value) ? value : null;
+}
+
+function safeResponseAttempts(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_RESPONSE_ATTEMPTS).map((entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const attempt = safeAttemptCount(entry.attempt);
+    const outcome = safeDiagnosticEnum(entry.outcome, RESPONSE_ATTEMPT_OUTCOMES);
+    if (attempt === null || attempt < 1 || !outcome) return null;
+    const result = { attempt, outcome };
+    const provider = safeDiagnosticEnum(entry.provider, RESPONSE_ATTEMPT_PROVIDERS);
+    if (provider) result.provider = provider;
+    const transport = safeDiagnosticEnum(entry.transport, RESPONSE_ATTEMPT_PROVIDERS);
+    if (transport) result.transport = transport;
+    const latency = safeLatency(entry.latencyMs);
+    if (latency !== null) result.latency_ms = latency;
+    const responseStatus = safeDiagnosticStatus(entry.responseStatus);
+    if (responseStatus) result.response_status = responseStatus;
+    const failureClass = safeDiagnosticEnum(entry.failureClass, RESPONSE_ATTEMPT_FAILURE_CLASSES);
+    if (failureClass) result.failure_class = failureClass;
+    const reasoningEffort = safeDiagnosticEnum(entry.reasoningEffort, RESPONSE_ATTEMPT_REASONING_EFFORTS);
+    if (reasoningEffort) result.reasoning_effort = reasoningEffort;
+    const maxOutputTokens = safeTokenCount(entry.maxOutputTokens);
+    if (maxOutputTokens !== null) result.max_output_tokens = maxOutputTokens;
+    const outputTokens = safeTokenCount(entry.outputTokens);
+    if (outputTokens !== null) result.output_tokens = outputTokens;
+    const outputShape = safeDiagnosticEnum(entry.outputShape, OUTPUT_SHAPES);
+    if (outputShape) result.output_shape = outputShape;
+    const finishReason = safeDiagnosticEnum(entry.finishReason, FINISH_REASONS);
+    if (finishReason) result.finish_reason = finishReason;
+    const responseMode = safeDiagnosticEnum(entry.responseMode, RESPONSE_MODES);
+    if (responseMode) result.response_mode = responseMode;
+    const findingsSource = safeDiagnosticEnum(entry.findingsSource, FINDINGS_SOURCES);
+    if (findingsSource) result.findings_source = findingsSource;
+    if (typeof entry.contentPresent === 'boolean') result.content_present = entry.contentPresent;
+    if (typeof entry.reasoningPresent === 'boolean') result.reasoning_present = entry.reasoningPresent;
+    const contentSizeBucket = safeDiagnosticEnum(entry.contentSizeBucket, RESPONSE_SIZE_BUCKETS);
+    if (contentSizeBucket) result.content_size_bucket = contentSizeBucket;
+    const reasoningSizeBucket = safeDiagnosticEnum(entry.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS);
+    if (reasoningSizeBucket) result.reasoning_size_bucket = reasoningSizeBucket;
+    return result;
+  }).filter(Boolean);
 }
 
 function incrementCount(target, value) {
@@ -257,6 +329,8 @@ export function summarizeFixtureOutcomes(rows = []) {
     if (contentSizeBucket) result.content_size_bucket = contentSizeBucket;
     const reasoningSizeBucket = safeDiagnosticEnum(row.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS);
     if (reasoningSizeBucket) result.reasoning_size_bucket = reasoningSizeBucket;
+    const responseAttempts = safeResponseAttempts(row.responseAttempts);
+    if (responseAttempts.length > 0) result.response_attempts = responseAttempts;
     return result;
   });
 }
@@ -278,6 +352,12 @@ export function summarizeEvaluation(payload, exitCode) {
   const findingsSources = {};
   const contentSizeBuckets = {};
   const reasoningSizeBuckets = {};
+  const responseAttemptOutcomes = {};
+  const firstAttemptOutputShapes = {};
+  const firstAttemptFinishReasons = {};
+  const firstAttemptFailureClasses = {};
+  const firstAttemptReasoningEfforts = {};
+  const firstAttemptMaxOutputTokens = {};
   for (const row of rows) {
     incrementCount(outputShapes, safeDiagnosticEnum(row.outputShape, OUTPUT_SHAPES));
     incrementCount(finishReasons, safeDiagnosticEnum(row.finishReason, FINISH_REASONS));
@@ -285,6 +365,18 @@ export function summarizeEvaluation(payload, exitCode) {
     incrementCount(findingsSources, safeDiagnosticEnum(row.findingsSource, FINDINGS_SOURCES));
     incrementCount(contentSizeBuckets, safeDiagnosticEnum(row.contentSizeBucket, RESPONSE_SIZE_BUCKETS));
     incrementCount(reasoningSizeBuckets, safeDiagnosticEnum(row.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS));
+    const attempts = safeResponseAttempts(row.responseAttempts);
+    for (const attempt of attempts) incrementCount(responseAttemptOutcomes, attempt.outcome);
+    const firstAttempt = attempts[0];
+    if (firstAttempt) {
+      incrementCount(firstAttemptOutputShapes, firstAttempt.output_shape);
+      incrementCount(firstAttemptFinishReasons, firstAttempt.finish_reason);
+      incrementCount(firstAttemptFailureClasses, firstAttempt.failure_class);
+      incrementCount(firstAttemptReasoningEfforts, firstAttempt.reasoning_effort);
+      if (firstAttempt.max_output_tokens !== undefined) {
+        incrementCount(firstAttemptMaxOutputTokens, String(firstAttempt.max_output_tokens));
+      }
+    }
   }
   for (const row of rows.filter((entry) => entry.errored)) {
     const label = classifyFailure(row);
@@ -319,6 +411,12 @@ export function summarizeEvaluation(payload, exitCode) {
     findings_sources: findingsSources,
     content_size_buckets: contentSizeBuckets,
     reasoning_size_buckets: reasoningSizeBuckets,
+    response_attempt_outcomes: responseAttemptOutcomes,
+    first_attempt_output_shapes: firstAttemptOutputShapes,
+    first_attempt_finish_reasons: firstAttemptFinishReasons,
+    first_attempt_failure_classes: firstAttemptFailureClasses,
+    first_attempt_reasoning_efforts: firstAttemptReasoningEfforts,
+    first_attempt_max_output_tokens: firstAttemptMaxOutputTokens,
     fixture_outcomes: summarizeFixtureOutcomes(rows),
     latency_ms_median: percentile(latencies, 0.5),
     latency_ms_p95: percentile(latencies, 0.95),
@@ -342,7 +440,8 @@ export function buildCandidateQualityGate(candidate = {}) {
     && uniqueFixtureIds.size === FIXTURE_IDS.length
     && FIXTURE_IDS.every((fixtureId) => uniqueFixtureIds.has(fixtureId));
   const malformedOutputRecoveries = outcomes.filter((entry) => (
-    Array.isArray(entry?.retry_reasons) && entry.retry_reasons.includes('malformed_output')
+    Array.isArray(entry?.response_attempts)
+      && entry.response_attempts.some((attempt) => attempt?.outcome === 'malformed_output')
   )).length;
   const fixtureOutcomesComplete = outcomes.every((entry) => {
     const fixtureId = String(entry?.fixture_id || '');
@@ -360,7 +459,48 @@ export function buildCandidateQualityGate(candidate = {}) {
     && RESPONSE_SIZE_BUCKETS.has(entry?.content_size_bucket)
     && RESPONSE_SIZE_BUCKETS.has(entry?.reasoning_size_bucket)
   ));
-  const stableCandidateOutputs = outputTelemetryComplete && outcomes.every((entry) => {
+  const responseAttemptTelemetryComplete = outcomes.every((entry) => {
+    const attempts = Array.isArray(entry?.response_attempts) ? entry.response_attempts : [];
+    const lastAttempt = attempts.at(-1);
+    return attempts.length >= 1
+      && attempts.length <= MAX_RESPONSE_ATTEMPTS
+      && attempts.every((attempt, index) => (
+        attempt?.attempt === index + 1
+        && RESPONSE_ATTEMPT_OUTCOMES.has(attempt?.outcome)
+        && attempt?.transport === 'ollama'
+        && Number.isSafeInteger(attempt?.latency_ms)
+        && attempt.latency_ms >= 0
+        && RESPONSE_ATTEMPT_REASONING_EFFORTS.has(attempt?.reasoning_effort)
+        && Number.isSafeInteger(attempt?.max_output_tokens)
+        && attempt.max_output_tokens > 0
+        && RESPONSE_MODES.has(attempt?.response_mode)
+        && FINISH_REASONS.has(attempt?.finish_reason)
+        && (
+          attempt.outcome === 'parsed' || attempt.outcome === 'malformed_output'
+            ? OUTPUT_SHAPES.has(attempt?.output_shape)
+              && FINDINGS_SOURCES.has(attempt?.findings_source)
+              && typeof attempt?.content_present === 'boolean'
+              && typeof attempt?.reasoning_present === 'boolean'
+              && RESPONSE_SIZE_BUCKETS.has(attempt?.content_size_bucket)
+              && RESPONSE_SIZE_BUCKETS.has(attempt?.reasoning_size_bucket)
+              && attempt?.response_status === '200'
+            : attempt.outcome === 'http_error'
+              ? typeof attempt?.response_status === 'string'
+              : RESPONSE_ATTEMPT_FAILURE_CLASSES.has(attempt?.failure_class)
+        )
+      ))
+      && lastAttempt?.outcome === 'parsed'
+      && lastAttempt?.output_shape === entry.output_shape
+      && lastAttempt?.finish_reason === entry.finish_reason
+      && lastAttempt?.response_mode === entry.response_mode
+      && lastAttempt?.findings_source === entry.findings_source;
+  });
+  const attemptTelemetryConsistent = responseAttemptTelemetryComplete && outcomes.every((entry) => {
+    const attempts = entry.response_attempts;
+    const retriedMalformedOutput = attempts.some((attempt) => attempt.outcome === 'malformed_output');
+    return retriedMalformedOutput === (Array.isArray(entry.retry_reasons) && entry.retry_reasons.includes('malformed_output'));
+  });
+  const stableCandidateOutputs = outputTelemetryComplete && responseAttemptTelemetryComplete && outcomes.every((entry) => {
     const sourcePresent = entry.findings_source === 'content'
       ? entry.content_present === true && entry.content_size_bucket !== 'empty'
       : entry.findings_source === 'reasoning'
@@ -379,6 +519,7 @@ export function buildCandidateQualityGate(candidate = {}) {
     && fixtureSetComplete
     && fixtureOutcomesComplete
     && malformedOutputRecoveries === 0
+    && attemptTelemetryConsistent
     && stableCandidateOutputs;
   return {
     required_rows: FIXTURE_IDS.length,
@@ -387,6 +528,8 @@ export function buildCandidateQualityGate(candidate = {}) {
     required_malformed_output_recoveries: 0,
     fixture_set_complete: fixtureSetComplete,
     output_telemetry_complete: outputTelemetryComplete,
+    response_attempt_telemetry_complete: responseAttemptTelemetryComplete,
+    response_attempt_telemetry_consistent: attemptTelemetryConsistent,
     required_output_shape: 'direct_json_object',
     required_finish_reason: 'stop',
     required_response_mode: 'stream',
@@ -436,6 +579,7 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
     && baselineQualityGate.passed
     && candidateQualityGate.passed
     && candidateNotWorseOnDefectRecall;
+  const candidateTransport = buildTransportHandoff(policy, CANDIDATE_PROFILE)[0];
   return {
     schema: QUALIFICATION_SCHEMA,
     mode: 'one-time-parallel-qualification',
@@ -447,9 +591,22 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
       base_sha: input.baseSha,
       head_sha: input.headSha,
     },
+    implementation_refs: {
+      central_action_sha: input.centralSha,
+      review_yeti_bot_sha: input.botSha,
+    },
     policy_sha256: policyDigest,
     baseline_profile: BASELINE_PROFILE,
     candidate_profile: CANDIDATE_PROFILE,
+    candidate_request_contract: {
+      transport: 'ollama',
+      timeout_ms: candidateTransport.timeout_ms,
+      connect_timeout_ms: candidateTransport.connect_timeout_ms,
+      reasoning_effort: candidateTransport.reasoning_effort,
+      max_output_tokens: 'bot_default',
+      repetitions: 1,
+      concurrency: 1,
+    },
     fixture_ids: [...FIXTURE_IDS],
     max_requests_per_arm: FIXTURE_IDS.length,
     authoritative_arm: 'baseline',
@@ -513,6 +670,7 @@ async function main() {
     baseSha: process.env.QUALIFY_BASE_SHA,
     headSha: process.env.QUALIFY_HEAD_SHA,
     botSha: process.env.QUALIFY_BOT_SHA,
+    centralSha: process.env.QUALIFY_CENTRAL_SHA,
     botRoot: process.env.QUALIFY_BOT_ROOT,
   };
   const result = await runQualification({

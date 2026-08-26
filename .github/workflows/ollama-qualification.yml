@@ -41,7 +41,11 @@ jobs:
   qualify:
     name: Paired Ollama evidence (no publication)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Thirteen candidate fixtures run serially, and each high-reasoning request
+    # has a 150-second inactivity window plus one bounded format-recovery turn.
+    # This job deadline adds no calls; it only ensures a fail-closed receipt can
+    # still be written when several fixtures consume their declared windows.
+    timeout-minutes: 90
     env:
       QUALIFY_CONFIRM: ${{ inputs.confirm }}
       QUALIFY_REPOSITORY: ${{ inputs.repository }}
@@ -49,6 +53,7 @@ jobs:
       QUALIFY_BASE_SHA: ${{ inputs.base_sha }}
       QUALIFY_HEAD_SHA: ${{ inputs.head_sha }}
       QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
+      QUALIFY_CENTRAL_SHA: ${{ github.sha }}
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
       QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}

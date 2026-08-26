@@ -9,7 +9,9 @@ import path from 'node:path';
 import {
   BASELINE_PROFILE,
   CANDIDATE_PROFILE,
+  CANDIDATE_TIMEOUT_MS,
   FIXTURE_IDS,
+  QUALIFICATION_SCHEMA,
   buildArmEnvironment,
   buildBaselineQualityGate,
   buildCandidateQualityGate,
@@ -31,6 +33,7 @@ const input = {
   baseSha: 'a'.repeat(40),
   headSha: 'b'.repeat(40),
   botSha: 'c'.repeat(40),
+  centralSha: 'd'.repeat(40),
   botRoot: '/tmp/review-yeti-bot',
 };
 const DEFECT_FIXTURE_IDS = new Set([
@@ -67,6 +70,64 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
       reasoningPresent: false,
       contentSizeBucket: 'tiny',
       reasoningSizeBucket: 'empty',
+      responseAttempts: malformedIds.has(fixtureId)
+        ? [{
+            attempt: 1,
+            outcome: 'malformed_output',
+            provider: 'ollama',
+            transport: 'ollama',
+            latencyMs: 90_000,
+            responseStatus: 200,
+            failureClass: 'malformed_output',
+            reasoningEffort: 'high',
+            maxOutputTokens: 24_576,
+            outputTokens: 24_576,
+            outputShape: 'no_json',
+            finishReason: 'length',
+            responseMode: 'stream',
+            findingsSource: 'none',
+            contentPresent: false,
+            reasoningPresent: true,
+            contentSizeBucket: 'empty',
+            reasoningSizeBucket: 'small',
+          }, {
+            attempt: 2,
+            outcome: 'parsed',
+            provider: 'ollama',
+            transport: 'ollama',
+            latencyMs: 1_000,
+            responseStatus: 200,
+            reasoningEffort: 'none',
+            maxOutputTokens: 24_576,
+            outputTokens: 12,
+            outputShape: 'direct_json_object',
+            finishReason: 'stop',
+            responseMode: 'stream',
+            findingsSource: 'content',
+            contentPresent: true,
+            reasoningPresent: false,
+            contentSizeBucket: 'tiny',
+            reasoningSizeBucket: 'empty',
+          }]
+        : [{
+            attempt: 1,
+            outcome: 'parsed',
+            provider: 'ollama',
+            transport: 'ollama',
+            latencyMs: 10 + index,
+            responseStatus: 200,
+            reasoningEffort: 'high',
+            maxOutputTokens: 24_576,
+            outputTokens: 12,
+            outputShape: 'direct_json_object',
+            finishReason: 'stop',
+            responseMode: 'stream',
+            findingsSource: 'content',
+            contentPresent: true,
+            reasoningPresent: false,
+            contentSizeBucket: 'tiny',
+            reasoningSizeBucket: 'empty',
+          }],
     };
   });
 }
@@ -77,7 +138,7 @@ function makeArm(profile, options = {}) {
 
 test('qualification input is fail-closed and requires immutable coordinates', () => {
   assert.deepEqual(validateQualificationInput(input).prNumber, 119);
-  for (const [field, value] of [['confirm', 'yes'], ['repository', 'not-a-repository'], ['baseSha', 'short'], ['botRoot', 'relative']]) {
+  for (const [field, value] of [['confirm', 'yes'], ['repository', 'not-a-repository'], ['baseSha', 'short'], ['centralSha', 'short'], ['botRoot', 'relative']]) {
     const invalid = { ...input, [field]: value };
     assert.throws(() => validateQualificationInput(invalid), /required|must|confirm|repository|SHA|absolute/u);
   }
@@ -89,6 +150,9 @@ test('only the explicit Ollama candidate profile narrows the current policy', ()
   const candidate = buildTransportHandoff(policy, CANDIDATE_PROFILE);
   assert.deepEqual(baseline.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
   assert.deepEqual(candidate.map((transport) => transport.name), ['ollama']);
+  assert.equal(candidate[0].timeout_ms, CANDIDATE_TIMEOUT_MS);
+  assert.equal(candidate[0].reasoning_effort, 'high');
+  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').timeout_ms, 90_000);
   assert.throws(() => buildTransportHandoff(policy, 'openrouter-primary'), /unsupported qualification profile/u);
 });
 
@@ -156,16 +220,32 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
     candidate: makeArm(CANDIDATE_PROFILE),
   });
   assert.deepEqual(receipt.fixture_ids, FIXTURE_IDS);
+  assert.equal(receipt.schema, QUALIFICATION_SCHEMA);
   assert.equal(receipt.authoritative_arm, 'baseline');
+  assert.deepEqual(receipt.implementation_refs, {
+    central_action_sha: input.centralSha,
+    review_yeti_bot_sha: input.botSha,
+  });
   assert.equal(receipt.publication, 'none');
   assert.equal(receipt.provider_mutation, 'none');
   assert.equal(receipt.promotion_gate, 'manual_review_required');
   assert.equal(receipt.baseline_quality_gate.passed, true);
   assert.equal(receipt.candidate_quality_gate.passed, true);
   assert.equal(receipt.candidate_quality_gate.output_telemetry_complete, true);
+  assert.equal(receipt.candidate_quality_gate.response_attempt_telemetry_complete, true);
+  assert.equal(receipt.candidate_quality_gate.response_attempt_telemetry_consistent, true);
   assert.equal(receipt.candidate_quality_gate.stable_candidate_outputs, true);
   assert.equal(receipt.candidate_not_worse_on_defect_recall, true);
   assert.equal(receipt.candidate_eligible_for_next_step, true);
+  assert.deepEqual(receipt.candidate_request_contract, {
+    transport: 'ollama',
+    timeout_ms: CANDIDATE_TIMEOUT_MS,
+    connect_timeout_ms: 30_000,
+    reasoning_effort: 'high',
+    max_output_tokens: 'bot_default',
+    repetitions: 1,
+    concurrency: 1,
+  });
   assert.equal(JSON.stringify(receipt).includes('secret'), false);
   assert.equal(JSON.stringify(receipt).includes('findingsDetail'), false);
 });
@@ -227,6 +307,21 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
   const missingOutputTelemetry = makeArm(CANDIDATE_PROFILE);
   delete missingOutputTelemetry.fixture_outcomes[0].content_size_bucket;
   assert.equal(buildCandidateQualityGate(missingOutputTelemetry).output_telemetry_complete, false);
+
+  const missingAttemptTelemetry = makeArm(CANDIDATE_PROFILE);
+  delete missingAttemptTelemetry.fixture_outcomes[0].response_attempts;
+  assert.equal(buildCandidateQualityGate(missingAttemptTelemetry).response_attempt_telemetry_complete, false);
+  assert.equal(buildCandidateQualityGate(missingAttemptTelemetry).passed, false);
+
+  const incompleteAttemptTelemetry = makeArm(CANDIDATE_PROFILE);
+  delete incompleteAttemptTelemetry.fixture_outcomes[0].response_attempts[0].max_output_tokens;
+  assert.equal(buildCandidateQualityGate(incompleteAttemptTelemetry).response_attempt_telemetry_complete, false);
+  assert.equal(buildCandidateQualityGate(incompleteAttemptTelemetry).passed, false);
+
+  const inconsistentAttemptTelemetry = makeArm(CANDIDATE_PROFILE);
+  inconsistentAttemptTelemetry.fixture_outcomes[0].retry_reasons = ['malformed_output'];
+  assert.equal(buildCandidateQualityGate(inconsistentAttemptTelemetry).response_attempt_telemetry_consistent, false);
+  assert.equal(buildCandidateQualityGate(inconsistentAttemptTelemetry).passed, false);
 
   const baselineFalsePositive = buildQualificationReceipt({
     input,
@@ -305,6 +400,12 @@ test('evaluation summary reports only bounded aggregate evidence', () => {
     findings_sources: {},
     content_size_buckets: {},
     reasoning_size_buckets: {},
+    response_attempt_outcomes: {},
+    first_attempt_output_shapes: {},
+    first_attempt_finish_reasons: {},
+    first_attempt_failure_classes: {},
+    first_attempt_reasoning_efforts: {},
+    first_attempt_max_output_tokens: {},
     fixture_outcomes: [
       { fixture_id: 'row-1', category: 'defect', outcome: 'detected', latency_ms: 100 },
       { fixture_id: 'row-2', category: 'clean', outcome: 'clean', latency_ms: 200 },
@@ -335,6 +436,27 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
       reasoningPresent: true,
       contentSizeBucket: 'empty',
       reasoningSizeBucket: 'tiny',
+      responseAttempts: [{
+        attempt: 1,
+        outcome: 'malformed_output',
+        provider: 'ollama',
+        transport: 'ollama',
+        latencyMs: 90_000,
+        responseStatus: 200,
+        failureClass: 'malformed_output',
+        reasoningEffort: 'high',
+        maxOutputTokens: 24_576,
+        outputTokens: 24_576,
+        outputShape: 'no_json',
+        finishReason: 'length',
+        responseMode: 'stream',
+        findingsSource: 'none',
+        contentPresent: false,
+        reasoningPresent: true,
+        contentSizeBucket: 'empty',
+        reasoningSizeBucket: 'small',
+        rawResponse: 'do not retain this response text',
+      }],
       error: 'do not retain this response text',
     },
     {
@@ -372,6 +494,26 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
       reasoning_present: true,
       content_size_bucket: 'empty',
       reasoning_size_bucket: 'tiny',
+      response_attempts: [{
+        attempt: 1,
+        outcome: 'malformed_output',
+        provider: 'ollama',
+        transport: 'ollama',
+        latency_ms: 90_000,
+        response_status: '200',
+        failure_class: 'malformed_output',
+        reasoning_effort: 'high',
+        max_output_tokens: 24_576,
+        output_tokens: 24_576,
+        output_shape: 'no_json',
+        finish_reason: 'length',
+        response_mode: 'stream',
+        findings_source: 'none',
+        content_present: false,
+        reasoning_present: true,
+        content_size_bucket: 'empty',
+        reasoning_size_bucket: 'small',
+      }],
     },
     {
       fixture_id: 'clean-rename-only',
@@ -404,6 +546,13 @@ test('fixture output telemetry accepts only exact bounded enums and booleans', (
     reasoningPresent: 1,
     contentSizeBucket: '12345',
     reasoningSizeBucket: 'raw-length',
+    responseAttempts: [{
+      attempt: 1,
+      outcome: 'secret-outcome',
+      provider: 'secret-provider',
+      reasoningEffort: 'secret-effort',
+      rawResponse: 'secret-response',
+    }],
   }]);
   assert.deepEqual(outcome, { fixture_id: 'clean-rename-only', category: 'clean', outcome: 'clean' });
 });
@@ -483,6 +632,8 @@ test('runQualification verifies first, then starts exactly two bounded arms in p
     });
     assert.deepEqual(starts.map((entry) => entry.arm).sort(), ['baseline', 'candidate']);
     assert.deepEqual(starts.find((entry) => entry.arm === 'candidate').transportPlan.map((transport) => transport.name), ['ollama']);
+    assert.equal(starts.find((entry) => entry.arm === 'candidate').transportPlan[0].timeout_ms, CANDIDATE_TIMEOUT_MS);
+    assert.equal(starts.find((entry) => entry.arm === 'baseline').transportPlan.find((transport) => transport.name === 'ollama').timeout_ms, 90_000);
     assert.deepEqual(starts.find((entry) => entry.arm === 'baseline').transportPlan.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
     assert.equal(result.receipt.candidate_eligible_for_next_step, true);
     assert.match(result.receiptPath, /ollama-qualification-receipt\.json$/u);

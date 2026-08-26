@@ -137,21 +137,31 @@ When an operator wants evidence for moving more work to Ollama, use the manually
 `One-time Ollama qualification` workflow. It requires the exact target repository, PR number,
 base/head SHAs, and the exact `review-yeti-bot` commit, then verifies those coordinates again
 through the GitHub API before starting any model request. It runs thirteen fixed fixtures once through
-the current production transport plan and once through an Ollama-only candidate in parallel.
+the current production transport plan and once through an Ollama-only, high-reasoning candidate with
+a 150-second inactivity window in parallel.
 
 This is a bounded evidence run, not a canary or a review trigger: it has no schedule, pull-request
 event, recurring rerun, traffic split, comment/check/review publication, merge authority, or
 provider mutation. The current-production arm is explicitly authoritative. The uploaded receipt
 contains only aggregate counts, bounded per-fixture outcomes and routing labels, latency, cost,
-exact-head coordinates, and digests; it contains no findings, response bodies, or credentials. A
+exact-head coordinates, digests, and up to eight content-free response-attempt summaries per
+fixture. Attempt summaries retain only closed outcome/effort/output classifications and bounded
+status, latency, token counts, and presence/size fields; they contain no findings, model text,
+reasoning trace, provider error body, exception message, or credentials. A
 completed candidate is only eligible for the next
 manual decision—the provider order and `v1` consumer path remain unchanged until a separate,
 reviewed control-plane change is approved.
 
+The receipt embeds both implementation identities: the exact central-action commit selected by
+the manual dispatch and the exact `review-yeti-bot` commit checked out for both arms.
+
 Candidate eligibility fails closed unless all seven defect fixtures are detected, all six clean
 fixtures remain clean in both arms, every expected fixture has bounded outcome evidence, the
 candidate has no `malformed_output` recovery, and candidate recall does not regress from the
-baseline. Transport completion or partial recall is not qualification evidence.
+baseline. The last response-attempt record must match the final output telemetry and the attempt
+history must agree with the retry classification. Transport completion or partial recall is not
+qualification evidence. The 150-second value is a qualification-only candidate override; the
+committed production Ollama timeout remains 90000ms.
 
 - **timeout_ms = 120000 for Fireworks, 90000 for Ollama and the OpenRouter fallback.** Since
   `review-yeti-bot` PR #163, an actively-streaming response is never aborted by a duration cap --
