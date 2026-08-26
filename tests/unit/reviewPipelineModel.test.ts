@@ -9,6 +9,8 @@ const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/rev
 
 const {
   analyzeFindingsPayload,
+  buildOutputContractTelemetry,
+  normalizeOutputContractTelemetry,
   normalizeModelFinishReason,
   responseSizeBucket,
   reviewWithModel,
@@ -56,6 +58,31 @@ const validFindings = JSON.stringify({
 });
 
 describe('bounded model output-shape telemetry', () => {
+  it('separates policy declaration, wire observation, provider capability, and terminal parsing', () => {
+    expect(buildOutputContractTelemetry(
+      { structured_output: 'strict' },
+      { response_format: { type: 'json_object' } },
+      true,
+    )).toEqual({
+      policyDeclared: 'json_object',
+      requestObserved: 'json_object',
+      providerSupported: 'unreported',
+      terminalParsed: true,
+    });
+    expect(buildOutputContractTelemetry({}, {}, false)).toEqual({
+      policyDeclared: 'unknown',
+      requestObserved: 'prompt_validated_json',
+      providerSupported: 'unreported',
+      terminalParsed: false,
+    });
+    expect(normalizeOutputContractTelemetry({ policyDeclared: 'secret', terminalParsed: 1 })).toEqual({
+      policyDeclared: 'unknown',
+      requestObserved: 'unknown',
+      providerSupported: 'unreported',
+      terminalParsed: false,
+    });
+  });
+
   it.each([
     ['{"findings":[]}', 'direct_json_object'],
     ['[]', 'direct_json_array'],
@@ -547,6 +574,12 @@ describe('reviewWithModel', () => {
       reasoningPresent: false,
       contentSizeBucket: 'tiny',
       reasoningSizeBucket: 'empty',
+      outputContract: {
+        policyDeclared: 'unknown',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
+      },
     });
 
     const reasoningOnly = stubFetch('', {
@@ -563,6 +596,12 @@ describe('reviewWithModel', () => {
       findingsSource: 'none',
       contentPresent: false,
       reasoningPresent: true,
+      outputContract: {
+        policyDeclared: 'unknown',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: false,
+      },
     });
   });
 
@@ -606,6 +645,12 @@ describe('reviewWithModel', () => {
       findingsSource: 'reasoning',
       contentPresent: false,
       reasoningPresent: true,
+      outputContract: {
+        policyDeclared: 'unknown',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
+      },
     });
     expect(result.findings).toEqual([]);
   });

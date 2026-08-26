@@ -1011,6 +1011,8 @@ const MODEL_FINISH_REASONS = new Set(['stop', 'length', 'content_filter', 'tool_
 const RESPONSE_MODES = new Set(['stream', 'buffered']);
 const FINDINGS_SOURCES = new Set(['content', 'reasoning', 'none']);
 const RESPONSE_SIZE_BUCKETS = new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']);
+const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_validated_json', 'unknown']);
+const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
 const MODEL_RESPONSE_ATTEMPT_OUTCOMES = new Set([
   'parsed',
   'malformed_output',
@@ -1131,6 +1133,51 @@ function normalizeResponseSizeBucket(value) {
   return RESPONSE_SIZE_BUCKETS.has(value) ? value : null;
 }
 
+function normalizeOutputContractMode(value) {
+  return OUTPUT_CONTRACT_MODES.has(value) ? value : 'unknown';
+}
+
+function normalizeOutputContractSupport(value) {
+  return OUTPUT_CONTRACT_SUPPORT.has(value) ? value : 'unreported';
+}
+
+function policyOutputContractMode(transport) {
+  const declared = transport?.structured_output ?? transport?.structuredOutput;
+  if (declared === 'strict') return 'json_object';
+  return normalizeOutputContractMode(declared);
+}
+
+function requestOutputContractMode(requestBody) {
+  const type = requestBody?.response_format?.type;
+  if (type === 'json_object') return 'json_object';
+  if (type === 'json_schema') return 'json_schema';
+  return 'prompt_validated_json';
+}
+
+/**
+ * Reports the output contract at the action boundary without changing the request. A successful
+ * HTTP response is not proof that a provider advertises structured-output support, so support is
+ * deliberately `unreported` until the upstream supplies an explicit capability signal.
+ */
+function buildOutputContractTelemetry(transport, requestBody, terminalParsed = false, providerSupported = 'unreported') {
+  return {
+    policyDeclared: policyOutputContractMode(transport),
+    requestObserved: requestOutputContractMode(requestBody),
+    providerSupported: normalizeOutputContractSupport(providerSupported),
+    terminalParsed: terminalParsed === true,
+  };
+}
+
+function normalizeOutputContractTelemetry(value) {
+  const contract = value && typeof value === 'object' ? value : {};
+  return {
+    policyDeclared: normalizeOutputContractMode(contract.policyDeclared),
+    requestObserved: normalizeOutputContractMode(contract.requestObserved),
+    providerSupported: normalizeOutputContractSupport(contract.providerSupported),
+    terminalParsed: contract.terminalParsed === true,
+  };
+}
+
 function normalizeModelResponseAttemptOutcome(value) {
   return MODEL_RESPONSE_ATTEMPT_OUTCOMES.has(value) ? value : null;
 }
@@ -1171,6 +1218,7 @@ function normalizeModelResponseAttempt(entry = {}) {
     reasoningPresent: entry.reasoningPresent === true,
     contentSizeBucket: normalizeResponseSizeBucket(entry.contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(entry.reasoningSizeBucket),
+    outputContract: normalizeOutputContractTelemetry(entry.outputContract),
   };
 }
 
@@ -1943,6 +1991,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   let reasoningPresent = false;
   let contentSizeBucket = 'empty';
   let reasoningSizeBucket = 'empty';
+  let outputContract = null;
   const responseAttempts = [];
   const noteRetryReason = (reason) => {
     const normalized = normalizeTelemetryOutcomeClass(reason);
@@ -1967,6 +2016,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     reasoningPresent: reasoningPresent === true,
     contentSizeBucket: normalizeResponseSizeBucket(contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(reasoningSizeBucket),
+    outputContract: normalizeOutputContractTelemetry(outputContract),
     responseAttempts: normalizeModelResponseAttempts(responseAttempts),
   });
   let requestOptions = null;
@@ -2098,6 +2148,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         ),
         response_format: { type: 'json_object' },
       };
+      // This is reporting-only. Keep the actual request body unchanged while recording the
+      // distinction between what policy declared and what the runtime placed on the wire.
+      outputContract = buildOutputContractTelemetry(transport, requestBody, false);
       const ollamaSeed = deriveOllamaRequestSeed(transport, transportBaseUrl, persona, diffFiles, prContext);
       if (ollamaSeed !== null) requestBody.seed = ollamaSeed;
       if (streamEnabled) requestBody.stream = true;
@@ -2196,6 +2249,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             reasoningPresent,
             contentSizeBucket,
             reasoningSizeBucket,
+            outputContract,
             ...overrides,
           });
           if (entry) responseAttempts.push(entry);
@@ -2450,6 +2504,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
 
           const findings = sanitizeFindings(rawFindings, diffFiles);
+          outputContract = buildOutputContractTelemetry(transport, requestBody, true);
           recordResponseAttempt('parsed', {
             provider: responseBase.provider,
             outputTokens: responseBase.outputTokens,
@@ -3902,12 +3957,13 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       reasoningPresent: result.reasoningPresent === true,
       contentSizeBucket: normalizeResponseSizeBucket(result.contentSizeBucket),
       reasoningSizeBucket: normalizeResponseSizeBucket(result.reasoningSizeBucket),
+      outputContract: normalizeOutputContractTelemetry(result.outputContract),
       responseAttempts: normalizeModelResponseAttempts(result.responseAttempts),
     };
   });
 
   return {
-    schemaVersion: 'review-provider-telemetry-v3',
+    schemaVersion: 'review-provider-telemetry-v4',
     repository: prContext.repo,
     prNumber: Number(prContext.prNumber),
     baseSha: prContext.baseSha,
@@ -4235,6 +4291,7 @@ async function main() {
             reasoningPresent: laneRuns.some((r) => r.reasoningPresent === true),
             contentSizeBucket: normalizeResponseSizeBucket(lastRun.contentSizeBucket),
             reasoningSizeBucket: normalizeResponseSizeBucket(lastRun.reasoningSizeBucket),
+            outputContract: normalizeOutputContractTelemetry(lastRun.outputContract),
             decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
             error: anyError ? anyError.error : undefined,
           };
@@ -4400,6 +4457,8 @@ module.exports = {
   parseFindingsPayload,
   normalizeModelFinishReason,
   responseSizeBucket,
+  buildOutputContractTelemetry,
+  normalizeOutputContractTelemetry,
   downgradeReasoningEffort,
   sanitizeFindings,
   loadLocalRepoConfig,
