@@ -117,6 +117,25 @@ describe('OpenRouter qualification contract', () => {
     expect(calls[0].body).not.toHaveProperty('reasoning_effort');
   });
 
+  it('preserves a response-reported OpenInference upstream label separately from the gateway transport', async () => {
+    const fetchImplementation = async () => streamResponse([
+      { choices: [{ delta: { content: '{"findings":[]}' } }] },
+    ], { provider: 'OpenInference', usage: { prompt_tokens: 11, completion_tokens: 7, cost: 0.0001 } });
+
+    const result = await reviewWithModel(persona, diffFiles, { repo: 'o/r', prNumber: 2 }, null, {
+      openRouterPolicy: policy,
+      transports: [openRouterTransport()],
+      fetchImplementation,
+      circuitBreaker: new RunTransportCircuitBreaker(),
+    });
+
+    expect(result.provider).toBe('OpenInference');
+    expect(result.transport).toBe('openrouter');
+    expect(result.responseAttempts).toEqual([
+      expect.objectContaining({ provider: 'openinference', transport: 'openrouter' }),
+    ]);
+  });
+
   it('fails closed on OpenRouter authentication failure without retrying or crossing providers', async () => {
     let calls = 0;
     const fetchImplementation = async () => {
