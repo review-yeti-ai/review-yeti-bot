@@ -960,6 +960,87 @@ describe('reviewWithModel', () => {
     expect(res.error).toBe('Model response contained no parseable findings JSON.');
   });
 
+  it('retains bounded first-attempt evidence across direct format recovery', async () => {
+    const requestBodies: any[] = [];
+    let calls = 0;
+    const fetchImplementation = async (_url: string, init: any) => {
+      requestBodies.push(JSON.parse(init.body));
+      calls += 1;
+      const payload = calls === 1
+        ? {
+            provider: 'unclassified-upstream-provider',
+            usage: { completion_tokens: 24_576 },
+            choices: [{
+              finish_reason: 'length',
+              message: { content: '', reasoning_content: 'analysis without findings JSON' },
+            }],
+          }
+        : {
+            usage: { completion_tokens: 12 },
+            choices: [{
+              finish_reason: 'stop',
+              message: { content: JSON.stringify({ findings: [] }), reasoning_content: '' },
+            }],
+          };
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => payload,
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'k',
+        model: 'deepseek-v4-flash:cloud',
+        reasoning_effort: 'high',
+      }],
+    });
+
+    expect(res.decision).toBe('APPROVE');
+    expect(requestBodies.map((body) => body.reasoning_effort)).toEqual(['high', 'none']);
+    expect(res.responseAttempts).toEqual([
+      expect.objectContaining({
+        attempt: 1,
+        outcome: 'malformed_output',
+        transport: 'ollama',
+        provider: 'ollama',
+        responseStatus: 200,
+        failureClass: 'malformed_output',
+        reasoningEffort: 'high',
+        maxOutputTokens: 24_576,
+        outputTokens: 24_576,
+        outputShape: 'no_json',
+        finishReason: 'length',
+        findingsSource: 'none',
+        contentPresent: false,
+        reasoningPresent: true,
+      }),
+      expect.objectContaining({
+        attempt: 2,
+        outcome: 'parsed',
+        transport: 'ollama',
+        provider: 'ollama',
+        responseStatus: 200,
+        failureClass: null,
+        reasoningEffort: 'none',
+        maxOutputTokens: 24_576,
+        outputTokens: 12,
+        outputShape: 'direct_json_object',
+        finishReason: 'stop',
+        findingsSource: 'content',
+        contentPresent: true,
+        reasoningPresent: false,
+      }),
+    ]);
+    expect(JSON.stringify(res.responseAttempts)).not.toContain('analysis without findings JSON');
+  });
+
   it('returns response model, provider, and reported usage cost metadata', async () => {
     const { impl } = stubFetch(JSON.stringify({ findings: [] }), {
       payload: {

@@ -106,11 +106,61 @@ const TELEMETRY_ENUMS = Object.freeze({
   contentSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
   reasoningSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
 });
+const ATTEMPT_OUTCOMES = new Set(['parsed', 'malformed_output', 'http_error', 'provider_error', 'transport_error']);
+const ATTEMPT_PROVIDERS = new Set(['fireworks', 'ollama', 'openrouter', 'anthropic', 'gemini', 'openai', 'default']);
+const ATTEMPT_FAILURE_CLASSES = new Set([
+  'http_429',
+  'http_4xx',
+  'http_5xx',
+  'timeout',
+  'transient_socket',
+  'provider_rate_limit',
+  'provider_error',
+  'malformed_output',
+  'unknown',
+]);
+const ATTEMPT_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'missing', 'other']);
+const MAX_RESPONSE_ATTEMPTS = 8;
 
 function safeTelemetryLabel(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!TELEMETRY_LABEL_PATTERN.test(normalized) || TELEMETRY_RESERVED_LABELS.has(normalized)) return null;
   return normalized;
+}
+
+function safeBoundedInteger(value, minimum, maximum) {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric >= minimum && numeric <= maximum ? numeric : null;
+}
+
+function captureResponseAttempts(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_RESPONSE_ATTEMPTS).map((entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const attempt = safeBoundedInteger(entry.attempt, 1, 100);
+    if (attempt === null || !ATTEMPT_OUTCOMES.has(entry.outcome)) return null;
+    const captured = { attempt, outcome: entry.outcome };
+    for (const key of ['transport', 'provider']) {
+      if (ATTEMPT_PROVIDERS.has(entry[key])) captured[key] = entry[key];
+    }
+    const latencyMs = safeBoundedInteger(entry.latencyMs, 0, 86_400_000);
+    if (latencyMs !== null) captured.latencyMs = latencyMs;
+    const responseStatus = safeBoundedInteger(entry.responseStatus, 100, 599);
+    if (responseStatus !== null) captured.responseStatus = responseStatus;
+    if (ATTEMPT_FAILURE_CLASSES.has(entry.failureClass)) captured.failureClass = entry.failureClass;
+    if (ATTEMPT_REASONING_EFFORTS.has(entry.reasoningEffort)) captured.reasoningEffort = entry.reasoningEffort;
+    for (const key of ['maxOutputTokens', 'outputTokens']) {
+      const tokens = safeBoundedInteger(entry[key], 0, 1_000_000);
+      if (tokens !== null) captured[key] = tokens;
+    }
+    for (const [key, allowedValues] of Object.entries(TELEMETRY_ENUMS)) {
+      if (allowedValues.has(entry[key])) captured[key] = entry[key];
+    }
+    for (const key of ['contentPresent', 'reasoningPresent']) {
+      if (typeof entry[key] === 'boolean') captured[key] = entry[key];
+    }
+    return captured;
+  }).filter(Boolean);
 }
 
 /**
@@ -142,6 +192,8 @@ export function captureLaneTelemetry(result = {}) {
   for (const key of ['contentPresent', 'reasoningPresent']) {
     if (typeof result[key] === 'boolean') telemetry[key] = result[key];
   }
+  const responseAttempts = captureResponseAttempts(result.responseAttempts);
+  if (responseAttempts.length > 0) telemetry.responseAttempts = responseAttempts;
   return telemetry;
 }
 
