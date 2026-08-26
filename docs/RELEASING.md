@@ -25,6 +25,14 @@ that may point only at a tested `v1.x.y` release commit during the normal path.
 6. Only after those gates pass does the second release job move the rolling `v1` tag to the exact
    tested release commit.
 
+### Commit-title requirement
+
+Release Please parses commit titles using the Conventional Commits grammar. An issue-only title such
+as `[API-1234] change description` is not parsed and will not be represented in the release PR's
+changelog. Use a conventional title such as `fix(review): change description` and put the issue key
+in the body or footer. If the release workflow logs an unparsed commit, stop and correct the release
+candidate before merging it; do not hand-create a tag to compensate.
+
 An ordinary `main` merge does not advance `v1`. Do not create or move a SemVer tag by hand and do not
 use a local force-push as a release procedure.
 
