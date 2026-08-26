@@ -82,6 +82,12 @@ function makeFixtureRows({
       reasoningPresent: false,
       contentSizeBucket: 'tiny',
       reasoningSizeBucket: 'empty',
+      outputContract: {
+        policyDeclared: provider === 'fireworks' ? 'json_object' : 'unknown',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: true,
+      },
       responseAttempts: malformedIds.has(fixtureId)
         ? [{
             attempt: 1,
@@ -102,6 +108,12 @@ function makeFixtureRows({
             reasoningPresent: true,
             contentSizeBucket: 'empty',
             reasoningSizeBucket: 'small',
+            outputContract: {
+              policyDeclared: provider === 'fireworks' ? 'json_object' : 'unknown',
+              requestObserved: 'json_object',
+              providerSupported: 'unreported',
+              terminalParsed: false,
+            },
           }, {
             attempt: 2,
             outcome: 'parsed',
@@ -120,6 +132,12 @@ function makeFixtureRows({
             reasoningPresent: false,
             contentSizeBucket: 'tiny',
             reasoningSizeBucket: 'empty',
+            outputContract: {
+              policyDeclared: provider === 'fireworks' ? 'json_object' : 'unknown',
+              requestObserved: 'json_object',
+              providerSupported: 'unreported',
+              terminalParsed: true,
+            },
           }]
         : [{
             attempt: 1,
@@ -139,6 +157,12 @@ function makeFixtureRows({
             reasoningPresent: false,
             contentSizeBucket: 'tiny',
             reasoningSizeBucket: 'empty',
+            outputContract: {
+              policyDeclared: provider === 'fireworks' ? 'json_object' : 'unknown',
+              requestObserved: 'json_object',
+              providerSupported: 'unreported',
+              terminalParsed: true,
+            },
           }],
     };
   });
@@ -555,6 +579,11 @@ test('evaluation summary reports only bounded aggregate evidence', () => {
     findings_sources: {},
     content_size_buckets: {},
     reasoning_size_buckets: {},
+    output_contract_telemetry_status: 'unavailable',
+    output_contract_policy_declared: {},
+    output_contract_request_observed: {},
+    output_contract_provider_supported: {},
+    output_contract_terminal_parsed: {},
     response_attempt_outcomes: {},
     first_attempt_output_shapes: {},
     first_attempt_finish_reasons: {},
@@ -582,6 +611,11 @@ test('zero-valued provider usage is marked unavailable instead of comparable pri
   assert.equal(summary.completion_tokens, null);
   assert.equal(summary.cost_telemetry_status, 'unavailable');
   assert.equal(summary.cost_usd, null);
+  assert.equal(summary.output_contract_telemetry_status, 'complete');
+  assert.deepEqual(summary.output_contract_policy_declared, { unknown: FIXTURE_IDS.length });
+  assert.deepEqual(summary.output_contract_request_observed, { json_object: FIXTURE_IDS.length });
+  assert.deepEqual(summary.output_contract_provider_supported, { unreported: FIXTURE_IDS.length });
+  assert.deepEqual(summary.output_contract_terminal_parsed, { true: FIXTURE_IDS.length });
 });
 
 test('fixture outcomes retain bounded routing evidence without findings or provider text', () => {
@@ -604,6 +638,12 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
       reasoningPresent: true,
       contentSizeBucket: 'empty',
       reasoningSizeBucket: 'tiny',
+      outputContract: {
+        policyDeclared: 'unknown',
+        requestObserved: 'json_object',
+        providerSupported: 'unreported',
+        terminalParsed: false,
+      },
       responseAttempts: [{
         attempt: 1,
         outcome: 'malformed_output',
@@ -623,6 +663,12 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
         reasoningPresent: true,
         contentSizeBucket: 'empty',
         reasoningSizeBucket: 'small',
+        outputContract: {
+          policyDeclared: 'unknown',
+          requestObserved: 'json_object',
+          providerSupported: 'unreported',
+          terminalParsed: false,
+        },
         rawResponse: 'do not retain this response text',
       }],
       error: 'do not retain this response text',
@@ -662,6 +708,12 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
       reasoning_present: true,
       content_size_bucket: 'empty',
       reasoning_size_bucket: 'tiny',
+      output_contract: {
+        policy_declared: 'unknown',
+        request_observed: 'json_object',
+        provider_supported: 'unreported',
+        terminal_parsed: false,
+      },
       response_attempts: [{
         attempt: 1,
         outcome: 'malformed_output',
@@ -681,6 +733,12 @@ test('fixture outcomes retain bounded routing evidence without findings or provi
         reasoning_present: true,
         content_size_bucket: 'empty',
         reasoning_size_bucket: 'small',
+        output_contract: {
+          policy_declared: 'unknown',
+          request_observed: 'json_object',
+          provider_supported: 'unreported',
+          terminal_parsed: false,
+        },
       }],
     },
     {

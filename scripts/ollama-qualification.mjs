@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
-export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v6';
+export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v7';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
 export const BASELINE_PROFILE = 'fireworks-high-150s-24576-control';
 export const CANDIDATE_PROFILE = 'ollama-high-150s-24576-evaluation';
@@ -64,6 +64,8 @@ const FINISH_REASONS = new Set(['stop', 'length', 'content_filter', 'tool_calls'
 const RESPONSE_MODES = new Set(['stream', 'buffered']);
 const FINDINGS_SOURCES = new Set(['content', 'reasoning', 'none']);
 const RESPONSE_SIZE_BUCKETS = new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']);
+const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_validated_json', 'unknown']);
+const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
 const RESPONSE_ATTEMPT_OUTCOMES = new Set(['parsed', 'malformed_output', 'http_error', 'provider_error', 'transport_error']);
 const RESPONSE_ATTEMPT_PROVIDERS = new Set(['fireworks', 'ollama', 'openrouter', 'anthropic', 'gemini', 'openai', 'default']);
 const RESPONSE_ATTEMPT_FAILURE_CLASSES = new Set([
@@ -254,6 +256,16 @@ function safeDiagnosticEnum(value, allowedValues) {
   return typeof value === 'string' && allowedValues.has(value) ? value : null;
 }
 
+function safeOutputContract(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    policy_declared: safeDiagnosticEnum(value.policyDeclared, OUTPUT_CONTRACT_MODES) || 'unknown',
+    request_observed: safeDiagnosticEnum(value.requestObserved, OUTPUT_CONTRACT_MODES) || 'unknown',
+    provider_supported: safeDiagnosticEnum(value.providerSupported, OUTPUT_CONTRACT_SUPPORT) || 'unreported',
+    terminal_parsed: value.terminalParsed === true,
+  };
+}
+
 function safeResponseAttempts(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, MAX_RESPONSE_ATTEMPTS).map((entry) => {
@@ -292,6 +304,8 @@ function safeResponseAttempts(value) {
     if (contentSizeBucket) result.content_size_bucket = contentSizeBucket;
     const reasoningSizeBucket = safeDiagnosticEnum(entry.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS);
     if (reasoningSizeBucket) result.reasoning_size_bucket = reasoningSizeBucket;
+    const outputContract = safeOutputContract(entry.outputContract);
+    if (outputContract) result.output_contract = outputContract;
     return result;
   }).filter(Boolean);
 }
@@ -345,6 +359,8 @@ export function summarizeFixtureOutcomes(rows = []) {
     if (contentSizeBucket) result.content_size_bucket = contentSizeBucket;
     const reasoningSizeBucket = safeDiagnosticEnum(row.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS);
     if (reasoningSizeBucket) result.reasoning_size_bucket = reasoningSizeBucket;
+    const outputContract = safeOutputContract(row.outputContract);
+    if (outputContract) result.output_contract = outputContract;
     const responseAttempts = safeResponseAttempts(row.responseAttempts);
     if (responseAttempts.length > 0) result.response_attempts = responseAttempts;
     return result;
@@ -388,6 +404,11 @@ export function summarizeEvaluation(payload, exitCode) {
   const firstAttemptFailureClasses = {};
   const firstAttemptReasoningEfforts = {};
   const firstAttemptMaxOutputTokens = {};
+  const outputContractPolicyDeclared = {};
+  const outputContractRequestObserved = {};
+  const outputContractProviderSupported = {};
+  const outputContractTerminalParsed = {};
+  let outputContractTelemetryRows = 0;
   for (const row of rows) {
     incrementCount(outputShapes, safeDiagnosticEnum(row.outputShape, OUTPUT_SHAPES));
     incrementCount(finishReasons, safeDiagnosticEnum(row.finishReason, FINISH_REASONS));
@@ -395,6 +416,14 @@ export function summarizeEvaluation(payload, exitCode) {
     incrementCount(findingsSources, safeDiagnosticEnum(row.findingsSource, FINDINGS_SOURCES));
     incrementCount(contentSizeBuckets, safeDiagnosticEnum(row.contentSizeBucket, RESPONSE_SIZE_BUCKETS));
     incrementCount(reasoningSizeBuckets, safeDiagnosticEnum(row.reasoningSizeBucket, RESPONSE_SIZE_BUCKETS));
+    const outputContract = safeOutputContract(row.outputContract);
+    if (outputContract) {
+      outputContractTelemetryRows += 1;
+      incrementCount(outputContractPolicyDeclared, outputContract.policy_declared);
+      incrementCount(outputContractRequestObserved, outputContract.request_observed);
+      incrementCount(outputContractProviderSupported, outputContract.provider_supported);
+      incrementCount(outputContractTerminalParsed, String(outputContract.terminal_parsed));
+    }
     const attempts = safeResponseAttempts(row.responseAttempts);
     for (const attempt of attempts) incrementCount(responseAttemptOutcomes, attempt.outcome);
     const firstAttempt = attempts[0];
@@ -441,6 +470,15 @@ export function summarizeEvaluation(payload, exitCode) {
     findings_sources: findingsSources,
     content_size_buckets: contentSizeBuckets,
     reasoning_size_buckets: reasoningSizeBuckets,
+    output_contract_telemetry_status: rows.length > 0 && outputContractTelemetryRows === rows.length
+      ? 'complete'
+      : outputContractTelemetryRows > 0
+        ? 'partial'
+        : 'unavailable',
+    output_contract_policy_declared: outputContractPolicyDeclared,
+    output_contract_request_observed: outputContractRequestObserved,
+    output_contract_provider_supported: outputContractProviderSupported,
+    output_contract_terminal_parsed: outputContractTerminalParsed,
     response_attempt_outcomes: responseAttemptOutcomes,
     first_attempt_output_shapes: firstAttemptOutputShapes,
     first_attempt_finish_reasons: firstAttemptFinishReasons,
