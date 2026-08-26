@@ -1,5 +1,10 @@
 # Original User Request
 
+> [!WARNING]
+> **Historical request record; non-authoritative.** This preserves the original requested scope and
+> model assumptions; it is not current runtime, release, or fleet policy. See
+> [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md).
+
 ## Initial Request — 2026-08-20T15:39:04-05:00
 
 Expand the Review Yeti evaluation benchmark suite by 50% (from 62 to 93+ scenarios) with exceptionally challenging, multi-file, multi-turn, and adversarial review scenarios (distributed race conditions, second-order injections, complex OTP/Go concurrency hazards, and AST evasions). Update release automation to automatically run benchmarks and publish both an embedded evaluation summary table and downloadable asset links in the GitHub release digest.
