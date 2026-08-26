@@ -1,3 +1,10 @@
+# Historical Review Comment Sample
+
+> [!WARNING]
+> **Historical sample artifact; non-authoritative.** This is not a live Review Yeti receipt and its
+> static-heuristic verdict, repository identity, model roster, and counts must not be used as current
+> review or release evidence. See [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md).
+
 ## 🟢 **Verdict: SHIP**
 
 ### 📊 AI Review Panel Summary

@@ -1,5 +1,10 @@
 # Pi Dynamic Review Workflow Implementation Plan
 
+> [!WARNING]
+> **Historical plan; non-authoritative.** This records a point-in-time proposal, not current runtime,
+> provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace Review Yeti's queue-burning persona scheduler with a pinned Pi dynamic workflow shared by hosted reviews, the publication-free CLI, and local Pi handoff.
