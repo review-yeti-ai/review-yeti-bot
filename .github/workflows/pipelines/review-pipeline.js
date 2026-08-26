@@ -1011,6 +1011,16 @@ const MODEL_FINISH_REASONS = new Set(['stop', 'length', 'content_filter', 'tool_
 const RESPONSE_MODES = new Set(['stream', 'buffered']);
 const FINDINGS_SOURCES = new Set(['content', 'reasoning', 'none']);
 const RESPONSE_SIZE_BUCKETS = new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']);
+const MODEL_RESPONSE_ATTEMPT_OUTCOMES = new Set([
+  'parsed',
+  'malformed_output',
+  'http_error',
+  'provider_error',
+  'transport_error',
+]);
+const MODEL_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'missing', 'other']);
+const MAX_MODEL_RESPONSE_ATTEMPTS = 8;
+const MAX_TELEMETRY_TOKEN_COUNT = 1_000_000;
 
 function findingsArray(parsed) {
   if (Array.isArray(parsed)) return parsed;
@@ -1119,6 +1129,57 @@ function responseSizeBucket(content) {
 
 function normalizeResponseSizeBucket(value) {
   return RESPONSE_SIZE_BUCKETS.has(value) ? value : null;
+}
+
+function normalizeModelResponseAttemptOutcome(value) {
+  return MODEL_RESPONSE_ATTEMPT_OUTCOMES.has(value) ? value : null;
+}
+
+function normalizeModelReasoningEffort(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return 'missing';
+  const normalized = value.trim().toLowerCase();
+  return MODEL_REASONING_EFFORTS.has(normalized) ? normalized : 'other';
+}
+
+function normalizeTelemetryTokenCount(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return Math.min(MAX_TELEMETRY_TOKEN_COUNT, Math.floor(numeric));
+}
+
+function normalizeModelResponseAttempt(entry = {}) {
+  const attempt = normalizeTelemetryAttemptCount(entry.attempt);
+  const outcome = normalizeModelResponseAttemptOutcome(entry.outcome);
+  if (attempt === null || attempt < 1 || !outcome) return null;
+  return {
+    attempt,
+    outcome,
+    transport: normalizeTelemetryProvider(entry.transport),
+    provider: normalizeTelemetryProvider(entry.provider) || normalizeTelemetryProvider(entry.transport),
+    latencyMs: normalizeTelemetryDuration(entry.latencyMs),
+    responseStatus: normalizeTelemetryStatus(entry.responseStatus),
+    failureClass: normalizeTelemetryOutcomeClass(entry.failureClass),
+    reasoningEffort: normalizeModelReasoningEffort(entry.reasoningEffort),
+    maxOutputTokens: normalizeTelemetryTokenCount(entry.maxOutputTokens),
+    outputTokens: normalizeTelemetryTokenCount(entry.outputTokens),
+    outputShape: normalizeFindingsOutputShape(entry.outputShape),
+    finishReason: normalizeModelFinishReason(entry.finishReason),
+    responseMode: normalizeResponseMode(entry.responseMode),
+    findingsSource: normalizeFindingsSource(entry.findingsSource),
+    contentPresent: entry.contentPresent === true,
+    reasoningPresent: entry.reasoningPresent === true,
+    contentSizeBucket: normalizeResponseSizeBucket(entry.contentSizeBucket),
+    reasoningSizeBucket: normalizeResponseSizeBucket(entry.reasoningSizeBucket),
+  };
+}
+
+function normalizeModelResponseAttempts(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, MAX_MODEL_RESPONSE_ATTEMPTS)
+    .map(normalizeModelResponseAttempt)
+    .filter(Boolean);
 }
 
 /**
@@ -1876,6 +1937,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   let reasoningPresent = false;
   let contentSizeBucket = 'empty';
   let reasoningSizeBucket = 'empty';
+  const responseAttempts = [];
   const noteRetryReason = (reason) => {
     const normalized = normalizeTelemetryOutcomeClass(reason);
     if (normalized && !retryReasons.includes(normalized) && retryReasons.length < 8) retryReasons.push(normalized);
@@ -1899,6 +1961,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     reasoningPresent: reasoningPresent === true,
     contentSizeBucket: normalizeResponseSizeBucket(contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(reasoningSizeBucket),
+    responseAttempts: normalizeModelResponseAttempts(responseAttempts),
   });
   let requestOptions = null;
   let resultBase = {
@@ -2099,6 +2162,38 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         reasoningPresent = false;
         contentSizeBucket = 'empty';
         reasoningSizeBucket = 'empty';
+        const attemptStartedMs = Date.now();
+        let attemptResponseStatus = null;
+        let responseAttemptRecorded = false;
+        const recordResponseAttempt = (outcome, overrides = {}) => {
+          if (responseAttemptRecorded || responseAttempts.length >= MAX_MODEL_RESPONSE_ATTEMPTS) return;
+          responseAttemptRecorded = true;
+          const reasoningEffortForAttempt = requestBody.reasoning?.enabled === false
+            ? 'none'
+            : requestBody.reasoning?.effort || requestBody.reasoning_effort || 'missing';
+          const entry = normalizeModelResponseAttempt({
+            attempt: attemptCount,
+            outcome,
+            transport: transportName,
+            provider: configuredProvider,
+            latencyMs: Date.now() - attemptStartedMs,
+            responseStatus: attemptResponseStatus,
+            failureClass,
+            reasoningEffort: reasoningEffortForAttempt,
+            maxOutputTokens: requestBody.max_tokens,
+            outputTokens: null,
+            outputShape,
+            finishReason,
+            responseMode,
+            findingsSource,
+            contentPresent,
+            reasoningPresent,
+            contentSizeBucket,
+            reasoningSizeBucket,
+            ...overrides,
+          });
+          if (entry) responseAttempts.push(entry);
+        };
         const streamAbortController = streamEnabled ? new AbortController() : null;
         let responseHeaderTimer = null;
         let releaseOllamaCapacity = null;
@@ -2128,6 +2223,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
 
           responseStatus = normalizeTelemetryStatus(response.status);
+          attemptResponseStatus = responseStatus;
           const generationId = typeof response?.headers?.get === 'function'
             ? response.headers.get('x-generation-id') || response.headers.get('x-request-id')
             : null;
@@ -2139,6 +2235,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             const outcomeClass = classifyTelemetryHttpFailure(response.status);
             noteRetryReason(outcomeClass);
             failureClass = outcomeClass;
+            recordResponseAttempt('http_error', { failureClass: outcomeClass });
             try {
               const parsedDetail = JSON.parse(detail);
               errorCode = resolveOpenRouterErrorCode(parsedDetail);
@@ -2206,6 +2303,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               : 'provider_error';
             noteRetryReason(providerFailureClass);
             failureClass = providerFailureClass;
+            recordResponseAttempt('provider_error', {
+              provider: responseBase.provider,
+              outputTokens: responseBase.outputTokens,
+              failureClass: providerFailureClass,
+            });
             if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
               prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message)) {
               providerRecoveryAttempted = true;
@@ -2245,6 +2347,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 errorCode = resolveOpenRouterErrorCode(providerLane);
                 noteRetryReason(providerFailureClass);
                 failureClass = providerFailureClass;
+                recordResponseAttempt('provider_error', {
+                  provider: responseBase.provider,
+                  outputTokens: responseBase.outputTokens,
+                  failureClass: providerFailureClass,
+                });
                 if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
                   prepareOpenRouterModelFallback(requestBody, requestOptions, providerLane, message)) {
                   providerRecoveryAttempted = true;
@@ -2286,6 +2393,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (rawFindings === null) {
             noteRetryReason('malformed_output');
             failureClass = 'malformed_output';
+            recordResponseAttempt('malformed_output', {
+              provider: responseBase.provider,
+              outputTokens: responseBase.outputTokens,
+              failureClass: 'malformed_output',
+            });
             // Direct reasoning providers can spend the first completion budget on
             // thought tokens and return no final JSON. Give the same admitted
             // transport one bounded, reasoning-disabled format-recovery attempt
@@ -2332,10 +2444,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
 
           const findings = sanitizeFindings(rawFindings, diffFiles);
+          recordResponseAttempt('parsed', {
+            provider: responseBase.provider,
+            outputTokens: responseBase.outputTokens,
+            failureClass: null,
+          });
           return withTelemetry({ ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage }, null);
         } catch (err) {
           const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
           const isUnusableDirectOutput = /empty_sse|Streaming response exceeded total deadline/i.test(err.message || '');
+          const attemptFailureClass = classifyTelemetryTransportError(err);
+          recordResponseAttempt('transport_error', { failureClass: attemptFailureClass });
           if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
             noteRetryReason('transient_socket');
@@ -3777,11 +3896,12 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       reasoningPresent: result.reasoningPresent === true,
       contentSizeBucket: normalizeResponseSizeBucket(result.contentSizeBucket),
       reasoningSizeBucket: normalizeResponseSizeBucket(result.reasoningSizeBucket),
+      responseAttempts: normalizeModelResponseAttempts(result.responseAttempts),
     };
   });
 
   return {
-    schemaVersion: 'review-provider-telemetry-v2',
+    schemaVersion: 'review-provider-telemetry-v3',
     repository: prContext.repo,
     prNumber: Number(prContext.prNumber),
     baseSha: prContext.baseSha,

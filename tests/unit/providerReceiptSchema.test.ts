@@ -155,6 +155,27 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reasoningPresent: false,
         contentSizeBucket: 'tiny',
         reasoningSizeBucket: 'empty',
+        responseAttempts: [{
+          attempt: 1,
+          outcome: 'malformed_output',
+          transport: 'openrouter',
+          provider: 'openrouter',
+          latencyMs: 30,
+          responseStatus: 200,
+          failureClass: 'malformed_output',
+          reasoningEffort: 'high',
+          maxOutputTokens: 24576,
+          outputTokens: 24576,
+          outputShape: 'no_json',
+          finishReason: 'length',
+          responseMode: 'buffered',
+          findingsSource: 'none',
+          contentPresent: false,
+          reasoningPresent: true,
+          contentSizeBucket: 'empty',
+          reasoningSizeBucket: 'small',
+          completion: SECRET_VALUES[3],
+        }],
         apiKey: SECRET_VALUES[0],
         prompt: SECRET_VALUES[2],
       },
@@ -170,7 +191,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     ], EXACT_HEAD);
 
     expect(receipt).toMatchObject({
-      schemaVersion: 'review-provider-telemetry-v2',
+      schemaVersion: 'review-provider-telemetry-v3',
       repository: EXACT_HEAD.repo,
       prNumber: 17,
       baseSha: EXACT_HEAD.baseSha,
@@ -204,6 +225,26 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reasoningPresent: false,
         contentSizeBucket: 'tiny',
         reasoningSizeBucket: 'empty',
+        responseAttempts: [{
+          attempt: 1,
+          outcome: 'malformed_output',
+          transport: 'openrouter',
+          provider: 'openrouter',
+          latencyMs: 30,
+          responseStatus: 200,
+          failureClass: 'malformed_output',
+          reasoningEffort: 'high',
+          maxOutputTokens: 24576,
+          outputTokens: 24576,
+          outputShape: 'no_json',
+          finishReason: 'length',
+          responseMode: 'buffered',
+          findingsSource: 'none',
+          contentPresent: false,
+          reasoningPresent: true,
+          contentSizeBucket: 'empty',
+          reasoningSizeBucket: 'small',
+        }],
       },
       {
         personaId: 'performance',
@@ -232,6 +273,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
         reasoningPresent: false,
         contentSizeBucket: null,
         reasoningSizeBucket: null,
+        responseAttempts: [],
       },
     ]);
 
@@ -262,7 +304,7 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     const receiptJson = fs.readFileSync(result.path, 'utf-8');
     expect(result.digest).toBe(createHash('sha256').update(receiptJson, 'utf-8').digest('hex'));
     expect(JSON.parse(receiptJson)).toMatchObject({
-      schemaVersion: 'review-provider-telemetry-v2',
+      schemaVersion: 'review-provider-telemetry-v3',
       baseSha: EXACT_HEAD.baseSha,
       headSha: EXACT_HEAD.headSha,
     });
