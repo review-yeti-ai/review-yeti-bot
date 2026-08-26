@@ -1,5 +1,10 @@
 # 🚀 ct-review-bot — Enterprise Marketing & Competitive Advantage
 
+> [!CAUTION]
+> **Unverified marketing draft; do not publish.** Superiority, accuracy, cost, noise, deployment,
+> and competitor claims require a separate sourced and reproducible audit before reuse. See
+> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 An executive overview of **ct-review-bot**, highlighting its competitive superiority over legacy AI code review tools like CodeRabbit and Greptile.
 
 ---
