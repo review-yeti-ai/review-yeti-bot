@@ -41,11 +41,10 @@ jobs:
   qualify:
     name: Paired Fireworks/Ollama evidence (no publication)
     runs-on: ubuntu-latest
-    # Thirteen fixtures per arm run serially, and each high-reasoning request
-    # has a 150-second inactivity window plus one bounded format-recovery turn.
-    # This job deadline adds no calls; it only ensures a fail-closed receipt can
-    # still be written when several fixtures consume their declared windows.
-    timeout-minutes: 90
+    # Both provider-pinned arms are dispatched in parallel by the parent script. Each child has
+    # an 8-minute wall-clock kill guard, and this 15-minute runner ceiling is the final backstop.
+    # It is intentionally short: a qualification run must never become a 90-minute CI review.
+    timeout-minutes: 15
     env:
       QUALIFY_CONFIRM: ${{ inputs.confirm }}
       QUALIFY_REPOSITORY: ${{ inputs.repository }}
@@ -84,6 +83,12 @@ jobs:
       - name: Install isolated qualification dependencies
         working-directory: review-yeti-bot
         run: npm ci --ignore-scripts --no-audit --no-fund --silent
+
+      - name: Announce bounded parallel dispatch
+        run: |
+          echo '::notice::Dispatching the Fireworks and Ollama qualification arms in parallel.'
+          echo '::notice::Each arm has an 8-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
+          echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 
       - name: Run bounded paired qualification
         id: qualification

@@ -14,6 +14,7 @@ import {
   COMPARISON_REASONING_EFFORT,
   COMPARISON_TIMEOUT_MS,
   FIXTURE_IDS,
+  QUALIFICATION_CHILD_TIMEOUT_MS,
   QUALIFICATION_SCHEMA,
   buildArmEnvironment,
   buildBaselineQualityGate,
@@ -21,7 +22,9 @@ import {
   buildQualificationReceipt,
   buildTransportHandoff,
   classifyFailure,
+  normalizeChildTimeoutMs,
   runQualification,
+  runChild,
   summarizeEvaluation,
   summarizeFixtureOutcomes,
   validateQualificationInput,
@@ -188,6 +191,75 @@ test('hosted comparison remains manual-only and fails the job on integrity error
   assert.doesNotMatch(workflow, /^\s{2}(schedule|pull_request|pull_request_target|repository_dispatch|workflow_run):/mu);
   assert.doesNotMatch(workflow, /continue-on-error:\s*true/u);
   assert.match(workflow, /if:\s*always\(\)/u);
+  assert.match(workflow, /timeout-minutes:\s*15\b/u);
+  assert.doesNotMatch(workflow, /timeout-minutes:\s*90\b/u);
+  assert.match(workflow, /Dispatching the Fireworks and Ollama qualification arms in parallel/u);
+  assert.match(workflow, /8-minute hard wall-clock deadline/u);
+});
+
+test('qualification child has a hard wall-clock kill guard', async () => {
+  const child = new EventEmitter();
+  const signals = [];
+  child.kill = (signal) => signals.push(signal);
+  const result = await runChild({
+    command: 'node',
+    args: [],
+    cwd: process.cwd(),
+    env: process.env,
+    spawnImpl: () => child,
+    timeoutMs: 5,
+    killGraceMs: 1,
+  });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.exitCode, 124);
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(QUALIFICATION_CHILD_TIMEOUT_MS, 480_000);
+});
+
+test('qualification child timeout cannot exceed the hard eight-minute arm bound', () => {
+  assert.equal(normalizeChildTimeoutMs(), QUALIFICATION_CHILD_TIMEOUT_MS);
+  assert.equal(normalizeChildTimeoutMs(100), 100);
+  assert.throws(() => normalizeChildTimeoutMs(QUALIFICATION_CHILD_TIMEOUT_MS + 1), /childTimeoutMs must be an integer/u);
+  assert.throws(() => normalizeChildTimeoutMs(0), /childTimeoutMs must be an integer/u);
+});
+
+test('qualification dispatches both provider arms concurrently', async () => {
+  const outputDir = mkdtempSync(path.join(os.tmpdir(), 'qualification-parallel-'));
+  const started = [];
+  let active = 0;
+  let maxActive = 0;
+  try {
+    const result = await runQualification({
+      input: { ...input, botRoot: '/tmp/review-yeti-bot' },
+      policy,
+      token: 'read-only-token',
+      outputDir,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ base: { sha: input.baseSha }, head: { sha: input.headSha } }),
+      }),
+      spawnImpl: (_command, _args, options) => {
+        started.push(options.env.QUALIFICATION_ARM);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        const child = new EventEmitter();
+        child.kill = () => true;
+        setTimeout(() => {
+          active -= 1;
+          child.emit('close', 0);
+        }, 5);
+        return child;
+      },
+      childTimeoutMs: 100,
+      runId: 'parallel-test',
+    });
+    assert.deepEqual(started, ['baseline', 'candidate']);
+    assert.equal(maxActive, 2);
+    assert.equal(result.receipt.arms.baseline.status, 'failed');
+    assert.equal(result.receipt.arms.candidate.status, 'failed');
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
 });
 
 test('comparison profiles pin one direct provider under the same bounded contract', () => {
@@ -352,6 +424,7 @@ test('receipt is sanitized, symmetric, and never a provider or promotion decisio
   assert.deepEqual(receipt.common_request_contract, {
     timeout_ms: COMPARISON_TIMEOUT_MS,
     connect_timeout_ms: 30_000,
+    child_timeout_ms: QUALIFICATION_CHILD_TIMEOUT_MS,
     reasoning_effort: COMPARISON_REASONING_EFFORT,
     max_output_tokens: COMPARISON_MAX_OUTPUT_TOKENS,
     stream: true,

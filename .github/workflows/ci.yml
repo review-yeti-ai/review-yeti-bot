@@ -84,6 +84,11 @@ jobs:
           grep -Fq 'context7-api-key:' .github/workflows/review-yeti.yml
           test -f .github/workflows/ollama-qualification.yml
           grep -Fq 'workflow_dispatch:' .github/workflows/ollama-qualification.yml
+          grep -Eq '^    timeout-minutes: 15$' .github/workflows/ollama-qualification.yml
+          if grep -Eq '^    timeout-minutes: (1[6-9]|[2-9][0-9]|[1-9][0-9]{2,})$' .github/workflows/ollama-qualification.yml; then
+            echo "::error::qualification workflow may not exceed the 15-minute hard ceiling"
+            exit 1
+          fi
           if grep -Eq '^  (schedule|pull_request|pull_request_target|repository_dispatch|workflow_run):' .github/workflows/ollama-qualification.yml; then
             echo "::error::Fireworks/Ollama comparison must remain manual and non-recurring"
             exit 1

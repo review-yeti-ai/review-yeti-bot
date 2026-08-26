@@ -25,6 +25,10 @@ export const COMPARISON_TIMEOUT_MS = 150_000;
 export const COMPARISON_CONNECT_TIMEOUT_MS = 30_000;
 export const COMPARISON_MAX_OUTPUT_TOKENS = 24_576;
 export const COMPARISON_REASONING_EFFORT = 'high';
+// This is a parent-process wall-clock guard, not a provider timeout. The child evaluator's
+// streaming inactivity timer can reset while a provider keeps sending deltas, so the parent must
+// still kill a hung arm before the workflow's 15-minute hard ceiling.
+export const QUALIFICATION_CHILD_TIMEOUT_MS = 8 * 60_000;
 const COMPARISON_REPETITIONS = 1;
 const COMPARISON_CONCURRENCY = 1;
 const MAX_MODEL_ATTEMPTS_PER_PRIMARY = 2;
@@ -81,6 +85,14 @@ const RESPONSE_ATTEMPT_FAILURE_CLASSES = new Set([
 ]);
 const RESPONSE_ATTEMPT_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'missing', 'other']);
 const MAX_RESPONSE_ATTEMPTS = 8;
+
+export function normalizeChildTimeoutMs(value = QUALIFICATION_CHILD_TIMEOUT_MS) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > QUALIFICATION_CHILD_TIMEOUT_MS) {
+    throw new Error(`childTimeoutMs must be an integer between 1 and ${QUALIFICATION_CHILD_TIMEOUT_MS}ms`);
+  }
+  return parsed;
+}
 
 function positiveInteger(value, label) {
   const parsed = Number(value);
@@ -184,17 +196,53 @@ export function buildArmEnvironment({ baseEnv = process.env, handoff, arm, botSh
   return environment;
 }
 
-function runChild({ command, args, cwd, env, spawnImpl = spawn }) {
+export function runChild({
+  command,
+  args,
+  cwd,
+  env,
+  spawnImpl = spawn,
+  timeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS,
+  killGraceMs = 5_000,
+}) {
+  const effectiveTimeoutMs = normalizeChildTimeoutMs(timeoutMs);
   return new Promise((resolve) => {
     let child;
+    let settled = false;
+    let timedOut = false;
+    let timeoutTimer = null;
+    let killTimer = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve({ ...result, timedOut });
+    };
     try {
       child = spawnImpl(command, args, { cwd, env, stdio: ['ignore', 'ignore', 'ignore'] });
     } catch {
-      resolve({ exitCode: 1 });
+      finish({ exitCode: 1 });
       return;
     }
-    child.once('error', () => resolve({ exitCode: 1 }));
-    child.once('close', (code) => resolve({ exitCode: Number.isInteger(code) ? code : 1 }));
+    child.once('error', () => finish({ exitCode: 1 }));
+    child.once('close', (code) => finish({ exitCode: Number.isInteger(code) ? code : 1 }));
+    if (effectiveTimeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        console.error(`::error::qualification arm exceeded hard wall-clock limit (${effectiveTimeoutMs}ms); terminating child`);
+        try {
+          child.kill('SIGTERM');
+        } catch (_) {}
+        const grace = Number.isFinite(killGraceMs) && killGraceMs >= 0 ? killGraceMs : 5_000;
+        killTimer = setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch (_) {}
+          finish({ exitCode: 124 });
+        }, grace);
+      }, effectiveTimeoutMs);
+    }
   });
 }
 
@@ -657,7 +705,16 @@ export function buildBaselineQualityGate(baseline = {}) {
   return buildArmQualityGate(baseline, BASELINE_PROFILE, 'fireworks');
 }
 
-export function buildQualificationReceipt({ input, policy, baseline, candidate, now = new Date().toISOString(), runId = 'manual' }) {
+export function buildQualificationReceipt({
+  input,
+  policy,
+  baseline,
+  candidate,
+  childTimeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS,
+  now = new Date().toISOString(),
+  runId = 'manual',
+}) {
+  const effectiveChildTimeoutMs = normalizeChildTimeoutMs(childTimeoutMs);
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
   const baselineQualityGate = buildBaselineQualityGate(baseline);
   const candidateQualityGate = buildCandidateQualityGate(candidate);
@@ -679,6 +736,7 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
   const commonRequestContract = {
     timeout_ms: COMPARISON_TIMEOUT_MS,
     connect_timeout_ms: COMPARISON_CONNECT_TIMEOUT_MS,
+    child_timeout_ms: effectiveChildTimeoutMs,
     reasoning_effort: COMPARISON_REASONING_EFFORT,
     max_output_tokens: COMPARISON_MAX_OUTPUT_TOKENS,
     stream: true,
@@ -757,17 +815,19 @@ export async function runQualification({
   fixturePath,
   fetchImpl = globalThis.fetch,
   spawnImpl = spawn,
+  childTimeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS,
   now,
   runId,
 } = {}) {
   const validated = validateQualificationInput(input);
+  const effectiveChildTimeoutMs = normalizeChildTimeoutMs(childTimeoutMs);
   const loadedPolicy = policy || loadPolicy();
   validatePolicy(loadedPolicy);
   await verifyPullRequest({ ...validated, token, fetchImpl });
   const targetDir = path.resolve(outputDir || process.env.RUNNER_TEMP || '.', 'ollama-qualification');
   mkdirSync(targetDir, { recursive: true });
   const fixture = fixturePath || path.join(validated.botRoot, 'eval-baselines/verified-publication-fixtures/evaluation-matrix.json');
-  const jobs = [
+  const armDispatches = [
     { arm: 'baseline', profile: BASELINE_PROFILE, output: path.join(targetDir, 'baseline.json') },
     { arm: 'candidate', profile: CANDIDATE_PROFILE, output: path.join(targetDir, 'candidate.json') },
   ].map(({ arm, profile, output }) => {
@@ -778,13 +838,30 @@ export async function runQualification({
       'lanes', '--arm', COMPARISON_EVALUATION_ARM, '--fixture', fixture, '--fixtures', FIXTURE_IDS.join(','),
       '--repetitions', String(COMPARISON_REPETITIONS), '--concurrency', String(COMPARISON_CONCURRENCY), '--out', output,
     ];
-    return runChild({ command: process.execPath, args, cwd: validated.botRoot, env, spawnImpl })
-      .then(({ exitCode }) => ({ arm, profile, output, exitCode }));
+    return () => runChild({
+      command: process.execPath,
+      args,
+      cwd: validated.botRoot,
+      env,
+      spawnImpl,
+      timeoutMs: effectiveChildTimeoutMs,
+    }).then((child) => ({ arm, profile, output, ...child }));
   });
-  const [baselineRun, candidateRun] = await Promise.all(jobs);
-  const baseline = { profile: baselineRun.profile, ...readEvaluation(baselineRun.output, baselineRun.exitCode) };
-  const candidate = { profile: candidateRun.profile, ...readEvaluation(candidateRun.output, candidateRun.exitCode) };
-  const receipt = buildQualificationReceipt({ input: validated, policy: loadedPolicy, baseline, candidate, now, runId });
+  // Start both provider-pinned arms explicitly and concurrently. The parent owns the hard
+  // wall-clock deadline; each child remains isolated from the other arm's credentials.
+  console.log(`[qualification] dispatching arms in parallel; child_timeout_ms=${effectiveChildTimeoutMs}`);
+  const [baselineRun, candidateRun] = await Promise.all(armDispatches.map((dispatch) => dispatch()));
+  const baseline = {
+    profile: baselineRun.profile,
+    child_timed_out: baselineRun.timedOut === true,
+    ...readEvaluation(baselineRun.output, baselineRun.exitCode),
+  };
+  const candidate = {
+    profile: candidateRun.profile,
+    child_timed_out: candidateRun.timedOut === true,
+    ...readEvaluation(candidateRun.output, candidateRun.exitCode),
+  };
+  const receipt = buildQualificationReceipt({ input: validated, policy: loadedPolicy, baseline, candidate, childTimeoutMs: effectiveChildTimeoutMs, now, runId });
   const receiptPath = path.join(targetDir, 'ollama-qualification-receipt.json');
   writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
   return { receipt, receiptPath, digest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex') };
