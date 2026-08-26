@@ -1,0 +1,121 @@
+name: One-time OpenRouter qualification
+
+# Manual, credentialed evidence only. This is not a review trigger, canary, schedule, shadow
+# path, or provider switch. The script runs one direct OpenRouter transport and emits a sanitized
+# receipt; production remains authoritative.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type QUALIFY to authorize one bounded OpenRouter probe'
+        required: true
+        type: string
+      repository:
+        description: 'Immutable target repository, owner/name'
+        required: true
+        type: string
+      pr_number:
+        description: 'Target pull request number'
+        required: true
+        type: string
+      base_sha:
+        description: 'Exact target PR base commit SHA'
+        required: true
+        type: string
+      head_sha:
+        description: 'Exact target PR head commit SHA'
+        required: true
+        type: string
+      bot_sha:
+        description: 'Exact review-yeti-bot commit SHA to qualify'
+        required: true
+        type: string
+      bot_release_tag:
+        description: 'Signed semver release tag that must resolve to bot_sha (for example v1.13.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  qualify:
+    name: OpenRouter evidence (no publication)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: review-yeti-openrouter-qualification
+    env:
+      QUALIFY_CONFIRM: ${{ inputs.confirm }}
+      QUALIFY_REPOSITORY: ${{ inputs.repository }}
+      QUALIFY_PR_NUMBER: ${{ inputs.pr_number }}
+      QUALIFY_BASE_SHA: ${{ inputs.base_sha }}
+      QUALIFY_HEAD_SHA: ${{ inputs.head_sha }}
+      QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
+      QUALIFY_BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
+      QUALIFY_CENTRAL_SHA: ${{ github.sha }}
+      QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
+      QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+    steps:
+      - name: Checkout central qualification tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: example-review-actions
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Checkout exact Review Yeti action commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: review-yeti-ai/review-yeti-bot
+          ref: ${{ inputs.bot_sha }}
+          path: review-yeti-bot
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install isolated qualification dependencies
+        working-directory: review-yeti-bot
+        run: npm ci --ignore-scripts --no-audit --no-fund --silent
+
+      - name: Verify signed release provenance before secret exposure
+        working-directory: example-review-actions
+        env:
+          BOT_SHA: ${{ inputs.bot_sha }}
+          BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
+          PROVENANCE_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+        run: |
+          node --input-type=module -e "import { verifyBotRelease } from './scripts/openrouter-qualification.mjs'; await verifyBotRelease({ botSha: process.env.BOT_SHA, botReleaseTag: process.env.BOT_RELEASE_TAG, token: process.env.PROVENANCE_TOKEN });"
+
+      - name: Announce bounded OpenRouter dispatch
+        run: |
+          echo '::notice::Dispatching one direct OpenRouter qualification arm over three fixtures.'
+          echo '::notice::The arm has an 8-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
+          echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
+
+      - name: Run bounded OpenRouter qualification
+        id: qualification
+        working-directory: example-review-actions
+        env:
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+        run: node scripts/openrouter-qualification.mjs
+
+      - name: Upload sanitized qualification receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: openrouter-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openrouter-qualification/openrouter-qualification-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: State the non-authoritative boundary
+        if: always()
+        run: |
+          echo 'OpenRouter qualification was read-only evidence only.'
+          echo 'Production remained authoritative; the probe could not comment, check, decide, merge, or mutate provider state.'
