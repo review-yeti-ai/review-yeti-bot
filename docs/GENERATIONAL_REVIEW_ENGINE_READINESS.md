@@ -1,5 +1,10 @@
 # Generational Review Engine Readiness
 
+> [!WARNING]
+> **Historical branch readiness record; non-authoritative.** Its branch, provider, test, and
+> residual-risk statements are point-in-time evidence, not current release or fleet status. See
+> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 ## Current branch
 
 Branch: `codex/review-bot-generational-hardening`

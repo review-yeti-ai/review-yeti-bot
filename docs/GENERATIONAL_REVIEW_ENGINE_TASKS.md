@@ -1,5 +1,10 @@
 # Generational Review Engine Task List
 
+> [!WARNING]
+> **Historical task record; non-authoritative.** Completion marks and branch references are retained
+> for provenance and do not state current runtime, release, or fleet behavior. See
+> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 Plan: [`docs/superpowers/plans/2026-08-01-generational-review-engine-hardening.md`](superpowers/plans/2026-08-01-generational-review-engine-hardening.md)
 
 Integration branch: `codex/review-bot-generational-hardening`

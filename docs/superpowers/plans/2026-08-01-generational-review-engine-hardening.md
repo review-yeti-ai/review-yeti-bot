@@ -1,5 +1,10 @@
 # Generational Review Engine Hardening Implementation Plan
 
+> [!WARNING]
+> **Historical plan; non-authoritative.** This records a point-in-time proposal, not current runtime,
+> provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn `ct-review-bot` from a reliable multi-persona panel into a durable, evidence-backed, repository-aware GitHub review engine that can credibly compete with CodeRabbit and Greptile.
