@@ -18,10 +18,11 @@ import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
 export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v5';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
-export const CANDIDATE_PROFILE = 'ollama-high-150s-49152-evaluation';
+export const CANDIDATE_PROFILE = 'ollama-medium-150s-49152-evaluation';
 export const BASELINE_PROFILE = 'current-production';
 export const CANDIDATE_TIMEOUT_MS = 150_000;
 export const CANDIDATE_MAX_OUTPUT_TOKENS = 49_152;
+export const CANDIDATE_REASONING_EFFORT = 'medium';
 const FIXTURE_CONTRACT = Object.freeze([
   ['vacuous-default-value-test', 'defect'],
   ['format-evadable-absence-guard', 'defect'],
@@ -119,6 +120,7 @@ export function buildTransportHandoff(policy, profile) {
       ...ollama,
       timeout_ms: CANDIDATE_TIMEOUT_MS,
       max_tokens: CANDIDATE_MAX_OUTPUT_TOKENS,
+      reasoning_effort: CANDIDATE_REASONING_EFFORT,
     }];
   }
   throw new Error(`unsupported qualification profile: ${profile}`);
@@ -508,7 +510,7 @@ export function buildCandidateQualityGate(candidate = {}) {
   const requestContractObserved = responseAttemptTelemetryComplete
     && candidate.profile === CANDIDATE_PROFILE
     && outcomes.every((entry) => (
-      entry.response_attempts[0]?.reasoning_effort === 'high'
+      entry.response_attempts[0]?.reasoning_effort === CANDIDATE_REASONING_EFFORT
       && entry.response_attempts[0]?.max_output_tokens === CANDIDATE_MAX_OUTPUT_TOKENS
     ));
   const stableCandidateOutputs = outputTelemetryComplete && responseAttemptTelemetryComplete && outcomes.every((entry) => {
@@ -542,7 +544,7 @@ export function buildCandidateQualityGate(candidate = {}) {
     output_telemetry_complete: outputTelemetryComplete,
     response_attempt_telemetry_complete: responseAttemptTelemetryComplete,
     response_attempt_telemetry_consistent: attemptTelemetryConsistent,
-    required_first_attempt_reasoning_effort: 'high',
+    required_first_attempt_reasoning_effort: CANDIDATE_REASONING_EFFORT,
     required_first_attempt_max_output_tokens: CANDIDATE_MAX_OUTPUT_TOKENS,
     request_contract_observed: requestContractObserved,
     required_output_shape: 'direct_json_object',

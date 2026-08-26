@@ -79,7 +79,7 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
             latencyMs: 90_000,
             responseStatus: 200,
             failureClass: 'malformed_output',
-            reasoningEffort: 'high',
+            reasoningEffort: 'medium',
             maxOutputTokens: 49_152,
             outputTokens: 49_152,
             outputShape: 'no_json',
@@ -116,7 +116,7 @@ function makeFixtureRows({ missed = [], falsePositives = [], malformed = [] } = 
             transport: 'ollama',
             latencyMs: 10 + index,
             responseStatus: 200,
-            reasoningEffort: 'high',
+            reasoningEffort: 'medium',
             maxOutputTokens: 49_152,
             outputTokens: 12,
             outputShape: 'direct_json_object',
@@ -148,15 +148,16 @@ test('qualification input is fail-closed and requires immutable coordinates', ()
 test('only the explicit Ollama candidate profile narrows the current policy', () => {
   const baseline = buildTransportHandoff(policy, BASELINE_PROFILE);
   const candidate = buildTransportHandoff(policy, CANDIDATE_PROFILE);
-  assert.equal(CANDIDATE_PROFILE, 'ollama-high-150s-49152-evaluation');
+  assert.equal(CANDIDATE_PROFILE, 'ollama-medium-150s-49152-evaluation');
   assert.deepEqual(baseline.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
   assert.deepEqual(candidate.map((transport) => transport.name), ['ollama']);
   assert.equal(candidate[0].timeout_ms, CANDIDATE_TIMEOUT_MS);
-  assert.equal(candidate[0].reasoning_effort, 'high');
+  assert.equal(candidate[0].reasoning_effort, 'medium');
   assert.equal(candidate[0].max_tokens, 49_152);
   assert.equal(baseline.find((transport) => transport.name === 'ollama').max_tokens, undefined);
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').timeout_ms, 90_000);
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').max_tokens, undefined);
+  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').reasoning_effort, 'high');
   assert.throws(() => buildTransportHandoff(policy, 'openrouter-primary'), /unsupported qualification profile/u);
 });
 
@@ -238,6 +239,9 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
   assert.equal(receipt.candidate_quality_gate.output_telemetry_complete, true);
   assert.equal(receipt.candidate_quality_gate.response_attempt_telemetry_complete, true);
   assert.equal(receipt.candidate_quality_gate.response_attempt_telemetry_consistent, true);
+  assert.equal(receipt.candidate_quality_gate.required_first_attempt_reasoning_effort, 'medium');
+  assert.equal(receipt.candidate_quality_gate.required_first_attempt_max_output_tokens, 49_152);
+  assert.equal(receipt.candidate_quality_gate.request_contract_observed, true);
   assert.equal(receipt.candidate_quality_gate.stable_candidate_outputs, true);
   assert.equal(receipt.candidate_not_worse_on_defect_recall, true);
   assert.equal(receipt.candidate_eligible_for_next_step, true);
@@ -245,7 +249,7 @@ test('receipt is sanitized, baseline-authoritative, and never a promotion decisi
     transport: 'ollama',
     timeout_ms: CANDIDATE_TIMEOUT_MS,
     connect_timeout_ms: 30_000,
-    reasoning_effort: 'high',
+    reasoning_effort: 'medium',
     max_output_tokens: 49_152,
     repetitions: 1,
     concurrency: 1,
@@ -333,7 +337,7 @@ test('receipt eligibility fails closed on candidate quality regressions', () => 
   assert.equal(buildCandidateQualityGate(ignoredTokenOverride).passed, false);
 
   const ignoredReasoningOverride = makeArm(CANDIDATE_PROFILE);
-  ignoredReasoningOverride.fixture_outcomes[0].response_attempts[0].reasoning_effort = 'medium';
+  ignoredReasoningOverride.fixture_outcomes[0].response_attempts[0].reasoning_effort = 'high';
   assert.equal(buildCandidateQualityGate(ignoredReasoningOverride).request_contract_observed, false);
   assert.equal(buildCandidateQualityGate(ignoredReasoningOverride).passed, false);
 
@@ -648,8 +652,10 @@ test('runQualification verifies first, then starts exactly two bounded arms in p
     assert.deepEqual(starts.find((entry) => entry.arm === 'candidate').transportPlan.map((transport) => transport.name), ['ollama']);
     assert.equal(starts.find((entry) => entry.arm === 'candidate').transportPlan[0].timeout_ms, CANDIDATE_TIMEOUT_MS);
     assert.equal(starts.find((entry) => entry.arm === 'candidate').transportPlan[0].max_tokens, 49_152);
+    assert.equal(starts.find((entry) => entry.arm === 'candidate').transportPlan[0].reasoning_effort, 'medium');
     assert.equal(starts.find((entry) => entry.arm === 'baseline').transportPlan.find((transport) => transport.name === 'ollama').timeout_ms, 90_000);
     assert.equal(starts.find((entry) => entry.arm === 'baseline').transportPlan.find((transport) => transport.name === 'ollama').max_tokens, undefined);
+    assert.equal(starts.find((entry) => entry.arm === 'baseline').transportPlan.find((transport) => transport.name === 'ollama').reasoning_effort, 'high');
     assert.deepEqual(starts.find((entry) => entry.arm === 'baseline').transportPlan.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
     assert.equal(result.receipt.candidate_eligible_for_next_step, true);
     assert.match(result.receiptPath, /ollama-qualification-receipt\.json$/u);

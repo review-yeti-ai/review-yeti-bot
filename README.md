@@ -137,7 +137,7 @@ When an operator wants evidence for moving more work to Ollama, use the manually
 `One-time Ollama qualification` workflow. It requires the exact target repository, PR number,
 base/head SHAs, and the exact `review-yeti-bot` commit, then verifies those coordinates again
 through the GitHub API before starting any model request. It runs thirteen fixed fixtures once through
-the current production transport plan and once through an Ollama-only, high-reasoning candidate with
+the current production transport plan and once through an Ollama-only, medium-reasoning candidate with
 a 150-second inactivity window and a 49,152-token output ceiling in parallel.
 
 This is a bounded evidence run, not a canary or a review trigger: it has no schedule, pull-request
@@ -160,9 +160,11 @@ fixtures remain clean in both arms, every expected fixture has bounded outcome e
 candidate has no `malformed_output` recovery, and candidate recall does not regress from the
 baseline. The last response-attempt record must match the final output telemetry and the attempt
 history must agree with the retry classification. Transport completion or partial recall is not
-qualification evidence. The 150-second and 49,152-token values are qualification-only candidate
-overrides; the committed production Ollama timeout remains 90000ms and its output-token setting
-remains unchanged.
+qualification evidence. The medium reasoning, 150-second, and 49,152-token values are
+qualification-only candidate overrides; the committed production Ollama reasoning effort remains
+high, its timeout remains 90000ms, and its output-token setting remains unchanged. Medium effort is
+being isolated only because high effort saturated both the 24,576 and 49,152-token ceilings on
+three first attempts without producing JSON; increasing the ceiling again is not justified.
 
 - **timeout_ms = 120000 for Fireworks, 90000 for Ollama and the OpenRouter fallback.** Since
   `review-yeti-bot` PR #163, an actively-streaming response is never aborted by a duration cap --

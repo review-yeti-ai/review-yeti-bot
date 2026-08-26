@@ -41,7 +41,7 @@ jobs:
   qualify:
     name: Paired Ollama evidence (no publication)
     runs-on: ubuntu-latest
-    # Thirteen candidate fixtures run serially, and each high-reasoning request
+    # Thirteen candidate fixtures run serially, and each medium-reasoning request
     # has a 150-second inactivity window plus one bounded format-recovery turn.
     # This job deadline adds no calls; it only ensures a fail-closed receipt can
     # still be written when several fixtures consume their declared windows.
