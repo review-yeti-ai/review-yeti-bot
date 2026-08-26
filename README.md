@@ -118,53 +118,58 @@ The workflow references only the GitHub secret; neither policy nor workflow file
 credential value.
 
 The action starts each model turn at Fireworks and advances through the declared order when a
-transport fails. The OpenRouter entry requires compatible request parameters, strict investigation
-output, and throughput-ranked routing while delegating quantization and endpoint eligibility to
-OpenRouter's live policy except for the account-level Morph exclusion recorded after its verified
-timeout incident. Each caller must expose the
-three named environment variables through its inherited GitHub Actions secrets. Fireworks stays
-on the default serverless tier; Fireworks and
-OpenRouter use maximum reasoning, while Ollama uses its documented `high` setting. Each transport
-gets one retry, and OpenRouter owns endpoint selection after a timeout.
+transport fails. The OpenRouter entry requires compatible request parameters, the policy's
+`strict` output marker, and throughput-ranked routing while delegating quantization and endpoint
+eligibility to OpenRouter's live policy except for the account-level Morph exclusion recorded after
+its verified timeout incident. In the current hosted panel, `strict` is a policy declaration: the
+runtime sends JSON mode (`response_format: { type: "json_object" }`) and validates the terminal
+payload, but it does not enforce one cross-provider JSON Schema. Each caller must expose the three
+named environment variables through its inherited GitHub Actions secrets. Fireworks stays on the
+default serverless tier. All three transports use `high` reasoning. Each transport gets one retry,
+and OpenRouter owns endpoint selection after a timeout.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
 budget, a fifteen-minute (900s) lane deadline with a two-minute non-generation reserve, and a
 30-second OpenRouter first-token budget.
 
-## One-time Ollama qualification
+## One-time Fireworks/Ollama comparison
 
 When an operator wants evidence for moving more work to Ollama, use the manually dispatched
-`One-time Ollama qualification` workflow. It requires the exact target repository, PR number,
-base/head SHAs, and the exact `review-yeti-bot` commit, then verifies those coordinates again
-through the GitHub API before starting any model request. It runs thirteen fixed fixtures once through
-the current production transport plan and once through an Ollama-only, medium-reasoning candidate with
-a 150-second inactivity window and a 49,152-token output ceiling in parallel.
+`One-time Fireworks/Ollama comparison` workflow. It requires the exact target repository, PR
+number, base/head SHAs, and exact `review-yeti-bot` commit, then verifies those coordinates through
+the GitHub API before starting a model request. Each dispatch runs thirteen fixed fixtures once
+through a Fireworks-only arm and once through an Ollama-only arm. Fixtures are serial within each
+arm (`concurrency: 1`); the two arms run in parallel. Both arms use high reasoning, streaming, a
+150-second inactivity window, a 30-second connection window, and a 24,576-token output ceiling.
+Both also invoke the same current-testing evaluator arm and synthetic prompt identity.
 
 This is a bounded evidence run, not a canary or a review trigger: it has no schedule, pull-request
 event, recurring rerun, traffic split, comment/check/review publication, merge authority, or
-provider mutation. The current-production arm is explicitly authoritative. The uploaded receipt
+provider mutation. Neither arm is authoritative. The uploaded receipt
 contains only aggregate counts, bounded per-fixture outcomes and routing labels, latency, cost,
-exact-head coordinates, digests, and up to eight content-free response-attempt summaries per
+exact-head coordinates, digests, and at most two content-free response-attempt summaries per
 fixture. Attempt summaries retain only closed outcome/effort/output classifications and bounded
 status, latency, token counts, and presence/size fields; they contain no findings, model text,
 reasoning trace, provider error body, exception message, or credentials. A
-completed candidate is only eligible for the next
-manual decision—the provider order and `v1` consumer path remain unchanged until a separate,
-reviewed control-plane change is approved.
+completed comparison is only evidence for a later manual decision. One receipt represents one
+independent run; at least three sequential manual dispatches are required before a provider
+decision. The provider order and `v1` consumer path remain unchanged until a separate, reviewed
+control-plane change is approved.
 
 The receipt embeds both implementation identities: the exact central-action commit selected by
 the manual dispatch and the exact `review-yeti-bot` commit checked out for both arms.
 
-Candidate eligibility fails closed unless all seven defect fixtures are detected, all six clean
-fixtures remain clean in both arms, every expected fixture has bounded outcome evidence, the
-candidate has no `malformed_output` recovery, and candidate recall does not regress from the
-baseline. The last response-attempt record must match the final output telemetry and the attempt
-history must agree with the retry classification. Transport completion or partial recall is not
-qualification evidence. The medium reasoning, 150-second, and 49,152-token values are
-qualification-only candidate overrides; the committed production Ollama reasoning effort remains
-high, its timeout remains 90000ms, and its output-token setting remains unchanged. Medium effort is
-being isolated only because high effort saturated both the 24,576 and 49,152-token ceilings on
-three first attempts without producing JSON; increasing the ceiling again is not justified.
+Both arms use the same fail-closed integrity checks: exact fixture ids and categories, provider and
+transport attribution, first-attempt reasoning and token settings, bounded attempt history,
+terminal parseability, streaming, and telemetry consistency. The workflow fails when that evidence
+is incomplete or misattributed. A valid run with missed defects, clean false positives, or malformed
+output recovery remains a successful evidence run and records the stricter per-arm quality gate as
+failed; it does not activate either provider. Route sampling is intentionally not identical:
+Fireworks uses its configured temperature without a deterministic seed, while Ollama uses its
+configured deterministic sampling. Receipts therefore compare the two configured operational
+routes, not pure model weights under an identical sampler. Missing provider usage or cost data is
+recorded as unavailable rather than zero, so this workflow cannot support a pricing conclusion
+without complete telemetry.
 
 - **timeout_ms = 120000 for Fireworks, 90000 for Ollama and the OpenRouter fallback.** Since
   `review-yeti-bot` PR #163, an actively-streaming response is never aborted by a duration cap --
@@ -285,7 +290,8 @@ The Review Yeti bot is selected by the platform release channel (`action_channel
 `policy/review-yeti.json`). The workflow resolves that channel to an exact commit, checks the
 tag target and main reachability, then executes the checked-out action. There is no
 per-repository SHA override or emergency bypass; changes advance through the central channel's
-reviewed promotion. See review-yeti-ai/review-yeti-bot `docs/RELEASING.md`.
+reviewed promotion. Until the dedicated release guide lands, see the
+[review-yeti-bot release section](https://github.com/review-yeti-ai/review-yeti-bot#5-reviewed-semver-releases).
 
 The credential-free execution-plan fixture records the provider behavior that central policy
 claims to configure without exposing endpoint URLs or credential environment names. It marks
