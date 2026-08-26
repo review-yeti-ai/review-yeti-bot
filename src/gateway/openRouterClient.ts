@@ -507,7 +507,7 @@ interface StreamState {
   content: string;
   reasoning: string;
   usage: any;
-  cost: number;
+  cost: number | null;
   lastChunkTime: number;
 }
 
@@ -519,8 +519,12 @@ function collectChunk(data: any, state: StreamState): void {
   const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
   if (typeof reasoning === 'string') state.reasoning += reasoning;
   if (data?.usage) state.usage = data.usage;
-  if (Number.isFinite(Number(data?.cost))) state.cost = Number(data.cost);
-  if (Number.isFinite(Number(data?.cost_usd))) state.cost = Number(data.cost_usd);
+  const reportedCost = data?.cost
+    ?? data?.cost_usd
+    ?? data?.usage?.cost
+    ?? data?.usage?.total_cost
+    ?? data?.usage?.cost_details?.upstream_inference_cost;
+  if (Number.isFinite(Number(reportedCost))) state.cost = Number(reportedCost);
   state.lastChunkTime = Date.now();
 }
 
@@ -549,7 +553,13 @@ async function readWithTimeout<T>(
 async function readStreamingResponse(
   response: Response,
   requestedModel: string,
-  options?: { inactivityTimeoutMs?: number; ttftTimeoutMs?: number; persona?: string; providerId?: string }
+  options?: {
+    inactivityTimeoutMs?: number;
+    ttftTimeoutMs?: number;
+    totalTimeoutMs?: number;
+    persona?: string;
+    providerId?: string;
+  }
 ): Promise<any> {
   const contentType = response.headers?.get('content-type') || '';
   if (!contentType.includes('text/event-stream')) {
@@ -566,7 +576,7 @@ async function readStreamingResponse(
     content: '',
     reasoning: '',
     usage: null as any,
-    cost: 0,
+    cost: null,
     lastChunkTime: Date.now(),
   };
 
@@ -577,6 +587,9 @@ async function readStreamingResponse(
   const personaLabel = options?.persona ? `[Persona: ${options.persona}] ` : '';
   let lastHeartbeatLog = Date.now();
   let receivedFirstChunk = false;
+  const totalDeadlineAt = options?.totalTimeoutMs && options.totalTimeoutMs > 0
+    ? Date.now() + options.totalTimeoutMs
+    : 0;
 
   const consume = (line: string) => {
     const trimmed = line.trim();
@@ -608,17 +621,28 @@ async function readStreamingResponse(
   try {
     while (true) {
       const readPromise = reader.read();
-      const readTimeoutMs = receivedFirstChunk ? inactivityTimeoutMs : ttftTimeoutMs;
+      const remainingTotalMs = totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity;
+      if (remainingTotalMs <= 0) {
+        throw new OpenRouterTimeoutError(
+          `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
+        );
+      }
+      const inactivityBudgetMs = receivedFirstChunk ? inactivityTimeoutMs : ttftTimeoutMs;
+      const readTimeoutMs = Math.min(inactivityBudgetMs, remainingTotalMs);
       const { done, value } = await readWithTimeout(
         readPromise,
         readTimeoutMs,
-        () => receivedFirstChunk
-          ? new OpenRouterConnectionError(
-              `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`
+        () => totalDeadlineAt && Date.now() >= totalDeadlineAt
+          ? new OpenRouterTimeoutError(
+              `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
             )
-          : new OpenRouterTimeoutError(
-              `Time to first streamed chunk exceeded ${Math.round(ttftTimeoutMs / 1000)}s`
-            )
+          : receivedFirstChunk
+            ? new OpenRouterConnectionError(
+                `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`
+              )
+            : new OpenRouterTimeoutError(
+                `Time to first streamed chunk exceeded ${Math.round(ttftTimeoutMs / 1000)}s`
+              )
       );
       if (done) break;
       receivedFirstChunk = true;
@@ -669,6 +693,7 @@ export class OpenRouterClient implements ReviewModelClient {
 
     const effectiveModel = normalizeOpenRouterModel(request.model);
     const started = this.now();
+    const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
     const headers = new Headers({
@@ -700,6 +725,7 @@ export class OpenRouterClient implements ReviewModelClient {
         providerId: request.providerId,
         ttftTimeoutMs: request.ttftTimeoutMs,
         inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+        totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
       });
       const rawMsg = data?.choices?.[0]?.message;
       const content = (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '')
@@ -717,7 +743,13 @@ export class OpenRouterClient implements ReviewModelClient {
             total: Number(rawUsage.total_tokens),
           }
         : null;
-      const rawCost = Number(data.cost ?? data.cost_usd ?? rawUsage?.cost);
+      const rawCost = Number(
+        data.cost
+        ?? data.cost_usd
+        ?? rawUsage?.cost
+        ?? rawUsage?.total_cost
+        ?? rawUsage?.cost_details?.upstream_inference_cost,
+      );
       const costUSD = Number.isFinite(rawCost) && rawCost > 0
         ? rawCost
         : usage ? estimateTokenCost(effectiveModel, usage.prompt, usage.completion) : null;
