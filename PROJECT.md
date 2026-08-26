@@ -1,5 +1,10 @@
 # Project: Review Yeti Dynamic Context Management & Compaction Architecture
 
+> [!WARNING]
+> **Historical implementation record; non-authoritative.** Scope, milestones, provider assumptions,
+> and acceptance status are bound to the original change set, not the current release or
+> CallTelemetry fleet. See [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md).
+
 ## Architecture
 
 The system refactors Review Yeti's context handling architecture to eliminate arbitrary diff truncation and support massive PRs across models ranging from 128k to 1M+ tokens:

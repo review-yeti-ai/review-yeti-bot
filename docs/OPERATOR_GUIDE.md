@@ -1,5 +1,11 @@
 # ct-review-bot — Enterprise Operator & Deployment Guide
 
+> [!IMPORTANT]
+> **Optional service document.** This DOKS/App runbook does not operate the public GitHub Action or
+> the CallTelemetry production fleet. Its deployment, secret, provider, and authentication claims
+> require verification against current service source before use. See
+> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 ## Overview
 This document describes production deployment procedures for `ct-review-bot` on DigitalOcean Kubernetes (DOKS), secret management via Doppler & Kubernetes Secrets, and default provider allocations.
 

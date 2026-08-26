@@ -1,5 +1,10 @@
 # GitHub App setup
 
+> [!IMPORTANT]
+> **Optional service document.** The public GitHub Action requires no App or webhook. This setup is
+> not used by the CallTelemetry production fleet and must be verified against current service
+> source before deployment. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 Configure the private `ct-review-bot` App with:
 
 - Homepage: `https://review-bot.calltelemetry.com`
