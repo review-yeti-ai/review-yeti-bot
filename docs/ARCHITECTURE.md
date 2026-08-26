@@ -1,5 +1,11 @@
 # ct-review-bot architecture
 
+> [!IMPORTANT]
+> **Optional service document.** This describes the long-running App/dashboard lineage, not the
+> public GitHub Action install path or the CallTelemetry production fleet. Verify deployment,
+> authentication, publication, and provider claims against current service source before use. See
+> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 The canonical contract is the version 3 `.ct-review.yaml` schema maintained by
 `ct-meta`. The bot executes that repository-owned contract; it has no universal
 persona roster.

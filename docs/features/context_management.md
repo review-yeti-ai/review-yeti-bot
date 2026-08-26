@@ -1,5 +1,10 @@
 # Review Yeti Context Management Architecture: Dynamic Model Discovery, AST Compaction, and Zero-Loss SHA Partitioning
 
+> [!WARNING]
+> **Historical feature design; non-authoritative.** The production, model-capacity, and zero-loss
+> claims below are retained with their original change set and require current source and runtime
+> verification. See [Documentation authority](../DOCUMENTATION_AUTHORITY.md).
+
 **Canonical Document**: `docs/features/context_management.md`  
 **Status**: Production / Hardened  
 **Target Systems**: Review Engine Core, GitHub Action Review Pipeline, Sandboxed PI Workspace Harness, Benchmark Evaluation Matrix  

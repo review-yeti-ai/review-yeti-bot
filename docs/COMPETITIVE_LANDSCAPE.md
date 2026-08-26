@@ -1,5 +1,10 @@
 # 🥊 Competitive Landscape & Feature Comparison
 
+> [!CAUTION]
+> **Unverified marketing draft; do not publish.** Competitor pricing, accuracy, performance,
+> deployment, and feature claims have not been revalidated with current primary sources and
+> reproducible measurements. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 An in-depth technical, financial, and architectural evaluation of **ct-review-bot** against leading market alternatives: **CodeRabbit**, **Greptile**, and **Qodo AI** (formerly Codu / Qodo Gen).
 
 ---

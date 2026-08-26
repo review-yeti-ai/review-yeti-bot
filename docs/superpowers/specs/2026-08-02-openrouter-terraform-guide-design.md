@@ -1,5 +1,10 @@
 # Review Bot OpenRouter Terraform Guide Design
 
+> [!WARNING]
+> **Historical specification; non-authoritative.** This records a point-in-time proposal, not current
+> runtime, provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 ## Goal
 
 Teach ct-review-bot operators how to build and safely manage the OpenRouter

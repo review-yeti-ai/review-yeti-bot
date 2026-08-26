@@ -1,10 +1,16 @@
 # 🤖 ct-review-bot
 
-[![Review Bot](https://github.com/JBJMLLC/ct-review-bot/actions/workflows/review-bot.yaml/badge.svg)](https://github.com/JBJMLLC/ct-review-bot/actions/workflows/review-bot.yaml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Review Bot](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml/badge.svg)](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml)
 
 **A GitHub Action that reviews your pull requests with a panel of AI reviewers and posts one
 consolidated comment.**
+
+> **Documentation scope:** This README is the public GitHub Action entry point. The optional
+> App/dashboard service and historical design records are classified in
+> [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md). CallTelemetry repositories use the
+> separate [`ct-review-actions`](https://github.com/calltelemetry/ct-review-actions) control plane;
+> its reviewed policy owns fleet provider order, credentials, release selection, and rollback.
+> Standalone provider examples below are not CallTelemetry fleet policy.
 
 Each reviewer is a persona with a narrow charter — security, performance, testing and so on —
 and you can write your own in markdown. Install it with ten lines of YAML. There is no app to
@@ -28,10 +34,10 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: JBJMLLC/ct-review-bot@v1
+      - uses: review-yeti-ai/review-yeti-bot@v1
         with:
           llm-base-url: https://openrouter.ai/api/v1
-          model: openrouter/auto-beta
+          model: openrouter/auto
           llm-api-key: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
 ```
 
@@ -40,7 +46,9 @@ action reads the pull request diff, runs the reviewers in parallel, and comments
 your workflow's built-in `GITHUB_TOKEN`; no personal access token required.
 
 You supply a model-provider API key and may override the compatible base URL. **You own the key
-and the prompts**; prompts are sent to the endpoint you configure. The default endpoint is OpenRouter.
+and the prompts**; prompts are sent to the endpoint you configure. For a direct standalone Action
+install, the default endpoint is OpenRouter. Centrally managed callers inherit their provider plan
+from their own control plane instead.
 
 > **No key yet?** The action fails closed without posting a successful verdict. It never presents
 > static pattern checks as a model review.
@@ -101,10 +109,11 @@ on the pull request that proposes them.
 
 ### What is sent to your model provider
 
-The pull request diff is sent to whichever endpoint you configure. The default `openrouter/auto`
-lets OpenRouter select a provider, which means you cannot state in advance which vendor received
-your code or what their retention policy is. If that matters — proprietary code, regulated data,
-a customer commitment — pin an explicit model and provider:
+The pull request diff is sent to whichever endpoint you configure. In a direct standalone install,
+the default `openrouter/auto` lets OpenRouter select a provider, which means you cannot state in
+advance which vendor received your code or what their retention policy is. If that matters —
+proprietary code, regulated data, a customer commitment — pin an explicit model and provider. A
+centrally managed caller must change its central policy instead of copying this example:
 
 ```yaml
         with:
@@ -120,8 +129,10 @@ a customer commitment — pin an explicit model and provider:
 - **You own the key.** Bring any OpenAI-compatible provider. Your code and diffs go to the
   provider you chose, not to an intermediary.
 - **It is a GitHub Action.** No app installation, no webhook endpoint, no server, no database.
-- **Cost is bounded and visible.** One request per reviewer per push, with a per-reviewer diff
-  budget you set.
+- **Cost controls are explicit.** Persona count, diff, completion, concurrency, and transport
+  budgets are bounded. Provider attempts can exceed one per reviewer because partitioning,
+  investigation turns, transport failover, and format recovery are real model calls; use the run
+  receipt and provider billing for actual usage.
 
 It is deliberately simpler than a full review platform: no cross-PR memory, no codebase-wide
 semantic index, no chat. If you need those, a hosted service will serve you better.
@@ -130,9 +141,11 @@ semantic index, no chat. If you need those, a hosted service will serve you bett
 
 ## What it costs
 
-One request per enabled reviewer, per push. The default roster is five reviewers, and each
-receives at most `max-diff-chars` of diff (24,000 characters by default), so a large pull request
-does not turn into a large bill. Lower the budget, or narrow the roster, to spend less:
+Cost depends on enabled reviewers, diff partitions, investigation turns, retries, recovery, model,
+and provider pricing. The default roster is five reviewers and the Action input defaults to a
+24,000-character diff budget, but zero-loss partitioning can create additional bounded model calls
+for a large pull request. Lower the budget or narrow the roster to reduce exposure, then use the
+sanitized run receipt and provider billing rather than assuming one request per reviewer:
 
 ```yaml
         with:
@@ -241,12 +254,23 @@ This mode needs two tokens — one in the calling repository allowed to dispatch
 default `GITHUB_TOKEN` is scoped to a single repository. Prefer the action above unless you
 specifically need centralized keys and session data.
 
+This repository-dispatch mode is not the CallTelemetry fleet wrapper. CallTelemetry callers invoke
+`ct-review-actions@v1`, which resolves an exact released bot commit and applies central policy.
+
 ---
 
 ### Repository configuration (`.ct-review.yaml`)
 
-The action reads one key from `.ct-review.yaml`: `personas`. Everything else that influences a
-review is an action input.
+The Action reads trusted configuration from the pull request's base ref. Its repository-owned
+surface is deliberately narrower than the optional service schema:
+
+- `personas` and `.ct-review/personas/*.md` define the reviewer roster and charters;
+- `limits.max_diff_bytes` may narrow the diff boundary;
+- `submodules` controls bounded gitlink handling; and
+- `github_action.openrouter` may narrow the direct standalone OpenRouter policy.
+
+Action inputs remain authoritative for caller-selected bounds. A centrally supplied transport plan
+owns provider routing for managed callers.
 
 ```yaml
 # .ct-review.yaml — in the repository being reviewed
@@ -264,18 +288,19 @@ personas:
 Longer charters belong in their own files under `.ct-review/personas/`, described above. See the
 [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) for every key.
 
-> Earlier versions of this file documented `profile`, `quorum`, `mascot`, `dials`, `reviews`,
-> `chat`, `knowledge_base` and `auto_review` keys. Those belong to the self-hosted service below;
-> the action ignores them.
+> `profile`, `quorum`, `mascot`, `dials`, `reviews`, `chat`, `knowledge_base`, `auto_review`, and
+> CodeRabbit translation behavior belong to the optional self-hosted service below; the public
+> Action does not use them to decide its panel.
 
 ---
 
-## Managed OpenRouter deployment
+## Historical OpenRouter infrastructure record
 
-For the Terraform/OpenTofu workspace, guardrail, and bounded completion-key
-template, see [Managed OpenRouter deployment](docs/OPENROUTER_TERRAFORM.md).
-The canonical fleet policy lives in the ct-meta OpenRouter skill; this repo
-does not apply infrastructure or store provider credentials.
+[`docs/OPENROUTER_TERRAFORM.md`](docs/OPENROUTER_TERRAFORM.md) is retained only as historical
+CallTelemetry infrastructure context. Its resource identifiers, Doppler paths, mutation commands,
+and secret handoffs are not validated for current use; do not execute them. A direct standalone
+Action is configured through reviewed Action inputs and repository secrets. The CallTelemetry fleet
+provider plan lives in `ct-review-actions`.
 
 ---
 
@@ -315,7 +340,7 @@ git diff origin/main...HEAD > /tmp/current_changes.diff
 # Execute local Review Yeti review
 PR_DIFF_FILE=/tmp/current_changes.diff \
 PR_NUMBER=1 \
-GITHUB_REPOSITORY="JBJMLLC/ct-review-bot" \
+GITHUB_REPOSITORY="review-yeti-ai/review-yeti-bot" \
 PR_HEAD_SHA="$(git rev-parse HEAD)" \
 PR_BASE_SHA="$(git rev-parse origin/main)" \
 OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
@@ -331,9 +356,10 @@ OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
 npx ts-node src/cli/runLiveReview.ts --pr=2119 --repo=calltelemetry/ct-meta
 ```
 
-### 4. Run the 190-Scenario Release Benchmark Harness
+### 4. Run the release benchmark harness
 
-Execute the complete 190-scenario benchmark evaluation suite across all 4 production models:
+Execute the checked-in offline benchmark or an explicitly authorized live OpenRouter run. Treat the
+current baseline files—not this README—as the authority for scenario and model counts:
 
 ```bash
 # Offline cassette replay (zero network required, deterministic)
@@ -347,6 +373,9 @@ node scripts/generate-benchmark-charts.mjs
 ```
 
 ### 5. Reviewed SemVer releases
+
+The authoritative operator procedure and verification receipt are in
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 Merges to `main` are evaluated by Release Please using Conventional Commits. It
 opens a release PR instead of publishing directly from an ordinary merge:
