@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.13.0...v1.13.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **openrouter:** bound active stream lifetime ([#278](https://github.com/review-yeti-ai/review-yeti-bot/issues/278)) ([9eaab7f](https://github.com/review-yeti-ai/review-yeti-bot/commit/9eaab7fc59ed0ec12a924d1fb5f7999b35b82720))
+
 ## [1.13.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.12.0...v1.13.0) (2026-08-26)
 
 
