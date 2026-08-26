@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.12.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.11.0...v1.12.0) (2026-08-26)
+
+
+### Features
+
+* **ollama:** derive deterministic review seeds ([#266](https://github.com/review-yeti-ai/review-yeti-bot/issues/266)) ([0035fed](https://github.com/review-yeti-ai/review-yeti-bot/commit/0035fed15e26bf7102760c88affe230ad5dbb754))
+* **telemetry:** classify bounded model output shapes ([#265](https://github.com/review-yeti-ai/review-yeti-bot/issues/265)) ([5b20127](https://github.com/review-yeti-ai/review-yeti-bot/commit/5b20127802742ec585bcb4c0c8aa5eacbabd05f9))
+
+
+### Bug Fixes
+
+* **release:** document conventional commit requirement ([#275](https://github.com/review-yeti-ai/review-yeti-bot/issues/275)) ([649876c](https://github.com/review-yeti-ai/review-yeti-bot/commit/649876cb3c7aa3bec33262d94986328556c44b6d))
+* **review:** align prompt with available evidence ([#263](https://github.com/review-yeti-ai/review-yeti-bot/issues/263)) ([c3513d1](https://github.com/review-yeti-ai/review-yeti-bot/commit/c3513d1708452ce20ddf00bd875e708bb6ff0b3a))
+* **telemetry:** retain bounded model response attempts ([#267](https://github.com/review-yeti-ai/review-yeti-bot/issues/267)) ([47b835a](https://github.com/review-yeti-ai/review-yeti-bot/commit/47b835ab5ebb8b430bf4f5cf138b49cc63b58703))
+
 ## [1.11.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.10.1...v1.11.0) (2026-08-25)
 
 
