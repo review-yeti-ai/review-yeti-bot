@@ -177,11 +177,16 @@ describe('review pipeline cassette replay', () => {
     const first = await runOnce();
     const second = await runOnce();
 
-    // Latency is an observation, not part of the deterministic replay result.
-    // Keep the equality assertion focused on provider response and verdict data
-    // so a 0/1 ms scheduling difference cannot make the replay suite flaky.
-    const withoutLatency = ({ latencyMs, ...result }: any) => result;
-    expect(withoutLatency(first.result)).toEqual(withoutLatency(second.result));
+    // Review-level and per-attempt latency are observations, not deterministic replay data.
+    // Keep the equality assertion focused on provider response and verdict data so a 0/1 ms
+    // scheduling difference cannot make the replay suite flaky.
+    const withoutObservedLatency = ({ latencyMs, responseAttempts, ...result }: any) => ({
+      ...result,
+      responseAttempts: Array.isArray(responseAttempts)
+        ? responseAttempts.map(({ latencyMs: attemptLatencyMs, ...attempt }: any) => attempt)
+        : responseAttempts,
+    });
+    expect(withoutObservedLatency(first.result)).toEqual(withoutObservedLatency(second.result));
     expect(first.arbitration).toEqual(second.arbitration);
     expect(first.comment).toBe(second.comment);
     expect(cassette.observedFingerprints).toHaveLength(2);
