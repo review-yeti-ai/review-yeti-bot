@@ -1,5 +1,10 @@
 # Product contract
 
+> [!IMPORTANT]
+> **Optional service product record.** Service, OmniRoute, replay, and App claims here do not define
+> the public GitHub Action or CallTelemetry fleet. Verify current service source before treating any
+> statement as an operational contract. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 `ct-review-bot` enforces repository-composed review teams. A repository defines
 ordered persona lanes, path scope, required status, charter, and provider
 fallback in its base-SHA `.ct-review.yaml`.

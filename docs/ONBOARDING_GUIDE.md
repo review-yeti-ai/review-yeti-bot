@@ -1,5 +1,11 @@
 # 🚀 ct-review-bot — Zero-Config Onboarding & Session Learning Guide
 
+> [!IMPORTANT]
+> **Optional service document.** Wizard, session-learning, dashboard, and App onboarding here does
+> not install the public GitHub Action or configure the CallTelemetry production fleet. Verify it
+> against current service source before use. See
+> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 Complete reference guide for deploying **ct-review-bot** to any codebase in under 60 seconds using the 1-Click Onboarding Wizard and configuring persistent team session learning.
 
 ---

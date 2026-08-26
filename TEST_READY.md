@@ -1,5 +1,10 @@
 # E2E Test Suite Ready: Dynamic Context Management & Zero-Loss Partitioning Architecture
 
+> [!WARNING]
+> **Historical readiness record; non-authoritative.** Commands and pass claims are point-in-time
+> evidence and do not prove current main, a released tag, or CallTelemetry fleet behavior. See
+> [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md).
+
 ## Test Runner Commands
 - **Dynamic Context Management E2E Suite**: `npx vitest run tests/e2e/contextManagementE2E.test.ts`
 - **Diff Compactor Unit & Invariance Suite**: `npx vitest run tests/unit/diffCompactor.test.ts`

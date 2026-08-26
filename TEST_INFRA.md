@@ -1,5 +1,10 @@
 # E2E Test Infra: Dynamic Context Management & Compaction
 
+> [!WARNING]
+> **Historical test-plan record; non-authoritative.** Counts and coverage claims apply to the named
+> change set and require fresh execution before reuse as current evidence. See
+> [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md).
+
 ## Test Philosophy
 - Opaque-box, requirement-driven verification of context window discovery, diff compaction, multi-turn sliding history, and zero-loss commit SHA partitioning.
 - Methodology: Category-Partition + BVA + Pairwise Combinatorial + Workload Testing.
