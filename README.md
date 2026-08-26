@@ -171,6 +171,11 @@ routes, not pure model weights under an identical sampler. Missing provider usag
 recorded as unavailable rather than zero, so this workflow cannot support a pricing conclusion
 without complete telemetry.
 
+The qualification receipt schema is `review-yeti.ollama-qualification.v7`. It retains the bot's
+output-contract provenance per fixture and records whether policy intent, the observed request
+mode, provider capability, and terminal parsing were reported. These fields are evidence only:
+they do not alter the provider order, verdict gate, or activation boundary.
+
 - **timeout_ms = 120000 for Fireworks, 90000 for Ollama and the OpenRouter fallback.** Since
   `review-yeti-bot` PR #163, an actively-streaming response is never aborted by a duration cap --
   the engine's stall/idle timer re-arms on every SSE chunk -- so `timeout_ms` is now primarily a
