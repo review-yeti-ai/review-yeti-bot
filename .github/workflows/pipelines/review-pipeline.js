@@ -1156,7 +1156,7 @@ function normalizeModelResponseAttempt(entry = {}) {
     attempt,
     outcome,
     transport: normalizeTelemetryProvider(entry.transport),
-    provider: normalizeTelemetryProvider(entry.provider),
+    provider: normalizeTelemetryProvider(entry.provider) || normalizeTelemetryProvider(entry.transport),
     latencyMs: normalizeTelemetryDuration(entry.latencyMs),
     responseStatus: normalizeTelemetryStatus(entry.responseStatus),
     failureClass: normalizeTelemetryOutcomeClass(entry.failureClass),

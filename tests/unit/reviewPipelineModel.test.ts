@@ -968,6 +968,7 @@ describe('reviewWithModel', () => {
       calls += 1;
       const payload = calls === 1
         ? {
+            provider: 'unclassified-upstream-provider',
             usage: { completion_tokens: 24_576 },
             choices: [{
               finish_reason: 'length',
