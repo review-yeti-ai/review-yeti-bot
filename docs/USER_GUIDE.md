@@ -1,5 +1,10 @@
 # 📖 ct-review-bot — User Guide
 
+> [!IMPORTANT]
+> **Optional service document.** Dashboard, App, chat, memory, and repository-management behavior
+> here is separate from the public GitHub Action and the CallTelemetry production fleet. Verify
+> current service behavior before use. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 Welcome to the **ct-review-bot** User Guide. This comprehensive guide covers operational workflows, authentication, repository management, dashboard analytics, interactive PR chat commands, and rich automated code review features for developers and operations teams.
 
 ---
