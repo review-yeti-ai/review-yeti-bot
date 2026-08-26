@@ -1,7 +1,13 @@
 # Managed OpenRouter deployment
 
-`ct-review-bot` runs review traffic directly through OpenRouter. The canonical
-fleet policy and reference stack live in the ct-meta
+> [!WARNING]
+> **Historical CallTelemetry infrastructure record; non-operational.** The resource identifiers,
+> Doppler paths, mutation commands, and secret handoffs below have not been revalidated. Do not run
+> them or use this file to change provider policy. Current CallTelemetry fleet authority is
+> `calltelemetry/ct-review-actions`. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
+This retained record described a direct OpenRouter deployment for the historical `CT Review Fleet`.
+Its provider template and reference stack were associated with the ct-meta
 [`ct-platform/openrouter` skill](https://github.com/calltelemetry/ct-meta/tree/main/plugins/ct-platform/skills/openrouter);
 this repository's [`infra/openrouter/`](../infra/openrouter/) directory is a
 consumer template for operators who need the deployment beside the bot.
@@ -115,10 +121,10 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: JBJMLLC/ct-review-bot@main
+      - uses: review-yeti-ai/review-yeti-bot@v1
         with:
           llm-base-url: https://openrouter.ai/api/v1
-          model: openrouter/auto-beta
+          model: openrouter/auto
           llm-api-key: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
 ```
 

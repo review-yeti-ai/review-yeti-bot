@@ -1,6 +1,27 @@
 # ⚙️ ct-review-bot — Configuration Reference
 
-This reference guide provides a complete, 1:1 schema specification for `.ct-review.yaml` and `.coderabbit.yaml` repository configuration files in **ct-review-bot**.
+> [!IMPORTANT]
+> **Public Action reference.** [`action.yml`](../action.yml) and the base-ref configuration loader
+> are authoritative when this guide disagrees with executable behavior. Sections explicitly scoped
+> to the self-hosted service do not configure the Action. CallTelemetry fleet policy is external;
+> see [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
+This is a mixed reference: it documents the narrow public Action configuration boundary and
+retains the broader optional-service schema. It is not a 1:1 schema for the public Action.
+
+## Public Action configuration boundary
+
+The Action fetches configuration from the pull request's trusted base ref. It currently consumes:
+
+- `personas` and `.ct-review/personas/*.md` for roster and charters;
+- `limits.max_diff_bytes` as a bounded diff limit;
+- the `submodules` block for bounded gitlink handling; and
+- `github_action.openrouter` for a direct standalone OpenRouter policy.
+
+Caller Action inputs may narrow these controls. A managed caller's explicit central transport plan
+owns provider routing. The service-only sections below—including `reviews`, `chat`,
+`knowledge_base`, `path_filters`, `auto_review`, `dials`, and CodeRabbit translation—do not select
+the public Action panel.
 
 ### Pi workflow runtime bootstrap
 
@@ -20,29 +41,33 @@ their transitive closure; provenance is generated from the exact clean release c
 
 ## 📋 Table of Contents
 
-1. [Configuration File Resolution](#configuration-file-resolution)
-2. [Top-Level Schema Overview](#top-level-schema-overview)
+1. [Optional-service Configuration File Resolution](#optional-service-configuration-file-resolution)
+2. [Optional-service Top-Level Schema Overview](#optional-service-top-level-schema-overview)
 3. [V4 Execution Policy](#v4-execution-policy)
-4. [The 6 Standard Sections](#the-6-standard-sections)
+4. [Optional-service Standard Sections](#optional-service-standard-sections)
    - [1. `reviews`](#1-reviews)
    - [2. `chat`](#2-chat)
    - [3. `knowledge_base`](#3-knowledge_base)
    - [4. `path_filters`](#4-path_filters)
    - [5. `auto_review`](#5-auto_review)
    - [6. `dials`](#6-dials)
-5. [Clean Key Toggles](#clean-key-toggles)
+5. [Optional-service Clean Key Toggles](#optional-service-clean-key-toggles)
 6. [Multi-LLM Personas & Provider Schema](#multi-llm-personas--provider-schema)
 7. [CodeRabbit 1:1 Translation Mapping (`translateCodeRabbitToV3`)](#coderabbit-11-translation-mapping-translatecoderabbittov3)
 8. [Full Configuration Examples](#full-configuration-examples)
    - [Native `.ct-review.yaml` (V3)](#native-ct-reviewyaml-v3)
    - [CodeRabbit-Compatible `.coderabbit.yaml`](#coderabbit-compatible-coderabbityaml)
-9. [Managed OpenRouter deployment](#managed-openrouter-deployment)
+9. [Historical OpenRouter infrastructure record](#historical-openrouter-infrastructure-record)
 
 ---
 
-## 🔍 Configuration File Resolution
+<a id="optional-service-configuration-file-resolution"></a>
 
-When a GitHub Pull Request webhook is received, `ct-review-bot` checks the target repository for a configuration file in the following order of precedence:
+## 🔍 Optional-service configuration file resolution
+
+When the optional GitHub App service receives a pull-request webhook, it checks the target
+repository in the following order. The public Action instead fetches its trusted base-ref files in
+the order implemented by [`action.yml`](../action.yml).
 
 1. `.ct-review.yaml` in PR target branch at the immutable PR base SHA
 2. `.ct-review.yml` in PR target branch
@@ -53,9 +78,12 @@ When a GitHub Pull Request webhook is received, `ct-review-bot` checks the targe
 
 ---
 
-## 📐 Top-Level Schema Overview
+<a id="optional-service-top-level-schema-overview"></a>
 
-A Version 3 configuration contains core policy settings along with six CodeRabbit-mirrored top-level sections:
+## 📐 Optional-service top-level schema overview
+
+The optional service's Version 3 configuration contains core policy settings along with six
+CodeRabbit-mirrored top-level sections:
 
 ```yaml
 version: 3
@@ -80,9 +108,10 @@ rules: [ ... ]
 
 ## V4 Execution Policy
 
-Version 4 is the additive execution-policy layer. Version 3 remains accepted and is normalized to
-these defaults. The App and Action read policy from the trusted base reference; pull-request
-payloads and model output cannot change these limits.
+Version 4 is the additive service execution-policy layer. Version 3 remains accepted and is
+normalized to these defaults. The public Action reads only `limits.max_diff_bytes` and the
+`submodules` block from this example; other service limits are not Action controls. Both paths read
+trusted configuration from the base reference rather than model output or pull-request-head policy.
 
 ```yaml
 version: 4
@@ -113,19 +142,19 @@ run identity.
 
 ---
 
-## Managed OpenRouter deployment
+## Historical OpenRouter infrastructure record
 
-For the Terraform/OpenTofu workspace, guardrail, model allowlist, budget, and
-secret handoff, use [Managed OpenRouter deployment](OPENROUTER_TERRAFORM.md).
-The review Action talks directly to `https://openrouter.ai/api/v1`; the
-management key is not a runtime review credential. Keep the generated fleet
-completion key in Doppler and expose it to the workflow as the dedicated
-`OPENROUTER_PR_REVIEW_API_KEY` repository secret. Terraform state and variable
-files stay outside Git.
+[`OPENROUTER_TERRAFORM.md`](OPENROUTER_TERRAFORM.md) preserves an earlier CallTelemetry fleet
+workspace, guardrail, budget, Doppler, and secret-handoff procedure. It is non-operational and its
+commands must not be executed without a separate current infrastructure audit. A direct standalone
+Action uses reviewed Action inputs and repository secrets; a managed fleet inherits provider policy
+from its central control plane.
 
 ---
 
-## 📦 The 6 Standard Sections
+<a id="optional-service-standard-sections"></a>
+
+## 📦 Optional-service standard sections
 
 ### 1. `reviews`
 Controls automated code review behaviors, summaries, status publishing, and inline comment formatting.
@@ -259,16 +288,17 @@ dials:
 
 ---
 
-## 🎛️ Clean Key Toggles
+<a id="optional-service-clean-key-toggles"></a>
+
+## 🎛️ Optional-service clean key toggles
 
 `ct-review-bot` supports direct, clean configuration toggles that map cleanly into the underlying engine:
 
 - **`memory_engine`** (`boolean`): Enables/disables `.ct-memory/` SQLite learning graph and duplicate nit suppression.
 - **`mascot`** (`boolean`): Controls whether ASCII art mascot headers are rendered in comments.
 - **`persona_model`** (`string`): OpenRouter model identifier used by the
-  persona. Managed fleets should use `openrouter/auto-beta` or a model from
-  the Terraform guardrail allowlist; the endpoint and key are configured by
-  the Action workflow rather than through a legacy provider proxy.
+  persona in the optional service. A direct standalone Action uses `openrouter/auto` or a
+  policy-allowed model. Managed fleet provider selection belongs to its central control plane.
 - **`confidence_threshold`** (`number`): Integer threshold from `0` to `100`.
 - **`ticket_enforcement`** (`boolean`): Enforces ticket links across Linear (`PROJ-123`), Jira (`KEY-456`), or GitHub (`#789`).
 - **`reviewer_effort`** (`enum`): Controls latency and reasoning depth (`low`, `medium`, `high`, `xhigh`, `max`).
@@ -280,7 +310,8 @@ dials:
 ### Persona Definition (`personas`)
 
 A `personas:` list in `.ct-review.yaml` selects which reviewers run, and may define new ones.
-When the key is absent, every built-in persona runs.
+When the key is absent, the five default-enabled personas run; `personas: all` opts into every
+built-in persona.
 
 **On by default** — `security`, `performance`, `architecture`, `testing`, `dependencies`. These
 apply to essentially any codebase.
