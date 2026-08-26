@@ -800,12 +800,89 @@ describe('reviewWithModel', () => {
     expect(calls[0].headers['X-OpenRouter-Metadata']).toBe('enabled');
     expect(calls[1].body).toMatchObject({
       model: 'openai/gpt-5.6-luna',
-      models: ['moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.1', 'google/gemini-3.5-flash-lite'],
+      models: ['moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.1'],
       provider: { data_collection: 'deny', require_parameters: true },
       response_format: { type: 'json_object' },
     });
     expect(calls[1].body).not.toHaveProperty('plugins');
     expect(calls[1].body).not.toHaveProperty('reasoning');
+  });
+
+  it.each([
+    {
+      name: 'keeps canonical order when the failed model is in the middle',
+      failedModel: 'tencent/hy3',
+      model: 'openrouter/auto',
+      allowedModels: [
+        'openai/gpt-5.6-luna',
+        'moonshotai/kimi-k2.6',
+        'tencent/hy3',
+        'z-ai/glm-5.1',
+        'google/gemini-3.5-flash-lite',
+      ],
+      expectedModels: [
+        'openai/gpt-5.6-luna',
+        'moonshotai/kimi-k2.6',
+        'z-ai/glm-5.1',
+      ],
+    },
+    {
+      name: 'retains every remaining model when the policy is below the limit',
+      failedModel: 'z-ai/glm-5.1',
+      model: 'z-ai/glm-5.1',
+      allowedModels: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+      expectedModels: ['moonshotai/kimi-k2.6'],
+    },
+  ])('$name', async ({ failedModel, model, allowedModels, expectedModels }) => {
+    const calls: any[] = [];
+    const fetchImplementation = async (_url: string, init: any) => {
+      calls.push(JSON.parse(init.body));
+      if (calls.length === 1) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            error: {
+              code: 'rate_limit_exceeded',
+              message: `${failedModel} is temporarily rate-limited upstream`,
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [] }) } }] }),
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k',
+      model,
+      openRouterPolicy: {
+        base_url: 'https://openrouter.ai/api/v1',
+        model,
+        allowed_models: allowedModels,
+        data_collection: 'deny',
+        cost_quality_tradeoff: 7,
+      },
+      fetchImplementation,
+      sleepImplementation: async () => {},
+    });
+
+    expect(res.decision).toBe('APPROVE');
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatchObject({
+      model: failedModel,
+      models: expectedModels,
+      provider: { data_collection: 'deny', require_parameters: true },
+      response_format: { type: 'json_object' },
+    });
+    expect(calls[1].models).toHaveLength(expectedModels.length);
+    expect(calls[1]).not.toHaveProperty('plugins');
+    expect(calls[1]).not.toHaveProperty('reasoning');
   });
 
   it('does not retry a non-capacity provider error payload', async () => {
