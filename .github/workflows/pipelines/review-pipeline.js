@@ -1235,6 +1235,10 @@ const TELEMETRY_RECOVERY_ACTIONS = new Set([
 ]);
 
 const OPENROUTER_MAX_RETRY_AFTER_MS = 5_000;
+// OpenRouter rejects recovery requests whose `models` array contains more than
+// three entries. Keep the bounded recovery deterministic by retaining the
+// policy's canonical order after removing the failed model.
+const OPENROUTER_MAX_FALLBACK_MODELS = 3;
 
 function normalizeTelemetryAttemptCount(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -1392,7 +1396,9 @@ function prepareOpenRouterModelFallback(requestBody, requestOptions, payload, me
     configuredModels,
   );
   if (!failedModel) return false;
-  const fallbackModels = configuredModels.filter((model) => model !== failedModel);
+  const fallbackModels = configuredModels
+    .filter((model) => model !== failedModel)
+    .slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
   if (fallbackModels.length === 0) return false;
 
   // OpenRouter's `models` extension performs model-level fallback on rate limits
