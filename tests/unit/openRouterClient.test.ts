@@ -92,7 +92,7 @@ describe('OpenRouterClient', () => {
     const stream = [
       ': OPENROUTER PROCESSING\n',
       'data: {"model":"openai/gpt-4o-mini","choices":[{"delta":{"content":"FIX"}}]}\n',
-      'data: {"choices":[{"delta":{"content":"_FIRST"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n',
+      'data: {"choices":[{"delta":{"content":"_FIRST"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"total_cost":"0.0081"}}\n',
       'data: [DONE]\n',
     ].join('');
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
@@ -104,6 +104,7 @@ describe('OpenRouterClient', () => {
     await expect(client.complete({ ...request, stream: true })).resolves.toMatchObject({
       content: 'FIX_FIRST',
       usage: { prompt: 3, completion: 2, total: 5 },
+      costUSD: 0.0081,
     });
   });
 
@@ -124,6 +125,67 @@ describe('OpenRouterClient', () => {
       timeoutMs: 500,
       ttftTimeoutMs: 10,
     })).rejects.toThrow(OpenRouterTimeoutError);
+  });
+
+  it('aborts an active stream at the total wall-clock deadline even when deltas keep arriving', async () => {
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const activeStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}\n\n',
+        ));
+        interval = setInterval(() => {
+          try {
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"choices":[{"delta":{"reasoning":" still thinking"}}]}\n\n',
+            ));
+          } catch {
+            // The reader has been cancelled by the total deadline.
+          }
+        }, 5);
+      },
+      cancel() {
+        cancelled = true;
+        if (interval) clearInterval(interval);
+      },
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(activeStream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const started = Date.now();
+
+    await expect(client.complete({
+      ...request,
+      stream: true,
+      timeoutMs: 50,
+      ttftTimeoutMs: 20,
+    })).rejects.toThrow(/total deadline/i);
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(cancelled).toBe(true);
+  });
+
+  it.each([
+    ['usage.total_cost', { total_cost: '0.0081' }, 0.0081],
+    ['usage.cost_details.upstream_inference_cost', { cost_details: { upstream_inference_cost: '0.0092' } }, 0.0092],
+  ])('uses %s when OpenRouter reports cost outside data.cost', async (_label, usage, expectedCost) => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      model: 'openai/gpt-5.6-luna',
+      choices: [{ message: { role: 'assistant', content: 'SHIP' } }],
+      usage,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    await expect(client.complete({ ...request, stream: false })).resolves.toMatchObject({
+      costUSD: expectedCost,
+    });
   });
 
   it('replays a credential-free OpenRouter cassette and rejects an unmatched request', async () => {
