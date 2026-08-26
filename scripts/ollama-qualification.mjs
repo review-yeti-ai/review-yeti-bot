@@ -16,11 +16,12 @@ import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
-export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v4';
+export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v5';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
-export const CANDIDATE_PROFILE = 'ollama-high-150s-evaluation';
+export const CANDIDATE_PROFILE = 'ollama-high-150s-49152-evaluation';
 export const BASELINE_PROFILE = 'current-production';
 export const CANDIDATE_TIMEOUT_MS = 150_000;
+export const CANDIDATE_MAX_OUTPUT_TOKENS = 49_152;
 const FIXTURE_CONTRACT = Object.freeze([
   ['vacuous-default-value-test', 'defect'],
   ['format-evadable-absence-guard', 'defect'],
@@ -114,7 +115,11 @@ export function buildTransportHandoff(policy, profile) {
   if (profile === CANDIDATE_PROFILE) {
     const ollama = transports.find((transport) => transport.name === 'ollama');
     if (!ollama) throw new Error('policy does not define the Ollama transport');
-    return [{ ...ollama, timeout_ms: CANDIDATE_TIMEOUT_MS }];
+    return [{
+      ...ollama,
+      timeout_ms: CANDIDATE_TIMEOUT_MS,
+      max_tokens: CANDIDATE_MAX_OUTPUT_TOKENS,
+    }];
   }
   throw new Error(`unsupported qualification profile: ${profile}`);
 }
@@ -500,6 +505,12 @@ export function buildCandidateQualityGate(candidate = {}) {
     const retriedMalformedOutput = attempts.some((attempt) => attempt.outcome === 'malformed_output');
     return retriedMalformedOutput === (Array.isArray(entry.retry_reasons) && entry.retry_reasons.includes('malformed_output'));
   });
+  const requestContractObserved = responseAttemptTelemetryComplete
+    && candidate.profile === CANDIDATE_PROFILE
+    && outcomes.every((entry) => (
+      entry.response_attempts[0]?.reasoning_effort === 'high'
+      && entry.response_attempts[0]?.max_output_tokens === CANDIDATE_MAX_OUTPUT_TOKENS
+    ));
   const stableCandidateOutputs = outputTelemetryComplete && responseAttemptTelemetryComplete && outcomes.every((entry) => {
     const sourcePresent = entry.findings_source === 'content'
       ? entry.content_present === true && entry.content_size_bucket !== 'empty'
@@ -520,6 +531,7 @@ export function buildCandidateQualityGate(candidate = {}) {
     && fixtureOutcomesComplete
     && malformedOutputRecoveries === 0
     && attemptTelemetryConsistent
+    && requestContractObserved
     && stableCandidateOutputs;
   return {
     required_rows: FIXTURE_IDS.length,
@@ -530,6 +542,9 @@ export function buildCandidateQualityGate(candidate = {}) {
     output_telemetry_complete: outputTelemetryComplete,
     response_attempt_telemetry_complete: responseAttemptTelemetryComplete,
     response_attempt_telemetry_consistent: attemptTelemetryConsistent,
+    required_first_attempt_reasoning_effort: 'high',
+    required_first_attempt_max_output_tokens: CANDIDATE_MAX_OUTPUT_TOKENS,
+    request_contract_observed: requestContractObserved,
     required_output_shape: 'direct_json_object',
     required_finish_reason: 'stop',
     required_response_mode: 'stream',
@@ -603,7 +618,7 @@ export function buildQualificationReceipt({ input, policy, baseline, candidate, 
       timeout_ms: candidateTransport.timeout_ms,
       connect_timeout_ms: candidateTransport.connect_timeout_ms,
       reasoning_effort: candidateTransport.reasoning_effort,
-      max_output_tokens: 'bot_default',
+      max_output_tokens: candidateTransport.max_tokens,
       repetitions: 1,
       concurrency: 1,
     },
