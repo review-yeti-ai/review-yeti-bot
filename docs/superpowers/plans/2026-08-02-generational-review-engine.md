@@ -1,5 +1,10 @@
 # Generational Review Engine Implementation Plan
 
+> [!WARNING]
+> **Historical plan; non-authoritative.** This records a point-in-time proposal, not current runtime,
+> provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Establish one deterministic review contract shared by the GitHub Action and App, bind every run to an immutable pull-request snapshot, add an explicit v4 policy surface for budgets and submodules, and persist resumable Pi-style run state without introducing OmniRoute or an external workflow dependency.

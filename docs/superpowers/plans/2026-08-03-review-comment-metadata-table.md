@@ -1,5 +1,10 @@
 # Review Comment Metadata Table Implementation Plan
 
+> [!WARNING]
+> **Historical plan; non-authoritative.** This records a point-in-time proposal, not current runtime,
+> provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the PR review comment’s persona table show provider, resolved model, P0/P1/P2-or-Nits counts, and three-decimal costs with deterministic fallbacks.

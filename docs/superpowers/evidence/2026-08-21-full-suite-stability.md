@@ -1,5 +1,10 @@
 # Full Suite Stability Evidence
 
+> [!WARNING]
+> **Historical evidence; non-authoritative.** Results are bound to the recorded date and source
+> state and do not prove current main or a released tag. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 ## Scope
 
 This receipt covers the follow-up repairs after the Pi runtime merge on the
