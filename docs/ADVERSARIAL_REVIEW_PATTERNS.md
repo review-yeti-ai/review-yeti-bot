@@ -1,5 +1,10 @@
 # ⚔️ Adversarial AI Code Review Patterns & Architecture
 
+> [!WARNING]
+> **Historical design record; non-authoritative.** Provider, persona, OmniRoute, and prompt claims
+> are preserved as proposal context and do not describe the current public Action or CallTelemetry
+> fleet. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+
 ## Executive Overview
 
 Standard AI code review frameworks frequently suffer from **sycophancy** and **confirmation bias**. When prompted with standard evaluation instructions ("Review this code for quality"), Large Language Models tend to provide overly optimistic feedback, complimenting minor styling details while overlooking critical race conditions, state corruption, boundary flaws, and subtle security vulnerabilities.

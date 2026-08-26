@@ -1,5 +1,10 @@
 # Pi Dynamic Review Workflow Design
 
+> [!WARNING]
+> **Historical specification; non-authoritative.** This records a point-in-time proposal, not current
+> runtime, provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 **Status:** Approved for implementation on 2026-08-20
 
 **Owner:** Review Yeti

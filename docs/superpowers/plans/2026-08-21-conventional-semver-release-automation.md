@@ -1,5 +1,10 @@
 # Conventional SemVer Release Automation Implementation Plan
 
+> [!WARNING]
+> **Historical plan; non-authoritative.** This records a point-in-time proposal, not current runtime,
+> provider, release, or fleet policy. See
+> [Documentation authority](../../DOCUMENTATION_AUTHORITY.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task with verification checkpoints.
 
 **Goal:** Turn merges to protected `main` into reviewed Conventional Commit release PRs, then publish only the immutable semver tag that has passed the existing release gates.
