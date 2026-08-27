@@ -83,6 +83,11 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.match(workflow, /environment:\s*\n\s+name:\s*review-yeti-openrouter-qualification/u);
   const jobEnv = workflow.split('    env:\n', 2)[1]?.split('    steps:', 1)[0] || '';
   assert.doesNotMatch(jobEnv, /OPENROUTER_PR_REVIEW_API_KEY/u);
+  assert.match(jobEnv, /QUALIFICATION_GH_TOKEN:\s*\$\{\{ github\.token \}\}/u);
+  assert.doesNotMatch(jobEnv, /QUALIFICATION_GH_TOKEN:.*CROSS_REPO_TOKEN/u);
+  const provenanceStep = workflow.split('      - name: Verify signed release provenance before secret exposure', 2)[1]?.split('      - name: Announce bounded OpenRouter dispatch', 1)[0] || '';
+  assert.match(provenanceStep, /PROVENANCE_TOKEN:\s*\$\{\{ github\.token \}\}/u);
+  assert.doesNotMatch(provenanceStep, /PROVENANCE_TOKEN:.*CROSS_REPO_TOKEN/u);
   assert.match(workflow, /publication or provider mutation/u);
 });
 

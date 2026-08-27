@@ -115,7 +115,7 @@ jobs:
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
       QUALIFY_EXAMPLE_META_ROOT: ${{ github.workspace }}/example-meta
       QUALIFY_PI_RUNTIME_ROOT: ${{ github.workspace }}/example-review-actions/qualification/pi-runtime
-      QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      QUALIFICATION_GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout central qualification tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -165,7 +165,7 @@ jobs:
         env:
           BOT_SHA: ${{ inputs.bot_sha }}
           BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
-          PROVENANCE_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          PROVENANCE_TOKEN: ${{ github.token }}
         run: |
           node --input-type=module -e "import { verifyBotRelease } from './scripts/openrouter-qualification.mjs'; await verifyBotRelease({ botSha: process.env.BOT_SHA, botReleaseTag: process.env.BOT_RELEASE_TAG, token: process.env.PROVENANCE_TOKEN });"
 
