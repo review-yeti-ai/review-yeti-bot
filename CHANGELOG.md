@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.0...v1.15.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **review:** enforce canonical model finding contract ([1ba40cc](https://github.com/review-yeti-ai/review-yeti-bot/commit/1ba40ccc72771fa25376f54e57916e377443476f))
+
 ## [1.15.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.14.2...v1.15.0) (2026-08-27)
 
 
