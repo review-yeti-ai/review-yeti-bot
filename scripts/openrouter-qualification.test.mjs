@@ -14,6 +14,7 @@ import {
   OPENROUTER_TIMEOUT_MS,
   OPENROUTER_TRANSPORT,
   QUALIFICATION_CHILD_TIMEOUT_MS,
+  QUALIFICATION_HEARTBEAT_MS,
   buildArmEnvironment,
   buildQualificationReceipt,
   buildTransportHandoff,
@@ -44,7 +45,7 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.match(workflow, /timeout-minutes:\s*15\b/u);
   assert.doesNotMatch(workflow, /timeout-minutes:\s*(?:90|[2-9]\d|1[6-9])\b/u);
   assert.match(workflow, /Dispatching one direct OpenRouter qualification arm/u);
-  assert.match(workflow, /8-minute hard wall-clock deadline/u);
+  assert.match(workflow, /10-minute hard wall-clock deadline/u);
   assert.match(workflow, /if:\s*always\(\)/u);
   assert.doesNotMatch(workflow, /continue-on-error:\s*true/u);
   assert.match(workflow, /OPENROUTER_PR_REVIEW_API_KEY:/u);
@@ -109,7 +110,7 @@ test('child environment strips every non-OpenRouter provider credential', () => 
   assert.equal(environment.QUALIFICATION_ARM, 'openrouter');
 });
 
-test('child timeout sends SIGTERM then SIGKILL and cannot exceed eight minutes', async () => {
+test('child timeout sends SIGTERM then SIGKILL and cannot exceed ten minutes', async () => {
   const child = new EventEmitter();
   const signals = [];
   child.kill = (signal) => signals.push(signal);
@@ -121,6 +122,9 @@ test('child timeout sends SIGTERM then SIGKILL and cannot exceed eight minutes',
   assert.equal(result.exitCode, 124);
   assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
   assert.equal(normalizeChildTimeoutMs(), QUALIFICATION_CHILD_TIMEOUT_MS);
+  assert.equal(QUALIFICATION_CHILD_TIMEOUT_MS, 600_000);
+  assert.equal(QUALIFICATION_HEARTBEAT_MS, 15_000);
+  assert.throws(() => normalizeChildTimeoutMs(QUALIFICATION_CHILD_TIMEOUT_MS + 1), /childTimeoutMs must be an integer/u);
 });
 
 if (process.platform !== 'win32') {

@@ -24,7 +24,11 @@ export const OPENROUTER_TIMEOUT_MS = 90_000;
 export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
 export const OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 export const OPENROUTER_REASONING_EFFORT = 'high';
-export const QUALIFICATION_CHILD_TIMEOUT_MS = 8 * 60_000;
+// Three fixtures may each use the bounded two-attempt, 90-second request envelope. Keep a
+// one-minute margin over that 9-minute worst case while leaving the parent workflow below its
+// non-negotiable 15-minute ceiling.
+export const QUALIFICATION_CHILD_TIMEOUT_MS = 10 * 60_000;
+export const QUALIFICATION_HEARTBEAT_MS = 15_000;
 // The bot preserves OpenInference when it is explicitly reported by the
 // upstream response; other upstream labels normalize back to OpenRouter.
 const OPENROUTER_ATTEMPT_PROVIDERS = Object.freeze(['openrouter', 'openinference']);
@@ -175,11 +179,14 @@ export function runChild({ command, args, cwd, env, spawnImpl = spawn, timeoutMs
     let timedOut = false;
     let timeoutTimer = null;
     let killTimer = null;
+    let heartbeatTimer = null;
+    const startedAt = Date.now();
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       resolve({ ...result, timedOut });
     };
     try {
@@ -201,6 +208,12 @@ export function runChild({ command, args, cwd, env, spawnImpl = spawn, timeoutMs
       if (timedOut) return;
       finish({ exitCode: Number.isInteger(code) ? code : 1 });
     });
+    heartbeatTimer = setInterval(() => {
+      const elapsedMs = Date.now() - startedAt;
+      const remainingMs = Math.max(0, effectiveTimeoutMs - elapsedMs);
+      console.log(`::notice::OpenRouter qualification arm active; elapsed=${Math.round(elapsedMs / 1000)}s remaining=${Math.round(remainingMs / 1000)}s hard_deadline=${effectiveTimeoutMs}ms`);
+    }, QUALIFICATION_HEARTBEAT_MS);
+    if (heartbeatTimer?.unref) heartbeatTimer.unref();
     timeoutTimer = setTimeout(() => {
       timedOut = true;
       console.error(`::error::OpenRouter qualification exceeded hard wall-clock limit (${effectiveTimeoutMs}ms)`);

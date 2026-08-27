@@ -95,7 +95,7 @@ jobs:
       - name: Announce bounded OpenRouter dispatch
         run: |
           echo '::notice::Dispatching one direct OpenRouter qualification arm over three fixtures.'
-          echo '::notice::The arm has an 8-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
+          echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 
       - name: Run bounded OpenRouter qualification
