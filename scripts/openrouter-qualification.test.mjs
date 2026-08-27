@@ -252,7 +252,7 @@ test('upstream response labels remain informational for the OpenRouter route', (
     responseAttempts: [{
       attempt: 1,
       outcome: 'parsed',
-      provider: 'openrouter',
+      provider: index === 1 ? 'openinference' : 'openrouter',
       transport: OPENROUTER_TRANSPORT,
     }],
   }));
@@ -272,7 +272,7 @@ test('missing or misrouted attempts cannot pass OpenRouter attribution', () => {
     responseAttempts: index === 0 ? [] : [{
       attempt: 1,
       outcome: 'parsed',
-      provider: index === 1 ? 'ollama' : 'openrouter',
+      provider: index === 1 ? 'ollama' : 'unknown-provider',
       transport: index === 1 ? 'ollama' : OPENROUTER_TRANSPORT,
     }],
   }));
