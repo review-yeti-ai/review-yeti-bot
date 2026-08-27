@@ -585,6 +585,9 @@ function resolveModelConfig(env = process.env) {
           apiKey: resolvedKey,
           model: t.model || model,
           provider: t.provider,
+          compat: t.compat || t.compatibility,
+          providerRouting: t.provider_routing || t.providerRouting,
+          ignoreProviders: t.ignore_providers || t.ignoreProviders,
           plugins: t.plugins,
           // Preserve the immutable central transport contract all the way to the
           // request boundary.  The handoff validator requires every admitted
@@ -654,6 +657,8 @@ function resolveModelConfig(env = process.env) {
         baseUrl,
         apiKey,
         model: model || 'deepseek/deepseek-v4-flash-0731:high',
+        compat: 'openrouter',
+        stream: true,
         timeoutMs: 90_000,
       });
     }
@@ -1021,6 +1026,7 @@ const MODEL_RESPONSE_ATTEMPT_OUTCOMES = new Set([
   'transport_error',
 ]);
 const MODEL_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'missing', 'other']);
+const MODEL_TIMEOUT_KINDS = new Set(['request', 'ttft', 'inactivity', 'total']);
 const MAX_MODEL_RESPONSE_ATTEMPTS = 8;
 const MAX_TELEMETRY_TOKEN_COUNT = 1_000_000;
 
@@ -1188,6 +1194,12 @@ function normalizeModelReasoningEffort(value) {
   return MODEL_REASONING_EFFORTS.has(normalized) ? normalized : 'other';
 }
 
+function normalizeModelTimeoutKind(value) {
+  return typeof value === 'string' && MODEL_TIMEOUT_KINDS.has(value.trim().toLowerCase())
+    ? value.trim().toLowerCase()
+    : null;
+}
+
 function normalizeTelemetryTokenCount(value) {
   if (value === null || value === undefined || value === '') return null;
   const numeric = Number(value);
@@ -1199,6 +1211,7 @@ function normalizeModelResponseAttempt(entry = {}) {
   const attempt = normalizeTelemetryAttemptCount(entry.attempt);
   const outcome = normalizeModelResponseAttemptOutcome(entry.outcome);
   if (attempt === null || attempt < 1 || !outcome) return null;
+  const timeoutKind = normalizeModelTimeoutKind(entry.timeoutKind);
   return {
     attempt,
     outcome,
@@ -1207,6 +1220,7 @@ function normalizeModelResponseAttempt(entry = {}) {
     latencyMs: normalizeTelemetryDuration(entry.latencyMs),
     responseStatus: normalizeTelemetryStatus(entry.responseStatus),
     failureClass: normalizeTelemetryOutcomeClass(entry.failureClass),
+    ...(timeoutKind ? { timeoutKind } : {}),
     reasoningEffort: normalizeModelReasoningEffort(entry.reasoningEffort),
     maxOutputTokens: normalizeTelemetryTokenCount(entry.maxOutputTokens),
     outputTokens: normalizeTelemetryTokenCount(entry.outputTokens),
@@ -1406,6 +1420,20 @@ function classifyTelemetryTransportError(error) {
   if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
   return 'unknown';
+}
+
+// Keep timeout evidence closed and actionable without retaining provider text. A transport-level
+// timeout means the request watchdog fired; an SSE timeout can distinguish first-byte, inactivity,
+// and total-generation budget failures for the receipt and RCA.
+function classifyTelemetryTimeoutKind(error) {
+  const explicit = normalizeModelTimeoutKind(error?.timeoutKind || error?.kind);
+  if (explicit) return explicit;
+  const message = String(error?.message || error || '');
+  if (/total deadline/i.test(message)) return 'total';
+  if (/first streamed chunk|TTFT/i.test(message)) return 'ttft';
+  if (/stream(?:ing)?(?: response)? stalled|inactivity|heartbeat/i.test(message)) return 'inactivity';
+  if (/AbortError|aborted|timeout|deadline/i.test(message)) return 'request';
+  return null;
 }
 
 function parseRetryAfterMs(response) {
@@ -1819,15 +1847,17 @@ function reasoningFragments(value) {
  * buffered, full-generation response.  Keep the non-streaming branch for legacy callers/tests,
  * but consume SSE deltas when the central handoff explicitly requests streaming.
  */
-function streamInactivityError(timeoutMs) {
+function streamInactivityError(timeoutMs, timeoutKind = 'inactivity') {
   const error = new Error(`Streaming response stalled for ${timeoutMs}ms`);
   error.name = 'TimeoutError';
+  error.timeoutKind = timeoutKind;
   return error;
 }
 
 function streamTotalDeadlineError(timeoutMs) {
   const error = new Error(`Streaming response exceeded total deadline of ${timeoutMs}ms`);
   error.name = 'TimeoutError';
+  error.timeoutKind = 'total';
   return error;
 }
 
@@ -1838,8 +1868,8 @@ async function withStreamInactivityTimeout(promise, timeoutMs, onTimeout) {
       promise,
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-          reject(streamInactivityError(timeoutMs));
-          onTimeout?.();
+          const timeoutError = onTimeout?.();
+          reject(timeoutError instanceof Error ? timeoutError : streamInactivityError(timeoutMs));
         }, timeoutMs);
       }),
     ]);
@@ -1901,7 +1931,9 @@ async function readChatCompletionResponse(
   const remainingTotalMs = () => (totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity);
   let cancelStream = () => {};
   const throwIfTotalDeadline = () => {
-    if (totalDeadlineAt && Date.now() >= totalDeadlineAt) {
+    // Timer callbacks can run a few milliseconds early. Classify that boundary consistently as
+    // the total lane deadline instead of nondeterministically reporting stream inactivity.
+    if (totalDeadlineAt && Date.now() + 10 >= totalDeadlineAt) {
       cancelStream();
       throw streamTotalDeadlineError(totalTimeoutMs);
     }
@@ -1913,6 +1945,7 @@ async function readChatCompletionResponse(
       void Promise.resolve(reader.cancel?.('stream total deadline')).catch(() => {});
     };
     const decoder = new TextDecoder();
+    let receivedFirstChunk = false;
     try {
       while (true) {
         throwIfTotalDeadline();
@@ -1922,11 +1955,23 @@ async function readChatCompletionResponse(
             reader.read(),
             readBudgetMs,
             () => {
-              void Promise.resolve(reader.cancel?.('stream inactivity timeout')).catch(() => {});
+              const timeoutError = streamInactivityError(
+                readBudgetMs,
+                receivedFirstChunk ? 'inactivity' : 'ttft',
+              );
+              // Reject the read race before cancellation can resolve reader.read() as { done: true }
+              // and turn a watchdog failure into the misleading `empty_sse` outcome.
+              queueMicrotask(() => {
+                void Promise.resolve(reader.cancel?.(receivedFirstChunk ? 'stream inactivity timeout' : 'stream ttft timeout')).catch(() => {});
+              });
+              return timeoutError;
             },
           );
           if (done) break;
-          if (value) consume(decoder.decode(value, { stream: true }));
+          if (value) {
+            receivedFirstChunk = true;
+            consume(decoder.decode(value, { stream: true }));
+          }
         } catch (err) {
           throwIfTotalDeadline();
           throw err;
@@ -2174,8 +2219,27 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       if (isOpenRouterTransport && (transport.plugins || requestOptions?.plugins)) {
         requestBody.plugins = transport.plugins || requestOptions?.plugins;
       }
-      if (isOpenRouterTransport && (transport.provider || requestOptions?.provider)) {
-        requestBody.provider = transport.provider || requestOptions?.provider;
+      if (isOpenRouterTransport) {
+        const trustedProviderPolicy = requestOptions?.provider && typeof requestOptions.provider === 'object'
+          ? requestOptions.provider
+          : {};
+        const handoffProviderPolicy = transport.providerRouting || transport.provider_routing
+          || (transport.provider && typeof transport.provider === 'object' ? transport.provider : {});
+        const mergedProviderPolicy = {
+          ...(handoffProviderPolicy && typeof handoffProviderPolicy === 'object' ? handoffProviderPolicy : {}),
+          // Account privacy policy is authoritative over a transport handoff; routing preferences
+          // may be selected by the central plan, but a caller cannot weaken data-collection rules.
+          ...trustedProviderPolicy,
+        };
+        const ignoredProviders = Array.isArray(transport.ignoreProviders)
+          ? transport.ignoreProviders.filter(Boolean)
+          : typeof transport.ignoreProviders === 'string'
+            ? transport.ignoreProviders.split(',').map((entry) => entry.trim()).filter(Boolean)
+            : [];
+        if (ignoredProviders.length > 0 && !Array.isArray(mergedProviderPolicy.ignore)) {
+          mergedProviderPolicy.ignore = ignoredProviders;
+        }
+        if (Object.keys(mergedProviderPolicy).length > 0) requestBody.provider = mergedProviderPolicy;
       }
 
       let heartbeatTimer = null;
@@ -2231,6 +2295,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const reasoningEffortForAttempt = requestBody.reasoning?.enabled === false
             ? 'none'
             : requestBody.reasoning?.effort || requestBody.reasoning_effort || 'missing';
+          const attemptFailureClass = overrides.failureClass ?? failureClass;
+          const timeoutKind = normalizeModelTimeoutKind(overrides.timeoutKind)
+            || (attemptFailureClass === 'timeout' ? 'request' : null);
           const entry = normalizeModelResponseAttempt({
             attempt: attemptCount,
             outcome,
@@ -2238,7 +2305,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             provider: configuredProvider,
             latencyMs: Date.now() - attemptStartedMs,
             responseStatus: attemptResponseStatus,
-            failureClass,
+            failureClass: attemptFailureClass,
+            ...(timeoutKind ? { timeoutKind } : {}),
             reasoningEffort: reasoningEffortForAttempt,
             maxOutputTokens: requestBody.max_tokens,
             outputTokens: null,
@@ -2264,7 +2332,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
-              () => streamAbortController.abort(streamInactivityError(transportTimeoutMs)),
+              () => streamAbortController.abort(streamInactivityError(transportTimeoutMs, 'request')),
               transportTimeoutMs,
             );
           }
@@ -2516,7 +2584,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
           const isUnusableDirectOutput = /empty_sse|Streaming response exceeded total deadline/i.test(err.message || '');
           const attemptFailureClass = classifyTelemetryTransportError(err);
-          recordResponseAttempt('transport_error', { failureClass: attemptFailureClass });
+          const timeoutKind = classifyTelemetryTimeoutKind(err);
+          recordResponseAttempt('transport_error', {
+            failureClass: attemptFailureClass,
+            ...(timeoutKind ? { timeoutKind } : {}),
+          });
           if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
             noteRetryReason('transient_socket');

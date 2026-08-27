@@ -10,8 +10,8 @@ const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 
 const FIXTURE_SOURCE = Object.freeze({
   repository: 'calltelemetry/ct-review-actions',
-  commit: '48ce1578adfc540ff4571b55abf7dbbeb286c27f',
-  digest: '25f23b8d71beea214be5bb7f13c711a6c348b1dd5df1d2eed128b0c559365ee5',
+  commit: 'f28022666c4f32e22c8a4394ae12a3e72083c636',
+  digest: '5ab2aab69d774c057c05e01c192a6d9a489622f6071742bbcec18321d2ffdbb2',
 });
 
 const BASE_URL_BY_CLASS: Record<string, string> = Object.freeze({
@@ -186,7 +186,8 @@ function dispositionFor(pathValue: string): string | null {
   if (/^transports\[\*\]\.(compatibility_mode|structured_output|reasoning\.wire_shape|routing\.mode)$/.test(pathValue)) return 'runtime-derived-or-hardcoded-parity';
   if (/^transports\[\*\]\.(privacy\.data_collection|routing\.provider\.data_collection)$/.test(pathValue)) return 'translated-via-action-policy';
   if (/^transports\[\*\]\.retry\.(max_attempts|classification)$/.test(pathValue)) return 'runtime-owned-uncharacterized';
-  if (/^transports\[\*\]\.(timeouts\.(connect_ms|stall_ms|ttft_ms)|routing\.ignore_providers(?:\[\*\])?|routing\.provider(?:\.(?!data_collection).+)?|quarantine\.on_timeout)$/.test(pathValue)) return 'dropped-by-runtime-mapper';
+  if (/^transports\[\*\]\.routing\.(ignore_providers(?:\[\*\])?|provider(?:\..*)?)/.test(pathValue)) return 'consumed';
+  if (/^transports\[\*\]\.(timeouts\.(connect_ms|stall_ms|ttft_ms)|quarantine\.on_timeout)$/.test(pathValue)) return 'dropped-by-runtime-mapper';
   return null;
 }
 
@@ -197,8 +198,8 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
     expect(createHash('sha256').update(canonicalJson(fixture.plan)!).digest('hex')).toBe(FIXTURE_SOURCE.digest);
     expect(FIXTURE_SOURCE).toEqual({
       repository: 'calltelemetry/ct-review-actions',
-      commit: '48ce1578adfc540ff4571b55abf7dbbeb286c27f',
-      digest: '25f23b8d71beea214be5bb7f13c711a6c348b1dd5df1d2eed128b0c559365ee5',
+      commit: 'f28022666c4f32e22c8a4394ae12a3e72083c636',
+      digest: '5ab2aab69d774c057c05e01c192a6d9a489622f6071742bbcec18321d2ffdbb2',
     });
   });
 
@@ -207,15 +208,6 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
     expect(paths.filter((entry) => dispositionFor(entry) === null)).toEqual([]);
     expect(paths.filter((entry) => dispositionFor(entry) === 'dropped-by-runtime-mapper')).toEqual([
       'transports[*].quarantine.on_timeout',
-      'transports[*].routing.ignore_providers',
-      'transports[*].routing.ignore_providers[*]',
-      'transports[*].routing.provider',
-      'transports[*].routing.provider.allow_fallbacks',
-      'transports[*].routing.provider.ignore[*]',
-      'transports[*].routing.provider.preferred_max_latency.p99',
-      'transports[*].routing.provider.preferred_min_throughput.p90',
-      'transports[*].routing.provider.require_parameters',
-      'transports[*].routing.provider.sort',
       'transports[*].timeouts.connect_ms',
       'transports[*].timeouts.stall_ms',
       'transports[*].timeouts.ttft_ms',
@@ -278,7 +270,15 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
             ],
             cost_quality_tradeoff: 7,
           }],
-          provider: { data_collection: 'deny' },
+          provider: {
+            allow_fallbacks: true,
+            require_parameters: true,
+            ignore: ['morph', 'fireworks'],
+            sort: 'throughput',
+            preferred_min_throughput: { p90: 40 },
+            preferred_max_latency: { p99: 3 },
+            data_collection: 'deny',
+          },
         },
       },
     });
@@ -348,7 +348,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
       },
       'openrouter-fallback': {
         model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
-        perf_metrics_in_response: 'equal', provider: 'different', plugins: 'panel-only',
+        perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'panel-only',
         temperature: 'prompt-specific-difference', max_tokens: 'prompt-specific-difference',
       },
     });
