@@ -678,7 +678,7 @@ describe('reviewWithModel', () => {
 
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
       fetchImplementation: streamFetch,
-      timeoutMs: 40,
+      timeoutMs: 100,
       circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
       transports: [{
         name: 'fireworks',
@@ -691,6 +691,56 @@ describe('reviewWithModel', () => {
 
     expect(res.decision).toBe('APPROVE');
     expect(res.findings).toEqual([]);
+  });
+
+  it('caps an active streaming generation by total wall clock even when deltas keep arriving', async () => {
+    const activeStreamFetch = async () => {
+      let cancelled = false;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+        body: new ReadableStream({
+          async start(controller) {
+            try {
+              while (!cancelled) {
+                controller.enqueue(new TextEncoder().encode(
+                  `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'still thinking ' } }] })}\n\n`,
+                ));
+                await new Promise((resolve) => setTimeout(resolve, 5));
+              }
+            } catch {
+              try { controller.close(); } catch { /* cancelled by watchdog */ }
+            }
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      };
+    };
+
+    const started = Date.now();
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: activeStreamFetch,
+      timeoutMs: 25,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-fallback',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        provider: 'openrouter',
+        stream: true,
+      }],
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(res.decision).toBe('ERROR');
+    expect(res.error).toContain('total deadline');
+    expect(res.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
+    ]));
   });
 
   it('fails closed when a streaming response becomes idle', async () => {
