@@ -18,11 +18,14 @@ import {
   QUALIFICATION_CONCURRENCY,
   QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE,
   QUALIFICATION_MAX_REPETITIONS,
+  QUALIFICATION_OUTPUT_CONTRACT_MODES,
+  QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE,
   QUALIFICATION_HEARTBEAT_MS,
   buildArmEnvironment,
   buildQualificationReceipt,
   buildTransportHandoff,
   normalizeChildTimeoutMs,
+  normalizeQualificationOutputContractMode,
   normalizeQualificationRepetitions,
   qualificationWorstCaseMs,
   runChild,
@@ -56,6 +59,10 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.doesNotMatch(workflow, /continue-on-error:\s*true/u);
   assert.match(workflow, /OPENROUTER_PR_REVIEW_API_KEY:/u);
   assert.match(workflow, /Fixed repetitions per fixture \(1 or 2/u);
+  const announceStep = workflow.split('      - name: Announce bounded OpenRouter dispatch', 2)[1]?.split('      - name: Run bounded OpenRouter qualification', 1)[0] || '';
+  assert.match(announceStep, /OUTPUT_CONTRACT_MODE_INPUT:/u);
+  const announceRun = announceStep.split('        run: |', 2)[1] || '';
+  assert.doesNotMatch(announceRun, /\$\{\{/u);
   assert.match(workflow, /environment:\s*\n\s+name:\s*review-yeti-openrouter-qualification/u);
   const jobEnv = workflow.split('    env:\n', 2)[1]?.split('    steps:', 1)[0] || '';
   assert.doesNotMatch(jobEnv, /OPENROUTER_PR_REVIEW_API_KEY/u);
@@ -65,6 +72,10 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
 test('input requires immutable coordinates and an explicit confirmation', () => {
   assert.equal(validateQualificationInput(input).prNumber, 278);
   assert.equal(validateQualificationInput({ ...input, repetitions: 2 }).repetitions, 2);
+  assert.equal(validateQualificationInput(input).outputContractMode, QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE);
+  assert.equal(validateQualificationInput({ ...input, outputContractMode: 'json_schema' }).outputContractMode, 'json_schema');
+  assert.deepEqual(QUALIFICATION_OUTPUT_CONTRACT_MODES, ['json_object', 'json_schema']);
+  assert.equal(normalizeQualificationOutputContractMode(), 'json_object');
   assert.equal(normalizeQualificationRepetitions(), 1);
   assert.equal(QUALIFICATION_MAX_REPETITIONS, 2);
   assert.equal(QUALIFICATION_CONCURRENCY, 3);
@@ -75,6 +86,7 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
     assert.throws(() => validateQualificationInput({ ...input, [field]: value }), /confirm|repository|SHA|botReleaseTag|absolute/u);
   }
   assert.throws(() => validateQualificationInput({ ...input, repetitions: 3 }), /repetitions/u);
+  assert.throws(() => validateQualificationInput({ ...input, outputContractMode: 'xml' }), /outputContractMode/u);
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
 });
 
@@ -102,6 +114,8 @@ test('handoff contains exactly one direct OpenRouter transport under the common 
   assert.equal(handoff[0].max_tokens, OPENROUTER_MAX_OUTPUT_TOKENS);
   assert.equal(handoff[0].reasoning_effort, OPENROUTER_REASONING_EFFORT);
   assert.equal(handoff[0].stream, true);
+  assert.equal(handoff[0].structured_output_mode, 'json_object');
+  assert.equal(buildTransportHandoff(policy, 'json_schema')[0].structured_output_mode, 'json_schema');
 });
 
 test('child environment strips every non-OpenRouter provider credential', () => {
@@ -226,6 +240,7 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
     assert.equal(result.receipt.evaluation.rows, 3);
     assert.equal(result.receipt.evaluation.provider_attribution_valid, true);
     assert.equal(result.receipt.evaluation.fixture_set_valid, true);
+    assert.equal(result.receipt.request_contract.structured_output_mode, 'json_object');
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }
@@ -245,6 +260,27 @@ test('receipt integrity fails closed on missing or misattributed evidence', () =
   assert.equal(receipt.integrity_gate.passed, false);
   assert.equal(receipt.publication, 'none');
   assert.equal(receipt.activation_authorized, false);
+});
+
+test('schema-mode qualification remains non-authoritative and records the selected contract', () => {
+  const schemaInput = { ...input, outputContractMode: 'json_schema' };
+  const validated = validateQualificationInput(schemaInput);
+  const handoff = buildTransportHandoff(policy, validated.outputContractMode);
+  const receipt = buildQualificationReceipt({
+    input: validated,
+    policy,
+    handoff,
+    evaluation: {
+      status: 'completed', rows: 3, fixture_set_valid: true, provider_attribution_valid: true,
+    },
+    childTimedOut: false,
+  });
+  assert.equal(receipt.request_contract.structured_output_mode, 'json_schema');
+  assert.equal(receipt.integrity_gate.request_contract_valid, true);
+  assert.equal(receipt.activation_authorized, false);
+  assert.equal(receipt.authoritative_arm, 'none');
+  assert.equal(receipt.publication, 'none');
+  assert.equal(receipt.provider_mutation, 'none');
 });
 
 test('row-level attribution is required and cannot pass vacuously', () => {

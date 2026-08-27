@@ -39,6 +39,11 @@ on:
         required: true
         default: '2'
         type: string
+      output_contract_mode:
+        description: 'Output contract for this evidence run (json_object is compatibility default; json_schema is opt-in)'
+        required: true
+        default: 'json_object'
+        type: string
 
 permissions:
   contents: read
@@ -60,6 +65,7 @@ jobs:
       QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
       QUALIFY_BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
       QUALIFY_REPETITIONS: ${{ inputs.repetitions }}
+      QUALIFY_OUTPUT_CONTRACT_MODE: ${{ inputs.output_contract_mode }}
       QUALIFY_CENTRAL_SHA: ${{ github.sha }}
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
       QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
@@ -99,8 +105,10 @@ jobs:
           node --input-type=module -e "import { verifyBotRelease } from './scripts/openrouter-qualification.mjs'; await verifyBotRelease({ botSha: process.env.BOT_SHA, botReleaseTag: process.env.BOT_RELEASE_TAG, token: process.env.PROVENANCE_TOKEN });"
 
       - name: Announce bounded OpenRouter dispatch
+        env:
+          OUTPUT_CONTRACT_MODE_INPUT: ${{ inputs.output_contract_mode }}
         run: |
-          echo '::notice::Dispatching one direct OpenRouter qualification arm over three fixtures and the declared repetition count (three concurrent lanes).'
+          echo "::notice::Dispatching one direct OpenRouter qualification arm over three fixtures and the declared repetition count (three concurrent lanes); output_contract_mode=${OUTPUT_CONTRACT_MODE_INPUT}."
           echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 

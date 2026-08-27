@@ -34,6 +34,8 @@ export const QUALIFICATION_MAX_REPETITIONS = 2;
 export const QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE = 2;
 export const QUALIFICATION_CONCURRENCY = 3;
 export const QUALIFICATION_BUDGET_MARGIN_MS = 4 * 60_000;
+export const QUALIFICATION_OUTPUT_CONTRACT_MODES = Object.freeze(['json_object', 'json_schema']);
+export const QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE = 'json_object';
 // The bot's telemetry normalizer reports the canonical OpenRouter transport as
 // `openrouter` on response attempts, while the handoff and row-level transport
 // retain `openrouter-fallback`. Accept both representations only after the row
@@ -75,6 +77,14 @@ export function normalizeQualificationRepetitions(value = QUALIFICATION_DEFAULT_
   return parsed;
 }
 
+export function normalizeQualificationOutputContractMode(value = QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!QUALIFICATION_OUTPUT_CONTRACT_MODES.includes(normalized)) {
+    throw new Error(`outputContractMode must be one of ${QUALIFICATION_OUTPUT_CONTRACT_MODES.join(', ')}`);
+  }
+  return normalized;
+}
+
 export function qualificationWorstCaseMs(repetitions = QUALIFICATION_MAX_REPETITIONS) {
   const expectedRepetitions = normalizeQualificationRepetitions(repetitions);
   const lanes = FIXTURE_IDS.length * expectedRepetitions;
@@ -95,6 +105,9 @@ export function validateQualificationInput(input = {}) {
   if (!REPOSITORY_PATTERN.test(String(input.repository || ''))) throw new Error('repository must be owner/name');
   const prNumber = positiveInteger(input.prNumber, 'prNumber');
   const repetitions = normalizeQualificationRepetitions(input.repetitions);
+  const outputContractMode = normalizeQualificationOutputContractMode(
+    input.outputContractMode ?? input.output_contract_mode,
+  );
   for (const [label, value] of [['baseSha', input.baseSha], ['headSha', input.headSha], ['botSha', input.botSha], ['centralSha', input.centralSha]]) {
     if (!SHA_PATTERN.test(String(value || ''))) throw new Error(`${label} must be a full commit SHA`);
   }
@@ -112,13 +125,15 @@ export function validateQualificationInput(input = {}) {
     botReleaseTag: String(input.botReleaseTag),
     botRoot: String(input.botRoot),
     repetitions,
+    outputContractMode,
   };
 }
 
-export function buildTransportHandoff(policy) {
+export function buildTransportHandoff(policy, outputContractMode = QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE) {
   const transports = validatePolicy(policy);
   const selected = transports.find((transport) => transport.name === OPENROUTER_TRANSPORT);
   if (!selected) throw new Error(`policy does not define the ${OPENROUTER_TRANSPORT} transport`);
+  const normalizedOutputContractMode = normalizeQualificationOutputContractMode(outputContractMode);
   return [{
     ...selected,
     name: OPENROUTER_TRANSPORT,
@@ -127,6 +142,7 @@ export function buildTransportHandoff(policy) {
     max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
     reasoning_effort: OPENROUTER_REASONING_EFFORT,
     stream: true,
+    structured_output_mode: normalizedOutputContractMode,
   }];
 }
 
@@ -365,6 +381,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     max_output_tokens: handoff[0].max_tokens,
     reasoning_effort: handoff[0].reasoning_effort,
     stream: handoff[0].stream === true,
+    structured_output_mode: normalizeQualificationOutputContractMode(handoff[0].structured_output_mode),
     repetitions,
     concurrency: QUALIFICATION_CONCURRENCY,
   };
@@ -372,7 +389,10 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     exact_bot_sha_bound: SHA_PATTERN.test(String(input.botSha || '')),
     fixture_set_valid: evaluation.fixture_set_valid === true,
     provider_attribution_valid: evaluation.provider_attribution_valid === true,
-    request_contract_valid: contract.stream && contract.max_output_tokens === OPENROUTER_MAX_OUTPUT_TOKENS && contract.reasoning_effort === OPENROUTER_REASONING_EFFORT,
+    request_contract_valid: contract.stream
+      && contract.max_output_tokens === OPENROUTER_MAX_OUTPUT_TOKENS
+      && contract.reasoning_effort === OPENROUTER_REASONING_EFFORT
+      && QUALIFICATION_OUTPUT_CONTRACT_MODES.includes(contract.structured_output_mode),
     child_completed: childTimedOut !== true && evaluation.status === 'completed',
   };
   integrity.passed = Object.values(integrity).every(Boolean);
@@ -402,7 +422,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
 export async function runQualification({ input, policy, token, outputDir, fixturePath, fetchImpl = globalThis.fetch, spawnImpl = spawn, childTimeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS, now, runId } = {}) {
   const validated = validateQualificationInput(input);
   const loadedPolicy = policy || loadPolicy();
-  const handoff = buildTransportHandoff(loadedPolicy);
+  const handoff = buildTransportHandoff(loadedPolicy, validated.outputContractMode);
   await verifyPullRequest({ ...validated, token, fetchImpl });
   await verifyBotRelease({ botSha: validated.botSha, botReleaseTag: validated.botReleaseTag, token, fetchImpl });
   const targetDir = path.resolve(outputDir || process.env.RUNNER_TEMP || '.', 'openrouter-qualification');
@@ -438,6 +458,7 @@ async function main() {
       centralSha: process.env.QUALIFY_CENTRAL_SHA,
       botRoot: process.env.QUALIFY_BOT_ROOT,
       repetitions: process.env.QUALIFY_REPETITIONS,
+      outputContractMode: process.env.QUALIFY_OUTPUT_CONTRACT_MODE,
     },
     token: process.env.QUALIFICATION_GH_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
     outputDir: process.env.RUNNER_TEMP,
