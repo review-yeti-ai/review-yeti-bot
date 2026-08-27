@@ -880,7 +880,7 @@ describe('reviewWithModel', () => {
     expect(res).toMatchObject({ decision: 'APPROVE', findings: [], attemptCount: 2, recoveryAction: 'bounded_retry' });
     expect(calls).toHaveLength(2);
     expect(calls[0]).toHaveProperty('reasoning', { effort: 'high' });
-    expect(calls[1]).toHaveProperty('reasoning', { enabled: false });
+    expect(calls[1]).toHaveProperty('reasoning', { effort: 'high' });
     expect(calls[1]).not.toHaveProperty('plugins');
     expect(calls[1].messages[0].content).toContain('Re-evaluate the complete diff');
     expect(calls[1].messages[0].content).not.toContain('return only {"findings":[]}');
