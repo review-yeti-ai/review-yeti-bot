@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.1...v1.15.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **review:** align reasoning output budgets and evaluation overrides ([#293](https://github.com/review-yeti-ai/review-yeti-bot/issues/293)) ([aa73bd4](https://github.com/review-yeti-ai/review-yeti-bot/commit/aa73bd4ef06bb49cb3a9e2d628f7d5525f912dbb))
+
 ## [1.15.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.0...v1.15.1) (2026-08-27)
 
 
