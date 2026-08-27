@@ -75,10 +75,13 @@ const DEFAULT_PERSONA_CONCURRENCY = 3;
 const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 16;
 const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
-// A recovery request gets a fresh generation budget. Allow one additional
-// transport window for a provider that is streaming validly but slowly, while
-// keeping the retry bounded so malformed or reasoning-only output remains fail-closed.
-const DEFAULT_FORMAT_RECOVERY_MAX_WALL_CLOCK_MS = 180_000;
+// Streaming responses need both an inactivity watchdog and a total generation
+// budget. Without the latter, a provider can emit a never-ending sequence of
+// small deltas and keep a review lane alive indefinitely. Keep the total budget
+// to two transport windows (capped at three minutes) so the normal 90-second
+// policy remains responsive while allowing a slow but active generation to
+// finish.
+const DEFAULT_STREAM_MAX_WALL_CLOCK_MS = 180_000;
 
 function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURRENCY) {
   if (value === undefined || value === null || value === '') return DEFAULT_PERSONA_CONCURRENCY;
@@ -2398,20 +2401,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: errMsg });
           }
 
-          // A streaming timeout is an inactivity budget, not a total generation
-          // budget. Once response headers arrive, each body read gets a fresh
-          // timeout so active reasoning/content deltas are never aborted merely
-          // because the full review takes longer than one timeout window.
-          // Format recovery already spent one full generation on unparseable
-          // output. Cap that retry by wall clock so a reasoning-only stream
-          // cannot reset the inactivity watchdog for minutes (cisco-cdr#4472).
+          // A streaming timeout is an inactivity budget, but every generation
+          // also receives a hard total wall-clock budget. Once response headers
+          // arrive, each body read gets a fresh inactivity timeout; the total
+          // deadline prevents active reasoning/content deltas from keeping a
+          // lane alive indefinitely. Format recovery gets the same bounded
+          // window rather than a special exemption.
+          const streamTotalTimeoutMs = streamEnabled
+            ? Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, transportTimeoutMs * 2)
+            : 0;
           const payload = await readChatCompletionResponse(
             response,
             streamEnabled,
             transportTimeoutMs,
-            formatRecoveryAttempted
-              ? Math.min(DEFAULT_FORMAT_RECOVERY_MAX_WALL_CLOCK_MS, transportTimeoutMs * 2)
-              : 0,
+            streamTotalTimeoutMs,
           );
           const payloadErrorCode = resolveOpenRouterErrorCode(payload);
           if (payloadErrorCode) errorCode = payloadErrorCode;
