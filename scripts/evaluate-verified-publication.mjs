@@ -350,12 +350,22 @@ export function buildModelOptions(argv = process.argv) {
   const model = argument('--model', process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731', argv);
   const maxTokens = resolveEvalMaxTokens({ argv, bounded: true, fallback: 4_096 });
   const configuredTransports = pipeline.resolveModelConfig().transports;
+  // Scenario evaluation may deliberately request a larger provider/context envelope than the
+  // production policy. Apply an explicit --max-tokens override to every admitted transport so a
+  // central handoff's production default cannot silently cap the experiment. The evaluator still
+  // owns its hard child deadline; this is not a production routing or timeout override.
+  const transports = maxTokens === undefined
+    ? configuredTransports
+    : configuredTransports.map((transport) => ({
+        ...transport,
+        maxTokens,
+      }));
   return {
     model,
     // The production reviewWithModel boundary only consumes an explicit options.transports
     // handoff. Preserve the central env-resolved plan here; otherwise qualification silently
     // collapses to the first transport as an unnamed buffered "default" request.
-    transports: configuredTransports,
+    transports,
     // 300s, not the pipeline's 90s transport default: lanes here are buffered (non-streaming)
     // single fetches against a reasoning model whose median full-review completion is ~65-75s
     // with a long tail. Measured 2026-08-21: a 90s cap converted 28-30 of 72 rows per arm into
