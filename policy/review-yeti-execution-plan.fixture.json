@@ -1,14 +1,14 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "1bcbcd44f9825a694d7e3eedbe1e3b2b698d3276254d2896a1075e9f53994a7c",
+  "normalized_plan_sha256": "7f55772829f4bdf6c86ad3598b4da6000544e23eae63011f501069b745fe6c7b",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
     "release_channel": "v1",
     "transport_order": [
-      "openrouter-fallback",
       "fireworks",
-      "ollama"
+      "ollama",
+      "openrouter-fallback"
     ],
     "lane": {
       "deadline_ms": 720000,
@@ -16,61 +16,6 @@
       "max_investigation_turns": 2
     },
     "transports": [
-      {
-        "name": "openrouter-fallback",
-        "base_url_class": "openrouter-gateway",
-        "model": "deepseek/deepseek-v4-flash-0731",
-        "compatibility_mode": "openrouter",
-        "timeouts": {
-          "connect_ms": 30000,
-          "request_ms": 90000,
-          "stall_ms": 20000,
-          "ttft_ms": 30000
-        },
-        "max_output_tokens": 24576,
-        "streaming": true,
-        "structured_output": "strict",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning.effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": false
-        },
-        "routing": {
-          "mode": "gateway-delegated",
-          "ignore_providers": [
-            "morph",
-            "fireworks"
-          ],
-          "provider": {
-            "allow_fallbacks": true,
-            "require_parameters": true,
-            "ignore": [
-              "morph",
-              "fireworks"
-            ],
-            "sort": "throughput",
-            "preferred_min_throughput": {
-              "p90": 40
-            },
-            "preferred_max_latency": {
-              "p99": 3
-            },
-            "data_collection": "deny"
-          }
-        },
-        "privacy": {
-          "data_collection": "deny"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "runtime-owned-uncharacterized"
-        },
-        "quarantine": {
-          "on_timeout": false
-        }
-      },
       {
         "name": "fireworks",
         "base_url_class": "direct-fireworks-openai-compatible",
@@ -143,6 +88,61 @@
         },
         "quarantine": {
           "on_timeout": "runtime-default-uncharacterized"
+        }
+      },
+      {
+        "name": "openrouter-fallback",
+        "base_url_class": "openrouter-gateway",
+        "model": "deepseek/deepseek-v4-flash-0731",
+        "compatibility_mode": "openrouter",
+        "timeouts": {
+          "connect_ms": 30000,
+          "request_ms": 90000,
+          "stall_ms": 20000,
+          "ttft_ms": 30000
+        },
+        "max_output_tokens": 24576,
+        "streaming": true,
+        "structured_output": "strict",
+        "reasoning": {
+          "effort": "high",
+          "wire_shape": "reasoning.effort"
+        },
+        "request_extensions": {
+          "perf_metrics_in_response": false
+        },
+        "routing": {
+          "mode": "gateway-delegated",
+          "ignore_providers": [
+            "morph",
+            "fireworks"
+          ],
+          "provider": {
+            "allow_fallbacks": true,
+            "require_parameters": true,
+            "ignore": [
+              "morph",
+              "fireworks"
+            ],
+            "sort": "throughput",
+            "preferred_min_throughput": {
+              "p90": 40
+            },
+            "preferred_max_latency": {
+              "p99": 3
+            },
+            "data_collection": "deny"
+          }
+        },
+        "privacy": {
+          "data_collection": "deny"
+        },
+        "retry": {
+          "max_attempts": 2,
+          "classification": "runtime-owned-uncharacterized"
+        },
+        "quarantine": {
+          "on_timeout": false
         }
       }
     ]

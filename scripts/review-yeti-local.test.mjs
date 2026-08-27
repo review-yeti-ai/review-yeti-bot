@@ -22,7 +22,7 @@ test('materializes the committed provider order and routing into the local CLI c
   const config = buildLocalConfig(policy);
   const transports = config.github_action.transports;
 
-  assert.deepEqual(transports.map((transport) => transport.name), ['openrouter-fallback', 'fireworks', 'ollama']);
+  assert.deepEqual(transports.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
   assert.equal(config.github_action.openrouter.stream, true);
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
@@ -63,7 +63,7 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.OPENROUTER_TIMEOUT_MS, String(openrouterTransport.timeout_ms));
   assert.equal(env.OPENROUTER_TTFT_MS, '30000');
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
-  assert.deepEqual(JSON.parse(env.REVIEW_YETI_TRANSPORTS).find((transport) => transport.name === 'openrouter-fallback').provider_routing.ignore, ['morph', 'fireworks']);
+  assert.deepEqual(JSON.parse(env.REVIEW_YETI_TRANSPORTS)[2].provider_routing.ignore, ['morph', 'fireworks']);
 });
 
 test('accepts only immutable SHA pairs, diff files, or GitHub pull requests', () => {
@@ -138,7 +138,7 @@ process.stdout.write(JSON.stringify({ delegated: true }) + '\\n');
     assert.equal(JSON.parse(output).delegated, true);
     assert.deepEqual(delegated.args, ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--json']);
     assert.equal(delegated.configMode, 0o600);
-    assert.deepEqual(delegated.transportNames, ['openrouter-fallback', 'fireworks', 'ollama']);
+    assert.deepEqual(delegated.transportNames, ['fireworks', 'ollama', 'openrouter-fallback']);
     assert.deepEqual(delegated.mcpServerIds, ['context7-local']);
     assert.equal(delegated.mcpSecretPresent, true);
     assert.equal(delegated.publicationFlag, 'false');
