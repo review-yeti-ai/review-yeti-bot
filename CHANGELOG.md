@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.13.1...v1.13.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* **telemetry:** preserve OpenRouter upstream attribution ([#281](https://github.com/review-yeti-ai/review-yeti-bot/issues/281)) ([6c5127d](https://github.com/review-yeti-ai/review-yeti-bot/commit/6c5127da400e370a552e0a2f19c4372b85d6f2f4))
+
 ## [1.13.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.13.0...v1.13.1) (2026-08-26)
 
 
