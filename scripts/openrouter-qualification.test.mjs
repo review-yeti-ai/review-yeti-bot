@@ -25,6 +25,7 @@ import {
   buildQualificationReceipt,
   buildTransportHandoff,
   normalizeChildTimeoutMs,
+  normalizeQualificationMaxTokens,
   normalizeQualificationOutputContractMode,
   normalizeQualificationRepetitions,
   qualificationWorstCaseMs,
@@ -61,6 +62,7 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.match(workflow, /Fixed repetitions per fixture \(1 or 2/u);
   const announceStep = workflow.split('      - name: Announce bounded OpenRouter dispatch', 2)[1]?.split('      - name: Run bounded OpenRouter qualification', 1)[0] || '';
   assert.match(announceStep, /OUTPUT_CONTRACT_MODE_INPUT:/u);
+  assert.match(announceStep, /MAX_TOKENS_INPUT:/u);
   const announceRun = announceStep.split('        run: |', 2)[1] || '';
   assert.doesNotMatch(announceRun, /\$\{\{/u);
   assert.match(workflow, /environment:\s*\n\s+name:\s*review-yeti-openrouter-qualification/u);
@@ -73,6 +75,10 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.equal(validateQualificationInput(input).prNumber, 278);
   assert.equal(validateQualificationInput({ ...input, repetitions: 2 }).repetitions, 2);
   assert.equal(validateQualificationInput(input).outputContractMode, QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE);
+  assert.equal(validateQualificationInput(input).maxTokens, OPENROUTER_MAX_OUTPUT_TOKENS);
+  assert.equal(validateQualificationInput({ ...input, maxTokens: 65_536 }).maxTokens, 65_536);
+  assert.equal(normalizeQualificationMaxTokens(65_536), 65_536);
+  assert.equal(normalizeQualificationMaxTokens(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
   assert.equal(validateQualificationInput({ ...input, outputContractMode: 'json_schema' }).outputContractMode, 'json_schema');
   assert.deepEqual(QUALIFICATION_OUTPUT_CONTRACT_MODES, ['json_object', 'json_schema']);
   assert.equal(normalizeQualificationOutputContractMode(), 'json_object');
@@ -87,6 +93,9 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   }
   assert.throws(() => validateQualificationInput({ ...input, repetitions: 3 }), /repetitions/u);
   assert.throws(() => validateQualificationInput({ ...input, outputContractMode: 'xml' }), /outputContractMode/u);
+  assert.throws(() => validateQualificationInput({ ...input, maxTokens: 0 }), /maxTokens/u);
+  assert.throws(() => validateQualificationInput({ ...input, maxTokens: 1.5 }), /maxTokens/u);
+  assert.throws(() => normalizeQualificationMaxTokens(Number.MAX_SAFE_INTEGER + 1), /maxTokens/u);
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
 });
 
@@ -116,6 +125,7 @@ test('handoff contains exactly one direct OpenRouter transport under the common 
   assert.equal(handoff[0].stream, true);
   assert.equal(handoff[0].structured_output_mode, 'json_object');
   assert.equal(buildTransportHandoff(policy, 'json_schema')[0].structured_output_mode, 'json_schema');
+  assert.equal(buildTransportHandoff(policy, 'json_object', 65_536)[0].max_tokens, 65_536);
 });
 
 test('child environment strips every non-OpenRouter provider credential', () => {
@@ -185,17 +195,18 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
   const outputDir = mkdtempSync(path.join(os.tmpdir(), 'openrouter-qualification-'));
   let captured;
   try {
+    const highBudgetInput = { ...input, maxTokens: 65_536 };
     const result = await runQualification({
-      input,
+      input: highBudgetInput,
       policy,
       token: 'read-only-token',
       outputDir,
       fetchImpl: async (url) => {
         if (url.includes('/pulls/')) {
-          return { ok: true, json: async () => ({ base: { sha: input.baseSha }, head: { sha: input.headSha } }) };
+          return { ok: true, json: async () => ({ base: { sha: highBudgetInput.baseSha }, head: { sha: highBudgetInput.headSha } }) };
         }
         if (url.includes('/git/ref/tags/')) {
-          return { ok: true, json: async () => ({ object: { type: 'commit', sha: input.botSha } }) };
+          return { ok: true, json: async () => ({ object: { type: 'commit', sha: highBudgetInput.botSha } }) };
         }
         return { ok: true, json: async () => ({ commit: { verification: { verified: true } } }) };
       },
@@ -230,6 +241,7 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
     assert.deepEqual(captured.args.slice(1, 5), ['lanes', '--arm', 'candidate', '--fixture']);
     assert.equal(captured.args[captured.args.indexOf('--repetitions') + 1], '1');
     assert.equal(captured.args[captured.args.indexOf('--concurrency') + 1], '3');
+    assert.equal(captured.args[captured.args.indexOf('--max-tokens') + 1], '65536');
     assert.equal(result.receipt.schema, 'review-yeti.openrouter-qualification.v1');
     assert.equal(result.receipt.integrity_gate.passed, true);
     assert.equal(result.receipt.authoritative_arm, 'none');
@@ -241,6 +253,8 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
     assert.equal(result.receipt.evaluation.provider_attribution_valid, true);
     assert.equal(result.receipt.evaluation.fixture_set_valid, true);
     assert.equal(result.receipt.request_contract.structured_output_mode, 'json_object');
+    assert.equal(result.receipt.request_contract.max_output_tokens, 65_536);
+    assert.equal(result.receipt.integrity_gate.request_contract_valid, true);
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }

@@ -39,6 +39,11 @@ on:
         required: true
         default: '2'
         type: string
+      max_tokens:
+        description: 'Positive safe-integer output budget for this evidence run; no harness-imposed upper bound (provider/model limits and hard deadlines still apply)'
+        required: true
+        default: '24576'
+        type: string
       output_contract_mode:
         description: 'Output contract for this evidence run (json_object is compatibility default; json_schema is opt-in)'
         required: true
@@ -65,6 +70,7 @@ jobs:
       QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
       QUALIFY_BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
       QUALIFY_REPETITIONS: ${{ inputs.repetitions }}
+      QUALIFY_MAX_TOKENS: ${{ inputs.max_tokens }}
       QUALIFY_OUTPUT_CONTRACT_MODE: ${{ inputs.output_contract_mode }}
       QUALIFY_CENTRAL_SHA: ${{ github.sha }}
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
@@ -107,8 +113,10 @@ jobs:
       - name: Announce bounded OpenRouter dispatch
         env:
           OUTPUT_CONTRACT_MODE_INPUT: ${{ inputs.output_contract_mode }}
+          MAX_TOKENS_INPUT: ${{ inputs.max_tokens }}
         run: |
           echo "::notice::Dispatching one direct OpenRouter qualification arm over three fixtures and the declared repetition count (three concurrent lanes); output_contract_mode=${OUTPUT_CONTRACT_MODE_INPUT}."
+          echo "::notice::Requested max_tokens=${MAX_TOKENS_INPUT}; provider/model limits and hard deadlines remain authoritative, with no harness-imposed token ceiling."
           echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 

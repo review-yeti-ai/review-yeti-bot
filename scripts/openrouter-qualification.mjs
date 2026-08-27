@@ -77,6 +77,17 @@ export function normalizeQualificationRepetitions(value = QUALIFICATION_DEFAULT_
   return parsed;
 }
 
+// Qualification must be able to test the provider/model's own output ceiling. Do not impose
+// another arbitrary harness cap: the provider request, model limits, and the hard child/workflow
+// deadlines remain authoritative. Number.isSafeInteger prevents JSON/CLI precision loss.
+export function normalizeQualificationMaxTokens(value = OPENROUTER_MAX_OUTPUT_TOKENS) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error('maxTokens must be a positive safe integer');
+  }
+  return parsed;
+}
+
 export function normalizeQualificationOutputContractMode(value = QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE) {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!QUALIFICATION_OUTPUT_CONTRACT_MODES.includes(normalized)) {
@@ -105,6 +116,7 @@ export function validateQualificationInput(input = {}) {
   if (!REPOSITORY_PATTERN.test(String(input.repository || ''))) throw new Error('repository must be owner/name');
   const prNumber = positiveInteger(input.prNumber, 'prNumber');
   const repetitions = normalizeQualificationRepetitions(input.repetitions);
+  const maxTokens = normalizeQualificationMaxTokens(input.maxTokens ?? input.max_tokens);
   const outputContractMode = normalizeQualificationOutputContractMode(
     input.outputContractMode ?? input.output_contract_mode,
   );
@@ -125,21 +137,27 @@ export function validateQualificationInput(input = {}) {
     botReleaseTag: String(input.botReleaseTag),
     botRoot: String(input.botRoot),
     repetitions,
+    maxTokens,
     outputContractMode,
   };
 }
 
-export function buildTransportHandoff(policy, outputContractMode = QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE) {
+export function buildTransportHandoff(
+  policy,
+  outputContractMode = QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE,
+  maxTokens = OPENROUTER_MAX_OUTPUT_TOKENS,
+) {
   const transports = validatePolicy(policy);
   const selected = transports.find((transport) => transport.name === OPENROUTER_TRANSPORT);
   if (!selected) throw new Error(`policy does not define the ${OPENROUTER_TRANSPORT} transport`);
   const normalizedOutputContractMode = normalizeQualificationOutputContractMode(outputContractMode);
+  const normalizedMaxTokens = normalizeQualificationMaxTokens(maxTokens);
   return [{
     ...selected,
     name: OPENROUTER_TRANSPORT,
     timeout_ms: OPENROUTER_TIMEOUT_MS,
     connect_timeout_ms: OPENROUTER_CONNECT_TIMEOUT_MS,
-    max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+    max_tokens: normalizedMaxTokens,
     reasoning_effort: OPENROUTER_REASONING_EFFORT,
     stream: true,
     structured_output_mode: normalizedOutputContractMode,
@@ -371,6 +389,7 @@ function readEvaluation(pathname, exitCode, repetitions = QUALIFICATION_DEFAULT_
 export function buildQualificationReceipt({ input, policy, handoff, evaluation, childTimedOut, childTimeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS, now = new Date().toISOString(), runId = 'manual' }) {
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
   const repetitions = normalizeQualificationRepetitions(input.repetitions);
+  const maxTokens = normalizeQualificationMaxTokens(input.maxTokens ?? input.max_tokens);
   const contract = {
     transport: OPENROUTER_TRANSPORT,
     provider: 'openrouter',
@@ -390,7 +409,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     fixture_set_valid: evaluation.fixture_set_valid === true,
     provider_attribution_valid: evaluation.provider_attribution_valid === true,
     request_contract_valid: contract.stream
-      && contract.max_output_tokens === OPENROUTER_MAX_OUTPUT_TOKENS
+      && contract.max_output_tokens === maxTokens
       && contract.reasoning_effort === OPENROUTER_REASONING_EFFORT
       && QUALIFICATION_OUTPUT_CONTRACT_MODES.includes(contract.structured_output_mode),
     child_completed: childTimedOut !== true && evaluation.status === 'completed',
@@ -422,7 +441,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
 export async function runQualification({ input, policy, token, outputDir, fixturePath, fetchImpl = globalThis.fetch, spawnImpl = spawn, childTimeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS, now, runId } = {}) {
   const validated = validateQualificationInput(input);
   const loadedPolicy = policy || loadPolicy();
-  const handoff = buildTransportHandoff(loadedPolicy, validated.outputContractMode);
+  const handoff = buildTransportHandoff(loadedPolicy, validated.outputContractMode, validated.maxTokens);
   await verifyPullRequest({ ...validated, token, fetchImpl });
   await verifyBotRelease({ botSha: validated.botSha, botReleaseTag: validated.botReleaseTag, token, fetchImpl });
   const targetDir = path.resolve(outputDir || process.env.RUNNER_TEMP || '.', 'openrouter-qualification');
@@ -434,6 +453,7 @@ export async function runQualification({ input, policy, token, outputDir, fixtur
     path.join(validated.botRoot, 'scripts/evaluate-verified-publication.mjs'),
     'lanes', '--arm', COMPARISON_EVALUATION_ARM, '--fixture', fixture, '--fixtures', FIXTURE_IDS.join(','),
     '--repetitions', String(validated.repetitions), '--concurrency', String(QUALIFICATION_CONCURRENCY), '--out', output,
+    '--max-tokens', String(validated.maxTokens),
   ];
   console.log(`[openrouter qualification] dispatching one direct arm; fixtures=${FIXTURE_IDS.length} repetitions=${validated.repetitions} child_timeout_ms=${normalizeChildTimeoutMs(childTimeoutMs)}`);
   const child = await runChild({ command: process.execPath, args, cwd: validated.botRoot, env, spawnImpl, timeoutMs: childTimeoutMs });
@@ -458,6 +478,7 @@ async function main() {
       centralSha: process.env.QUALIFY_CENTRAL_SHA,
       botRoot: process.env.QUALIFY_BOT_ROOT,
       repetitions: process.env.QUALIFY_REPETITIONS,
+      maxTokens: process.env.QUALIFY_MAX_TOKENS,
       outputContractMode: process.env.QUALIFY_OUTPUT_CONTRACT_MODE,
     },
     token: process.env.QUALIFICATION_GH_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
