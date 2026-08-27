@@ -192,7 +192,25 @@ export function buildPiRuntimeTask({ fixture, charter }) {
     '',
     'Changed files:',
     changedFiles,
+    '',
+    'Workflow control contract (this maps the review charter into the local Pi artifact schema):',
+    '- Return exactly <control>{...}</control> followed by <analysis>...</analysis>, with no code fence or prose outside those tags. A <refs> section is not required.',
+    '- The control object must contain exactly status, summary, findings, and coverage_gaps.',
+    '- Map charter severity P0 to blocker, P1 to high, and P2 to medium. The severity field must use only blocker, high, medium, or low; never emit P0, P1, or P2 in that field.',
+    '- Every finding must contain exactly id, severity, claim, and evidence. Every evidence item must contain file, line_start, and line_end; do not use path or line aliases.',
+    '- Use status complete when the supplied scope was reviewed, including when findings is empty. Use partial or blocked only when the supplied scope itself could not be reviewed.',
   ].join('\n');
+}
+
+function safeIssueCounts(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const output = {};
+  for (const [key, count] of Object.entries(value)) {
+    const label = safeLabel(key);
+    const numeric = Number(count);
+    if (label && Number.isSafeInteger(numeric) && numeric > 0 && numeric <= 100) output[label] = numeric;
+  }
+  return output;
 }
 
 function expectedFixturePairs(repetitions) {
@@ -239,6 +257,7 @@ export function summarizePiRows(rows, { repetitions = 1 } = {}) {
     terminal_status_detail: safeLabel(row?.terminalStatusDetail),
     repair_reason: safeLabel(row?.repairReason),
     failure_class: safeLabel(row?.failureClass),
+    output_issue_counts: safeIssueCounts(row?.outputIssueCounts),
     launch_retries: Number.isInteger(Number(row?.launchRetries)) ? Number(row.launchRetries) : null,
     provider: safeLabel(row?.provider),
     observed_provider: safeLabel(row?.observedProvider),
@@ -250,6 +269,12 @@ export function summarizePiRows(rows, { repetitions = 1 } = {}) {
     usage_attempts: Number.isInteger(Number(row?.usageAttempts)) ? Number(row.usageAttempts) : null,
     prompt_sha256: /^sha256:[a-f0-9]{64}$/u.test(String(row?.promptSha256 || '')) ? row.promptSha256 : null,
   }));
+  const outputIssueCounts = {};
+  for (const row of safeRows) {
+    for (const [code, count] of Object.entries(safeIssueCounts(row?.outputIssueCounts))) {
+      outputIssueCounts[code] = (outputIssueCounts[code] || 0) + count;
+    }
+  }
   return {
     status: fixtureSetValid ? 'completed' : 'incomplete',
     rows: safeRows.length,
@@ -262,6 +287,7 @@ export function summarizePiRows(rows, { repetitions = 1 } = {}) {
     locally_repaired_runs: safeRows.filter((row) => Number(row?.localRepairCount) > 0 && row?.terminalParsed).length,
     repair_attempts: safeRows.reduce((sum, row) => sum + (Number.isInteger(Number(row?.repairAttempts)) ? Number(row.repairAttempts) : 0), 0),
     local_repairs: safeRows.reduce((sum, row) => sum + (Number.isInteger(Number(row?.localRepairCount)) ? Number(row.localRepairCount) : 0), 0),
+    output_issue_counts: outputIssueCounts,
     terminal_parsed_runs: safeRows.filter((row) => row?.terminalParsed).length,
     provider_attribution_valid: providerAttributionValid,
     fixture_set_valid: fixtureSetValid,

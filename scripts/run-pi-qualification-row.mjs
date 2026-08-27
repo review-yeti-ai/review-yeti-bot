@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -101,6 +101,25 @@ function mapControlFindings(control) {
   });
 }
 
+export function readInvalidOutputIssueCounts(runRoot, task) {
+  if (!task?.files?.result) return {};
+  const taskRoot = path.dirname(path.resolve(runRoot, task.files.result));
+  const counts = {};
+  let entries = [];
+  try { entries = readdirSync(taskRoot); } catch { return counts; }
+  for (const entry of entries.filter((name) => /^result\.invalid-attempt-\d+\.json$/u.test(name)).slice(0, 8)) {
+    try {
+      const envelope = JSON.parse(readFileSync(path.join(taskRoot, entry), 'utf8'));
+      const issues = Array.isArray(envelope?.outputValidation?.issues) ? envelope.outputValidation.issues : [];
+      for (const issue of issues) {
+        const code = safeFailureClass(issue?.code, 'unknown');
+        counts[code] = (counts[code] || 0) + 1;
+      }
+    } catch {}
+  }
+  return counts;
+}
+
 async function runRow(input) {
   const ctMetaRoot = requireAbsolute(input.ctMetaRoot, 'ctMetaRoot');
   const piRuntimeRoot = requireAbsolute(input.piRuntimeRoot, 'piRuntimeRoot');
@@ -153,6 +172,7 @@ async function runRow(input) {
     const localRepairCount = Number.isInteger(Number(resultEnvelope?.outputValidation?.repairCount))
       ? Number(resultEnvelope.outputValidation.repairCount)
       : 0;
+    const outputIssueCounts = readInvalidOutputIssueCounts(runRoot, task);
     return {
       fixtureId: String(input.fixtureId || ''),
       repetition: Number(input.repetition),
@@ -172,6 +192,7 @@ async function runRow(input) {
       failureClass: terminal?.status === 'completed' && terminalParsed
         ? null
         : workflowFailureClass || safeFailureClass(task?.statusDetail, 'workflow_terminal_error'),
+      outputIssueCounts,
       timedOut: false,
       latencyMs: Date.now() - startedAt,
       inputTokens: numericOrNull(usage.inputTokens),

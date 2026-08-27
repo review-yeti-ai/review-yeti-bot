@@ -20,7 +20,7 @@ import {
   runPiQualification,
   summarizePiRows,
 } from './pi-openrouter-qualification.mjs';
-import { readInstalledPiRuntimeVersions } from './run-pi-qualification-row.mjs';
+import { readInstalledPiRuntimeVersions, readInvalidOutputIssueCounts } from './run-pi-qualification-row.mjs';
 
 const sha = (character) => character.repeat(40);
 const input = {
@@ -136,11 +136,29 @@ test('installed runtime attestation does not depend on package.json exports', ()
   }
 });
 
+test('invalid Pi outputs expose bounded issue codes without retaining model text', () => {
+  const runRoot = mkdtempSync(path.join(os.tmpdir(), 'pi-invalid-output-'));
+  const taskRoot = path.join(runRoot, '.pi/workflows/test/tasks/task-1');
+  mkdirSync(taskRoot, { recursive: true });
+  const task = { files: { result: '.pi/workflows/test/tasks/task-1/result.json' } };
+  try {
+    writeFileSync(path.join(taskRoot, 'result.invalid-attempt-1.json'), JSON.stringify({ outputValidation: { issues: [{ code: 'invalid_json', message: 'secret model output' }, { code: 'invalid_type' }] } }));
+    writeFileSync(path.join(taskRoot, 'result.invalid-attempt-2.json'), JSON.stringify({ outputValidation: { issues: [{ code: 'invalid_json' }] } }));
+    writeFileSync(path.join(taskRoot, 'raw.invalid-attempt-1.md'), 'must never enter the receipt');
+    assert.deepEqual(readInvalidOutputIssueCounts(runRoot, task), { invalid_json: 2, invalid_type: 1 });
+  } finally {
+    rmSync(runRoot, { recursive: true, force: true });
+  }
+});
+
 test('runtime task contains the charter and diff but never leaks grading metadata', () => {
   const task = buildPiRuntimeTask({ fixture: defectFixture, charter: 'TESTING CHARTER CONTENT' });
   assert.match(task, /TESTING CHARTER CONTENT/u);
   assert.match(task, /tests\/test_marker_policy\.py/u);
   assert.match(task, /@@ -1 \+1 @@/u);
+  assert.match(task, /Map charter severity P0 to blocker, P1 to high, and P2 to medium/u);
+  assert.match(task, /Return exactly <control>\{\.\.\.\}<\/control> followed by <analysis>/u);
+  assert.match(task, /file, line_start, and line_end/u);
   assert.doesNotMatch(task, /SECRET ANSWER/u);
   assert.doesNotMatch(task, /expectedPaths|mustMatch|category/u);
   assert.doesNotMatch(task, /vacuous-default-value-test/u);
@@ -160,6 +178,7 @@ test('summary distinguishes first-pass parsing, repair, terminal errors, quality
       firstAttemptParseable: false, repairAttempts: 1, terminalParsed: true,
       localRepairCount: 0,
       provider: 'openrouter', model: PI_MODEL, inputTokens: null, outputTokens: null, costUsd: null,
+      outputIssueCounts: { invalid_json: 1, invalid_enum: 2 },
     },
     {
       fixtureId: 'clean-behavioural-guard', repetition: 1, category: 'clean',
@@ -179,6 +198,7 @@ test('summary distinguishes first-pass parsing, repair, terminal errors, quality
   assert.equal(summary.locally_repaired_runs, 1);
   assert.equal(summary.repair_attempts, 1);
   assert.equal(summary.local_repairs, 1);
+  assert.deepEqual(summary.output_issue_counts, { invalid_json: 1, invalid_enum: 2 });
   assert.equal(summary.latency_ms_median, 200);
   assert.equal(summary.latency_ms_p95, 300);
   assert.equal(summary.provider_attribution_valid, true);
