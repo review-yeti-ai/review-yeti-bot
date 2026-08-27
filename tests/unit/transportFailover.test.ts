@@ -341,10 +341,10 @@ describe('Multi-Transport Fast Failover', () => {
     expect(result.decision).toBe('APPROVE');
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(requestBodies[0].max_tokens).toBe(1024);
+    expect(requestBodies[0].max_tokens).toBe(24576);
     expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
     expect(requestBodies[1].model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(requestBodies[1].max_tokens).toBe(4096);
+    expect(requestBodies[1].max_tokens).toBe(24576);
     expect(requestBodies[1].reasoning).toEqual({ enabled: false });
     expect(requestBodies[1].provider).toEqual({ data_collection: 'deny' });
     expect(requestBodies[1].plugins).toBeUndefined();
