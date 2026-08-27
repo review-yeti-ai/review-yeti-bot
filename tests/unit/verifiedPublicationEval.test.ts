@@ -171,6 +171,36 @@ describe('grading mirror', () => {
     }
   });
 
+  it('lets scenario evaluation override the production output envelope explicitly', () => {
+    const previousTransports = process.env.REVIEW_YETI_TRANSPORTS;
+    const previousOpenRouterKey = process.env.OPENROUTER_PR_REVIEW_API_KEY;
+    process.env.REVIEW_YETI_TRANSPORTS = JSON.stringify([{
+      name: 'openrouter-fallback',
+      base_url: 'https://openrouter.test/v1',
+      api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
+      model: 'deepseek/deepseek-v4-flash-0731',
+      compat: 'openrouter',
+      stream: true,
+      timeout_ms: 90000,
+    }]);
+    process.env.OPENROUTER_PR_REVIEW_API_KEY = 'scenario-secret';
+    try {
+      const options = buildModelOptions([
+        'node',
+        'evaluate-verified-publication.mjs',
+        '--max-tokens',
+        '65536',
+      ]);
+      expect(options.maxOutputTokens).toBe(65536);
+      expect(options.transports[0]).toMatchObject({ maxTokens: 65536 });
+    } finally {
+      if (previousTransports === undefined) delete process.env.REVIEW_YETI_TRANSPORTS;
+      else process.env.REVIEW_YETI_TRANSPORTS = previousTransports;
+      if (previousOpenRouterKey === undefined) delete process.env.OPENROUTER_PR_REVIEW_API_KEY;
+      else process.env.OPENROUTER_PR_REVIEW_API_KEY = previousOpenRouterKey;
+    }
+  });
+
   it('retains only bounded lane telemetry and rejects prototype labels', () => {
     expect(captureLaneTelemetry({
       provider: 'Ollama',
