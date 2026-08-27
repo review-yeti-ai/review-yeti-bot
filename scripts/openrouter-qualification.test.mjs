@@ -14,11 +14,17 @@ import {
   OPENROUTER_TIMEOUT_MS,
   OPENROUTER_TRANSPORT,
   QUALIFICATION_CHILD_TIMEOUT_MS,
+  QUALIFICATION_BUDGET_MARGIN_MS,
+  QUALIFICATION_CONCURRENCY,
+  QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE,
+  QUALIFICATION_MAX_REPETITIONS,
   QUALIFICATION_HEARTBEAT_MS,
   buildArmEnvironment,
   buildQualificationReceipt,
   buildTransportHandoff,
   normalizeChildTimeoutMs,
+  normalizeQualificationRepetitions,
+  qualificationWorstCaseMs,
   runChild,
   runQualification,
   summarizeRows,
@@ -49,6 +55,7 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.match(workflow, /if:\s*always\(\)/u);
   assert.doesNotMatch(workflow, /continue-on-error:\s*true/u);
   assert.match(workflow, /OPENROUTER_PR_REVIEW_API_KEY:/u);
+  assert.match(workflow, /Fixed repetitions per fixture \(1 or 2/u);
   assert.match(workflow, /environment:\s*\n\s+name:\s*review-yeti-openrouter-qualification/u);
   const jobEnv = workflow.split('    env:\n', 2)[1]?.split('    steps:', 1)[0] || '';
   assert.doesNotMatch(jobEnv, /OPENROUTER_PR_REVIEW_API_KEY/u);
@@ -57,9 +64,17 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
 
 test('input requires immutable coordinates and an explicit confirmation', () => {
   assert.equal(validateQualificationInput(input).prNumber, 278);
+  assert.equal(validateQualificationInput({ ...input, repetitions: 2 }).repetitions, 2);
+  assert.equal(normalizeQualificationRepetitions(), 1);
+  assert.equal(QUALIFICATION_MAX_REPETITIONS, 2);
+  assert.equal(QUALIFICATION_CONCURRENCY, 3);
+  assert.equal(QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE, 2);
+  assert.equal(QUALIFICATION_BUDGET_MARGIN_MS, 4 * 60_000);
+  assert.ok(qualificationWorstCaseMs(2) <= QUALIFICATION_CHILD_TIMEOUT_MS - QUALIFICATION_BUDGET_MARGIN_MS);
   for (const [field, value] of [['confirm', 'yes'], ['repository', 'invalid'], ['baseSha', 'short'], ['botReleaseTag', 'main'], ['botRoot', 'relative']]) {
     assert.throws(() => validateQualificationInput({ ...input, [field]: value }), /confirm|repository|SHA|botReleaseTag|absolute/u);
   }
+  assert.throws(() => validateQualificationInput({ ...input, repetitions: 3 }), /repetitions/u);
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
 });
 
@@ -175,6 +190,7 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
         const outputPath = args[args.indexOf('--out') + 1];
         const rows = FIXTURE_IDS.map((fixtureId, index) => ({
           fixtureId,
+          repetition: 1,
           category: index === 2 ? 'clean' : 'defect',
           detected: index !== 2,
           falsePositive: false,
@@ -198,6 +214,8 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
     assert.equal(captured.env.QUALIFICATION_ARM, 'openrouter');
     assert.deepEqual(JSON.parse(captured.env.REVIEW_YETI_TRANSPORTS).map((transport) => transport.name), [OPENROUTER_TRANSPORT]);
     assert.deepEqual(captured.args.slice(1, 5), ['lanes', '--arm', 'candidate', '--fixture']);
+    assert.equal(captured.args[captured.args.indexOf('--repetitions') + 1], '1');
+    assert.equal(captured.args[captured.args.indexOf('--concurrency') + 1], '3');
     assert.equal(result.receipt.schema, 'review-yeti.openrouter-qualification.v1');
     assert.equal(result.receipt.integrity_gate.passed, true);
     assert.equal(result.receipt.authoritative_arm, 'none');
@@ -241,6 +259,52 @@ test('row-level attribution is required and cannot pass vacuously', () => {
     transport: index === 0 ? undefined : 'openrouter-fallback',
   }));
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, false);
+});
+
+test('repeated fixture evidence requires every fixture exactly once per repetition', () => {
+  const rows = [1, 2].flatMap((repetition) => FIXTURE_IDS.map((fixtureId, index) => ({
+    fixtureId,
+    repetition,
+    category: index === 2 ? 'clean' : 'defect',
+    detected: index !== 2,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: 'openrouter',
+    transport: OPENROUTER_TRANSPORT,
+    responseAttempts: [{ attempt: 1, outcome: 'parsed', provider: 'openrouter', transport: 'openrouter' }],
+  })));
+  assert.equal(summarizeRows(rows, 0, 2).fixture_set_valid, true);
+  assert.equal(summarizeRows(rows.slice(1), 0, 2).fixture_set_valid, false);
+  assert.equal(summarizeRows(rows, 0, 2).response_attempts, 6);
+});
+
+test('single-repetition callers may omit repetition, but duplicates fail closed', () => {
+  const singleRunRows = FIXTURE_IDS.map((fixtureId, index) => ({
+    fixtureId,
+    category: index === 2 ? 'clean' : 'defect',
+    detected: index !== 2,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: 'openrouter',
+    transport: OPENROUTER_TRANSPORT,
+    responseAttempts: [{ attempt: 1, outcome: 'parsed', transport: 'openrouter' }],
+  }));
+  assert.equal(summarizeRows(singleRunRows, 0).fixture_set_valid, true);
+  const duplicateRows = [1, 2].flatMap((repetition) => FIXTURE_IDS.map((fixtureId, index) => ({
+    fixtureId,
+    repetition: fixtureId === FIXTURE_IDS[0] ? 1 : repetition,
+    category: index === 2 ? 'clean' : 'defect',
+    detected: index !== 2,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: 'openrouter',
+    transport: OPENROUTER_TRANSPORT,
+    responseAttempts: [{ attempt: 1, outcome: 'parsed', transport: 'openrouter' }],
+  })));
+  assert.equal(summarizeRows(duplicateRows, 0, 2).fixture_set_valid, false);
 });
 
 test('upstream response labels remain informational for the OpenRouter route', () => {

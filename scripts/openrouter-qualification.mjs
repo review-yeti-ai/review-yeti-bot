@@ -24,11 +24,16 @@ export const OPENROUTER_TIMEOUT_MS = 90_000;
 export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
 export const OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 export const OPENROUTER_REASONING_EFFORT = 'high';
-// Three fixtures may each use the bounded two-attempt, 90-second request envelope. Keep a
-// one-minute margin over that 9-minute worst case while leaving the parent workflow below its
-// non-negotiable 15-minute ceiling.
+// Three fixtures may each use the bounded two-attempt, 90-second request envelope. The declared
+// two-repetition run uses three concurrent lanes, so its worst case is two 180-second waves with
+// a four-minute margin while leaving the parent workflow below its non-negotiable 15-minute cap.
 export const QUALIFICATION_CHILD_TIMEOUT_MS = 10 * 60_000;
 export const QUALIFICATION_HEARTBEAT_MS = 15_000;
+export const QUALIFICATION_DEFAULT_REPETITIONS = 1;
+export const QUALIFICATION_MAX_REPETITIONS = 2;
+export const QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE = 2;
+export const QUALIFICATION_CONCURRENCY = 3;
+export const QUALIFICATION_BUDGET_MARGIN_MS = 4 * 60_000;
 // The bot's telemetry normalizer reports the canonical OpenRouter transport as
 // `openrouter` on response attempts, while the handoff and row-level transport
 // retain `openrouter-fallback`. Accept both representations only after the row
@@ -39,6 +44,9 @@ export const FIXTURE_IDS = Object.freeze([
   'format-evadable-absence-guard',
   'clean-behavioural-guard',
 ]);
+if (qualificationWorstCaseMs() > QUALIFICATION_CHILD_TIMEOUT_MS - QUALIFICATION_BUDGET_MARGIN_MS) {
+  throw new Error('OpenRouter qualification request budget exceeds the ten-minute child deadline');
+}
 const PROFILE_KEY_NAMES = Object.freeze([
   'FIREWORKS_PR_REVIEW_API_KEY',
   'FIREWORKS_API_KEY',
@@ -59,6 +67,21 @@ function positiveInteger(value, label) {
   return parsed;
 }
 
+export function normalizeQualificationRepetitions(value = QUALIFICATION_DEFAULT_REPETITIONS) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > QUALIFICATION_MAX_REPETITIONS) {
+    throw new Error(`repetitions must be an integer between 1 and ${QUALIFICATION_MAX_REPETITIONS}`);
+  }
+  return parsed;
+}
+
+export function qualificationWorstCaseMs(repetitions = QUALIFICATION_MAX_REPETITIONS) {
+  const expectedRepetitions = normalizeQualificationRepetitions(repetitions);
+  const lanes = FIXTURE_IDS.length * expectedRepetitions;
+  const waves = Math.ceil(lanes / QUALIFICATION_CONCURRENCY);
+  return waves * QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE * OPENROUTER_TIMEOUT_MS;
+}
+
 export function normalizeChildTimeoutMs(value = QUALIFICATION_CHILD_TIMEOUT_MS) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > QUALIFICATION_CHILD_TIMEOUT_MS) {
@@ -71,6 +94,7 @@ export function validateQualificationInput(input = {}) {
   if (input.confirm !== QUALIFY_CONFIRMATION) throw new Error(`confirm must equal ${QUALIFY_CONFIRMATION}`);
   if (!REPOSITORY_PATTERN.test(String(input.repository || ''))) throw new Error('repository must be owner/name');
   const prNumber = positiveInteger(input.prNumber, 'prNumber');
+  const repetitions = normalizeQualificationRepetitions(input.repetitions);
   for (const [label, value] of [['baseSha', input.baseSha], ['headSha', input.headSha], ['botSha', input.botSha], ['centralSha', input.centralSha]]) {
     if (!SHA_PATTERN.test(String(value || ''))) throw new Error(`${label} must be a full commit SHA`);
   }
@@ -87,6 +111,7 @@ export function validateQualificationInput(input = {}) {
     centralSha: String(input.centralSha).toLowerCase(),
     botReleaseTag: String(input.botReleaseTag),
     botRoot: String(input.botRoot),
+    repetitions,
   };
 }
 
@@ -245,11 +270,20 @@ function percentile(values, fraction) {
   return values[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)];
 }
 
-export function summarizeRows(rows, exitCode) {
+export function summarizeRows(rows, exitCode, repetitions = QUALIFICATION_DEFAULT_REPETITIONS) {
+  const expectedRepetitions = normalizeQualificationRepetitions(repetitions);
   const safeRows = Array.isArray(rows) ? rows : [];
+  const resolveRowRepetition = (row) => {
+    if (Number.isInteger(Number(row?.repetition))) return Number(row.repetition);
+    // Preserve the pre-repetition exported helper contract for callers that
+    // summarize a single run without a repetition field. Multi-repetition
+    // evidence must carry explicit repetition numbers.
+    return expectedRepetitions === 1 ? 1 : null;
+  };
   const latencies = safeRows.map((row) => Number(row?.latencyMs)).filter(Number.isFinite).sort((a, b) => a - b);
-  const fixtureOutcomes = safeRows.slice(0, FIXTURE_IDS.length).map((row) => ({
+  const fixtureOutcomes = safeRows.map((row) => ({
     fixture_id: safeLabel(row?.fixtureId),
+    repetition: resolveRowRepetition(row),
     category: row?.category === 'defect' || row?.category === 'clean' ? row.category : 'unknown',
     outcome: row?.errored ? 'error' : row?.category === 'defect' ? (row.detected ? 'detected' : 'miss') : row?.falsePositive ? 'false_positive' : 'clean',
     provider: safeLabel(row?.provider),
@@ -270,9 +304,20 @@ export function summarizeRows(rows, exitCode) {
     const attempts = Array.isArray(row?.responseAttempts) ? row.responseAttempts : [];
     return attempts.length > 0 && attempts.every((attempt) => OPENROUTER_ATTEMPT_TRANSPORTS.includes(attempt?.transport));
   });
-  const fixtureSetValid = safeRows.length === FIXTURE_IDS.length
-    && new Set(safeRows.map((row) => row?.fixtureId)).size === FIXTURE_IDS.length
-    && FIXTURE_IDS.every((fixtureId) => safeRows.some((row) => row?.fixtureId === fixtureId));
+  const expectedFixturePairs = new Set(FIXTURE_IDS.flatMap((fixtureId) => (
+    Array.from({ length: expectedRepetitions }, (_, index) => JSON.stringify([fixtureId, index + 1]))
+  )));
+  const observedFixturePairs = new Set();
+  let invalidFixturePair = false;
+  for (const row of safeRows) {
+    const repetition = resolveRowRepetition(row);
+    const pair = JSON.stringify([row?.fixtureId, repetition]);
+    if (!expectedFixturePairs.has(pair) || observedFixturePairs.has(pair)) invalidFixturePair = true;
+    else observedFixturePairs.add(pair);
+  }
+  const fixtureSetValid = safeRows.length === FIXTURE_IDS.length * expectedRepetitions
+    && !invalidFixturePair
+    && observedFixturePairs.size === expectedFixturePairs.size;
   const tokenTelemetryStatus = positivePrompt.length === safeRows.length && positiveCompletion.length === safeRows.length ? 'complete' : positivePrompt.length || positiveCompletion.length ? 'partial' : 'unavailable';
   const costTelemetryStatus = positiveCosts.length === safeRows.length ? 'complete' : positiveCosts.length ? 'partial' : 'unavailable';
   const malformedOutputRecoveries = safeRows.filter((row) => Array.isArray(row?.responseAttempts) && row.responseAttempts.some((attempt) => attempt?.outcome === 'malformed_output')).length;
@@ -299,16 +344,17 @@ export function summarizeRows(rows, exitCode) {
   };
 }
 
-function readEvaluation(pathname, exitCode) {
+function readEvaluation(pathname, exitCode, repetitions = QUALIFICATION_DEFAULT_REPETITIONS) {
   try {
-    return summarizeRows(JSON.parse(readFileSync(pathname, 'utf8')).rows, exitCode);
+    return summarizeRows(JSON.parse(readFileSync(pathname, 'utf8')).rows, exitCode, repetitions);
   } catch {
-    return summarizeRows([], exitCode);
+    return summarizeRows([], exitCode, repetitions);
   }
 }
 
 export function buildQualificationReceipt({ input, policy, handoff, evaluation, childTimedOut, childTimeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS, now = new Date().toISOString(), runId = 'manual' }) {
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
+  const repetitions = normalizeQualificationRepetitions(input.repetitions);
   const contract = {
     transport: OPENROUTER_TRANSPORT,
     provider: 'openrouter',
@@ -319,8 +365,8 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     max_output_tokens: handoff[0].max_tokens,
     reasoning_effort: handoff[0].reasoning_effort,
     stream: handoff[0].stream === true,
-    repetitions: 1,
-    concurrency: 1,
+    repetitions,
+    concurrency: QUALIFICATION_CONCURRENCY,
   };
   const integrity = {
     exact_bot_sha_bound: SHA_PATTERN.test(String(input.botSha || '')),
@@ -367,11 +413,11 @@ export async function runQualification({ input, policy, token, outputDir, fixtur
   const args = [
     path.join(validated.botRoot, 'scripts/evaluate-verified-publication.mjs'),
     'lanes', '--arm', COMPARISON_EVALUATION_ARM, '--fixture', fixture, '--fixtures', FIXTURE_IDS.join(','),
-    '--repetitions', '1', '--concurrency', '1', '--out', output,
+    '--repetitions', String(validated.repetitions), '--concurrency', String(QUALIFICATION_CONCURRENCY), '--out', output,
   ];
-  console.log(`[openrouter qualification] dispatching one direct arm; child_timeout_ms=${normalizeChildTimeoutMs(childTimeoutMs)}`);
+  console.log(`[openrouter qualification] dispatching one direct arm; fixtures=${FIXTURE_IDS.length} repetitions=${validated.repetitions} child_timeout_ms=${normalizeChildTimeoutMs(childTimeoutMs)}`);
   const child = await runChild({ command: process.execPath, args, cwd: validated.botRoot, env, spawnImpl, timeoutMs: childTimeoutMs });
-  const evaluation = readEvaluation(output, child.exitCode);
+  const evaluation = readEvaluation(output, child.exitCode, validated.repetitions);
   const receipt = buildQualificationReceipt({ input: validated, policy: loadedPolicy, handoff, evaluation, childTimedOut: child.timedOut, childTimeoutMs, now, runId });
   const receiptPath = path.join(targetDir, 'openrouter-qualification-receipt.json');
   writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
@@ -391,6 +437,7 @@ async function main() {
       botReleaseTag: process.env.QUALIFY_BOT_RELEASE_TAG,
       centralSha: process.env.QUALIFY_CENTRAL_SHA,
       botRoot: process.env.QUALIFY_BOT_ROOT,
+      repetitions: process.env.QUALIFY_REPETITIONS,
     },
     token: process.env.QUALIFICATION_GH_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
     outputDir: process.env.RUNNER_TEMP,

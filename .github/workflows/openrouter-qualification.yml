@@ -34,6 +34,11 @@ on:
         description: 'Signed semver release tag that must resolve to bot_sha (for example v1.13.1)'
         required: true
         type: string
+      repetitions:
+        description: 'Fixed repetitions per fixture (1 or 2; 2 is the bounded evidence default)'
+        required: true
+        default: '2'
+        type: string
 
 permissions:
   contents: read
@@ -54,6 +59,7 @@ jobs:
       QUALIFY_HEAD_SHA: ${{ inputs.head_sha }}
       QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
       QUALIFY_BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
+      QUALIFY_REPETITIONS: ${{ inputs.repetitions }}
       QUALIFY_CENTRAL_SHA: ${{ github.sha }}
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
       QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
@@ -94,7 +100,7 @@ jobs:
 
       - name: Announce bounded OpenRouter dispatch
         run: |
-          echo '::notice::Dispatching one direct OpenRouter qualification arm over three fixtures.'
+          echo '::notice::Dispatching one direct OpenRouter qualification arm over three fixtures and the declared repetition count (three concurrent lanes).'
           echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 
