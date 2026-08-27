@@ -340,6 +340,31 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     });
   });
 
+  it('keeps timeout kind distinct in sanitized response-attempt receipts', () => {
+    const receipt = pipeline.buildProviderTelemetryReceipt([{
+      personaId: 'security',
+      transport: 'openrouter',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash-0731',
+      responseAttempts: [{
+        attempt: 1,
+        outcome: 'transport_error',
+        transport: 'openrouter',
+        provider: 'openrouter',
+        failureClass: 'timeout',
+        timeoutKind: 'total',
+      }],
+    }], EXACT_HEAD);
+
+    expect(receipt.lanes[0].responseAttempts).toEqual([
+      expect.objectContaining({
+        outcome: 'transport_error',
+        failureClass: 'timeout',
+        timeoutKind: 'total',
+      }),
+    ]);
+  });
+
   it('omits empty, overlong, and control-character identifiers', () => {
     const receipt = pipeline.buildProviderTelemetryReceipt([{
       personaId: ' ',
