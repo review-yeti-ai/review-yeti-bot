@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.14.0...v1.14.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **streaming:** bound active generation wall clock ([#285](https://github.com/review-yeti-ai/review-yeti-bot/issues/285)) ([fbca6d8](https://github.com/review-yeti-ai/review-yeti-bot/commit/fbca6d870c47be0f6bbbac4362b1a575902d5ff1))
+
 ## [1.14.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.13.2...v1.14.0) (2026-08-27)
 
 
