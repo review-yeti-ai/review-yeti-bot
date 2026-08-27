@@ -29,9 +29,6 @@ export const OPENROUTER_REASONING_EFFORT = 'high';
 // non-negotiable 15-minute ceiling.
 export const QUALIFICATION_CHILD_TIMEOUT_MS = 10 * 60_000;
 export const QUALIFICATION_HEARTBEAT_MS = 15_000;
-// The bot preserves OpenInference when it is explicitly reported by the
-// upstream response; other upstream labels normalize back to OpenRouter.
-const OPENROUTER_ATTEMPT_PROVIDERS = Object.freeze(['openrouter', 'openinference']);
 export const FIXTURE_IDS = Object.freeze([
   'vacuous-default-value-test',
   'format-evadable-absence-guard',
@@ -266,7 +263,7 @@ export function summarizeRows(rows, exitCode) {
   const providerAttributionValid = safeRows.every((row) => {
     if (row?.transport !== OPENROUTER_TRANSPORT) return false;
     const attempts = Array.isArray(row?.responseAttempts) ? row.responseAttempts : [];
-    return attempts.length > 0 && attempts.every((attempt) => OPENROUTER_ATTEMPT_PROVIDERS.includes(attempt?.provider) && attempt?.transport === OPENROUTER_TRANSPORT);
+    return attempts.length > 0 && attempts.every((attempt) => attempt?.transport === OPENROUTER_TRANSPORT);
   });
   const fixtureSetValid = safeRows.length === FIXTURE_IDS.length
     && new Set(safeRows.map((row) => row?.fixtureId)).size === FIXTURE_IDS.length

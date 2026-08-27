@@ -256,7 +256,7 @@ test('upstream response labels remain informational for the OpenRouter route', (
     responseAttempts: [{
       attempt: 1,
       outcome: 'parsed',
-      provider: index === 1 ? 'openinference' : 'openrouter',
+      provider: index === 0 ? 'inceptron' : index === 1 ? 'openinference' : 'deepinfra',
       transport: OPENROUTER_TRANSPORT,
     }],
   }));
