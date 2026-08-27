@@ -277,6 +277,28 @@ describe('grading mirror', () => {
     });
   });
 
+  it('retains the canonical OpenRouter fallback transport in attempt attribution', () => {
+    expect(captureLaneTelemetry({
+      provider: 'reka',
+      transport: 'openrouter-fallback',
+      responseAttempts: [{
+        attempt: 1,
+        outcome: 'parsed',
+        provider: 'openrouter',
+        transport: 'openrouter-fallback',
+      }],
+    })).toEqual({
+      provider: 'reka',
+      transport: 'openrouter-fallback',
+      responseAttempts: [{
+        attempt: 1,
+        outcome: 'parsed',
+        provider: 'openrouter',
+        transport: 'openrouter-fallback',
+      }],
+    });
+  });
+
   it('drops arbitrary values at the output telemetry boundary', () => {
     expect(captureLaneTelemetry({
       outputShape: 'secret-response-shape',
