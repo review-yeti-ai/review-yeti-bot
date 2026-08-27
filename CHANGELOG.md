@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.13.2...v1.14.0) (2026-08-27)
+
+
+### Features
+
+* **openrouter:** harden bounded production-readiness path ([#283](https://github.com/review-yeti-ai/review-yeti-bot/issues/283)) ([541e97b](https://github.com/review-yeti-ai/review-yeti-bot/commit/541e97b9742abbd509ba9eff8651649bbfbcc9ee))
+
 ## [1.13.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.13.1...v1.13.2) (2026-08-26)
 
 
