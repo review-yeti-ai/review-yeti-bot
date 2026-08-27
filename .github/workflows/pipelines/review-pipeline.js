@@ -2369,10 +2369,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         recoveryAction = 'bounded_retry';
         noteRetryReason('timeout');
         // A timeout with no usable stream cannot identify a failed upstream model. Retry the
-        // same OpenRouter route with reasoning disabled and without the auto-router plugin so
-        // the provider can select a fresh path while reserving the response budget for JSON.
+        // same OpenRouter route without the auto-router plugin. Preserve the admitted reasoning
+        // effort so a transport recovery does not silently downgrade review semantics.
         delete requestBody.plugins;
-        requestBody.reasoning = { enabled: false };
         requestBody.max_tokens = Math.max(requestBody.max_tokens, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
         requestBody.messages[0].content += [
           '',
@@ -2382,7 +2381,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           '- Do not assume the change is clean; include every finding that meets the review criteria.',
           '- Do not emit prose or markdown outside the required findings object.',
         ].join('\n');
-        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with reasoning disabled before failing closed...`);
+        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with the admitted reasoning effort and auto-routing disabled before failing closed...`);
         return true;
       };
 
