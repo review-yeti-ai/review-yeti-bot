@@ -40,6 +40,7 @@ const ALLOWED_TRANSPORT_KEYS = [
   'compat',
   'timeout_ms',
   'connect_timeout_ms',
+  'max_tokens',
   'stream',
   'structured_output',
   'perf_metrics_in_response',
@@ -169,6 +170,7 @@ export function buildExecutionPlan(policy) {
           stall_ms: stallTimeoutMs,
           ttft_ms: ttftTimeoutMs,
         },
+        max_output_tokens: configuredOrUnknown(transport.max_tokens),
         streaming: transport.stream,
         structured_output: configuredOrUnknown(transport.structured_output),
         reasoning: {

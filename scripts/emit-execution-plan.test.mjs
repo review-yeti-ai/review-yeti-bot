@@ -41,6 +41,9 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   );
   assert.equal(fireworks.reasoning.wire_shape, 'reasoning_effort');
   assert.equal(openrouter.reasoning.wire_shape, 'reasoning.effort');
+  assert.equal(openrouter.max_output_tokens, 24_576);
+  assert.equal(fireworks.max_output_tokens, 24_576);
+  assert.equal(ollama.max_output_tokens, 24_576);
   assert.deepEqual(fireworks.timeouts, {
     connect_ms: 15_000,
     request_ms: 120_000,

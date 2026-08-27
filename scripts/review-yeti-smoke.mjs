@@ -60,6 +60,9 @@ export function validatePolicy(policy) {
     if (!positiveSafeInteger(transport.timeout_ms) || !positiveSafeInteger(transport.connect_timeout_ms)) {
       throw new Error(`transport ${transport.name} timeout budgets must be positive safe integers`);
     }
+    if (transport.max_tokens !== undefined && !positiveSafeInteger(Number(transport.max_tokens))) {
+      throw new Error(`transport ${transport.name} max_tokens must be a positive safe integer when declared`);
+    }
     if (transport.connect_timeout_ms > transport.timeout_ms) {
       throw new Error(`transport ${transport.name} connect timeout must not exceed timeout`);
     }

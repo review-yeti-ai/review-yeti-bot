@@ -14,6 +14,7 @@
         "compat": "openrouter",
         "timeout_ms": 90000,
         "connect_timeout_ms": 30000,
+        "max_tokens": 24576,
         "stream": true,
         "structured_output": "strict",
         "quarantine_on_timeout": false,
@@ -41,6 +42,7 @@
         "compat": "openai",
         "timeout_ms": 120000,
         "connect_timeout_ms": 15000,
+        "max_tokens": 24576,
         "stream": true,
         "structured_output": "strict",
         "perf_metrics_in_response": true,
@@ -54,6 +56,7 @@
         "compat": "openai",
         "timeout_ms": 90000,
         "connect_timeout_ms": 30000,
+        "max_tokens": 24576,
         "stream": true,
         "reasoning_effort": "high"
       }

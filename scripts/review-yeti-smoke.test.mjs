@@ -86,6 +86,7 @@ test('the committed OpenRouter fallback delegates quantization and keeps through
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
+  assert.equal(openrouter.max_tokens, 24_576);
   // Post review-yeti-bot#163: the lane deadline bounds the dead-transport connect+stall envelope
   // plus the declared overhead reserve, not the sum of timeout_ms (an actively-streaming call is
   // never killed by a duration cap). Mirrors the same inequality emit-policy.mjs enforces.

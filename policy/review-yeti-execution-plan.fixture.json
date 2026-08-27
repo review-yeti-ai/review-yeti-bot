@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "5d787295e9e007f867c56a2508a86ab03ff53774547641302a3f4395d0d01c1a",
+  "normalized_plan_sha256": "8e1ef2528616de6b3bf8d9a4a4ea978622c2e68be7b467cb631dc50e484f63fb",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -27,6 +27,7 @@
           "stall_ms": 20000,
           "ttft_ms": 30000
         },
+        "max_output_tokens": 24576,
         "streaming": true,
         "structured_output": "strict",
         "reasoning": {
@@ -81,6 +82,7 @@
           "stall_ms": 20000,
           "ttft_ms": 30000
         },
+        "max_output_tokens": 24576,
         "streaming": true,
         "structured_output": "strict",
         "reasoning": {
@@ -117,6 +119,7 @@
           "stall_ms": 20000,
           "ttft_ms": 30000
         },
+        "max_output_tokens": 24576,
         "streaming": true,
         "structured_output": "runtime-default-uncharacterized",
         "reasoning": {
