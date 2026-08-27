@@ -158,6 +158,8 @@ test('runtime task contains the charter and diff but never leaks grading metadat
   assert.match(task, /@@ -1 \+1 @@/u);
   assert.match(task, /Map charter severity P0 to blocker, P1 to high, and P2 to medium/u);
   assert.match(task, /Return exactly <control>\{\.\.\.\}<\/control> followed by <analysis>/u);
+  assert.match(task, /exactly schema, digest, status, summary, findings, and coverage_gaps/u);
+  assert.match(task, /Set schema to ct-pi-audit-result\.v1/u);
   assert.match(task, /file, line_start, and line_end/u);
   assert.doesNotMatch(task, /SECRET ANSWER/u);
   assert.doesNotMatch(task, /expectedPaths|mustMatch|category/u);

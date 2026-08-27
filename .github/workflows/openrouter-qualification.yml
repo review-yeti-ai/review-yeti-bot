@@ -45,7 +45,7 @@ on:
       example_meta_sha:
         description: 'Exact reviewed example-meta Pi authoring commit (required for pi_workflow)'
         required: true
-        default: '13914bb18eceac4a222525dd84e57cb0594dd0ba'
+        default: 'e6f92b7304605a895d9c39315f6d6588bd721c8c'
         type: string
       repetitions:
         description: 'Fixed repetitions per fixture (1 or 2; 2 is the bounded evidence default)'

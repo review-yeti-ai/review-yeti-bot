@@ -18,7 +18,7 @@ import { verifyBotRelease, verifyPullRequest } from './openrouter-qualification.
 
 export const PI_QUALIFICATION_SCHEMA = 'review-yeti.pi-openrouter-qualification.v1';
 export const PI_QUALIFICATION_CONFIRMATION = 'QUALIFY_PI';
-export const PI_AUTHORING_SHA = '13914bb18eceac4a222525dd84e57cb0594dd0ba';
+export const PI_AUTHORING_SHA = 'e6f92b7304605a895d9c39315f6d6588bd721c8c';
 export const PI_ENGINE_VERSION = '0.12.0';
 export const PI_CODING_AGENT_VERSION = '0.84.2';
 export const PI_AI_VERSION = '0.84.2';
@@ -195,7 +195,8 @@ export function buildPiRuntimeTask({ fixture, charter }) {
     '',
     'Workflow control contract (this maps the review charter into the local Pi artifact schema):',
     '- Return exactly <control>{...}</control> followed by <analysis>...</analysis>, with no code fence or prose outside those tags. A <refs> section is not required.',
-    '- The control object must contain exactly status, summary, findings, and coverage_gaps.',
+    '- The control object must contain exactly schema, digest, status, summary, findings, and coverage_gaps.',
+    '- Set schema to ct-pi-audit-result.v1. Set digest to one short non-empty sentence summarizing the bounded result.',
     '- Map charter severity P0 to blocker, P1 to high, and P2 to medium. The severity field must use only blocker, high, medium, or low; never emit P0, P1, or P2 in that field.',
     '- Every finding must contain exactly id, severity, claim, and evidence. Every evidence item must contain file, line_start, and line_end; do not use path or line aliases.',
     '- Use status complete when the supplied scope was reviewed, including when findings is empty. Use partial or blocked only when the supplied scope itself could not be reviewed.',
