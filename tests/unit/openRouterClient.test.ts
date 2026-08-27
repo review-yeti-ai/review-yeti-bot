@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
 import {
+  buildOpenRouterChatRequest,
   normalizeOpenRouterModel,
   OpenRouterClient,
   OpenRouterConnectionError,
@@ -20,6 +21,41 @@ const request = {
 };
 
 describe('OpenRouterClient', () => {
+  it('builds a stable OpenRouter request with routing, privacy, and structured-output controls', () => {
+    expect(buildOpenRouterChatRequest({
+      ...request,
+      model: 'openrouter/5.6-luna-high',
+      reasoningEffort: 'high',
+      maxTokens: 24_576,
+      temperature: 0,
+      responseFormat: { type: 'json_object' },
+      provider: {
+        allow_fallbacks: true,
+        require_parameters: true,
+        ignore: ['morph', 'fireworks'],
+        data_collection: 'deny',
+      },
+      plugins: [{ id: 'auto-router', allowed_models: ['openai/gpt-5.6-luna'] }],
+      metadata: { 'x-ct-test': 'replay' },
+    })).toEqual({
+      model: 'openai/gpt-5.6-luna',
+      messages: request.messages,
+      stream: false,
+      max_tokens: 24_576,
+      temperature: 0,
+      reasoning_effort: 'high',
+      response_format: { type: 'json_object' },
+      provider: {
+        allow_fallbacks: true,
+        require_parameters: true,
+        ignore: ['morph', 'fireworks'],
+        data_collection: 'deny',
+      },
+      plugins: [{ id: 'auto-router', allowed_models: ['openai/gpt-5.6-luna'] }],
+      metadata: { 'x-ct-test': 'replay' },
+    });
+  });
+
   it('normalizes legacy provider-router model names without using the old route', () => {
     expect(normalizeOpenRouterModel('codex/gpt-5.6-sol-high')).toBe('openai/gpt-5.6-sol');
     expect(normalizeOpenRouterModel('grok-cli/grok-4.5')).toBe('x-ai/grok-4.5');
@@ -108,6 +144,61 @@ describe('OpenRouterClient', () => {
     });
   });
 
+  it('replays fragmented SSE frames and keepalives without losing usage or cost metadata', async () => {
+    const encoded = [
+      ': keep-alive\n\n',
+      'data: {"choices":[{"delta":{"content":"{\\"findings\\": ["}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":" ]}"}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}\n\n',
+      'data: {"usage":{"cost_details":{"upstream_inference_cost":"0.0042"}}}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    const splitAt = encoded.indexOf('findings') + 4;
+    const chunks = [encoded.slice(0, splitAt), encoded.slice(splitAt)].map((part) => new TextEncoder().encode(part));
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      start(controller) {
+        chunks.forEach((chunk) => controller.enqueue(chunk));
+        controller.close();
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({ ...request, stream: true })).resolves.toMatchObject({
+      content: '{"findings": [ ]}',
+      usage: { prompt: 7, completion: 3, total: 10 },
+      costUSD: 0.0042,
+    });
+  });
+
+  it.each([
+    [401, 'unauthorized'],
+    [429, 'rate limited'],
+    [503, 'upstream unavailable'],
+  ])('fails closed on OpenRouter HTTP %s without client-side retry', async (status, detail) => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: detail } }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({ ...request, stream: false })).rejects.toMatchObject({
+      name: 'OpenRouterResponseError',
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects malformed streaming frames instead of accepting partial JSON', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(
+      'data: {"choices":[{"delta":{"content":"not-json"}}]\n\ndata: {broken}\n\ndata: [DONE]\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    ));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({ ...request, stream: true })).rejects.toThrow('malformed streaming JSON');
+  });
+
   it('fails closed when the first streamed chunk exceeds the TTFT deadline', async () => {
     const stalledStream = new ReadableStream({
       start() {},
@@ -162,10 +253,60 @@ describe('OpenRouterClient', () => {
       stream: true,
       timeoutMs: 50,
       ttftTimeoutMs: 20,
-    })).rejects.toThrow(/total deadline/i);
+    })).rejects.toMatchObject({
+      name: 'OpenRouterTimeoutError',
+      kind: 'total',
+    });
 
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(cancelled).toBe(true);
+  });
+
+  it('does not wait indefinitely when a timed-out reader ignores cancellation', async () => {
+    let cancelCalled = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const activeStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}\n\n',
+        ));
+        interval = setInterval(() => {
+          try {
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"choices":[{"delta":{"reasoning":" still thinking"}}]}\n\n',
+            ));
+          } catch {
+            // The reader has already been detached; cleanup below stops the fixture.
+          }
+        }, 2);
+      },
+      cancel() {
+        cancelCalled = true;
+        return new Promise<void>(() => {});
+      },
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(activeStream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const started = Date.now();
+
+    try {
+      await expect(client.complete({
+        ...request,
+        stream: true,
+        timeoutMs: 35,
+        ttftTimeoutMs: 20,
+      })).rejects.toMatchObject({
+        name: 'OpenRouterTimeoutError',
+        kind: 'total',
+      });
+      expect(cancelCalled).toBe(true);
+      expect(Date.now() - started).toBeLessThan(500);
+    } finally {
+      if (interval) clearInterval(interval);
+    }
   });
 
   it.each([
