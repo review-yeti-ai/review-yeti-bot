@@ -105,6 +105,7 @@ const TELEMETRY_ENUMS = Object.freeze({
   findingsSource: new Set(['content', 'reasoning', 'none']),
   contentSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
   reasoningSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
+  timeoutKind: new Set(['request', 'ttft', 'inactivity', 'total']),
 });
 const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_validated_json', 'unknown']);
 const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
