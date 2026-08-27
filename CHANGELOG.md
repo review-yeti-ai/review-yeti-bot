@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.2...v1.15.3) (2026-08-27)
+
+
+### Bug Fixes
+
+* recover OpenRouter streaming timeouts ([#295](https://github.com/review-yeti-ai/review-yeti-bot/issues/295)) ([9c35639](https://github.com/review-yeti-ai/review-yeti-bot/commit/9c3563952790c158d609356cfbacdb5b527a8c56))
+
 ## [1.15.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.1...v1.15.2) (2026-08-27)
 
 
