@@ -239,7 +239,7 @@ test('row-level attribution is required and cannot pass vacuously', () => {
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, false);
 });
 
-test('OpenInference response labels remain attributable to the OpenRouter route', () => {
+test('upstream response labels remain informational for the OpenRouter route', () => {
   const rows = FIXTURE_IDS.map((fixtureId, index) => ({
     fixtureId,
     category: index === 2 ? 'clean' : 'defect',
@@ -247,7 +247,7 @@ test('OpenInference response labels remain attributable to the OpenRouter route'
     falsePositive: false,
     errored: false,
     latencyMs: 10,
-    provider: 'openinference',
+    provider: index === 0 ? 'inceptron' : index === 1 ? 'openinference' : 'deepinfra',
     transport: OPENROUTER_TRANSPORT,
     responseAttempts: [{
       attempt: 1,
@@ -259,7 +259,7 @@ test('OpenInference response labels remain attributable to the OpenRouter route'
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, true);
 });
 
-test('unknown response providers cannot pass OpenRouter attribution', () => {
+test('missing or misrouted attempts cannot pass OpenRouter attribution', () => {
   const rows = FIXTURE_IDS.map((fixtureId, index) => ({
     fixtureId,
     category: index === 2 ? 'clean' : 'defect',
@@ -267,13 +267,13 @@ test('unknown response providers cannot pass OpenRouter attribution', () => {
     falsePositive: false,
     errored: false,
     latencyMs: 10,
-    provider: index === 0 ? 'other-provider' : 'openrouter',
+    provider: 'deepinfra',
     transport: OPENROUTER_TRANSPORT,
-    responseAttempts: [{
+    responseAttempts: index === 0 ? [] : [{
       attempt: 1,
       outcome: 'parsed',
-      provider: 'openrouter',
-      transport: OPENROUTER_TRANSPORT,
+      provider: index === 1 ? 'ollama' : 'openrouter',
+      transport: index === 1 ? 'ollama' : OPENROUTER_TRANSPORT,
     }],
   }));
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, false);

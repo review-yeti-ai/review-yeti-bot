@@ -25,10 +25,6 @@ export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
 export const OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 export const OPENROUTER_REASONING_EFFORT = 'high';
 export const QUALIFICATION_CHILD_TIMEOUT_MS = 8 * 60_000;
-// The gateway route is OpenRouter, but its response may identify the resolved
-// upstream adapter as OpenInference. Keep this allowlist narrow so attribution
-// remains fail-closed for every other provider label.
-const OPENROUTER_RESPONSE_PROVIDERS = Object.freeze(['openrouter', 'openinference']);
 export const FIXTURE_IDS = Object.freeze([
   'vacuous-default-value-test',
   'format-evadable-absence-guard',
@@ -247,10 +243,14 @@ export function summarizeRows(rows, exitCode) {
   const positivePrompt = safeRows.map((row) => Number(row?.usage?.promptTokens)).filter((value) => Number.isFinite(value) && value > 0);
   const positiveCompletion = safeRows.map((row) => Number(row?.usage?.completionTokens)).filter((value) => Number.isFinite(value) && value > 0);
   const positiveCosts = safeRows.map((row) => Number(row?.usage?.costUSD)).filter((value) => Number.isFinite(value) && value > 0);
+  // OpenRouter may report the resolved upstream adapter (for example, Inceptron
+  // or DeepInfra) in the row-level provider field. Route attribution is proven
+  // by the configured OpenRouter transport on every row and response attempt;
+  // the upstream label remains informational telemetry and is not allowlisted.
   const providerAttributionValid = safeRows.every((row) => {
-    if (!OPENROUTER_RESPONSE_PROVIDERS.includes(row?.provider) || row?.transport !== OPENROUTER_TRANSPORT) return false;
+    if (row?.transport !== OPENROUTER_TRANSPORT) return false;
     const attempts = Array.isArray(row?.responseAttempts) ? row.responseAttempts : [];
-    return attempts.every((attempt) => attempt?.provider === 'openrouter' && attempt?.transport === OPENROUTER_TRANSPORT);
+    return attempts.length > 0 && attempts.every((attempt) => attempt?.provider === 'openrouter' && attempt?.transport === OPENROUTER_TRANSPORT);
   });
   const fixtureSetValid = safeRows.length === FIXTURE_IDS.length
     && new Set(safeRows.map((row) => row?.fixtureId)).size === FIXTURE_IDS.length
