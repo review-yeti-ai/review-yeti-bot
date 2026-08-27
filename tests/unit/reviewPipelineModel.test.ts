@@ -882,6 +882,8 @@ describe('reviewWithModel', () => {
     expect(calls[0]).toHaveProperty('reasoning', { effort: 'high' });
     expect(calls[1]).toHaveProperty('reasoning', { enabled: false });
     expect(calls[1]).not.toHaveProperty('plugins');
+    expect(calls[1].messages[0].content).toContain('Re-evaluate the complete diff');
+    expect(calls[1].messages[0].content).not.toContain('return only {"findings":[]}');
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
       expect.objectContaining({ attempt: 1, outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
       expect.objectContaining({ attempt: 2, outcome: 'parsed', failureClass: null }),
