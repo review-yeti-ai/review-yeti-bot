@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.3...v1.15.4) (2026-08-27)
+
+
+### Bug Fixes
+
+* preserve findings during OpenRouter timeout recovery ([#298](https://github.com/review-yeti-ai/review-yeti-bot/issues/298)) ([173b3d5](https://github.com/review-yeti-ai/review-yeti-bot/commit/173b3d5acddf10a09d81cfda020403a70b26f510))
+
 ## [1.15.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.2...v1.15.3) (2026-08-27)
 
 
