@@ -9,9 +9,12 @@ export class OpenRouterConnectionError extends Error {
 }
 
 export class OpenRouterResponseError extends Error {
-  constructor(message: string) {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
     super(message);
     this.name = 'OpenRouterResponseError';
+    this.status = Number.isInteger(status) ? status : undefined;
   }
 }
 
@@ -788,7 +791,7 @@ export class OpenRouterClient implements ReviewModelClient {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new OpenRouterResponseError(`OpenRouter HTTP ${response.status}: ${text.slice(0, 2_000)}`);
+        throw new OpenRouterResponseError(`OpenRouter HTTP ${response.status}: ${text.slice(0, 2_000)}`, response.status);
       }
 
       const data = await readStreamingResponse(response, effectiveModel, {
