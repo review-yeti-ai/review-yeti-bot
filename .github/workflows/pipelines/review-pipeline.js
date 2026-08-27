@@ -81,10 +81,10 @@ const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 // Streaming responses need both an inactivity watchdog and a total generation
 // budget. Without the latter, a provider can emit a never-ending sequence of
-// small deltas and keep a review lane alive indefinitely. Keep the total budget
-// to two transport windows (capped at three minutes) so the normal 90-second
-// policy remains responsive while allowing a slow but active generation to
-// finish.
+// small deltas and keep a review lane alive indefinitely. The total budget is
+// capped by the admitted transport timeout so the wire contract and the
+// watchdog agree; a bounded recovery attempt, when admitted, gets its own
+// transport window.
 const DEFAULT_STREAM_MAX_WALL_CLOCK_MS = 180_000;
 
 function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURRENCY) {
@@ -2363,6 +2363,26 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once with reasoning disabled before failover...`);
         return true;
       };
+      const prepareOpenRouterTimeoutRecovery = () => {
+        if (!isOpenRouterTransport || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
+        formatRecoveryAttempted = true;
+        recoveryAction = 'bounded_retry';
+        noteRetryReason('timeout');
+        // A timeout with no usable stream cannot identify a failed upstream model. Retry the
+        // same OpenRouter route with reasoning disabled and without the auto-router plugin so
+        // the provider can select a fresh path while reserving the response budget for JSON.
+        delete requestBody.plugins;
+        requestBody.reasoning = { enabled: false };
+        requestBody.max_tokens = Math.max(requestBody.max_tokens, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
+        requestBody.messages[0].content += [
+          '',
+          'TIMEOUT RECOVERY:',
+          '- The prior generation produced no usable streamed output before the transport deadline.',
+          '- Disable reasoning and return only {"findings":[]} or the required findings object.',
+        ].join('\n');
+        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with reasoning disabled before failing closed...`);
+        return true;
+      };
 
       while (fetchAttempts < maxFetchAttempts) {
         fetchAttempts++;
@@ -2506,7 +2526,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           // lane alive indefinitely. Format recovery gets the same bounded
           // window rather than a special exemption.
           const streamTotalTimeoutMs = streamEnabled
-            ? Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, transportTimeoutMs * 2)
+            ? Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, transportTimeoutMs)
             : 0;
           const payload = await readChatCompletionResponse(
             response,
@@ -2700,6 +2720,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             ...(timeoutKind ? { timeoutKind } : {}),
           });
           if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
+          if (attemptFailureClass === 'timeout' && prepareOpenRouterTimeoutRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
             noteRetryReason('transient_socket');
             console.warn(`[Persona: ${persona.id}] Transient socket error on ${transportName} (${err.message}); retrying attempt ${fetchAttempts + 1}/${maxFetchAttempts}...`);
