@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.14.1...v1.14.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **telemetry:** retain OpenRouter fallback attribution ([#287](https://github.com/review-yeti-ai/review-yeti-bot/issues/287)) ([57c453d](https://github.com/review-yeti-ai/review-yeti-bot/commit/57c453d346d6ed25a1a753969d15cb8eaf3904d3))
+
 ## [1.14.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.14.0...v1.14.1) (2026-08-27)
 
 
