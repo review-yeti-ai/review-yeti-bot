@@ -15,7 +15,11 @@ const fs = require('fs');
 const path = require('path');
 const { createHash } = require('crypto');
 const { spawnSync, execSync } = require('child_process');
-const { computeArbitration: computeCanonicalArbitration, sanitizeFindings: sanitizeCanonicalFindings } = require('../../../src/review/reviewCore');
+const {
+  computeArbitration: computeCanonicalArbitration,
+  sanitizeFindings: sanitizeCanonicalFindings,
+  validateReviewFindings,
+} = require('../../../src/review/reviewCore');
 const { applyFalsificationOutcomes, runFindingFalsification } = require('../../../src/review/findingFalsification');
 const {
   resolveOpenRouterReviewPolicy,
@@ -2602,13 +2606,19 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 ? contentAnalysis
                 : reasoningAnalysis;
           const rawFindings = selectedAnalysis.findings;
+          const findingsValidation = rawFindings === null
+            ? null
+            : validateReviewFindings(rawFindings);
+          const contractFailure = findingsValidation?.error
+            ? `Model response violated canonical findings contract: ${findingsValidation.error}.`
+            : 'Model response contained no parseable findings JSON.';
           outputShape = selectedAnalysis.outputShape;
           findingsSource = contentAnalysis.findings !== null
             ? 'content'
             : reasoningAnalysis.findings !== null
               ? 'reasoning'
               : 'none';
-          if (rawFindings === null) {
+          if (rawFindings === null || !findingsValidation?.valid) {
             noteRetryReason('malformed_output');
             failureClass = 'malformed_output';
             recordResponseAttempt('malformed_output', {
@@ -2623,8 +2633,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             // Ollama/Fireworks lane useful without accepting malformed output.
             if (prepareDirectFormatRecovery()) continue;
             if (i < candidateTransports.length - 1) {
-              lastError = 'Model response contained no parseable findings JSON.';
-              console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned no parseable findings JSON; trying next transport...`);
+              lastError = contractFailure;
+              console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned a non-canonical findings response; trying next transport...`);
               fallbackAttempt++;
               break;
             }
@@ -2651,17 +2661,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               requestBody.messages[0].content += [
                 '',
                 'FORMAT RECOVERY:',
-                '- Your prior response did not contain parseable findings JSON.',
+                `- Your prior response did not satisfy the canonical findings contract${findingsValidation?.error ? ` (${findingsValidation.error}).` : '.'}`,
                 '- Keep reasoning brief and reserve output tokens for the final JSON object.',
                 '- Return only {"findings":[]} or the required findings object.',
               ].join('\n');
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned no parseable findings JSON; retrying once via the admitted ${requestBody.model} route with reasoning disabled and a larger answer budget...`);
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with reasoning disabled and a larger answer budget...`);
               continue;
             }
-            return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: 'Model response contained no parseable findings JSON.' });
+            return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: contractFailure });
           }
 
-          const findings = sanitizeFindings(rawFindings, diffFiles);
+          // Validation happens before the legacy publication sanitizer. The latter may still
+          // discard a syntactically valid finding that cannot be anchored to this diff, but it
+          // must never invent a severity, line, title, or body for malformed model output.
+          const findings = sanitizeFindings(findingsValidation.findings, diffFiles);
           outputContract = buildOutputContractTelemetry(transport, requestBody, true);
           recordResponseAttempt('parsed', {
             provider: responseBase.provider,

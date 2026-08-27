@@ -98,6 +98,98 @@ function sanitizeFindings(findings, changedFiles) {
   return findings.map((finding) => sanitizeFinding(finding, changedFiles)).filter(Boolean);
 }
 
+/**
+ * Validate the model-facing findings contract before any lossy sanitization occurs.
+ *
+ * `sanitizeFindings` is intentionally tolerant because it is also used at the final publication
+ * boundary to discard findings that cannot be anchored to a diff. Model responses need a stricter
+ * boundary: inventing a severity, line, path, title, or body hides a provider contract failure and
+ * can turn malformed output into an apparently valid review. This validator therefore rejects the
+ * malformed item (and reports its index) without coercing any contract field. Optional UI metadata
+ * is kept only when it already has the expected primitive shape; malformed optional metadata is
+ * ignored for compatibility because it cannot change the review decision.
+ */
+function validateReviewFindings(rawFindings, changedFiles) {
+  // Some hosted moderator/arbiter compatibility callers omit findings when they are not
+  // producing a findings payload. Preserve that established empty-result convention; once a
+  // findings field is present, every item is validated strictly below.
+  if (rawFindings === undefined) {
+    return { valid: true, findings: [] };
+  }
+  if (!Array.isArray(rawFindings)) {
+    return { valid: false, findings: [], error: 'findings must be an array' };
+  }
+
+  const changedFileMap = Array.isArray(changedFiles)
+    ? new Map(changedFiles.map((file) => [normalizePath(file?.path), file]))
+    : null;
+  const changedLineMap = changedFileMap
+    ? new Map([...changedFileMap.entries()].map(([path, file]) => [path, changedLineNumbers(file?.patch)]))
+    : null;
+  const findings = [];
+  for (const [index, raw] of rawFindings.entries()) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { valid: false, findings: [], index, error: 'finding must be an object' };
+    }
+    if (!['P0', 'P1', 'P2'].includes(raw.severity)) {
+      return { valid: false, findings: [], index, error: 'finding severity must be P0, P1, or P2' };
+    }
+    const path = normalizePath(raw.path);
+    if (!path) {
+      return { valid: false, findings: [], index, error: 'finding path must be a relative non-empty string' };
+    }
+    if (!Number.isInteger(raw.line) || raw.line < 1) {
+      return { valid: false, findings: [], index, error: 'finding line must be an integer greater than zero' };
+    }
+    if (changedFileMap) {
+      const changed = changedFileMap.get(path);
+      if (!changed) {
+        return { valid: false, findings: [], index, error: 'finding path must name a changed file' };
+      }
+      if (!isGitlinkFile(changed)) {
+        const changedLines = changedLineMap.get(path);
+        // Content-only callers do not provide unified-hunk metadata. We still require a valid
+        // relative changed path and integer line, while deferring line anchoring to a caller that
+        // has patch data; treating unavailable metadata as an empty hunk would reject valid
+        // hosted-panel inputs without improving evidence.
+        if (changedLines && changedLines.size > 0 && !changedLines.has(raw.line)) {
+          return { valid: false, findings: [], index, error: 'finding line must identify an added line in the changed file' };
+        }
+        if (changedLines && changedLines.size === 0 && typeof changed.patch === 'string' && !/^@@ /m.test(changed.patch)) {
+          return { valid: false, findings: [], index, error: 'finding cannot be anchored because the changed file has no line hunk' };
+        }
+      }
+    }
+    if (typeof raw.title !== 'string' || !raw.title.trim()) {
+      return { valid: false, findings: [], index, error: 'finding title must be a non-empty string' };
+    }
+    if (typeof raw.body !== 'string' || !raw.body.trim()) {
+      return { valid: false, findings: [], index, error: 'finding body must be a non-empty string' };
+    }
+    if (raw.suggestion !== undefined && raw.suggestion !== null && typeof raw.suggestion !== 'string') {
+      return { valid: false, findings: [], index, error: 'finding suggestion must be a string or null' };
+    }
+    // Optional UI metadata is deliberately ignored when malformed. It cannot change the
+    // review decision, while rejecting an otherwise valid finding would make old panel callers
+    // fail for non-contract fields such as confidence. Valid values are preserved below.
+
+    const finding = {
+      severity: raw.severity,
+      path,
+      line: raw.line,
+      title: raw.title.trim(),
+      body: raw.body.trim(),
+    };
+    if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) finding.suggestion = raw.suggestion.trim();
+    if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) finding.confidence = raw.confidence;
+    if (typeof raw.recommendation === 'string' && raw.recommendation.trim()) finding.recommendation = raw.recommendation.trim();
+    if (Array.isArray(raw.fixOptions)) finding.fixOptions = raw.fixOptions;
+    findings.push(finding);
+  }
+
+  return { valid: true, findings };
+}
+
 function isFailedLane(lane) {
   return Boolean(lane && (lane.error || lane.status === 'ERROR' || lane.decision === 'ERROR'));
 }
@@ -182,5 +274,6 @@ module.exports = {
   changedLineNumbers,
   sanitizeFinding,
   sanitizeFindings,
+  validateReviewFindings,
   computeArbitration,
 };
