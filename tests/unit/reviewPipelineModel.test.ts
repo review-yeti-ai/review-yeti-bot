@@ -716,6 +716,9 @@ describe('reviewWithModel', () => {
 
     expect(res.decision).toBe('ERROR');
     expect(res.error).toContain('Streaming response stalled');
+    expect(res.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'ttft' }),
+    ]));
   });
 
   it('caps format-recovery streams by wall clock so reasoning tokens cannot hang the lane', async () => {
@@ -776,6 +779,9 @@ describe('reviewWithModel', () => {
     expect(calls).toBe(2);
     expect(res.decision).toBe('ERROR');
     expect(res.error).toMatch(/total deadline|stalled/i);
+    expect(res.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
+    ]));
   });
 
   it('marks a provider lane failure as ERROR so it cannot become a successful verdict', async () => {
