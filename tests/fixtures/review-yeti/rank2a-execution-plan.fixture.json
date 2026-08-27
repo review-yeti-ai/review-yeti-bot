@@ -1,6 +1,6 @@
 {
   "schema": "calltelemetry.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "25f23b8d71beea214be5bb7f13c711a6c348b1dd5df1d2eed128b0c559365ee5",
+  "normalized_plan_sha256": "5ab2aab69d774c057c05e01c192a6d9a489622f6071742bbcec18321d2ffdbb2",
   "plan": {
     "schema": "calltelemetry.review-execution-plan.v1",
     "policy_schema": "calltelemetry.review-policy.v1",
@@ -11,7 +11,7 @@
       "openrouter-fallback"
     ],
     "lane": {
-      "deadline_ms": 1050000,
+      "deadline_ms": 720000,
       "overhead_ms": 120000,
       "max_investigation_turns": 2
     },

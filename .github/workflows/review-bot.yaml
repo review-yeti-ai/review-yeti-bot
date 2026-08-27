@@ -28,6 +28,9 @@ jobs:
   review:
     name: Execute AI Review Pipeline
     runs-on: ubuntu-latest
+    # Caller-side hard backstop: no direct self-review or repository-dispatch path may run
+    # longer than the central Review Yeti contract's fifteen-minute ceiling.
+    timeout-minutes: 15
     steps:
       - name: Checkout Review Runner (this repository)
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1

@@ -15,10 +15,15 @@ export class OpenRouterResponseError extends Error {
   }
 }
 
+export type OpenRouterTimeoutKind = 'request' | 'ttft' | 'inactivity' | 'total';
+
 export class OpenRouterTimeoutError extends OpenRouterConnectionError {
-  constructor(message: string) {
+  readonly kind: OpenRouterTimeoutKind;
+
+  constructor(message: string, kind: OpenRouterTimeoutKind = 'request') {
     super(message);
     this.name = 'OpenRouterTimeoutError';
+    this.kind = kind;
   }
 }
 
@@ -42,6 +47,13 @@ export interface OpenRouterRequest {
   ttftTimeoutMs?: number;
   stream?: boolean;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  reasoning?: Record<string, unknown>;
+  maxTokens?: number;
+  temperature?: number;
+  responseFormat?: Record<string, unknown>;
+  provider?: Record<string, unknown>;
+  plugins?: Array<Record<string, unknown>>;
+  metadata?: Record<string, string>;
 }
 
 export interface TokensUsed {
@@ -69,6 +81,27 @@ export interface OpenRouterClientOptions {
   /** @deprecated Use fetchImplementation. */
   fetchImpl?: FetchImplementation;
   now?: () => number;
+}
+
+/**
+ * Build the single OpenRouter chat-completions request shape used by the typed client.
+ * Optional fields are omitted rather than sent as `undefined`, which keeps request fingerprints
+ * stable across smoke, replay, and live qualification callers.
+ */
+export function buildOpenRouterChatRequest(request: OpenRouterRequest): Record<string, unknown> {
+  return {
+    model: normalizeOpenRouterModel(request.model),
+    messages: request.messages,
+    stream: request.stream ?? true,
+    ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
+    ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+    ...(request.reasoning ? { reasoning: request.reasoning } : {}),
+    ...(request.reasoningEffort ? { reasoning_effort: request.reasoningEffort } : {}),
+    ...(request.responseFormat ? { response_format: request.responseFormat } : {}),
+    ...(request.provider ? { provider: request.provider } : {}),
+    ...(request.plugins ? { plugins: request.plugins } : {}),
+    ...(request.metadata ? { metadata: request.metadata } : {}),
+  };
 }
 
 /**
@@ -518,7 +551,22 @@ function collectChunk(data: any, state: StreamState): void {
   if (typeof content === 'string') state.content += content;
   const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
   if (typeof reasoning === 'string') state.reasoning += reasoning;
-  if (data?.usage) state.usage = data.usage;
+  if (data?.usage) {
+    // Providers may emit token usage and cost details in separate terminal SSE frames. Merge
+    // them instead of letting a later cost-only frame erase prompt/completion token counts.
+    state.usage = {
+      ...(state.usage && typeof state.usage === 'object' ? state.usage : {}),
+      ...data.usage,
+      ...(data.usage.cost_details && typeof data.usage.cost_details === 'object'
+        ? {
+            cost_details: {
+              ...(state.usage?.cost_details && typeof state.usage.cost_details === 'object' ? state.usage.cost_details : {}),
+              ...data.usage.cost_details,
+            },
+          }
+        : {}),
+    };
+  }
   const reportedCost = data?.cost
     ?? data?.cost_usd
     ?? data?.usage?.cost
@@ -545,6 +593,28 @@ async function readWithTimeout<T>(
 
   try {
     return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// A provider can ignore AbortSignal and return a never-settling reader.cancel() promise. Never
+// make the review wait on cleanup after we have already classified the provider failure.
+const STREAM_CANCEL_WAIT_MS = 100;
+
+async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>, reason: string): Promise<void> {
+  if (typeof reader.cancel !== 'function') return;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const cancellation = Promise.resolve()
+      .then(() => reader.cancel(reason))
+      .then(() => undefined, () => undefined);
+    await Promise.race([
+      cancellation,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, STREAM_CANCEL_WAIT_MS);
+      }),
+    ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -590,6 +660,16 @@ async function readStreamingResponse(
   const totalDeadlineAt = options?.totalTimeoutMs && options.totalTimeoutMs > 0
     ? Date.now() + options.totalTimeoutMs
     : 0;
+  // Timer callbacks can run a few milliseconds before their requested deadline. Treat a read
+  // timeout that is already inside this small scheduling window as a total deadline so the same
+  // request cannot nondeterministically report either "stalled" or "total deadline".
+  const totalDeadlineClassificationGraceMs = 10;
+  const totalDeadlineReached = () => totalDeadlineAt > 0 && Date.now() >= totalDeadlineAt;
+  const totalDeadlineNear = () => totalDeadlineAt > 0 && Date.now() + totalDeadlineClassificationGraceMs >= totalDeadlineAt;
+  const totalDeadlineError = () => new OpenRouterTimeoutError(
+    `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
+    'total',
+  );
 
   const consume = (line: string) => {
     const trimmed = line.trim();
@@ -623,25 +703,23 @@ async function readStreamingResponse(
       const readPromise = reader.read();
       const remainingTotalMs = totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity;
       if (remainingTotalMs <= 0) {
-        throw new OpenRouterTimeoutError(
-          `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
-        );
+        throw totalDeadlineError();
       }
       const inactivityBudgetMs = receivedFirstChunk ? inactivityTimeoutMs : ttftTimeoutMs;
       const readTimeoutMs = Math.min(inactivityBudgetMs, remainingTotalMs);
       const { done, value } = await readWithTimeout(
         readPromise,
         readTimeoutMs,
-        () => totalDeadlineAt && Date.now() >= totalDeadlineAt
-          ? new OpenRouterTimeoutError(
-              `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
-            )
+        () => totalDeadlineNear()
+          ? totalDeadlineError()
           : receivedFirstChunk
-            ? new OpenRouterConnectionError(
-                `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`
+            ? new OpenRouterTimeoutError(
+                `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`,
+                'inactivity',
               )
             : new OpenRouterTimeoutError(
-                `Time to first streamed chunk exceeded ${Math.round(ttftTimeoutMs / 1000)}s`
+                `Time to first streamed chunk exceeded ${Math.round(ttftTimeoutMs / 1000)}s`,
+                'ttft',
               )
       );
       if (done) break;
@@ -653,9 +731,7 @@ async function readStreamingResponse(
     }
     buffer += decoder.decode();
   } catch (error) {
-    if (typeof reader.cancel === 'function') {
-      await reader.cancel().catch(() => undefined);
-    }
+    await cancelReader(reader, totalDeadlineReached() ? 'stream total deadline' : 'stream timeout');
     throw error;
   }
 
@@ -706,12 +782,7 @@ export class OpenRouterClient implements ReviewModelClient {
       const response = await this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          model: effectiveModel,
-          messages: request.messages,
-          stream: request.stream ?? true,
-          ...(request.reasoningEffort ? { reasoning_effort: request.reasoningEffort } : {}),
-        }),
+        body: JSON.stringify(buildOpenRouterChatRequest(request)),
         signal: controller.signal,
       });
 
@@ -778,7 +849,7 @@ export class OpenRouterClient implements ReviewModelClient {
     } catch (error: any) {
       if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError || error instanceof UpstreamCapacityRejectionError) throw error;
       if (error?.name === 'AbortError' || controller.signal.aborted) {
-        throw new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`);
+        throw new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`, 'request');
       }
       logger.error('OpenRouter network failure or timeout', { error: error?.message || String(error), model: request.model });
       throw new OpenRouterConnectionError(`OpenRouter connection failure for model ${request.model}: ${error?.message || String(error)}`);
