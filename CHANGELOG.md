@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.14.2...v1.15.0) (2026-08-27)
+
+
+### Features
+
+* **output:** support schema contract with compatibility fallback ([54612bc](https://github.com/review-yeti-ai/review-yeti-bot/commit/54612bcd1fbd01fe47e430a5a1b8b3d09d1256b3))
+
 ## [1.14.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.14.1...v1.14.2) (2026-08-27)
 
 
