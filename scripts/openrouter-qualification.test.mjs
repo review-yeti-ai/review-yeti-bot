@@ -238,3 +238,43 @@ test('row-level attribution is required and cannot pass vacuously', () => {
   }));
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, false);
 });
+
+test('OpenInference response labels remain attributable to the OpenRouter route', () => {
+  const rows = FIXTURE_IDS.map((fixtureId, index) => ({
+    fixtureId,
+    category: index === 2 ? 'clean' : 'defect',
+    detected: index !== 2,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: 'openinference',
+    transport: OPENROUTER_TRANSPORT,
+    responseAttempts: [{
+      attempt: 1,
+      outcome: 'parsed',
+      provider: 'openrouter',
+      transport: OPENROUTER_TRANSPORT,
+    }],
+  }));
+  assert.equal(summarizeRows(rows, 0).provider_attribution_valid, true);
+});
+
+test('unknown response providers cannot pass OpenRouter attribution', () => {
+  const rows = FIXTURE_IDS.map((fixtureId, index) => ({
+    fixtureId,
+    category: index === 2 ? 'clean' : 'defect',
+    detected: index !== 2,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: index === 0 ? 'other-provider' : 'openrouter',
+    transport: OPENROUTER_TRANSPORT,
+    responseAttempts: [{
+      attempt: 1,
+      outcome: 'parsed',
+      provider: 'openrouter',
+      transport: OPENROUTER_TRANSPORT,
+    }],
+  }));
+  assert.equal(summarizeRows(rows, 0).provider_attribution_valid, false);
+});

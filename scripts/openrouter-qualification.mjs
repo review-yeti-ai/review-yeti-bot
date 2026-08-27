@@ -25,6 +25,10 @@ export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
 export const OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 export const OPENROUTER_REASONING_EFFORT = 'high';
 export const QUALIFICATION_CHILD_TIMEOUT_MS = 8 * 60_000;
+// The gateway route is OpenRouter, but its response may identify the resolved
+// upstream adapter as OpenInference. Keep this allowlist narrow so attribution
+// remains fail-closed for every other provider label.
+const OPENROUTER_RESPONSE_PROVIDERS = Object.freeze(['openrouter', 'openinference']);
 export const FIXTURE_IDS = Object.freeze([
   'vacuous-default-value-test',
   'format-evadable-absence-guard',
@@ -244,7 +248,7 @@ export function summarizeRows(rows, exitCode) {
   const positiveCompletion = safeRows.map((row) => Number(row?.usage?.completionTokens)).filter((value) => Number.isFinite(value) && value > 0);
   const positiveCosts = safeRows.map((row) => Number(row?.usage?.costUSD)).filter((value) => Number.isFinite(value) && value > 0);
   const providerAttributionValid = safeRows.every((row) => {
-    if (row?.provider !== 'openrouter' || row?.transport !== OPENROUTER_TRANSPORT) return false;
+    if (!OPENROUTER_RESPONSE_PROVIDERS.includes(row?.provider) || row?.transport !== OPENROUTER_TRANSPORT) return false;
     const attempts = Array.isArray(row?.responseAttempts) ? row.responseAttempts : [];
     return attempts.every((attempt) => attempt?.provider === 'openrouter' && attempt?.transport === OPENROUTER_TRANSPORT);
   });
