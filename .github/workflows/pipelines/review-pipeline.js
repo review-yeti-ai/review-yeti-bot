@@ -2378,7 +2378,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           '',
           'TIMEOUT RECOVERY:',
           '- The prior generation produced no usable streamed output before the transport deadline.',
-          '- Disable reasoning and return only {"findings":[]} or the required findings object.',
+          '- Re-evaluate the complete diff against the review charter and return the required findings object.',
+          '- Do not assume the change is clean; include every finding that meets the review criteria.',
+          '- Do not emit prose or markdown outside the required findings object.',
         ].join('\n');
         console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with reasoning disabled before failing closed...`);
         return true;
