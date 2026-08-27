@@ -600,6 +600,11 @@ function resolveModelConfig(env = process.env) {
           stream: t.stream === true,
           reasoningEffort: t.reasoning_effort || t.reasoningEffort,
           structuredOutput: t.structured_output || t.structuredOutput,
+          // `structured_output: strict` is the existing policy declaration and remains mapped
+          // to the broadly compatible json_object request.  A route must opt in explicitly to
+          // json_schema so incompatible providers can continue using the legacy contract.
+          structuredOutputMode: t.structured_output_mode || t.structuredOutputMode
+            || (t.structured_output === 'json_schema' ? 'json_schema' : undefined),
           perfMetricsInResponse: t.perf_metrics_in_response === true || t.perfMetricsInResponse === true,
           maxTokens: t.max_tokens || t.maxTokens || t.max_output_tokens || t.maxOutputTokens,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
@@ -1021,6 +1026,31 @@ const FINDINGS_SOURCES = new Set(['content', 'reasoning', 'none']);
 const RESPONSE_SIZE_BUCKETS = new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']);
 const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_validated_json', 'unknown']);
 const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
+// Keep the schema deliberately small and stable.  It is opt-in per transport so a provider or
+// model that only supports JSON mode can continue using the existing compatibility path.
+const FINDINGS_RESPONSE_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['P0', 'P1', 'P2'] },
+          path: { type: 'string' },
+          line: { type: 'integer', minimum: 1 },
+          title: { type: 'string' },
+          body: { type: 'string' },
+          suggestion: { type: ['string', 'null'] },
+        },
+        required: ['severity', 'path', 'line', 'title', 'body', 'suggestion'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['findings'],
+  additionalProperties: false,
+});
 const MODEL_RESPONSE_ATTEMPT_OUTCOMES = new Set([
   'parsed',
   'malformed_output',
@@ -1150,8 +1180,51 @@ function normalizeOutputContractSupport(value) {
   return OUTPUT_CONTRACT_SUPPORT.has(value) ? value : 'unreported';
 }
 
+function normalizeStructuredOutputMode(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'json_schema' || normalized === 'schema' ? 'json_schema' : 'json_object';
+}
+
+function resolveStructuredOutputMode(transport = {}) {
+  const explicit = transport.structuredOutputMode
+    || transport.structured_output_mode
+    || transport.responseFormat?.type
+    || transport.response_format?.type;
+  return normalizeStructuredOutputMode(explicit);
+}
+
+function buildFindingsResponseFormat(mode = 'json_object') {
+  if (normalizeStructuredOutputMode(mode) !== 'json_schema') return { type: 'json_object' };
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: 'review_findings',
+      strict: true,
+      schema: FINDINGS_RESPONSE_SCHEMA,
+    },
+  };
+}
+
+function isStructuredOutputCompatibilityError(status, detail = '') {
+  const code = Number(status);
+  if (code !== 400 && code !== 422) return false;
+  const text = String(detail || '');
+  if (!/(response[_ -]?format|json[_ -]?schema|structured[_ -]?output|structured_outputs)/iu.test(text)) {
+    return false;
+  }
+  return /(unsupported|not supported|unrecognized|unknown|invalid|not available|does not support)/iu.test(text);
+}
+
+function downgradeStructuredOutputRequest(requestBody) {
+  if (requestBody?.response_format?.type !== 'json_schema') return false;
+  requestBody.response_format = { type: 'json_object' };
+  return true;
+}
+
 function policyOutputContractMode(transport) {
   const declared = transport?.structured_output ?? transport?.structuredOutput;
+  const explicitMode = transport?.structured_output_mode ?? transport?.structuredOutputMode;
+  if (normalizeStructuredOutputMode(explicitMode) === 'json_schema') return 'json_schema';
   if (declared === 'strict') return 'json_object';
   return normalizeOutputContractMode(declared);
 }
@@ -1297,6 +1370,7 @@ const TELEMETRY_OUTCOME_CLASSES = new Set([
 const TELEMETRY_RECOVERY_ACTIONS = new Set([
   'bounded_retry',
   'model_fallback',
+  'structured_output_fallback',
 ]);
 
 const OPENROUTER_MAX_RETRY_AFTER_MS = 5_000;
@@ -2176,6 +2250,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const isDirectReasoning = isDirectReasoningTransport(transport, transportBaseUrl);
       const configuredMaxOutputTokens =
         transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens;
+      const structuredOutputMode = resolveStructuredOutputMode(transport);
 
       resultBase = {
         ...resultBase,
@@ -2195,7 +2270,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           configuredMaxOutputTokens,
           isDirectReasoning ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS : DEFAULT_MAX_OUTPUT_TOKENS,
         ),
-        response_format: { type: 'json_object' },
+        response_format: buildFindingsResponseFormat(structuredOutputMode),
       };
       // This is reporting-only. Keep the actual request body unchanged while recording the
       // distinction between what policy declared and what the runtime placed on the wire.
@@ -2257,6 +2332,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const maxFetchAttempts = 2;
       let formatRecoveryAttempted = false;
       let providerRecoveryAttempted = false;
+      let structuredOutputFallbackAttempted = false;
       const prepareDirectFormatRecovery = () => {
         if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
@@ -2368,6 +2444,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             noteRetryReason(outcomeClass);
             failureClass = outcomeClass;
             recordResponseAttempt('http_error', { failureClass: outcomeClass });
+            if (!structuredOutputFallbackAttempted
+              && fetchAttempts < maxFetchAttempts
+              && isStructuredOutputCompatibilityError(response.status, detail)
+              && downgradeStructuredOutputRequest(requestBody)) {
+              structuredOutputFallbackAttempted = true;
+              recoveryAction = 'structured_output_fallback';
+              outputContract = buildOutputContractTelemetry(transport, requestBody, false);
+              console.warn(`[Persona: ${persona.id}] Transport '${transportName}' does not support the requested JSON Schema; retrying once with the compatible json_object contract...`);
+              continue;
+            }
             try {
               const parsedDetail = JSON.parse(detail);
               errorCode = resolveOpenRouterErrorCode(parsedDetail);
@@ -4535,6 +4621,12 @@ module.exports = {
   responseSizeBucket,
   buildOutputContractTelemetry,
   normalizeOutputContractTelemetry,
+  normalizeStructuredOutputMode,
+  resolveStructuredOutputMode,
+  buildFindingsResponseFormat,
+  isStructuredOutputCompatibilityError,
+  downgradeStructuredOutputRequest,
+  FINDINGS_RESPONSE_SCHEMA,
   downgradeReasoningEffort,
   sanitizeFindings,
   loadLocalRepoConfig,

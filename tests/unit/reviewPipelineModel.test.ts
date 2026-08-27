@@ -15,6 +15,10 @@ const {
   responseSizeBucket,
   reviewWithModel,
   resolveModelConfig,
+  resolveStructuredOutputMode,
+  buildFindingsResponseFormat,
+  isStructuredOutputCompatibilityError,
+  FINDINGS_RESPONSE_SCHEMA,
   PERSONA_CHARTERS,
 } = pipeline;
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
@@ -107,6 +111,28 @@ describe('bounded model output-shape telemetry', () => {
     expect(responseSizeBucket('x'.repeat(257))).toBe('small');
     expect(responseSizeBucket('x'.repeat(16_385))).toBe('oversize');
   });
+
+  it('keeps json_schema opt-in while preserving the compatible json_object default', () => {
+    expect(resolveStructuredOutputMode({ structured_output: 'strict' })).toBe('json_object');
+    expect(resolveStructuredOutputMode({})).toBe('json_object');
+    expect(resolveStructuredOutputMode({ structured_output_mode: 'json_schema' })).toBe('json_schema');
+    expect(buildFindingsResponseFormat('json_object')).toEqual({ type: 'json_object' });
+    expect(buildFindingsResponseFormat('json_schema')).toEqual({
+      type: 'json_schema',
+      json_schema: {
+        name: 'review_findings',
+        strict: true,
+        schema: FINDINGS_RESPONSE_SCHEMA,
+      },
+    });
+  });
+
+  it('recognizes only explicit structured-output compatibility errors', () => {
+    expect(isStructuredOutputCompatibilityError(400, 'response_format json_schema is not supported')).toBe(true);
+    expect(isStructuredOutputCompatibilityError(422, 'structured output schema is invalid')).toBe(true);
+    expect(isStructuredOutputCompatibilityError(401, 'response_format json_schema is not supported')).toBe(false);
+    expect(isStructuredOutputCompatibilityError(400, 'invalid API key')).toBe(false);
+  });
 });
 
 describe('resolveModelConfig', () => {
@@ -177,6 +203,7 @@ describe('resolveModelConfig', () => {
         stream: true,
         reasoning_effort: 'high',
         perf_metrics_in_response: true,
+        structured_output_mode: 'json_schema',
       }]),
     });
 
@@ -184,6 +211,7 @@ describe('resolveModelConfig', () => {
       stream: true,
       reasoningEffort: 'high',
       perfMetricsInResponse: true,
+      structuredOutputMode: 'json_schema',
     });
   });
 });
@@ -317,6 +345,64 @@ describe('reviewWithModel', () => {
     });
     expect(calls[0].body.provider).not.toHaveProperty('allow_fallbacks');
     expect(calls[0].body.plugins[0].allowed_models).toHaveLength(5);
+  });
+
+  it('falls back once from an unsupported JSON Schema contract to json_object', async () => {
+    const calls: any[] = [];
+    let requestCount = 0;
+    const fetchImplementation = async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      requestCount += 1;
+      if (requestCount === 1) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => JSON.stringify({ error: { message: 'response_format json_schema is not supported by this model' } }),
+          headers: new Headers(),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ findings: [] }) } }] }),
+      };
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-fallback',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'k',
+        model: 'provider/schema-model',
+        provider: 'openrouter',
+        structured_output_mode: 'json_schema',
+      }],
+    });
+
+    expect(result.decision).toBe('APPROVE');
+    expect(calls).toHaveLength(2);
+    expect(calls[0].response_format.type).toBe('json_schema');
+    expect(calls[1].response_format).toEqual({ type: 'json_object' });
+    expect(result.recoveryAction).toBe('structured_output_fallback');
+    expect(result.outputContract).toMatchObject({
+      requestObserved: 'json_object',
+      terminalParsed: true,
+    });
+    expect(result.responseAttempts).toEqual([
+      expect.objectContaining({
+        outcome: 'http_error',
+        responseStatus: 400,
+        outputContract: expect.objectContaining({ requestObserved: 'json_schema' }),
+      }),
+      expect.objectContaining({
+        outcome: 'parsed',
+        outputContract: expect.objectContaining({ requestObserved: 'json_object' }),
+      }),
+    ]);
   });
 
   it('uses deterministic sampling for Ollama while preserving the existing gateway temperature', async () => {
