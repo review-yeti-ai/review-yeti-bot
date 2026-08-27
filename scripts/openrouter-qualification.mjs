@@ -29,6 +29,11 @@ export const OPENROUTER_REASONING_EFFORT = 'high';
 // non-negotiable 15-minute ceiling.
 export const QUALIFICATION_CHILD_TIMEOUT_MS = 10 * 60_000;
 export const QUALIFICATION_HEARTBEAT_MS = 15_000;
+// The bot's telemetry normalizer reports the canonical OpenRouter transport as
+// `openrouter` on response attempts, while the handoff and row-level transport
+// retain `openrouter-fallback`. Accept both representations only after the row
+// itself proves the exact admitted handoff.
+const OPENROUTER_ATTEMPT_TRANSPORTS = Object.freeze(['openrouter', OPENROUTER_TRANSPORT]);
 export const FIXTURE_IDS = Object.freeze([
   'vacuous-default-value-test',
   'format-evadable-absence-guard',
@@ -263,7 +268,7 @@ export function summarizeRows(rows, exitCode) {
   const providerAttributionValid = safeRows.every((row) => {
     if (row?.transport !== OPENROUTER_TRANSPORT) return false;
     const attempts = Array.isArray(row?.responseAttempts) ? row.responseAttempts : [];
-    return attempts.length > 0 && attempts.every((attempt) => attempt?.transport === OPENROUTER_TRANSPORT);
+    return attempts.length > 0 && attempts.every((attempt) => OPENROUTER_ATTEMPT_TRANSPORTS.includes(attempt?.transport));
   });
   const fixtureSetValid = safeRows.length === FIXTURE_IDS.length
     && new Set(safeRows.map((row) => row?.fixtureId)).size === FIXTURE_IDS.length

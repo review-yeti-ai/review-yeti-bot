@@ -257,7 +257,7 @@ test('upstream response labels remain informational for the OpenRouter route', (
       attempt: 1,
       outcome: 'parsed',
       provider: index === 0 ? 'inceptron' : index === 1 ? 'openinference' : 'deepinfra',
-      transport: OPENROUTER_TRANSPORT,
+      transport: index === 0 ? 'openrouter' : OPENROUTER_TRANSPORT,
     }],
   }));
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, true);
