@@ -817,6 +817,7 @@ describe('reviewWithModel', () => {
         apiKey: 'or-key',
         model: 'deepseek/deepseek-v4-flash-0731',
         provider: 'openrouter',
+        reasoning_effort: 'high',
         stream: true,
       }],
     });
@@ -826,6 +827,64 @@ describe('reviewWithModel', () => {
     expect(res.error).toContain('total deadline');
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
       expect.objectContaining({ outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
+    ]));
+  });
+
+  it('retries an OpenRouter stream timeout once with reasoning disabled before failing closed', async () => {
+    const calls: any[] = [];
+    const stalledResponse = () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({ start() {} }),
+    });
+    const recoveredResponse = () => {
+      const wire = [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":[]}' } }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(wire));
+            controller.close();
+          },
+        }),
+      };
+    };
+    const fetchImplementation = async (_url: string, init: any) => {
+      calls.push(JSON.parse(init.body));
+      return calls.length === 1 ? stalledResponse() : recoveredResponse();
+    };
+
+    const started = Date.now();
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      timeoutMs: 25,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-fallback',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+      }],
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(res).toMatchObject({ decision: 'APPROVE', findings: [], attemptCount: 2, recoveryAction: 'bounded_retry' });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toHaveProperty('reasoning', { effort: 'high' });
+    expect(calls[1]).toHaveProperty('reasoning', { enabled: false });
+    expect(calls[1]).not.toHaveProperty('plugins');
+    expect(res.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ attempt: 1, outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
+      expect.objectContaining({ attempt: 2, outcome: 'parsed', failureClass: null }),
     ]));
   });
 
@@ -851,9 +910,9 @@ describe('reviewWithModel', () => {
     });
 
     expect(res.decision).toBe('ERROR');
-    expect(res.error).toContain('Streaming response stalled');
+    expect(res.error).toMatch(/Streaming response stalled|total deadline/);
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'ttft' }),
+      expect.objectContaining({ outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
     ]));
   });
 
