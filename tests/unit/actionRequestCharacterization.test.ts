@@ -257,7 +257,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         headers: { authorization: '<redacted>', 'content-type': 'application/json' },
         timeout_ms: 90000,
         body: {
-          ...common('deepseek/deepseek-v4-flash-0731', 1024),
+          ...common('deepseek/deepseek-v4-flash-0731', 24576),
           reasoning: { effort: 'high' },
           plugins: [{
             id: 'auto-router',

@@ -1440,7 +1440,7 @@ describe('reviewWithModel', () => {
 
     const user = calls[0].body.messages.find((m: any) => m.role === 'user').content;
     expect(user.length).toBeLessThanOrEqual(412_000);
-    expect(calls[0].body.max_tokens).toBe(1024);
+    expect(calls[0].body.max_tokens).toBe(24576);
   });
 
   it('includes prior-turn session context in the prompt when present', async () => {

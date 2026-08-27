@@ -457,10 +457,14 @@ const DEFAULT_PERSONA_IDS = PERSONA_CHARTERS.filter((p) => p.defaultEnabled).map
 const SEVERITIES = ['P0', 'P1', 'P2'];
 const DEFAULT_MAX_DIFF_CHARS = 410_400;
 const ACTION_MAX_DIFF_CAP = 10_000_000;
-// Review responses are intentionally small structured findings objects. Keeping the completion
-// budget bounded makes the live panel request match the bounded smoke probe and prevents a
-// reasoning provider from spending the entire transport deadline on an unbounded tail.
+// Review responses are structured findings objects, but reasoning-capable OpenRouter models
+// need enough output budget for both their hidden reasoning tokens and the final JSON object.
+// Keep the generic fallback conservative while giving the explicitly admitted OpenRouter route
+// the same 24,576-token envelope used by the qualification harness. This is a provider-safe
+// ceiling, not an unbounded generation request; the per-request and workflow wall-clock guards
+// remain authoritative.
 const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
+const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 // Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
 // still caps the complete generated sequence (reasoning plus the final JSON).
 // Keep an 8,192-token structured-output target and reserve three times that
@@ -2272,7 +2276,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         temperature: resolveTransportTemperature(transport, transportBaseUrl),
         max_tokens: normalizeMaxOutputTokens(
           configuredMaxOutputTokens,
-          isDirectReasoning ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS : DEFAULT_MAX_OUTPUT_TOKENS,
+          isOpenRouterTransport
+            ? DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS
+            : isDirectReasoning
+              ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS
+              : DEFAULT_MAX_OUTPUT_TOKENS,
         ),
         response_format: buildFindingsResponseFormat(structuredOutputMode),
       };
@@ -4607,6 +4615,7 @@ module.exports = {
   OLLAMA_CAPACITY_WAIT_TIMEOUT_MS,
   AsyncSemaphore,
   DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
   DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS,
   DIRECT_GENERATION_BUDGET_MULTIPLIER,
   DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
