@@ -1376,14 +1376,15 @@ describe('reviewWithModel', () => {
     expect(res.findings[0].title).toBe('Real');
   });
 
-  it('normalizes unknown severities to P2', async () => {
+  it('fails closed on unknown severities instead of normalizing them to P2', async () => {
     const { impl } = stubFetch(JSON.stringify({
       findings: [{ severity: 'CRITICAL', path: 'src/api/user.ts', line: 1, title: 't', body: 'b' }],
     }));
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
       apiKey: 'k', fetchImpl: impl,
     });
-    expect(res.findings[0].severity).toBe('P2');
+    expect(res.findings).toEqual([]);
+    expect(res.error).toContain('canonical findings contract');
   });
 
   it('returns no findings rather than throwing on unparseable output', async () => {

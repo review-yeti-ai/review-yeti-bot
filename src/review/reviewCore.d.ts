@@ -50,6 +50,13 @@ export function sha256(value: unknown): string;
 export function changedLineNumbers(patch?: string): Set<number> | null;
 export function sanitizeFinding(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFinding | null;
 export function sanitizeFindings(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFinding[];
+export interface ReviewFindingsValidation {
+  valid: boolean;
+  findings: ReviewFinding[];
+  index?: number;
+  error?: string;
+}
+export function validateReviewFindings(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFindingsValidation;
 export function computeArbitration(
   personaResults: ReviewLane[],
   expectedPersonas?: number,

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
-import { OpenRouterResponse, ReviewModelClient, TokensUsed, isExplicitUpstreamRejection } from '../gateway/openRouterClient';
+import { OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, isExplicitUpstreamRejection } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
@@ -11,6 +11,7 @@ import { LiveStreamBus } from '../live/liveStreamBus';
 import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
+import { validateReviewFindings } from '../review/reviewCore';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { executeMillerTool } from '../services/millerTool';
@@ -79,6 +80,13 @@ export class PanelConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PanelConfigurationError';
+  }
+}
+
+class PanelFindingsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PanelFindingsValidationError';
   }
 }
 
@@ -388,36 +396,23 @@ function provider(config: CtReviewConfigV3, id: ProviderId) {
   return spec;
 }
 
-function validateFindings(value: unknown): PanelFinding[] {
-  if (!value || !Array.isArray(value)) return [];
-  return value.map((finding: any) => {
-    let severity: 'P0' | 'P1' | 'P2' = 'P2';
-    if (finding && ['P0', 'P1', 'P2'].includes(finding.severity)) {
-      severity = finding.severity;
-    }
-    const path = (finding && typeof finding.path === 'string') ? finding.path : 'unknown';
-    let line = 1;
-    if (finding && finding.line !== undefined) {
-      const parsedLine = parseInt(finding.line, 10);
-      if (Number.isInteger(parsedLine) && parsedLine >= 1) {
-        line = parsedLine;
-      }
-    }
-    const title = (finding && typeof finding.title === 'string') ? finding.title : 'Review Finding';
-    const body = (finding && typeof finding.body === 'string') ? finding.body : '';
+export function validateFindings(value: unknown, changedFiles?: Array<{ path: string; patch?: string }>): PanelFinding[] {
+  const validation = validateReviewFindings(value, changedFiles);
+  if (!validation.valid) {
+    const suffix = validation.index === undefined ? '' : ` at index ${validation.index}`;
+    throw new PanelFindingsValidationError(`invalid findings contract${suffix}: ${validation.error || 'unknown validation error'}`);
+  }
+  return validation.findings as PanelFinding[];
+}
 
-    return {
-      severity,
-      path,
-      line,
-      title,
-      body,
-      ...(finding && typeof finding.suggestion === 'string' ? { suggestion: finding.suggestion } : {}),
-      ...(finding && typeof finding.confidence === 'number' ? { confidence: finding.confidence } : {}),
-      ...(finding && typeof finding.recommendation === 'string' ? { recommendation: finding.recommendation } : {}),
-      ...(finding && Array.isArray(finding.fixOptions) ? { fixOptions: finding.fixOptions } : {}),
-    };
-  });
+/** Retry only provider conditions that are plausibly transient; auth and contract errors fail over. */
+export function isRetryablePanelError(error: unknown): boolean {
+  if (error instanceof OpenRouterTimeoutError) return true;
+  if (error instanceof OpenRouterResponseError) {
+    return error.status === 429 || (error.status !== undefined && error.status >= 500 && error.status <= 599);
+  }
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /(?:\b500\b|\b502\b|\b503\b|\b504\b|Connection error|fetch failed|ECONNRESET|ETIMEDOUT)/i.test(message);
 }
 
 async function invoke(
@@ -771,6 +766,9 @@ async function runPersona(
           if (!result.parsed) {
             throw new Error('invalid empty persona response');
           }
+          // The panel may receive either a unified diff or context-only file content. Strict
+          // field validation is safe in both cases; final publication performs diff anchoring when
+          // patch metadata is available, so do not reject a valid finding solely on fixture shape.
           let findings = validateFindings(result.parsed.findings);
           if (result.parsed.decision === 'APPROVE' && findings.length > 0) {
             throw new Error('APPROVE cannot contain findings');
@@ -880,13 +878,19 @@ async function runPersona(
             ...(isRedTeam || dualResolved || persona.model ? { crossExaminedModel: targetModel } : {}),
           };
         } catch (error: any) {
+          if (error instanceof PanelFindingsValidationError) {
+            errors.push(`${providerId}: ${error.message}`);
+            logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned malformed findings; retrying once before failover.`);
+            if (attempts < maxAttempts) continue;
+            break;
+          }
           if (isExplicitUpstreamRejection(error)) {
             logger.warn(`[Persona: ${persona.id}] Fast failover: provider '${providerId}' capacity rejected (${error?.message || error}); failing over to next provider...`);
             errors.push(`${providerId}: ${error?.message || String(error)}`);
             if (config.reviewers.fallback === 'none') break;
             break;
           }
-          if (attempts < maxAttempts && (error?.message?.includes('500') || error?.message?.includes('Connection error') || error?.message?.includes('fetch failed'))) {
+          if (attempts < maxAttempts && isRetryablePanelError(error)) {
             logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts}): ${error.message}`);
             await new Promise((r) => setTimeout(r, 1000));
             continue;

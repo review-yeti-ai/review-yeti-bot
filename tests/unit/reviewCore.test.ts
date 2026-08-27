@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changedLineNumbers, sanitizeFinding } from '../../src/review/reviewCore';
+import { changedLineNumbers, sanitizeFinding, validateReviewFindings } from '../../src/review/reviewCore';
 
 describe('review core diff parsing', () => {
   it('does not advance changed line numbers for no-newline metadata', () => {
@@ -82,5 +82,89 @@ describe('review core diff parsing', () => {
       body: 'The deleted behavior still has a caller.',
     }, [{ path: 'src/removed.ts', patch: '@@ -10,1 +10,0 @@\n-legacy();' }]);
     expect(finding).toMatchObject({ path: 'src/removed.ts', line: 10 });
+  });
+
+  it('rejects malformed model fields instead of coercing them into a finding', () => {
+    const result = validateReviewFindings([{
+      severity: 'CRITICAL',
+      path: 'src/review.ts',
+      line: '10',
+      title: '',
+      body: '',
+    }]);
+
+    expect(result.valid).toBe(false);
+    expect(result.findings).toEqual([]);
+    expect(result.index).toBe(0);
+    expect(result.error).toMatch(/severity/);
+  });
+
+  it.each([
+    ['non-array payload', { findings: 'nope' }, /findings must be an array/],
+    ['non-object item', [null], /finding must be an object/],
+    ['absolute path', [{ severity: 'P1', path: '/src/review.ts', line: 1, title: 't', body: 'b' }], /relative/],
+    ['parent path', [{ severity: 'P1', path: '../review.ts', line: 1, title: 't', body: 'b' }], /relative/],
+    ['string line', [{ severity: 'P1', path: 'src/review.ts', line: '1', title: 't', body: 'b' }], /line must be an integer/],
+    ['zero line', [{ severity: 'P1', path: 'src/review.ts', line: 0, title: 't', body: 'b' }], /line must be an integer/],
+    ['empty title', [{ severity: 'P1', path: 'src/review.ts', line: 1, title: ' ', body: 'b' }], /title must be/],
+    ['empty body', [{ severity: 'P1', path: 'src/review.ts', line: 1, title: 't', body: ' ' }], /body must be/],
+    ['invalid suggestion', [{ severity: 'P1', path: 'src/review.ts', line: 1, title: 't', body: 'b', suggestion: 5 }], /suggestion must be/],
+  ])('rejects %s without coercion', (_label, payload, expected) => {
+    const result = validateReviewFindings(payload);
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(expected);
+  });
+
+  it('accepts the canonical finding shape without changing valid values', () => {
+    const result = validateReviewFindings([{
+      severity: 'P1',
+      path: './src/review.ts',
+      line: 10,
+      title: ' Real issue ',
+      body: ' Explain the failure. ',
+      suggestion: null,
+      confidence: 0.9,
+    }]);
+
+    expect(result).toEqual({
+      valid: true,
+      findings: [{
+        severity: 'P1',
+        path: 'src/review.ts',
+        line: 10,
+        title: 'Real issue',
+        body: 'Explain the failure.',
+        confidence: 0.9,
+      }],
+    });
+  });
+
+  it('rejects findings that cannot be anchored to the changed-file hunk', () => {
+    const result = validateReviewFindings([{
+      severity: 'P1',
+      path: 'src/review.ts',
+      line: 99,
+      title: 'Real issue',
+      body: 'Explain the failure.',
+    }], [{
+      path: 'src/review.ts',
+      patch: '@@ -1,1 +10,1 @@\n+const changed = true;',
+    }]);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/added line/);
+  });
+
+  it('rejects a finding path that is not present in the supplied changed files', () => {
+    const result = validateReviewFindings([{
+      severity: 'P1',
+      path: 'src/other.ts',
+      line: 1,
+      title: 'Ghost issue',
+      body: 'This file was not changed.',
+    }], [{ path: 'src/review.ts', patch: '@@ -1,1 +1,1 @@\n+changed;' }]);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/changed file/);
   });
 });
