@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   PI_AI_VERSION,
@@ -26,9 +26,31 @@ function requireAbsolute(value, label) {
   return path.resolve(value);
 }
 
-function packageVersion(requireFromRuntime, packageName) {
-  const packagePath = requireFromRuntime.resolve(`${packageName}/package.json`);
+const RUNTIME_PACKAGE_PATHS = Object.freeze({
+  '@agwab/pi-workflow': ['@agwab', 'pi-workflow'],
+  '@earendil-works/pi-coding-agent': ['@earendil-works', 'pi-coding-agent'],
+  '@earendil-works/pi-ai': ['@earendil-works', 'pi-ai'],
+});
+
+function packageVersion(piRuntimeRoot, packageName) {
+  const segments = RUNTIME_PACKAGE_PATHS[packageName];
+  if (!segments) throw new Error('unsupported Pi runtime package');
+  const packagePath = path.join(piRuntimeRoot, 'node_modules', ...segments, 'package.json');
   return JSON.parse(readFileSync(packagePath, 'utf8')).version;
+}
+
+export function readInstalledPiRuntimeVersions(piRuntimeRoot) {
+  const root = requireAbsolute(piRuntimeRoot, 'piRuntimeRoot');
+  return {
+    workflow: packageVersion(root, '@agwab/pi-workflow'),
+    codingAgent: packageVersion(root, '@earendil-works/pi-coding-agent'),
+    ai: packageVersion(root, '@earendil-works/pi-ai'),
+  };
+}
+
+function safeFailureClass(value, fallback = 'row_execution_failed') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9._:-]{0,95}$/u.test(normalized) ? normalized : fallback;
 }
 
 function normalizeProvider(value) {
@@ -83,11 +105,7 @@ async function runRow(input) {
   const ctMetaRoot = requireAbsolute(input.ctMetaRoot, 'ctMetaRoot');
   const piRuntimeRoot = requireAbsolute(input.piRuntimeRoot, 'piRuntimeRoot');
   const requireFromRuntime = createRequire(path.join(piRuntimeRoot, 'package.json'));
-  const versions = {
-    workflow: packageVersion(requireFromRuntime, '@agwab/pi-workflow'),
-    codingAgent: packageVersion(requireFromRuntime, '@earendil-works/pi-coding-agent'),
-    ai: packageVersion(requireFromRuntime, '@earendil-works/pi-ai'),
-  };
+  const versions = readInstalledPiRuntimeVersions(piRuntimeRoot);
   if (versions.workflow !== PI_ENGINE_VERSION || versions.codingAgent !== PI_CODING_AGENT_VERSION || versions.ai !== PI_AI_VERSION) {
     throw new Error('Pi runtime version drift');
   }
@@ -105,12 +123,14 @@ async function runRow(input) {
     const generationReceipt = JSON.parse(readFileSync(path.join(candidateRoot, 'workflow-generation-receipt.json'), 'utf8'));
     const taskText = buildPiRuntimeTask({ fixture: input.fixture, charter: input.charter });
     let terminal;
+    let workflowFailureClass = null;
     try {
       const launched = await runWorkflowSpec(path.join(candidateRoot, 'spec.json'), runRoot, { task: taskText });
       terminal = launched.status === 'running'
         ? await waitForRun(runRoot, launched.runId, PI_ROW_TIMEOUT_MS - 5_000)
         : launched;
-    } catch {
+    } catch (error) {
+      workflowFailureClass = safeFailureClass(error?.code);
       terminal = null;
     }
 
@@ -149,6 +169,9 @@ async function runRow(input) {
       terminalStatus: terminal?.status || 'failed',
       terminalStatusDetail: task?.statusDetail || null,
       errored: terminal?.status !== 'completed' || !terminalParsed,
+      failureClass: terminal?.status === 'completed' && terminalParsed
+        ? null
+        : workflowFailureClass || safeFailureClass(task?.statusDetail, 'workflow_terminal_error'),
       timedOut: false,
       latencyMs: Date.now() - startedAt,
       inputTokens: numericOrNull(usage.inputTokens),
@@ -176,11 +199,38 @@ async function main() {
   const inputPath = requireAbsolute(argument('--input'), 'input');
   const outputPath = requireAbsolute(argument('--out'), 'out');
   const input = JSON.parse(readFileSync(inputPath, 'utf8'));
-  const row = await runRow(input);
+  let row;
+  try {
+    row = await runRow(input);
+  } catch (error) {
+    row = {
+      fixtureId: String(input.fixtureId || ''),
+      repetition: Number(input.repetition),
+      provider: 'openrouter',
+      observedProvider: null,
+      model: PI_MODEL,
+      firstAttemptParseable: false,
+      repairAttempts: 0,
+      localRepairCount: 0,
+      terminalParsed: false,
+      terminalStatus: 'failed',
+      errored: true,
+      timedOut: false,
+      failureClass: safeFailureClass(error?.code, 'row_setup_failed'),
+      latencyMs: null,
+      inputTokens: null,
+      outputTokens: null,
+      costUsd: null,
+      usageAttempts: null,
+      findings: [],
+    };
+  }
   writeFileSync(outputPath, `${JSON.stringify(row, null, 2)}\n`, { mode: 0o600 });
   if (row.errored) process.exitCode = 1;
 }
 
-main().catch(() => {
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  main().catch(() => {
+    process.exitCode = 1;
+  });
+}

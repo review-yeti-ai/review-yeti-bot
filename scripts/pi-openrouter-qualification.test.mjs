@@ -20,6 +20,7 @@ import {
   runPiQualification,
   summarizePiRows,
 } from './pi-openrouter-qualification.mjs';
+import { readInstalledPiRuntimeVersions } from './run-pi-qualification-row.mjs';
 
 const sha = (character) => character.repeat(40);
 const input = {
@@ -111,6 +112,28 @@ test('runtime lock pins the exact reviewed Pi engine and host packages', () => {
   assert.equal(lock.packages['node_modules/@earendil-works/pi-coding-agent'].version, PI_CODING_AGENT_VERSION);
   assert.match(lock.packages['node_modules/@agwab/pi-workflow'].integrity, /^sha512-/u);
   assert.match(lock.packages['node_modules/@earendil-works/pi-coding-agent'].integrity, /^sha512-/u);
+});
+
+test('installed runtime attestation does not depend on package.json exports', () => {
+  const runtimeRoot = mkdtempSync(path.join(os.tmpdir(), 'pi-runtime-versions-'));
+  try {
+    for (const [segments, version] of [
+      [['@agwab', 'pi-workflow'], PI_ENGINE_VERSION],
+      [['@earendil-works', 'pi-coding-agent'], PI_CODING_AGENT_VERSION],
+      [['@earendil-works', 'pi-ai'], PI_CODING_AGENT_VERSION],
+    ]) {
+      const packageRoot = path.join(runtimeRoot, 'node_modules', ...segments);
+      mkdirSync(packageRoot, { recursive: true });
+      writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ version }));
+    }
+    assert.deepEqual(readInstalledPiRuntimeVersions(runtimeRoot), {
+      workflow: PI_ENGINE_VERSION,
+      codingAgent: PI_CODING_AGENT_VERSION,
+      ai: PI_CODING_AGENT_VERSION,
+    });
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
 });
 
 test('runtime task contains the charter and diff but never leaks grading metadata', () => {

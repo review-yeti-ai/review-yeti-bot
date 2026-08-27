@@ -238,6 +238,7 @@ export function summarizePiRows(rows, { repetitions = 1 } = {}) {
     terminal_status: safeLabel(row?.terminalStatus),
     terminal_status_detail: safeLabel(row?.terminalStatusDetail),
     repair_reason: safeLabel(row?.repairReason),
+    failure_class: safeLabel(row?.failureClass),
     launch_retries: Number.isInteger(Number(row?.launchRetries)) ? Number(row.launchRetries) : null,
     provider: safeLabel(row?.provider),
     observed_provider: safeLabel(row?.observedProvider),
@@ -453,6 +454,7 @@ function fallbackRow(job, { timedOut = false } = {}) {
     outputTokens: null,
     costUsd: null,
     findings: [],
+    failureClass: timedOut ? 'row_timeout' : 'row_process_failed',
   };
 }
 
