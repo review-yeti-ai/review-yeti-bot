@@ -34,8 +34,8 @@ import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
 transports = review.get('transports', [])
-if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrouter-fallback']:
-    raise SystemExit('policy must preserve Fireworks -> Ollama -> OpenRouter order')
+if [item.get('name') for item in transports] != ['openrouter-fallback', 'fireworks', 'ollama']:
+    raise SystemExit('policy must use OpenRouter first, then Fireworks -> Ollama fallback order')
 # Measured ablation 2026-08-20 (live, N=8 reps x 9 fixtures x 3 arms, errored runs counted as
 # failures): reasoning_effort=max scored recall 0.425 [0.29-0.58] with 25/72 errors, versus the
 # provider default (unset) at 0.750 [0.60-0.86] with 7/72 -- non-overlapping CIs and 3.5x the
@@ -47,9 +47,10 @@ if [item.get('name') for item in transports] != ['fireworks', 'ollama', 'openrou
 # NOTE: 'high' itself was never measured -- the ablation covered none / unset / max only.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
-if transports[0].get('structured_output') != 'strict':
+fireworks = next((item for item in transports if item.get('name') == 'fireworks'), None)
+if fireworks is None or fireworks.get('structured_output') != 'strict':
     raise SystemExit('Fireworks must use the strict investigation response schema')
-if transports[0].get('perf_metrics_in_response') is not True:
+if fireworks.get('perf_metrics_in_response') is not True:
     raise SystemExit('Fireworks must return performance metrics')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
@@ -224,7 +225,7 @@ import sys
 
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
-transport = policy['review_yeti']['transports'][0]
+transport = next(item for item in policy['review_yeti']['transports'] if item.get('name') == 'fireworks')
 transport['timeout_ms'] = 1_000
 transport['connect_timeout_ms'] = 1_001
 with open(destination, 'w') as handle:
@@ -408,7 +409,7 @@ policy = json.load(open(source))
 review = policy['review_yeti']
 review['openrouter_ttft_ms'] = '30000'
 if stream_scope == 'transport':
-    review['transports'][0]['stream'] = False
+    next(item for item in review['transports'] if item.get('name') == 'openrouter-fallback')['stream'] = False
 elif stream_scope == 'global':
     review['openrouter_stream'] = 'false'
 else:
@@ -445,8 +446,8 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['fireworks', 'ollama', 'openrouter-fallback']:
-    raise SystemExit('base64 transport plan must preserve Fireworks -> Ollama -> OpenRouter order')
+if [item.get('name') for item in plan] != ['openrouter-fallback', 'fireworks', 'ollama']:
+    raise SystemExit('base64 transport plan must preserve OpenRouter-first, then Fireworks -> Ollama fallback order')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
@@ -489,7 +490,7 @@ done
 for field in timeout_ms connect_timeout_ms; do
   for value in 0 -1 180001 true 1.5 ''; do
     name="invalid-transport-${field}-${value:-empty}"
-    run_case "$name" "transport.0.${field}" "$value" 1
+    run_case "$name" "transport.1.${field}" "$value" 1
     grep -q "transport fireworks.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
   done
 done

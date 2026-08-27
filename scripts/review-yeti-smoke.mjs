@@ -5,9 +5,9 @@ import { resolve } from 'node:path';
 import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
+  'openrouter-fallback',
   'fireworks',
   'ollama',
-  'openrouter-fallback',
 ]);
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
@@ -66,6 +66,10 @@ export function validatePolicy(policy) {
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
 
+  const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
+  const fireworks = transports.find((transport) => transport.name === 'fireworks');
+  const ollama = transports.find((transport) => transport.name === 'ollama');
+
   // Fireworks must NOT pin reasoning_effort. Measured ablation 2026-08-20, live,
   // deepseek-v4-flash-0731, N=8 reps x 9 fixtures x 3 arms, errored runs counted as failures:
   //   arm       recall               errors      median latency
@@ -76,14 +80,14 @@ export function validatePolicy(policy) {
   // rate. Its median reasoning output was *lower* than unset's (837 vs 2,902 chars) -- consistent
   // with blowing past the per-attempt budget mid-thought rather than reasoning further. The
   // previous rule required exactly the worst-performing arm.
-  if (transports[0].reasoning_effort === 'max') {
+  if (fireworks?.reasoning_effort === 'max') {
     throw new Error("Fireworks must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
   }
-  if (transports[0].perf_metrics_in_response !== true) {
+  if (fireworks?.perf_metrics_in_response !== true) {
     throw new Error('Fireworks must report performance metrics');
   }
-  if (transports[0].structured_output !== 'strict') throw new Error('Fireworks must use strict investigation output');
-  if (transports[1].reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
+  if (fireworks?.structured_output !== 'strict') throw new Error('Fireworks must use strict investigation output');
+  if (ollama?.reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
@@ -101,7 +105,6 @@ export function validatePolicy(policy) {
     }
   }
 
-  const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
     throw new Error('OpenRouter routing must delegate quantization, exclude only Morph, and keep throughput floors/fallbacks');
   }

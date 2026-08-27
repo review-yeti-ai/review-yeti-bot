@@ -108,16 +108,16 @@ receipt without printing credentials or response content.
 
 The current standard transport plan is deliberately limited and ordered:
 
-1. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`)
-2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
-3. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`) as the final fallback
+1. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`)
+2. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`) as the first fallback
+3. Ollama (`OLLAMA_PR_REVIEW_API_KEY`) as the final fallback
 
 `OLLAMA_PR_REVIEW_API_KEY` is sourced from the masked Doppler secret in
 `example-workspace/prd` and synchronized to the repository's GitHub Actions secret of the same name.
 The workflow references only the GitHub secret; neither policy nor workflow files contain the
 credential value.
 
-The action starts each model turn at Fireworks and advances through the declared order when a
+The action starts each model turn at OpenRouter and advances through the declared order when a
 transport fails. The OpenRouter entry requires compatible request parameters, the policy's
 `strict` output marker, and throughput-ranked routing while delegating quantization and endpoint
 eligibility to OpenRouter's live policy except for the account-level Morph exclusion recorded after
@@ -206,7 +206,7 @@ silently carrying a stale budget.
 
 **Streaming is an invariant.** Every transport declares `stream: true` and the global
 `openrouter_stream` flag is `"true"`. The action's single-slot streaming gate serializes the full
-Fireworks-to-Ollama-to-OpenRouter transport plan per persona, so a failover never opens a sibling SSE stream
+OpenRouter-to-Fireworks-to-Ollama transport plan per persona, so a failover never opens a sibling SSE stream
 over the active one. `emit-policy.mjs` rejects a future policy that makes only one transport
 non-streaming while retaining a tight TTFT budget; `scripts/emit-policy.test.sh` exercises that
 counterfactual. This keeps provider attribution and first-token telemetry intact without disabling
