@@ -16,7 +16,9 @@ jobs:
   review:
     name: Review Yeti
     runs-on: blacksmith-2vcpu-ubuntu-2404-arm
-    timeout-minutes: 40
+    # Hard caller-side maximum: smoke, review, fallback, publication, and verdict enforcement
+    # must all finish inside the same 15-minute operational contract.
+    timeout-minutes: 15
     env:
       REVIEW_REPOSITORY: ${{ github.repository }}
       REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}

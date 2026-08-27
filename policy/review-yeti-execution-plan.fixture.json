@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "8e1ef2528616de6b3bf8d9a4a4ea978622c2e68be7b467cb631dc50e484f63fb",
+  "normalized_plan_sha256": "1bcbcd44f9825a694d7e3eedbe1e3b2b698d3276254d2896a1075e9f53994a7c",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -11,7 +11,7 @@
       "ollama"
     ],
     "lane": {
-      "deadline_ms": 1050000,
+      "deadline_ms": 720000,
       "overhead_ms": 120000,
       "max_investigation_turns": 2
     },
