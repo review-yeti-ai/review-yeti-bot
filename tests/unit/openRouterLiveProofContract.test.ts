@@ -33,6 +33,7 @@ describe('manual OpenRouter live proof contract', () => {
     expect(script).toContain("'error-path-logging'");
     expect(script).toContain("schemaVersion: 'openrouter-live-proof-batch-v1'");
     expect(script).toContain('serial: true');
+    expect(script).toContain('args.indexOf(`--${name}`)');
     expect(script).not.toContain('process.env.GITHUB_TOKEN');
   });
 });
