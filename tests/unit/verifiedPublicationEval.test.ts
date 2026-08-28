@@ -329,6 +329,39 @@ describe('grading mirror', () => {
     });
   });
 
+  it('retains only sanitized OpenRouter router metadata in lane telemetry', () => {
+    expect(captureLaneTelemetry({
+      provider: 'openrouter',
+      transport: 'openrouter-fallback',
+      ttftMs: 1234,
+      routerMetadata: {
+        strategy: 'default',
+        region: 'us-east',
+        taskType: 'chat',
+        attempt: 2,
+        endpointDigests: [
+          'f8e63aa29393718a2aaaa32d9b6e4682a71fa9af6b490f6240c41c331ea94bd0',
+          '1f70967d524c5883f11ab8963d4a67b7302f7cc6b67451bee7ed1140a89d282a',
+        ],
+        raw: 'do not retain this',
+      },
+    })).toEqual({
+      provider: 'openrouter',
+      transport: 'openrouter-fallback',
+      ttftMs: 1234,
+      routerMetadata: {
+        strategy: 'default',
+        region: 'us-east',
+        taskType: 'chat',
+        attempt: 2,
+        endpointDigests: [
+          'f8e63aa29393718a2aaaa32d9b6e4682a71fa9af6b490f6240c41c331ea94bd0',
+          '1f70967d524c5883f11ab8963d4a67b7302f7cc6b67451bee7ed1140a89d282a',
+        ],
+      },
+    });
+  });
+
   it('drops arbitrary values at the output telemetry boundary', () => {
     expect(captureLaneTelemetry({
       outputShape: 'secret-response-shape',

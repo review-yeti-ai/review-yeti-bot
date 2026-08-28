@@ -77,6 +77,12 @@ describe('action.yml — installable GitHub Action contract', () => {
     // --prefix keeps node_modules out of the checked-out repository being reviewed.
     expect(raw).toContain('--prefix');
   });
+
+  it('pins the official OpenRouter SDK in the legacy runtime install', () => {
+    const raw = fs.readFileSync(actionPath, 'utf-8');
+    expect(raw).toContain('@openrouter/sdk@1.2.80');
+    expect(raw).toContain('--no-package-lock');
+  });
 });
 
 describe('Pi runtime packaging contract', () => {
@@ -110,6 +116,13 @@ describe('Pi runtime packaging contract', () => {
       '@earendil-works/pi-tui',
       'typebox',
     ]);
+  });
+
+  it('includes the pinned OpenRouter SDK in the lock-backed Pi runtime', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'pi-runtime/package.json'), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'pi-runtime/package-lock.json'), 'utf8'));
+    expect(manifest.dependencies['@openrouter/sdk']).toBe('1.2.80');
+    expect(lock.packages['node_modules/@openrouter/sdk'].version).toBe('1.2.80');
   });
 
   it('keeps legacy as the default and wires the Pi install branch to the Action path', () => {

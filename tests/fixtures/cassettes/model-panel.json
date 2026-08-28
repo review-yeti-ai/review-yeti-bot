@@ -7,7 +7,8 @@
         "url": "https://llm.test/v1/chat/completions",
         "headers": {
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "accept": "application/json"
         },
         "body": {
           "model": "synthetic/reviewer",
@@ -50,7 +51,8 @@
         "url": "https://llm.test/v1/chat/completions",
         "headers": {
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "accept": "application/json"
         },
         "body": {
           "model": "synthetic/reviewer",
@@ -93,7 +95,8 @@
         "url": "https://llm.test/v1/chat/completions",
         "headers": {
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "accept": "application/json"
         },
         "body": {
           "model": "synthetic/reviewer",
@@ -136,7 +139,8 @@
         "url": "https://llm.test/v1/chat/completions",
         "headers": {
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "accept": "application/json"
         },
         "body": {
           "model": "synthetic/reviewer",
