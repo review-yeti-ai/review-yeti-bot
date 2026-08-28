@@ -20,7 +20,66 @@ const request = {
   stream: false,
 };
 
+function sdkChatResult(content: string, usage = { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 }) {
+  return {
+    id: 'chatcmpl-replay',
+    object: 'chat.completion',
+    created: 1_700_000_000,
+    model: 'openai/gpt-4o-mini',
+    system_fingerprint: null,
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }],
+    usage,
+  };
+}
+
+function sdkChunk(delta: Record<string, unknown>, options: { model?: string; usage?: Record<string, unknown>; finish_reason?: string | null } = {}) {
+  return JSON.stringify({
+    id: 'chatcmpl-replay',
+    object: 'chat.completion.chunk',
+    created: 1_700_000_000,
+    model: options.model || 'openai/gpt-4o-mini',
+    choices: [{ index: 0, finish_reason: options.finish_reason ?? null, delta }],
+    ...(options.usage ? { usage: options.usage } : {}),
+  });
+}
+
 describe('OpenRouterClient', () => {
+  it('uses the official OpenRouter SDK transport and enables router metadata for chat calls', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'chatcmpl-sdk-replay',
+      object: 'chat.completion',
+      created: 1_700_000_000,
+      model: 'openai/gpt-4o-mini',
+      system_fingerprint: null,
+      choices: [{
+        index: 0,
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: 'SDK_OK' },
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    await expect(client.complete({
+      ...request,
+      responseFormat: { type: 'json_object' },
+      provider: { allow_fallbacks: true, require_parameters: true },
+    })).resolves.toMatchObject({ content: 'SDK_OK' });
+
+    const [input, init] = fetchImplementation.mock.calls[0] as [string | URL | Request, RequestInit];
+    expect(String(input)).toBe('https://openrouter.test/api/v1/chat/completions');
+    expect(new Headers(init.headers).get('x-openrouter-metadata')).toBe('enabled');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'openai/gpt-4o-mini',
+      response_format: { type: 'json_object' },
+      provider: { allow_fallbacks: true, require_parameters: true },
+    });
+  });
+
   it('builds a stable OpenRouter request with routing, privacy, and structured-output controls', () => {
     expect(buildOpenRouterChatRequest({
       ...request,
@@ -69,9 +128,8 @@ describe('OpenRouterClient', () => {
 
   it('normalizes openrouter/5.6-luna-high in requests and computes estimated luna token cost', async () => {
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...sdkChatResult('APPROVE', { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 }),
       model: 'openai/gpt-5.6-luna',
-      choices: [{ message: { role: 'assistant', content: 'APPROVE' } }],
-      usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 },
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
 
     const client = new OpenRouterClient({
@@ -97,11 +155,7 @@ describe('OpenRouterClient', () => {
   });
 
   it('uses the injected transport, OpenRouter endpoint, and exact request payload', async () => {
-    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      model: request.model,
-      choices: [{ message: { role: 'assistant', content: 'SHIP' } }],
-      usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
-    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify(sdkChatResult('SHIP')), { status: 200, headers: { 'content-type': 'application/json' } }));
     const client = new OpenRouterClient({
       baseUrl: 'https://openrouter.test/api/v1',
       apiKey: 'test-openrouter-key',
@@ -128,8 +182,8 @@ describe('OpenRouterClient', () => {
   it('replays a streaming OpenRouter response deterministically', async () => {
     const stream = [
       ': OPENROUTER PROCESSING\n',
-      'data: {"model":"openai/gpt-4o-mini","choices":[{"delta":{"content":"FIX"}}]}\n',
-      'data: {"choices":[{"delta":{"content":"_FIRST"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"total_cost":"0.0081"}}\n',
+      `data: ${sdkChunk({ content: 'FIX' })}\n\n`,
+      `data: ${sdkChunk({ content: '_FIRST' }, { usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5, cost: 0.0081 } })}\n\n`,
       'data: [DONE]\n',
     ].join('');
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
@@ -150,9 +204,9 @@ describe('OpenRouterClient', () => {
   it('replays fragmented SSE frames and keepalives without losing usage or cost metadata', async () => {
     const encoded = [
       ': keep-alive\n\n',
-      'data: {"choices":[{"delta":{"content":"{\\"findings\\": ["}}]}\n\n',
-      'data: {"choices":[{"delta":{"content":" ]}"}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}\n\n',
-      'data: {"usage":{"cost_details":{"upstream_inference_cost":"0.0042"}}}\n\n',
+      `data: ${sdkChunk({ content: '{"findings": [' })}\n\n`,
+      `data: ${sdkChunk({ content: ' ]}' }, { usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } })}\n\n`,
+      `data: ${sdkChunk({}, { usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10, cost: 0.0042 } })}\n\n`,
       'data: [DONE]\n\n',
     ].join('');
     const splitAt = encoded.indexOf('findings') + 4;
@@ -177,8 +231,8 @@ describe('OpenRouterClient', () => {
 
   it('replays OpenRouter reasoning_details SSE entries as reasoning text', async () => {
     const stream = [
-      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"checking the diff"}]}}]}\n\n',
-      'data: {"choices":[{"delta":{"content":"{\\"findings\\":[]}"}}]}\n\n',
+      `data: ${sdkChunk({ reasoning_details: [{ type: 'reasoning.text', text: 'checking the diff' }] })}\n\n`,
+      `data: ${sdkChunk({ content: '{"findings":[]}' })}\n\n`,
       'data: [DONE]\n\n',
     ].join('');
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
@@ -263,12 +317,12 @@ describe('OpenRouterClient', () => {
 
   it('rejects malformed streaming frames instead of accepting partial JSON', async () => {
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(
-      'data: {"choices":[{"delta":{"content":"not-json"}}]\n\ndata: {broken}\n\ndata: [DONE]\n\n',
+      `data: ${sdkChunk({ content: 'not-json' })}\n\ndata: {broken}\n\ndata: [DONE]\n\n`,
       { status: 200, headers: { 'content-type': 'text/event-stream' } },
     ));
     const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
 
-    await expect(client.complete({ ...request, stream: true })).rejects.toThrow('malformed streaming JSON');
+    await expect(client.complete({ ...request, stream: true })).rejects.toThrow('malformed response');
   });
 
   it('fails closed when the first streamed chunk exceeds the TTFT deadline', async () => {
@@ -324,12 +378,12 @@ describe('OpenRouterClient', () => {
       const activeStream = new ReadableStream({
         start(controller) {
           controller.enqueue(encoder.encode(
-            'data: {"choices":[{"delta":{"content":"active"}}]}\n\n',
+            `data: ${sdkChunk({ content: 'active' })}\n\n`,
           ));
           interval = setInterval(() => {
             try {
               controller.enqueue(encoder.encode(
-                'data: {"choices":[{"delta":{"content":" delta"}}]}\n\n',
+                `data: ${sdkChunk({ content: ' delta' })}\n\n`,
               ));
             } catch {
               // The reader has been cancelled by the total deadline.
@@ -380,12 +434,12 @@ describe('OpenRouterClient', () => {
     const activeStream = new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(
-          'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}\n\n',
+          `data: ${sdkChunk({ reasoning: 'thinking' })}\n\n`,
         ));
         interval = setInterval(() => {
           try {
             controller.enqueue(new TextEncoder().encode(
-              'data: {"choices":[{"delta":{"reasoning":" still thinking"}}]}\n\n',
+              `data: ${sdkChunk({ reasoning: ' still thinking' })}\n\n`,
             ));
           } catch {
             // The reader has already been detached; cleanup below stops the fixture.
@@ -422,13 +476,17 @@ describe('OpenRouterClient', () => {
   });
 
   it.each([
-    ['usage.total_cost', { total_cost: '0.0081' }, 0.0081],
-    ['usage.cost_details.upstream_inference_cost', { cost_details: { upstream_inference_cost: '0.0092' } }, 0.0092],
+    ['usage.cost', { cost: 0.0081 }, 0.0081],
+    ['usage.cost_details.upstream_inference_cost', {
+      cost_details: {
+        upstream_inference_completions_cost: 0.004,
+        upstream_inference_cost: 0.0092,
+        upstream_inference_prompt_cost: 0.0052,
+      },
+    }, 0.0092],
   ])('uses %s when OpenRouter reports cost outside data.cost', async (_label, usage, expectedCost) => {
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      model: 'openai/gpt-5.6-luna',
-      choices: [{ message: { role: 'assistant', content: 'SHIP' } }],
-      usage,
+      ...sdkChatResult('SHIP', { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, ...usage }),
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const client = new OpenRouterClient({
       baseUrl: 'https://openrouter.test/api/v1',
@@ -467,9 +525,12 @@ describe('OpenRouterClient', () => {
 
     const malformed = new OpenRouterClient({
       apiKey: 'test-openrouter-key',
-      fetchImplementation: vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [] }), { status: 200 })),
+      fetchImplementation: vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })),
     });
-    await expect(malformed.complete(request)).rejects.toThrow('empty completion content');
+    await expect(malformed.complete(request)).rejects.toThrow('malformed response');
   });
 });
 

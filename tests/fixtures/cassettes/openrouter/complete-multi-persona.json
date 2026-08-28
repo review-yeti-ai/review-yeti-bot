@@ -7,7 +7,9 @@
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "headers": {
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "accept": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "messages": [
@@ -41,7 +43,8 @@
             "type": "json_object"
           },
           "temperature": 0.1,
-          "max_tokens": 1024
+          "max_tokens": 1024,
+          "stream": false
         }
       },
       "response": {
@@ -51,9 +54,17 @@
           "x-ratelimit-remaining": "777"
         },
         "body": {
+          "id": "chatcmpl-replay",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "openrouter/auto",
+          "system_fingerprint": null,
           "choices": [
             {
+              "index": 0,
+              "finish_reason": "stop",
               "message": {
+                "role": "assistant",
                 "content": "{\"findings\":[{\"severity\":\"P1\",\"path\":\"src/api/user.ts\",\"line\":1,\"title\":\"Validate user id\",\"body\":\"The request id is used to select a user without validation or authorization context.\",\"suggestion\":\"Validate the id and scope lookup to the authenticated tenant.\"}]}"
               }
             }
@@ -67,7 +78,9 @@
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "headers": {
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "accept": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "messages": [
@@ -101,7 +114,8 @@
             "type": "json_object"
           },
           "temperature": 0.1,
-          "max_tokens": 1024
+          "max_tokens": 1024,
+          "stream": false
         }
       },
       "response": {
@@ -111,9 +125,17 @@
           "x-ratelimit-remaining": "777"
         },
         "body": {
+          "id": "chatcmpl-replay",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "openrouter/auto",
+          "system_fingerprint": null,
           "choices": [
             {
+              "index": 0,
+              "finish_reason": "stop",
               "message": {
+                "role": "assistant",
                 "content": "{\"findings\":[]}"
               }
             }
@@ -127,7 +149,9 @@
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "headers": {
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "accept": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "messages": [
@@ -161,7 +185,8 @@
             "type": "json_object"
           },
           "temperature": 0.1,
-          "max_tokens": 1024
+          "max_tokens": 1024,
+          "stream": false
         }
       },
       "response": {
@@ -171,9 +196,17 @@
           "x-ratelimit-remaining": "777"
         },
         "body": {
+          "id": "chatcmpl-replay",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "openrouter/auto",
+          "system_fingerprint": null,
           "choices": [
             {
+              "index": 0,
+              "finish_reason": "stop",
               "message": {
+                "role": "assistant",
                 "content": "{\"findings\":[{\"severity\":\"P0\",\"path\":\"src/not-in-diff.ts\",\"line\":1,\"title\":\"Ghost finding\",\"body\":\"This file was not in the diff.\",\"suggestion\":\"Ignore this hallucination.\"},{\"severity\":\"P2\",\"path\":\"src/api/user.ts\",\"line\":2,\"title\":\"Document lookup behavior\",\"body\":\"The lookup behavior changed without an inline explanation.\",\"suggestion\":\"Add a short comment or docs note if this API is public.\"}]}"
               }
             }
