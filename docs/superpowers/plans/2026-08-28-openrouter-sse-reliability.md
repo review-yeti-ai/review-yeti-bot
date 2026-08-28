@@ -30,6 +30,9 @@ metadata. Qualification remains manual, non-publishing, and capped at 15 minutes
   receipts and response-attempt telemetry.
 - [x] Carry the explicit 30-second TTFT contract through policy, handoff, and receipt integrity
   checks; keep the existing transport order.
+- [x] Route OpenRouter chat completions through the pinned official `@openrouter/sdk` client and
+  HTTP client, with SDK retries disabled so review-pipeline retry and 15-minute deadline policy
+  stays authoritative; keep the existing CommonJS action artifact and production order.
 - [x] Add deterministic unit/contract coverage for delayed first data, keepalives, fragmented
   frames, reasoning details, metadata, and timeout classification.
 - [ ] Run a manual one-fixture OpenRouter-only probe, serially, with a 10-minute child hard kill

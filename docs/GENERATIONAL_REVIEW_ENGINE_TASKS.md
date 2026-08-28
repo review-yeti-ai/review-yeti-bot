@@ -22,6 +22,9 @@ probe, automatic flip, or publication change. See the staged plan:
 - [x] Parse OpenRouter `reasoning_details` and retain sanitized router metadata for diagnosis
   without storing URLs, prompts, secrets, or raw provider payloads.
 - [x] Carry the TTFT contract through the policy handoff and qualification receipt.
+- [x] Use the pinned official `@openrouter/sdk` chat client and HTTP client for OpenRouter
+  completions, while keeping SDK retries disabled so the existing bounded retry/deadline policy
+  remains authoritative; preserve the current production transport order.
 - [ ] Run the serial, manual-only OpenRouter qualification matrix (one fixture, then three) and
   require 100% terminal completion before comparing review quality.
 - [ ] Compare direct fixed-model and Auto Router/provider-routing behavior in separate evidence

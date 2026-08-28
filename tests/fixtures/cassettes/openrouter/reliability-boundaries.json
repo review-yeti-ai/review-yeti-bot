@@ -8,7 +8,8 @@
         "headers": {
           "accept": "application/json",
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "model": "openai/gpt-4o-mini",
@@ -29,7 +30,8 @@
         "headers": {
           "accept": "application/json",
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "model": "openai/gpt-4o-mini",
@@ -50,7 +52,8 @@
         "headers": {
           "accept": "application/json",
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "model": "openai/gpt-4o-mini",
@@ -71,7 +74,8 @@
         "headers": {
           "accept": "application/json",
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "model": "openai/gpt-4o-mini",
@@ -92,7 +96,8 @@
         "headers": {
           "accept": "application/json",
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "model": "openai/gpt-4o-mini",
@@ -113,7 +118,8 @@
         "headers": {
           "accept": "text/event-stream",
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "model": "openai/gpt-4o-mini",
@@ -127,10 +133,10 @@
         "body": null,
         "streamChunks": [
           ": keep-alive\n\n",
-          "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"find",
+          "data: {\"id\":\"chatcmpl-replay\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"content\":\"{\\\"find",
           "ings\\\": [\"}}]}\n\n",
-          "data: {\"choices\":[{\"delta\":{\"content\":\" ]}\"}}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n",
-          "data: {\"usage\":{\"cost_details\":{\"upstream_inference_cost\":\"0.0042\"}}}\n\n",
+          "data: {\"id\":\"chatcmpl-replay\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"content\":\" ]}\"}}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n",
+          "data: {\"id\":\"chatcmpl-replay\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{}}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10,\"cost\":0.0042}}\n\n",
           "data: [DONE]\n\n"
         ]
       }

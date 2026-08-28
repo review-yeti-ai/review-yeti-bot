@@ -8,7 +8,8 @@
         "headers": {
           "accept": "application/json",
           "authorization": "<redacted>",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "user-agent": "speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk"
         },
         "body": {
           "messages": [
@@ -27,8 +28,13 @@
           "content-type": "application/json"
         },
         "body": {
+          "id": "chatcmpl-replay",
+          "object": "chat.completion",
+          "created": 1700000000,
           "choices": [
             {
+              "index": 0,
+              "finish_reason": "stop",
               "message": {
                 "content": "{\"verdict\":\"SHIP\"}",
                 "role": "assistant"
@@ -36,6 +42,7 @@
             }
           ],
           "model": "openai/gpt-4o-mini",
+          "system_fingerprint": null,
           "usage": {
             "completion_tokens": 4,
             "prompt_tokens": 10,

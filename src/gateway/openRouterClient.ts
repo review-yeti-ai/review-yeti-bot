@@ -107,6 +107,92 @@ export function buildOpenRouterChatRequest(request: OpenRouterRequest): Record<s
   };
 }
 
+type OpenRouterSdkClient = {
+  chat: {
+    send(request: Record<string, unknown>, options?: Record<string, unknown>): Promise<unknown>;
+  };
+};
+
+type OpenRouterSdkModule = {
+  OpenRouter: new (options?: Record<string, unknown>) => OpenRouterSdkClient;
+  HTTPClient: new (options?: Record<string, unknown>) => {
+    addHook(type: string, hook: (...args: any[]) => void | Promise<void>): unknown;
+  };
+};
+
+let openRouterSdkModulePromise: Promise<OpenRouterSdkModule> | null = null;
+
+/**
+ * The application is emitted as CommonJS, while @openrouter/sdk publishes ESM. Node 24+'s
+ * synchronous ESM bridge can load this dependency without lowering the application to ESM, which
+ * keeps the existing action artifact/module contract intact.
+ */
+function loadOpenRouterSdk(): Promise<OpenRouterSdkModule> {
+  if (!openRouterSdkModulePromise) {
+    openRouterSdkModulePromise = Promise.resolve(require('@openrouter/sdk') as OpenRouterSdkModule);
+  }
+  return openRouterSdkModulePromise;
+}
+
+function mapSdkKeys(value: unknown, keys: Record<string, string>): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const mapped: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(source)) {
+    mapped[keys[key] || key] = item;
+  }
+  return mapped;
+}
+
+function toSdkProviderPreferences(provider?: Record<string, unknown>): Record<string, unknown> | undefined {
+  return mapSdkKeys(provider, {
+    allow_fallbacks: 'allowFallbacks',
+    data_collection: 'dataCollection',
+    enforce_distillable_text: 'enforceDistillableText',
+    max_price: 'maxPrice',
+    preferred_max_latency: 'preferredMaxLatency',
+    preferred_min_throughput: 'preferredMinThroughput',
+    require_parameters: 'requireParameters',
+  });
+}
+
+function toSdkPlugin(plugin: Record<string, unknown>): Record<string, unknown> {
+  return mapSdkKeys(plugin, {
+    allowed_models: 'allowedModels',
+    cost_quality_tradeoff: 'costQualityTradeoff',
+    cost_tier: 'costTier',
+    excluded_models: 'excludedModels',
+    pin_model: 'pinModel',
+  }) || plugin;
+}
+
+function toSdkResponseFormat(responseFormat?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!responseFormat) return undefined;
+  const mapped = { ...responseFormat };
+  if (mapped.json_schema && !mapped.jsonSchema) {
+    mapped.jsonSchema = mapSdkKeys(mapped.json_schema, {}) || mapped.json_schema;
+    delete mapped.json_schema;
+  }
+  return mapped;
+}
+
+/** Convert the repository's wire-shaped request into the SDK's typed camelCase request model. */
+export function buildOpenRouterSdkChatRequest(request: OpenRouterRequest): Record<string, unknown> {
+  return {
+    model: normalizeOpenRouterModel(request.model),
+    messages: request.messages,
+    stream: request.stream ?? true,
+    ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
+    ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+    ...(request.reasoning ? { reasoning: mapSdkKeys(request.reasoning, { effort: 'effort' }) } : {}),
+    ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
+    ...(toSdkResponseFormat(request.responseFormat) ? { responseFormat: toSdkResponseFormat(request.responseFormat) } : {}),
+    ...(toSdkProviderPreferences(request.provider) ? { provider: toSdkProviderPreferences(request.provider) } : {}),
+    ...(request.plugins ? { plugins: request.plugins.map(toSdkPlugin) } : {}),
+    ...(request.metadata ? { metadata: request.metadata } : {}),
+  };
+}
+
 /**
  * Convert legacy provider-router names into real OpenRouter model ids. This keeps existing
  * repository policies readable while ensuring the network request never targets OmniRoute.
@@ -544,6 +630,8 @@ interface StreamState {
   reasoning: string;
   usage: any;
   cost: number | null;
+  routerMetadata: unknown;
+  finishReason: string | null;
   lastChunkTime: number;
 }
 
@@ -621,7 +709,7 @@ async function readWithTimeout<T>(
 // make the review wait on cleanup after we have already classified the provider failure.
 const STREAM_CANCEL_WAIT_MS = 100;
 
-async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>, reason: string): Promise<void> {
+async function cancelReader<T>(reader: ReadableStreamDefaultReader<T>, reason: string): Promise<void> {
   if (typeof reader.cancel !== 'function') return;
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -667,6 +755,8 @@ async function readStreamingResponse(
     reasoning: '',
     usage: null as any,
     cost: null,
+    routerMetadata: null,
+    finishReason: null,
     lastChunkTime: Date.now(),
   };
 
@@ -798,6 +888,259 @@ async function readStreamingResponse(
   };
 }
 
+function sdkUsageToWire(usage: any): Record<string, unknown> | null {
+  if (!usage || typeof usage !== 'object') return null;
+  const costDetails = usage.costDetails ?? usage.cost_details;
+  return {
+    prompt_tokens: usage.promptTokens ?? usage.prompt_tokens,
+    completion_tokens: usage.completionTokens ?? usage.completion_tokens,
+    total_tokens: usage.totalTokens ?? usage.total_tokens,
+    ...(usage.cost !== undefined ? { cost: usage.cost } : {}),
+    ...(costDetails && typeof costDetails === 'object' ? {
+      cost_details: {
+        ...(costDetails.upstreamInferenceCompletionsCost !== undefined || costDetails.upstream_inference_completions_cost !== undefined
+          ? { upstream_inference_completions_cost: costDetails.upstreamInferenceCompletionsCost ?? costDetails.upstream_inference_completions_cost }
+          : {}),
+        ...(costDetails.upstreamInferenceCost !== undefined || costDetails.upstream_inference_cost !== undefined
+          ? { upstream_inference_cost: costDetails.upstreamInferenceCost ?? costDetails.upstream_inference_cost }
+          : {}),
+        ...(costDetails.upstreamInferencePromptCost !== undefined || costDetails.upstream_inference_prompt_cost !== undefined
+          ? { upstream_inference_prompt_cost: costDetails.upstreamInferencePromptCost ?? costDetails.upstream_inference_prompt_cost }
+          : {}),
+      },
+    } : {}),
+  };
+}
+
+function collectSdkChunk(data: any, state: StreamState): void {
+  if (data?.error) {
+    const message = data.error.message || data.error.code || 'OpenRouter emitted a streaming error';
+    const status = Number.isInteger(Number(data.error.code)) ? Number(data.error.code) : undefined;
+    throw new OpenRouterResponseError(`OpenRouter streaming error: ${String(message).slice(0, 2_000)}`, status);
+  }
+  if (typeof data?.model === 'string' && data.model) state.model = data.model;
+  const choice = data?.choices?.[0];
+  const content = choice?.delta?.content ?? choice?.message?.content;
+  if (typeof content === 'string') state.content += content;
+  const reasoning = choice?.delta?.reasoningDetails
+    ?? choice?.delta?.reasoning_details
+    ?? choice?.delta?.reasoning
+    ?? choice?.message?.reasoningDetails
+    ?? choice?.message?.reasoning_details
+    ?? choice?.message?.reasoning;
+  state.reasoning += reasoningText(reasoning);
+  if (choice?.finishReason !== undefined || choice?.finish_reason !== undefined) {
+    state.finishReason = choice.finishReason ?? choice.finish_reason ?? null;
+  }
+  if (data?.usage) {
+    const usage = sdkUsageToWire(data.usage);
+    state.usage = {
+      ...(state.usage && typeof state.usage === 'object' ? state.usage : {}),
+      ...(usage || {}),
+    };
+  }
+  const reportedCost = data?.cost
+    ?? data?.costUSD
+    ?? data?.cost_usd
+    ?? data?.usage?.cost
+    ?? data?.usage?.totalCost
+    ?? data?.usage?.total_cost
+    ?? data?.usage?.costDetails?.upstreamInferenceCost
+    ?? data?.usage?.cost_details?.upstream_inference_cost;
+  if (Number.isFinite(Number(reportedCost))) state.cost = Number(reportedCost);
+  if (data?.openrouterMetadata && typeof data.openrouterMetadata === 'object') {
+    state.routerMetadata = data.openrouterMetadata;
+  } else if (data?.openrouter_metadata && typeof data.openrouter_metadata === 'object') {
+    state.routerMetadata = data.openrouter_metadata;
+  }
+  state.lastChunkTime = Date.now();
+}
+
+async function readSdkStreamingResponse(
+  stream: ReadableStream<unknown>,
+  requestedModel: string,
+  options?: {
+    inactivityTimeoutMs?: number;
+    ttftTimeoutMs?: number;
+    totalTimeoutMs?: number;
+    onTotalTimeout?: () => void;
+  },
+): Promise<any> {
+  const reader = stream.getReader();
+  const state: StreamState = {
+    model: requestedModel,
+    content: '',
+    reasoning: '',
+    usage: null,
+    cost: null,
+    routerMetadata: null,
+    finishReason: null,
+    lastChunkTime: Date.now(),
+  };
+  const inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 45_000;
+  const ttftTimeoutMs = options?.ttftTimeoutMs && options.ttftTimeoutMs > 0
+    ? options.ttftTimeoutMs
+    : inactivityTimeoutMs;
+  const totalDeadlineAt = options?.totalTimeoutMs && options.totalTimeoutMs > 0
+    ? Date.now() + options.totalTimeoutMs
+    : 0;
+  const totalDeadlineError = () => new OpenRouterTimeoutError(
+    `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
+    'total',
+  );
+  let totalDeadlineTriggered = false;
+  const totalTimer = totalDeadlineAt
+    ? setTimeout(() => {
+        totalDeadlineTriggered = true;
+        options?.onTotalTimeout?.();
+        void cancelReader(reader, 'stream total deadline');
+      }, Math.max(0, totalDeadlineAt - Date.now()))
+    : undefined;
+  let receivedFirstData = false;
+
+  try {
+    while (true) {
+      const remainingTotalMs = totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity;
+      if (remainingTotalMs <= 0 || totalDeadlineTriggered) throw totalDeadlineError();
+      const readTimeoutMs = Math.min(
+        receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs,
+        remainingTotalMs,
+      );
+      const { done, value } = await readWithTimeout(
+        reader.read(),
+        readTimeoutMs,
+        () => {
+          if (totalDeadlineAt && Date.now() + 10 >= totalDeadlineAt) return totalDeadlineError();
+          return new OpenRouterTimeoutError(
+            receivedFirstData
+              ? `Streaming stalled: no data or heartbeat received from OpenRouter for ${Math.round(inactivityTimeoutMs / 1000)}s`
+              : `Time to first streamed chunk from OpenRouter exceeded ${Math.round(ttftTimeoutMs / 1000)}s`,
+            receivedFirstData ? 'inactivity' : 'ttft',
+          );
+        },
+      );
+      if (done) break;
+      if (value !== undefined) {
+        receivedFirstData = true;
+        collectSdkChunk(value, state);
+      }
+    }
+    // The deadline timer cancels the SDK EventStream so a pending read can settle. Cancellation
+    // reports `{done:true}` to the downstream reader, therefore classify that terminal read as a
+    // timeout instead of returning a partial successful completion.
+    if (totalDeadlineTriggered || (totalDeadlineAt > 0 && Date.now() >= totalDeadlineAt)) {
+      throw totalDeadlineError();
+    }
+  } catch (error) {
+    const totalExpired = totalDeadlineTriggered
+      || (error instanceof OpenRouterTimeoutError && error.kind === 'total')
+      || (totalDeadlineAt > 0 && Date.now() + 10 >= totalDeadlineAt);
+    if (totalExpired && !totalDeadlineTriggered) {
+      totalDeadlineTriggered = true;
+      options?.onTotalTimeout?.();
+    }
+    await cancelReader(reader, totalExpired ? 'stream total deadline' : 'stream timeout');
+    if (totalExpired) throw totalDeadlineError();
+    throw error;
+  } finally {
+    if (totalTimer) clearTimeout(totalTimer);
+    reader.releaseLock?.();
+  }
+
+  const finalContent = state.content || state.reasoning || '';
+  return {
+    model: state.model,
+    choices: [{
+      index: 0,
+      finish_reason: state.finishReason,
+      message: {
+        role: 'assistant',
+        content: finalContent,
+        ...(state.reasoning ? { reasoning: state.reasoning } : {}),
+      },
+    }],
+    ...(state.usage ? { usage: state.usage } : {}),
+    ...(state.cost !== null ? { cost: state.cost } : {}),
+    ...(state.routerMetadata ? { openrouter_metadata: state.routerMetadata } : {}),
+  };
+}
+
+function normalizeSdkResponse(response: any): any {
+  const usage = sdkUsageToWire(response?.usage);
+  const choice = response?.choices?.[0];
+  const message = choice?.message || {};
+  const content = typeof message.content === 'string'
+    ? message.content
+    : Array.isArray(message.content)
+      ? message.content.map((part: any) => typeof part === 'string' ? part : part?.text || '').join('')
+      : '';
+  const cost = response?.cost
+    ?? response?.costUSD
+    ?? response?.usage?.cost
+    ?? response?.usage?.costDetails?.upstreamInferenceCost;
+  return {
+    model: response?.model,
+    choices: [{
+      index: choice?.index ?? 0,
+      finish_reason: choice?.finishReason ?? choice?.finish_reason ?? null,
+      message: {
+        role: message.role || 'assistant',
+        content,
+        ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+        ...(message.reasoningDetails ? { reasoning_details: message.reasoningDetails } : {}),
+      },
+    }],
+    ...(usage ? { usage } : {}),
+    ...(cost !== undefined ? { cost } : {}),
+    ...(response?.openrouterMetadata ? { openrouter_metadata: response.openrouterMetadata } : {}),
+  };
+}
+
+async function createOpenRouterSdkClient(options: {
+  baseUrl: string;
+  apiKey: string;
+  fetchImplementation: FetchImplementation;
+  onGenerationId?: (value: string) => void;
+}): Promise<OpenRouterSdkClient> {
+  const { OpenRouter, HTTPClient } = await loadOpenRouterSdk();
+  const httpClient = new HTTPClient({
+    fetcher: async (sdkRequest: Request) => {
+      const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
+      return options.fetchImplementation(sdkRequest.url, {
+        method: sdkRequest.method,
+        headers: sdkRequest.headers,
+        ...(body !== undefined ? { body } : {}),
+        signal: sdkRequest.signal,
+      });
+    },
+  });
+  httpClient.addHook('response', (response: Response) => {
+    const generationId = response.headers.get('x-generation-id');
+    if (generationId) options.onGenerationId?.(generationId);
+  });
+  return new OpenRouter({
+    apiKey: options.apiKey,
+    serverURL: options.baseUrl,
+    httpClient,
+    // Retry policy belongs to the review pipeline, where it is bounded and telemetry-aware.
+    // Disable the SDK's default one-hour 5xx retry loop so it cannot violate the 15-minute CI cap.
+    retryConfig: { strategy: 'none' },
+  });
+}
+
+function sdkErrorStatus(error: any): number | undefined {
+  const status = Number(error?.statusCode ?? error?.status);
+  return Number.isInteger(status) && status > 0 ? status : undefined;
+}
+
+function sdkErrorMessage(error: any): string {
+  const detail = error?.error?.message
+    ?? error?.data$?.error?.message
+    ?? error?.message
+    ?? String(error);
+  return String(detail).slice(0, 2_000);
+}
+
 /** OpenAI-compatible model boundary pinned to OpenRouter for review execution. */
 export class OpenRouterClient implements ReviewModelClient {
   private readonly baseUrl: string;
@@ -824,37 +1167,41 @@ export class OpenRouterClient implements ReviewModelClient {
     const started = this.now();
     const startedAt = Date.now();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
-    const headers = new Headers({
-      // OpenRouter selects the SSE response envelope from the request contract. Keep
-      // the Accept header aligned with the body instead of asking for JSON while
-      // simultaneously consuming a ReadableStream.
-      Accept: request.stream === false ? 'application/json' : 'text/event-stream',
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.apiKey}`,
-    });
+    let requestDeadlineExpired = false;
+    let generationId: string | null = null;
+    const timeout = setTimeout(() => {
+      requestDeadlineExpired = true;
+      controller.abort();
+    }, request.timeoutMs);
 
     try {
-      const response = await this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(buildOpenRouterChatRequest(request)),
-        signal: controller.signal,
+      const sdkClient = await createOpenRouterSdkClient({
+        baseUrl: this.baseUrl,
+        apiKey: this.apiKey,
+        fetchImplementation: this.fetchImplementation,
+        onGenerationId: (value) => { generationId = value; },
       });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new OpenRouterResponseError(`OpenRouter HTTP ${response.status}: ${text.slice(0, 2_000)}`, response.status);
-      }
-
-      const data = await readStreamingResponse(response, effectiveModel, {
-        persona: request.persona,
-        providerId: request.providerId,
-        ttftTimeoutMs: request.ttftTimeoutMs,
-        inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
-        totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
-        onTotalTimeout: () => controller.abort(),
-      });
+      const sdkResponse = await sdkClient.chat.send(
+        {
+          xOpenRouterMetadata: 'enabled',
+          chatRequest: buildOpenRouterSdkChatRequest(request),
+        },
+        {
+          signal: controller.signal,
+          retries: { strategy: 'none' },
+        },
+      );
+      const data = sdkResponse && typeof (sdkResponse as any).getReader === 'function'
+        ? await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
+            ttftTimeoutMs: request.ttftTimeoutMs,
+            inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+            totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+            onTotalTimeout: () => {
+              requestDeadlineExpired = true;
+              controller.abort();
+            },
+          })
+        : normalizeSdkResponse(sdkResponse);
       const rawMsg = data?.choices?.[0]?.message;
       const content = (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '')
         ? rawMsg.content
@@ -898,6 +1245,8 @@ export class OpenRouterClient implements ReviewModelClient {
             completionTokens: usage?.completion || 0,
             totalTokens: usage?.total || 0,
             costUSD,
+            ...(generationId ? { generationId } : {}),
+            ...(data?.openrouter_metadata ? { routerMetadata: data.openrouter_metadata } : {}),
           },
         });
       }
@@ -905,11 +1254,23 @@ export class OpenRouterClient implements ReviewModelClient {
       return { model, content, usage, costUSD, raw: data };
     } catch (error: any) {
       if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError || error instanceof UpstreamCapacityRejectionError) throw error;
-      if (error?.name === 'AbortError' || controller.signal.aborted) {
+      if (error instanceof OpenRouterTimeoutError) throw error;
+      const status = sdkErrorStatus(error);
+      if (status && status >= 400) {
+        throw new OpenRouterResponseError(`OpenRouter HTTP ${status}: ${sdkErrorMessage(error)}`, status);
+      }
+      const sdkMessage = sdkErrorMessage(error);
+      if (request.stream !== false && /malformed json|response validation failed/i.test(sdkMessage)) {
+        throw new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
+      }
+      if (error?.name === 'ResponseValidationError') {
+        throw new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkErrorMessage(error)}`);
+      }
+      if (requestDeadlineExpired || error?.name === 'AbortError' || controller.signal.aborted) {
         throw new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`, 'request');
       }
-      logger.error('OpenRouter network failure or timeout', { error: error?.message || String(error), model: request.model });
-      throw new OpenRouterConnectionError(`OpenRouter connection failure for model ${request.model}: ${error?.message || String(error)}`);
+      logger.error('OpenRouter SDK network failure or timeout', { error: sdkMessage, model: request.model });
+      throw new OpenRouterConnectionError(`OpenRouter SDK connection failure for model ${request.model}: ${sdkMessage}`);
     } finally {
       clearTimeout(timeout);
     }
