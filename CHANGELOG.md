@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.5...v1.15.6) (2026-08-28)
+
+
+### Bug Fixes
+
+* **openrouter:** abort active streams at total deadline ([#302](https://github.com/review-yeti-ai/review-yeti-bot/issues/302)) ([34e1d76](https://github.com/review-yeti-ai/review-yeti-bot/commit/34e1d76791b9e75bee0b0e4ecccc8e743d5db947))
+
 ## [1.15.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.4...v1.15.5) (2026-08-27)
 
 
