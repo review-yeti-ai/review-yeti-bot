@@ -21,7 +21,7 @@ describe('Dispatch path: persona resolution defaults', () => {
     const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, {
       OPENROUTER_API_KEY: 'test-openrouter-key',
       OPENROUTER_MODEL: 'openrouter/auto',
-      OPENROUTER_ALLOWED_MODELS: 'openai/gpt-5.6-luna,z-ai/glm-5.1',
+      OPENROUTER_ALLOWED_MODELS: 'openai/gpt-5.6-luna,z-ai/glm-5.2',
       OPENROUTER_COST_QUALITY_TRADEOFF: '4',
       OPENROUTER_DATA_COLLECTION: 'deny',
     });
@@ -32,7 +32,7 @@ describe('Dispatch path: persona resolution defaults', () => {
       model: 'openrouter/auto',
       openRouterPolicy: {
         model: 'openrouter/auto',
-        allowed_models: ['openai/gpt-5.6-luna', 'z-ai/glm-5.1'],
+        allowed_models: ['openai/gpt-5.6-luna', 'z-ai/glm-5.2'],
         data_collection: 'deny',
         cost_quality_tradeoff: 4,
       },
@@ -45,7 +45,7 @@ describe('Dispatch path: persona resolution defaults', () => {
       parsed: {
         github_action: {
           openrouter: {
-            allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+            allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
             cost_quality_tradeoff: 3,
             data_collection: 'deny',
           },
@@ -57,7 +57,7 @@ describe('Dispatch path: persona resolution defaults', () => {
 
     expect(runtime.modelConfig.openRouterPolicy).toMatchObject({
       model: 'openrouter/auto',
-      allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+      allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
       data_collection: 'deny',
       cost_quality_tradeoff: 3,
     });
