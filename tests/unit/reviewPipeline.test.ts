@@ -150,7 +150,7 @@ index 123456..789abc 100644
       {
         personaId: 'style',
         displayName: 'Style',
-        model: 'z-ai/glm-5.1',
+        model: 'z-ai/glm-5.2',
         provider: 'openrouter',
         decision: 'APPROVE',
         inputTokens: 200,
@@ -171,7 +171,7 @@ index 123456..789abc 100644
 
     expect(formattedComment).toContain('| Reviewer Persona | Provider | Model | Decision | P0 | P1 | P2 / Nits | Input Tokens | Output Tokens | Cost |');
     expect(formattedComment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ⚠️ FINDINGS | 🔴 1 | 🟠 1 | 🟡 1 | 100 | 20 | $0.007 |');
-    expect(formattedComment).toContain('| Style | `openrouter` | `z-ai/glm-5.1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 200 | 30 | $0.006 |');
+    expect(formattedComment).toContain('| Style | `openrouter` | `z-ai/glm-5.2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 200 | 30 | $0.006 |');
     expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 1 | 🟠 1 | 🟡 1 | **300** | **50** | **$0.014** |');
     expect(formattedComment).not.toContain('| P3 |');
   });
@@ -467,7 +467,7 @@ index 123456..789abc 100644
           {
             personaId: 'style',
             displayName: 'Style',
-            model: 'z-ai/glm-5.1',
+            model: 'z-ai/glm-5.2',
             provider: 'openrouter',
             decision: 'APPROVE',
             inputTokens: 500,
@@ -488,7 +488,7 @@ index 123456..789abc 100644
 
         expect(comment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,000 | 200 | $0.007 |');
         expect(comment).toContain('| Architecture | `fireworks` | `accounts/fireworks/models/deepseek-v3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,500 | 300 | Subscription |');
-        expect(comment).toContain('| Style | `openrouter` | `z-ai/glm-5.1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 500 | 100 | $0.006 |');
+        expect(comment).toContain('| Style | `openrouter` | `z-ai/glm-5.2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 500 | 100 | $0.006 |');
         expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | **3,000** | **600** | **$0.014 + Subscription** |');
       });
 
