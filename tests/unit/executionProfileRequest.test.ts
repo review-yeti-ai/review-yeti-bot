@@ -20,7 +20,7 @@ const openRouterPolicy = {
     'openai/gpt-5.6-luna',
     'moonshotai/kimi-k2.6',
     'tencent/hy3',
-    'z-ai/glm-5.1',
+    'z-ai/glm-5.2',
     'google/gemini-3.5-flash-lite',
   ],
   data_collection: 'deny',
