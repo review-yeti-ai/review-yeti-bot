@@ -59,8 +59,10 @@ describe('review pipeline cassette replay', () => {
       method: 'POST',
       url: 'https://openrouter.ai/api/v1/chat/completions',
       headers: {
+        accept: 'application/json',
         authorization: '<redacted>',
         'content-type': 'application/json',
+        'user-agent': 'speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk',
       },
       body: {
         messages: [
@@ -85,6 +87,7 @@ describe('review pipeline cassette replay', () => {
         response_format: {
           type: 'json_object',
         },
+        stream: false,
         temperature: 0.1,
         max_tokens: '<redacted>',
       },
@@ -96,8 +99,16 @@ describe('review pipeline cassette replay', () => {
         'x-ratelimit-remaining': '777',
       },
       body: {
+        id: 'chatcmpl-replay',
+        object: 'chat.completion',
+        created: 1700000000,
+        model: 'openrouter/auto',
+        system_fingerprint: null,
         choices: [{
+          index: 0,
+          finish_reason: 'stop',
           message: {
+            role: 'assistant',
             content: '{"findings":[]}',
           },
         }],

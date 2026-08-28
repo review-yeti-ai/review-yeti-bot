@@ -755,6 +755,53 @@ describe('reviewWithModel', () => {
     expect(result.findings).toEqual([]);
   });
 
+  it('uses the official OpenRouter SDK for a native SSE response and preserves gateway telemetry', async () => {
+    const frames = [
+      JSON.stringify({
+        id: 'chatcmpl-sdk-pipeline',
+        object: 'chat.completion.chunk',
+        created: 1_700_000_000,
+        model: 'openai/gpt-5.6-luna',
+        choices: [{ index: 0, finish_reason: null, delta: { content: '{"findings":[]}' } }],
+      }),
+      '[DONE]',
+    ].map((frame) => `data: ${frame}\n\n`).join('');
+    let observed: { headers: Headers; body: any } | null = null;
+    const fetchImplementation = async (_url: string, init: any) => {
+      observed = { headers: new Headers(init.headers), body: JSON.parse(init.body) };
+      return new Response(frames, {
+        status: 200,
+        headers: {
+          'content-type': 'text/event-stream',
+          'x-generation-id': 'gen-sdk-pipeline',
+        },
+      });
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      transports: [{
+        name: 'openrouter-fallback',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'openrouter/auto',
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+      }],
+    });
+
+    expect(result).toMatchObject({ decision: 'APPROVE', findings: [], responseMode: 'stream' });
+    expect(result.generationIdDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(observed?.headers.get('x-openrouter-metadata')).toBe('enabled');
+    expect(observed?.headers.get('user-agent')).toContain('@openrouter/sdk');
+    expect(observed?.body).toMatchObject({
+      model: 'openrouter/auto',
+      stream: true,
+      reasoning: { effort: 'high' },
+    });
+  });
+
   it('treats the streaming timeout as inactivity instead of total generation time', async () => {
     const frames = [
       `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":' } }] })}\n\n`,
