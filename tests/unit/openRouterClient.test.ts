@@ -184,7 +184,7 @@ describe('OpenRouterClient', () => {
       ': OPENROUTER PROCESSING\n',
       `data: ${sdkChunk({ content: 'FIX' })}\n\n`,
       `data: ${sdkChunk({ content: '_FIRST' }, { usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5, cost: 0.0081 } })}\n\n`,
-      'data: [DONE]\n',
+      'data: [DONE]\n\n',
     ].join('');
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
       status: 200,
