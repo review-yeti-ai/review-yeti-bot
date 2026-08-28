@@ -91,6 +91,7 @@ describe('OpenRouter qualification contract', () => {
       findingsSource: 'content',
       outputShape: 'direct_json_object',
       attemptCount: 1,
+      requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(result.responseAttempts).toEqual([
       expect.objectContaining({
@@ -102,6 +103,8 @@ describe('OpenRouter qualification contract', () => {
         outputTokens: 23,
         responseMode: 'stream',
         outputShape: 'direct_json_object',
+        requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        generationIdDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
     ]);
     expect(calls).toHaveLength(1);
