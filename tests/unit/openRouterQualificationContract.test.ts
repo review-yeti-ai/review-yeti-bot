@@ -9,7 +9,12 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const policy = require(path.join(rootRepoDir, 'src/config/openrouter-review-policy.json'));
 
-const { PERSONA_CHARTERS, RunTransportCircuitBreaker, reviewWithModel } = pipeline;
+const {
+  PERSONA_CHARTERS,
+  RunTransportCircuitBreaker,
+  reviewWithModel,
+  readChatCompletionResponse,
+} = pipeline;
 const persona = PERSONA_CHARTERS.find((candidate: any) => candidate.id === 'security');
 const diffFiles = [{
   path: 'src/api/user.ts',
@@ -60,11 +65,42 @@ function streamResponse(frames: any[], { model = 'openai/gpt-5.6-luna', provider
 }
 
 describe('OpenRouter qualification contract', () => {
+  it('enforces the distinct time-to-first-token deadline for a real SSE body', async () => {
+    const response = {
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: new ReadableStream({ start() {}, cancel() {} }),
+    };
+
+    await expect(readChatCompletionResponse(response, true, 100, 100, 5)).rejects.toMatchObject({
+      timeoutKind: 'ttft',
+    });
+  });
+
+  it('records reasoning_details text from the OpenRouter SSE wire shape', async () => {
+    const fetchImplementation = async () => streamResponse([
+      {
+        choices: [{ delta: { reasoning_details: [{ type: 'reasoning.text', text: 'checked the diff' }] } }],
+      },
+      { choices: [{ delta: { content: '{"findings":[]}' } }] },
+    ]);
+
+    const result = await reviewWithModel(persona, diffFiles, { repo: 'o/r', prNumber: 3 }, null, {
+      openRouterPolicy: policy,
+      transports: [openRouterTransport()],
+      fetchImplementation,
+      circuitBreaker: new RunTransportCircuitBreaker(),
+    });
+
+    expect(result).toMatchObject({ decision: 'APPROVE', reasoningPresent: true, ttftMs: expect.any(Number) });
+    expect(result.responseAttempts[0]).toMatchObject({ reasoningPresent: true });
+  });
+
   it('parses fragmented SSE, preserves OpenRouter routing, and records runtime attribution', async () => {
     const calls: any[] = [];
     const fetchImplementation = async (_url: string, init: any) => {
       calls.push({ body: JSON.parse(init.body), headers: init.headers });
       return streamResponse([
+        { openrouter_metadata: { attempt: 2, strategy: 'default', region: 'us', endpoints: ['provider-a'] } },
         { choices: [{ delta: { reasoning: 'checking the diff' } }] },
         { choices: [{ delta: { content: '{"findings":[]}' } }] },
       ], {
@@ -92,6 +128,7 @@ describe('OpenRouter qualification contract', () => {
       outputShape: 'direct_json_object',
       attemptCount: 1,
       requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      routerMetadata: expect.objectContaining({ attempt: 2, strategy: 'default', region: 'us' }),
     });
     expect(result.responseAttempts).toEqual([
       expect.objectContaining({
@@ -105,10 +142,12 @@ describe('OpenRouter qualification contract', () => {
         outputShape: 'direct_json_object',
         requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
         generationIdDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        routerMetadata: expect.objectContaining({ attempt: 2 }),
       }),
     ]);
     expect(calls).toHaveLength(1);
     expect(calls[0].headers['X-OpenRouter-Metadata']).toBe('enabled');
+    expect(calls[0].headers.Accept).toBe('text/event-stream');
     expect(calls[0].body).toMatchObject({
       model: 'openrouter/auto',
       stream: true,

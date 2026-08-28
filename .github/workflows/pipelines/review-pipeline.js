@@ -87,6 +87,400 @@ const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 // transport window.
 const DEFAULT_STREAM_MAX_WALL_CLOCK_MS = 180_000;
 
+// OpenRouter's official SDK is used only for the OpenRouter gateway branch. Direct providers
+// remain on their existing OpenAI-compatible transport because their response contracts and
+// recovery policies are intentionally different. The Action installs this pinned dependency in
+// its own path before this pipeline starts. Preload the module when available so the first
+// transport deadline measures provider work rather than the SDK's one-time module initialization;
+// the guarded load still lets non-OpenRouter callers report a clear error if packaging is broken.
+let openRouterSdkModule = null;
+
+function loadOpenRouterSdk() {
+  if (!openRouterSdkModule) {
+    try {
+      openRouterSdkModule = require('@openrouter/sdk');
+    } catch (error) {
+      throw new Error(`OpenRouter official SDK is unavailable: ${error?.message || String(error)}`);
+    }
+  }
+  return openRouterSdkModule;
+}
+
+try {
+  openRouterSdkModule = require('@openrouter/sdk');
+} catch (_) {
+  // Keep import-time behavior compatible for callers that do not exercise OpenRouter. The
+  // OpenRouter branch will fail closed with the actionable error from loadOpenRouterSdk().
+}
+
+function mapOpenRouterSdkKeys(value, mapping) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [mapping[key] || key, item]));
+}
+
+function toOpenRouterSdkRequest(requestBody) {
+  if (requestBody?.perf_metrics_in_response !== undefined) {
+    throw new Error('OpenRouter official SDK does not expose perf_metrics_in_response; refusing to drop the requested extension');
+  }
+  const provider = requestBody.provider && mapOpenRouterSdkKeys(requestBody.provider, {
+    allow_fallbacks: 'allowFallbacks',
+    data_collection: 'dataCollection',
+    enforce_distillable_text: 'enforceDistillableText',
+    max_price: 'maxPrice',
+    preferred_max_latency: 'preferredMaxLatency',
+    preferred_min_throughput: 'preferredMinThroughput',
+    require_parameters: 'requireParameters',
+  });
+  const plugins = Array.isArray(requestBody.plugins)
+    ? requestBody.plugins.map((plugin) => mapOpenRouterSdkKeys(plugin, {
+        allowed_models: 'allowedModels',
+        cost_quality_tradeoff: 'costQualityTradeoff',
+        cost_tier: 'costTier',
+        excluded_models: 'excludedModels',
+        pin_model: 'pinModel',
+      }))
+    : undefined;
+  const responseFormat = requestBody.response_format
+    ? mapOpenRouterSdkKeys(requestBody.response_format, { json_schema: 'jsonSchema' })
+    : undefined;
+  const reasoning = requestBody.reasoning
+    ? mapOpenRouterSdkKeys(requestBody.reasoning, {})
+    : undefined;
+  return {
+    model: requestBody.model,
+    messages: requestBody.messages,
+    ...(requestBody.stream !== undefined ? { stream: requestBody.stream } : {}),
+    ...(requestBody.max_tokens !== undefined ? { maxTokens: requestBody.max_tokens } : {}),
+    ...(requestBody.max_completion_tokens !== undefined ? { maxCompletionTokens: requestBody.max_completion_tokens } : {}),
+    ...(requestBody.temperature !== undefined ? { temperature: requestBody.temperature } : {}),
+    ...(requestBody.reasoning_effort !== undefined ? { reasoningEffort: requestBody.reasoning_effort } : {}),
+    ...(reasoning ? { reasoning } : {}),
+    ...(responseFormat ? { responseFormat } : {}),
+    ...(provider ? { provider } : {}),
+    ...(plugins ? { plugins } : {}),
+    ...(requestBody.models ? { models: requestBody.models } : {}),
+    ...(requestBody.seed !== undefined ? { seed: requestBody.seed } : {}),
+    ...(requestBody.metadata ? { metadata: requestBody.metadata } : {}),
+  };
+}
+
+function sdkUsageToWire(usage) {
+  if (!usage || typeof usage !== 'object') return usage;
+  const costDetails = usage.costDetails || usage.cost_details;
+  return {
+    ...usage,
+    ...(usage.promptTokens !== undefined ? { prompt_tokens: usage.promptTokens } : {}),
+    ...(usage.completionTokens !== undefined ? { completion_tokens: usage.completionTokens } : {}),
+    ...(usage.totalTokens !== undefined ? { total_tokens: usage.totalTokens } : {}),
+    ...(usage.completionTokensDetails ? { completion_tokens_details: usage.completionTokensDetails } : {}),
+    ...(usage.promptTokensDetails ? { prompt_tokens_details: usage.promptTokensDetails } : {}),
+    ...(usage.isByok !== undefined ? { is_byok: usage.isByok } : {}),
+    ...(costDetails ? {
+      cost_details: {
+        ...costDetails,
+        ...(costDetails.upstreamInferenceCompletionsCost !== undefined ? { upstream_inference_completions_cost: costDetails.upstreamInferenceCompletionsCost } : {}),
+        ...(costDetails.upstreamInferenceCost !== undefined ? { upstream_inference_cost: costDetails.upstreamInferenceCost } : {}),
+        ...(costDetails.upstreamInferencePromptCost !== undefined ? { upstream_inference_prompt_cost: costDetails.upstreamInferencePromptCost } : {}),
+      },
+    } : {}),
+  };
+}
+
+function sdkChunkToWire(chunk) {
+  if (!chunk || typeof chunk !== 'object') return chunk;
+  return {
+    ...chunk,
+    ...(chunk.openrouterMetadata ? { openrouter_metadata: chunk.openrouterMetadata } : {}),
+    ...(chunk.serviceTier ? { service_tier: chunk.serviceTier } : {}),
+    ...(chunk.systemFingerprint ? { system_fingerprint: chunk.systemFingerprint } : {}),
+    ...(chunk.usage ? { usage: sdkUsageToWire(chunk.usage) } : {}),
+    choices: Array.isArray(chunk.choices) ? chunk.choices.map((choice) => ({
+      ...choice,
+      ...(choice.finishReason !== undefined ? { finish_reason: choice.finishReason } : {}),
+      delta: choice.delta ? {
+        ...choice.delta,
+        ...(choice.reasoningDetails ? { reasoning_details: choice.reasoningDetails } : {}),
+        ...(choice.toolCalls ? { tool_calls: choice.toolCalls } : {}),
+      } : choice.delta,
+    })) : chunk.choices,
+  };
+}
+
+function sdkResultToWire(result) {
+  if (!result || typeof result !== 'object') return result;
+  return {
+    ...result,
+    ...(result.systemFingerprint ? { system_fingerprint: result.systemFingerprint } : {}),
+    ...(result.serviceTier ? { service_tier: result.serviceTier } : {}),
+    ...(result.usage ? { usage: sdkUsageToWire(result.usage) } : {}),
+    choices: Array.isArray(result.choices) ? result.choices.map((choice) => ({
+      ...choice,
+      ...(choice.finishReason !== undefined ? { finish_reason: choice.finishReason } : {}),
+      message: choice.message ? {
+        ...choice.message,
+        ...(choice.reasoningDetails ? { reasoning_details: choice.reasoningDetails } : {}),
+        ...(choice.toolCalls ? { tool_calls: choice.toolCalls } : {}),
+      } : choice.message,
+    })) : result.choices,
+  };
+}
+
+function sdkResponseHeaders(response, contentType) {
+  const headers = new Headers(response?.headers || {});
+  headers.set('content-type', contentType);
+  return headers;
+}
+
+async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, signal }) {
+  const { OpenRouter, HTTPClient } = loadOpenRouterSdk();
+  let capturedResponse = null;
+  let capturedCompatibilityResponse = null;
+  let capturedRawBody = null;
+  const cancelCapturedRawBody = (reason) => {
+    try {
+      capturedRawBody?.cancel?.(reason);
+    } catch (_) {
+      // Cleanup is best effort; the active request has already been classified by the caller.
+    }
+  };
+  const httpClient = new HTTPClient({
+    fetcher: async (sdkRequest) => {
+      const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
+      let response = await fetchImpl(sdkRequest.url, {
+        method: sdkRequest.method,
+        headers: (() => {
+          if (!(sdkRequest.headers instanceof Headers)) return sdkRequest.headers;
+          const headers = Object.fromEntries(sdkRequest.headers.entries());
+          for (const [wireName, legacyName] of [
+            ['authorization', 'Authorization'],
+            ['content-type', 'Content-Type'],
+            ['accept', 'Accept'],
+          ]) {
+            if (headers[wireName] !== undefined) {
+              headers[legacyName] = headers[wireName];
+              delete headers[wireName];
+            }
+          }
+          // Preserve the legacy test/instrumentation spelling while the SDK itself owns the
+          // actual wire headers (HTTP header names remain case-insensitive on the network).
+          const metadata = sdkRequest.headers.get('x-openrouter-metadata');
+          if (metadata) {
+            delete headers['x-openrouter-metadata'];
+            headers['X-OpenRouter-Metadata'] = metadata;
+          }
+          return headers;
+        })(),
+        ...(body !== undefined ? { body } : {}),
+        signal: sdkRequest.signal,
+      });
+      // Unit/replay callers may inject a small OpenAI-compatible response double instead of a
+      // WHATWG Response. Keep that test seam compatible without weakening production behavior:
+      // runner fetch always returns a native Response and therefore always takes the SDK path.
+      const compatibilityStreamDouble = !(response instanceof Response)
+        && typeof response?.body?.getReader === 'function';
+      if (!(response instanceof Response)) {
+        capturedCompatibilityResponse = response;
+        // The generated SDK expects a WHATWG Response. Adapt only the test/replay seam to a
+        // native response so the SDK can still exercise its request/validation path; if the
+        // compatibility payload is not a complete SDK envelope, the catch below returns the
+        // original response double to preserve the pipeline's legacy parser contract.
+        // A response double may expose a live ReadableStream as `body`. It cannot be coerced into
+        // the native Response constructor without losing the stream; keep the original double
+        // available for the legacy parser when the strict SDK rejects the empty adaptation.
+        let compatibilityBody = typeof response?.body === 'string' || response?.body instanceof Uint8Array
+          ? response.body
+          : '';
+        if (!compatibilityBody && typeof response?.json === 'function') {
+          try {
+            compatibilityBody = JSON.stringify(await response.json());
+          } catch (_) {
+            // Fall through to text for doubles that model malformed/non-JSON responses.
+          }
+        }
+        if (!compatibilityBody && typeof response?.text === 'function') {
+          compatibilityBody = await response.text();
+        }
+        response = new Response(compatibilityStreamDouble ? '{}' : compatibilityBody, {
+          status: Number(response?.status) || 200,
+          headers: compatibilityStreamDouble
+            ? { 'content-type': 'application/json' }
+            : response?.headers || { 'content-type': 'application/json' },
+        });
+      }
+      capturedResponse = response;
+      // Consume a clone in parallel so an SDK schema rejection can fall back to the repository's
+      // broader OpenAI-compatible parser without leaving an unread tee that blocks EventStream
+      // cancellation at [DONE]. This is one bounded in-memory response, not a second request.
+      try {
+        const rawClone = response.clone();
+        const rawReader = rawClone.body?.getReader();
+        const body = rawReader
+          ? (async () => {
+              const decoder = new TextDecoder();
+              let text = '';
+              try {
+                while (true) {
+                  const { done, value } = await rawReader.read();
+                  if (done) break;
+                  if (value) text += decoder.decode(value, { stream: true });
+                }
+                return text + decoder.decode();
+              } finally {
+                rawReader.releaseLock?.();
+              }
+            })()
+          : rawClone.text();
+        let cancelled = false;
+        capturedRawBody = compatibilityStreamDouble ? null : {
+          body,
+          status: response.status,
+          statusText: response.statusText,
+          headers: new Headers(response.headers),
+          cancel: (reason) => {
+            if (cancelled) return;
+            cancelled = true;
+            try {
+              const cancellation = rawReader?.cancel(reason);
+              if (cancellation?.catch) void cancellation.catch(() => {});
+            } catch (_) {
+              // Cleanup is best effort; the active request has already been classified by the caller.
+            }
+          },
+        };
+        if (capturedRawBody && signal) {
+          const cancelOnAbort = () => cancelCapturedRawBody('request aborted');
+          if (signal.aborted) cancelOnAbort();
+          else signal.addEventListener('abort', cancelOnAbort, { once: true });
+        }
+      } catch (_) {
+        capturedRawBody = null;
+      }
+      return response;
+    },
+  });
+  const client = new OpenRouter({
+    apiKey,
+    serverURL: baseUrl,
+    httpClient,
+    // The review pipeline owns retry-after, model fallback, and the 15-minute ceiling.
+    retryConfig: { strategy: 'none' },
+  });
+  try {
+    const result = await client.chat.send({
+      xOpenRouterMetadata: 'enabled',
+      chatRequest: toOpenRouterSdkRequest(requestBody),
+    }, {
+      signal,
+      retries: { strategy: 'none' },
+    });
+    if (result && typeof result.getReader === 'function') {
+      const upstream = result;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream({
+        start(controller) {
+          (async () => {
+            const reader = upstream.getReader();
+            let emittedChunks = 0;
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                emittedChunks += 1;
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(sdkChunkToWire(value))}\n\n`));
+              }
+              // A few existing replay callers use line-delimited OpenAI-compatible fixtures
+              // without the blank SSE event delimiter required by the SDK. If the strict SDK
+              // therefore observes an empty stream, replay the already-buffered response through
+              // the legacy parser seam; live OpenRouter responses use the SDK path normally.
+              if (emittedChunks === 0 && capturedRawBody) {
+                const rawBody = await capturedRawBody.body;
+                if (rawBody.trim()) controller.enqueue(encoder.encode(rawBody));
+                else controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              } else {
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              }
+              controller.close();
+              cancelCapturedRawBody('sdk response parsed');
+            } catch (error) {
+              // Preserve the broader OpenAI-compatible response contract when the official SDK
+              // rejects legacy/incomplete chunk envelopes. This does not retry the request.
+              if (capturedRawBody && !signal?.aborted) {
+                try {
+                  const rawBody = await capturedRawBody.body;
+                  if (rawBody.trim()) {
+                    controller.enqueue(encoder.encode(rawBody));
+                    controller.close();
+                    cancelCapturedRawBody('compatibility response parsed');
+                    return;
+                  }
+                } catch (_) {
+                  // Fall through to the strict SDK error when capture is unavailable.
+                }
+              }
+              controller.error(error);
+            } finally {
+              reader.releaseLock?.();
+            }
+          })();
+        },
+        cancel(reason) {
+          return upstream.cancel?.(reason);
+        },
+      });
+      return {
+        response: new Response(body, {
+          status: capturedResponse?.status || 200,
+          headers: sdkResponseHeaders(capturedResponse, 'text/event-stream'),
+        }),
+        sdkError: null,
+      };
+    }
+    cancelCapturedRawBody('sdk response parsed');
+    return {
+      response: new Response(JSON.stringify(sdkResultToWire(result)), {
+        status: capturedResponse?.status || 200,
+        headers: sdkResponseHeaders(capturedResponse, 'application/json'),
+      }),
+      sdkError: null,
+    };
+  } catch (error) {
+    if (signal?.aborted) cancelCapturedRawBody('request aborted');
+    if (capturedCompatibilityResponse && !capturedRawBody) {
+      return { response: capturedCompatibilityResponse, sdkError: null };
+    }
+    if (capturedRawBody && !signal?.aborted) {
+      try {
+        const abort = signal
+          ? new Promise((_, reject) => {
+              if (signal.aborted) reject(new Error('request aborted'));
+              else signal.addEventListener('abort', () => reject(new Error('request aborted')), { once: true });
+            })
+          : null;
+        const body = await (abort
+          ? Promise.race([capturedRawBody.body, abort])
+          : capturedRawBody.body);
+        return {
+          response: new Response(body, {
+            status: capturedRawBody.status,
+            statusText: capturedRawBody.statusText,
+            headers: capturedRawBody.headers,
+          }),
+          sdkError: null,
+        };
+      } catch (_) {
+        // Preserve the SDK error below when the provider body cannot be captured before abort.
+      }
+    }
+    const status = Number(error?.statusCode || error?.status || error?.rawResponse?.status || capturedResponse?.status || 500);
+    const headers = error?.headers || capturedResponse?.headers || { 'content-type': 'application/json' };
+    const body = error?.body || '';
+    return {
+      response: new Response(body, { status, headers }),
+      sdkError: error,
+    };
+  }
+}
+
 function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURRENCY) {
   if (value === undefined || value === null || value === '') return DEFAULT_PERSONA_CONCURRENCY;
   const parsed = Number(value);
@@ -466,6 +860,7 @@ const ACTION_MAX_DIFF_CAP = 10_000_000;
 // remain authoritative.
 const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
 const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
+const DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS = 30_000;
 // Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
 // still caps the complete generated sequence (reasoning plus the final JSON).
 // Keep an 8,192-token structured-output target and reserve three times that
@@ -616,6 +1011,8 @@ function resolveModelConfig(env = process.env) {
             || (t.structured_output === 'json_schema' ? 'json_schema' : undefined),
           perfMetricsInResponse: t.perf_metrics_in_response === true || t.perfMetricsInResponse === true,
           maxTokens: t.max_tokens || t.maxTokens || t.max_output_tokens || t.maxOutputTokens,
+          connectTimeoutMs: t.connect_timeout_ms || t.connectTimeoutMs,
+          ttftTimeoutMs: t.ttft_ms || t.ttftMs || t.ttft_timeout_ms || t.ttftTimeoutMs,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
         };
       }).filter((t) => Boolean(t.apiKey))
@@ -1305,6 +1702,7 @@ function normalizeModelResponseAttempt(entry = {}) {
     transport: normalizeTelemetryProvider(entry.transport),
     provider: normalizeTelemetryProvider(entry.provider) || normalizeTelemetryProvider(entry.transport),
     latencyMs: normalizeTelemetryDuration(entry.latencyMs),
+    ttftMs: normalizeTelemetryDuration(entry.ttftMs),
     responseStatus: normalizeTelemetryStatus(entry.responseStatus),
     failureClass: normalizeTelemetryOutcomeClass(entry.failureClass),
     ...(timeoutKind ? { timeoutKind } : {}),
@@ -1320,6 +1718,7 @@ function normalizeModelResponseAttempt(entry = {}) {
     contentSizeBucket: normalizeResponseSizeBucket(entry.contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(entry.reasoningSizeBucket),
     outputContract: normalizeOutputContractTelemetry(entry.outputContract),
+    ...(entry.routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(entry.routerMetadata) } : {}),
   };
   if (requestFingerprint) normalized.requestFingerprint = requestFingerprint;
   if (generationIdDigest) normalized.generationIdDigest = generationIdDigest;
@@ -1462,6 +1861,38 @@ function normalizeTelemetryProvider(value) {
 function hashTelemetryIdentifier(value) {
   const normalized = normalizeTelemetryIdentifier(value);
   return normalized ? createHash('sha256').update(normalized, 'utf-8').digest('hex') : null;
+}
+
+// OpenRouter router metadata is useful for diagnosing endpoint selection, but its raw form may
+// contain URLs or provider-provided text. Retain only bounded labels, attempt numbers, and
+// one-way endpoint/provider digests so receipts remain safe to publish.
+function normalizeOpenRouterMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const metadata = {};
+  for (const [target, source] of [
+    ['strategy', value.strategy],
+    ['region', value.region],
+    ['taskType', value.task_type ?? value.taskType],
+  ]) {
+    const normalized = normalizeTelemetryIdentifier(source);
+    if (normalized) metadata[target] = normalized.slice(0, 64);
+  }
+  const attempt = normalizeTelemetryAttemptCount(value.attempt);
+  if (attempt !== null) metadata.attempt = attempt;
+  const candidates = [
+    ...(Array.isArray(value.endpoints) ? value.endpoints : []),
+    ...(Array.isArray(value.available_providers) ? value.available_providers : []),
+    ...(Array.isArray(value.attempts) ? value.attempts : []),
+  ];
+  const endpointDigests = candidates.map((candidate) => {
+    if (typeof candidate === 'string') return hashTelemetryIdentifier(candidate);
+    if (!candidate || typeof candidate !== 'object') return null;
+    return hashTelemetryIdentifier(
+      candidate.endpoint || candidate.url || candidate.provider || candidate.slug || candidate.name,
+    );
+  }).filter(Boolean).slice(0, 16);
+  if (endpointDigests.length > 0) metadata.endpointDigests = endpointDigests;
+  return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 function normalizeTelemetryDigest(value) {
@@ -2030,6 +2461,8 @@ async function readChatCompletionResponse(
   streamEnabled,
   inactivityTimeoutMs = 90_000,
   totalTimeoutMs = 0,
+  ttftTimeoutMs = inactivityTimeoutMs,
+  onFirstData,
 ) {
   const contentType = typeof response?.headers?.get === 'function'
     ? String(response.headers.get('content-type') || '').toLowerCase()
@@ -2041,37 +2474,72 @@ async function readChatCompletionResponse(
   const chunks = [];
   const reasoningChunks = [];
   let latest = null;
+  let streamedRouterMetadata = null;
   let pending = '';
+  let eventData = [];
+  let receivedFirstData = false;
+  const streamStartedAt = Date.now();
+  const dispatchEvent = () => {
+    if (eventData.length === 0) return;
+    const data = eventData.join('\n');
+    eventData = [];
+    if (!data || data === '[DONE]') return;
+    if (!receivedFirstData) {
+      receivedFirstData = true;
+      onFirstData?.(Date.now() - streamStartedAt);
+    }
+    try {
+      const payload = JSON.parse(data);
+      latest = payload;
+      if (payload?.openrouter_metadata && typeof payload.openrouter_metadata === 'object') {
+        streamedRouterMetadata = payload.openrouter_metadata;
+      }
+      const choice = payload?.choices?.[0];
+      const delta = contentFragments(choice?.delta?.content);
+      const message = contentFragments(choice?.message?.content);
+      const deltaReasoning = reasoningFragments(
+        choice?.delta?.reasoning_details
+          ?? choice?.delta?.reasoning
+          ?? choice?.delta?.reasoning_content,
+      );
+      const messageReasoning = reasoningFragments(
+        choice?.message?.reasoning_details
+          ?? choice?.message?.reasoning
+          ?? choice?.message?.reasoning_content,
+      );
+      if (delta.length > 0) chunks.push(...delta);
+      else if (message.length > 0) chunks.push(...message);
+      if (deltaReasoning.length > 0) reasoningChunks.push(...deltaReasoning);
+      else if (messageReasoning.length > 0) reasoningChunks.push(...messageReasoning);
+    } catch (_) {
+      // Providers may terminate a stream with a partial final SSE frame. The
+      // completed content accumulated so far remains valid and is parsed below.
+    }
+  };
   const consume = (text, final = false) => {
     pending += String(text);
     const lines = pending.split(/\r?\n/);
     pending = final ? '' : (lines.pop() || '');
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const data = trimmed.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-      try {
-        const payload = JSON.parse(data);
-        latest = payload;
-        const choice = payload?.choices?.[0];
-        const delta = contentFragments(choice?.delta?.content);
-        const message = contentFragments(choice?.message?.content);
-        const deltaReasoning = reasoningFragments(
-          choice?.delta?.reasoning ?? choice?.delta?.reasoning_content,
-        );
-        const messageReasoning = reasoningFragments(
-          choice?.message?.reasoning ?? choice?.message?.reasoning_content,
-        );
-        if (delta.length > 0) chunks.push(...delta);
-        else if (message.length > 0) chunks.push(...message);
-        if (deltaReasoning.length > 0) reasoningChunks.push(...deltaReasoning);
-        else if (messageReasoning.length > 0) reasoningChunks.push(...messageReasoning);
-      } catch (_) {
-        // Providers may terminate a stream with a partial final SSE frame. The
-        // completed content accumulated so far remains valid and is parsed below.
+      if (line === '') {
+        dispatchEvent();
+        continue;
       }
+      // SSE comments are keep-alives. They are intentionally not counted as
+      // first-token evidence, but their arrival keeps the reader alive.
+      if (line.startsWith(':')) continue;
+      const separator = line.indexOf(':');
+      const field = separator === -1 ? line : line.slice(0, separator);
+      if (field !== 'data') continue;
+      // OpenRouter emits one JSON object per event. A few compatible gateways omit
+      // the required blank separator; dispatch the previous data field leniently so
+      // that one missing delimiter cannot discard an otherwise complete response.
+      if (eventData.length > 0) dispatchEvent();
+      let value = separator === -1 ? '' : line.slice(separator + 1);
+      if (value.startsWith(' ')) value = value.slice(1);
+      eventData.push(value);
     }
+    if (final) dispatchEvent();
   };
 
   const totalDeadlineAt = totalTimeoutMs > 0 ? Date.now() + totalTimeoutMs : 0;
@@ -2092,11 +2560,13 @@ async function readChatCompletionResponse(
       void Promise.resolve(reader.cancel?.('stream total deadline')).catch(() => {});
     };
     const decoder = new TextDecoder();
-    let receivedFirstChunk = false;
     try {
       while (true) {
         throwIfTotalDeadline();
-        const readBudgetMs = Math.min(inactivityTimeoutMs, remainingTotalMs());
+        const readBudgetMs = Math.min(
+          receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs,
+          remainingTotalMs(),
+        );
         try {
           const { value, done } = await withStreamInactivityTimeout(
             reader.read(),
@@ -2104,19 +2574,18 @@ async function readChatCompletionResponse(
             () => {
               const timeoutError = streamInactivityError(
                 readBudgetMs,
-                receivedFirstChunk ? 'inactivity' : 'ttft',
+                receivedFirstData ? 'inactivity' : 'ttft',
               );
               // Reject the read race before cancellation can resolve reader.read() as { done: true }
               // and turn a watchdog failure into the misleading `empty_sse` outcome.
               queueMicrotask(() => {
-                void Promise.resolve(reader.cancel?.(receivedFirstChunk ? 'stream inactivity timeout' : 'stream ttft timeout')).catch(() => {});
+                void Promise.resolve(reader.cancel?.(receivedFirstData ? 'stream inactivity timeout' : 'stream ttft timeout')).catch(() => {});
               });
               return timeoutError;
             },
           );
           if (done) break;
           if (value) {
-            receivedFirstChunk = true;
             consume(decoder.decode(value, { stream: true }));
           }
         } catch (err) {
@@ -2145,6 +2614,7 @@ async function readChatCompletionResponse(
   const lastChoice = latest?.choices?.[0] || {};
   return {
     ...(latest || {}),
+    ...(streamedRouterMetadata ? { openrouter_metadata: streamedRouterMetadata } : {}),
     choices: [{
       ...lastChoice,
       message: {
@@ -2184,7 +2654,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   let reasoningPresent = false;
   let contentSizeBucket = 'empty';
   let reasoningSizeBucket = 'empty';
+  let ttftMs = null;
   let outputContract = null;
+  let routerMetadata = null;
   let requestFingerprint = null;
   const responseAttempts = [];
   const noteRetryReason = (reason) => {
@@ -2195,6 +2667,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ...base,
     attemptCount,
     latencyMs: normalizeTelemetryDuration(Date.now() - laneStartMs),
+    ttftMs: normalizeTelemetryDuration(ttftMs),
     retryReasons: [...retryReasons],
     failureClass: normalizeTelemetryOutcomeClass(finalFailureClass),
     responseStatus: normalizeTelemetryStatus(responseStatus),
@@ -2211,6 +2684,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     contentSizeBucket: normalizeResponseSizeBucket(contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(reasoningSizeBucket),
     outputContract: normalizeOutputContractTelemetry(outputContract),
+    ...(routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(routerMetadata) } : {}),
     ...(requestFingerprint ? { requestFingerprint } : {}),
     responseAttempts: normalizeModelResponseAttempts(responseAttempts),
   });
@@ -2323,6 +2797,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const configuredMaxOutputTokens =
         transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens;
       const structuredOutputMode = resolveStructuredOutputMode(transport);
+      const connectTimeoutMs = Math.min(
+        transportTimeoutMs,
+        Number(transport.connectTimeoutMs || transport.connect_timeout_ms) > 0
+          ? Number(transport.connectTimeoutMs || transport.connect_timeout_ms)
+          : transportTimeoutMs,
+      );
+      const ttftTimeoutMs = Math.min(
+        transportTimeoutMs,
+        Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms) > 0
+          ? Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms)
+          : isOpenRouterTransport
+            ? DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS
+            : transportTimeoutMs,
+      );
 
       resultBase = {
         ...resultBase,
@@ -2462,6 +2950,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         reasoningPresent = false;
         contentSizeBucket = 'empty';
         reasoningSizeBucket = 'empty';
+        ttftMs = null;
+        routerMetadata = null;
         generationIdDigest = null;
         const attemptStartedMs = Date.now();
         let attemptResponseStatus = null;
@@ -2475,7 +2965,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const recordResponseAttempt = (outcome, overrides = {}) => {
           if (responseAttemptRecorded || responseAttempts.length >= MAX_MODEL_RESPONSE_ATTEMPTS) return;
           responseAttemptRecorded = true;
-          const reasoningEffortForAttempt = requestBody.reasoning?.enabled === false
+          const reasoningEffortForAttempt = requestBody.reasoning?.enabled === false || requestBody.reasoning?.effort === 'none'
             ? 'none'
             : requestBody.reasoning?.effort || requestBody.reasoning_effort || 'missing';
           const attemptFailureClass = overrides.failureClass ?? failureClass;
@@ -2499,9 +2989,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             findingsSource,
             contentPresent,
             reasoningPresent,
+            ttftMs,
             contentSizeBucket,
             reasoningSizeBucket,
             outputContract,
+            routerMetadata,
             requestFingerprint,
             generationIdDigest,
             ...overrides,
@@ -2518,19 +3010,33 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
               () => streamAbortController.abort(streamInactivityError(transportTimeoutMs, 'request')),
-              transportTimeoutMs,
+              connectTimeoutMs,
             );
           }
-          const response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${transportApiKey}`,
-              ...(isOpenRouterTransport ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
-            },
-            body: JSON.stringify(requestBody),
-            signal: streamAbortController?.signal || AbortSignal.timeout(transportTimeoutMs),
-          });
+          let response;
+          let sdkError = null;
+          if (isOpenRouterTransport) {
+            const sdkResult = await callOpenRouterSdk({
+              baseUrl: transportBaseUrl,
+              apiKey: transportApiKey,
+              requestBody,
+              fetchImpl,
+              signal: streamAbortController?.signal || AbortSignal.timeout(transportTimeoutMs),
+            });
+            response = sdkResult.response;
+            sdkError = sdkResult.sdkError;
+          } else {
+            response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: streamEnabled ? 'text/event-stream' : 'application/json',
+                Authorization: `Bearer ${transportApiKey}`,
+              },
+              body: JSON.stringify(requestBody),
+              signal: streamAbortController?.signal || AbortSignal.timeout(transportTimeoutMs),
+            });
+          }
           if (responseHeaderTimer) {
             clearTimeout(responseHeaderTimer);
             responseHeaderTimer = null;
@@ -2542,6 +3048,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             ? response.headers.get('x-generation-id') || response.headers.get('x-request-id')
             : null;
           generationIdDigest = hashTelemetryIdentifier(generationId);
+
+          // A 2xx SDK validation failure is still a provider failure. Do not let a partially
+          // parsed/invalid envelope enter the findings parser as if it were a successful review.
+          if (sdkError && response.ok) throw sdkError;
 
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
@@ -2607,16 +3117,22 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             streamEnabled,
             transportTimeoutMs,
             streamTotalTimeoutMs,
+            ttftTimeoutMs,
+            (value) => {
+              ttftMs = normalizeTelemetryDuration(value);
+            },
           );
           const payloadErrorCode = resolveOpenRouterErrorCode(payload);
           if (payloadErrorCode) errorCode = payloadErrorCode;
           if (payload?.openrouter_metadata?.attempt !== undefined) routerAttempt = payload.openrouter_metadata.attempt;
+          routerMetadata = normalizeOpenRouterMetadata(payload?.openrouter_metadata);
           const responseBase = {
             ...resultBase,
             model: resolveResponseModel(payload, requestModel),
             provider: resolveResponseProvider(payload, configuredProvider),
             transport: transportName,
             cost: extractResponseCost(payload),
+            ttftMs: normalizeTelemetryDuration(ttftMs),
             ...extractResponseTokenUsage(payload),
           };
 
@@ -2651,7 +3167,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const message = payload?.choices?.[0]?.message || {};
           const content = contentFragments(message.content).join('');
           const reasoning = reasoningFragments(
-            message.reasoning ?? message.reasoning_content,
+            message.reasoning_details ?? message.reasoning ?? message.reasoning_content,
           ).join('');
           finishReason = normalizeModelFinishReason(
             payload?.choices?.[0]?.finish_reason ?? payload?.choices?.[0]?.finishReason,
@@ -2757,7 +3273,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 requestBody.max_tokens,
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
               );
-              if (isOpenRouterTransport) requestBody.reasoning = { enabled: false };
+              if (isOpenRouterTransport) requestBody.reasoning = { effort: 'none' };
               else if (isDirectReasoning) requestBody.reasoning_effort = 'none';
               else requestBody.reasoning_effort = 'low';
               requestBody.messages[0].content += [
@@ -4226,6 +4742,7 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       errorCode: normalizeTelemetryErrorCode(result.errorCode),
       generationIdDigest: normalizeTelemetryIdentifier(result.generationIdDigest),
       routerAttempt: normalizeTelemetryAttemptCount(result.routerAttempt),
+      ...(result.routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(result.routerMetadata) } : {}),
       recoveryAction: normalizeTelemetryRecoveryAction(result.recoveryAction),
       outputShape: normalizeFindingsOutputShape(result.outputShape),
       finishReason: normalizeModelFinishReason(result.finishReason),
@@ -4744,6 +5261,7 @@ module.exports = {
   normalizeStructuredOutputMode,
   resolveStructuredOutputMode,
   buildFindingsResponseFormat,
+  readChatCompletionResponse,
   isStructuredOutputCompatibilityError,
   downgradeStructuredOutputRequest,
   FINDINGS_RESPONSE_SCHEMA,

@@ -496,4 +496,9 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
   it('retains the redacted provider telemetry receipt as a workflow artifact', () => {
     expect(workflow).toContain('${{ steps.review.outputs.provider-telemetry-path }}');
   });
+
+  it('bounds the required CI test job to the fifteen-minute review contract', () => {
+    const ciWorkflow = fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8');
+    expect(ciWorkflow).toMatch(/jobs:\n  test:[\s\S]*?timeout-minutes: 15/u);
+  });
 });
