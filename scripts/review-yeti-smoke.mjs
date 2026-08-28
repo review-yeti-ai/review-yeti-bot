@@ -21,6 +21,8 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
 });
+export const EXPECTED_OPENROUTER_MODEL = 'openrouter/auto-beta';
+export const EXPECTED_OPENROUTER_PLUGIN_ID = 'auto-beta-router';
 
 // Provider selectors freeze routing against an endpoint list that changes underneath us. The
 // policy may retain a narrowly-scoped account safety exclusion for a provider with a verified
@@ -122,7 +124,10 @@ export function validatePolicy(policy) {
   if (openrouter?.reasoning_effort === 'max') {
     throw new Error("OpenRouter must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
   }
-  if (openrouter?.model !== 'deepseek/deepseek-v4-flash-0731') throw new Error('OpenRouter must use the approved structured-output fallback model');
+  if (openrouter?.model !== EXPECTED_OPENROUTER_MODEL) throw new Error('OpenRouter must use the approved Auto Router beta model');
+  if (!Array.isArray(openrouter?.plugins) || openrouter.plugins.length !== 1 || openrouter.plugins[0]?.id !== EXPECTED_OPENROUTER_PLUGIN_ID) {
+    throw new Error(`OpenRouter ${EXPECTED_OPENROUTER_MODEL} must use the ${EXPECTED_OPENROUTER_PLUGIN_ID} plugin`);
+  }
   if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
   if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
   if (policy.review_yeti?.openrouter_max_attempts !== '2') throw new Error('each transport must retain one retry');
@@ -174,6 +179,7 @@ export function buildRequest(transport) {
     else request.reasoning_effort = transport.reasoning_effort;
   }
   if (transport.perf_metrics_in_response === true) request.perf_metrics_in_response = true;
+  if (Array.isArray(transport.plugins)) request.plugins = transport.plugins;
 
   return request;
 }

@@ -128,7 +128,12 @@ runtime sends JSON mode (`response_format: { type: "json_object" }`) and validat
 payload, but it does not enforce one cross-provider JSON Schema. Each caller must expose the three
 named environment variables through its inherited GitHub Actions secrets. Fireworks stays on the
 default serverless tier. All three transports use `high` reasoning. Each transport gets one retry,
-and OpenRouter owns endpoint selection after a timeout.
+and OpenRouter owns endpoint selection after a timeout. The OpenRouter fallback uses the
+[`openrouter/auto-beta`](https://openrouter.ai/docs/guides/routing/routers/auto-router) model with the
+matching `auto-beta-router` plugin; this is the beta task-aware route, while the transport remains
+last in the production order. Its response telemetry
+records the model that OpenRouter actually selected, so changing the routed model does not silently
+change the central transport contract.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
 budget, a fifteen-minute (900s) lane deadline with a two-minute non-generation reserve, and a

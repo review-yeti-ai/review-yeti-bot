@@ -40,6 +40,9 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   const openrouter = fixture.plan.transports.find((transport) => transport.name === 'openrouter-fallback');
   assert.equal(ollama.reasoning.wire_shape, 'reasoning_effort');
   assert.equal(openrouter.reasoning.wire_shape, 'reasoning.effort');
+  assert.equal(openrouter.model, 'openrouter/auto-beta');
+  assert.equal(openrouter.request_extensions.plugins[0].id, 'auto-beta-router');
+  assert.equal(openrouter.request_extensions.plugins[0].cost_quality_tradeoff, 7);
   assert.deepEqual(fireworks.timeouts, {
     connect_ms: 15_000,
     request_ms: 120_000,
@@ -87,6 +90,10 @@ test('rejects unknown keys at every execution-policy object boundary', () => {
     [
       'policy.review_yeti.transports[2].provider_routing.preferred_max_latency',
       (policy) => { policy.review_yeti.transports[2].provider_routing.preferred_max_latency.unexpected = true; },
+    ],
+    [
+      'policy.review_yeti.transports[2].plugins[0]',
+      (policy) => { policy.review_yeti.transports[2].plugins[0].unexpected = true; },
     ],
   ];
 

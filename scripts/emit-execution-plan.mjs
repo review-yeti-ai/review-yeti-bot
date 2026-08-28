@@ -48,6 +48,7 @@ const ALLOWED_TRANSPORT_KEYS = [
   'quarantine_on_timeout',
   'ignore_providers',
   'provider_routing',
+  'plugins',
 ];
 const ALLOWED_ROUTING_KEYS = [
   'allow_fallbacks',
@@ -57,6 +58,13 @@ const ALLOWED_ROUTING_KEYS = [
   'preferred_min_throughput',
   'preferred_max_latency',
   'data_collection',
+];
+const ALLOWED_PLUGIN_KEYS = [
+  'id',
+  'allowed_models',
+  'excluded_models',
+  'cost_quality_tradeoff',
+  'cost_tier',
 ];
 
 const BASE_URL_CLASSES = new Map([
@@ -106,6 +114,31 @@ export function validateExecutionPlanPolicy(policy) {
           ['p99'],
           `${transportPath}.provider_routing.preferred_max_latency`,
         );
+      }
+    }
+    if (transport.plugins !== undefined) {
+      if (!Array.isArray(transport.plugins)) {
+        throw new Error(`${transportPath}.plugins must be an array`);
+      }
+      for (const [pluginIndex, plugin] of transport.plugins.entries()) {
+        const pluginPath = `${transportPath}.plugins[${pluginIndex}]`;
+        rejectUnknownKeys(plugin, ALLOWED_PLUGIN_KEYS, pluginPath);
+        if (typeof plugin.id !== 'string' || plugin.id.length === 0) {
+          throw new Error(`${pluginPath}.id must be a non-empty string`);
+        }
+        for (const key of ['allowed_models', 'excluded_models']) {
+          if (plugin[key] !== undefined && (!Array.isArray(plugin[key]) || plugin[key].some((model) => typeof model !== 'string' || model.length === 0))) {
+            throw new Error(`${pluginPath}.${key} must be an array of non-empty strings`);
+          }
+        }
+        if (plugin.cost_quality_tradeoff !== undefined
+          && (!Number.isInteger(plugin.cost_quality_tradeoff) || plugin.cost_quality_tradeoff < 0 || plugin.cost_quality_tradeoff > 10)) {
+          throw new Error(`${pluginPath}.cost_quality_tradeoff must be an integer from 0 through 10`);
+        }
+        if (plugin.cost_tier !== undefined
+          && !['low', 'medium', 'high', 'xhigh', 'max'].includes(plugin.cost_tier)) {
+          throw new Error(`${pluginPath}.cost_tier must be one of low, medium, high, xhigh, max`);
+        }
       }
     }
   }
@@ -179,6 +212,7 @@ export function buildExecutionPlan(policy) {
         },
         request_extensions: {
           perf_metrics_in_response: transport.perf_metrics_in_response === true,
+          ...(transport.plugins !== undefined ? { plugins: transport.plugins } : {}),
         },
         routing: {
           mode: isGateway ? 'gateway-delegated' : 'direct',

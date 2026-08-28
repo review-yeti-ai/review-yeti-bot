@@ -86,10 +86,10 @@ test('builds the delegated invocation without changing source identity', () => {
       base: 'a'.repeat(40),
       head: 'b'.repeat(40),
       output: 'review.json',
-      model: 'deepseek/deepseek-v4-flash-0731',
+      model: 'openrouter/auto-beta',
       json: true,
     }),
-    ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--output', 'review.json', '--model', 'deepseek/deepseek-v4-flash-0731', '--json'],
+    ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--output', 'review.json', '--model', 'openrouter/auto-beta', '--json'],
   );
 });
 

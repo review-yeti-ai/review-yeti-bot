@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 
 import {
   EXPECTED_OPENROUTER_ROUTING,
+  EXPECTED_OPENROUTER_MODEL,
+  EXPECTED_OPENROUTER_PLUGIN_ID,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
   classifyHttpFailure,
@@ -32,7 +34,7 @@ function policyFixture() {
           name: 'openrouter-fallback',
           base_url: 'https://openrouter.test/api/v1',
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
-          model: 'deepseek/deepseek-v4-flash-0731',
+          model: EXPECTED_OPENROUTER_MODEL,
           compat: 'openrouter',
           reasoning_effort: 'high',
           timeout_ms: 90000,
@@ -41,6 +43,11 @@ function policyFixture() {
           structured_output: 'strict',
           quarantine_on_timeout: false,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
+          plugins: [{
+            id: EXPECTED_OPENROUTER_PLUGIN_ID,
+            allowed_models: ['openai/gpt-5.6-luna', 'moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.1', 'google/gemini-3.5-flash-lite'],
+            cost_quality_tradeoff: 7,
+          }],
         },
       ],
     },
@@ -54,6 +61,8 @@ test('the smoke contract pins the approved transport order', () => {
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
   assert.deepEqual(buildRequest(openrouter).provider, EXPECTED_OPENROUTER_ROUTING);
+  assert.equal(buildRequest(openrouter).model, EXPECTED_OPENROUTER_MODEL);
+  assert.equal(buildRequest(openrouter).plugins[0].id, EXPECTED_OPENROUTER_PLUGIN_ID);
   assert.deepEqual(buildRequest(fireworks).response_format, { type: 'json_object' });
   assert.deepEqual(buildRequest(openrouter).response_format, { type: 'json_object' });
   assert.equal(buildRequest(ollama).max_tokens, 128);
