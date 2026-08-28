@@ -1,0 +1,64 @@
+name: OpenRouter Live Proof
+
+# Deliberate manual evidence run. This workflow never reviews a pull request, publishes a
+# comment, changes provider order, or enables a canary. It exists to prove the OpenRouter
+# transport and parser against one harmless fixture with a fifteen-minute hard backstop.
+on:
+  workflow_dispatch:
+    inputs:
+      fixture:
+        description: 'Synthetic proof fixture identifier'
+        required: false
+        default: harmless-documentation-diff
+        type: string
+      model:
+        description: 'OpenRouter model route'
+        required: false
+        default: openrouter/auto
+        type: string
+      timeout_ms:
+        description: 'Per-attempt total timeout in milliseconds (capped at 10 minutes)'
+        required: false
+        default: '120000'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Manual OpenRouter transport proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact proof implementation
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run isolated OpenRouter proof
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+        run: >-
+          node scripts/openrouter-live-proof.cjs
+          --out artifacts/openrouter-live-proof.json
+          --fixture "${{ inputs.fixture }}"
+          --model "${{ inputs.model }}"
+          --timeout-ms "${{ inputs.timeout_ms }}"
+
+      - name: Upload sanitized proof receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: openrouter-live-proof-${{ github.run_id }}
+          path: artifacts/openrouter-live-proof.json
+          if-no-files-found: ignore
+          retention-days: 14
