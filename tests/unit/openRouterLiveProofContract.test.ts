@@ -29,6 +29,10 @@ describe('manual OpenRouter live proof contract', () => {
     expect(script).toContain('transports: [{');
     expect(script).toContain('maxOutputTokens: 24_576');
     expect(script).toContain('mode: 0o600');
+    expect(script).toContain("'security-header-validation'");
+    expect(script).toContain("'error-path-logging'");
+    expect(script).toContain("schemaVersion: 'openrouter-live-proof-batch-v1'");
+    expect(script).toContain('serial: true');
     expect(script).not.toContain('process.env.GITHUB_TOKEN');
   });
 });
