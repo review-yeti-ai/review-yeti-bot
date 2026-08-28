@@ -300,7 +300,11 @@ runs:
             node "$GITHUB_ACTION_PATH/scripts/install-action-runtime.mjs"
             ;;
           legacy)
-            npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 --no-save --no-audit --no-fund --silent
+            # The legacy pipeline uses the official OpenRouter SDK for gateway requests. Install
+            # only the two runtime packages it needs under the Action path; never write into the
+            # consumer checkout or resolve a floating SDK version.
+            npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 @openrouter/sdk@1.2.80 \
+              --no-save --no-package-lock --ignore-scripts --no-audit --no-fund --silent
             ;;
           *)
             echo "::error::review-engine must be legacy or pi-workflow"

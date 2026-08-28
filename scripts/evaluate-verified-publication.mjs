@@ -23,8 +23,9 @@
  * transport failover — PRs #217/#218). Lanes now run the production reviewWithModel path from
  * the current pipeline; the summarizeArm/summarizePerFixture reporting shapes and the fixture
  * corpus are vendored here (fixtures relocated to eval-baselines/verified-publication-fixtures/)
- * so the harness is self-contained. TTFT columns from the retired harness are dropped rather
- * than reported as nulls: the refit lane path does not measure them.
+ * so the harness is self-contained. The current lane path records measured TTFT from the first
+ * streamed data event when the provider emits SSE; missing TTFT remains unknown rather than
+ * being inferred from header arrival or reported as zero.
  *
  * Offline by default: without a configured provider transport, `lanes` and `verify` exit 0
  * with not_run.
@@ -149,6 +150,24 @@ function captureOutputContract(value) {
   };
 }
 
+function captureRouterMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const metadata = {};
+  for (const key of ['strategy', 'region', 'taskType']) {
+    const valueForKey = safeTelemetryLabel(value[key]);
+    if (valueForKey) metadata[key] = valueForKey;
+  }
+  const attempt = safeBoundedInteger(value.attempt, 1, 100);
+  if (attempt !== null) metadata.attempt = attempt;
+  if (Array.isArray(value.endpointDigests)) {
+    const endpointDigests = value.endpointDigests
+      .filter((digest) => /^[a-f0-9]{64}$/iu.test(String(digest || '')))
+      .slice(0, 16);
+    if (endpointDigests.length > 0) metadata.endpointDigests = endpointDigests;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : null;
+}
+
 function captureResponseAttempts(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, MAX_RESPONSE_ATTEMPTS).map((entry) => {
@@ -161,6 +180,8 @@ function captureResponseAttempts(value) {
     }
     const latencyMs = safeBoundedInteger(entry.latencyMs, 0, 86_400_000);
     if (latencyMs !== null) captured.latencyMs = latencyMs;
+    const ttftMs = safeBoundedInteger(entry.ttftMs, 0, 86_400_000);
+    if (ttftMs !== null) captured.ttftMs = ttftMs;
     const responseStatus = safeBoundedInteger(entry.responseStatus, 100, 599);
     if (responseStatus !== null) captured.responseStatus = responseStatus;
     if (ATTEMPT_FAILURE_CLASSES.has(entry.failureClass)) captured.failureClass = entry.failureClass;
@@ -177,6 +198,8 @@ function captureResponseAttempts(value) {
     }
     const outputContract = captureOutputContract(entry.outputContract);
     if (outputContract) captured.outputContract = outputContract;
+    const routerMetadata = captureRouterMetadata(entry.routerMetadata);
+    if (routerMetadata) captured.routerMetadata = routerMetadata;
     return captured;
   }).filter(Boolean);
 }
@@ -212,6 +235,10 @@ export function captureLaneTelemetry(result = {}) {
   }
   const outputContract = captureOutputContract(result.outputContract);
   if (outputContract) telemetry.outputContract = outputContract;
+  const ttftMs = safeBoundedInteger(result.ttftMs, 0, 86_400_000);
+  if (ttftMs !== null) telemetry.ttftMs = ttftMs;
+  const routerMetadata = captureRouterMetadata(result.routerMetadata);
+  if (routerMetadata) telemetry.routerMetadata = routerMetadata;
   const responseAttempts = captureResponseAttempts(result.responseAttempts);
   if (responseAttempts.length > 0) telemetry.responseAttempts = responseAttempts;
   return telemetry;
@@ -367,10 +394,10 @@ export function buildModelOptions(argv = process.argv) {
     // handoff. Preserve the central env-resolved plan here; otherwise qualification silently
     // collapses to the first transport as an unnamed buffered "default" request.
     transports,
-    // 300s, not the pipeline's 90s transport default: lanes here are buffered (non-streaming)
-    // single fetches against a reasoning model whose median full-review completion is ~65-75s
-    // with a long tail. Measured 2026-08-21: a 90s cap converted 28-30 of 72 rows per arm into
-    // timeout errors -- a harness artifact, not provider weather. Overridable via --timeout-ms.
+    // The explicit handoff carries streaming plus per-attempt connection/TTFT/inactivity/total
+    // budgets. The child process owns its hard deadline and the workflow remains capped at 15m;
+    // --timeout-ms remains the evaluator's non-provider-stage budget and is intentionally
+    // overridable for a qualification scenario.
     timeoutMs: Number(argument('--timeout-ms', 300_000, argv)),
     ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
     // Provider routing note: the retired harness pinned an OpenRouter ignore-list
