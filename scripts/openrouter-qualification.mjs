@@ -33,9 +33,17 @@ export const QUALIFICATION_DEFAULT_REPETITIONS = 1;
 export const QUALIFICATION_MAX_REPETITIONS = 2;
 export const QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE = 2;
 export const QUALIFICATION_CONCURRENCY = 3;
+export const QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY = 1;
+export const QUALIFICATION_MAX_CONCURRENCY = 3;
 export const QUALIFICATION_BUDGET_MARGIN_MS = 4 * 60_000;
 export const QUALIFICATION_OUTPUT_CONTRACT_MODES = Object.freeze(['json_object', 'json_schema']);
 export const QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE = 'json_object';
+// OpenRouter's documented default routing is health-aware and load-balanced. An explicit `sort`
+// mode is a separate control because OpenRouter documents that sorting disables load balancing.
+// Keep both profiles in the qualification harness so the routing hypothesis can be tested without
+// mutating the central production policy.
+export const QUALIFICATION_ROUTING_PROFILES = Object.freeze(['default_uptime', 'throughput_sorted']);
+export const QUALIFICATION_DEFAULT_ROUTING_PROFILE = 'default_uptime';
 // The bot's telemetry normalizer reports the canonical OpenRouter transport as
 // `openrouter` on response attempts, while the handoff and row-level transport
 // retain `openrouter-fallback`. Accept both representations only after the row
@@ -46,6 +54,29 @@ export const FIXTURE_IDS = Object.freeze([
   'format-evadable-absence-guard',
   'clean-behavioural-guard',
 ]);
+
+export function normalizeQualificationFixtureId(value = '') {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return null;
+  if (!FIXTURE_IDS.includes(normalized)) {
+    throw new Error(`fixtureId must be one of ${FIXTURE_IDS.join(', ')}`);
+  }
+  return normalized;
+}
+
+export function normalizeQualificationConcurrency(value, isolated = false) {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return isolated ? QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY : QUALIFICATION_CONCURRENCY;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > QUALIFICATION_MAX_CONCURRENCY) {
+    throw new Error(`concurrency must be an integer between 1 and ${QUALIFICATION_MAX_CONCURRENCY}`);
+  }
+  if (!isolated && parsed !== QUALIFICATION_CONCURRENCY) {
+    throw new Error('concurrency may only be changed for an isolated fixture');
+  }
+  return parsed;
+}
 if (qualificationWorstCaseMs() > QUALIFICATION_CHILD_TIMEOUT_MS - QUALIFICATION_BUDGET_MARGIN_MS) {
   throw new Error('OpenRouter qualification request budget exceeds the ten-minute child deadline');
 }
@@ -88,10 +119,30 @@ export function normalizeQualificationMaxTokens(value = OPENROUTER_MAX_OUTPUT_TO
   return parsed;
 }
 
+// Provider pinning is an investigation-only override. It never changes the committed
+// production policy; it is applied only to the one-transport qualification handoff so we can
+// distinguish an upstream endpoint problem from OpenRouter's normal load-balanced behavior.
+export function normalizeQualificationProviderSlug(value = '') {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (!LABEL_PATTERN.test(normalized)) {
+    throw new Error('providerSlug must be a lowercase OpenRouter provider slug');
+  }
+  return normalized;
+}
+
 export function normalizeQualificationOutputContractMode(value = QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE) {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!QUALIFICATION_OUTPUT_CONTRACT_MODES.includes(normalized)) {
     throw new Error(`outputContractMode must be one of ${QUALIFICATION_OUTPUT_CONTRACT_MODES.join(', ')}`);
+  }
+  return normalized;
+}
+
+export function normalizeQualificationRoutingProfile(value = QUALIFICATION_DEFAULT_ROUTING_PROFILE) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!QUALIFICATION_ROUTING_PROFILES.includes(normalized)) {
+    throw new Error(`routingProfile must be one of ${QUALIFICATION_ROUTING_PROFILES.join(', ')}`);
   }
   return normalized;
 }
@@ -117,9 +168,16 @@ export function validateQualificationInput(input = {}) {
   const prNumber = positiveInteger(input.prNumber, 'prNumber');
   const repetitions = normalizeQualificationRepetitions(input.repetitions);
   const maxTokens = normalizeQualificationMaxTokens(input.maxTokens ?? input.max_tokens);
+  const providerSlug = normalizeQualificationProviderSlug(input.providerSlug ?? input.provider_slug);
   const outputContractMode = normalizeQualificationOutputContractMode(
     input.outputContractMode ?? input.output_contract_mode,
   );
+  const routingProfile = normalizeQualificationRoutingProfile(
+    input.routingProfile ?? input.routing_profile,
+  );
+  const fixtureId = normalizeQualificationFixtureId(input.fixtureId ?? input.fixture_id);
+  const rawConcurrency = input.concurrency ?? input.qualificationConcurrency;
+  const concurrency = normalizeQualificationConcurrency(rawConcurrency, Boolean(fixtureId));
   for (const [label, value] of [['baseSha', input.baseSha], ['headSha', input.headSha], ['botSha', input.botSha], ['centralSha', input.centralSha]]) {
     if (!SHA_PATTERN.test(String(value || ''))) throw new Error(`${label} must be a full commit SHA`);
   }
@@ -138,7 +196,11 @@ export function validateQualificationInput(input = {}) {
     botRoot: String(input.botRoot),
     repetitions,
     maxTokens,
+    providerSlug,
     outputContractMode,
+    routingProfile,
+    fixtureId,
+    concurrency,
   };
 }
 
@@ -146,13 +208,21 @@ export function buildTransportHandoff(
   policy,
   outputContractMode = QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE,
   maxTokens = OPENROUTER_MAX_OUTPUT_TOKENS,
+  providerSlug = null,
+  routingProfile = QUALIFICATION_DEFAULT_ROUTING_PROFILE,
 ) {
   const transports = validatePolicy(policy);
   const selected = transports.find((transport) => transport.name === OPENROUTER_TRANSPORT);
   if (!selected) throw new Error(`policy does not define the ${OPENROUTER_TRANSPORT} transport`);
   const normalizedOutputContractMode = normalizeQualificationOutputContractMode(outputContractMode);
   const normalizedMaxTokens = normalizeQualificationMaxTokens(maxTokens);
-  return [{
+  const normalizedProviderSlug = normalizeQualificationProviderSlug(providerSlug);
+  const normalizedRoutingProfile = normalizeQualificationRoutingProfile(routingProfile);
+  const selectedRouting = selected.provider_routing || {};
+  const delegatedRouting = normalizedRoutingProfile === 'default_uptime'
+    ? Object.fromEntries(Object.entries(selectedRouting).filter(([key]) => key !== 'sort'))
+    : { ...selectedRouting };
+  const handoff = {
     ...selected,
     name: OPENROUTER_TRANSPORT,
     timeout_ms: OPENROUTER_TIMEOUT_MS,
@@ -161,7 +231,29 @@ export function buildTransportHandoff(
     reasoning_effort: OPENROUTER_REASONING_EFFORT,
     stream: true,
     structured_output_mode: normalizedOutputContractMode,
-  }];
+    provider_routing: delegatedRouting,
+  };
+  if (normalizedProviderSlug) {
+    const ignoredProviders = new Set([
+      ...(Array.isArray(selected.ignore_providers) ? selected.ignore_providers : []),
+      ...(Array.isArray(selected.provider_routing?.ignore) ? selected.provider_routing.ignore : []),
+    ].map((entry) => String(entry).trim().toLowerCase()));
+    if (ignoredProviders.has(normalizedProviderSlug)) {
+      throw new Error(`providerSlug ${normalizedProviderSlug} is excluded by the committed policy`);
+    }
+    const {
+      sort: _sort,
+      preferred_min_throughput: _preferredMinThroughput,
+      preferred_max_latency: _preferredMaxLatency,
+      ...delegatedRouting
+    } = selectedRouting;
+    handoff.provider_routing = {
+      ...delegatedRouting,
+      order: [normalizedProviderSlug],
+      allow_fallbacks: false,
+    };
+  }
+  return [handoff];
 }
 
 export async function verifyPullRequest({ repository, prNumber, baseSha, headSha, token, fetchImpl = globalThis.fetch }) {
@@ -304,8 +396,38 @@ function percentile(values, fraction) {
   return values[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)];
 }
 
-export function summarizeRows(rows, exitCode, repetitions = QUALIFICATION_DEFAULT_REPETITIONS) {
+function summarizeResponseAttempts(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 8).map((attempt) => {
+    if (!attempt || typeof attempt !== 'object') return null;
+    const captured = {};
+    for (const key of ['attempt', 'responseStatus', 'latencyMs', 'maxOutputTokens', 'outputTokens']) {
+      const number = Number(attempt[key]);
+      if (Number.isSafeInteger(number) && number >= 0 && number <= 1_000_000) captured[key] = number;
+    }
+    for (const key of [
+      'outcome', 'transport', 'provider', 'failureClass', 'errorCode', 'outputShape',
+      'timeoutKind', 'finishReason', 'responseMode', 'findingsSource', 'contentSizeBucket', 'reasoningSizeBucket',
+    ]) {
+      const label = safeLabel(attempt[key]);
+      if (label) captured[key] = label;
+    }
+    for (const key of ['contentPresent', 'reasoningPresent']) {
+      if (typeof attempt[key] === 'boolean') captured[key] = attempt[key];
+    }
+    return Object.keys(captured).length > 0 ? captured : null;
+  }).filter(Boolean);
+}
+
+export function summarizeRows(
+  rows,
+  exitCode,
+  repetitions = QUALIFICATION_DEFAULT_REPETITIONS,
+  fixtureIds = FIXTURE_IDS,
+) {
   const expectedRepetitions = normalizeQualificationRepetitions(repetitions);
+  const expectedFixtureIds = fixtureIds.map((fixtureId) => normalizeQualificationFixtureId(fixtureId)).filter(Boolean);
+  if (expectedFixtureIds.length === 0) throw new Error('at least one expected fixture is required');
   const safeRows = Array.isArray(rows) ? rows : [];
   const resolveRowRepetition = (row) => {
     if (Number.isInteger(Number(row?.repetition))) return Number(row.repetition);
@@ -315,20 +437,33 @@ export function summarizeRows(rows, exitCode, repetitions = QUALIFICATION_DEFAUL
     return expectedRepetitions === 1 ? 1 : null;
   };
   const latencies = safeRows.map((row) => Number(row?.latencyMs)).filter(Number.isFinite).sort((a, b) => a - b);
-  const fixtureOutcomes = safeRows.map((row) => ({
-    fixture_id: safeLabel(row?.fixtureId),
-    repetition: resolveRowRepetition(row),
-    category: row?.category === 'defect' || row?.category === 'clean' ? row.category : 'unknown',
-    outcome: row?.errored ? 'error' : row?.category === 'defect' ? (row.detected ? 'detected' : 'miss') : row?.falsePositive ? 'false_positive' : 'clean',
-    provider: safeLabel(row?.provider),
-    transport: safeLabel(row?.transport),
-    response_status: Number.isInteger(Number(row?.responseStatus)) ? Number(row.responseStatus) : null,
-    attempt_count: Number.isInteger(Number(row?.attemptCount)) ? Number(row.attemptCount) : null,
-  }));
+  const fixtureOutcomes = safeRows.map((row) => {
+    const responseAttempts = summarizeResponseAttempts(row?.responseAttempts);
+    const lastAttempt = responseAttempts.at(-1) || {};
+    return {
+      fixture_id: safeLabel(row?.fixtureId),
+      repetition: resolveRowRepetition(row),
+      category: row?.category === 'defect' || row?.category === 'clean' ? row.category : 'unknown',
+      outcome: row?.errored ? 'error' : row?.category === 'defect' ? (row.detected ? 'detected' : 'miss') : row?.falsePositive ? 'false_positive' : 'clean',
+      provider: safeLabel(row?.provider),
+      upstream_provider: safeLabel(row?.provider),
+      transport: safeLabel(row?.transport),
+      response_status: Number.isInteger(Number(row?.responseStatus)) ? Number(row.responseStatus) : null,
+      attempt_count: Number.isInteger(Number(row?.attemptCount)) ? Number(row.attemptCount) : null,
+      failure_class: safeLabel(row?.failureClass) || safeLabel(lastAttempt.failureClass) || null,
+      timeout_kind: safeLabel(row?.timeoutKind) || safeLabel(lastAttempt.timeoutKind) || null,
+      error_code: safeLabel(row?.errorCode) || safeLabel(lastAttempt.errorCode) || null,
+      output_shape: safeLabel(row?.outputShape) || safeLabel(lastAttempt.outputShape) || null,
+      response_attempts: responseAttempts,
+    };
+  });
   const responseAttempts = safeRows.flatMap((row) => Array.isArray(row?.responseAttempts) ? row.responseAttempts : []);
   const positivePrompt = safeRows.map((row) => Number(row?.usage?.promptTokens)).filter((value) => Number.isFinite(value) && value > 0);
   const positiveCompletion = safeRows.map((row) => Number(row?.usage?.completionTokens)).filter((value) => Number.isFinite(value) && value > 0);
   const positiveCosts = safeRows.map((row) => Number(row?.usage?.costUSD)).filter((value) => Number.isFinite(value) && value > 0);
+  const observedPromptTokens = positivePrompt.reduce((sum, value) => sum + value, 0);
+  const observedCompletionTokens = positiveCompletion.reduce((sum, value) => sum + value, 0);
+  const observedCost = positiveCosts.reduce((sum, value) => sum + value, 0);
   // OpenRouter may report the resolved upstream adapter (for example, Inceptron
   // or DeepInfra) in the row-level provider field. Route attribution is proven
   // by the configured OpenRouter transport on every row and response attempt;
@@ -338,7 +473,7 @@ export function summarizeRows(rows, exitCode, repetitions = QUALIFICATION_DEFAUL
     const attempts = Array.isArray(row?.responseAttempts) ? row.responseAttempts : [];
     return attempts.length > 0 && attempts.every((attempt) => OPENROUTER_ATTEMPT_TRANSPORTS.includes(attempt?.transport));
   });
-  const expectedFixturePairs = new Set(FIXTURE_IDS.flatMap((fixtureId) => (
+  const expectedFixturePairs = new Set(expectedFixtureIds.flatMap((fixtureId) => (
     Array.from({ length: expectedRepetitions }, (_, index) => JSON.stringify([fixtureId, index + 1]))
   )));
   const observedFixturePairs = new Set();
@@ -349,7 +484,7 @@ export function summarizeRows(rows, exitCode, repetitions = QUALIFICATION_DEFAUL
     if (!expectedFixturePairs.has(pair) || observedFixturePairs.has(pair)) invalidFixturePair = true;
     else observedFixturePairs.add(pair);
   }
-  const fixtureSetValid = safeRows.length === FIXTURE_IDS.length * expectedRepetitions
+  const fixtureSetValid = safeRows.length === expectedFixtureIds.length * expectedRepetitions
     && !invalidFixturePair
     && observedFixturePairs.size === expectedFixturePairs.size;
   const tokenTelemetryStatus = positivePrompt.length === safeRows.length && positiveCompletion.length === safeRows.length ? 'complete' : positivePrompt.length || positiveCompletion.length ? 'partial' : 'unavailable';
@@ -372,17 +507,21 @@ export function summarizeRows(rows, exitCode, repetitions = QUALIFICATION_DEFAUL
     token_telemetry_status: tokenTelemetryStatus,
     prompt_tokens: tokenTelemetryStatus === 'complete' ? positivePrompt.reduce((sum, value) => sum + value, 0) : null,
     completion_tokens: tokenTelemetryStatus === 'complete' ? positiveCompletion.reduce((sum, value) => sum + value, 0) : null,
+    prompt_tokens_observed: positivePrompt.length > 0 ? observedPromptTokens : null,
+    completion_tokens_observed: positiveCompletion.length > 0 ? observedCompletionTokens : null,
     cost_telemetry_status: costTelemetryStatus,
     cost_usd: costTelemetryStatus === 'complete' ? Number(positiveCosts.reduce((sum, value) => sum + value, 0).toFixed(6)) : null,
+    cost_usd_observed: positiveCosts.length > 0 ? Number(observedCost.toFixed(6)) : null,
+    cost_observation_count: positiveCosts.length,
     fixture_outcomes: fixtureOutcomes,
   };
 }
 
-function readEvaluation(pathname, exitCode, repetitions = QUALIFICATION_DEFAULT_REPETITIONS) {
+function readEvaluation(pathname, exitCode, repetitions = QUALIFICATION_DEFAULT_REPETITIONS, fixtureIds = FIXTURE_IDS) {
   try {
-    return summarizeRows(JSON.parse(readFileSync(pathname, 'utf8')).rows, exitCode, repetitions);
+    return summarizeRows(JSON.parse(readFileSync(pathname, 'utf8')).rows, exitCode, repetitions, fixtureIds);
   } catch {
-    return summarizeRows([], exitCode, repetitions);
+    return summarizeRows([], exitCode, repetitions, fixtureIds);
   }
 }
 
@@ -390,6 +529,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
   const policyDigest = createHash('sha256').update(JSON.stringify(policy)).digest('hex');
   const repetitions = normalizeQualificationRepetitions(input.repetitions);
   const maxTokens = normalizeQualificationMaxTokens(input.maxTokens ?? input.max_tokens);
+  const routingProfile = normalizeQualificationRoutingProfile(input.routingProfile ?? input.routing_profile);
   const contract = {
     transport: OPENROUTER_TRANSPORT,
     provider: 'openrouter',
@@ -401,8 +541,25 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     reasoning_effort: handoff[0].reasoning_effort,
     stream: handoff[0].stream === true,
     structured_output_mode: normalizeQualificationOutputContractMode(handoff[0].structured_output_mode),
+    provider_routing: input.providerSlug
+      ? {
+        mode: 'pinned',
+        profile: routingProfile,
+        provider_slug: input.providerSlug,
+        order: handoff[0].provider_routing?.order || null,
+        allow_fallbacks: handoff[0].provider_routing?.allow_fallbacks,
+        sort: handoff[0].provider_routing?.sort ?? null,
+      }
+      : {
+        mode: 'delegated',
+        profile: routingProfile,
+        provider_slug: null,
+        order: null,
+        allow_fallbacks: handoff[0].provider_routing?.allow_fallbacks ?? null,
+        sort: handoff[0].provider_routing?.sort ?? null,
+      },
     repetitions,
-    concurrency: QUALIFICATION_CONCURRENCY,
+    concurrency: input.concurrency ?? (input.fixtureId ? QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY : QUALIFICATION_CONCURRENCY),
   };
   const integrity = {
     exact_bot_sha_bound: SHA_PATTERN.test(String(input.botSha || '')),
@@ -411,6 +568,16 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     request_contract_valid: contract.stream
       && contract.max_output_tokens === maxTokens
       && contract.reasoning_effort === OPENROUTER_REASONING_EFFORT
+      && (input.providerSlug
+        ? contract.provider_routing.mode === 'pinned'
+          && contract.provider_routing.profile === routingProfile
+          && JSON.stringify(contract.provider_routing.order) === JSON.stringify([input.providerSlug])
+          && contract.provider_routing.allow_fallbacks === false
+        : contract.provider_routing.mode === 'delegated'
+          && contract.provider_routing.profile === routingProfile
+          && (routingProfile === 'default_uptime'
+            ? contract.provider_routing.sort === null
+            : contract.provider_routing.sort === 'throughput'))
       && QUALIFICATION_OUTPUT_CONTRACT_MODES.includes(contract.structured_output_mode),
     child_completed: childTimedOut !== true && evaluation.status === 'completed',
   };
@@ -423,7 +590,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     exact_target: { repository: input.repository, pr_number: input.prNumber, base_sha: input.baseSha, head_sha: input.headSha },
     implementation_refs: { central_action_sha: input.centralSha, review_yeti_bot_sha: input.botSha, review_yeti_bot_release_tag: input.botReleaseTag },
     policy_sha256: policyDigest,
-    fixture_ids: [...FIXTURE_IDS],
+    fixture_ids: input.fixtureId ? [input.fixtureId] : [...FIXTURE_IDS],
     prompt_contract: { evaluator_arm: COMPARISON_EVALUATION_ARM, charter: 'current-testing', synthetic_prompt_identity: 'single-fixed-fixture-contract' },
     request_contract: contract,
     integrity_gate: integrity,
@@ -441,7 +608,13 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
 export async function runQualification({ input, policy, token, outputDir, fixturePath, fetchImpl = globalThis.fetch, spawnImpl = spawn, childTimeoutMs = QUALIFICATION_CHILD_TIMEOUT_MS, now, runId } = {}) {
   const validated = validateQualificationInput(input);
   const loadedPolicy = policy || loadPolicy();
-  const handoff = buildTransportHandoff(loadedPolicy, validated.outputContractMode, validated.maxTokens);
+  const handoff = buildTransportHandoff(
+    loadedPolicy,
+    validated.outputContractMode,
+    validated.maxTokens,
+    validated.providerSlug,
+    validated.routingProfile,
+  );
   await verifyPullRequest({ ...validated, token, fetchImpl });
   await verifyBotRelease({ botSha: validated.botSha, botReleaseTag: validated.botReleaseTag, token, fetchImpl });
   const targetDir = path.resolve(outputDir || process.env.RUNNER_TEMP || '.', 'openrouter-qualification');
@@ -449,15 +622,17 @@ export async function runQualification({ input, policy, token, outputDir, fixtur
   const fixture = fixturePath || path.join(validated.botRoot, 'eval-baselines/verified-publication-fixtures/evaluation-matrix.json');
   const output = path.join(targetDir, 'openrouter-lanes.json');
   const env = buildArmEnvironment({ baseEnv: process.env, handoff, botSha: validated.botSha, fixturePath: fixture });
+  const fixtureIds = validated.fixtureId ? [validated.fixtureId] : FIXTURE_IDS;
+  const concurrency = validated.concurrency;
   const args = [
     path.join(validated.botRoot, 'scripts/evaluate-verified-publication.mjs'),
-    'lanes', '--arm', COMPARISON_EVALUATION_ARM, '--fixture', fixture, '--fixtures', FIXTURE_IDS.join(','),
-    '--repetitions', String(validated.repetitions), '--concurrency', String(QUALIFICATION_CONCURRENCY), '--out', output,
+    'lanes', '--arm', COMPARISON_EVALUATION_ARM, '--fixture', fixture, '--fixtures', fixtureIds.join(','),
+    '--repetitions', String(validated.repetitions), '--concurrency', String(concurrency), '--out', output,
     '--max-tokens', String(validated.maxTokens),
   ];
-  console.log(`[openrouter qualification] dispatching one direct arm; fixtures=${FIXTURE_IDS.length} repetitions=${validated.repetitions} child_timeout_ms=${normalizeChildTimeoutMs(childTimeoutMs)}`);
+  console.log(`[openrouter qualification] dispatching one direct arm; fixtures=${fixtureIds.length} concurrency=${concurrency} repetitions=${validated.repetitions} child_timeout_ms=${normalizeChildTimeoutMs(childTimeoutMs)}`);
   const child = await runChild({ command: process.execPath, args, cwd: validated.botRoot, env, spawnImpl, timeoutMs: childTimeoutMs });
-  const evaluation = readEvaluation(output, child.exitCode, validated.repetitions);
+  const evaluation = readEvaluation(output, child.exitCode, validated.repetitions, fixtureIds);
   const receipt = buildQualificationReceipt({ input: validated, policy: loadedPolicy, handoff, evaluation, childTimedOut: child.timedOut, childTimeoutMs, now, runId });
   const receiptPath = path.join(targetDir, 'openrouter-qualification-receipt.json');
   writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
@@ -480,6 +655,10 @@ async function main() {
       repetitions: process.env.QUALIFY_REPETITIONS,
       maxTokens: process.env.QUALIFY_MAX_TOKENS,
       outputContractMode: process.env.QUALIFY_OUTPUT_CONTRACT_MODE,
+      fixtureId: process.env.QUALIFY_FIXTURE_ID,
+      concurrency: process.env.QUALIFY_CONCURRENCY,
+      providerSlug: process.env.QUALIFY_PROVIDER_SLUG,
+      routingProfile: process.env.QUALIFY_ROUTING_PROFILE,
     },
     token: process.env.QUALIFICATION_GH_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
     outputDir: process.env.RUNNER_TEMP,

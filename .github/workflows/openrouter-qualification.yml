@@ -49,6 +49,26 @@ on:
         required: true
         default: 'json_object'
         type: string
+      provider_slug:
+        description: 'Optional single OpenRouter upstream slug for an isolated diagnostic; blank keeps normal load-balanced routing'
+        required: false
+        default: ''
+        type: string
+      routing_profile:
+        description: 'Qualification-only routing contract: default_uptime omits sort; throughput_sorted is the existing policy control'
+        required: true
+        default: 'default_uptime'
+        type: string
+      fixture_id:
+        description: 'Optional single fixture for an isolated diagnostic run; blank keeps the three-fixture qualification'
+        required: false
+        default: ''
+        type: string
+      concurrency:
+        description: 'Isolated fixture concurrency (1 serial by default; max 3)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -72,6 +92,10 @@ jobs:
       QUALIFY_REPETITIONS: ${{ inputs.repetitions }}
       QUALIFY_MAX_TOKENS: ${{ inputs.max_tokens }}
       QUALIFY_OUTPUT_CONTRACT_MODE: ${{ inputs.output_contract_mode }}
+      QUALIFY_PROVIDER_SLUG: ${{ inputs.provider_slug }}
+      QUALIFY_ROUTING_PROFILE: ${{ inputs.routing_profile }}
+      QUALIFY_FIXTURE_ID: ${{ inputs.fixture_id }}
+      QUALIFY_CONCURRENCY: ${{ inputs.concurrency }}
       QUALIFY_CENTRAL_SHA: ${{ github.sha }}
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
       QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
@@ -114,9 +138,15 @@ jobs:
         env:
           OUTPUT_CONTRACT_MODE_INPUT: ${{ inputs.output_contract_mode }}
           MAX_TOKENS_INPUT: ${{ inputs.max_tokens }}
+          PROVIDER_SLUG_INPUT: ${{ inputs.provider_slug }}
+          ROUTING_PROFILE_INPUT: ${{ inputs.routing_profile }}
+          FIXTURE_ID_INPUT: ${{ inputs.fixture_id }}
+          CONCURRENCY_INPUT: ${{ inputs.concurrency }}
         run: |
-          echo "::notice::Dispatching one direct OpenRouter qualification arm over three fixtures and the declared repetition count (three concurrent lanes); output_contract_mode=${OUTPUT_CONTRACT_MODE_INPUT}."
+          echo "::notice::Dispatching one direct OpenRouter qualification arm; fixture_scope=${FIXTURE_ID_INPUT:-all-three} concurrency=${CONCURRENCY_INPUT:-isolated-default} output_contract_mode=${OUTPUT_CONTRACT_MODE_INPUT}."
+          echo "::notice::Routing profile=${ROUTING_PROFILE_INPUT}; default_uptime omits explicit sort so OpenRouter can apply its documented health-aware routing."
           echo "::notice::Requested max_tokens=${MAX_TOKENS_INPUT}; provider/model limits and hard deadlines remain authoritative, with no harness-imposed token ceiling."
+          if [ -n "${PROVIDER_SLUG_INPUT}" ]; then echo "::notice::Provider pin is qualification-only: ${PROVIDER_SLUG_INPUT}; production routing is unchanged."; fi
           echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 

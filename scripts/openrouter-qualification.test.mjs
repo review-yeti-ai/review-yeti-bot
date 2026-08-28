@@ -16,17 +16,25 @@ import {
   QUALIFICATION_CHILD_TIMEOUT_MS,
   QUALIFICATION_BUDGET_MARGIN_MS,
   QUALIFICATION_CONCURRENCY,
+  QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY,
+  QUALIFICATION_MAX_CONCURRENCY,
   QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE,
   QUALIFICATION_MAX_REPETITIONS,
   QUALIFICATION_OUTPUT_CONTRACT_MODES,
   QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE,
+  QUALIFICATION_ROUTING_PROFILES,
+  QUALIFICATION_DEFAULT_ROUTING_PROFILE,
   QUALIFICATION_HEARTBEAT_MS,
   buildArmEnvironment,
   buildQualificationReceipt,
   buildTransportHandoff,
   normalizeChildTimeoutMs,
   normalizeQualificationMaxTokens,
+  normalizeQualificationProviderSlug,
+  normalizeQualificationFixtureId,
+  normalizeQualificationConcurrency,
   normalizeQualificationOutputContractMode,
+  normalizeQualificationRoutingProfile,
   normalizeQualificationRepetitions,
   qualificationWorstCaseMs,
   runChild,
@@ -60,9 +68,15 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.doesNotMatch(workflow, /continue-on-error:\s*true/u);
   assert.match(workflow, /OPENROUTER_PR_REVIEW_API_KEY:/u);
   assert.match(workflow, /Fixed repetitions per fixture \(1 or 2/u);
+  assert.match(workflow, /fixture_id:/u);
+  assert.match(workflow, /concurrency:/u);
   const announceStep = workflow.split('      - name: Announce bounded OpenRouter dispatch', 2)[1]?.split('      - name: Run bounded OpenRouter qualification', 1)[0] || '';
   assert.match(announceStep, /OUTPUT_CONTRACT_MODE_INPUT:/u);
   assert.match(announceStep, /MAX_TOKENS_INPUT:/u);
+  assert.match(announceStep, /FIXTURE_ID_INPUT:/u);
+  assert.match(announceStep, /CONCURRENCY_INPUT:/u);
+  assert.match(announceStep, /PROVIDER_SLUG_INPUT:/u);
+  assert.match(announceStep, /ROUTING_PROFILE_INPUT:/u);
   const announceRun = announceStep.split('        run: |', 2)[1] || '';
   assert.doesNotMatch(announceRun, /\$\{\{/u);
   assert.match(workflow, /environment:\s*\n\s+name:\s*review-yeti-openrouter-qualification/u);
@@ -75,10 +89,26 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.equal(validateQualificationInput(input).prNumber, 278);
   assert.equal(validateQualificationInput({ ...input, repetitions: 2 }).repetitions, 2);
   assert.equal(validateQualificationInput(input).outputContractMode, QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE);
+  assert.equal(validateQualificationInput(input).routingProfile, QUALIFICATION_DEFAULT_ROUTING_PROFILE);
   assert.equal(validateQualificationInput(input).maxTokens, OPENROUTER_MAX_OUTPUT_TOKENS);
+  assert.equal(validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0] }).fixtureId, FIXTURE_IDS[0]);
+  assert.equal(validateQualificationInput(input).concurrency, QUALIFICATION_CONCURRENCY);
+  assert.equal(validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0] }).concurrency, QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY);
+  assert.equal(validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 3 }).concurrency, 3);
+  assert.equal(normalizeQualificationConcurrency('', true), QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY);
+  assert.equal(normalizeQualificationConcurrency(QUALIFICATION_MAX_CONCURRENCY, true), QUALIFICATION_MAX_CONCURRENCY);
+  assert.equal(normalizeQualificationFixtureId(), null);
+  assert.throws(() => normalizeQualificationFixtureId('missing-fixture'), /fixtureId/u);
   assert.equal(validateQualificationInput({ ...input, maxTokens: 65_536 }).maxTokens, 65_536);
   assert.equal(normalizeQualificationMaxTokens(65_536), 65_536);
   assert.equal(normalizeQualificationMaxTokens(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
+  assert.equal(normalizeQualificationProviderSlug(), null);
+  assert.equal(normalizeQualificationProviderSlug('OpenInference'), 'openinference');
+  assert.throws(() => normalizeQualificationProviderSlug('bad provider'), /providerSlug/u);
+  assert.deepEqual(QUALIFICATION_ROUTING_PROFILES, ['default_uptime', 'throughput_sorted']);
+  assert.equal(normalizeQualificationRoutingProfile(), QUALIFICATION_DEFAULT_ROUTING_PROFILE);
+  assert.equal(normalizeQualificationRoutingProfile('THROUGHPUT_SORTED'), 'throughput_sorted');
+  assert.throws(() => normalizeQualificationRoutingProfile('provider_order'), /routingProfile/u);
   assert.equal(validateQualificationInput({ ...input, outputContractMode: 'json_schema' }).outputContractMode, 'json_schema');
   assert.deepEqual(QUALIFICATION_OUTPUT_CONTRACT_MODES, ['json_object', 'json_schema']);
   assert.equal(normalizeQualificationOutputContractMode(), 'json_object');
@@ -95,6 +125,10 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.throws(() => validateQualificationInput({ ...input, outputContractMode: 'xml' }), /outputContractMode/u);
   assert.throws(() => validateQualificationInput({ ...input, maxTokens: 0 }), /maxTokens/u);
   assert.throws(() => validateQualificationInput({ ...input, maxTokens: 1.5 }), /maxTokens/u);
+  assert.throws(() => validateQualificationInput({ ...input, fixtureId: 'missing-fixture' }), /fixtureId/u);
+  assert.throws(() => validateQualificationInput({ ...input, concurrency: 1 }), /isolated fixture/u);
+  assert.throws(() => validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 0 }), /concurrency/u);
+  assert.throws(() => validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 4 }), /concurrency/u);
   assert.throws(() => normalizeQualificationMaxTokens(Number.MAX_SAFE_INTEGER + 1), /maxTokens/u);
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
 });
@@ -124,8 +158,67 @@ test('handoff contains exactly one direct OpenRouter transport under the common 
   assert.equal(handoff[0].reasoning_effort, OPENROUTER_REASONING_EFFORT);
   assert.equal(handoff[0].stream, true);
   assert.equal(handoff[0].structured_output_mode, 'json_object');
+  assert.equal(handoff[0].provider_routing.sort, undefined);
+  assert.equal(handoff[0].provider_routing.allow_fallbacks, true);
+  assert.equal(handoff[0].provider_routing.require_parameters, true);
+  assert.deepEqual(handoff[0].provider_routing.preferred_min_throughput, { p90: 40 });
+  assert.deepEqual(handoff[0].provider_routing.preferred_max_latency, { p99: 3 });
+  const receipt = buildQualificationReceipt({
+    input,
+    policy,
+    handoff,
+    evaluation: { status: 'completed', rows: 3, fixture_set_valid: true, provider_attribution_valid: true },
+    childTimedOut: false,
+  });
+  assert.equal(receipt.request_contract.provider_routing.profile, 'default_uptime');
+  assert.equal(receipt.request_contract.provider_routing.sort, null);
+  assert.equal(receipt.integrity_gate.request_contract_valid, true);
   assert.equal(buildTransportHandoff(policy, 'json_schema')[0].structured_output_mode, 'json_schema');
   assert.equal(buildTransportHandoff(policy, 'json_object', 65_536)[0].max_tokens, 65_536);
+});
+
+test('qualification retains a throughput-sorted control without changing production policy', () => {
+  const handoff = buildTransportHandoff(policy, 'json_object', 24_576, null, 'throughput_sorted');
+  assert.equal(handoff[0].provider_routing.sort, 'throughput');
+  assert.equal(handoff[0].provider_routing.allow_fallbacks, true);
+  const receipt = buildQualificationReceipt({
+    input: { ...input, routingProfile: 'throughput_sorted' },
+    policy,
+    handoff,
+    evaluation: { status: 'completed', rows: 3, fixture_set_valid: true, provider_attribution_valid: true },
+    childTimedOut: false,
+  });
+  assert.equal(receipt.request_contract.provider_routing.profile, 'throughput_sorted');
+  assert.equal(receipt.request_contract.provider_routing.sort, 'throughput');
+  assert.equal(receipt.integrity_gate.request_contract_valid, true);
+});
+
+test('provider pinning is an isolated diagnostic override and disables gateway fallback', () => {
+  const handoff = buildTransportHandoff(policy, 'json_schema', 24_576, 'openinference');
+  assert.deepEqual(handoff[0].provider_routing.order, ['openinference']);
+  assert.equal(handoff[0].provider_routing.allow_fallbacks, false);
+  assert.equal(handoff[0].provider_routing.sort, undefined);
+  assert.equal(handoff[0].provider_routing.preferred_min_throughput, undefined);
+  assert.equal(handoff[0].provider_routing.preferred_max_latency, undefined);
+  assert.throws(() => buildTransportHandoff(policy, 'json_object', 24_576, 'morph'), /excluded/u);
+});
+
+test('pinned receipts bind the diagnostic upstream without authorizing activation', () => {
+  const pinnedInput = validateQualificationInput({ ...input, providerSlug: 'openinference' });
+  const handoff = buildTransportHandoff(policy, 'json_schema', 24_576, pinnedInput.providerSlug);
+  const receipt = buildQualificationReceipt({
+    input: pinnedInput,
+    policy,
+    handoff,
+    evaluation: { status: 'completed', rows: 3, fixture_set_valid: true, provider_attribution_valid: true },
+    childTimedOut: false,
+  });
+  assert.deepEqual(receipt.request_contract.provider_routing, {
+    mode: 'pinned', profile: 'default_uptime', provider_slug: 'openinference', order: ['openinference'], allow_fallbacks: false, sort: null,
+  });
+  assert.equal(receipt.integrity_gate.request_contract_valid, true);
+  assert.equal(receipt.activation_authorized, false);
+  assert.equal(receipt.provider_mutation, 'none');
 });
 
 test('child environment strips every non-OpenRouter provider credential', () => {
@@ -311,6 +404,34 @@ test('row-level attribution is required and cannot pass vacuously', () => {
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, false);
 });
 
+test('receipt keeps bounded RCA telemetry and observed partial cost without response bodies', () => {
+  const fixtureId = FIXTURE_IDS[0];
+  const rows = [
+    {
+      fixtureId, repetition: 1, category: 'defect', detected: true, falsePositive: false, errored: false,
+      latencyMs: 100, provider: 'wafer', transport: OPENROUTER_TRANSPORT,
+      usage: { promptTokens: 100, completionTokens: 200, costUSD: 0.012345 },
+      responseAttempts: [{ attempt: 1, outcome: 'parsed', transport: 'openrouter', provider: 'wafer', outputShape: 'direct_json_object', responseStatus: 200 }],
+    },
+    {
+      fixtureId, repetition: 2, category: 'defect', detected: false, falsePositive: false, errored: true,
+      latencyMs: 200, provider: OPENROUTER_TRANSPORT, transport: OPENROUTER_TRANSPORT,
+      responseStatus: 200, attemptCount: 1,
+      responseAttempts: [{ attempt: 1, outcome: 'transport_error', transport: 'openrouter', failureClass: 'unknown', outputShape: 'empty_content', responseStatus: 200 }],
+    },
+  ];
+  const summary = summarizeRows(rows, 0, 2, [fixtureId]);
+  assert.equal(summary.cost_telemetry_status, 'partial');
+  assert.equal(summary.cost_usd, null);
+  assert.equal(summary.cost_usd_observed, 0.012345);
+  assert.equal(summary.cost_observation_count, 1);
+  assert.equal(summary.fixture_outcomes[1].failure_class, 'unknown');
+  assert.equal(summary.fixture_outcomes[1].output_shape, 'empty_content');
+  assert.equal(summary.fixture_outcomes[1].response_attempts[0].outcome, 'transport_error');
+  assert.equal(summary.fixture_outcomes[0].response_attempts[0].provider, 'wafer');
+  assert.equal(Object.hasOwn(summary.fixture_outcomes[1], 'response_body'), false);
+});
+
 test('repeated fixture evidence requires every fixture exactly once per repetition', () => {
   const rows = [1, 2].flatMap((repetition) => FIXTURE_IDS.map((fixtureId, index) => ({
     fixtureId,
@@ -327,6 +448,44 @@ test('repeated fixture evidence requires every fixture exactly once per repetiti
   assert.equal(summarizeRows(rows, 0, 2).fixture_set_valid, true);
   assert.equal(summarizeRows(rows.slice(1), 0, 2).fixture_set_valid, false);
   assert.equal(summarizeRows(rows, 0, 2).response_attempts, 6);
+});
+
+test('isolated fixture evidence can validate one fixture serially', () => {
+  const fixtureId = FIXTURE_IDS[0];
+  const rows = [1, 2].map((repetition) => ({
+    fixtureId,
+    repetition,
+    category: 'defect',
+    detected: true,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: 'openrouter',
+    transport: OPENROUTER_TRANSPORT,
+    responseStatus: 200,
+    attemptCount: 1,
+    responseAttempts: [{ attempt: 1, outcome: 'parsed', provider: 'openrouter', transport: 'openrouter' }],
+  }));
+  assert.equal(summarizeRows(rows, 0, 2, [fixtureId]).fixture_set_valid, true);
+  const validated = validateQualificationInput({ ...input, fixtureId });
+  const receipt = buildQualificationReceipt({
+    input: validated,
+    policy,
+    handoff: buildTransportHandoff(policy),
+    evaluation: { status: 'completed', rows: 2, fixture_set_valid: true, provider_attribution_valid: true },
+    childTimedOut: false,
+  });
+  assert.deepEqual(receipt.fixture_ids, [fixtureId]);
+  assert.equal(receipt.request_contract.concurrency, 1);
+  const parallelValidated = validateQualificationInput({ ...input, fixtureId, concurrency: 3 });
+  const parallelReceipt = buildQualificationReceipt({
+    input: parallelValidated,
+    policy,
+    handoff: buildTransportHandoff(policy),
+    evaluation: { status: 'completed', rows: 2, fixture_set_valid: true, provider_attribution_valid: true },
+    childTimedOut: false,
+  });
+  assert.equal(parallelReceipt.request_contract.concurrency, 3);
 });
 
 test('single-repetition callers may omit repetition, but duplicates fail closed', () => {
