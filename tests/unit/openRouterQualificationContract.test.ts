@@ -268,7 +268,7 @@ describe('OpenRouter qualification contract', () => {
       status: 200,
       headers: new Headers(),
       json: async () => ({
-        model: 'z-ai/glm-5.1',
+        model: 'z-ai/glm-5.2',
         choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
       }),
     });
@@ -283,7 +283,7 @@ describe('OpenRouter qualification contract', () => {
     expect(result).toMatchObject({
       decision: 'APPROVE',
       provider: 'openrouter',
-      model: 'z-ai/glm-5.1',
+      model: 'z-ai/glm-5.2',
       cost: null,
       inputTokens: null,
       outputTokens: null,
