@@ -111,6 +111,10 @@ type OpenRouterSdkClient = {
   chat: {
     send(request: Record<string, unknown>, options?: Record<string, unknown>): Promise<unknown>;
   };
+  /** A one-shot buffered response used only for explicitly supported compatible envelopes. */
+  getRawResponse?: () => Promise<Response | null>;
+  /** Cancel the unused compatibility clone so SDK stream cancellation reaches the upstream body. */
+  cancelRawResponse?: (reason: string) => void;
 };
 
 type OpenRouterSdkModule = {
@@ -713,9 +717,14 @@ async function cancelReader<T>(reader: ReadableStreamDefaultReader<T>, reason: s
   if (typeof reader.cancel !== 'function') return;
   let timer: NodeJS.Timeout | undefined;
   try {
-    const cancellation = Promise.resolve()
-      .then(() => reader.cancel(reason))
-      .then(() => undefined, () => undefined);
+    // Invoke cancellation synchronously so an active provider stream is detached immediately;
+    // only the potentially unbounded completion of the provider's promise is raced below.
+    let cancellation: Promise<void>;
+    try {
+      cancellation = Promise.resolve(reader.cancel(reason)).then(() => undefined, () => undefined);
+    } catch (_) {
+      cancellation = Promise.resolve();
+    }
     await Promise.race([
       cancellation,
       new Promise<void>((resolve) => {
@@ -735,6 +744,7 @@ async function readStreamingResponse(
     ttftTimeoutMs?: number;
     totalTimeoutMs?: number;
     onTotalTimeout?: () => void;
+    onCancel?: (reason: string) => void;
     persona?: string;
     providerId?: string;
   }
@@ -793,6 +803,7 @@ async function readStreamingResponse(
     if (totalDeadlineTriggered) return;
     totalDeadlineTriggered = true;
     options?.onTotalTimeout?.();
+    options?.onCancel?.('stream total deadline');
     void cancel('stream total deadline');
   };
   // Keep an independent wall-clock timer for active streams. A provider can ignore the fetch
@@ -871,6 +882,7 @@ async function readStreamingResponse(
       || totalDeadlineReached()
       || (error instanceof OpenRouterTimeoutError && error.kind === 'total');
     if (totalDeadlineExpired) triggerTotalDeadline();
+    if (!totalDeadlineExpired) options?.onCancel?.('stream timeout');
     await cancel(totalDeadlineExpired ? 'stream total deadline' : 'stream timeout');
     if (totalDeadlineExpired) throw totalDeadlineError();
     throw error;
@@ -964,6 +976,7 @@ async function readSdkStreamingResponse(
     ttftTimeoutMs?: number;
     totalTimeoutMs?: number;
     onTotalTimeout?: () => void;
+    onCancel?: (reason: string) => void;
   },
 ): Promise<any> {
   const reader = stream.getReader();
@@ -991,10 +1004,11 @@ async function readSdkStreamingResponse(
   let totalDeadlineTriggered = false;
   const totalTimer = totalDeadlineAt
     ? setTimeout(() => {
-        totalDeadlineTriggered = true;
-        options?.onTotalTimeout?.();
-        void cancelReader(reader, 'stream total deadline');
-      }, Math.max(0, totalDeadlineAt - Date.now()))
+      totalDeadlineTriggered = true;
+      options?.onTotalTimeout?.();
+      options?.onCancel?.('stream total deadline');
+      void cancelReader(reader, 'stream total deadline');
+    }, Math.max(0, totalDeadlineAt - Date.now()))
     : undefined;
   let receivedFirstData = false;
 
@@ -1039,7 +1053,19 @@ async function readSdkStreamingResponse(
       totalDeadlineTriggered = true;
       options?.onTotalTimeout?.();
     }
-    await cancelReader(reader, totalExpired ? 'stream total deadline' : 'stream timeout');
+    // Cancellation is best-effort cleanup. Do not make the caller wait for a provider's
+    // cancellation promise after the deadline has already classified the request; a provider
+    // that ignores cancellation must not hold the review lane open.
+    const cancelReason = totalExpired ? 'stream total deadline' : 'stream timeout';
+    // Preserve the background compatibility capture for SDK schema failures; the caller may
+    // still need it to parse a broader OpenAI-compatible envelope. Only hard timeouts should
+    // discard that capture.
+    if (totalExpired || error instanceof OpenRouterTimeoutError) options?.onCancel?.(cancelReason);
+    // cancelReader invokes reader.cancel synchronously and only bounds its completion wait. Give
+    // the stream tee one microtask to propagate cancellation before this classified rejection is
+    // observed by callers; never await a provider-controlled cancellation promise here.
+    void cancelReader(reader, cancelReason);
+    await Promise.resolve();
     if (totalExpired) throw totalDeadlineError();
     throw error;
   } finally {
@@ -1103,22 +1129,112 @@ async function createOpenRouterSdkClient(options: {
   onGenerationId?: (value: string) => void;
 }): Promise<OpenRouterSdkClient> {
   const { OpenRouter, HTTPClient } = await loadOpenRouterSdk();
+  type RawCompatibilityCapture = {
+    body: Promise<string>;
+    status: number;
+    statusText: string;
+    headers: Headers;
+    cancel: (reason: string) => void;
+  };
+  let rawResponseForCompatibility: RawCompatibilityCapture | null = null;
   const httpClient = new HTTPClient({
     fetcher: async (sdkRequest: Request) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
-      return options.fetchImplementation(sdkRequest.url, {
+      let response = await options.fetchImplementation(sdkRequest.url, {
         method: sdkRequest.method,
         headers: sdkRequest.headers,
         ...(body !== undefined ? { body } : {}),
         signal: sdkRequest.signal,
       });
+      if (!(response instanceof Response)) {
+        // Keep injected OpenAI-compatible test/replay transports usable while production fetch
+        // remains a native WHATWG Response. The official SDK receives the adapted response;
+        // response validation and compatibility parsing still happen through the same path.
+        const compatibilityResponse: any = response as any;
+        let compatibilityBody = compatibilityResponse?.body || '';
+        if (!compatibilityBody && typeof compatibilityResponse?.json === 'function') {
+          try {
+            compatibilityBody = JSON.stringify(await compatibilityResponse.json());
+          } catch (_) {
+            // Fall through to text for malformed/non-JSON doubles.
+          }
+        }
+        if (!compatibilityBody && typeof compatibilityResponse?.text === 'function') {
+          compatibilityBody = await compatibilityResponse.text();
+        }
+        response = new Response(compatibilityBody, {
+          status: Number(compatibilityResponse?.status) || 200,
+          statusText: compatibilityResponse?.statusText,
+          headers: compatibilityResponse?.headers || { 'content-type': 'application/json' },
+        });
+      }
+      // Buffer one clone so a legacy OpenAI-compatible response can be parsed after the official
+      // SDK rejects a missing optional envelope field. Reading the clone concurrently is
+      // important: an unused Response.clone() tee keeps SDK EventStream cancellation pending at
+      // [DONE], which can otherwise look like a provider timeout. The SDK remains the primary
+      // parser; this bounded adapter exists for existing callers and fixtures that intentionally
+      // exercise the broader OpenAI-compatible contract.
+      try {
+        const rawClone = response.clone();
+        const rawReader = rawClone.body?.getReader();
+        const body = rawReader
+          ? (async () => {
+              const decoder = new TextDecoder();
+              let text = '';
+              try {
+                while (true) {
+                  const { done, value } = await rawReader.read();
+                  if (done) break;
+                  if (value) text += decoder.decode(value, { stream: true });
+                }
+                return text + decoder.decode();
+              } finally {
+                rawReader.releaseLock?.();
+              }
+            })()
+          : rawClone.text();
+        let cancelled = false;
+        rawResponseForCompatibility = {
+          body,
+          status: response.status,
+          statusText: response.statusText,
+          headers: new Headers(response.headers),
+          cancel: (reason: string) => {
+            if (cancelled) return;
+            cancelled = true;
+            try {
+              void rawReader?.cancel(reason).catch(() => undefined);
+            } catch (_) {
+              // Cleanup is best effort; the request has already been classified by the caller.
+            }
+          },
+        };
+      } catch (_) {
+        // A custom test transport may not implement the native Response clone contract. The SDK
+        // call remains authoritative; compatibility parsing is simply unavailable for that body.
+        rawResponseForCompatibility = null;
+      }
+      return response;
     },
   });
+  const cancelRawResponse = (reason: string): void => {
+    const response = rawResponseForCompatibility;
+    rawResponseForCompatibility = null;
+    if (!response) return;
+    try {
+      // Cancel the background compatibility capture whenever the SDK
+      // stream is classified as timed out, otherwise the original upstream branch cannot see
+      // cancellation and a fake or non-cooperative provider can keep the review alive.
+      response.cancel(reason);
+    } catch (_) {
+      // Cleanup is best effort; the request has already been classified by the caller.
+    }
+  };
   httpClient.addHook('response', (response: Response) => {
-    const generationId = response.headers.get('x-generation-id');
+    const generationId = response?.headers?.get?.('x-generation-id');
     if (generationId) options.onGenerationId?.(generationId);
   });
-  return new OpenRouter({
+  const client = new OpenRouter({
     apiKey: options.apiKey,
     serverURL: options.baseUrl,
     httpClient,
@@ -1126,6 +1242,23 @@ async function createOpenRouterSdkClient(options: {
     // Disable the SDK's default one-hour 5xx retry loop so it cannot violate the 15-minute CI cap.
     retryConfig: { strategy: 'none' },
   });
+  client.getRawResponse = async () => {
+    const capture = rawResponseForCompatibility;
+    rawResponseForCompatibility = null;
+    if (!capture) return null;
+    try {
+      const body = await capture.body;
+      return new Response(body, {
+        status: capture.status,
+        statusText: capture.statusText,
+        headers: capture.headers,
+      });
+    } catch (_) {
+      return null;
+    }
+  };
+  client.cancelRawResponse = cancelRawResponse;
+  return client;
 }
 
 function sdkErrorStatus(error: any): number | undefined {
@@ -1139,6 +1272,15 @@ function sdkErrorMessage(error: any): string {
     ?? error?.message
     ?? String(error);
   return String(detail).slice(0, 2_000);
+}
+
+function isSdkResponseValidationFailure(error: any): boolean {
+  const name = String(error?.name || '');
+  const message = sdkErrorMessage(error);
+  return name === 'ResponseValidationError'
+    || name === 'SDKValidationError'
+    || name === 'ZodError'
+    || /response validation failed|invalid input|invalid_(?:union|type|value)|expected .* received|malformed json|unexpected status or content-type/i.test(message);
 }
 
 /** OpenAI-compatible model boundary pinned to OpenRouter for review execution. */
@@ -1164,50 +1306,107 @@ export class OpenRouterClient implements ReviewModelClient {
     }
 
     const effectiveModel = normalizeOpenRouterModel(request.model);
+    let generationId: string | null = null;
+    // Loading the local SDK is not provider latency and must not consume a caller's request
+    // deadline. This is especially important for the first invocation in a fresh action process.
+    const sdkClient = await createOpenRouterSdkClient({
+      baseUrl: this.baseUrl,
+      apiKey: this.apiKey,
+      fetchImplementation: this.fetchImplementation,
+      onGenerationId: (value) => { generationId = value; },
+    });
     const started = this.now();
     const startedAt = Date.now();
     const controller = new AbortController();
     let requestDeadlineExpired = false;
-    let generationId: string | null = null;
     const timeout = setTimeout(() => {
       requestDeadlineExpired = true;
       controller.abort();
     }, request.timeoutMs);
 
     try {
-      const sdkClient = await createOpenRouterSdkClient({
-        baseUrl: this.baseUrl,
-        apiKey: this.apiKey,
-        fetchImplementation: this.fetchImplementation,
-        onGenerationId: (value) => { generationId = value; },
-      });
-      const sdkResponse = await sdkClient.chat.send(
-        {
-          xOpenRouterMetadata: 'enabled',
-          chatRequest: buildOpenRouterSdkChatRequest(request),
-        },
-        {
-          signal: controller.signal,
-          retries: { strategy: 'none' },
-        },
-      );
-      const data = sdkResponse && typeof (sdkResponse as any).getReader === 'function'
-        ? await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
-            ttftTimeoutMs: request.ttftTimeoutMs,
-            inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
-            totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
-            onTotalTimeout: () => {
-              requestDeadlineExpired = true;
-              controller.abort();
-            },
-          })
-        : normalizeSdkResponse(sdkResponse);
+      let data: any;
+      let compatibilityFallbackUsed = false;
+      try {
+        const sdkResponse = await sdkClient.chat.send(
+          {
+            xOpenRouterMetadata: 'enabled',
+            chatRequest: buildOpenRouterSdkChatRequest(request),
+          },
+          {
+            signal: controller.signal,
+            retries: { strategy: 'none' },
+          },
+        );
+        data = sdkResponse && typeof (sdkResponse as any).getReader === 'function'
+          ? await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
+              ttftTimeoutMs: request.ttftTimeoutMs,
+              inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+              totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+              onTotalTimeout: () => {
+                requestDeadlineExpired = true;
+                controller.abort();
+              },
+              onCancel: (reason) => sdkClient.cancelRawResponse?.(reason),
+            })
+          : normalizeSdkResponse(sdkResponse);
+        sdkClient.cancelRawResponse?.('sdk response parsed');
+      } catch (sdkError: any) {
+        let compatibilityResponse: Response | null = null;
+        if (sdkClient.getRawResponse) {
+          try {
+            compatibilityResponse = await readWithTimeout(
+              sdkClient.getRawResponse(),
+              Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+              () => new OpenRouterTimeoutError(
+                `OpenRouter compatibility response exceeded total deadline of ${request.timeoutMs}ms`,
+                'total',
+              ),
+            );
+          } catch (compatibilityReadError) {
+            sdkClient.cancelRawResponse?.('compatibility response deadline');
+            throw compatibilityReadError;
+          }
+        }
+        if (!compatibilityResponse || !compatibilityResponse.ok || !isSdkResponseValidationFailure(sdkError)) {
+          throw sdkError;
+        }
+
+        // The SDK's schema is intentionally strict, but OpenRouter also serves the broader
+        // OpenAI-compatible envelope used by older app callers. Retry parsing from the one-shot
+        // response clone only after SDK validation fails; malformed/empty content still fails
+        // closed below and no second network request is made.
+        compatibilityFallbackUsed = true;
+        try {
+          data = request.stream === false
+            ? await compatibilityResponse.json()
+            : await readStreamingResponse(compatibilityResponse, effectiveModel, {
+                ttftTimeoutMs: request.ttftTimeoutMs,
+                inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+                totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+                onTotalTimeout: () => {
+                  requestDeadlineExpired = true;
+                  controller.abort();
+                },
+              });
+        } catch (compatibilityError: any) {
+          if (compatibilityError instanceof OpenRouterResponseError
+            && /malformed streaming JSON/i.test(compatibilityError.message)) {
+            throw new OpenRouterResponseError(`OpenRouter returned malformed response: ${compatibilityError.message}`);
+          }
+          throw compatibilityError;
+        }
+      }
       const rawMsg = data?.choices?.[0]?.message;
       const content = (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '')
         ? rawMsg.content
         : (typeof rawMsg?.reasoning === 'string' && rawMsg.reasoning.trim() !== '' ? rawMsg.reasoning : '');
       if (typeof content !== 'string' || content.trim() === '') {
-        throw new OpenRouterResponseError('OpenRouter returned empty completion content');
+        throw new OpenRouterResponseError(
+          compatibilityFallbackUsed
+            ? 'OpenRouter returned malformed response: empty completion content'
+            : 'OpenRouter returned empty completion content',
+        );
       }
 
       const rawUsage = data.usage;

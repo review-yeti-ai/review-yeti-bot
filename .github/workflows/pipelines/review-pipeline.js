@@ -90,7 +90,9 @@ const DEFAULT_STREAM_MAX_WALL_CLOCK_MS = 180_000;
 // OpenRouter's official SDK is used only for the OpenRouter gateway branch. Direct providers
 // remain on their existing OpenAI-compatible transport because their response contracts and
 // recovery policies are intentionally different. The Action installs this pinned dependency in
-// its own path before this pipeline starts; the lazy load keeps non-OpenRouter callers unchanged.
+// its own path before this pipeline starts. Preload the module when available so the first
+// transport deadline measures provider work rather than the SDK's one-time module initialization;
+// the guarded load still lets non-OpenRouter callers report a clear error if packaging is broken.
 let openRouterSdkModule = null;
 
 function loadOpenRouterSdk() {
@@ -102,6 +104,13 @@ function loadOpenRouterSdk() {
     }
   }
   return openRouterSdkModule;
+}
+
+try {
+  openRouterSdkModule = require('@openrouter/sdk');
+} catch (_) {
+  // Keep import-time behavior compatible for callers that do not exercise OpenRouter. The
+  // OpenRouter branch will fail closed with the actionable error from loadOpenRouterSdk().
 }
 
 function mapOpenRouterSdkKeys(value, mapping) {
@@ -226,14 +235,32 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
   const { OpenRouter, HTTPClient } = loadOpenRouterSdk();
   let capturedResponse = null;
   let capturedCompatibilityResponse = null;
+  let capturedRawBody = null;
+  const cancelCapturedRawBody = (reason) => {
+    try {
+      capturedRawBody?.cancel?.(reason);
+    } catch (_) {
+      // Cleanup is best effort; the active request has already been classified by the caller.
+    }
+  };
   const httpClient = new HTTPClient({
     fetcher: async (sdkRequest) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
-      const response = await fetchImpl(sdkRequest.url, {
+      let response = await fetchImpl(sdkRequest.url, {
         method: sdkRequest.method,
         headers: (() => {
           if (!(sdkRequest.headers instanceof Headers)) return sdkRequest.headers;
           const headers = Object.fromEntries(sdkRequest.headers.entries());
+          for (const [wireName, legacyName] of [
+            ['authorization', 'Authorization'],
+            ['content-type', 'Content-Type'],
+            ['accept', 'Accept'],
+          ]) {
+            if (headers[wireName] !== undefined) {
+              headers[legacyName] = headers[wireName];
+              delete headers[wireName];
+            }
+          }
           // Preserve the legacy test/instrumentation spelling while the SDK itself owns the
           // actual wire headers (HTTP header names remain case-insensitive on the network).
           const metadata = sdkRequest.headers.get('x-openrouter-metadata');
@@ -249,14 +276,21 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
       // Unit/replay callers may inject a small OpenAI-compatible response double instead of a
       // WHATWG Response. Keep that test seam compatible without weakening production behavior:
       // runner fetch always returns a native Response and therefore always takes the SDK path.
+      const compatibilityStreamDouble = !(response instanceof Response)
+        && typeof response?.body?.getReader === 'function';
       if (!(response instanceof Response)) {
         capturedCompatibilityResponse = response;
         // The generated SDK expects a WHATWG Response. Adapt only the test/replay seam to a
         // native response so the SDK can still exercise its request/validation path; if the
         // compatibility payload is not a complete SDK envelope, the catch below returns the
         // original response double to preserve the pipeline's legacy parser contract.
-        let compatibilityBody = '';
-        if (typeof response?.json === 'function') {
+        // A response double may expose a live ReadableStream as `body`. It cannot be coerced into
+        // the native Response constructor without losing the stream; keep the original double
+        // available for the legacy parser when the strict SDK rejects the empty adaptation.
+        let compatibilityBody = typeof response?.body === 'string' || response?.body instanceof Uint8Array
+          ? response.body
+          : '';
+        if (!compatibilityBody && typeof response?.json === 'function') {
           try {
             compatibilityBody = JSON.stringify(await response.json());
           } catch (_) {
@@ -266,12 +300,61 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
         if (!compatibilityBody && typeof response?.text === 'function') {
           compatibilityBody = await response.text();
         }
-        return new Response(compatibilityBody, {
+        response = new Response(compatibilityStreamDouble ? '{}' : compatibilityBody, {
           status: Number(response?.status) || 200,
-          headers: response?.headers || { 'content-type': 'application/json' },
+          headers: compatibilityStreamDouble
+            ? { 'content-type': 'application/json' }
+            : response?.headers || { 'content-type': 'application/json' },
         });
       }
       capturedResponse = response;
+      // Consume a clone in parallel so an SDK schema rejection can fall back to the repository's
+      // broader OpenAI-compatible parser without leaving an unread tee that blocks EventStream
+      // cancellation at [DONE]. This is one bounded in-memory response, not a second request.
+      try {
+        const rawClone = response.clone();
+        const rawReader = rawClone.body?.getReader();
+        const body = rawReader
+          ? (async () => {
+              const decoder = new TextDecoder();
+              let text = '';
+              try {
+                while (true) {
+                  const { done, value } = await rawReader.read();
+                  if (done) break;
+                  if (value) text += decoder.decode(value, { stream: true });
+                }
+                return text + decoder.decode();
+              } finally {
+                rawReader.releaseLock?.();
+              }
+            })()
+          : rawClone.text();
+        let cancelled = false;
+        capturedRawBody = compatibilityStreamDouble ? null : {
+          body,
+          status: response.status,
+          statusText: response.statusText,
+          headers: new Headers(response.headers),
+          cancel: (reason) => {
+            if (cancelled) return;
+            cancelled = true;
+            try {
+              const cancellation = rawReader?.cancel(reason);
+              if (cancellation?.catch) void cancellation.catch(() => {});
+            } catch (_) {
+              // Cleanup is best effort; the active request has already been classified by the caller.
+            }
+          },
+        };
+        if (capturedRawBody && signal) {
+          const cancelOnAbort = () => cancelCapturedRawBody('request aborted');
+          if (signal.aborted) cancelOnAbort();
+          else signal.addEventListener('abort', cancelOnAbort, { once: true });
+        }
+      } catch (_) {
+        capturedRawBody = null;
+      }
       return response;
     },
   });
@@ -297,15 +380,43 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
         start(controller) {
           (async () => {
             const reader = upstream.getReader();
+            let emittedChunks = 0;
             try {
               while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                emittedChunks += 1;
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(sdkChunkToWire(value))}\n\n`));
               }
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              // A few existing replay callers use line-delimited OpenAI-compatible fixtures
+              // without the blank SSE event delimiter required by the SDK. If the strict SDK
+              // therefore observes an empty stream, replay the already-buffered response through
+              // the legacy parser seam; live OpenRouter responses use the SDK path normally.
+              if (emittedChunks === 0 && capturedRawBody) {
+                const rawBody = await capturedRawBody.body;
+                if (rawBody.trim()) controller.enqueue(encoder.encode(rawBody));
+                else controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              } else {
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              }
               controller.close();
+              cancelCapturedRawBody('sdk response parsed');
             } catch (error) {
+              // Preserve the broader OpenAI-compatible response contract when the official SDK
+              // rejects legacy/incomplete chunk envelopes. This does not retry the request.
+              if (capturedRawBody && !signal?.aborted) {
+                try {
+                  const rawBody = await capturedRawBody.body;
+                  if (rawBody.trim()) {
+                    controller.enqueue(encoder.encode(rawBody));
+                    controller.close();
+                    cancelCapturedRawBody('compatibility response parsed');
+                    return;
+                  }
+                } catch (_) {
+                  // Fall through to the strict SDK error when capture is unavailable.
+                }
+              }
               controller.error(error);
             } finally {
               reader.releaseLock?.();
@@ -324,6 +435,7 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
         sdkError: null,
       };
     }
+    cancelCapturedRawBody('sdk response parsed');
     return {
       response: new Response(JSON.stringify(sdkResultToWire(result)), {
         status: capturedResponse?.status || 200,
@@ -332,8 +444,32 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
       sdkError: null,
     };
   } catch (error) {
-    if (capturedCompatibilityResponse) {
+    if (signal?.aborted) cancelCapturedRawBody('request aborted');
+    if (capturedCompatibilityResponse && !capturedRawBody) {
       return { response: capturedCompatibilityResponse, sdkError: null };
+    }
+    if (capturedRawBody && !signal?.aborted) {
+      try {
+        const abort = signal
+          ? new Promise((_, reject) => {
+              if (signal.aborted) reject(new Error('request aborted'));
+              else signal.addEventListener('abort', () => reject(new Error('request aborted')), { once: true });
+            })
+          : null;
+        const body = await (abort
+          ? Promise.race([capturedRawBody.body, abort])
+          : capturedRawBody.body);
+        return {
+          response: new Response(body, {
+            status: capturedRawBody.status,
+            statusText: capturedRawBody.statusText,
+            headers: capturedRawBody.headers,
+          }),
+          sdkError: null,
+        };
+      } catch (_) {
+        // Preserve the SDK error below when the provider body cannot be captured before abort.
+      }
     }
     const status = Number(error?.statusCode || error?.status || error?.rawResponse?.status || capturedResponse?.status || 500);
     const headers = error?.headers || capturedResponse?.headers || { 'content-type': 'application/json' };
@@ -2829,7 +2965,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const recordResponseAttempt = (outcome, overrides = {}) => {
           if (responseAttemptRecorded || responseAttempts.length >= MAX_MODEL_RESPONSE_ATTEMPTS) return;
           responseAttemptRecorded = true;
-          const reasoningEffortForAttempt = requestBody.reasoning?.enabled === false
+          const reasoningEffortForAttempt = requestBody.reasoning?.enabled === false || requestBody.reasoning?.effort === 'none'
             ? 'none'
             : requestBody.reasoning?.effort || requestBody.reasoning_effort || 'missing';
           const attemptFailureClass = overrides.failureClass ?? failureClass;
@@ -3137,7 +3273,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 requestBody.max_tokens,
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
               );
-              if (isOpenRouterTransport) requestBody.reasoning = { enabled: false };
+              if (isOpenRouterTransport) requestBody.reasoning = { effort: 'none' };
               else if (isDirectReasoning) requestBody.reasoning_effort = 'none';
               else requestBody.reasoning_effort = 'low';
               requestBody.messages[0].content += [
