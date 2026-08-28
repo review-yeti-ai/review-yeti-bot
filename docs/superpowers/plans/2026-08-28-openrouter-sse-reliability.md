@@ -42,8 +42,14 @@ metadata. Qualification remains manual, non-publishing, and capped at 15 minutes
   ran on merged `46abe269`, completed one streamed request in 1.9 seconds (TTFT 295 ms),
   returned HTTP 200 and a parseable response on the first attempt, and recorded no retry or
   failure. This is transport evidence only; it does not authorize production activation.
-- [ ] Repeat with three fixtures only if the one-fixture probe has 100% terminal completion and
-  complete attempt attribution. Keep this probe evidence-only and non-publishing.
+- [x] Repeat with three fixtures only if the one-fixture probe has 100% terminal completion and
+  complete attempt attribution. Keep this probe evidence-only and non-publishing. The corrected
+  2026-08-28 batch run [33197006887](https://github.com/review-yeti-ai/review-yeti-bot/actions/runs/33197006887)
+  ran all three fixtures serially on merged `0250c0c`: 3/3 terminal, 4/4 model attempts attributed
+  to OpenRouter, HTTP 200 for every response, and 40.6 seconds total. One security fixture hit a
+  first-attempt TTFT timeout after headers and recovered on the bounded second attempt in 505 ms;
+  the other two parsed on their first attempt. This demonstrates recovery behavior, not a claim of
+  zero transient provider stalls.
 - [ ] Run separate direct-fixed-model and Auto Router/provider-routing comparisons. Keep model,
   prompt, stream mode, deadlines, and fixture order identical within each comparison; do not claim
   provider equivalence across different sampler or route policies.
@@ -62,7 +68,8 @@ is `openrouter-live-proof-v1`: `terminal=true`, `publication=none`, `failover=di
 and one parsed attempt. The policy fingerprint is recorded and the router metadata is limited to
 strategy, region, and attempt. No credential-like strings were present in the downloaded receipt.
 One successful fixture proves the SDK/SSE connection path; it does not establish provider quality or
-long-run reliability. The three-fixture qualification remains intentionally pending.
+long-run reliability. The three-fixture batch now proves 3/3 terminal completion with one recovered
+TTFT stall; direct-model comparison, quality metrics, and production activation remain pending.
 
 ## Acceptance gates
 
