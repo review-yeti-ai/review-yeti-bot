@@ -492,8 +492,8 @@ describe('reviewWithModel', () => {
       fetchImpl: impl,
       openRouterPolicy: {
         base_url: 'https://openrouter.ai/api/v1',
-        model: 'z-ai/glm-5.1',
-        allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+        model: 'z-ai/glm-5.2',
+        allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
         data_collection: 'deny',
         cost_quality_tradeoff: 5,
       },
@@ -501,12 +501,12 @@ describe('reviewWithModel', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].body).toMatchObject({
-      model: 'z-ai/glm-5.1',
+      model: 'z-ai/glm-5.2',
       provider: { data_collection: 'deny' },
       plugins: [
         {
           id: 'auto-router',
-          allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+          allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
           cost_quality_tradeoff: 5,
         },
       ],
@@ -529,7 +529,7 @@ describe('reviewWithModel', () => {
       openRouterPolicy: {
         base_url: 'https://openrouter.ai/api/v1',
         model: 'openrouter/auto',
-        allowed_models: ['openai/gpt-5.6-luna', 'z-ai/glm-5.1'],
+        allowed_models: ['openai/gpt-5.6-luna', 'z-ai/glm-5.2'],
         data_collection: 'deny',
         cost_quality_tradeoff: 5,
       },
@@ -1079,7 +1079,7 @@ describe('reviewWithModel', () => {
         status: 200,
         headers: new Headers({ 'x-generation-id': 'gen-recovered' }),
         json: async () => ({
-          model: 'z-ai/glm-5.1',
+          model: 'z-ai/glm-5.2',
           openrouter_metadata: { attempt: 2 },
           choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
         }),
@@ -1126,7 +1126,7 @@ describe('reviewWithModel', () => {
     expect(calls[0].headers['X-OpenRouter-Metadata']).toBe('enabled');
     expect(calls[1].body).toMatchObject({
       model: 'openai/gpt-5.6-luna',
-      models: ['moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.1'],
+      models: ['moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.2'],
       provider: { data_collection: 'deny', require_parameters: true },
       response_format: { type: 'json_object' },
     });
@@ -1143,20 +1143,20 @@ describe('reviewWithModel', () => {
         'openai/gpt-5.6-luna',
         'moonshotai/kimi-k2.6',
         'tencent/hy3',
-        'z-ai/glm-5.1',
+        'z-ai/glm-5.2',
         'google/gemini-3.5-flash-lite',
       ],
       expectedModels: [
         'openai/gpt-5.6-luna',
         'moonshotai/kimi-k2.6',
-        'z-ai/glm-5.1',
+        'z-ai/glm-5.2',
       ],
     },
     {
       name: 'retains every remaining model when the policy is below the limit',
-      failedModel: 'z-ai/glm-5.1',
-      model: 'z-ai/glm-5.1',
-      allowedModels: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.1'],
+      failedModel: 'z-ai/glm-5.2',
+      model: 'z-ai/glm-5.2',
+      allowedModels: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
       expectedModels: ['moonshotai/kimi-k2.6'],
     },
   ])('$name', async ({ failedModel, model, allowedModels, expectedModels }) => {
