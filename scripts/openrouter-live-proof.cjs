@@ -62,9 +62,12 @@ const FIXTURES = Object.freeze({
 });
 
 function argument(name, fallback) {
+  const args = process.argv.slice(2);
   const prefix = `--${name}=`;
-  const value = process.argv.slice(2).find((entry) => entry.startsWith(prefix));
-  return value ? value.slice(prefix.length) : fallback;
+  const inline = args.find((entry) => entry.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const position = args.indexOf(`--${name}`);
+  return position >= 0 && args[position + 1] !== undefined ? args[position + 1] : fallback;
 }
 
 function fixtureIdsFromArguments() {
