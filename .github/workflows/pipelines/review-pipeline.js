@@ -466,6 +466,7 @@ const ACTION_MAX_DIFF_CAP = 10_000_000;
 // remain authoritative.
 const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
 const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
+const DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS = 30_000;
 // Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
 // still caps the complete generated sequence (reasoning plus the final JSON).
 // Keep an 8,192-token structured-output target and reserve three times that
@@ -616,6 +617,8 @@ function resolveModelConfig(env = process.env) {
             || (t.structured_output === 'json_schema' ? 'json_schema' : undefined),
           perfMetricsInResponse: t.perf_metrics_in_response === true || t.perfMetricsInResponse === true,
           maxTokens: t.max_tokens || t.maxTokens || t.max_output_tokens || t.maxOutputTokens,
+          connectTimeoutMs: t.connect_timeout_ms || t.connectTimeoutMs,
+          ttftTimeoutMs: t.ttft_ms || t.ttftMs || t.ttft_timeout_ms || t.ttftTimeoutMs,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
         };
       }).filter((t) => Boolean(t.apiKey))
@@ -1305,6 +1308,7 @@ function normalizeModelResponseAttempt(entry = {}) {
     transport: normalizeTelemetryProvider(entry.transport),
     provider: normalizeTelemetryProvider(entry.provider) || normalizeTelemetryProvider(entry.transport),
     latencyMs: normalizeTelemetryDuration(entry.latencyMs),
+    ttftMs: normalizeTelemetryDuration(entry.ttftMs),
     responseStatus: normalizeTelemetryStatus(entry.responseStatus),
     failureClass: normalizeTelemetryOutcomeClass(entry.failureClass),
     ...(timeoutKind ? { timeoutKind } : {}),
@@ -1320,6 +1324,7 @@ function normalizeModelResponseAttempt(entry = {}) {
     contentSizeBucket: normalizeResponseSizeBucket(entry.contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(entry.reasoningSizeBucket),
     outputContract: normalizeOutputContractTelemetry(entry.outputContract),
+    ...(entry.routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(entry.routerMetadata) } : {}),
   };
   if (requestFingerprint) normalized.requestFingerprint = requestFingerprint;
   if (generationIdDigest) normalized.generationIdDigest = generationIdDigest;
@@ -1462,6 +1467,38 @@ function normalizeTelemetryProvider(value) {
 function hashTelemetryIdentifier(value) {
   const normalized = normalizeTelemetryIdentifier(value);
   return normalized ? createHash('sha256').update(normalized, 'utf-8').digest('hex') : null;
+}
+
+// OpenRouter router metadata is useful for diagnosing endpoint selection, but its raw form may
+// contain URLs or provider-provided text. Retain only bounded labels, attempt numbers, and
+// one-way endpoint/provider digests so receipts remain safe to publish.
+function normalizeOpenRouterMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const metadata = {};
+  for (const [target, source] of [
+    ['strategy', value.strategy],
+    ['region', value.region],
+    ['taskType', value.task_type ?? value.taskType],
+  ]) {
+    const normalized = normalizeTelemetryIdentifier(source);
+    if (normalized) metadata[target] = normalized.slice(0, 64);
+  }
+  const attempt = normalizeTelemetryAttemptCount(value.attempt);
+  if (attempt !== null) metadata.attempt = attempt;
+  const candidates = [
+    ...(Array.isArray(value.endpoints) ? value.endpoints : []),
+    ...(Array.isArray(value.available_providers) ? value.available_providers : []),
+    ...(Array.isArray(value.attempts) ? value.attempts : []),
+  ];
+  const endpointDigests = candidates.map((candidate) => {
+    if (typeof candidate === 'string') return hashTelemetryIdentifier(candidate);
+    if (!candidate || typeof candidate !== 'object') return null;
+    return hashTelemetryIdentifier(
+      candidate.endpoint || candidate.url || candidate.provider || candidate.slug || candidate.name,
+    );
+  }).filter(Boolean).slice(0, 16);
+  if (endpointDigests.length > 0) metadata.endpointDigests = endpointDigests;
+  return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 function normalizeTelemetryDigest(value) {
@@ -2030,6 +2067,8 @@ async function readChatCompletionResponse(
   streamEnabled,
   inactivityTimeoutMs = 90_000,
   totalTimeoutMs = 0,
+  ttftTimeoutMs = inactivityTimeoutMs,
+  onFirstData,
 ) {
   const contentType = typeof response?.headers?.get === 'function'
     ? String(response.headers.get('content-type') || '').toLowerCase()
@@ -2041,37 +2080,72 @@ async function readChatCompletionResponse(
   const chunks = [];
   const reasoningChunks = [];
   let latest = null;
+  let streamedRouterMetadata = null;
   let pending = '';
+  let eventData = [];
+  let receivedFirstData = false;
+  const streamStartedAt = Date.now();
+  const dispatchEvent = () => {
+    if (eventData.length === 0) return;
+    const data = eventData.join('\n');
+    eventData = [];
+    if (!data || data === '[DONE]') return;
+    if (!receivedFirstData) {
+      receivedFirstData = true;
+      onFirstData?.(Date.now() - streamStartedAt);
+    }
+    try {
+      const payload = JSON.parse(data);
+      latest = payload;
+      if (payload?.openrouter_metadata && typeof payload.openrouter_metadata === 'object') {
+        streamedRouterMetadata = payload.openrouter_metadata;
+      }
+      const choice = payload?.choices?.[0];
+      const delta = contentFragments(choice?.delta?.content);
+      const message = contentFragments(choice?.message?.content);
+      const deltaReasoning = reasoningFragments(
+        choice?.delta?.reasoning_details
+          ?? choice?.delta?.reasoning
+          ?? choice?.delta?.reasoning_content,
+      );
+      const messageReasoning = reasoningFragments(
+        choice?.message?.reasoning_details
+          ?? choice?.message?.reasoning
+          ?? choice?.message?.reasoning_content,
+      );
+      if (delta.length > 0) chunks.push(...delta);
+      else if (message.length > 0) chunks.push(...message);
+      if (deltaReasoning.length > 0) reasoningChunks.push(...deltaReasoning);
+      else if (messageReasoning.length > 0) reasoningChunks.push(...messageReasoning);
+    } catch (_) {
+      // Providers may terminate a stream with a partial final SSE frame. The
+      // completed content accumulated so far remains valid and is parsed below.
+    }
+  };
   const consume = (text, final = false) => {
     pending += String(text);
     const lines = pending.split(/\r?\n/);
     pending = final ? '' : (lines.pop() || '');
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const data = trimmed.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-      try {
-        const payload = JSON.parse(data);
-        latest = payload;
-        const choice = payload?.choices?.[0];
-        const delta = contentFragments(choice?.delta?.content);
-        const message = contentFragments(choice?.message?.content);
-        const deltaReasoning = reasoningFragments(
-          choice?.delta?.reasoning ?? choice?.delta?.reasoning_content,
-        );
-        const messageReasoning = reasoningFragments(
-          choice?.message?.reasoning ?? choice?.message?.reasoning_content,
-        );
-        if (delta.length > 0) chunks.push(...delta);
-        else if (message.length > 0) chunks.push(...message);
-        if (deltaReasoning.length > 0) reasoningChunks.push(...deltaReasoning);
-        else if (messageReasoning.length > 0) reasoningChunks.push(...messageReasoning);
-      } catch (_) {
-        // Providers may terminate a stream with a partial final SSE frame. The
-        // completed content accumulated so far remains valid and is parsed below.
+      if (line === '') {
+        dispatchEvent();
+        continue;
       }
+      // SSE comments are keep-alives. They are intentionally not counted as
+      // first-token evidence, but their arrival keeps the reader alive.
+      if (line.startsWith(':')) continue;
+      const separator = line.indexOf(':');
+      const field = separator === -1 ? line : line.slice(0, separator);
+      if (field !== 'data') continue;
+      // OpenRouter emits one JSON object per event. A few compatible gateways omit
+      // the required blank separator; dispatch the previous data field leniently so
+      // that one missing delimiter cannot discard an otherwise complete response.
+      if (eventData.length > 0) dispatchEvent();
+      let value = separator === -1 ? '' : line.slice(separator + 1);
+      if (value.startsWith(' ')) value = value.slice(1);
+      eventData.push(value);
     }
+    if (final) dispatchEvent();
   };
 
   const totalDeadlineAt = totalTimeoutMs > 0 ? Date.now() + totalTimeoutMs : 0;
@@ -2092,11 +2166,13 @@ async function readChatCompletionResponse(
       void Promise.resolve(reader.cancel?.('stream total deadline')).catch(() => {});
     };
     const decoder = new TextDecoder();
-    let receivedFirstChunk = false;
     try {
       while (true) {
         throwIfTotalDeadline();
-        const readBudgetMs = Math.min(inactivityTimeoutMs, remainingTotalMs());
+        const readBudgetMs = Math.min(
+          receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs,
+          remainingTotalMs(),
+        );
         try {
           const { value, done } = await withStreamInactivityTimeout(
             reader.read(),
@@ -2104,19 +2180,18 @@ async function readChatCompletionResponse(
             () => {
               const timeoutError = streamInactivityError(
                 readBudgetMs,
-                receivedFirstChunk ? 'inactivity' : 'ttft',
+                receivedFirstData ? 'inactivity' : 'ttft',
               );
               // Reject the read race before cancellation can resolve reader.read() as { done: true }
               // and turn a watchdog failure into the misleading `empty_sse` outcome.
               queueMicrotask(() => {
-                void Promise.resolve(reader.cancel?.(receivedFirstChunk ? 'stream inactivity timeout' : 'stream ttft timeout')).catch(() => {});
+                void Promise.resolve(reader.cancel?.(receivedFirstData ? 'stream inactivity timeout' : 'stream ttft timeout')).catch(() => {});
               });
               return timeoutError;
             },
           );
           if (done) break;
           if (value) {
-            receivedFirstChunk = true;
             consume(decoder.decode(value, { stream: true }));
           }
         } catch (err) {
@@ -2145,6 +2220,7 @@ async function readChatCompletionResponse(
   const lastChoice = latest?.choices?.[0] || {};
   return {
     ...(latest || {}),
+    ...(streamedRouterMetadata ? { openrouter_metadata: streamedRouterMetadata } : {}),
     choices: [{
       ...lastChoice,
       message: {
@@ -2184,7 +2260,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   let reasoningPresent = false;
   let contentSizeBucket = 'empty';
   let reasoningSizeBucket = 'empty';
+  let ttftMs = null;
   let outputContract = null;
+  let routerMetadata = null;
   let requestFingerprint = null;
   const responseAttempts = [];
   const noteRetryReason = (reason) => {
@@ -2195,6 +2273,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ...base,
     attemptCount,
     latencyMs: normalizeTelemetryDuration(Date.now() - laneStartMs),
+    ttftMs: normalizeTelemetryDuration(ttftMs),
     retryReasons: [...retryReasons],
     failureClass: normalizeTelemetryOutcomeClass(finalFailureClass),
     responseStatus: normalizeTelemetryStatus(responseStatus),
@@ -2211,6 +2290,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     contentSizeBucket: normalizeResponseSizeBucket(contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(reasoningSizeBucket),
     outputContract: normalizeOutputContractTelemetry(outputContract),
+    ...(routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(routerMetadata) } : {}),
     ...(requestFingerprint ? { requestFingerprint } : {}),
     responseAttempts: normalizeModelResponseAttempts(responseAttempts),
   });
@@ -2323,6 +2403,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const configuredMaxOutputTokens =
         transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens;
       const structuredOutputMode = resolveStructuredOutputMode(transport);
+      const connectTimeoutMs = Math.min(
+        transportTimeoutMs,
+        Number(transport.connectTimeoutMs || transport.connect_timeout_ms) > 0
+          ? Number(transport.connectTimeoutMs || transport.connect_timeout_ms)
+          : transportTimeoutMs,
+      );
+      const ttftTimeoutMs = Math.min(
+        transportTimeoutMs,
+        Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms) > 0
+          ? Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms)
+          : isOpenRouterTransport
+            ? DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS
+            : transportTimeoutMs,
+      );
 
       resultBase = {
         ...resultBase,
@@ -2462,6 +2556,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         reasoningPresent = false;
         contentSizeBucket = 'empty';
         reasoningSizeBucket = 'empty';
+        ttftMs = null;
+        routerMetadata = null;
         generationIdDigest = null;
         const attemptStartedMs = Date.now();
         let attemptResponseStatus = null;
@@ -2499,9 +2595,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             findingsSource,
             contentPresent,
             reasoningPresent,
+            ttftMs,
             contentSizeBucket,
             reasoningSizeBucket,
             outputContract,
+            routerMetadata,
             requestFingerprint,
             generationIdDigest,
             ...overrides,
@@ -2518,13 +2616,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
               () => streamAbortController.abort(streamInactivityError(transportTimeoutMs, 'request')),
-              transportTimeoutMs,
+              connectTimeoutMs,
             );
           }
           const response = await fetchImpl(`${transportBaseUrl}/chat/completions`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              Accept: streamEnabled ? 'text/event-stream' : 'application/json',
               Authorization: `Bearer ${transportApiKey}`,
               ...(isOpenRouterTransport ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
             },
@@ -2607,16 +2706,22 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             streamEnabled,
             transportTimeoutMs,
             streamTotalTimeoutMs,
+            ttftTimeoutMs,
+            (value) => {
+              ttftMs = normalizeTelemetryDuration(value);
+            },
           );
           const payloadErrorCode = resolveOpenRouterErrorCode(payload);
           if (payloadErrorCode) errorCode = payloadErrorCode;
           if (payload?.openrouter_metadata?.attempt !== undefined) routerAttempt = payload.openrouter_metadata.attempt;
+          routerMetadata = normalizeOpenRouterMetadata(payload?.openrouter_metadata);
           const responseBase = {
             ...resultBase,
             model: resolveResponseModel(payload, requestModel),
             provider: resolveResponseProvider(payload, configuredProvider),
             transport: transportName,
             cost: extractResponseCost(payload),
+            ttftMs: normalizeTelemetryDuration(ttftMs),
             ...extractResponseTokenUsage(payload),
           };
 
@@ -2651,7 +2756,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const message = payload?.choices?.[0]?.message || {};
           const content = contentFragments(message.content).join('');
           const reasoning = reasoningFragments(
-            message.reasoning ?? message.reasoning_content,
+            message.reasoning_details ?? message.reasoning ?? message.reasoning_content,
           ).join('');
           finishReason = normalizeModelFinishReason(
             payload?.choices?.[0]?.finish_reason ?? payload?.choices?.[0]?.finishReason,
@@ -4226,6 +4331,7 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       errorCode: normalizeTelemetryErrorCode(result.errorCode),
       generationIdDigest: normalizeTelemetryIdentifier(result.generationIdDigest),
       routerAttempt: normalizeTelemetryAttemptCount(result.routerAttempt),
+      ...(result.routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(result.routerMetadata) } : {}),
       recoveryAction: normalizeTelemetryRecoveryAction(result.recoveryAction),
       outputShape: normalizeFindingsOutputShape(result.outputShape),
       finishReason: normalizeModelFinishReason(result.finishReason),
@@ -4744,6 +4850,7 @@ module.exports = {
   normalizeStructuredOutputMode,
   resolveStructuredOutputMode,
   buildFindingsResponseFormat,
+  readChatCompletionResponse,
   isStructuredOutputCompatibilityError,
   downgradeStructuredOutputRequest,
   FINDINGS_RESPONSE_SCHEMA,

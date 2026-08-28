@@ -7,6 +7,28 @@
 
 Plan: [`docs/superpowers/plans/2026-08-01-generational-review-engine-hardening.md`](superpowers/plans/2026-08-01-generational-review-engine-hardening.md)
 
+## Current OpenRouter reliability follow-up
+
+The production transport order is unchanged: Ollama remains primary, Fireworks remains the
+second transport, and OpenRouter remains the fallback. This follow-up hardens the protocol and
+qualification evidence before any routing decision; it does not authorize a canary, scheduled
+probe, automatic flip, or publication change. See the staged plan:
+[`docs/superpowers/plans/2026-08-28-openrouter-sse-reliability.md`](superpowers/plans/2026-08-28-openrouter-sse-reliability.md).
+
+- [x] Consume provider `text/event-stream` responses incrementally with a real SSE reader in the
+  action and the smoke probe; preserve chunk boundaries, keepalives, `[DONE]`, and metadata.
+- [x] Separate connection, time-to-first-data, inactivity, and total request deadlines, with
+  bounded reader cancellation and a 15-minute qualification job ceiling.
+- [x] Parse OpenRouter `reasoning_details` and retain sanitized router metadata for diagnosis
+  without storing URLs, prompts, secrets, or raw provider payloads.
+- [x] Carry the TTFT contract through the policy handoff and qualification receipt.
+- [ ] Run the serial, manual-only OpenRouter qualification matrix (one fixture, then three) and
+  require 100% terminal completion before comparing review quality.
+- [ ] Compare direct fixed-model and Auto Router/provider-routing behavior in separate evidence
+  runs; do not mix route choice with production activation.
+- [ ] Make an explicit, human-reviewed activation decision with a tested rollback; no canary,
+  schedule, or automatic provider-order mutation is permitted.
+
 Integration branch: `codex/review-bot-generational-hardening`
 
 ## Execution order
