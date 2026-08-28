@@ -547,13 +547,29 @@ interface StreamState {
   lastChunkTime: number;
 }
 
+function reasoningText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return '';
+  return value.flatMap((part) => {
+    if (typeof part === 'string') return [part];
+    if (!part || typeof part !== 'object') return [];
+    const candidate = part as Record<string, unknown>;
+    if (typeof candidate.text === 'string') return [candidate.text];
+    if (typeof candidate.reasoning === 'string') return [candidate.reasoning];
+    if (typeof candidate.content === 'string') return [candidate.content];
+    return [];
+  }).join('');
+}
+
 function collectChunk(data: any, state: StreamState): void {
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
   if (typeof content === 'string') state.content += content;
-  const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
-  if (typeof reasoning === 'string') state.reasoning += reasoning;
+  const reasoning = choice?.delta?.reasoning_details
+    ?? choice?.delta?.reasoning
+    ?? choice?.delta?.reasoning_content;
+  state.reasoning += reasoningText(reasoning);
   if (data?.usage) {
     // Providers may emit token usage and cost details in separate terminal SSE frames. Merge
     // them instead of letting a later cost-only frame erase prompt/completion token counts.
@@ -660,7 +676,10 @@ async function readStreamingResponse(
     : inactivityTimeoutMs;
   const personaLabel = options?.persona ? `[Persona: ${options.persona}] ` : '';
   let lastHeartbeatLog = Date.now();
-  let receivedFirstChunk = false;
+  // SSE comments/keepalives prove the connection is alive, but they are not a
+  // first-data event. Keep TTFT tied to an actual provider payload so a stream
+  // cannot evade the first-token budget with heartbeats alone.
+  let receivedFirstData = false;
   const totalDeadlineAt = options?.totalTimeoutMs && options.totalTimeoutMs > 0
     ? Date.now() + options.totalTimeoutMs
     : 0;
@@ -705,6 +724,7 @@ async function readStreamingResponse(
     if (!json || json === '[DONE]') return;
     try {
       collectChunk(JSON.parse(json), state);
+      receivedFirstData = true;
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed streaming JSON');
     }
@@ -727,14 +747,14 @@ async function readStreamingResponse(
       if (remainingTotalMs <= 0) {
         throw totalDeadlineError();
       }
-      const inactivityBudgetMs = receivedFirstChunk ? inactivityTimeoutMs : ttftTimeoutMs;
+      const inactivityBudgetMs = receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs;
       const readTimeoutMs = Math.min(inactivityBudgetMs, remainingTotalMs);
       const { done, value } = await readWithTimeout(
         readPromise,
         readTimeoutMs,
         () => totalDeadlineNear()
           ? totalDeadlineError()
-          : receivedFirstChunk
+          : receivedFirstData
             ? new OpenRouterTimeoutError(
                 `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`,
                 'inactivity',
@@ -748,7 +768,6 @@ async function readStreamingResponse(
         throw totalDeadlineError();
       }
       if (done) break;
-      receivedFirstChunk = true;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -807,7 +826,10 @@ export class OpenRouterClient implements ReviewModelClient {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
     const headers = new Headers({
-      Accept: 'application/json',
+      // OpenRouter selects the SSE response envelope from the request contract. Keep
+      // the Accept header aligned with the body instead of asking for JSON while
+      // simultaneously consuming a ReadableStream.
+      Accept: request.stream === false ? 'application/json' : 'text/event-stream',
       'Content-Type': 'application/json',
       Authorization: `Bearer ${this.apiKey}`,
     });

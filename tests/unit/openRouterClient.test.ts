@@ -121,6 +121,7 @@ describe('OpenRouterClient', () => {
     );
     const init = fetchImplementation.mock.calls[0][1] as RequestInit;
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer test-openrouter-key');
+    expect(new Headers(init.headers).get('accept')).toBe('application/json');
     expect(JSON.parse(String(init.body))).toMatchObject({ model: request.model, stream: false });
   });
 
@@ -142,6 +143,8 @@ describe('OpenRouterClient', () => {
       usage: { prompt: 3, completion: 2, total: 5 },
       costUSD: 0.0081,
     });
+    const init = fetchImplementation.mock.calls[0][1] as RequestInit;
+    expect(new Headers(init.headers).get('accept')).toBe('text/event-stream');
   });
 
   it('replays fragmented SSE frames and keepalives without losing usage or cost metadata', async () => {
@@ -169,6 +172,28 @@ describe('OpenRouterClient', () => {
       content: '{"findings": [ ]}',
       usage: { prompt: 7, completion: 3, total: 10 },
       costUSD: 0.0042,
+    });
+  });
+
+  it('replays OpenRouter reasoning_details SSE entries as reasoning text', async () => {
+    const stream = [
+      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"checking the diff"}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"{\\"findings\\":[]}"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({ ...request, stream: true })).resolves.toMatchObject({
+      content: '{"findings":[]}',
+      raw: expect.objectContaining({
+        choices: [expect.objectContaining({
+          message: expect.objectContaining({ reasoning: 'checking the diff' }),
+        })],
+      }),
     });
   });
 
@@ -263,6 +288,30 @@ describe('OpenRouterClient', () => {
       timeoutMs: 500,
       ttftTimeoutMs: 10,
     })).rejects.toThrow(OpenRouterTimeoutError);
+  });
+
+  it('does not count SSE keepalives as first data for TTFT', async () => {
+    const keepaliveOnlyStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'));
+      },
+      cancel() {},
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(keepaliveOnlyStream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({
+      ...request,
+      stream: true,
+      timeoutMs: 500,
+      ttftTimeoutMs: 10,
+    })).rejects.toMatchObject({
+      name: 'OpenRouterTimeoutError',
+      kind: 'ttft',
+    });
   });
 
   it('cancels and aborts an active-delta stream at a deterministic total deadline', async () => {
