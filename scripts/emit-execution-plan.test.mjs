@@ -26,32 +26,35 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(fixture, committedFixture);
   assert.match(fixture.normalized_plan_sha256, /^[0-9a-f]{64}$/);
   assert.equal(fixture.normalized_plan_sha256, sha256(canonicalJson(fixture.plan)));
-  assert.deepEqual(fixture.plan.transport_order, ['fireworks', 'ollama', 'openrouter-fallback']);
+  assert.deepEqual(fixture.plan.transport_order, ['ollama', 'fireworks', 'openrouter-fallback']);
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
     [
-      'direct-fireworks-openai-compatible',
       'direct-ollama-cloud-openai-compatible',
+      'direct-fireworks-openai-compatible',
       'openrouter-gateway',
     ],
   );
-  assert.equal(fixture.plan.transports[0].reasoning.wire_shape, 'reasoning_effort');
-  assert.equal(fixture.plan.transports[2].reasoning.wire_shape, 'reasoning.effort');
-  assert.deepEqual(fixture.plan.transports[0].timeouts, {
+  const ollama = fixture.plan.transports.find((transport) => transport.name === 'ollama');
+  const fireworks = fixture.plan.transports.find((transport) => transport.name === 'fireworks');
+  const openrouter = fixture.plan.transports.find((transport) => transport.name === 'openrouter-fallback');
+  assert.equal(ollama.reasoning.wire_shape, 'reasoning_effort');
+  assert.equal(openrouter.reasoning.wire_shape, 'reasoning.effort');
+  assert.deepEqual(fireworks.timeouts, {
     connect_ms: 15_000,
     request_ms: 120_000,
     stall_ms: 20_000,
     ttft_ms: 30_000,
   });
-  assert.equal(fixture.plan.transports[1].structured_output, 'runtime-default-uncharacterized');
-  assert.equal(fixture.plan.transports[0].retry.classification, 'runtime-owned-uncharacterized');
-  assert.equal(fixture.plan.transports[0].quarantine.on_timeout, 'runtime-default-uncharacterized');
-  assert.equal(fixture.plan.transports[2].quarantine.on_timeout, false);
-  assert.equal(fixture.plan.transports[2].privacy.data_collection, 'deny');
-  assert.equal(fixture.plan.transports[0].routing.provider, null);
+  assert.equal(ollama.structured_output, 'runtime-default-uncharacterized');
+  assert.equal(ollama.retry.classification, 'runtime-owned-uncharacterized');
+  assert.equal(ollama.quarantine.on_timeout, 'runtime-default-uncharacterized');
+  assert.equal(openrouter.quarantine.on_timeout, false);
+  assert.equal(openrouter.privacy.data_collection, 'deny');
+  assert.equal(ollama.routing.provider, null);
   assert.deepEqual(
-    fixture.plan.transports[2].routing.provider,
-    committedPolicy.review_yeti.transports[2].provider_routing,
+    openrouter.routing.provider,
+    committedPolicy.review_yeti.transports.find((transport) => transport.name === 'openrouter-fallback').provider_routing,
   );
 
   for (const forbidden of [

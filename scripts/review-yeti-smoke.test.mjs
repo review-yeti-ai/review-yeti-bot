@@ -26,8 +26,8 @@ function policyFixture() {
       stall_ms: '20000',
       budget: { lane_deadline_ms: '600000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
-        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, reasoning_effort: 'high', structured_output: 'strict', perf_metrics_in_response: true },
         { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'high' },
+        { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, reasoning_effort: 'high', structured_output: 'strict', perf_metrics_in_response: true },
         {
           name: 'openrouter-fallback',
           base_url: 'https://openrouter.test/api/v1',
@@ -49,21 +49,24 @@ function policyFixture() {
 
 test('the smoke contract pins the approved transport order', () => {
   const transports = validatePolicy(policyFixture());
+  const ollama = transports.find((transport) => transport.name === 'ollama');
+  const fireworks = transports.find((transport) => transport.name === 'fireworks');
+  const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
-  assert.deepEqual(buildRequest(transports[2]).provider, EXPECTED_OPENROUTER_ROUTING);
-  assert.deepEqual(buildRequest(transports[0]).response_format, { type: 'json_object' });
-  assert.deepEqual(buildRequest(transports[2]).response_format, { type: 'json_object' });
-  assert.equal(buildRequest(transports[0]).max_tokens, 128);
-  assert.equal(buildRequest(transports[0]).stream, true);
-  assert.equal(buildRequest(transports[1]).stream, true);
-  assert.equal(buildRequest(transports[2]).stream, true);
+  assert.deepEqual(buildRequest(openrouter).provider, EXPECTED_OPENROUTER_ROUTING);
+  assert.deepEqual(buildRequest(fireworks).response_format, { type: 'json_object' });
+  assert.deepEqual(buildRequest(openrouter).response_format, { type: 'json_object' });
+  assert.equal(buildRequest(ollama).max_tokens, 128);
+  assert.equal(buildRequest(ollama).stream, true);
+  assert.equal(buildRequest(fireworks).stream, true);
+  assert.equal(buildRequest(openrouter).stream, true);
   // Measured ablation: pinning `max` cost recall (0.425 vs 0.750) and tripled errors. Unset wins.
-  assert.equal(buildRequest(transports[0]).reasoning_effort, 'high');
-  assert.equal(buildRequest(transports[0]).perf_metrics_in_response, true);
-  assert.equal(buildRequest(transports[1]).reasoning_effort, 'high');
+  assert.equal(buildRequest(fireworks).reasoning_effort, 'high');
+  assert.equal(buildRequest(fireworks).perf_metrics_in_response, true);
+  assert.equal(buildRequest(ollama).reasoning_effort, 'high');
   // Measured ablation 2026-08-20: pinning `max` scored recall 0.425 with 25/72 errors vs unset
   // at 0.750 with 7/72. The provider default wins; no reasoning override is emitted.
-  assert.deepEqual(buildRequest(transports[2]).reasoning, { effort: 'high' });
+  assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
 });
 
 test('the committed OpenRouter fallback delegates quantization and keeps throughput floors', () => {
@@ -137,8 +140,8 @@ test('the smoke suite probes every configured transport without logging credenti
   const result = await runSmoke({ policy: policyFixture(), env, fetchImpl, log: (line) => logs.push(line) });
 
   assert.deepEqual(calls.map((call) => call.url), [
-    'https://fireworks.test/v1/chat/completions',
     'https://ollama.test/v1/chat/completions',
+    'https://fireworks.test/v1/chat/completions',
     'https://openrouter.test/api/v1/chat/completions',
   ]);
   assert.deepEqual(result.healthy, EXPECTED_TRANSPORT_ORDER);
@@ -182,7 +185,7 @@ test('the smoke suite keeps healthy transports usable when an optional fallback 
     log: (line) => logs.push(line),
   });
 
-  assert.deepEqual(result.healthy, ['fireworks', 'ollama']);
+  assert.deepEqual(result.healthy, ['ollama', 'fireworks']);
   assert.equal(logs.some((line) => line.includes('unhealthy optional transport(s): openrouter-fallback (http_401)')), true);
 });
 
@@ -333,26 +336,26 @@ test('the smoke suite rejects a provider allow-list before any network request',
 // transport(s) were healthy, but the caller workflow ignored that result and always pointed the
 // review panel at a hardcoded Fireworks base-url/key/model. resolveTransport() is what the
 // workflow now uses to pick the transport it actually calls, so these tests pin the three
-// outcomes that mattered in QA-380: healthy primary (no-op), primary down / fallback up
+// outcomes that mattered in QA-380: healthy Ollama primary (no-op), primary down / fallback up
 // (real failover, and it must be honest that this happened), and both down (still a hard fail --
 // this suite never silently green-lights a run with zero working transports).
 
-test('resolveTransport prefers the primary transport when it is healthy', () => {
+test('resolveTransport prefers the Ollama primary when it is healthy', () => {
+  const transports = policyFixture().review_yeti.transports;
+  const resolved = resolveTransport(transports, ['ollama', 'fireworks', 'openrouter-fallback']);
+  assert.equal(resolved.name, 'ollama');
+});
+
+test('resolveTransport fails over to Fireworks when Ollama is unhealthy', () => {
   const transports = policyFixture().review_yeti.transports;
   const resolved = resolveTransport(transports, ['fireworks', 'openrouter-fallback']);
   assert.equal(resolved.name, 'fireworks');
 });
 
-test('resolveTransport fails over to openrouter-fallback when Fireworks is unhealthy', () => {
-  const transports = policyFixture().review_yeti.transports;
-  const resolved = resolveTransport(transports, ['openrouter-fallback']);
-  assert.equal(resolved.name, 'openrouter-fallback');
-});
-
 test('resolveTransport keeps direct order while excluding verified fallback providers', () => {
   const transports = policyFixture().review_yeti.transports;
-  for (const healthy of [['fireworks'], ['fireworks', 'openrouter-fallback']]) {
-    assert.equal(resolveTransport(transports, healthy).name, 'fireworks');
+  for (const healthy of [['ollama'], ['ollama', 'fireworks', 'openrouter-fallback']]) {
+    assert.equal(resolveTransport(transports, healthy).name, 'ollama');
   }
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
@@ -375,7 +378,7 @@ test('selectHealthyTransports removes providers that failed preflight while pres
 });
 
 test('probe admission rejects a transport that misses the action TTFT budget', async () => {
-  const transport = policyFixture().review_yeti.transports[0];
+  const transport = policyFixture().review_yeti.transports.find((entry) => entry.name === 'ollama');
   const result = await probeTransport(
     transport,
     'fireworks-secret',

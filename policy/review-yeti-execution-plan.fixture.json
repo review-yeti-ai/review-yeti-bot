@@ -1,13 +1,13 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "7f55772829f4bdf6c86ad3598b4da6000544e23eae63011f501069b745fe6c7b",
+  "normalized_plan_sha256": "f156687bf103775b3658343f4824e9c5c478e32a8abf95ee978395063f17fe37",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
     "release_channel": "v1",
     "transport_order": [
-      "fireworks",
       "ollama",
+      "fireworks",
       "openrouter-fallback"
     ],
     "lane": {
@@ -16,43 +16,6 @@
       "max_investigation_turns": 2
     },
     "transports": [
-      {
-        "name": "fireworks",
-        "base_url_class": "direct-fireworks-openai-compatible",
-        "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
-        "compatibility_mode": "openai",
-        "timeouts": {
-          "connect_ms": 15000,
-          "request_ms": 120000,
-          "stall_ms": 20000,
-          "ttft_ms": 30000
-        },
-        "max_output_tokens": 24576,
-        "streaming": true,
-        "structured_output": "strict",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning_effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": true
-        },
-        "routing": {
-          "mode": "direct",
-          "ignore_providers": [],
-          "provider": null
-        },
-        "privacy": {
-          "data_collection": "not-declared"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "runtime-owned-uncharacterized"
-        },
-        "quarantine": {
-          "on_timeout": "runtime-default-uncharacterized"
-        }
-      },
       {
         "name": "ollama",
         "base_url_class": "direct-ollama-cloud-openai-compatible",
@@ -73,6 +36,43 @@
         },
         "request_extensions": {
           "perf_metrics_in_response": false
+        },
+        "routing": {
+          "mode": "direct",
+          "ignore_providers": [],
+          "provider": null
+        },
+        "privacy": {
+          "data_collection": "not-declared"
+        },
+        "retry": {
+          "max_attempts": 2,
+          "classification": "runtime-owned-uncharacterized"
+        },
+        "quarantine": {
+          "on_timeout": "runtime-default-uncharacterized"
+        }
+      },
+      {
+        "name": "fireworks",
+        "base_url_class": "direct-fireworks-openai-compatible",
+        "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
+        "compatibility_mode": "openai",
+        "timeouts": {
+          "connect_ms": 15000,
+          "request_ms": 120000,
+          "stall_ms": 20000,
+          "ttft_ms": 30000
+        },
+        "max_output_tokens": 24576,
+        "streaming": true,
+        "structured_output": "strict",
+        "reasoning": {
+          "effort": "high",
+          "wire_shape": "reasoning_effort"
+        },
+        "request_extensions": {
+          "perf_metrics_in_response": true
         },
         "routing": {
           "mode": "direct",

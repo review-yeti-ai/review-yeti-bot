@@ -22,7 +22,7 @@ test('materializes the committed provider order and routing into the local CLI c
   const config = buildLocalConfig(policy);
   const transports = config.github_action.transports;
 
-  assert.deepEqual(transports.map((transport) => transport.name), ['fireworks', 'ollama', 'openrouter-fallback']);
+  assert.deepEqual(transports.map((transport) => transport.name), ['ollama', 'fireworks', 'openrouter-fallback']);
   assert.equal(config.github_action.openrouter.stream, true);
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
@@ -138,7 +138,7 @@ process.stdout.write(JSON.stringify({ delegated: true }) + '\\n');
     assert.equal(JSON.parse(output).delegated, true);
     assert.deepEqual(delegated.args, ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--json']);
     assert.equal(delegated.configMode, 0o600);
-    assert.deepEqual(delegated.transportNames, ['fireworks', 'ollama', 'openrouter-fallback']);
+    assert.deepEqual(delegated.transportNames, ['ollama', 'fireworks', 'openrouter-fallback']);
     assert.deepEqual(delegated.mcpServerIds, ['context7-local']);
     assert.equal(delegated.mcpSecretPresent, true);
     assert.equal(delegated.publicationFlag, 'false');

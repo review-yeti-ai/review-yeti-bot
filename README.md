@@ -108,8 +108,8 @@ receipt without printing credentials or response content.
 
 The current standard transport plan is deliberately limited and ordered:
 
-1. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`)
-2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
+1. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
+2. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`) as the immediate break-glass fallback
 3. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`) as the final fallback
 
 `OLLAMA_PR_REVIEW_API_KEY` is sourced from the masked Doppler secret in
@@ -117,8 +117,10 @@ The current standard transport plan is deliberately limited and ordered:
 The workflow references only the GitHub secret; neither policy nor workflow files contain the
 credential value.
 
-The action starts each model turn at Fireworks and advances through the declared order when a
-transport fails. The OpenRouter entry requires compatible request parameters, the policy's
+The action starts each model turn at Ollama and advances through the declared order when a
+transport fails. Fireworks remains the immediate rollback target if Ollama is unavailable or
+quality regresses; reverting the central policy is a separate guarded change. The OpenRouter entry
+requires compatible request parameters, the policy's
 `strict` output marker, and throughput-ranked routing while delegating quantization and endpoint
 eligibility to OpenRouter's live policy except for the account-level Morph exclusion recorded after
 its verified timeout incident. In the current hosted panel, `strict` is a policy declaration: the
@@ -153,8 +155,8 @@ status, latency, token counts, and presence/size fields; they contain no finding
 reasoning trace, provider error body, exception message, or credentials. A
 completed comparison is only evidence for a later manual decision. One receipt represents one
 independent run; at least three sequential manual dispatches are required before a provider
-decision. The provider order and `v1` consumer path remain unchanged until a separate, reviewed
-control-plane change is approved.
+decision. The qualification workflow itself never mutates provider order or the `v1` consumer path;
+those are controlled by a separate, reviewed control-plane policy change.
 
 The receipt embeds both implementation identities: the exact central-action commit selected by
 the manual dispatch and the exact `review-yeti-bot` commit checked out for both arms.
@@ -206,7 +208,7 @@ silently carrying a stale budget.
 
 **Streaming is an invariant.** Every transport declares `stream: true` and the global
 `openrouter_stream` flag is `"true"`. The action's single-slot streaming gate serializes the full
-Fireworks-to-Ollama-to-OpenRouter transport plan per persona, so a failover never opens a sibling SSE stream
+Ollama-to-Fireworks-to-OpenRouter transport plan per persona, so a failover never opens a sibling SSE stream
 over the active one. `emit-policy.mjs` rejects a future policy that makes only one transport
 non-streaming while retaining a tight TTFT budget; `scripts/emit-policy.test.sh` exercises that
 counterfactual. This keeps provider attribution and first-token telemetry intact without disabling
