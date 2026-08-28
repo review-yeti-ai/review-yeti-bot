@@ -265,7 +265,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
               'openai/gpt-5.6-luna',
               'moonshotai/kimi-k2.6',
               'tencent/hy3',
-              'z-ai/glm-5.1',
+              'z-ai/glm-5.2',
               'google/gemini-3.5-flash-lite',
             ],
             cost_quality_tradeoff: 7,
