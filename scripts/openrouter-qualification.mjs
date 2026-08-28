@@ -44,6 +44,7 @@ export const QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE = 'json_object';
 // mutating the central production policy.
 export const QUALIFICATION_ROUTING_PROFILES = Object.freeze(['default_uptime', 'throughput_sorted']);
 export const QUALIFICATION_DEFAULT_ROUTING_PROFILE = 'default_uptime';
+export const QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY = 'single-fixed-fixture-contract';
 // The bot's telemetry normalizer reports the canonical OpenRouter transport as
 // `openrouter` on response attempts, while the handoff and row-level transport
 // retain `openrouter-fallback`. Accept both representations only after the row
@@ -391,6 +392,59 @@ function safeLabel(value) {
   return LABEL_PATTERN.test(normalized) ? normalized : null;
 }
 
+// Receipt fingerprints must be stable even if a caller constructs an equivalent contract
+// with a different object insertion order. Only the sanitized contract and row identity reach
+// this serializer; prompt bodies, credentials, and response bodies never do.
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value ?? null);
+  }
+  if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => (
+    `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+  )).join(',')}}`;
+}
+
+function sha256Value(value) {
+  return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+}
+
+export function buildQualificationRowFingerprints({
+  fixtureId,
+  repetition,
+  syntheticPromptIdentity = QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY,
+  requestContract,
+  transport,
+  upstreamProvider,
+} = {}) {
+  const sanitizedFixtureId = safeLabel(fixtureId);
+  const sanitizedRepetition = Number.isInteger(Number(repetition)) ? Number(repetition) : null;
+  const sanitizedPromptIdentity = safeLabel(syntheticPromptIdentity) || QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY;
+  const invocationIdentity = sha256Value({
+    schema: 'review-yeti.openrouter-qualification.invocation.v1',
+    fixture_id: sanitizedFixtureId,
+    repetition: sanitizedRepetition,
+    synthetic_prompt_identity: sanitizedPromptIdentity,
+  });
+  const requestFingerprint = sha256Value({
+    schema: 'review-yeti.openrouter-qualification.request.v1',
+    invocation_identity: invocationIdentity,
+    request_contract: requestContract || null,
+  });
+  const upstreamFingerprint = sha256Value({
+    schema: 'review-yeti.openrouter-qualification.upstream.v1',
+    invocation_identity: invocationIdentity,
+    request_contract: requestContract || null,
+    transport: safeLabel(transport),
+    upstream_provider: safeLabel(upstreamProvider),
+  });
+  return {
+    invocation_identity: invocationIdentity,
+    request_fingerprint: requestFingerprint,
+    upstream_fingerprint: upstreamFingerprint,
+  };
+}
+
 function percentile(values, fraction) {
   if (!values.length) return null;
   return values[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)];
@@ -582,6 +636,27 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     child_completed: childTimedOut !== true && evaluation.status === 'completed',
   };
   integrity.passed = Object.values(integrity).every(Boolean);
+  const promptContract = {
+    evaluator_arm: COMPARISON_EVALUATION_ARM,
+    charter: 'current-testing',
+    synthetic_prompt_identity: QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY,
+  };
+  const receiptEvaluation = Array.isArray(evaluation?.fixture_outcomes)
+    ? {
+      ...evaluation,
+      fixture_outcomes: evaluation.fixture_outcomes.map((outcome) => ({
+        ...outcome,
+        ...buildQualificationRowFingerprints({
+          fixtureId: outcome?.fixture_id,
+          repetition: outcome?.repetition,
+          syntheticPromptIdentity: promptContract.synthetic_prompt_identity,
+          requestContract: contract,
+          transport: outcome?.transport,
+          upstreamProvider: outcome?.upstream_provider,
+        }),
+      })),
+    }
+    : evaluation;
   return {
     schema: QUALIFICATION_SCHEMA,
     mode: 'one-time-manual-openrouter-probe',
@@ -591,7 +666,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     implementation_refs: { central_action_sha: input.centralSha, review_yeti_bot_sha: input.botSha, review_yeti_bot_release_tag: input.botReleaseTag },
     policy_sha256: policyDigest,
     fixture_ids: input.fixtureId ? [input.fixtureId] : [...FIXTURE_IDS],
-    prompt_contract: { evaluator_arm: COMPARISON_EVALUATION_ARM, charter: 'current-testing', synthetic_prompt_identity: 'single-fixed-fixture-contract' },
+    prompt_contract: promptContract,
     request_contract: contract,
     integrity_gate: integrity,
     authoritative_arm: 'none',
@@ -601,7 +676,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     provider_mutation: 'none',
     promotion_gate: 'manual_review_required',
     decision: 'evidence_only',
-    evaluation,
+    evaluation: receiptEvaluation,
   };
 }
 

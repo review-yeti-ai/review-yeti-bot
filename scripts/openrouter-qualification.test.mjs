@@ -24,6 +24,7 @@ import {
   QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE,
   QUALIFICATION_ROUTING_PROFILES,
   QUALIFICATION_DEFAULT_ROUTING_PROFILE,
+  QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY,
   QUALIFICATION_HEARTBEAT_MS,
   buildArmEnvironment,
   buildQualificationReceipt,
@@ -430,6 +431,48 @@ test('receipt keeps bounded RCA telemetry and observed partial cost without resp
   assert.equal(summary.fixture_outcomes[1].response_attempts[0].outcome, 'transport_error');
   assert.equal(summary.fixture_outcomes[0].response_attempts[0].provider, 'wafer');
   assert.equal(Object.hasOwn(summary.fixture_outcomes[1], 'response_body'), false);
+});
+
+test('receipt adds deterministic sanitized per-row identity and request/upstream fingerprints', () => {
+  const rows = [1, 2].flatMap((repetition) => FIXTURE_IDS.map((fixtureId, index) => ({
+    fixtureId,
+    repetition,
+    category: index === 2 ? 'clean' : 'defect',
+    detected: index !== 2,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: 'openinference',
+    transport: OPENROUTER_TRANSPORT,
+    prompt: 'prompt contents must never enter a receipt',
+    apiKey: 'openrouter-secret',
+    responseAttempts: [{ attempt: 1, outcome: 'parsed', provider: 'openinference', transport: 'openrouter' }],
+  })));
+  const buildReceipt = () => buildQualificationReceipt({
+    input: { ...input, repetitions: 2 },
+    policy,
+    handoff: buildTransportHandoff(policy),
+    evaluation: summarizeRows(rows, 0, 2),
+    childTimedOut: false,
+    now: '2026-08-27T00:00:00.000Z',
+  });
+  const receipt = buildReceipt();
+  const outcomes = receipt.evaluation.fixture_outcomes;
+  assert.equal(receipt.prompt_contract.synthetic_prompt_identity, QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY);
+  for (const outcome of outcomes) {
+    for (const field of ['invocation_identity', 'request_fingerprint', 'upstream_fingerprint']) {
+      assert.match(outcome[field], /^[a-f0-9]{64}$/u);
+    }
+  }
+  assert.notEqual(outcomes[0].invocation_identity, outcomes[1].invocation_identity, 'repetition changes invocation identity');
+  assert.notEqual(outcomes[0].invocation_identity, outcomes[2].invocation_identity, 'fixture changes invocation identity');
+  assert.notEqual(outcomes[0].request_fingerprint, outcomes[1].request_fingerprint, 'repetition changes request fingerprint');
+  assert.notEqual(outcomes[0].request_fingerprint, outcomes[2].request_fingerprint, 'fixture changes request fingerprint');
+  assert.notEqual(outcomes[0].upstream_fingerprint, outcomes[1].upstream_fingerprint, 'repetition changes upstream fingerprint');
+  assert.notEqual(outcomes[0].upstream_fingerprint, outcomes[2].upstream_fingerprint, 'fixture changes upstream fingerprint');
+  assert.deepEqual(buildReceipt(), receipt, 'fingerprints are deterministic');
+  const serialized = JSON.stringify(receipt);
+  assert.doesNotMatch(serialized, /openrouter-secret|prompt contents must never enter/u);
 });
 
 test('repeated fixture evidence requires every fixture exactly once per repetition', () => {
