@@ -630,6 +630,7 @@ async function readStreamingResponse(
     inactivityTimeoutMs?: number;
     ttftTimeoutMs?: number;
     totalTimeoutMs?: number;
+    onTotalTimeout?: () => void;
     persona?: string;
     providerId?: string;
   }
@@ -673,6 +674,24 @@ async function readStreamingResponse(
     `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
     'total',
   );
+  let totalDeadlineTriggered = false;
+  let cancellationPromise: Promise<void> | undefined;
+  const cancel = (reason: string): Promise<void> => {
+    cancellationPromise ??= cancelReader(reader, reason);
+    return cancellationPromise;
+  };
+  const triggerTotalDeadline = () => {
+    if (totalDeadlineTriggered) return;
+    totalDeadlineTriggered = true;
+    options?.onTotalTimeout?.();
+    void cancel('stream total deadline');
+  };
+  // Keep an independent wall-clock timer for active streams. A provider can ignore the fetch
+  // AbortSignal, and an active reader can keep resolving before each inactivity timeout; in both
+  // cases expiry must still abort the request and detach the reader at the total deadline.
+  const totalDeadlineTimer = totalDeadlineAt
+    ? setTimeout(triggerTotalDeadline, Math.max(0, totalDeadlineAt - Date.now()))
+    : undefined;
 
   const consume = (line: string) => {
     const trimmed = line.trim();
@@ -725,6 +744,9 @@ async function readStreamingResponse(
                 'ttft',
               )
       );
+      if (totalDeadlineTriggered || totalDeadlineReached()) {
+        throw totalDeadlineError();
+      }
       if (done) break;
       receivedFirstChunk = true;
       buffer += decoder.decode(value, { stream: true });
@@ -734,8 +756,17 @@ async function readStreamingResponse(
     }
     buffer += decoder.decode();
   } catch (error) {
-    await cancelReader(reader, totalDeadlineReached() ? 'stream total deadline' : 'stream timeout');
+    // The read timer can win a same-deadline race a few milliseconds early (the classification
+    // grace above still marks it as total). Trigger the abort/cancel path for that case too.
+    const totalDeadlineExpired = totalDeadlineTriggered
+      || totalDeadlineReached()
+      || (error instanceof OpenRouterTimeoutError && error.kind === 'total');
+    if (totalDeadlineExpired) triggerTotalDeadline();
+    await cancel(totalDeadlineExpired ? 'stream total deadline' : 'stream timeout');
+    if (totalDeadlineExpired) throw totalDeadlineError();
     throw error;
+  } finally {
+    if (totalDeadlineTimer) clearTimeout(totalDeadlineTimer);
   }
 
   const finalContent = state.content || state.reasoning || '';
@@ -800,6 +831,7 @@ export class OpenRouterClient implements ReviewModelClient {
         ttftTimeoutMs: request.ttftTimeoutMs,
         inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
         totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+        onTotalTimeout: () => controller.abort(),
       });
       const rawMsg = data?.choices?.[0]?.message;
       const content = (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '')
