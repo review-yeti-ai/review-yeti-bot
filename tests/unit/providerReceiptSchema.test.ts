@@ -365,6 +365,47 @@ describe('Rank 3D provider telemetry receipt schema', () => {
     ]);
   });
 
+  it('retains only bounded request and upstream identity digests per response attempt', () => {
+    const receipt = pipeline.buildProviderTelemetryReceipt([{
+      personaId: 'security',
+      transport: 'openrouter',
+      provider: 'openrouter',
+      model: 'openai/gpt-5.6-luna',
+      requestFingerprint: 'A'.repeat(64),
+      responseAttempts: [{
+        attempt: 1,
+        outcome: 'http_error',
+        transport: 'openrouter',
+        provider: 'openrouter',
+        requestFingerprint: 'b'.repeat(64),
+        generationIdDigest: 'C'.repeat(64),
+        responseStatus: 503,
+      }, {
+        attempt: 2,
+        outcome: 'parsed',
+        transport: 'openrouter',
+        provider: 'openrouter',
+        requestFingerprint: 'not-a-digest',
+        generationIdDigest: 'Bearer upstream-secret',
+      }],
+    }], EXACT_HEAD);
+
+    expect(receipt.lanes[0]).toMatchObject({
+      requestFingerprint: 'a'.repeat(64),
+      responseAttempts: [
+        expect.objectContaining({
+          requestFingerprint: 'b'.repeat(64),
+          generationIdDigest: 'c'.repeat(64),
+        }),
+        expect.not.objectContaining({
+          requestFingerprint: 'not-a-digest',
+          generationIdDigest: 'Bearer upstream-secret',
+        }),
+      ],
+    });
+    expect(JSON.stringify(receipt)).not.toContain('upstream-secret');
+  });
+
   it('omits empty, overlong, and control-character identifiers', () => {
     const receipt = pipeline.buildProviderTelemetryReceipt([{
       personaId: ' ',

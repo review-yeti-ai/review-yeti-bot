@@ -1044,6 +1044,23 @@ describe('reviewWithModel', () => {
       routerAttempt: 2,
     });
     expect(res.generationIdDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(res.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(res.responseAttempts).toEqual([
+      expect.objectContaining({
+        attempt: 1,
+        outcome: 'provider_error',
+        requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        generationIdDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+      expect.objectContaining({
+        attempt: 2,
+        outcome: 'parsed',
+        requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        generationIdDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    ]);
+    expect(res.responseAttempts[0].requestFingerprint).not.toBe(res.responseAttempts[1].requestFingerprint);
+    expect(res.responseAttempts[0].generationIdDigest).not.toBe(res.responseAttempts[1].generationIdDigest);
     expect(calls).toHaveLength(2);
     expect(calls[0].headers['X-OpenRouter-Metadata']).toBe('enabled');
     expect(calls[1].body).toMatchObject({

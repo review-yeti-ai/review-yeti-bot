@@ -172,6 +172,53 @@ describe('OpenRouterClient', () => {
     });
   });
 
+  it('replays provider error, malformed-body, and SSE boundary fixtures without network access', async () => {
+    const cassette = createCassetteFetch({
+      cassettePath: path.resolve(__dirname, '../fixtures/cassettes/openrouter/reliability-boundaries.json'),
+      fetchImplementation: vi.fn(async () => {
+        throw new Error('network escaped replay');
+      }),
+    });
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation: cassette.fetchImplementation,
+    });
+
+    for (const status of [401, 429, 503]) {
+      await expect(client.complete({
+        ...request,
+        messages: [{ role: 'user', content: 'replay reliability boundary' }],
+      })).rejects.toMatchObject({
+        name: 'OpenRouterResponseError',
+        status,
+      });
+    }
+
+    await expect(client.complete({
+      ...request,
+      messages: [{ role: 'user', content: 'replay reliability boundary' }],
+    })).rejects.toBeInstanceOf(OpenRouterConnectionError);
+    await expect(client.complete({
+      ...request,
+      messages: [{ role: 'user', content: 'replay reliability boundary' }],
+    })).rejects.toBeInstanceOf(OpenRouterConnectionError);
+
+    await expect(client.complete({
+      ...request,
+      stream: true,
+      messages: [{ role: 'user', content: 'replay reliability boundary' }],
+    })).resolves.toMatchObject({
+      content: '{"findings": [ ]}',
+      usage: { prompt: 7, completion: 3, total: 10 },
+      costUSD: 0.0042,
+    });
+
+    cassette.assertComplete();
+    expect(cassette.observedFingerprints).toHaveLength(6);
+    expect(JSON.stringify(cassette.interactions)).not.toContain('test-openrouter-key');
+  });
+
   it.each([
     [401, 'unauthorized'],
     [429, 'rate limited'],

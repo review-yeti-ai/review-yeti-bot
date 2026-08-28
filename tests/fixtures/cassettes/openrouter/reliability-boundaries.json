@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "openai/gpt-4o-mini",
+          "messages": [{"role": "user", "content": "replay reliability boundary"}],
+          "stream": false
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {"content-type": "application/json"},
+        "body": {"error": {"code": "invalid_api_key", "message": "credential rejected"}}
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "openai/gpt-4o-mini",
+          "messages": [{"role": "user", "content": "replay reliability boundary"}],
+          "stream": false
+        }
+      },
+      "response": {
+        "status": 429,
+        "headers": {"content-type": "application/json", "retry-after": "1"},
+        "body": {"error": {"code": "rate_limit", "message": "provider rate limit"}}
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "openai/gpt-4o-mini",
+          "messages": [{"role": "user", "content": "replay reliability boundary"}],
+          "stream": false
+        }
+      },
+      "response": {
+        "status": 503,
+        "headers": {"content-type": "application/json"},
+        "body": {"error": {"code": "upstream_unavailable", "message": "provider unavailable"}}
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "openai/gpt-4o-mini",
+          "messages": [{"role": "user", "content": "replay reliability boundary"}],
+          "stream": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": "malformed provider json"
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "openai/gpt-4o-mini",
+          "messages": [{"role": "user", "content": "replay reliability boundary"}],
+          "stream": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "text/plain"},
+        "body": "upstream returned an HTML error page"
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<redacted>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "openai/gpt-4o-mini",
+          "messages": [{"role": "user", "content": "replay reliability boundary"}],
+          "stream": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "text/event-stream"},
+        "body": null,
+        "streamChunks": [
+          ": keep-alive\n\n",
+          "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"find",
+          "ings\\\": [\"}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"content\":\" ]}\"}}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n",
+          "data: {\"usage\":{\"cost_details\":{\"upstream_inference_cost\":\"0.0042\"}}}\n\n",
+          "data: [DONE]\n\n"
+        ]
+      }
+    }
+  ]
+}
