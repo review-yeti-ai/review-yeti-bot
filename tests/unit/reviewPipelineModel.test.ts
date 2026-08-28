@@ -255,6 +255,20 @@ describe('reviewWithModel', () => {
     }
   });
 
+  it('includes generic testing evidence checks in the runtime charter', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(testingPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+    });
+
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    expect(system).toContain('Concrete counterfactual evidence:');
+    expect(system).toContain('Sibling coverage:');
+    expect(system).toContain('Semantic equivalence:');
+    expect(system).toContain('equivalent formatting, reordering, or representation');
+    expect(system).not.toMatch(/vacuous|format.?evadable|absence.?guard|default.?value/i);
+  });
+
   it('keeps evaluation answers and grading vocabulary out of the runtime testing prompt', async () => {
     const matrix = JSON.parse(fs.readFileSync(
       path.join(rootRepoDir, 'eval-baselines/verified-publication-fixtures/evaluation-matrix.json'),
