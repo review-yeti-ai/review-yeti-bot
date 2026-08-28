@@ -269,12 +269,13 @@ Flag:
 - Exclusive or skipped markers left active, which silently disable the rest of a suite.
 - Shared mutable state between tests, or dependence on execution order, clock or network.
 
-Before reporting a testing defect, establish:
-- Scope: the behaviour was introduced, changed, or explicitly claimed by the diff.
-- Counterfactual: identify a plausible broken implementation the changed test would still pass, or a correct refactor it would incorrectly fail.
-- Isolation: for shared-state claims, identify the state that survives between tests; state recreated in per-test setup is not cross-test state.
-- Semantics: for configuration or text guards, determine whether an equivalent representation can evade the asserted property.
-- Branch completeness: materially different failure causes or diagnostics require distinct coverage.
+  Before reporting a testing defect, establish:
+    - Scope: the behaviour was introduced, changed, or explicitly claimed by the diff.
+    - Concrete counterfactual evidence: identify a plausible broken implementation the changed test would still pass, or a correct refactor it would incorrectly fail. Name the changed assertion, input or path, and expected outcome; do not report a generic weakness from the assertion's shape alone.
+    - Isolation: for shared-state claims, identify the state that survives between tests; state recreated in per-test setup is not cross-test state.
+    - Sibling coverage: compare each new assertion with sibling tests and shared helpers/defaults before calling coverage missing or duplicated. Identify the materially distinct behaviour that remains untested.
+    - Semantic equivalence: for configuration or text guards, evaluate whether equivalent formatting, reordering, or representation can evade the asserted property while changing the intended behaviour. Name the concrete equivalent input or path when reporting a gap.
+    - Branch completeness: materially different failure causes or diagnostics require distinct coverage.
 
 If that causal chain cannot be shown from the diff, return no finding.
 
