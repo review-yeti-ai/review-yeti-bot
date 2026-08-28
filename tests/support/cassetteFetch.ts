@@ -19,6 +19,8 @@ export interface CassetteInteraction {
     status: number;
     headers: Record<string, string>;
     body: JsonValue;
+    /** Optional wire chunks used to replay streaming responses at chunk boundaries. */
+    streamChunks?: string[];
   };
 }
 
@@ -207,6 +209,20 @@ export function createCassetteFetch(options: CassetteFetchOptions): CassetteFetc
     }
     consumed.add(interactionIndex);
     const interaction = loaded[interactionIndex];
+    const streamChunks = interaction.response.streamChunks;
+    if (Array.isArray(streamChunks)) {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of streamChunks) controller.enqueue(encoder.encode(chunk));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: interaction.response.status,
+        headers: interaction.response.headers,
+      });
+    }
     const body = interaction.response.body === null || typeof interaction.response.body === 'string'
       ? interaction.response.body
       : JSON.stringify(interaction.response.body);
