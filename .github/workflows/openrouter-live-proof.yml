@@ -48,6 +48,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           OPENROUTER_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
         run: >-
+          timeout --signal=TERM --kill-after=15s 10m
           node scripts/openrouter-live-proof.cjs
           --out artifacts/openrouter-live-proof.json
           --fixture "${{ inputs.fixture }}"

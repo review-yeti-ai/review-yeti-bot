@@ -17,6 +17,7 @@ describe('manual OpenRouter live proof contract', () => {
     expect(workflow).not.toMatch(/^\s*pull_request:\s*$/mu);
     expect(workflow).not.toMatch(/^\s*repository_dispatch:\s*$/mu);
     expect(workflow).not.toMatch(/gh\s+pr\s+(comment|review)/u);
+    expect(workflow).toContain('timeout --signal=TERM --kill-after=15s 10m');
   });
 
   it('uses one explicit OpenRouter transport and writes a sanitized receipt', () => {
