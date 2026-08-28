@@ -2,14 +2,14 @@ name: OpenRouter Live Proof
 
 # Deliberate manual evidence run. This workflow never reviews a pull request, publishes a
 # comment, changes provider order, or enables a canary. It exists to prove the OpenRouter
-# transport and parser against one harmless fixture with a fifteen-minute hard backstop.
+# transport and parser against three small synthetic fixtures with a fifteen-minute hard backstop.
 on:
   workflow_dispatch:
     inputs:
-      fixture:
-        description: 'Synthetic proof fixture identifier'
+      fixtures:
+        description: 'Comma-separated synthetic proof fixture identifiers'
         required: false
-        default: harmless-documentation-diff
+        default: harmless-documentation-diff,security-header-validation,error-path-logging
         type: string
       model:
         description: 'OpenRouter model route'
@@ -51,7 +51,7 @@ jobs:
           timeout --signal=TERM --kill-after=15s 10m
           node scripts/openrouter-live-proof.cjs
           --out artifacts/openrouter-live-proof.json
-          --fixture "${{ inputs.fixture }}"
+          --fixtures "${{ inputs.fixtures }}"
           --model "${{ inputs.model }}"
           --timeout-ms "${{ inputs.timeout_ms }}"
 
