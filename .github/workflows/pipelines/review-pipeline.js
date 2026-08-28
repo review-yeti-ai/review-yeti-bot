@@ -1296,7 +1296,9 @@ function normalizeModelResponseAttempt(entry = {}) {
   const outcome = normalizeModelResponseAttemptOutcome(entry.outcome);
   if (attempt === null || attempt < 1 || !outcome) return null;
   const timeoutKind = normalizeModelTimeoutKind(entry.timeoutKind);
-  return {
+  const requestFingerprint = normalizeTelemetryDigest(entry.requestFingerprint);
+  const generationIdDigest = normalizeTelemetryDigest(entry.generationIdDigest);
+  const normalized = {
     attempt,
     outcome,
     transport: normalizeTelemetryProvider(entry.transport),
@@ -1318,6 +1320,9 @@ function normalizeModelResponseAttempt(entry = {}) {
     reasoningSizeBucket: normalizeResponseSizeBucket(entry.reasoningSizeBucket),
     outputContract: normalizeOutputContractTelemetry(entry.outputContract),
   };
+  if (requestFingerprint) normalized.requestFingerprint = requestFingerprint;
+  if (generationIdDigest) normalized.generationIdDigest = generationIdDigest;
+  return normalized;
 }
 
 function normalizeModelResponseAttempts(value) {
@@ -1456,6 +1461,62 @@ function normalizeTelemetryProvider(value) {
 function hashTelemetryIdentifier(value) {
   const normalized = normalizeTelemetryIdentifier(value);
   return normalized ? createHash('sha256').update(normalized, 'utf-8').digest('hex') : null;
+}
+
+function normalizeTelemetryDigest(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/iu.test(value.trim())
+    ? value.trim().toLowerCase()
+    : null;
+}
+
+function canonicalTelemetryJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalTelemetryJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalTelemetryJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fingerprintRequestString(value) {
+  return createHash('sha256').update(String(value), 'utf8').digest('hex');
+}
+
+// Request fingerprints are useful for correlating a qualification row with its exact retry,
+// but prompts, diffs, and arbitrary provider payloads must not cross the receipt boundary. Keep
+// message content as a digest (not plaintext) and redact credential-shaped fields before hashing.
+function sanitizeRequestForFingerprint(value, key = '') {
+  if (/(?:api[_-]?key|authorization|credential|password|secret|token)/i.test(key)) return '<redacted-secret>';
+  if (/(?:content|prompt|completion|patch|diff)/i.test(key) && typeof value === 'string') {
+    return { digest: fingerprintRequestString(value), length: value.length };
+  }
+  if (Array.isArray(value)) return value.map((entry) => sanitizeRequestForFingerprint(entry, key));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((childKey) => [childKey, sanitizeRequestForFingerprint(value[childKey], childKey)]),
+    );
+  }
+  return value;
+}
+
+function requestFingerprintForAttempt(requestBody, transportName, configuredProvider, transportBaseUrl) {
+  let endpoint = String(transportBaseUrl || '').replace(/\/+$/u, '');
+  try {
+    const parsed = new URL(endpoint);
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+    endpoint = parsed.toString().replace(/\/+$/u, '');
+  } catch (_) {
+    endpoint = endpoint.replace(/[?#].*$/u, '');
+  }
+  return normalizeTelemetryDigest(createHash('sha256').update(canonicalTelemetryJson({
+    method: 'POST',
+    endpoint: `${endpoint}/chat/completions`,
+    transport: normalizeTelemetryProvider(transportName) || 'unknown',
+    provider: normalizeResponseProvider(configuredProvider) || 'unknown',
+    body: sanitizeRequestForFingerprint(requestBody),
+  }), 'utf8').digest('hex'));
 }
 
 function safeReceiptPathToken(value) {
@@ -2123,6 +2184,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   let contentSizeBucket = 'empty';
   let reasoningSizeBucket = 'empty';
   let outputContract = null;
+  let requestFingerprint = null;
   const responseAttempts = [];
   const noteRetryReason = (reason) => {
     const normalized = normalizeTelemetryOutcomeClass(reason);
@@ -2148,6 +2210,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     contentSizeBucket: normalizeResponseSizeBucket(contentSizeBucket),
     reasoningSizeBucket: normalizeResponseSizeBucket(reasoningSizeBucket),
     outputContract: normalizeOutputContractTelemetry(outputContract),
+    ...(requestFingerprint ? { requestFingerprint } : {}),
     responseAttempts: normalizeModelResponseAttempts(responseAttempts),
   });
   let requestOptions = null;
@@ -2398,9 +2461,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         reasoningPresent = false;
         contentSizeBucket = 'empty';
         reasoningSizeBucket = 'empty';
+        generationIdDigest = null;
         const attemptStartedMs = Date.now();
         let attemptResponseStatus = null;
         let responseAttemptRecorded = false;
+        requestFingerprint = requestFingerprintForAttempt(
+          requestBody,
+          transportName,
+          configuredProvider,
+          transportBaseUrl,
+        );
         const recordResponseAttempt = (outcome, overrides = {}) => {
           if (responseAttemptRecorded || responseAttempts.length >= MAX_MODEL_RESPONSE_ATTEMPTS) return;
           responseAttemptRecorded = true;
@@ -2431,6 +2501,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             contentSizeBucket,
             reasoningSizeBucket,
             outputContract,
+            requestFingerprint,
+            generationIdDigest,
             ...overrides,
           });
           if (entry) responseAttempts.push(entry);
@@ -4163,6 +4235,9 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       contentSizeBucket: normalizeResponseSizeBucket(result.contentSizeBucket),
       reasoningSizeBucket: normalizeResponseSizeBucket(result.reasoningSizeBucket),
       outputContract: normalizeOutputContractTelemetry(result.outputContract),
+      ...(normalizeTelemetryDigest(result.requestFingerprint)
+        ? { requestFingerprint: normalizeTelemetryDigest(result.requestFingerprint) }
+        : {}),
       responseAttempts: normalizeModelResponseAttempts(result.responseAttempts),
     };
   });
@@ -4703,6 +4778,8 @@ module.exports = {
   mapWithConcurrency,
   getStaticModelContext,
   formatCost,
+  normalizeTelemetryDigest,
+  requestFingerprintForAttempt,
   shaPartitionManager,
   main,
 };
