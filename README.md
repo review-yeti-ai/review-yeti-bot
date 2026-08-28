@@ -85,6 +85,30 @@ then promoted only after validation. The model may identify recurring failures a
 but it never writes directly to `main` or `v1`, changes release policy, or self-approves a
 promotion.
 
+### Ref protection inventory (example-meta ADR 0431)
+
+The invariants above are mechanically enforced by repository settings, recorded here because
+settings are not visible in the tree:
+
+| Guard | Mechanism | What it prevents |
+| --- | --- | --- |
+| `v1 release channel branch protection` (ruleset 21052007) | deletion + non-fast-forward on `refs/heads/v1` | rewinding or deleting the channel |
+| `v1 tag shadow guard (ADR 0431)` (ruleset 21752583) | creation + update + deletion blocked on `refs/tags/v1` | recreating the legacy `v1` tag, which would shadow the branch in `uses:` resolution (git resolves tags before heads) |
+| `release tags immutable once created (ADR 0431)` (ruleset 21752607) | update + deletion blocked on `refs/tags/v*.*.*` | moving or deleting a published release tag |
+| `main` classic protection | required `validate` + `review / Review Yeti` checks | unvalidated commits becoming promotable |
+| `promote-v1.yml` / `scripts/promote-v1.sh` | atomic compare-and-swap push leased against the observed old `v1` and validated `main` tip, sha256 receipts | racing or stale promotions |
+| `scripts/validate-release-provenance.sh` | run-time fail-closed check that the resolved release-channel commit is reachable from `main` | executing a hijacked or disjoint channel commit |
+
+Known residual (accepted in ADR 0431): the built-in GitHub Actions app cannot be added to a
+ruleset bypass list or a classic push allowlist via the API, so an org member with push access
+can still fast-forward push onto `v1` out-of-band. A divergent push fails the next promotion's
+ancestor check and the provenance guard; a main-reachable push has already passed `main`'s
+required checks. If full push prevention is ever required, promote via a token minted from the
+org-owned `ct-review-bot` GitHub App and allowlist only that app.
+
+Consumer repositories reference this channel as `@v1` and their required contracts reject SHA
+pins by design — see example-meta ADR 0431 for the decision record and revisit triggers.
+
 ## Fireworks timeout debug
 
 The hosted panel uses `openrouter-ttft-ms` across the model transports. Fireworks, Ollama,
