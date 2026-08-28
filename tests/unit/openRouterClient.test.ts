@@ -218,48 +218,64 @@ describe('OpenRouterClient', () => {
     })).rejects.toThrow(OpenRouterTimeoutError);
   });
 
-  it('aborts an active stream at the total wall-clock deadline even when deltas keep arriving', async () => {
+  it('cancels and aborts an active-delta stream at a deterministic total deadline', async () => {
+    vi.useFakeTimers();
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | undefined;
-    const activeStream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(
-          'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}\n\n',
-        ));
-        interval = setInterval(() => {
-          try {
-            controller.enqueue(new TextEncoder().encode(
-              'data: {"choices":[{"delta":{"reasoning":" still thinking"}}]}\n\n',
-            ));
-          } catch {
-            // The reader has been cancelled by the total deadline.
-          }
-        }, 5);
-      },
-      cancel() {
-        cancelled = true;
-        if (interval) clearInterval(interval);
-      },
-    });
-    const fetchImplementation = vi.fn().mockResolvedValue(new Response(activeStream, {
-      status: 200,
-      headers: { 'content-type': 'text/event-stream' },
-    }));
-    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
-    const started = Date.now();
+    let requestSignal: AbortSignal | null = null;
+    try {
+      const encoder = new TextEncoder();
+      const activeStream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            'data: {"choices":[{"delta":{"content":"active"}}]}\n\n',
+          ));
+          interval = setInterval(() => {
+            try {
+              controller.enqueue(encoder.encode(
+                'data: {"choices":[{"delta":{"content":" delta"}}]}\n\n',
+              ));
+            } catch {
+              // The reader has been cancelled by the total deadline.
+            }
+          }, 5);
+        },
+        cancel() {
+          cancelled = true;
+          if (interval) clearInterval(interval);
+        },
+      });
+      const fetchImplementation = vi.fn().mockImplementation((_input, init: RequestInit) => {
+        requestSignal = init.signal ?? null;
+        return Promise.resolve(new Response(activeStream, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }));
+      });
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+      const rejection = expect(client.complete({
+        ...request,
+        stream: true,
+        timeoutMs: 50,
+        ttftTimeoutMs: 20,
+      })).rejects.toMatchObject({
+        name: 'OpenRouterTimeoutError',
+        kind: 'total',
+      });
 
-    await expect(client.complete({
-      ...request,
-      stream: true,
-      timeoutMs: 50,
-      ttftTimeoutMs: 20,
-    })).rejects.toMatchObject({
-      name: 'OpenRouterTimeoutError',
-      kind: 'total',
-    });
+      // Let fetch resolve and the first active delta enter the reader before advancing the clock.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requestSignal?.aborted).toBe(false);
 
-    expect(Date.now() - started).toBeLessThan(1_000);
-    expect(cancelled).toBe(true);
+      await vi.advanceTimersByTimeAsync(50);
+      await rejection;
+
+      expect(requestSignal?.aborted).toBe(true);
+      expect(cancelled).toBe(true);
+    } finally {
+      if (interval) clearInterval(interval);
+      vi.useRealTimers();
+    }
   });
 
   it('does not wait indefinitely when a timed-out reader ignores cancellation', async () => {
