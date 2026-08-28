@@ -35,9 +35,13 @@ metadata. Qualification remains manual, non-publishing, and capped at 15 minutes
   stays authoritative; keep the existing CommonJS action artifact and production order.
 - [x] Add deterministic unit/contract coverage for delayed first data, keepalives, fragmented
   frames, reasoning details, metadata, and timeout classification.
-- [ ] Run a manual one-fixture OpenRouter-only probe, serially, with a 10-minute child hard kill
+- [x] Run a manual one-fixture OpenRouter-only probe, serially, with a 10-minute child hard kill
   and a 15-minute workflow maximum. Record request fingerprint, model, route policy, TTFT,
-  inactivity, total timeout, attempts, terminal status, and sanitized router metadata.
+  inactivity, total timeout, attempts, terminal status, and sanitized router metadata. The
+  2026-08-28 proof run [33193664445](https://github.com/review-yeti-ai/review-yeti-bot/actions/runs/33193664445)
+  ran on merged `46abe269`, completed one streamed request in 1.9 seconds (TTFT 295 ms),
+  returned HTTP 200 and a parseable response on the first attempt, and recorded no retry or
+  failure. This is transport evidence only; it does not authorize production activation.
 - [ ] Repeat with three fixtures only if the one-fixture probe has 100% terminal completion and
   complete attempt attribution. Keep this probe evidence-only and non-publishing.
 - [ ] Run separate direct-fixed-model and Auto Router/provider-routing comparisons. Keep model,
@@ -48,6 +52,17 @@ metadata. Qualification remains manual, non-publishing, and capped at 15 minutes
   zero.
 - [ ] Review the receipts and rollback procedure manually. Only then decide whether to propose a
   production-order change in a separate protected change.
+
+## Latest bounded proof
+
+The receipt from run [33193664445](https://github.com/review-yeti-ai/review-yeti-bot/actions/runs/33193664445)
+is `openrouter-live-proof-v1`: `terminal=true`, `publication=none`, `failover=disabled`,
+`schedule=manual-only`, requested model `openrouter/auto`, resolved route
+`moonshotai/kimi-k2.6`, `responseMode=stream`, `finishReason=stop`, `outputShape=direct_json_object`,
+and one parsed attempt. The policy fingerprint is recorded and the router metadata is limited to
+strategy, region, and attempt. No credential-like strings were present in the downloaded receipt.
+One successful fixture proves the SDK/SSE connection path; it does not establish provider quality or
+long-run reliability. The three-fixture qualification remains intentionally pending.
 
 ## Acceptance gates
 
