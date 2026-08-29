@@ -24,6 +24,8 @@ export const OPENROUTER_TIMEOUT_MS = 90_000;
 export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
 export const OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 export const OPENROUTER_REASONING_EFFORT = 'high';
+export const QUALIFICATION_GEMINI_MODEL = 'google/gemini-3.7-flash';
+export const QUALIFICATION_MODEL_OVERRIDES = Object.freeze([QUALIFICATION_GEMINI_MODEL]);
 // Three fixtures may each use the bounded two-attempt, 90-second request envelope. The declared
 // two-repetition run uses three concurrent lanes, so its worst case is two 180-second waves with
 // a four-minute margin while leaving the parent workflow below its non-negotiable 15-minute cap.
@@ -120,6 +122,18 @@ export function normalizeQualificationMaxTokens(value = OPENROUTER_MAX_OUTPUT_TO
   return parsed;
 }
 
+// Model overrides are deliberately narrower than provider pins: this harness may qualify the
+// explicit Gemini route without becoming a general-purpose production-policy editor. An empty
+// value preserves the model selected by the committed policy (currently Auto Router).
+export function normalizeQualificationModel(value = '') {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (!QUALIFICATION_MODEL_OVERRIDES.includes(normalized)) {
+    throw new Error(`model must be one of ${QUALIFICATION_MODEL_OVERRIDES.join(', ')}`);
+  }
+  return normalized;
+}
+
 // Provider pinning is an investigation-only override. It never changes the committed
 // production policy; it is applied only to the one-transport qualification handoff so we can
 // distinguish an upstream endpoint problem from OpenRouter's normal load-balanced behavior.
@@ -169,6 +183,7 @@ export function validateQualificationInput(input = {}) {
   const prNumber = positiveInteger(input.prNumber, 'prNumber');
   const repetitions = normalizeQualificationRepetitions(input.repetitions);
   const maxTokens = normalizeQualificationMaxTokens(input.maxTokens ?? input.max_tokens);
+  const model = normalizeQualificationModel(input.model);
   const providerSlug = normalizeQualificationProviderSlug(input.providerSlug ?? input.provider_slug);
   const outputContractMode = normalizeQualificationOutputContractMode(
     input.outputContractMode ?? input.output_contract_mode,
@@ -197,6 +212,7 @@ export function validateQualificationInput(input = {}) {
     botRoot: String(input.botRoot),
     repetitions,
     maxTokens,
+    model,
     providerSlug,
     outputContractMode,
     routingProfile,
@@ -211,6 +227,7 @@ export function buildTransportHandoff(
   maxTokens = OPENROUTER_MAX_OUTPUT_TOKENS,
   providerSlug = null,
   routingProfile = QUALIFICATION_DEFAULT_ROUTING_PROFILE,
+  model = null,
 ) {
   const transports = validatePolicy(policy);
   const selected = transports.find((transport) => transport.name === OPENROUTER_TRANSPORT);
@@ -219,6 +236,7 @@ export function buildTransportHandoff(
   const normalizedMaxTokens = normalizeQualificationMaxTokens(maxTokens);
   const normalizedProviderSlug = normalizeQualificationProviderSlug(providerSlug);
   const normalizedRoutingProfile = normalizeQualificationRoutingProfile(routingProfile);
+  const normalizedModel = normalizeQualificationModel(model);
   const selectedRouting = selected.provider_routing || {};
   const delegatedRouting = normalizedRoutingProfile === 'default_uptime'
     ? Object.fromEntries(Object.entries(selectedRouting).filter(([key]) => key !== 'sort'))
@@ -226,6 +244,7 @@ export function buildTransportHandoff(
   const handoff = {
     ...selected,
     name: OPENROUTER_TRANSPORT,
+    model: normalizedModel || selected.model,
     timeout_ms: OPENROUTER_TIMEOUT_MS,
     connect_timeout_ms: OPENROUTER_CONNECT_TIMEOUT_MS,
     max_tokens: normalizedMaxTokens,
@@ -234,6 +253,7 @@ export function buildTransportHandoff(
     structured_output_mode: normalizedOutputContractMode,
     provider_routing: delegatedRouting,
   };
+  if (normalizedModel) delete handoff.plugins;
   if (normalizedProviderSlug) {
     const ignoredProviders = new Set([
       ...(Array.isArray(selected.ignore_providers) ? selected.ignore_providers : []),
@@ -588,6 +608,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     transport: OPENROUTER_TRANSPORT,
     provider: 'openrouter',
     model: handoff[0].model,
+    model_selection: input.model ? 'qualification_override' : 'policy',
     timeout_ms: handoff[0].timeout_ms,
     connect_timeout_ms: handoff[0].connect_timeout_ms,
     child_timeout_ms: normalizeChildTimeoutMs(childTimeoutMs),
@@ -689,6 +710,7 @@ export async function runQualification({ input, policy, token, outputDir, fixtur
     validated.maxTokens,
     validated.providerSlug,
     validated.routingProfile,
+    validated.model,
   );
   await verifyPullRequest({ ...validated, token, fetchImpl });
   await verifyBotRelease({ botSha: validated.botSha, botReleaseTag: validated.botReleaseTag, token, fetchImpl });
@@ -734,6 +756,7 @@ async function main() {
       concurrency: process.env.QUALIFY_CONCURRENCY,
       providerSlug: process.env.QUALIFY_PROVIDER_SLUG,
       routingProfile: process.env.QUALIFY_ROUTING_PROFILE,
+      model: process.env.QUALIFY_MODEL,
     },
     token: process.env.QUALIFICATION_GH_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
     outputDir: process.env.RUNNER_TEMP,

@@ -67,6 +67,11 @@ on:
         required: false
         default: ''
         type: string
+      model:
+        description: 'Optional qualification-only model override; blank keeps the committed policy model; currently google/gemini-3.7-flash'
+        required: false
+        default: ''
+        type: string
       routing_profile:
         description: 'Qualification-only routing contract: default_uptime omits sort; throughput_sorted is the existing policy control'
         required: true
@@ -108,6 +113,7 @@ jobs:
       QUALIFY_MAX_TOKENS: ${{ inputs.max_tokens }}
       QUALIFY_OUTPUT_CONTRACT_MODE: ${{ inputs.output_contract_mode }}
       QUALIFY_PROVIDER_SLUG: ${{ inputs.provider_slug }}
+      QUALIFY_MODEL: ${{ inputs.model }}
       QUALIFY_ROUTING_PROFILE: ${{ inputs.routing_profile }}
       QUALIFY_FIXTURE_ID: ${{ inputs.fixture_id }}
       QUALIFY_CONCURRENCY: ${{ inputs.concurrency }}
@@ -175,6 +181,7 @@ jobs:
           OUTPUT_CONTRACT_MODE_INPUT: ${{ inputs.output_contract_mode }}
           MAX_TOKENS_INPUT: ${{ inputs.max_tokens }}
           PROVIDER_SLUG_INPUT: ${{ inputs.provider_slug }}
+          MODEL_INPUT: ${{ inputs.model }}
           ROUTING_PROFILE_INPUT: ${{ inputs.routing_profile }}
           FIXTURE_ID_INPUT: ${{ inputs.fixture_id }}
           CONCURRENCY_INPUT: ${{ inputs.concurrency }}
@@ -183,6 +190,7 @@ jobs:
           echo "::notice::Routing profile=${ROUTING_PROFILE_INPUT}; default_uptime omits explicit sort so OpenRouter can apply its documented health-aware routing."
           echo "::notice::Requested max_tokens=${MAX_TOKENS_INPUT}; provider/model limits and hard deadlines remain authoritative, with no harness-imposed token ceiling."
           if [ -n "${PROVIDER_SLUG_INPUT}" ]; then echo "::notice::Provider pin is qualification-only: ${PROVIDER_SLUG_INPUT}; production routing is unchanged."; fi
+          if [ -n "${MODEL_INPUT}" ]; then echo "::notice::Model override is qualification-only: ${MODEL_INPUT}; production routing is unchanged."; fi
           echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 
