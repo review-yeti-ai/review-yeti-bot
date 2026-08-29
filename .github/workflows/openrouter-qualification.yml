@@ -6,8 +6,16 @@ name: One-time OpenRouter qualification
 on:
   workflow_dispatch:
     inputs:
+      execution_engine:
+        description: 'Qualification engine; review_yeti preserves the existing direct harness, pi_workflow runs local schema validation and repair'
+        required: true
+        default: 'review_yeti'
+        type: choice
+        options:
+          - review_yeti
+          - pi_workflow
       confirm:
-        description: 'Type QUALIFY to authorize one bounded OpenRouter probe'
+        description: 'Type QUALIFY for review_yeti or QUALIFY_PI for pi_workflow'
         required: true
         type: string
       repository:
@@ -34,6 +42,11 @@ on:
         description: 'Signed semver release tag that must resolve to bot_sha (for example v1.13.1)'
         required: true
         type: string
+      example_meta_sha:
+        description: 'Exact reviewed example-meta Pi authoring commit (required for pi_workflow)'
+        required: true
+        default: 'e6f92b7304605a895d9c39315f6d6588bd721c8c'
+        type: string
       repetitions:
         description: 'Fixed repetitions per fixture (1 or 2; 2 is the bounded evidence default)'
         required: true
@@ -51,6 +64,11 @@ on:
         type: string
       provider_slug:
         description: 'Optional single OpenRouter upstream slug for an isolated diagnostic; blank keeps normal load-balanced routing'
+        required: false
+        default: ''
+        type: string
+      model:
+        description: 'Optional qualification-only model override; blank keeps the committed policy model; currently google/gemini-3.7-flash'
         required: false
         default: ''
         type: string
@@ -89,16 +107,21 @@ jobs:
       QUALIFY_HEAD_SHA: ${{ inputs.head_sha }}
       QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
       QUALIFY_BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
+      QUALIFY_EXECUTION_ENGINE: ${{ inputs.execution_engine }}
+      QUALIFY_EXAMPLE_META_SHA: ${{ inputs.example_meta_sha }}
       QUALIFY_REPETITIONS: ${{ inputs.repetitions }}
       QUALIFY_MAX_TOKENS: ${{ inputs.max_tokens }}
       QUALIFY_OUTPUT_CONTRACT_MODE: ${{ inputs.output_contract_mode }}
       QUALIFY_PROVIDER_SLUG: ${{ inputs.provider_slug }}
+      QUALIFY_MODEL: ${{ inputs.model }}
       QUALIFY_ROUTING_PROFILE: ${{ inputs.routing_profile }}
       QUALIFY_FIXTURE_ID: ${{ inputs.fixture_id }}
       QUALIFY_CONCURRENCY: ${{ inputs.concurrency }}
       QUALIFY_CENTRAL_SHA: ${{ github.sha }}
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
-      QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      QUALIFY_EXAMPLE_META_ROOT: ${{ github.workspace }}/example-meta
+      QUALIFY_PI_RUNTIME_ROOT: ${{ github.workspace }}/example-review-actions/qualification/pi-runtime
+      QUALIFICATION_GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout central qualification tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -121,24 +144,44 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      - name: Checkout exact Pi authoring commit
+        if: inputs.execution_engine == 'pi_workflow'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: exampleorg/example-meta
+          ref: ${{ inputs.example_meta_sha }}
+          path: example-meta
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          persist-credentials: false
+          fetch-depth: 1
+
       - name: Install isolated qualification dependencies
         working-directory: review-yeti-bot
         run: npm ci --ignore-scripts --no-audit --no-fund --silent
+
+      - name: Install exact isolated Pi runtime
+        if: inputs.execution_engine == 'pi_workflow'
+        working-directory: example-review-actions/qualification/pi-runtime
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --silent
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Verify signed release provenance before secret exposure
         working-directory: example-review-actions
         env:
           BOT_SHA: ${{ inputs.bot_sha }}
           BOT_RELEASE_TAG: ${{ inputs.bot_release_tag }}
-          PROVENANCE_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          PROVENANCE_TOKEN: ${{ github.token }}
         run: |
           node --input-type=module -e "import { verifyBotRelease } from './scripts/openrouter-qualification.mjs'; await verifyBotRelease({ botSha: process.env.BOT_SHA, botReleaseTag: process.env.BOT_RELEASE_TAG, token: process.env.PROVENANCE_TOKEN });"
 
       - name: Announce bounded OpenRouter dispatch
+        if: inputs.execution_engine == 'review_yeti'
         env:
           OUTPUT_CONTRACT_MODE_INPUT: ${{ inputs.output_contract_mode }}
           MAX_TOKENS_INPUT: ${{ inputs.max_tokens }}
           PROVIDER_SLUG_INPUT: ${{ inputs.provider_slug }}
+          MODEL_INPUT: ${{ inputs.model }}
           ROUTING_PROFILE_INPUT: ${{ inputs.routing_profile }}
           FIXTURE_ID_INPUT: ${{ inputs.fixture_id }}
           CONCURRENCY_INPUT: ${{ inputs.concurrency }}
@@ -147,22 +190,40 @@ jobs:
           echo "::notice::Routing profile=${ROUTING_PROFILE_INPUT}; default_uptime omits explicit sort so OpenRouter can apply its documented health-aware routing."
           echo "::notice::Requested max_tokens=${MAX_TOKENS_INPUT}; provider/model limits and hard deadlines remain authoritative, with no harness-imposed token ceiling."
           if [ -n "${PROVIDER_SLUG_INPUT}" ]; then echo "::notice::Provider pin is qualification-only: ${PROVIDER_SLUG_INPUT}; production routing is unchanged."; fi
+          if [ -n "${MODEL_INPUT}" ]; then echo "::notice::Model override is qualification-only: ${MODEL_INPUT}; production routing is unchanged."; fi
           echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 
       - name: Run bounded OpenRouter qualification
+        if: inputs.execution_engine == 'review_yeti'
         id: qualification
         working-directory: example-review-actions
         env:
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
         run: node scripts/openrouter-qualification.mjs
 
+      - name: Announce bounded Pi OpenRouter dispatch
+        if: inputs.execution_engine == 'pi_workflow'
+        run: |
+          echo '::notice::Dispatching six Pi/OpenRouter evidence rows as two waves of three; each Pi workflow remains single-stage and concurrency one.'
+          echo '::notice::The provider phase has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
+          echo '::notice::Pi validates the control artifact locally and may issue targeted repair instructions; no provider-native JSON schema is requested.'
+          echo '::notice::This run cannot publish, mutate provider order, activate Pi, or change production routing.'
+
+      - name: Run bounded Pi OpenRouter qualification
+        if: inputs.execution_engine == 'pi_workflow'
+        id: pi_qualification
+        working-directory: example-review-actions
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+        run: node scripts/pi-openrouter-qualification.mjs
+
       - name: Upload sanitized qualification receipt
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: openrouter-qualification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/openrouter-qualification/openrouter-qualification-receipt.json
+          path: ${{ runner.temp }}/openrouter-qualification/*qualification-receipt.json
           if-no-files-found: warn
           retention-days: 14
 

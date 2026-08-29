@@ -11,6 +11,8 @@ import {
   OPENROUTER_CONNECT_TIMEOUT_MS,
   OPENROUTER_MAX_OUTPUT_TOKENS,
   OPENROUTER_REASONING_EFFORT,
+  QUALIFICATION_GEMINI_MODEL,
+  QUALIFICATION_MODEL_OVERRIDES,
   OPENROUTER_TIMEOUT_MS,
   OPENROUTER_TRANSPORT,
   QUALIFICATION_CHILD_TIMEOUT_MS,
@@ -31,6 +33,7 @@ import {
   buildTransportHandoff,
   normalizeChildTimeoutMs,
   normalizeQualificationMaxTokens,
+  normalizeQualificationModel,
   normalizeQualificationProviderSlug,
   normalizeQualificationFixtureId,
   normalizeQualificationConcurrency,
@@ -71,18 +74,25 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.match(workflow, /Fixed repetitions per fixture \(1 or 2/u);
   assert.match(workflow, /fixture_id:/u);
   assert.match(workflow, /concurrency:/u);
+  assert.match(workflow, /model:/u);
   const announceStep = workflow.split('      - name: Announce bounded OpenRouter dispatch', 2)[1]?.split('      - name: Run bounded OpenRouter qualification', 1)[0] || '';
   assert.match(announceStep, /OUTPUT_CONTRACT_MODE_INPUT:/u);
   assert.match(announceStep, /MAX_TOKENS_INPUT:/u);
   assert.match(announceStep, /FIXTURE_ID_INPUT:/u);
   assert.match(announceStep, /CONCURRENCY_INPUT:/u);
   assert.match(announceStep, /PROVIDER_SLUG_INPUT:/u);
+  assert.match(announceStep, /MODEL_INPUT:/u);
   assert.match(announceStep, /ROUTING_PROFILE_INPUT:/u);
   const announceRun = announceStep.split('        run: |', 2)[1] || '';
   assert.doesNotMatch(announceRun, /\$\{\{/u);
   assert.match(workflow, /environment:\s*\n\s+name:\s*review-yeti-openrouter-qualification/u);
   const jobEnv = workflow.split('    env:\n', 2)[1]?.split('    steps:', 1)[0] || '';
   assert.doesNotMatch(jobEnv, /OPENROUTER_PR_REVIEW_API_KEY/u);
+  assert.match(jobEnv, /QUALIFICATION_GH_TOKEN:\s*\$\{\{ github\.token \}\}/u);
+  assert.doesNotMatch(jobEnv, /QUALIFICATION_GH_TOKEN:.*CROSS_REPO_TOKEN/u);
+  const provenanceStep = workflow.split('      - name: Verify signed release provenance before secret exposure', 2)[1]?.split('      - name: Announce bounded OpenRouter dispatch', 1)[0] || '';
+  assert.match(provenanceStep, /PROVENANCE_TOKEN:\s*\$\{\{ github\.token \}\}/u);
+  assert.doesNotMatch(provenanceStep, /PROVENANCE_TOKEN:.*CROSS_REPO_TOKEN/u);
   assert.match(workflow, /publication or provider mutation/u);
 });
 
@@ -132,6 +142,37 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.throws(() => validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 4 }), /concurrency/u);
   assert.throws(() => normalizeQualificationMaxTokens(Number.MAX_SAFE_INTEGER + 1), /maxTokens/u);
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
+});
+
+test('allows only the explicit Gemini model as a qualification override and removes Auto Router plugins', () => {
+  assert.deepEqual(QUALIFICATION_MODEL_OVERRIDES, [QUALIFICATION_GEMINI_MODEL]);
+  assert.equal(normalizeQualificationModel(), null);
+  assert.equal(normalizeQualificationModel('GOOGLE/GEMINI-3.7-FLASH'), QUALIFICATION_GEMINI_MODEL);
+  assert.throws(() => normalizeQualificationModel('google/gemini-3.6-flash'), /model/u);
+
+  const validated = validateQualificationInput({ ...input, model: QUALIFICATION_GEMINI_MODEL });
+  assert.equal(validated.model, QUALIFICATION_GEMINI_MODEL);
+  const handoff = buildTransportHandoff(
+    policy,
+    'json_schema',
+    OPENROUTER_MAX_OUTPUT_TOKENS,
+    null,
+    QUALIFICATION_DEFAULT_ROUTING_PROFILE,
+    validated.model,
+  );
+  assert.equal(handoff[0].model, QUALIFICATION_GEMINI_MODEL);
+  assert.equal('plugins' in handoff[0], false);
+  const receipt = buildQualificationReceipt({
+    input: validated,
+    policy,
+    handoff,
+    evaluation: { status: 'completed', rows: 3, fixture_set_valid: true, provider_attribution_valid: true },
+    childTimedOut: false,
+  });
+  assert.equal(receipt.request_contract.model, QUALIFICATION_GEMINI_MODEL);
+  assert.equal(receipt.request_contract.model_selection, 'qualification_override');
+  assert.equal(receipt.integrity_gate.request_contract_valid, true);
+  assert.equal(receipt.activation_authorized, false);
 });
 
 test('exact-head and signed release verification tolerate SHA casing but reject tag drift', async () => {

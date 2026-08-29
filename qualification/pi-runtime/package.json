@@ -1,0 +1,11 @@
+{
+  "name": "review-yeti-pi-qualification-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agwab/pi-workflow": "0.12.0",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.84.2"
+  }
+}

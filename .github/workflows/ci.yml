@@ -18,6 +18,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Verify exact Pi runtime closure
+        working-directory: qualification/pi-runtime
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --silent
+          node --input-type=module -e "const runtime = await import('@agwab/pi-workflow'); if (typeof runtime.runWorkflowSpec !== 'function' || typeof runtime.waitForRun !== 'function') process.exit(1);"
       - name: Validate policy and scripts
         run: |
           node --check scripts/emit-policy.mjs
@@ -28,6 +37,8 @@ jobs:
           node --check scripts/review-yeti-mcp.mjs
           node --check scripts/ollama-qualification.mjs
           node --check scripts/openrouter-qualification.mjs
+          node --check scripts/pi-openrouter-qualification.mjs
+          node --check scripts/run-pi-qualification-row.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           node scripts/emit-execution-plan.mjs --check
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
@@ -62,6 +73,7 @@ jobs:
           node --test scripts/review-yeti-mcp.test.mjs
           node --test scripts/ollama-qualification.test.mjs
           node --test scripts/openrouter-qualification.test.mjs
+          node --test scripts/pi-openrouter-qualification.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
