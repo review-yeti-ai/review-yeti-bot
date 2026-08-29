@@ -253,7 +253,10 @@ export function buildTransportHandoff(
     structured_output_mode: normalizedOutputContractMode,
     provider_routing: delegatedRouting,
   };
-  if (normalizedModel) delete handoff.plugins;
+  // Keep an explicit empty list so the bot's action-level Auto Router policy cannot be
+  // re-injected when this qualification asks for a direct model. Production transports retain
+  // their committed plugin declaration; this is a qualification-only boundary marker.
+  if (normalizedModel) handoff.plugins = [];
   if (normalizedProviderSlug) {
     const ignoredProviders = new Set([
       ...(Array.isArray(selected.ignore_providers) ? selected.ignore_providers : []),

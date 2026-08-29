@@ -161,7 +161,7 @@ test('allows only the explicit Gemini model as a qualification override and remo
     validated.model,
   );
   assert.equal(handoff[0].model, QUALIFICATION_GEMINI_MODEL);
-  assert.equal('plugins' in handoff[0], false);
+  assert.deepEqual(handoff[0].plugins, []);
   const receipt = buildQualificationReceipt({
     input: validated,
     policy,
