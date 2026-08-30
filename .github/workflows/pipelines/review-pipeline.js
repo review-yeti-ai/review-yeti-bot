@@ -991,6 +991,9 @@ function resolveModelConfig(env = process.env) {
           baseUrl: (t.base_url || t.baseUrl || baseUrl).replace(/\/+$/, ''),
           apiKey: resolvedKey,
           model: t.model || model,
+          models: Array.isArray(t.models)
+            ? t.models.filter((candidate) => typeof candidate === 'string' && candidate.trim())
+            : undefined,
           provider: t.provider,
           compat: t.compat || t.compatibility,
           providerRouting: t.provider_routing || t.providerRouting,
@@ -2043,8 +2046,14 @@ function matchAllowedModelInError(message, allowedModels = []) {
   return allowedModels.find((model) => text.includes(model)) || null;
 }
 
-function prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message) {
-  const configuredModels = requestOptions?.plugins?.find((plugin) => plugin?.id === 'auto-router')?.allowed_models;
+function prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message, transport = null) {
+  // An explicit transport handoff is authoritative. Its `model` plus `models` list is the
+  // documented OpenRouter model-fallback contract; never replace it with the legacy action
+  // policy's auto-router allowlist when the central plan supplied an explicit route.
+  const explicitModels = Array.isArray(transport?.models) && transport.models.length > 0
+    ? [transport.model || requestBody.model, ...transport.models]
+    : null;
+  const configuredModels = explicitModels || requestOptions?.plugins?.find((plugin) => plugin?.id === 'auto-router')?.allowed_models;
   if (!Array.isArray(configuredModels) || configuredModels.length < 2) return false;
   const failedModel = matchAllowedModelInError(
     [message, payload?.error?.metadata?.model, payload?.model].filter(Boolean).join(' '),
@@ -2836,6 +2845,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         ),
         response_format: buildFindingsResponseFormat(structuredOutputMode),
       };
+      if (isOpenRouterTransport && Array.isArray(transport.models) && transport.models.length > 0) {
+        requestBody.models = transport.models;
+      }
       // This is reporting-only. Keep the actual request body unchanged while recording the
       // distinction between what policy declared and what the runtime placed on the wire.
       outputContract = buildOutputContractTelemetry(transport, requestBody, false);
@@ -2858,7 +2870,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       // the action-level policy remains canonical for the OpenRouter fallback.
       // Sending the auto-router plugin to Fireworks/Ollama is rejected as an
       // unknown request field and makes every persona lane fail.
-      if (isOpenRouterTransport && (transport.plugins || requestOptions?.plugins)) {
+      // Presence matters even when the qualification harness deliberately sends `models: []`
+      // to measure one model alone. In both cases, an explicit central handoff must suppress the
+      // legacy action policy's Auto Router plugin; an omitted field remains backward-compatible.
+      const hasExplicitModelSelection = Array.isArray(transport.models);
+      if (isOpenRouterTransport && (transport.plugins || (!hasExplicitModelSelection && requestOptions?.plugins))) {
         requestBody.plugins = transport.plugins || requestOptions?.plugins;
       }
       if (isOpenRouterTransport) {
@@ -3075,7 +3091,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               errorCode = resolveOpenRouterErrorCode(parsedDetail);
               if (isOpenRouterTransport && !providerRecoveryAttempted &&
                 (outcomeClass === 'http_429' || outcomeClass === 'http_5xx' || outcomeClass === 'timeout') &&
-                prepareOpenRouterModelFallback(requestBody, requestOptions, parsedDetail, detail)) {
+                prepareOpenRouterModelFallback(requestBody, requestOptions, parsedDetail, detail, transport)) {
                 providerRecoveryAttempted = true;
                 recoveryAction = 'model_fallback';
                 const retryAfterMs = parseRetryAfterMs(response);
@@ -3149,7 +3165,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               failureClass: providerFailureClass,
             });
             if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
-              prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message)) {
+              prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message, transport)) {
               providerRecoveryAttempted = true;
               recoveryAction = 'model_fallback';
               continue;
@@ -3193,7 +3209,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                   failureClass: providerFailureClass,
                 });
                 if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
-                  prepareOpenRouterModelFallback(requestBody, requestOptions, providerLane, message)) {
+                  prepareOpenRouterModelFallback(requestBody, requestOptions, providerLane, message, transport)) {
                   providerRecoveryAttempted = true;
                   recoveryAction = 'model_fallback';
                   continue;
