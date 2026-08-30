@@ -76,8 +76,10 @@ jobs:
           node --test scripts/pi-openrouter-qualification.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
+          grep -Fq '"name": "gemini"' policy/review-yeti.json
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
           grep -Fq '"name": "ollama"' policy/review-yeti.json
+          grep -Fq '"name": "synthetic"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
@@ -90,6 +92,10 @@ jobs:
           grep -Fq 'secrets.OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
+          grep -Fq 'GEMINI_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'secrets.GEMINI_API_KEY' .github/workflows/review-yeti.yml
+          grep -Fq 'SYNTHETIC_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'secrets.SYNTHETIC_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'llm-base-url: https://openrouter.ai/api/v1' .github/workflows/review-yeti.yml
           grep -Fq 'action-sha:' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-data-collection:' .github/workflows/review-yeti.yml
