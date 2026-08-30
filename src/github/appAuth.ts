@@ -14,6 +14,14 @@ export interface InstallationTokenResult {
   permissions?: Record<string, string>;
 }
 
+export interface GitHubRepositoryInstallationConfig {
+  appId: string;
+  privateKey: string;
+  owner: string;
+  repo: string;
+  baseUrl?: string;
+}
+
 /**
  * Encodes a JSON object or string to base64url format.
  */
@@ -90,4 +98,31 @@ export async function getGitHubAppInstallationToken(
     expiresAt: data.expires_at,
     permissions: data.permissions,
   };
+}
+
+/** Resolves the App installation for an allowlisted repository without creating a token. */
+export async function getGitHubAppInstallationIdForRepository(
+  config: GitHubRepositoryInstallationConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<number> {
+  const { appId, privateKey, owner, repo, baseUrl = 'https://api.github.com' } = config;
+  const jwt = generateGitHubAppJwt(appId, privateKey);
+  const url = `${baseUrl.replace(/\/+$/, '')}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`;
+  const response = await fetchFn(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${jwt}`,
+      'User-Agent': 'ct-review-bot[bot]',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error(`GitHub App repository installation lookup failed HTTP ${response.status}`);
+  const body = await response.json() as { id?: unknown };
+  const installationId = Number(body.id);
+  if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+    throw new Error('GitHub App repository installation lookup returned no installation id');
+  }
+  return installationId;
 }

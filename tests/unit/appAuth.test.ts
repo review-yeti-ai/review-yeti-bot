@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
-import { generateGitHubAppJwt, getGitHubAppInstallationToken } from '../../src/github/appAuth';
+import {
+  generateGitHubAppJwt,
+  getGitHubAppInstallationIdForRepository,
+  getGitHubAppInstallationToken,
+} from '../../src/github/appAuth';
 
 describe('GitHub App Authentication & Installation Token Exchange', () => {
   // Generate temporary 2048-bit RSA key pair for testing
@@ -48,5 +52,27 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
     expect(mockFetch).toHaveBeenCalledOnce();
     expect(result.token).toBe('ghs_mockInstallationToken123456789');
     expect(result.permissions).toEqual({ pull_requests: 'write', issues: 'write' });
+  });
+
+  it('resolves a repository installation with App authentication and no installation token', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 456 }) });
+    await expect(getGitHubAppInstallationIdForRepository({
+      appId: '123456',
+      privateKey,
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+    }, mockFetch as any)).resolves.toBe(456);
+    expect(mockFetch.mock.calls[0][0]).toBe('https://api.github.com/repos/calltelemetry/cisco-cdr/installation');
+    expect(new Headers(mockFetch.mock.calls[0][1].headers).get('authorization')).toMatch(/^Bearer [^.]+\.[^.]+\.[^.]+$/u);
+  });
+
+  it('fails closed when the App is not installed on the target repository', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+    await expect(getGitHubAppInstallationIdForRepository({
+      appId: '123456',
+      privateKey,
+      owner: 'calltelemetry',
+      repo: 'missing',
+    }, mockFetch as any)).rejects.toThrow(/HTTP 404/u);
   });
 });

@@ -53,6 +53,34 @@ from their own control plane instead.
 > **No key yet?** The action fails closed without posting a successful verdict. It never presents
 > static pattern checks as a model review.
 
+### Optional DOKS admission (qualification only)
+
+The Action can instead make a short authenticated admission request to the Review Yeti DOKS
+queue. Local execution remains the default. This mode sends immutable PR identity only—never a
+provider key, GitHub token, diff, or prompt—and returns `DISPATCHED` / `PENDING`, not a passing
+review. The later Review Yeti App check is responsible for the terminal result.
+
+```yaml
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: review-yeti-ai/review-yeti-bot@<exact-commit-sha>
+        with:
+          execution-backend: doks
+          action-sha: <same-exact-commit-sha>
+          doks-publish-mode: disabled
+```
+
+The service must explicitly enable Action admission and allowlist the numeric repository and owner
+IDs plus the immutable trusted workflow ref and SHA. A missing OIDC permission, unavailable durable
+database, uninstalled GitHub App, identity mismatch, or non-`202` response fails the Action. There
+is no automatic local fallback and no scheduled canary.
+
 ---
 
 ## What you get

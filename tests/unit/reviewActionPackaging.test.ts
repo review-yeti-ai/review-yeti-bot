@@ -43,6 +43,37 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('github-token');
     expect(inputs).toContain('review-engine');
     expect(inputs).toContain('action-sha');
+    expect(inputs).toContain('execution-backend');
+    expect(inputs).toContain('doks-dispatch-url');
+    expect(inputs).toContain('doks-publish-mode');
+  });
+
+  it('keeps local execution as the default and makes DOKS an explicit OIDC dispatch', () => {
+    expect(action.inputs['execution-backend'].default).toBe('local');
+    expect(action.inputs['doks-publish-mode'].default).toBe('disabled');
+    expect(action.inputs['doks-dispatch-url'].default).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
+
+    const raw = fs.readFileSync(actionPath, 'utf8');
+    const dispatcher = fs.readFileSync(path.join(rootRepoDir, 'scripts/dispatch-doks-action.mjs'), 'utf8');
+    expect(raw).toContain('dispatch-doks-action.mjs');
+    expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_URL');
+    expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_TOKEN');
+    expect(raw).toContain("inputs.execution-backend == 'doks'");
+    expect(raw).toContain("inputs.execution-backend != 'doks'");
+  });
+
+  it('does not expose provider credentials to the DOKS dispatch step', () => {
+    const step = action.runs.steps.find((candidate: any) => candidate.name === 'Dispatch review to DOKS');
+    expect(step).toBeTruthy();
+    expect(JSON.stringify(step.env)).not.toMatch(/OPENROUTER|FIREWORKS|OLLAMA|ANTHROPIC|GEMINI|OPENAI_API_KEY/u);
+    expect(step.env).not.toHaveProperty('GH_TOKEN');
+    expect(step.env.DOKS_OIDC_AUDIENCE).toBe('review-yeti-doks-dispatch');
+  });
+
+  it('reports remote admission as pending rather than a green review', () => {
+    expect(action.outputs['review-status'].value).toContain('steps.doks-dispatch.outputs.review-status');
+    expect(action.outputs['gate-decision'].value).toContain('steps.doks-dispatch.outputs.gate-decision');
+    expect(action.outputs['merge-eligible'].value).toContain('steps.doks-dispatch.outputs.merge-eligible');
   });
 
   it('defaults github-token to the caller workflow token so no PAT is required', () => {
