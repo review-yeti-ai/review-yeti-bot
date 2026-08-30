@@ -75,7 +75,10 @@ describe('DOKS Action dispatch client', () => {
     expect(() => buildDispatchRequest(environment({ DOKS_PUBLISH_MODE: 'publish-everything' }))).toThrow(/publish mode/i);
   });
 
-  it('requests the fixed GitHub OIDC audience and posts the token only to the dispatch endpoint', async () => {
+  it.each([
+    'pipelines.actions.githubusercontent.com',
+    'token.actions.githubusercontent.com',
+  ])('requests the fixed GitHub OIDC audience from %s and posts the token only to the dispatch endpoint', async (oidcHost) => {
     const { dispatchAction } = await import(modulePath);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), {
@@ -91,11 +94,13 @@ describe('DOKS Action dispatch client', () => {
         headers: { 'content-type': 'application/json' },
       }));
 
-    const result = await dispatchAction(environment(), fetchMock);
+    const result = await dispatchAction(environment({
+      ACTIONS_ID_TOKEN_REQUEST_URL: `https://${oidcHost}/token?x=1`,
+    }), fetchMock);
 
     expect(result).toEqual({ version: 'ActionDispatchAccepted.v1', status: 'accepted', runId: `run_${'1'.repeat(32)}` });
     const oidcUrl = new URL(String(fetchMock.mock.calls[0][0]));
-    expect(oidcUrl.origin).toBe('https://pipelines.actions.githubusercontent.com');
+    expect(oidcUrl.origin).toBe(`https://${oidcHost}`);
     expect(oidcUrl.searchParams.get('audience')).toBe('review-yeti-doks-dispatch');
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer actions-runtime-token');
     expect(fetchMock.mock.calls[1][0]).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
