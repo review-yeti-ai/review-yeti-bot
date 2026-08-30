@@ -26,19 +26,25 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(fixture, committedFixture);
   assert.match(fixture.normalized_plan_sha256, /^[0-9a-f]{64}$/);
   assert.equal(fixture.normalized_plan_sha256, sha256(canonicalJson(fixture.plan)));
-  assert.deepEqual(fixture.plan.transport_order, ['ollama', 'fireworks', 'openrouter-fallback']);
+  assert.deepEqual(fixture.plan.transport_order, ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']);
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
     [
+      'direct-gemini-openai-compatible',
       'direct-ollama-cloud-openai-compatible',
+      'direct-synthetic-openai-compatible',
       'direct-fireworks-openai-compatible',
       'openrouter-gateway',
     ],
   );
   const ollama = fixture.plan.transports.find((transport) => transport.name === 'ollama');
+  const gemini = fixture.plan.transports.find((transport) => transport.name === 'gemini');
+  const synthetic = fixture.plan.transports.find((transport) => transport.name === 'synthetic');
   const fireworks = fixture.plan.transports.find((transport) => transport.name === 'fireworks');
   const openrouter = fixture.plan.transports.find((transport) => transport.name === 'openrouter-fallback');
   assert.equal(ollama.reasoning.wire_shape, 'reasoning_effort');
+  assert.equal(gemini.reasoning.wire_shape, 'reasoning_effort');
+  assert.equal(synthetic.reasoning.wire_shape, 'reasoning_effort');
   assert.equal(openrouter.reasoning.wire_shape, 'reasoning.effort');
   assert.equal(openrouter.model, 'openrouter/auto-beta');
   assert.equal(openrouter.request_extensions.plugins[0].id, 'auto-beta-router');
@@ -80,20 +86,20 @@ test('rejects unknown keys at every execution-policy object boundary', () => {
     ['policy.review_yeti.budget', (policy) => { policy.review_yeti.budget.unexpected = true; }],
     ['policy.review_yeti.transports[0]', (policy) => { policy.review_yeti.transports[0].unexpected = true; }],
     [
-      'policy.review_yeti.transports[2].provider_routing',
-      (policy) => { policy.review_yeti.transports[2].provider_routing.unexpected = true; },
+      'policy.review_yeti.transports[4].provider_routing',
+      (policy) => { policy.review_yeti.transports[4].provider_routing.unexpected = true; },
     ],
     [
-      'policy.review_yeti.transports[2].provider_routing.preferred_min_throughput',
-      (policy) => { policy.review_yeti.transports[2].provider_routing.preferred_min_throughput.unexpected = true; },
+      'policy.review_yeti.transports[4].provider_routing.preferred_min_throughput',
+      (policy) => { policy.review_yeti.transports[4].provider_routing.preferred_min_throughput.unexpected = true; },
     ],
     [
-      'policy.review_yeti.transports[2].provider_routing.preferred_max_latency',
-      (policy) => { policy.review_yeti.transports[2].provider_routing.preferred_max_latency.unexpected = true; },
+      'policy.review_yeti.transports[4].provider_routing.preferred_max_latency',
+      (policy) => { policy.review_yeti.transports[4].provider_routing.preferred_max_latency.unexpected = true; },
     ],
     [
-      'policy.review_yeti.transports[2].plugins[0]',
-      (policy) => { policy.review_yeti.transports[2].plugins[0].unexpected = true; },
+      'policy.review_yeti.transports[4].plugins[0]',
+      (policy) => { policy.review_yeti.transports[4].plugins[0].unexpected = true; },
     ],
   ];
 
@@ -106,7 +112,7 @@ test('rejects unknown keys at every execution-policy object boundary', () => {
 
 test('rejects an unclassified base URL instead of leaking it into the fixture', () => {
   const policy = clone(committedPolicy);
-  policy.review_yeti.transports[0].base_url = 'https://credentials.example.invalid/v1';
+  policy.review_yeti.transports[3].base_url = 'https://credentials.example.invalid/v1';
   assert.throws(
     () => buildExecutionPlan(policy),
     /base_url has no approved credential-free class/,

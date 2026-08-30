@@ -34,8 +34,8 @@ import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
 transports = review.get('transports', [])
-if [item.get('name') for item in transports] != ['ollama', 'fireworks', 'openrouter-fallback']:
-    raise SystemExit('policy must preserve Ollama -> Fireworks -> OpenRouter order')
+if [item.get('name') for item in transports] != ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']:
+    raise SystemExit('policy must preserve Gemini -> Ollama -> Synthetic -> Fireworks -> OpenRouter order')
 # Measured ablation 2026-08-20 (live, N=8 reps x 9 fixtures x 3 arms, errored runs counted as
 # failures): reasoning_effort=max scored recall 0.425 [0.29-0.58] with 25/72 errors, versus the
 # provider default (unset) at 0.750 [0.60-0.86] with 7/72 -- non-overlapping CIs and 3.5x the
@@ -49,8 +49,18 @@ if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
 fireworks = next((item for item in transports if item.get('name') == 'fireworks'), None)
 ollama = next((item for item in transports if item.get('name') == 'ollama'), None)
-if not fireworks or not ollama:
-    raise SystemExit('policy must define named Fireworks and Ollama transports')
+gemini = next((item for item in transports if item.get('name') == 'gemini'), None)
+synthetic = next((item for item in transports if item.get('name') == 'synthetic'), None)
+if not fireworks or not ollama or not gemini or not synthetic:
+    raise SystemExit('policy must define named Gemini, Ollama, Synthetic, and Fireworks transports')
+if (gemini.get('base_url'), gemini.get('api_key_env'), gemini.get('model'), gemini.get('compat')) != (
+    'https://generativelanguage.googleapis.com/v1beta/openai', 'GEMINI_API_KEY', 'gemini-3.7-flash', 'openai'
+):
+    raise SystemExit('Gemini must remain pinned to the Google OpenAI-compatible contract')
+if (synthetic.get('base_url'), synthetic.get('api_key_env'), synthetic.get('model'), synthetic.get('compat')) != (
+    'https://api.synthetic.new/openai/v1', 'SYNTHETIC_API_KEY', 'hf:zai-org/GLM-5.2', 'openai'
+):
+    raise SystemExit('Synthetic must remain pinned to its OpenAI-compatible contract')
 if fireworks.get('structured_output') != 'strict':
     raise SystemExit('Fireworks must use the strict investigation response schema')
 if fireworks.get('perf_metrics_in_response') is not True:
@@ -454,8 +464,8 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['ollama', 'fireworks', 'openrouter-fallback']:
-    raise SystemExit('base64 transport plan must preserve Ollama -> Fireworks -> OpenRouter order')
+if [item.get('name') for item in plan] != ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']:
+    raise SystemExit('base64 transport plan must preserve Gemini -> Ollama -> Synthetic -> Fireworks -> OpenRouter order')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
@@ -468,9 +478,9 @@ grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
 grep -q '^lane_call_budget<<' "$tmp_dir/valid.output"
 grep -qx '24' "$tmp_dir/valid.output"
 
-run_case valid-lane-deadline lane_deadline_ms 720000 0
+run_case valid-lane-deadline lane_deadline_ms 860000 0
 grep -q '^lane_deadline_ms<<' "$tmp_dir/valid-lane-deadline.output"
-grep -qx '720000' "$tmp_dir/valid-lane-deadline.output"
+grep -qx '860000' "$tmp_dir/valid-lane-deadline.output"
 
 run_case valid-investigation-turns max_investigation_turns 2 0
 grep -q '^max_investigation_turns<<' "$tmp_dir/valid-investigation-turns.output"

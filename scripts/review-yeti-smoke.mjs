@@ -5,10 +5,16 @@ import { resolve } from 'node:path';
 import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
+  'gemini',
   'ollama',
+  'synthetic',
   'fireworks',
   'openrouter-fallback',
 ]);
+export const EXPECTED_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+export const EXPECTED_GEMINI_MODEL = 'gemini-3.7-flash';
+export const EXPECTED_SYNTHETIC_BASE_URL = 'https://api.synthetic.new/openai/v1';
+export const EXPECTED_SYNTHETIC_MODEL = 'hf:zai-org/GLM-5.2';
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -71,9 +77,30 @@ export function validatePolicy(policy) {
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
 
+  const gemini = transports.find((transport) => transport.name === 'gemini');
+  const synthetic = transports.find((transport) => transport.name === 'synthetic');
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const ollama = transports.find((transport) => transport.name === 'ollama');
-  if (!fireworks || !ollama) throw new Error('policy must define named Fireworks and Ollama transports');
+  if (!gemini || !ollama || !synthetic || !fireworks) {
+    throw new Error('policy must define Gemini, Ollama, Synthetic, and Fireworks transports');
+  }
+
+  if (gemini.base_url !== EXPECTED_GEMINI_BASE_URL
+      || gemini.api_key_env !== 'GEMINI_API_KEY'
+      || gemini.model !== EXPECTED_GEMINI_MODEL
+      || gemini.compat !== 'openai'
+      || gemini.structured_output !== 'strict'
+      || gemini.reasoning_effort !== 'high') {
+    throw new Error('Gemini must use the pinned Google OpenAI-compatible endpoint/model with strict high-reasoning output');
+  }
+  if (synthetic.base_url !== EXPECTED_SYNTHETIC_BASE_URL
+      || synthetic.api_key_env !== 'SYNTHETIC_API_KEY'
+      || synthetic.model !== EXPECTED_SYNTHETIC_MODEL
+      || synthetic.compat !== 'openai'
+      || synthetic.structured_output !== 'strict'
+      || synthetic.reasoning_effort !== 'high') {
+    throw new Error('Synthetic must use the pinned OpenAI-compatible endpoint/model with strict high-reasoning output');
+  }
 
   // Fireworks must NOT pin reasoning_effort. Measured ablation 2026-08-20, live,
   // deepseek-v4-flash-0731, N=8 reps x 9 fixtures x 3 arms, errored runs counted as failures:
@@ -159,16 +186,24 @@ export function loadPolicy(policyPath = process.env.REVIEW_YETI_POLICY_PATH || D
 }
 
 export function buildRequest(transport) {
+  const isGemini = transport.name === 'gemini' || transport.base_url === EXPECTED_GEMINI_BASE_URL;
   const request = {
     model: transport.model,
     messages: [
       { role: 'system', content: 'You are a Review Yeti transport smoke test. Do not inspect files.' },
       { role: 'user', content: 'Return exactly {"ok":true,"review":"SMOKE_OK"} as a JSON object.' },
     ],
-    temperature: 0,
-    max_tokens: 128,
+    // Reasoning models can spend the first part of a short probe budget on hidden thought
+    // tokens. 128 caused Gemini 3.7 Flash to finish with `length` before emitting JSON even
+    // though the endpoint was healthy. Keep the probe bounded, but leave enough room for the
+    // terminal object so a valid provider is not falsely admitted as unhealthy.
+    max_tokens: 512,
     stream: transport.stream === true,
     ...(transport.structured_output === 'none' ? {} : { response_format: { type: 'json_object' } }),
+    // Gemini 3.7's compatibility layer documents temperature/top-k/top-p as deprecated. Keep
+    // the direct Gemini probe on the documented request shape while retaining deterministic
+    // sampling for the other OpenAI-compatible transports.
+    ...(isGemini ? {} : { temperature: 0 }),
   };
 
   if (transport.provider_routing) {

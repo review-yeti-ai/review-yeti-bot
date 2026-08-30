@@ -6,6 +6,10 @@ import {
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_OPENROUTER_MODEL,
   EXPECTED_OPENROUTER_PLUGIN_ID,
+  EXPECTED_GEMINI_BASE_URL,
+  EXPECTED_GEMINI_MODEL,
+  EXPECTED_SYNTHETIC_BASE_URL,
+  EXPECTED_SYNTHETIC_MODEL,
   EXPECTED_TRANSPORT_ORDER,
   buildRequest,
   classifyHttpFailure,
@@ -26,9 +30,11 @@ function policyFixture() {
       openrouter_stream: 'true',
       openrouter_ttft_ms: '30000',
       stall_ms: '20000',
-      budget: { lane_deadline_ms: '600000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
+      budget: { lane_deadline_ms: '900000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
+        { name: 'gemini', base_url: EXPECTED_GEMINI_BASE_URL, api_key_env: 'GEMINI_API_KEY', model: EXPECTED_GEMINI_MODEL, compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
         { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'high' },
+        { name: 'synthetic', base_url: EXPECTED_SYNTHETIC_BASE_URL, api_key_env: 'SYNTHETIC_API_KEY', model: EXPECTED_SYNTHETIC_MODEL, compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
         { name: 'fireworks', base_url: 'https://fireworks.test/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'fireworks-model', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 15000, stream: true, reasoning_effort: 'high', structured_output: 'strict', perf_metrics_in_response: true },
         {
           name: 'openrouter-fallback',
@@ -38,7 +44,7 @@ function policyFixture() {
           compat: 'openrouter',
           reasoning_effort: 'high',
           timeout_ms: 90000,
-          connect_timeout_ms: 30000,
+          connect_timeout_ms: 20000,
           stream: true,
           structured_output: 'strict',
           quarantine_on_timeout: false,
@@ -57,6 +63,8 @@ function policyFixture() {
 test('the smoke contract pins the approved transport order', () => {
   const transports = validatePolicy(policyFixture());
   const ollama = transports.find((transport) => transport.name === 'ollama');
+  const gemini = transports.find((transport) => transport.name === 'gemini');
+  const synthetic = transports.find((transport) => transport.name === 'synthetic');
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
@@ -65,7 +73,15 @@ test('the smoke contract pins the approved transport order', () => {
   assert.equal(buildRequest(openrouter).plugins[0].id, EXPECTED_OPENROUTER_PLUGIN_ID);
   assert.deepEqual(buildRequest(fireworks).response_format, { type: 'json_object' });
   assert.deepEqual(buildRequest(openrouter).response_format, { type: 'json_object' });
-  assert.equal(buildRequest(ollama).max_tokens, 128);
+  assert.equal(buildRequest(ollama).max_tokens, 512);
+  assert.equal(buildRequest(gemini).response_format.type, 'json_object');
+  assert.equal(buildRequest(gemini).temperature, undefined);
+  assert.equal(buildRequest(gemini).reasoning_effort, 'high');
+  assert.equal(buildRequest(gemini).stream, true);
+  assert.equal(buildRequest(synthetic).response_format.type, 'json_object');
+  assert.equal(buildRequest(synthetic).temperature, 0);
+  assert.equal(buildRequest(synthetic).reasoning_effort, 'high');
+  assert.equal(buildRequest(synthetic).stream, true);
   assert.equal(buildRequest(ollama).stream, true);
   assert.equal(buildRequest(fireworks).stream, true);
   assert.equal(buildRequest(openrouter).stream, true);
@@ -138,8 +154,10 @@ test('the smoke suite probes every configured transport without logging credenti
   const logs = [];
   const env = {
     FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+    GEMINI_API_KEY: 'gemini-secret',
     OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
     OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
+    SYNTHETIC_API_KEY: 'synthetic-secret',
   };
   const fetchImpl = async (url, init) => {
     calls.push({ url, authorization: init.headers.authorization, request: JSON.parse(init.body) });
@@ -149,7 +167,9 @@ test('the smoke suite probes every configured transport without logging credenti
   const result = await runSmoke({ policy: policyFixture(), env, fetchImpl, log: (line) => logs.push(line) });
 
   assert.deepEqual(calls.map((call) => call.url), [
+    `${EXPECTED_GEMINI_BASE_URL}/chat/completions`,
     'https://ollama.test/v1/chat/completions',
+    `${EXPECTED_SYNTHETIC_BASE_URL}/chat/completions`,
     'https://fireworks.test/v1/chat/completions',
     'https://openrouter.test/api/v1/chat/completions',
   ]);
@@ -166,9 +186,11 @@ test('the smoke suite fails closed when no provider can complete the real reques
     runSmoke({
       policy: policyFixture(),
       env: {
-        FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
-        OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
-        OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
+    FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+      GEMINI_API_KEY: 'gemini-secret',
+      OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
+      OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
+      SYNTHETIC_API_KEY: 'synthetic-secret',
       },
       fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({}) }),
       log: (line) => logs.push(line),
@@ -250,7 +272,7 @@ test('the smoke suite treats missing keys as unavailable and still accepts a hea
   });
 
   assert.deepEqual(result.healthy, ['openrouter-fallback']);
-  assert.deepEqual(result.results.map((result) => result.status), ['missing', 'missing', 'healthy']);
+  assert.deepEqual(result.results.map((result) => result.status), ['missing', 'missing', 'missing', 'missing', 'healthy']);
 });
 
 test('the smoke suite still accepts SSE chat completions if a transport streams', async () => {
@@ -351,20 +373,20 @@ test('the smoke suite rejects a provider allow-list before any network request',
 
 test('resolveTransport prefers the Ollama primary when it is healthy', () => {
   const transports = policyFixture().review_yeti.transports;
-  const resolved = resolveTransport(transports, ['ollama', 'fireworks', 'openrouter-fallback']);
-  assert.equal(resolved.name, 'ollama');
+  const resolved = resolveTransport(transports, EXPECTED_TRANSPORT_ORDER);
+  assert.equal(resolved.name, 'gemini');
 });
 
-test('resolveTransport fails over to Fireworks when Ollama is unhealthy', () => {
+test('resolveTransport fails over to Ollama when Gemini is unhealthy', () => {
   const transports = policyFixture().review_yeti.transports;
-  const resolved = resolveTransport(transports, ['fireworks', 'openrouter-fallback']);
-  assert.equal(resolved.name, 'fireworks');
+  const resolved = resolveTransport(transports, ['ollama', 'synthetic', 'fireworks', 'openrouter-fallback']);
+  assert.equal(resolved.name, 'ollama');
 });
 
 test('resolveTransport keeps direct order while excluding verified fallback providers', () => {
   const transports = policyFixture().review_yeti.transports;
-  for (const healthy of [['ollama'], ['ollama', 'fireworks', 'openrouter-fallback']]) {
-    assert.equal(resolveTransport(transports, healthy).name, 'ollama');
+  for (const healthy of [['gemini'], ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']]) {
+    assert.equal(resolveTransport(transports, healthy).name, 'gemini');
   }
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
