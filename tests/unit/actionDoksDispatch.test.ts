@@ -21,7 +21,7 @@ function environment(overrides: Record<string, string> = {}) {
     GITHUB_EVENT_NAME: 'workflow_dispatch',
     GITHUB_WORKFLOW_REF: 'calltelemetry/ct-review-actions/.github/workflows/review.yml@refs/heads/main',
     GITHUB_WORKFLOW_SHA: 'd'.repeat(40),
-    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.githubusercontent.com/token?x=1',
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.actions.githubusercontent.com/token?x=1',
     ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'actions-runtime-token',
     ...overrides,
   };
@@ -75,7 +75,10 @@ describe('DOKS Action dispatch client', () => {
     expect(() => buildDispatchRequest(environment({ DOKS_PUBLISH_MODE: 'publish-everything' }))).toThrow(/publish mode/i);
   });
 
-  it('requests the fixed GitHub OIDC audience and posts the token only to the dispatch endpoint', async () => {
+  it.each([
+    'pipelines.actions.githubusercontent.com',
+    'token.actions.githubusercontent.com',
+  ])('requests the fixed GitHub OIDC audience from %s and posts the token only to the dispatch endpoint', async (oidcHost) => {
     const { dispatchAction } = await import(modulePath);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), {
@@ -91,11 +94,13 @@ describe('DOKS Action dispatch client', () => {
         headers: { 'content-type': 'application/json' },
       }));
 
-    const result = await dispatchAction(environment(), fetchMock);
+    const result = await dispatchAction(environment({
+      ACTIONS_ID_TOKEN_REQUEST_URL: `https://${oidcHost}/token?x=1`,
+    }), fetchMock);
 
     expect(result).toEqual({ version: 'ActionDispatchAccepted.v1', status: 'accepted', runId: `run_${'1'.repeat(32)}` });
     const oidcUrl = new URL(String(fetchMock.mock.calls[0][0]));
-    expect(oidcUrl.origin).toBe('https://token.actions.githubusercontent.com');
+    expect(oidcUrl.origin).toBe(`https://${oidcHost}`);
     expect(oidcUrl.searchParams.get('audience')).toBe('review-yeti-doks-dispatch');
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer actions-runtime-token');
     expect(fetchMock.mock.calls[1][0]).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
@@ -105,6 +110,9 @@ describe('DOKS Action dispatch client', () => {
   it('fails closed on missing OIDC capability, non-202 responses, and malformed receipts', async () => {
     const { dispatchAction } = await import(modulePath);
     await expect(dispatchAction(environment({ ACTIONS_ID_TOKEN_REQUEST_TOKEN: '' }), vi.fn())).rejects.toThrow(/id-token: write/i);
+    await expect(dispatchAction(environment({
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.actions.githubusercontent.com.attacker.example/token',
+    }), vi.fn())).rejects.toThrow(/OIDC request URL is invalid/i);
 
     const rejected = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
