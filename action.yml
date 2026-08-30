@@ -62,6 +62,23 @@ inputs:
       from the consumer repository. Legacy remains the default until governed callers migrate.
     required: false
     default: 'legacy'
+  execution-backend:
+    description: >-
+      Review execution location: local runs the existing panel on this runner; doks only admits
+      the immutable request to the Review Yeti DOKS queue. DOKS callers must grant
+      permissions: id-token: write and rely on the later Review Yeti App gate for a terminal result.
+    required: false
+    default: 'local'
+  doks-dispatch-url:
+    description: 'Fixed Review Yeti DOKS admission endpoint. Only the canonical HTTPS endpoint is accepted.'
+    required: false
+    default: 'https://review-bot.calltelemetry.com/api/dispatch/action'
+  doks-publish-mode:
+    description: >-
+      DOKS publication policy: disabled admits a nonpublishing qualification run; app-gate is
+      reserved for an allowlisted trusted workflow after the App gate is separately activated.
+    required: false
+    default: 'disabled'
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter auto-router fleet, as comma-separated model IDs.
@@ -182,19 +199,19 @@ inputs:
 outputs:
   verdict:
     description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely.'
-    value: ${{ steps.review.outputs.verdict }}
+    value: ${{ steps.review.outputs.verdict || steps.doks-dispatch.outputs.verdict }}
   findings-count:
     description: 'Total findings across all personas.'
-    value: ${{ steps.review.outputs.findings-count }}
+    value: ${{ steps.review.outputs.findings-count || steps.doks-dispatch.outputs.findings-count }}
   review-status:
-    description: 'Overall review outcome: SHIP, FIX_FIRST, or BLOCK.'
-    value: ${{ steps.review.outputs.review-status }}
+    description: 'Overall review outcome: SHIP, FIX_FIRST, BLOCK, or DISPATCHED while the App gate is pending.'
+    value: ${{ steps.review.outputs.review-status || steps.doks-dispatch.outputs.review-status }}
   gate-decision:
-    description: 'Exact-head gate result: PASS or BLOCK.'
-    value: ${{ steps.review.outputs.gate-decision }}
+    description: 'Exact-head gate result: PASS, BLOCK, or PENDING after remote admission.'
+    value: ${{ steps.review.outputs.gate-decision || steps.doks-dispatch.outputs.gate-decision }}
   merge-eligible:
     description: 'Whether the exact-head review is eligible for merge.'
-    value: ${{ steps.review.outputs.merge-eligible }}
+    value: ${{ steps.review.outputs.merge-eligible || steps.doks-dispatch.outputs.merge-eligible }}
   dispatch-reflection-status:
     description: 'Provider dispatch reflection status for the exact-head run.'
     value: ${{ steps.review.outputs.dispatch-reflection-status }}
@@ -218,19 +235,19 @@ outputs:
     value: ${{ steps.review.outputs.provider-telemetry-path }}
   rationale:
     description: 'Executive rationale summarizing why this verdict was chosen.'
-    value: ${{ steps.review.outputs.rationale }}
+    value: ${{ steps.review.outputs.rationale || steps.doks-dispatch.outputs.rationale }}
   total-findings:
     description: 'Total findings across all evaluated reviewers.'
-    value: ${{ steps.review.outputs.total-findings }}
+    value: ${{ steps.review.outputs.total-findings || steps.doks-dispatch.outputs.total-findings }}
   p0-count:
     description: 'Count of P0 (blocking) findings.'
-    value: ${{ steps.review.outputs.p0-count }}
+    value: ${{ steps.review.outputs.p0-count || steps.doks-dispatch.outputs.p0-count }}
   p1-count:
     description: 'Count of P1 (high-priority) findings.'
-    value: ${{ steps.review.outputs.p1-count }}
+    value: ${{ steps.review.outputs.p1-count || steps.doks-dispatch.outputs.p1-count }}
   p2-count:
     description: 'Count of P2 (nit) findings.'
-    value: ${{ steps.review.outputs.p2-count }}
+    value: ${{ steps.review.outputs.p2-count || steps.doks-dispatch.outputs.p2-count }}
   personas-completed:
     description: 'Persona lanes that completed successfully.'
     value: ${{ steps.review.outputs.personas-completed }}
@@ -244,6 +261,20 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate execution backend
+      shell: bash
+      env:
+        EXECUTION_BACKEND: ${{ inputs.execution-backend }}
+      run: |
+        set -euo pipefail
+        case "$EXECUTION_BACKEND" in
+          local|doks) ;;
+          *)
+            echo "::error::execution-backend must be local or doks"
+            exit 1
+            ;;
+        esac
+
     - name: Resolve target pull request
       id: target
       shell: bash
@@ -264,9 +295,33 @@ runs:
 
         echo "repo=$REPO" >> "$GITHUB_OUTPUT"
         echo "pr=$PR" >> "$GITHUB_OUTPUT"
-        echo "Reviewing $REPO#$PR"
+        echo "repository-id=$(gh api "repos/$REPO" --jq .id)" >> "$GITHUB_OUTPUT"
+        gh pr view "$PR" --repo "$REPO" --json headRefOid,baseRefOid \
+          --jq '"head-sha=\(.headRefOid)\nbase-sha=\(.baseRefOid)"' >> "$GITHUB_OUTPUT"
+        echo "Reviewing $REPO#$PR via ${{ inputs.execution-backend }}"
+
+    - name: Dispatch review to DOKS
+      id: doks-dispatch
+      if: ${{ inputs.execution-backend == 'doks' }}
+      shell: bash
+      env:
+        DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
+        DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
+        DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
+        ACTION_SHA: ${{ inputs.action-sha }}
+        REPOSITORY_ID: ${{ steps.target.outputs.repository-id }}
+        REPOSITORY: ${{ steps.target.outputs.repo }}
+        PR_NUMBER: ${{ steps.target.outputs.pr }}
+        HEAD_SHA: ${{ steps.target.outputs.head-sha }}
+        BASE_SHA: ${{ steps.target.outputs.base-sha }}
+        GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+        GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      run: |
+        set -euo pipefail
+        node "$GITHUB_ACTION_PATH/scripts/dispatch-doks-action.mjs"
 
     - name: Fetch pull request diff
+      if: ${{ inputs.execution-backend != 'doks' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -274,8 +329,8 @@ runs:
         set -euo pipefail
         gh pr diff "${{ steps.target.outputs.pr }}" \
           --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/ct-review.diff"
-        PR_HEAD_SHA="$(gh pr view "${{ steps.target.outputs.pr }}" --repo "${{ steps.target.outputs.repo }}" --json headRefOid --jq .headRefOid)"
-        PR_BASE_SHA="$(gh pr view "${{ steps.target.outputs.pr }}" --repo "${{ steps.target.outputs.repo }}" --json baseRefOid --jq .baseRefOid)"
+        PR_HEAD_SHA="${{ steps.target.outputs.head-sha }}"
+        PR_BASE_SHA="${{ steps.target.outputs.base-sha }}"
         echo "PR_HEAD_SHA=$PR_HEAD_SHA" >> "$GITHUB_ENV"
         echo "PR_BASE_SHA=$PR_BASE_SHA" >> "$GITHUB_ENV"
         echo "Fetched $(wc -l < "${RUNNER_TEMP}/ct-review.diff") diff lines."
@@ -283,6 +338,7 @@ runs:
     # Installed under the action path, not the consumer's workspace, so reviewing a repository
     # never leaves a stray node_modules in its checkout.
     - name: Install pipeline dependencies
+      if: ${{ inputs.execution-backend != 'doks' }}
       shell: bash
       env:
         NPM_PREFIX: ${{ runner.temp }}/review-yeti-npm
@@ -318,6 +374,7 @@ runs:
     # the API, into a directory the pull request cannot write to. This also means the caller does
     # not need to check the repository out at all.
     - name: Fetch reviewer configuration from the trusted base ref
+      if: ${{ inputs.execution-backend != 'doks' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -364,6 +421,7 @@ runs:
 
     - name: Run review panel
       id: review
+      if: ${{ inputs.execution-backend != 'doks' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}

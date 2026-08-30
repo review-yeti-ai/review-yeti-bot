@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-30-doks-review-dispatch-design.md`
 
-**Required companion plans:** After Task 9 and before Task 10, execute both `docs/superpowers/plans/2026-08-30-doks-required-review-gate.md` and `docs/superpowers/plans/2026-08-30-doks-fast-worker-image.md`. Task 10 consumes their Check API, image, pre-pull, RBAC, and NetworkPolicy outputs.
+**Required companion plans:** The opt-in Action ingress is specified in `docs/superpowers/plans/2026-08-30-action-doks-opt-in.md` and may be implemented before cluster activation because it defaults to local execution and publishes nothing remotely. After Task 9 and before Task 10, execute both `docs/superpowers/plans/2026-08-30-doks-required-review-gate.md` and `docs/superpowers/plans/2026-08-30-doks-fast-worker-image.md`. Task 10 consumes their Check API, image, pre-pull, RBAC, and NetworkPolicy outputs.
 
 ## Global constraints
 
