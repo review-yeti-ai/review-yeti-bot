@@ -77,6 +77,7 @@ describe('DOKS Action dispatch client', () => {
 
   it.each([
     'pipelines.actions.githubusercontent.com',
+    'run-actions-3-azure-eastus.actions.githubusercontent.com',
     'token.actions.githubusercontent.com',
     'vstoken.actions.githubusercontent.com',
   ])('requests the fixed GitHub OIDC audience from %s and posts the token only to the dispatch endpoint', async (oidcHost) => {
