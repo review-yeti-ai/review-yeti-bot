@@ -50,9 +50,10 @@ export function buildLocalConfig(policy) {
     github_action: {
       transports: review.transports,
       openrouter: {
-        model: openrouter.model,
-        data_collection: routing.data_collection,
-        ignore_providers: routing.ignore,
+      model: openrouter.model,
+      data_collection: routing.data_collection,
+      models: openrouter.models,
+      ignore_providers: routing.ignore,
         provider_routing: routing,
         stream: review.openrouter_stream === 'true',
         timeout_ms: integer(review.openrouter_timeout_ms, 'openrouter_timeout_ms'),
@@ -216,6 +217,7 @@ function policySummary(policy, policyPath) {
       name: transport.name,
       compat: transport.compat,
       model: transport.model,
+      ...(transport.models !== undefined ? { models: transport.models } : {}),
       api_key_env: transport.api_key_env,
       timeout_ms: transport.timeout_ms,
       connect_timeout_ms: transport.connect_timeout_ms,

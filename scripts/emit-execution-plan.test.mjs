@@ -46,9 +46,9 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.equal(gemini.reasoning.wire_shape, 'reasoning_effort');
   assert.equal(synthetic.reasoning.wire_shape, 'reasoning_effort');
   assert.equal(openrouter.reasoning.wire_shape, 'reasoning.effort');
-  assert.equal(openrouter.model, 'openrouter/auto-beta');
-  assert.equal(openrouter.request_extensions.plugins[0].id, 'auto-beta-router');
-  assert.equal(openrouter.request_extensions.plugins[0].cost_quality_tradeoff, 7);
+  assert.equal(openrouter.model, '~deepseek/deepseek-v4-flash-latest');
+  assert.deepEqual(openrouter.models, ['z-ai/glm-5.3-flash']);
+  assert.equal(openrouter.request_extensions.plugins, undefined);
   assert.deepEqual(fireworks.timeouts, {
     connect_ms: 15_000,
     request_ms: 120_000,
@@ -98,14 +98,21 @@ test('rejects unknown keys at every execution-policy object boundary', () => {
       (policy) => { policy.review_yeti.transports[4].provider_routing.preferred_max_latency.unexpected = true; },
     ],
     [
-      'policy.review_yeti.transports[4].plugins[0]',
-      (policy) => { policy.review_yeti.transports[4].plugins[0].unexpected = true; },
+      'policy.review_yeti.transports[4].models',
+      (policy) => { policy.review_yeti.transports[4].models = { unexpected: true }; },
     ],
   ];
 
   for (const [path, mutate] of cases) {
     const policy = clone(committedPolicy);
     mutate(policy);
+    if (path.endsWith('.models')) {
+      assert.throws(
+        () => buildExecutionPlan(policy),
+        /policy\.review_yeti\.transports\[4\]\.models must be an array of non-empty strings/,
+      );
+      continue;
+    }
     assert.throws(() => buildExecutionPlan(policy), new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} contains unknown keys: unexpected`));
   }
 });

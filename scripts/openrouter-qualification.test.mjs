@@ -11,7 +11,8 @@ import {
   OPENROUTER_CONNECT_TIMEOUT_MS,
   OPENROUTER_MAX_OUTPUT_TOKENS,
   OPENROUTER_REASONING_EFFORT,
-  QUALIFICATION_GEMINI_MODEL,
+  QUALIFICATION_DEEPSEEK_MODEL,
+  QUALIFICATION_GLM_MODEL,
   QUALIFICATION_MODEL_OVERRIDES,
   OPENROUTER_TIMEOUT_MS,
   OPENROUTER_TRANSPORT,
@@ -144,14 +145,15 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
 });
 
-test('allows only the explicit Gemini model as a qualification override and removes Auto Router plugins', () => {
-  assert.deepEqual(QUALIFICATION_MODEL_OVERRIDES, [QUALIFICATION_GEMINI_MODEL]);
+test('allows only the two explicit production models as qualification overrides', () => {
+  assert.deepEqual(QUALIFICATION_MODEL_OVERRIDES, [QUALIFICATION_DEEPSEEK_MODEL, QUALIFICATION_GLM_MODEL]);
   assert.equal(normalizeQualificationModel(), null);
-  assert.equal(normalizeQualificationModel('GOOGLE/GEMINI-3.7-FLASH'), QUALIFICATION_GEMINI_MODEL);
-  assert.throws(() => normalizeQualificationModel('google/gemini-3.6-flash'), /model/u);
+  assert.equal(normalizeQualificationModel('~DEEPSEEK/DEEPSEEK-V4-FLASH-LATEST'), QUALIFICATION_DEEPSEEK_MODEL);
+  assert.equal(normalizeQualificationModel('Z-AI/GLM-5.3-FLASH'), QUALIFICATION_GLM_MODEL);
+  assert.throws(() => normalizeQualificationModel('google/gemini-3.7-flash'), /model/u);
 
-  const validated = validateQualificationInput({ ...input, model: QUALIFICATION_GEMINI_MODEL });
-  assert.equal(validated.model, QUALIFICATION_GEMINI_MODEL);
+  const validated = validateQualificationInput({ ...input, model: QUALIFICATION_GLM_MODEL });
+  assert.equal(validated.model, QUALIFICATION_GLM_MODEL);
   const handoff = buildTransportHandoff(
     policy,
     'json_schema',
@@ -160,8 +162,8 @@ test('allows only the explicit Gemini model as a qualification override and remo
     QUALIFICATION_DEFAULT_ROUTING_PROFILE,
     validated.model,
   );
-  assert.equal(handoff[0].model, QUALIFICATION_GEMINI_MODEL);
-  assert.deepEqual(handoff[0].plugins, []);
+  assert.equal(handoff[0].model, QUALIFICATION_GLM_MODEL);
+  assert.deepEqual(handoff[0].models, []);
   const receipt = buildQualificationReceipt({
     input: validated,
     policy,
@@ -169,7 +171,7 @@ test('allows only the explicit Gemini model as a qualification override and remo
     evaluation: { status: 'completed', rows: 3, fixture_set_valid: true, provider_attribution_valid: true },
     childTimedOut: false,
   });
-  assert.equal(receipt.request_contract.model, QUALIFICATION_GEMINI_MODEL);
+  assert.equal(receipt.request_contract.model, QUALIFICATION_GLM_MODEL);
   assert.equal(receipt.request_contract.model_selection, 'qualification_override');
   assert.equal(receipt.integrity_gate.request_contract_valid, true);
   assert.equal(receipt.activation_authorized, false);

@@ -27,8 +27,11 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   preferred_max_latency: { p99: 3 },
   data_collection: 'deny',
 });
-export const EXPECTED_OPENROUTER_MODEL = 'openrouter/auto-beta';
-export const EXPECTED_OPENROUTER_PLUGIN_ID = 'auto-beta-router';
+export const EXPECTED_OPENROUTER_MODELS = Object.freeze([
+  '~deepseek/deepseek-v4-flash-latest',
+  'z-ai/glm-5.3-flash',
+]);
+export const EXPECTED_OPENROUTER_MODEL = EXPECTED_OPENROUTER_MODELS[0];
 
 // Provider selectors freeze routing against an endpoint list that changes underneath us. The
 // policy may retain a narrowly-scoped account safety exclusion for a provider with a verified
@@ -139,10 +142,17 @@ export function validatePolicy(policy) {
 
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must delegate quantization, exclude only Morph, and keep throughput floors/fallbacks');
+    throw new Error('OpenRouter routing must delegate provider selection, exclude only Morph and Fireworks, and keep throughput floors/fallbacks');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
+  }
+  if (openrouter?.plugins !== undefined) {
+    throw new Error('OpenRouter explicit model fallback must not use auto-router plugins');
+  }
+  if (openrouter?.model !== EXPECTED_OPENROUTER_MODEL
+      || JSON.stringify(openrouter?.models) !== JSON.stringify(EXPECTED_OPENROUTER_MODELS.slice(1))) {
+    throw new Error('OpenRouter must use only the approved DeepSeek V4 Flash Latest primary and GLM-5.3 Flash fallback models');
   }
   // Same measured ablation as the fireworks rule above (2026-08-20, live, N=8x9x3, errored runs
   // counted as failures): `max` scored recall 0.425 [0.29-0.58] with 25/72 errors, versus unset at
@@ -150,10 +160,6 @@ export function validatePolicy(policy) {
   // required exactly the worst-measured arm.
   if (openrouter?.reasoning_effort === 'max') {
     throw new Error("OpenRouter must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
-  }
-  if (openrouter?.model !== EXPECTED_OPENROUTER_MODEL) throw new Error('OpenRouter must use the approved Auto Router beta model');
-  if (!Array.isArray(openrouter?.plugins) || openrouter.plugins.length !== 1 || openrouter.plugins[0]?.id !== EXPECTED_OPENROUTER_PLUGIN_ID) {
-    throw new Error(`OpenRouter ${EXPECTED_OPENROUTER_MODEL} must use the ${EXPECTED_OPENROUTER_PLUGIN_ID} plugin`);
   }
   if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
   if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
@@ -208,6 +214,9 @@ export function buildRequest(transport) {
 
   if (transport.provider_routing) {
     request.provider = transport.provider_routing;
+  }
+  if (Array.isArray(transport.models)) {
+    request.models = transport.models;
   }
   if (transport.reasoning_effort) {
     if (transport.compat === 'openrouter') request.reasoning = { effort: transport.reasoning_effort };

@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import {
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_OPENROUTER_MODEL,
-  EXPECTED_OPENROUTER_PLUGIN_ID,
+  EXPECTED_OPENROUTER_MODELS,
   EXPECTED_GEMINI_BASE_URL,
   EXPECTED_GEMINI_MODEL,
   EXPECTED_SYNTHETIC_BASE_URL,
@@ -41,6 +41,7 @@ function policyFixture() {
           base_url: 'https://openrouter.test/api/v1',
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
           model: EXPECTED_OPENROUTER_MODEL,
+          models: EXPECTED_OPENROUTER_MODELS.slice(1),
           compat: 'openrouter',
           reasoning_effort: 'high',
           timeout_ms: 90000,
@@ -49,11 +50,6 @@ function policyFixture() {
           structured_output: 'strict',
           quarantine_on_timeout: false,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
-          plugins: [{
-            id: EXPECTED_OPENROUTER_PLUGIN_ID,
-            allowed_models: ['openai/gpt-5.6-luna', 'moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.1', 'google/gemini-3.5-flash-lite'],
-            cost_quality_tradeoff: 7,
-          }],
         },
       ],
     },
@@ -70,7 +66,7 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
   assert.deepEqual(buildRequest(openrouter).provider, EXPECTED_OPENROUTER_ROUTING);
   assert.equal(buildRequest(openrouter).model, EXPECTED_OPENROUTER_MODEL);
-  assert.equal(buildRequest(openrouter).plugins[0].id, EXPECTED_OPENROUTER_PLUGIN_ID);
+  assert.deepEqual(buildRequest(openrouter).models, EXPECTED_OPENROUTER_MODELS.slice(1));
   assert.deepEqual(buildRequest(fireworks).response_format, { type: 'json_object' });
   assert.deepEqual(buildRequest(openrouter).response_format, { type: 'json_object' });
   assert.equal(buildRequest(ollama).max_tokens, 512);
@@ -100,6 +96,9 @@ test('the committed OpenRouter fallback delegates quantization and keeps through
   const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
 
   assert.deepEqual(openrouter.provider_routing, EXPECTED_OPENROUTER_ROUTING);
+  assert.equal(openrouter.model, EXPECTED_OPENROUTER_MODELS[0]);
+  assert.deepEqual(openrouter.models, EXPECTED_OPENROUTER_MODELS.slice(1));
+  assert.equal(openrouter.plugins, undefined);
   assert.equal(openrouter.provider_routing.allow_fallbacks, true);
   assert.equal(openrouter.provider_routing.sort, 'throughput');
   assert.equal(openrouter.provider_routing.quantizations, undefined);

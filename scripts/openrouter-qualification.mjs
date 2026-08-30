@@ -24,8 +24,12 @@ export const OPENROUTER_TIMEOUT_MS = 90_000;
 export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
 export const OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 export const OPENROUTER_REASONING_EFFORT = 'high';
-export const QUALIFICATION_GEMINI_MODEL = 'google/gemini-3.7-flash';
-export const QUALIFICATION_MODEL_OVERRIDES = Object.freeze([QUALIFICATION_GEMINI_MODEL]);
+export const QUALIFICATION_DEEPSEEK_MODEL = '~deepseek/deepseek-v4-flash-latest';
+export const QUALIFICATION_GLM_MODEL = 'z-ai/glm-5.3-flash';
+export const QUALIFICATION_MODEL_OVERRIDES = Object.freeze([
+  QUALIFICATION_DEEPSEEK_MODEL,
+  QUALIFICATION_GLM_MODEL,
+]);
 // Three fixtures may each use the bounded two-attempt, 90-second request envelope. The declared
 // two-repetition run uses three concurrent lanes, so its worst case is two 180-second waves with
 // a four-minute margin while leaving the parent workflow below its non-negotiable 15-minute cap.
@@ -123,8 +127,8 @@ export function normalizeQualificationMaxTokens(value = OPENROUTER_MAX_OUTPUT_TO
 }
 
 // Model overrides are deliberately narrower than provider pins: this harness may qualify the
-// explicit Gemini route without becoming a general-purpose production-policy editor. An empty
-// value preserves the model selected by the committed policy (currently Auto Router).
+// explicit model route without becoming a general-purpose production-policy editor. An empty
+// value preserves the primary model selected by the committed policy.
 export function normalizeQualificationModel(value = '') {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized) return null;
@@ -253,10 +257,10 @@ export function buildTransportHandoff(
     structured_output_mode: normalizedOutputContractMode,
     provider_routing: delegatedRouting,
   };
-  // Keep an explicit empty list so the bot's action-level Auto Router policy cannot be
-  // re-injected when this qualification asks for a direct model. Production transports retain
-  // their committed plugin declaration; this is a qualification-only boundary marker.
-  if (normalizedModel) handoff.plugins = [];
+  // A single-model qualification override deliberately removes the committed model fallback so
+  // the receipt measures that model alone. The normal qualification handoff keeps the explicit
+  // two-model OpenRouter fallback list from central policy; no Auto Router plugin is ever added.
+  if (normalizedModel) handoff.models = [];
   if (normalizedProviderSlug) {
     const ignoredProviders = new Set([
       ...(Array.isArray(selected.ignore_providers) ? selected.ignore_providers : []),

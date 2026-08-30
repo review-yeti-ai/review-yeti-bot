@@ -156,19 +156,17 @@ transport fails. Fireworks remains the direct rollback target if the subscriptio
 unavailable or quality regresses; reverting the central policy is a separate guarded change. The
 OpenRouter entry remains last so it can provide a final emergency route without changing the
 requested primary chain. It requires compatible request parameters, the policy's
-`strict` output marker, and throughput-ranked routing while delegating quantization and endpoint
-eligibility to OpenRouter's live policy except for the account-level Morph exclusion recorded after
-its verified timeout incident. In the current hosted panel, `strict` is a policy declaration: the
-runtime sends JSON mode (`response_format: { type: "json_object" }`) and validates the terminal
-payload, but it does not enforce one cross-provider JSON Schema. Each caller must expose the five
-named environment variables through its inherited GitHub Actions secrets. Fireworks stays on the
-default serverless tier. All five transports use `high` reasoning. Each transport gets one retry,
-and OpenRouter owns endpoint selection after a timeout. The OpenRouter fallback uses the
-[`openrouter/auto-beta`](https://openrouter.ai/docs/guides/routing/routers/auto-router) model with the
-matching `auto-beta-router` plugin; this is the beta task-aware route, while the transport remains
-last in the production order. Its response telemetry
-records the model that OpenRouter actually selected, so changing the routed model does not silently
-change the central transport contract.
+`strict` output marker, and throughput-ranked provider routing while delegating endpoint eligibility
+to OpenRouter's live policy except for the account-level Morph and Fireworks exclusions recorded
+after their verified incidents. Model selection is explicit: OpenRouter receives
+`~deepseek/deepseek-v4-flash-latest` first and `z-ai/glm-5.3-flash` as its only model fallback via
+the documented `models` array; the Auto Router alias and plugin are not used. In the current hosted
+panel, `strict` is a policy declaration: the runtime sends JSON mode
+(`response_format: { type: "json_object" }`) and validates the terminal payload, but it does not
+enforce one cross-provider JSON Schema. Each caller must expose the five named environment
+variables through its inherited GitHub Actions secrets. Fireworks stays on the default serverless
+tier. All five transports use `high` reasoning. Each transport gets one retry, and OpenRouter owns
+endpoint selection after a timeout.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
 budget, an 860-second lane deadline with a two-minute non-generation reserve and a 40-second

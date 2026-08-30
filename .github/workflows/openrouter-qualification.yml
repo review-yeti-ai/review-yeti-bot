@@ -68,7 +68,7 @@ on:
         default: ''
         type: string
       model:
-        description: 'Optional qualification-only model override; blank keeps the committed policy model; currently google/gemini-3.7-flash'
+        description: 'Optional qualification-only model override: ~deepseek/deepseek-v4-flash-latest or z-ai/glm-5.3-flash; blank keeps the committed primary'
         required: false
         default: ''
         type: string

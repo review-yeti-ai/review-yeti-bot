@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "373eaecca6e72678e553bea0abd6bf1223cd3a710b8f0896b8dffdca9982248b",
+  "normalized_plan_sha256": "aa0b798eff2d051a8d0cddd65e664a5c9ad0c293ed4d254bc2eedfae291724f8",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -169,7 +169,10 @@
       {
         "name": "openrouter-fallback",
         "base_url_class": "openrouter-gateway",
-        "model": "openrouter/auto-beta",
+        "model": "~deepseek/deepseek-v4-flash-latest",
+        "models": [
+          "z-ai/glm-5.3-flash"
+        ],
         "compatibility_mode": "openrouter",
         "timeouts": {
           "connect_ms": 20000,
@@ -185,20 +188,7 @@
           "wire_shape": "reasoning.effort"
         },
         "request_extensions": {
-          "perf_metrics_in_response": false,
-          "plugins": [
-            {
-              "id": "auto-beta-router",
-              "allowed_models": [
-                "openai/gpt-5.6-luna",
-                "moonshotai/kimi-k2.6",
-                "tencent/hy3",
-                "z-ai/glm-5.1",
-                "google/gemini-3.5-flash-lite"
-              ],
-              "cost_quality_tradeoff": 7
-            }
-          ]
+          "perf_metrics_in_response": false
         },
         "routing": {
           "mode": "gateway-delegated",

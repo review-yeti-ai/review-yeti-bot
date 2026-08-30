@@ -78,13 +78,12 @@ if not fallback:
     raise SystemExit('policy must define the openrouter-fallback transport')
 if fallback.get('stream') is not True:
     raise SystemExit('openrouter-fallback must use streaming for provider attribution')
-if fallback.get('model') != 'openrouter/auto-beta':
-    raise SystemExit('openrouter-fallback must use OpenRouter Auto Router beta')
-plugins = fallback.get('plugins') or []
-if len(plugins) != 1 or plugins[0].get('id') != 'auto-beta-router':
-    raise SystemExit('openrouter-fallback must use the auto-beta-router plugin')
-if plugins[0].get('cost_quality_tradeoff') != 7:
-    raise SystemExit('openrouter-fallback must preserve the cost-quality policy on the beta router')
+if fallback.get('model') != '~deepseek/deepseek-v4-flash-latest':
+    raise SystemExit('openrouter-fallback must use DeepSeek V4 Flash Latest')
+if fallback.get('models') != ['z-ai/glm-5.3-flash']:
+    raise SystemExit('openrouter-fallback must use GLM-5.3 Flash as its only model fallback')
+if 'plugins' in fallback:
+    raise SystemExit('openrouter-fallback must not use the Auto Router plugin')
 if fallback.get('structured_output') != 'strict':
     raise SystemExit('openrouter-fallback must use strict investigation output')
 if fallback.get('allow_banned_providers') is not None:

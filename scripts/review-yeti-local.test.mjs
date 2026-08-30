@@ -28,6 +28,8 @@ test('materializes the committed provider order and routing into the local CLI c
   assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
   assert.equal(config.github_action.openrouter.ttft_ms, 30000);
   assert.equal(config.github_action.openrouter.data_collection, 'deny');
+  assert.equal(config.github_action.openrouter.model, '~deepseek/deepseek-v4-flash-latest');
+  assert.deepEqual(config.github_action.openrouter.models, ['z-ai/glm-5.3-flash']);
   assert.deepEqual(config.github_action.openrouter.ignore_providers, ['morph', 'fireworks']);
   // Must track policy/review-yeti.json rather than restating a provider preference.
   assert.equal(
@@ -64,6 +66,8 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.OPENROUTER_TTFT_MS, '30000');
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   const openrouter = JSON.parse(env.REVIEW_YETI_TRANSPORTS).find((transport) => transport.name === 'openrouter-fallback');
+  assert.equal(openrouter.model, '~deepseek/deepseek-v4-flash-latest');
+  assert.deepEqual(openrouter.models, ['z-ai/glm-5.3-flash']);
   assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
 });
 
@@ -87,10 +91,10 @@ test('builds the delegated invocation without changing source identity', () => {
       base: 'a'.repeat(40),
       head: 'b'.repeat(40),
       output: 'review.json',
-      model: 'openrouter/auto-beta',
+      model: '~deepseek/deepseek-v4-flash-latest',
       json: true,
     }),
-    ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--output', 'review.json', '--model', 'openrouter/auto-beta', '--json'],
+    ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--output', 'review.json', '--model', '~deepseek/deepseek-v4-flash-latest', '--json'],
   );
 });
 

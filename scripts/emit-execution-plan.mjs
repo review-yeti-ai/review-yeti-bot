@@ -37,6 +37,7 @@ const ALLOWED_TRANSPORT_KEYS = [
   'base_url',
   'api_key_env',
   'model',
+  'models',
   'compat',
   'timeout_ms',
   'connect_timeout_ms',
@@ -101,6 +102,11 @@ export function validateExecutionPlanPolicy(policy) {
   for (const [index, transport] of policy.review_yeti.transports.entries()) {
     const transportPath = `policy.review_yeti.transports[${index}]`;
     rejectUnknownKeys(transport, ALLOWED_TRANSPORT_KEYS, transportPath);
+    if (transport.models !== undefined
+      && (!Array.isArray(transport.models)
+        || transport.models.some((model) => typeof model !== 'string' || model.length === 0))) {
+      throw new Error(`${transportPath}.models must be an array of non-empty strings`);
+    }
     if (transport.provider_routing !== undefined) {
       rejectUnknownKeys(transport.provider_routing, ALLOWED_ROUTING_KEYS, `${transportPath}.provider_routing`);
       if (transport.provider_routing.preferred_min_throughput !== undefined) {
@@ -198,6 +204,7 @@ export function buildExecutionPlan(policy) {
         name: transport.name,
         base_url_class: baseUrlClass(transport.base_url),
         model: transport.model,
+        ...(transport.models !== undefined ? { models: transport.models } : {}),
         compatibility_mode: transport.compat,
         timeouts: {
           connect_ms: transport.connect_timeout_ms,
