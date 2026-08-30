@@ -138,6 +138,11 @@ The current standard transport plan is deliberately limited and ordered:
 4. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`) as the direct break-glass fallback
 5. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`) as the final rollback-only fallback
 
+Synthetic is a direct OpenAI-compatible transport using `hf:zai-org/GLM-5.3-Flash`. This is the
+current catalog model selected for its supported high reasoning, JSON mode, structured outputs,
+and low published subscription price; Synthetic does not currently expose a DeepSeek V4 0731 model
+identifier. The model is deliberately explicit rather than using a moving `syn:` alias.
+
 `OLLAMA_PR_REVIEW_API_KEY` is sourced from the masked Doppler secret in
 `example-workspace/prd` and synchronized to the repository's GitHub Actions secret of the same name.
 `GEMINI_API_KEY` and `SYNTHETIC_API_KEY` must likewise be populated from production-scoped

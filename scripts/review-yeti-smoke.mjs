@@ -14,7 +14,7 @@ export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
 export const EXPECTED_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 export const EXPECTED_GEMINI_MODEL = 'gemini-3.7-flash';
 export const EXPECTED_SYNTHETIC_BASE_URL = 'https://api.synthetic.new/openai/v1';
-export const EXPECTED_SYNTHETIC_MODEL = 'hf:zai-org/GLM-5.2';
+export const EXPECTED_SYNTHETIC_MODEL = 'hf:zai-org/GLM-5.3-Flash';
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 30_000;
