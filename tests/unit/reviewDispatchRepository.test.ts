@@ -25,6 +25,7 @@ const row = {
   config_digest: identity.configDigest,
   effective_policy_digest: identity.configDigest,
   effective_config_digest: identity.configDigest,
+  publication_mode: 'disabled',
   index_epoch: 0,
   identity,
   status: 'queued',
@@ -44,6 +45,7 @@ function input() {
     receivedAt: 1_000,
     terminalDeadline: 901_000,
     payloadDigest: 'f'.repeat(64),
+    publicationMode: 'disabled' as const,
     identity,
   };
 }
@@ -70,6 +72,8 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.query.mock.calls[6][0]).toMatch(/review_dispatch_outbox/u);
     expect(client.query.mock.calls[3][0]).not.toContain('$6');
     expect(client.query.mock.calls[3][1]).toHaveLength(5);
+    expect(client.query.mock.calls[4][0]).toMatch(/publication_mode/u);
+    expect(client.query.mock.calls[4][1]).toContain('disabled');
     expect(client.release).toHaveBeenCalledOnce();
   });
 
@@ -88,6 +92,26 @@ describe('PostgresReviewDispatchRepository', () => {
     const client = clientWithRows([[], [], [], [{ ...row, payload_digest: '0'.repeat(64), repository_id: 999 }], []]);
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
     await expect(repository.admit(input())).rejects.toThrow(/delivery identity conflict/i);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+  });
+
+  it('rejects a delivery id replayed with a different publication mode', async () => {
+    const client = clientWithRows([[], [], [], [{
+      ...row,
+      payload_digest: input().payloadDigest,
+      repository_id: 123,
+      publication_mode: 'app-gate',
+    }], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+    await expect(repository.admit(input())).rejects.toThrow(/publication mode/i);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+  });
+
+  it('rejects a new delivery that changes publication mode for an existing run identity', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: 'new-delivery' }], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+    await expect(repository.admit({ ...input(), deliveryId: 'new-delivery' }))
+      .rejects.toThrow(/publication mode/i);
     expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
   });
 
@@ -112,12 +136,14 @@ describe('PostgresReviewDispatchRepository', () => {
       delivery_id: input().deliveryId,
       repository_id: 123,
       installation_id: 456,
+      publication_mode: 'disabled',
       lease_owner: 'dispatcher-a',
       lease_expires_at: new Date(31_000),
     }] }));
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
     const claim = await repository.claimNext('dispatcher-a', 1_000, 30_000);
     expect(claim?.runId).toBe(row.run_id);
+    expect(claim?.publicationMode).toBe('disabled');
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE OF outbox SKIP LOCKED/u);
     expect(await repository.heartbeat(row.run_id, 'dispatcher-a', 2_000, 30_000)).toBe(true);
   });
@@ -127,5 +153,7 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(source).toMatch(/CREATE TABLE IF NOT EXISTS github_deliveries/u);
     expect(source).toMatch(/CREATE TABLE IF NOT EXISTS review_dispatch_outbox/u);
     expect(source).toMatch(/ADD COLUMN IF NOT EXISTS terminal_deadline/u);
+    expect(source).toMatch(/ADD COLUMN IF NOT EXISTS publication_mode/u);
+    expect(source).toMatch(/publication_mode IN \('disabled', 'app-gate'\)/u);
   });
 });

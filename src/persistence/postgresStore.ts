@@ -146,6 +146,8 @@ export class PostgresStore {
           effective_config_digest VARCHAR(64) NOT NULL,
           index_epoch BIGINT NOT NULL DEFAULT 0,
           identity JSONB NOT NULL,
+          publication_mode TEXT NOT NULL DEFAULT 'disabled'
+            CHECK (publication_mode IN ('disabled', 'app-gate')),
           status VARCHAR(32) NOT NULL,
           stage VARCHAR(32) NOT NULL,
           attempt INT NOT NULL DEFAULT 0,
@@ -171,6 +173,19 @@ export class PostgresStore {
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS delivery_id TEXT;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS received_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS terminal_deadline TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS publication_mode TEXT NOT NULL DEFAULT 'disabled';
+        UPDATE review_runs SET publication_mode = 'disabled' WHERE publication_mode IS NULL;
+        ALTER TABLE review_runs ALTER COLUMN publication_mode SET DEFAULT 'disabled';
+        ALTER TABLE review_runs ALTER COLUMN publication_mode SET NOT NULL;
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'review_runs_publication_mode_check'
+          ) THEN
+            ALTER TABLE review_runs ADD CONSTRAINT review_runs_publication_mode_check
+              CHECK (publication_mode IN ('disabled', 'app-gate'));
+          END IF;
+        END $$;
         UPDATE review_runs
            SET effective_policy_digest = COALESCE(config_digest, repeat('0', 64)),
                effective_config_digest = COALESCE(config_digest, repeat('0', 64))
