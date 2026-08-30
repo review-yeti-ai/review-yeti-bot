@@ -1,0 +1,114 @@
+name: DOKS Action admission qualification
+
+# Reusable admission evidence only. An App-installed repository supplies the one-time manual
+# wrapper. This workflow is never scheduled, never publishes a review, never invokes a model
+# provider, and never turns the DOKS path into a required merge check.
+on:
+  workflow_call:
+    inputs:
+      confirm:
+        description: 'Type DISPATCH to authorize one nonpublishing admission qualification'
+        required: true
+        type: string
+      pr_number:
+        description: 'Pull request in exampleorg/example-review-actions to identify immutably'
+        required: true
+        type: string
+      base_sha:
+        description: 'Exact 40-hex base commit SHA for the target pull request'
+        required: true
+        type: string
+      head_sha:
+        description: 'Exact 40-hex head commit SHA for the target pull request'
+        required: true
+        type: string
+      bot_sha:
+        description: 'Exact reviewed review-yeti-bot commit containing the DOKS client'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  id-token: write
+
+concurrency:
+  group: one-time-doks-action-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: DOKS admission and idempotency (no publication)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate immutable qualification request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIRM: ${{ inputs.confirm }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          BOT_SHA: ${{ inputs.bot_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == DISPATCH ]] || { echo '::error::confirm must be DISPATCH'; exit 1; }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo '::error::pr_number must be positive'; exit 1; }
+          for value in "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA" "$BOT_SHA"; do
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::all SHAs must be exact lowercase 40-hex commits'; exit 1; }
+          done
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.base.sha,.head.sha] | @tsv')"
+          [[ "$actual" == "$EXPECTED_BASE_SHA"$'\t'"$EXPECTED_HEAD_SHA" ]] || {
+            echo '::error::the pull request head or base moved; refuse stale qualification'
+            exit 1
+          }
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Checkout exact Review Yeti Action commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: review-yeti-ai/review-yeti-bot
+          ref: ${{ inputs.bot_sha }}
+          path: .review-yeti-bot
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Admit immutable request
+        id: first_dispatch
+        uses: ./.review-yeti-bot
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          action-sha: ${{ inputs.bot_sha }}
+          execution-backend: doks
+          doks-publish-mode: disabled
+
+      - name: Retry the identical immutable request
+        id: duplicate_dispatch
+        uses: ./.review-yeti-bot
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          action-sha: ${{ inputs.bot_sha }}
+          execution-backend: doks
+          doks-publish-mode: disabled
+
+      - name: Assert fail-closed pending outputs
+        env:
+          FIRST_STATUS: ${{ steps.first_dispatch.outputs.review-status }}
+          FIRST_GATE: ${{ steps.first_dispatch.outputs.gate-decision }}
+          FIRST_ELIGIBLE: ${{ steps.first_dispatch.outputs.merge-eligible }}
+          DUPLICATE_STATUS: ${{ steps.duplicate_dispatch.outputs.review-status }}
+          DUPLICATE_GATE: ${{ steps.duplicate_dispatch.outputs.gate-decision }}
+          DUPLICATE_ELIGIBLE: ${{ steps.duplicate_dispatch.outputs.merge-eligible }}
+        run: |
+          set -euo pipefail
+          [[ "$FIRST_STATUS/$FIRST_GATE/$FIRST_ELIGIBLE" == 'DISPATCHED/PENDING/false' ]]
+          [[ "$DUPLICATE_STATUS/$DUPLICATE_GATE/$DUPLICATE_ELIGIBLE" == 'DISPATCHED/PENDING/false' ]]
+          echo 'Both admissions returned DISPATCHED/PENDING/false; no review was executed or published.' >> "$GITHUB_STEP_SUMMARY"

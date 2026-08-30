@@ -51,6 +51,7 @@ jobs:
           bash -n scripts/review-yeti-local
           bash -n scripts/resolve-release-channel.sh
           bash -n scripts/validate-release-provenance.sh
+          bash -n scripts/doks-action-qualification.test.sh
           bash -n scripts/emit-policy.test.sh
           bash -n scripts/validate-caller-workflow.test.sh
           bash -n scripts/promote-v1.test.sh
@@ -63,6 +64,7 @@ jobs:
           bash scripts/check-review-verdict.test.sh
           bash scripts/self-cancel-run.test.sh
           bash scripts/emit-policy.test.sh
+          bash scripts/doks-action-qualification.test.sh
           bash scripts/release-channel.test.sh
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output"
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
