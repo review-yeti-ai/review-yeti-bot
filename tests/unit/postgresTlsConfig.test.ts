@@ -20,6 +20,16 @@ describe('PostgreSQL TLS configuration', () => {
     )).toThrow(/sslmode=disable/i);
   });
 
+  it.each(['ssl', 'sslrootcert', 'sslcert', 'sslkey'])(
+    'rejects a conflicting %s URL option when an explicit CA is supplied',
+    (parameter) => {
+      expect(() => postgresConnectionConfig(
+        `postgresql://db.example.com/app?${parameter}=conflict`,
+        'certificate',
+      )).toThrow(new RegExp(parameter, 'i'));
+    },
+  );
+
   it('removes URL TLS parameters so node-postgres cannot overwrite the verified CA', () => {
     expect(postgresConnectionConfig(
       'postgresql://user:pass@db.example.com:25060/app?application_name=review-yeti&sslmode=verify-full',
