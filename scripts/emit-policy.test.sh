@@ -508,7 +508,7 @@ done
 for field in timeout_ms connect_timeout_ms; do
   for value in 0 -1 180001 true 1.5 ''; do
     name="invalid-transport-${field}-${value:-empty}"
-    run_case "$name" "transport.1.${field}" "$value" 1
+    run_case "$name" "transport.3.${field}" "$value" 1
     grep -q "transport fireworks.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
   done
 done
