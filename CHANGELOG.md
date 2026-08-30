@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.16.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.6...v1.16.0) (2026-08-30)
+
+
+### Features
+
+* qualify OpenRouter across three fixtures ([#310](https://github.com/review-yeti-ai/review-yeti-bot/issues/310)) ([24ef8c3](https://github.com/review-yeti-ai/review-yeti-bot/commit/24ef8c3bd784388f569b2d9c46580b23b5a4cff1))
+* support explicit OpenRouter model fallbacks ([2180a7e](https://github.com/review-yeti-ai/review-yeti-bot/commit/2180a7e591916426fdadce96b9cc703fac9bd45d))
+
+
+### Bug Fixes
+
+* align OpenRouter allowlist with GLM-5.2 ([099578a](https://github.com/review-yeti-ai/review-yeti-bot/commit/099578ac2a3aaf02bd1a0ce89dfdf801a21e8de5))
+* honor separated live-proof arguments ([#312](https://github.com/review-yeti-ai/review-yeti-bot/issues/312)) ([0250c0c](https://github.com/review-yeti-ai/review-yeti-bot/commit/0250c0cefad9d653475375c4f2c2de2408c57181))
+
 ## [1.15.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.5...v1.15.6) (2026-08-28)
 
 
