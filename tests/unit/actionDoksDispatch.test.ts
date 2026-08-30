@@ -112,9 +112,18 @@ describe('DOKS Action dispatch client', () => {
   it('fails closed on missing OIDC capability, non-202 responses, and malformed receipts', async () => {
     const { dispatchAction } = await import(modulePath);
     await expect(dispatchAction(environment({ ACTIONS_ID_TOKEN_REQUEST_TOKEN: '' }), vi.fn())).rejects.toThrow(/id-token: write/i);
-    await expect(dispatchAction(environment({
-      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.actions.githubusercontent.com.attacker.example/token',
-    }), vi.fn())).rejects.toThrow(/invalid for host pipelines\.actions\.githubusercontent\.com\.attacker\.example/i);
+
+    for (const unsafeHost of [
+      'pipelines.actions.githubusercontent.com.attacker.example',
+      'run-actions-3-azure-eastus.actions.githubusercontent.com.attacker',
+      'run_actions.actions.githubusercontent.com',
+    ]) {
+      const fetchMock = vi.fn();
+      await expect(dispatchAction(environment({
+        ACTIONS_ID_TOKEN_REQUEST_URL: `https://${unsafeHost}/token`,
+      }), fetchMock)).rejects.toThrow(new RegExp(`invalid for host ${unsafeHost.replaceAll('.', '\\.')}`, 'i'));
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
 
     const rejected = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
