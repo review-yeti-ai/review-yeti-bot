@@ -58,7 +58,7 @@ if (gemini.get('base_url'), gemini.get('api_key_env'), gemini.get('model'), gemi
 ):
     raise SystemExit('Gemini must remain pinned to the Google OpenAI-compatible contract')
 if (synthetic.get('base_url'), synthetic.get('api_key_env'), synthetic.get('model'), synthetic.get('compat')) != (
-    'https://api.synthetic.new/openai/v1', 'SYNTHETIC_API_KEY', 'hf:zai-org/GLM-5.2', 'openai'
+    'https://api.synthetic.new/openai/v1', 'SYNTHETIC_API_KEY', 'hf:zai-org/GLM-5.3-Flash', 'openai'
 ):
     raise SystemExit('Synthetic must remain pinned to its OpenAI-compatible contract')
 if fireworks.get('structured_output') != 'strict':

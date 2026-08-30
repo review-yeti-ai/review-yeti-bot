@@ -35,7 +35,7 @@
         "name": "synthetic",
         "base_url": "https://api.synthetic.new/openai/v1",
         "api_key_env": "SYNTHETIC_API_KEY",
-        "model": "hf:zai-org/GLM-5.2",
+        "model": "hf:zai-org/GLM-5.3-Flash",
         "compat": "openai",
         "timeout_ms": 90000,
         "connect_timeout_ms": 15000,

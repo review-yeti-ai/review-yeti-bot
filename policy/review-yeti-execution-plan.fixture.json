@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "0ec191378fc5a3309832665d38c37bfbcb688942623d123f2e1931995822c322",
+  "normalized_plan_sha256": "373eaecca6e72678e553bea0abd6bf1223cd3a710b8f0896b8dffdca9982248b",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -95,7 +95,7 @@
       {
         "name": "synthetic",
         "base_url_class": "direct-synthetic-openai-compatible",
-        "model": "hf:zai-org/GLM-5.2",
+        "model": "hf:zai-org/GLM-5.3-Flash",
         "compatibility_mode": "openai",
         "timeouts": {
           "connect_ms": 15000,
