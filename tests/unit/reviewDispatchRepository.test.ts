@@ -173,7 +173,10 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(source).toMatch(/CREATE TABLE IF NOT EXISTS github_deliveries/u);
     expect(source).toMatch(/CREATE TABLE IF NOT EXISTS review_dispatch_outbox/u);
     expect(source).toMatch(/ADD COLUMN IF NOT EXISTS terminal_deadline/u);
-    expect(source).toMatch(/ADD COLUMN IF NOT EXISTS publication_mode/u);
+    expect(source).toMatch(/ADD COLUMN IF NOT EXISTS publication_mode TEXT NOT NULL DEFAULT 'disabled'/u);
+    expect(source).toMatch(/UPDATE review_runs SET publication_mode = 'disabled' WHERE publication_mode IS NULL/u);
+    expect(source).toMatch(/ALTER COLUMN publication_mode SET DEFAULT 'disabled'/u);
+    expect(source).toMatch(/ALTER COLUMN publication_mode SET NOT NULL/u);
     expect(source).toMatch(/publication_mode IN \('disabled', 'app-gate'\)/u);
   });
 });
