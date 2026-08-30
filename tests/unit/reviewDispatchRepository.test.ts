@@ -108,11 +108,31 @@ describe('PostgresReviewDispatchRepository', () => {
   });
 
   it('rejects a new delivery that changes publication mode for an existing run identity', async () => {
-    const client = clientWithRows([[], [], [{ delivery_id: 'new-delivery' }], [], [], []]);
+    const persistedMode = 'app-gate';
+    const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+      if (/INSERT INTO github_deliveries/u.test(sql)) return { rows: [{ delivery_id: 'new-delivery' }] };
+      if (/INSERT INTO review_runs/u.test(sql)) {
+        const enforcesModeIdentity = /WHERE review_runs\.publication_mode = EXCLUDED\.publication_mode/u.test(sql);
+        const requestedMode = values[17];
+        return { rows: enforcesModeIdentity && requestedMode !== persistedMode
+          ? []
+          : [{ ...row, publication_mode: persistedMode }] };
+      }
+      return { rows: [] };
+    });
+    const client = { query, release: vi.fn() };
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
     await expect(repository.admit({ ...input(), deliveryId: 'new-delivery' }))
       .rejects.toThrow(/publication mode/i);
     expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+  });
+
+  it('rejects an invalid publication mode before opening a transaction', async () => {
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect } as any);
+    await expect(repository.admit({ ...input(), publicationMode: 'bogus' as any }))
+      .rejects.toThrow(/publication mode/i);
+    expect(connect).not.toHaveBeenCalled();
   });
 
   it('rolls back when the outbox insert fails so acknowledgement cannot lose work', async () => {
