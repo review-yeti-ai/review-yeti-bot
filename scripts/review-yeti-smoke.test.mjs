@@ -30,7 +30,7 @@ function policyFixture() {
       openrouter_stream: 'true',
       openrouter_ttft_ms: '30000',
       stall_ms: '20000',
-      budget: { lane_deadline_ms: '900000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
+      budget: { lane_deadline_ms: '860000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
         { name: 'gemini', base_url: EXPECTED_GEMINI_BASE_URL, api_key_env: 'GEMINI_API_KEY', model: EXPECTED_GEMINI_MODEL, compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
         { name: 'ollama', base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'high' },
