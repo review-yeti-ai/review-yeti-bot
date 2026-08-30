@@ -14,6 +14,35 @@ import { logger } from '../utils/logger';
 
 export const ADVISORY_LOCK_ID = 1029384;
 
+export function postgresTlsConfig(connectionString: string, caCertificate?: string): { ca: string; rejectUnauthorized: true } | undefined {
+  const ca = String(caCertificate || '').trim().replace(/\\n/g, '\n');
+  if (!ca) return undefined;
+  const sslMode = new URL(connectionString).searchParams.get('sslmode');
+  if (sslMode === 'disable') throw new Error('DATABASE_CA_CERT cannot be combined with sslmode=disable');
+  return { ca, rejectUnauthorized: true };
+}
+
+export function postgresConnectionConfig(connectionString: string, caCertificate?: string): {
+  connectionString: string;
+  ssl?: { ca: string; rejectUnauthorized: true };
+} {
+  const ssl = postgresTlsConfig(connectionString, caCertificate);
+  if (!ssl) return { connectionString };
+
+  const url = new URL(connectionString);
+  for (const parameter of ['ssl', 'sslrootcert', 'sslcert', 'sslkey']) {
+    if (url.searchParams.has(parameter)) {
+      throw new Error(`${parameter} in DATABASE_URL cannot be combined with DATABASE_CA_CERT`);
+    }
+  }
+
+  // node-postgres parses connectionString after top-level options. Any sslmode
+  // in the URL replaces the explicit ssl object, including its trusted CA.
+  // Preserve the verified CA as the sole TLS source instead.
+  url.searchParams.delete('sslmode');
+  return { connectionString: url.toString(), ssl };
+}
+
 export class PostgresStore {
   private pool: Pool | null = null;
   private initialized = false;
@@ -32,8 +61,9 @@ export class PostgresStore {
       if (!connectionString) {
         throw new Error('DATABASE_URL or POSTGRES_URL environment variable is not configured');
       }
+      const connection = postgresConnectionConfig(connectionString, process.env.DATABASE_CA_CERT);
       this.pool = new Pool({
-        connectionString,
+        ...connection,
         max: 10,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 5000,
