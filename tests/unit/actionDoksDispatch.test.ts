@@ -78,6 +78,7 @@ describe('DOKS Action dispatch client', () => {
   it.each([
     'pipelines.actions.githubusercontent.com',
     'token.actions.githubusercontent.com',
+    'vstoken.actions.githubusercontent.com',
   ])('requests the fixed GitHub OIDC audience from %s and posts the token only to the dispatch endpoint', async (oidcHost) => {
     const { dispatchAction } = await import(modulePath);
     const fetchMock = vi.fn()
@@ -112,7 +113,7 @@ describe('DOKS Action dispatch client', () => {
     await expect(dispatchAction(environment({ ACTIONS_ID_TOKEN_REQUEST_TOKEN: '' }), vi.fn())).rejects.toThrow(/id-token: write/i);
     await expect(dispatchAction(environment({
       ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.actions.githubusercontent.com.attacker.example/token',
-    }), vi.fn())).rejects.toThrow(/OIDC request URL is invalid/i);
+    }), vi.fn())).rejects.toThrow(/invalid for host pipelines\.actions\.githubusercontent\.com\.attacker\.example/i);
 
     const rejected = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
