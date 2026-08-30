@@ -6,11 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 export const DOKS_OIDC_AUDIENCE = 'review-yeti-doks-dispatch';
 export const DOKS_DISPATCH_ENDPOINT = 'https://review-bot.calltelemetry.com/api/dispatch/action';
-const GITHUB_ACTIONS_OIDC_REQUEST_HOSTS = new Set([
-  'pipelines.actions.githubusercontent.com',
-  'token.actions.githubusercontent.com',
-  'vstoken.actions.githubusercontent.com',
-]);
+const GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.actions\.githubusercontent\.com$/u;
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const RUN_ID_PATTERN = /^run_[a-f0-9]{16,64}$/u;
@@ -62,7 +58,7 @@ function validateOidcRequestUrl(raw) {
   } catch {
     throw new Error('GitHub Actions OIDC request URL is invalid; grant permissions: id-token: write');
   }
-  if (url.protocol !== 'https:' || !GITHUB_ACTIONS_OIDC_REQUEST_HOSTS.has(url.hostname) || url.username || url.password || url.hash) {
+  if (url.protocol !== 'https:' || !GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN.test(url.hostname) || url.username || url.password || url.hash) {
     throw new Error(`GitHub Actions OIDC request URL is invalid for host ${url.hostname || '<empty>'}; grant permissions: id-token: write`);
   }
   return url;
