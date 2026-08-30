@@ -16,6 +16,8 @@ The current `calltelemetry/ct-review-actions` workflow remains the production fa
 - No scheduled, periodic, or four-hour canary is permitted. Qualification is manual, bounded, non-publishing, and tied to an explicit change or approval.
 - At most four review Jobs run concurrently until measured DOKS capacity supports a reviewed change.
 - Only the exact admitted pull-request head may publish. A newer head supersedes the older run.
+- Every admitted head receives one `Review Yeti / Gate` Check Run created by the Review Yeti GitHub App. The check is non-passing while the binding verdict blocks, required conversations are unresolved, execution fails, or the deadline expires.
+- Production rulesets require `Review Yeti / Gate` from the Review Yeti App integration and require review-thread resolution. The runtime App cannot modify repository rulesets or grant itself a bypass.
 - The public webhook receiver has no Kubernetes Job, PVC, Lease, Secret, or custom-resource permissions.
 - Review workers never receive the GitHub App private key.
 - Images are pinned by immutable digest. Floating `latest` or moving release tags are rejected at admission.
@@ -26,7 +28,7 @@ The current `calltelemetry/ct-review-actions` workflow remains the production fa
 
 ```text
 GitHub App webhook
-  -> public ingress: HMAC verification and event admission
+  -> public ingress: HMAC verification, event admission, exact-head Gate check
   -> PostgreSQL transaction: delivery + review_run + dispatch_outbox
   -> internal dispatcher: claim outbox and mint short-lived installation token
   -> PRReviewJob execution projection
@@ -79,6 +81,42 @@ The dispatcher claims rows with `FOR UPDATE SKIP LOCKED`. Each claim has a renew
 - At 15 minutes the finalizer concludes the GitHub check as timed out even if Kubernetes cleanup is still converging.
 
 A database-backed deadline sweeper claims every nonterminal run whose `terminalDeadline` has passed, fences any later worker receipt, concludes the check as timed out, and requests Kubernetes cancellation. This sweeper is required for the 15-minute guarantee; a Job deadline or operator status alone is insufficient when callbacks or the cluster control plane are unavailable.
+
+## GitHub merge gate and unresolved conversations
+
+The Kubernetes Job is runner-like execution capacity, but Review Yeti does not register it as a GitHub Actions self-hosted runner. GitHub integration is through the Checks API, which avoids a required workflow run while still exposing queued/in-progress/completed state, annotations, a details URL, re-request actions, and a branch-protection result.
+
+The exact check name is `Review Yeti / Gate`. The App creates one check per admitted `headSha` with `external_id=runId`, status `in_progress`, and a details URL to the durable run. It completes with only these conclusions:
+
+| Condition | Check conclusion | Merge effect when required |
+|---|---|---|
+| exact-head binding verdict is `SHIP`, publication receipt is verified, and no required conversation is unresolved | `success` | passes Review Yeti gate |
+| binding verdict blocks, a blocking finding lacks a resolvable thread, or a required conversation is unresolved | `action_required` | blocks |
+| execution/receipt/policy validation fails | `failure` | blocks |
+| original 15-minute deadline expires | `timed_out` | blocks |
+| a newer head supersedes the run | `cancelled` on the old SHA | old result cannot satisfy the new SHA |
+
+`neutral` and `skipped` are never used for an admitted required review because GitHub treats them as success-like for required checks. A policy-exempt PR receives an explicit `success` receipt explaining the trusted base-SHA exemption; absence of a check is not a valid skip.
+
+Before any transition to `success`, the finalizer queries the current PR head and paginates every live review thread. The query records thread node ID, `isResolved`, first-comment author and URL, and the exact head observed with the thread snapshot. The gate distinguishes:
+
+- all unresolved conversations, because the native ruleset requires conversation resolution;
+- unresolved Review Yeti finding threads, for check annotations and remediation summaries;
+- blocking findings that fell back to a body-only comment and therefore cannot be resolved as a thread.
+
+Resolving a thread does not override a binding `BLOCK` verdict. A fresh exact-head re-review must produce `SHIP`. When the stored verdict is already `SHIP`, resolving the final required conversation may move the check to `success` without another model call.
+
+The App subscribes to `pull_request_review_thread` resolution events and relevant review-comment changes. These events enqueue an idempotent gate-only reconciliation that re-queries current head and all threads; it does not dispatch a Kubernetes Job or call a model. A new PR head always creates a new review run/check. The native ruleset remains the final protection if GitHub does not deliver a thread event.
+
+Production activation configures an organization or repository ruleset with:
+
+- required status check context `Review Yeti / Gate`;
+- expected source set to the Review Yeti GitHub App integration ID;
+- `required_review_thread_resolution: true`;
+- no Review Yeti App bypass actor;
+- the existing exact-head/update/approval requirements left intact.
+
+This ruleset mutation is an administrative activation step outside runtime credentials. The App needs `checks:write`, pull requests read/write for its reviews, and contents read; it does not need repository administration permission.
 
 ## PR-scoped workspace PVC
 
@@ -169,7 +207,7 @@ spec:
   runSecretName: "ct-review-run-<digest>"
 ```
 
-The dispatcher creates the one-time Secret before the custom resource. It contains a repository-scoped, short-lived GitHub installation token, provider credentials required by the admitted policy, and a random result-callback bearer token. The database stores only the callback-token hash. After creating the Job, the operator patches the Secret with that Job's controller owner reference; terminal reconciliation also explicitly deletes the Secret so cleanup does not depend only on owner-reference garbage collection. It never contains the GitHub App private key.
+The dispatcher deterministically names and projects the custom resource while preparing its one-time Secret concurrently. The operator may ensure/reuse the PR PVC as soon as it observes the projection, but it cannot create the review Job until the named Secret exists, validates for the same `runId`, and a capacity slot is granted. The Secret contains a repository-scoped, short-lived GitHub installation token, provider credentials required by the admitted policy, and a random result-callback bearer token. The database stores only the callback-token hash. After creating the Job, the operator patches the Secret with that Job's controller owner reference; terminal reconciliation also explicitly deletes the Secret so cleanup does not depend only on owner-reference garbage collection. It never contains the GitHub App private key.
 
 Worker Job defaults:
 
@@ -184,6 +222,53 @@ Worker Job defaults:
 - NetworkPolicy egress limited to DNS, GitHub, admitted model-provider endpoints, and the internal receipt endpoint
 
 Resource values are qualification defaults, not permanent truth. Change them only from observed p50/p95 CPU, memory, scheduling, and deadline data.
+
+## Fast worker dispatch and image contract
+
+Dispatch speed is measured as distinct spans rather than one opaque duration:
+
+```ts
+interface ReviewDispatchTimingV1 {
+  version: 'ReviewDispatchTiming.v1';
+  runId: string;
+  tier: 'warm_reused' | 'warm_new_workspace' | 'cold_node';
+  webhookReceivedAt: number;
+  admissionCommittedAt: number;
+  projectionCreatedAt: number;
+  workspaceReadyAt: number;
+  jobCreatedAt: number;
+  podScheduledAt: number;
+  imageReadyAt: number;
+  processStartedAt: number;
+  checkoutReadyAt: number;
+  firstProviderRequestAt: number;
+}
+```
+
+Qualification has three explicit tiers:
+
+| Tier | Condition | p95 webhook-to-process target | p95 webhook-to-first-provider-request target |
+|---|---|---:|---:|
+| warm/reused | worker digest present on node and same-PR PVC reused | 5s | 10s |
+| warm/new workspace | worker digest present; new block PVC required | 20s | 30s |
+| cold node | autoscaled node must pull image and attach/create storage | 60s | 90s |
+
+These targets do not extend the 15-minute terminal deadline. A missed startup target is a performance failure with stage attribution, not permission to wait longer.
+
+The worker uses a dedicated `Dockerfile.worker`, not the dashboard/service image. It contains Node.js 24, CA certificates, Git, ripgrep, compiled worker code, and only the worker runtime dependency closure. It contains no Next.js frontend, dashboard assets, test fixtures, compiler, npm cache, `gh` CLI, App private key, or service entrypoint. The runtime image is non-root/read-only and is pinned by digest.
+
+The worker image is built once per reviewed release and pushed to the DigitalOcean registry in the DOKS region; it is never built during review dispatch. Layers place the stable Node/runtime dependencies before compiled worker code. BuildKit cache mounts accelerate image publication but are not part of dispatch latency.
+
+`imagePullPolicy: IfNotPresent` is safe because the Job uses an immutable digest. A tiny, secret-free DaemonSet references the same digest to pre-pull it on every eligible current or newly autoscaled review node. The DaemonSet makes no GitHub or provider calls and is not a canary. Release activation waits for every eligible node to report the new digest ready before routing reviews to it.
+
+PVC creation/binding begins as soon as the immutable custom resource is accepted and runs concurrently with token/Secret preparation. The preparation window is bounded to the four active runs plus the next four FIFO runs; later custom resources remain queued without allocating a PVC until they enter that window. Queued runs still cannot create a review Pod before a capacity slot is available. Reused claims skip provisioning. The Job has one container, no service-mesh injection, no init container, no Kubernetes API token, and no per-run package installation.
+
+The worker image gate requires both:
+
+- compressed image size at most 300 MiB and at least 50% smaller than the current service image; and
+- container process-start p95 at most 2 seconds after kubelet reports the image ready on a warm node.
+
+If the dependency closure cannot meet the size gate without unsafe dynamic-import omissions, the release fails. Pre-pulling may improve warm dispatch but cannot waive the cold-image correctness and size tests.
 
 ## Receipt and publication
 
@@ -261,6 +346,9 @@ Rollback removes the repository from the DOKS allowlist and restores the central
 - 0 runs exceed 15 minutes from webhook acceptance to check conclusion.
 - 0 duplicate executions from duplicate deliveries or dispatcher/operator restart.
 - 0 stale-head or duplicate publications.
+- `Review Yeti / Gate` is required from the Review Yeti App source; `action_required`, `failure`, and `timed_out` demonstrably block a test PR.
+- A `SHIP` receipt cannot pass while any required review conversation is unresolved; resolving the final thread triggers gate-only reconciliation without a provider call.
+- A binding `BLOCK` verdict cannot be cleared by resolving its threads; a new exact-head `SHIP` receipt is required.
 - At least the currently approved review-quality gate; DOKS does not lower defect recall or increase clean false positives.
 - Same repository+PR reuses one PVC across different head SHAs, with serial access.
 - Different PRs and repositories never reuse a PVC.
@@ -268,4 +356,6 @@ Rollback removes the repository from the DOKS allowlist and restores the central
 - No reuse deletes the claim at or after 1,800 seconds, followed by PV and DigitalOcean volume deletion.
 - Operator/dispatcher restart reconstructs queue, leases, and active count without exceeding four Jobs.
 - Worker Pod has no App private key and no Kubernetes API token.
+- Worker image meets the 300 MiB/50% size gate and 2-second warm process-start gate.
+- Warm/reused, warm/new-workspace, and cold-node dispatch meet the 5/20/60-second process-start p95 targets.
 - Rollback to the central Action is rehearsed and completes without consumer-repository edits.

@@ -1,6 +1,6 @@
 # DOKS Review Dispatch Implementation Plan
 
-> **For agentic workers:** Execute this plan in order. Use test-driven changes, preserve the production `calltelemetry/ct-review-actions` route until the explicit activation task, and stop at every approval gate. Do not create a scheduled canary.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Execute in order, preserve the production `calltelemetry/ct-review-actions` route until the explicit activation task, and stop at every approval gate. Do not create a scheduled canary.
 
 **Goal:** Run Review Yeti reviews as bounded DOKS Jobs with durable dispatch, exact-head publication, and a same-PR reusable workspace PVC that is removed after 30 idle minutes.
 
@@ -9,6 +9,8 @@
 **Tech Stack:** Node.js 24+, TypeScript 5, PostgreSQL, Express, GitHub App installation tokens, Go 1.22, controller-runtime 0.18, Kubernetes batch Jobs/Leases/PVCs, DOKS block storage, Vitest, Go test.
 
 **Spec:** `docs/superpowers/specs/2026-08-30-doks-review-dispatch-design.md`
+
+**Required companion plans:** After Task 9 and before Task 10, execute both `docs/superpowers/plans/2026-08-30-doks-required-review-gate.md` and `docs/superpowers/plans/2026-08-30-doks-fast-worker-image.md`. Task 10 consumes their Check API, image, pre-pull, RBAC, and NetworkPolicy outputs.
 
 ## Global constraints
 
@@ -21,6 +23,8 @@
 - Never place the App private key, webhook secret, or long-lived GitHub credential in a worker Pod.
 - Never use `do-block-storage-retain`, `ReadWriteMany`, a shared fleet PVC, or a head-SHA-specific PVC for PR workspaces.
 - Review all generated CRD/RBAC manifests before applying them to any cluster.
+- The production ruleset requires `Review Yeti / Gate` from the Review Yeti App integration and native review-thread resolution. Runtime pods have no repository-administration permission.
+- The dedicated worker image must meet the companion plan's 300 MiB/50% size gate and 5/20/60-second warm/reused, warm/new-PVC, and cold-node process-start p95 gates.
 
 ---
 
@@ -439,7 +443,7 @@ Expected: FAIL because two current implementations create Jobs/PVCs directly and
 
 **Step 3: Implement the projection worker**
 
-`ReviewDispatchWorker` loops over durable claims, refuses expired runs, mints a repository-scoped GitHub App installation token, creates a one-time Secret, creates the immutable custom resource, and marks the outbox projection. Use exponential backoff bounded by `terminalDeadline`; never sleep beyond the claim heartbeat interval.
+`ReviewDispatchWorker` loops over durable claims, refuses expired runs, derives the deterministic custom-resource and Secret names, and starts custom-resource projection and repository-scoped installation-token/Secret preparation concurrently. It marks projection only after the custom resource exists; the operator independently waits for the matching Secret before Job creation. Use exponential backoff bounded by `terminalDeadline`; never sleep beyond the claim heartbeat interval.
 
 The run Secret contains only:
 
@@ -696,6 +700,9 @@ npm test -- tests/unit/webhook.test.ts tests/integration/webhookAdmission.test.t
   tests/unit/prWorkspace.test.ts tests/integration/prWorkspaceReuse.test.ts \
   tests/unit/reviewReceipt.test.ts tests/integration/reviewReceiptHandoff.test.ts \
   tests/integration/reviewDeadlineWorker.test.ts \
+  tests/unit/reviewThreadGate.test.ts tests/unit/reviewGateCheck.test.ts \
+  tests/integration/reviewThreadGateReconciliation.test.ts \
+  tests/unit/reviewDispatchTiming.test.ts tests/unit/workerContainerContract.test.ts \
   tests/unit/publicationIdempotency.test.ts tests/unit/k8sDeploymentManifests.test.ts \
   tests/unit/reviewCost.test.ts
 (cd k8s-operator && go test -race ./...)
@@ -706,6 +713,8 @@ It also renders manifests and runs client-side schema validation. Any failure ex
 **Step 2: Run an isolated namespace smoke test**
 
 Use a disposable namespace, synthetic Git repository, non-publishing callback, and digest-pinned images. Prove duplicate admission, operator restart, dispatcher restart, worker failure, superseded head, deadline expiry, same-PR PVC reuse, cross-PR isolation, and receipt idempotency.
+
+Also prove the required Check contract: unresolved conversations and binding blocks produce `action_required`; execution errors produce `failure`; deadline expiry produces `timed_out`; only exact-head `SHIP` with no unresolved required conversations produces `success`. A thread-resolution event must reconcile the gate without creating a Job or provider request.
 
 Explicitly verify storage lifecycle:
 
@@ -731,6 +740,8 @@ Required gate:
 - 0 duplicate/stale publications (and 0 publications during non-publishing qualification);
 - 0 App private key or Kubernetes token in worker environment/logs;
 - at most four active Jobs.
+- required `Review Yeti / Gate` is sourced from the Review Yeti App and unresolved conversations demonstrably block merge;
+- worker image and the three dispatch tiers meet the companion performance gates.
 
 **Step 4: Run one approved live parallel review**
 
@@ -789,5 +800,8 @@ Do not auto-expand, schedule a canary, or disable the fallback based on elapsed 
 - [ ] Four-Job cap and 15-minute end-to-end deadline survive restarts.
 - [ ] Worker has neither App private key nor Kubernetes API token.
 - [ ] Images are immutable digests; no `latest` remains in the execution path.
+- [ ] `Review Yeti / Gate` is required from the App integration; unresolved conversations cannot pass and thread-only reconciliation makes no model call.
+- [ ] Worker image is prebuilt, worker-only, pre-pulled, at most 300 MiB compressed and at least 50% smaller than the service image.
+- [ ] Dispatch process-start p95 is at most 5s warm/reused, 20s warm/new-PVC, and 60s on a qualification cold node.
 - [ ] Manual non-publishing parallel qualification passes; no scheduled canary exists.
 - [ ] Production activation remains a separate explicit approval with a rehearsed one-change rollback.
