@@ -200,6 +200,7 @@ describe('resolveModelConfig', () => {
         base_url: 'https://api.fireworks.ai/inference/v1',
         api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY',
         model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        models: ['fallback/model'],
         stream: true,
         reasoning_effort: 'high',
         perf_metrics_in_response: true,
@@ -209,6 +210,7 @@ describe('resolveModelConfig', () => {
 
     expect(cfg.transports[0]).toMatchObject({
       stream: true,
+      models: ['fallback/model'],
       reasoningEffort: 'high',
       perfMetricsInResponse: true,
       structuredOutputMode: 'json_schema',
@@ -511,6 +513,67 @@ describe('reviewWithModel', () => {
         },
       ],
     });
+  });
+
+  it('sends an explicit OpenRouter model fallback list without re-injecting the legacy auto-router plugin', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      fetchImpl: impl,
+      // Keep a legacy action policy in the fixture so this proves an explicit central handoff
+      // cannot accidentally inherit its auto-router plugin at the request boundary.
+      openRouterPolicy: {
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/auto',
+        allowed_models: ['openai/gpt-5.6-luna', 'moonshotai/kimi-k2.6'],
+        data_collection: 'deny',
+        cost_quality_tradeoff: 5,
+      },
+      transports: [{
+        name: 'openrouter-fallback',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'k',
+        model: '~deepseek/deepseek-v4-flash-latest',
+        models: ['z-ai/glm-5.3-flash'],
+        provider: 'openrouter',
+        stream: false,
+      }],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toMatchObject({
+      model: '~deepseek/deepseek-v4-flash-latest',
+      models: ['z-ai/glm-5.3-flash'],
+    });
+    expect(calls[0].body).not.toHaveProperty('plugins');
+  });
+
+  it('keeps a single-model qualification override free of the legacy auto-router plugin', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+      fetchImpl: impl,
+      openRouterPolicy: {
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/auto',
+        allowed_models: ['openai/gpt-5.6-luna', 'moonshotai/kimi-k2.6'],
+        data_collection: 'deny',
+        cost_quality_tradeoff: 5,
+      },
+      transports: [{
+        name: 'openrouter-fallback',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'k',
+        model: 'z-ai/glm-5.3-flash',
+        models: [],
+        provider: 'openrouter',
+        stream: false,
+      }],
+    });
+
+    expect(calls[0].body.model).toBe('z-ai/glm-5.3-flash');
+    expect(calls[0].body).not.toHaveProperty('models');
+    expect(calls[0].body).not.toHaveProperty('plugins');
   });
 
   it('does not send OpenRouter routing fields to a direct provider transport', async () => {
