@@ -5,13 +5,14 @@ import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient } from './gateway/openRouterClient';
-import { getGitHubAppInstallationToken } from './github/appAuth';
+import { getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
 import { createWebhookRouter, RequestWithRawBody } from './github/webhookServer';
 import { executePersonaPanel, PanelResult } from './panel/panelEngine';
 import { ReviewRunStore } from './persistence/reviewRunStore';
 import { PostgresReviewRunRepository, ReviewRunRepository } from './persistence/reviewRunRepository';
+import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewArtifactStore, ReviewArtifactStore } from './persistence/reviewArtifactStore';
 import { createMemoryRouter } from './api/memoryApi';
 import { createProviderRouter } from './gateway/providerRouterApi';
@@ -22,6 +23,8 @@ import { createIntegrationsRouter } from './dashboard/integrationsApi';
 import { createLiveRouter } from './api/liveApi';
 import { createGitHubAppApiRouter } from './api/githubAppApi';
 import { createOnboardingRouter } from './api/onboarding';
+import { createActionDispatchRouter } from './api/actionDispatchApi';
+import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
 import { getSystemVersionInfo } from './utils/versionInfo';
 import { requireAuth } from './api/authMiddleware';
 import { dashboardStore } from './persistence/dashboardStore';
@@ -795,6 +798,26 @@ export function createApp(): Express {
   app.use('/api/onboarding', createOnboardingRouter());
   app.use('/api/router', createProviderRouter());
   app.use('/api/live', createLiveRouter());
+
+  if (process.env.ACTION_DISPATCH_ENABLED === 'true') {
+    if (!postgresStore.isConfigured()) {
+      throw new Error('ACTION_DISPATCH_ENABLED requires DATABASE_URL or POSTGRES_URL for durable admission');
+    }
+    const oidcPolicy = githubActionsOidcPolicyFromEnv();
+    const dispatchRepository = new PostgresReviewDispatchRepository(postgresStore.getPool());
+    app.use('/api/dispatch', createActionDispatchRouter({
+      verifier: new GitHubActionsOidcVerifier({ policy: oidcPolicy }),
+      admission: dispatchRepository,
+      allowAppGate: oidcPolicy.allowAppGate,
+      resolveInstallationId: (owner, repo) => getGitHubAppInstallationIdForRepository({
+        appId: requiredEnv('GITHUB_APP_ID'),
+        privateKey: privateKey(),
+        owner,
+        repo,
+        baseUrl: process.env.GITHUB_API_BASE_URL,
+      }),
+    }));
+  }
 
   // Protected API Routes
   app.use('/api', requireAuth);

@@ -81,6 +81,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "express": "^4.19.2",
+    "jose": "5.10.0",
     "js-yaml": "^4.1.0",
     "lucide-react": "^1.27.0",
     "next": "^14.2.35",

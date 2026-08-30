@@ -136,12 +136,44 @@ export class PostgresStore {
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS index_epoch BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS artifacts JSONB NOT NULL DEFAULT '{}'::jsonb;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS publication_fence VARCHAR(64);
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS repository_id BIGINT;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS installation_id BIGINT;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS delivery_id TEXT;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS received_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS terminal_deadline TIMESTAMP WITH TIME ZONE;
         UPDATE review_runs
            SET effective_policy_digest = COALESCE(config_digest, repeat('0', 64)),
                effective_config_digest = COALESCE(config_digest, repeat('0', 64))
          WHERE effective_policy_digest IS NULL OR effective_config_digest IS NULL;
         ALTER TABLE review_runs ALTER COLUMN effective_policy_digest SET NOT NULL;
         ALTER TABLE review_runs ALTER COLUMN effective_config_digest SET NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS github_deliveries (
+          delivery_id TEXT PRIMARY KEY,
+          event_name TEXT NOT NULL,
+          repository_id BIGINT NOT NULL,
+          installation_id BIGINT NOT NULL,
+          payload_digest CHAR(64) NOT NULL,
+          run_id TEXT REFERENCES review_runs(run_id) ON DELETE SET NULL,
+          received_at TIMESTAMP WITH TIME ZONE NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS review_dispatch_outbox (
+          run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
+          delivery_id TEXT UNIQUE NOT NULL REFERENCES github_deliveries(delivery_id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'projected', 'terminal')),
+          lease_owner TEXT,
+          lease_expires_at TIMESTAMP WITH TIME ZONE,
+          projection_name TEXT,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS review_dispatch_claim_idx
+          ON review_dispatch_outbox (status, available_at, lease_expires_at);
+        CREATE INDEX IF NOT EXISTS review_runs_delivery_idx ON review_runs (delivery_id);
 
         CREATE TABLE IF NOT EXISTS review_run_artifacts (
           run_id VARCHAR(255) NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
