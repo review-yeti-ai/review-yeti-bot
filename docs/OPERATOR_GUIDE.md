@@ -51,7 +51,7 @@ kubectl apply -f k8s/synthetic-secret.yaml
 Verify Kubernetes secrets and server readiness:
 ```bash
 kubectl get secret ct-review-bot-secrets -n ct-review-bot
-curl -s https://ct-review-bot.calltelemetry.com/health | jq .
+curl -s https://review-bot.calltelemetry.com/health | jq .
 ```
 
 ## GitHub App Bot Authentication & Webhook Setup
@@ -66,7 +66,7 @@ Set the following environment variables in your Kubernetes Secret or Doppler:
 
 ### 2. GitHub Webhook Configuration
 In your GitHub App / Organization Settings (`https://github.com/organizations/calltelemetry/settings/apps/ct-review-bot`):
-- **Webhook URL**: `https://ct-review-bot.calltelemetry.com/webhook`
+- **Webhook URL**: `https://review-bot.calltelemetry.com/webhook`
 - **Permissions**:
   - `Pull Requests`: Read & Write
   - `Issues`: Read & Write
@@ -77,3 +77,20 @@ In your GitHub App / Organization Settings (`https://github.com/organizations/ca
 
 ### 3. Automated Token Exchange (`ghs_...`)
 When incoming webhooks trigger `src/app.ts`, the bot automatically exchanges `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` + `installation.id` for a short-lived **Installation Access Token** (`ghs_...`). All posted comments are strictly authored by **`ct-review-bot[bot]`**.
+
+## Optional GitHub Action to DOKS Admission
+
+This endpoint is off by default. It only admits work to PostgreSQL; it does not call Kubernetes or
+a model in the request handler. Configure all allowlists before enabling it:
+
+- `ACTION_DISPATCH_ENABLED=true`
+- `ACTION_DISPATCH_REPOSITORY_IDS`: comma-separated numeric GitHub repository IDs.
+- `ACTION_DISPATCH_OWNER_IDS`: comma-separated numeric GitHub organization/user IDs.
+- `ACTION_DISPATCH_WORKFLOW_REFS`: comma-separated exact trusted reusable-workflow refs.
+- `ACTION_DISPATCH_WORKFLOW_SHAS`: comma-separated immutable 40-hex workflow commit SHAs.
+- `ACTION_DISPATCH_ALLOW_APP_GATE=false` during qualification.
+- `DATABASE_URL` or `POSTGRES_URL`, plus the GitHub App credentials above.
+
+The Action requests audience `review-yeti-doks-dispatch` and posts to
+`https://review-bot.calltelemetry.com/api/dispatch/action`. Keep App-gate publication disabled
+until the separate worker receipt/finalizer and required-check plans pass exact-head qualification.
