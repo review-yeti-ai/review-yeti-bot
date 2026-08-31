@@ -77,6 +77,9 @@ func TestValidatePVCRejectsIdentityStorageAndOwnershipExpansion(t *testing.T) {
 		},
 		"per-run owner":      func(pvc *corev1.PersistentVolumeClaim) { pvc.OwnerReferences = []metav1.OwnerReference{{Name: "run"}} },
 		"missing protection": func(pvc *corev1.PersistentVolumeClaim) { pvc.Finalizers = nil },
+		"invalid last-used timestamp": func(pvc *corev1.PersistentVolumeClaim) {
+			pvc.Annotations[workspace.LastUsedAtAnnotation] = "not-a-timestamp"
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

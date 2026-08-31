@@ -1,6 +1,7 @@
 package workspace_test
 
 import (
+	"errors"
 	"regexp"
 	"testing"
 
@@ -60,8 +61,23 @@ func TestValidateMetadataRejectsCrossPRAndTamperedIdentity(t *testing.T) {
 	if err := workspace.ValidateMetadata(metadata, "ct-review-system", workspace.PVCName(123, 42), 123, 42); err != nil {
 		t.Fatalf("valid metadata rejected: %v", err)
 	}
-	metadata.Annotations[workspace.WorkspaceKeyAnnotation] = workspace.Key(123, 43)
-	if err := workspace.ValidateMetadata(metadata, "ct-review-system", workspace.PVCName(123, 42), 123, 42); err == nil {
-		t.Fatal("tampered full workspace identity must be rejected")
+	mutations := map[string]func(*metav1.ObjectMeta){
+		"full key annotation": func(candidate *metav1.ObjectMeta) {
+			candidate.Annotations[workspace.WorkspaceKeyAnnotation] = workspace.Key(123, 43)
+		},
+		"repository label":   func(candidate *metav1.ObjectMeta) { candidate.Labels[workspace.RepositoryIDLabel] = "124" },
+		"pull request label": func(candidate *metav1.ObjectMeta) { candidate.Labels[workspace.PRNumberLabel] = "43" },
+		"hash label": func(candidate *metav1.ObjectMeta) {
+			candidate.Labels[workspace.WorkspaceHashLabel] = workspace.Key(123, 43)[:63]
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			candidate := metadata.DeepCopy()
+			mutate(candidate)
+			if err := workspace.ValidateMetadata(*candidate, "ct-review-system", workspace.PVCName(123, 42), 123, 42); !errors.Is(err, workspace.ErrWorkspaceIdentity) {
+				t.Fatalf("tampered metadata error = %v, want ErrWorkspaceIdentity", err)
+			}
+		})
 	}
 }
