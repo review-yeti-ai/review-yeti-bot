@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 const fsMocks = vi.hoisted(() => ({
   mkdir: vi.fn(async () => undefined),
@@ -132,8 +133,16 @@ describe('receipt-only worker contract', () => {
 
     expect(fsMocks.readFile).toHaveBeenCalledWith('/tmp/runtime-manifest.json');
     expect(moduleLoader).toHaveBeenCalledTimes(6);
+    expect(moduleLoader.mock.calls.flat()).toEqual([
+      '../gateway/openRouterClient',
+      '../panel/panelEngine',
+      '../github/publicationReceipt',
+      '../k8s/reviewJobProjection',
+      '../k8s/reviewJobDispatchEngine',
+      'node:child_process',
+    ]);
     expect(result.ok).toBe(true);
-    expect(result.runtimeManifestDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(result.runtimeManifestDigest).toBe(createHash('sha256').update(manifest).digest('hex'));
     expect(result.loadedModuleIds).toContain('../gateway/openRouterClient');
   });
 
