@@ -167,9 +167,9 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 			Name:      worker.Name + "-pod",
 			Namespace: review.Namespace,
 			Labels: map[string]string{
-				"review-yeti.ai/run-id":    review.Spec.RunID,
-				"review-yeti.ai/component": "receipt-only-worker",
-				"job-name":                 worker.Name,
+				"review-yeti.ai/run-id":        review.Spec.RunID,
+				"review-yeti.ai/component":     "receipt-only-worker",
+				"batch.kubernetes.io/job-name": worker.Name,
 			},
 		},
 		Status: corev1.PodStatus{
