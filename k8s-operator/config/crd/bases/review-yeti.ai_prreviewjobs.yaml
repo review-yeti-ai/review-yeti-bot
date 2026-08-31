@@ -1,0 +1,233 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.15.0
+  name: prreviewjobs.review-yeti.ai
+spec:
+  group: review-yeti.ai
+  names:
+    kind: PRReviewJob
+    listKind: PRReviewJobList
+    plural: prreviewjobs
+    shortNames:
+    - prj
+    singular: prreviewjob
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.repo
+      name: Repo
+      type: string
+    - jsonPath: .spec.prNumber
+      name: PR
+      type: integer
+    - jsonPath: .spec.terminalDeadline
+      name: Deadline
+      type: date
+    name: v1alpha2
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PRReviewJobSpec is an immutable, non-secret projection of an authenticated review run.
+              The CRD schema rejects updates and all fields not declared here.
+            properties:
+              baseSha:
+                pattern: ^[a-f0-9]{40}$
+                type: string
+              configDigest:
+                pattern: ^[a-f0-9]{64}$
+                type: string
+              deliveryId:
+                maxLength: 512
+                minLength: 1
+                type: string
+              headSha:
+                pattern: ^[a-f0-9]{40}$
+                type: string
+              policyDigest:
+                pattern: ^[a-f0-9]{64}$
+                type: string
+              prNumber:
+                format: int32
+                minimum: 1
+                type: integer
+              publicationMode:
+                enum:
+                - disabled
+                type: string
+              receivedAt:
+                format: date-time
+                type: string
+              repo:
+                pattern: ^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$
+                type: string
+              repositoryId:
+                format: int64
+                minimum: 1
+                type: integer
+              runId:
+                pattern: ^run_[a-f0-9]{32}$
+                type: string
+              runSecretName:
+                pattern: ^ct-review-run-[a-f0-9]{32}$
+                type: string
+              terminalDeadline:
+                format: date-time
+                type: string
+              workerImage:
+                pattern: ^registry\.digitalocean\.com/calltelemetry/review-yeti-worker@sha256:[a-f0-9]{64}$
+                type: string
+            required:
+            - baseSha
+            - configDigest
+            - deliveryId
+            - headSha
+            - policyDigest
+            - prNumber
+            - publicationMode
+            - receivedAt
+            - repo
+            - repositoryId
+            - runId
+            - runSecretName
+            - terminalDeadline
+            - workerImage
+            type: object
+            x-kubernetes-validations:
+            - message: PRReviewJob spec is immutable
+              rule: self == oldSelf
+            - message: terminalDeadline must be exactly 15 minutes after receivedAt
+              rule: timestamp(self.terminalDeadline) - timestamp(self.receivedAt)
+                == duration('900s')
+          status:
+            description: PRReviewJobStatus contains execution references only; PostgreSQL
+              remains lifecycle authority.
+            properties:
+              completionTime:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: "Condition contains details for one aspect of the current
+                    state of this API Resource.\n---\nThis struct is intended for
+                    direct use as an array at the field path .status.conditions.  For
+                    example,\n\n\n\ttype FooStatus struct{\n\t    // Represents the
+                    observations of a foo's current state.\n\t    // Known .status.conditions.type
+                    are: \"Available\", \"Progressing\", and \"Degraded\"\n\t    //
+                    +patchMergeKey=type\n\t    // +patchStrategy=merge\n\t    // +listType=map\n\t
+                    \   // +listMapKey=type\n\t    Conditions []metav1.Condition `json:\"conditions,omitempty\"
+                    patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`\n\n\n\t
+                    \   // other fields\n\t}"
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: |-
+                        type of condition in CamelCase or in foo.example.com/CamelCase.
+                        ---
+                        Many .condition.type values are consistent across resources like Available, but because arbitrary conditions can be
+                        useful (see .node.status.conditions), the ability to deconflict is important.
+                        The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              jobName:
+                type: string
+              leaseName:
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: PRReviewJobPhase is the bounded Kubernetes execution
+                  phase.
+                enum:
+                - Queued
+                - Running
+                - Succeeded
+                - Failed
+                - Expired
+                type: string
+              pvcName:
+                type: string
+              startTime:
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
