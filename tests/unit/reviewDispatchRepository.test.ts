@@ -164,7 +164,7 @@ describe('PostgresReviewDispatchRepository', () => {
       base_sha: identity.baseSha,
       received_at: new Date(1_000),
       terminal_deadline: new Date(901_000),
-      effective_policy_digest: identity.configDigest,
+      effective_policy_digest: 'c'.repeat(64),
       effective_config_digest: identity.configDigest,
       lease_owner: 'dispatcher-a',
       lease_expires_at: new Date(31_000),
@@ -180,7 +180,7 @@ describe('PostgresReviewDispatchRepository', () => {
       baseSha: identity.baseSha,
       receivedAt: 1_000,
       terminalDeadline: 901_000,
-      policyDigest: identity.configDigest,
+      policyDigest: 'c'.repeat(64),
       configDigest: identity.configDigest,
     }));
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE OF outbox SKIP LOCKED/u);
@@ -197,7 +197,10 @@ describe('PostgresReviewDispatchRepository', () => {
       'review job projection rejected',
     )).resolves.toBe(true);
     expect(query.mock.calls[0][0]).toMatch(/WITH terminalized AS/u);
+    expect(query.mock.calls[0][0]).toMatch(/UPDATE review_dispatch_outbox/u);
+    expect(query.mock.calls[0][0]).toMatch(/SET status = 'terminal'/u);
     expect(query.mock.calls[0][0]).toMatch(/UPDATE review_runs/u);
+    expect(query.mock.calls[0][0]).toMatch(/SET status = 'failed'/u);
     expect(query.mock.calls[0][0]).toMatch(/lease_owner = \$2 AND status = 'claimed'/u);
     expect(query.mock.calls[0][1]).toEqual([
       row.run_id,
