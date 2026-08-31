@@ -8,6 +8,7 @@ const dockerfilePath = resolve(repositoryRoot, 'Dockerfile.worker');
 const baseImageEnvPath = resolve(repositoryRoot, '.github/worker-image.env');
 const stagingScriptPath = resolve(repositoryRoot, 'scripts/stage-worker-runtime.mjs');
 const liveReviewPath = resolve(repositoryRoot, 'src/cli/runLiveReview.ts');
+const selfTestModulesPath = resolve(repositoryRoot, 'src/cli/workerSelfTestModules.json');
 const ciWorkflowPath = resolve(repositoryRoot, '.github/workflows/ci-cd.yaml');
 const sizeGatePath = resolve(repositoryRoot, 'scripts/verify-worker-image-size.mjs');
 
@@ -88,15 +89,19 @@ describe('worker container contract', () => {
     }
     expect(script).toContain('runtime-manifest.json');
     expect(script).toContain('createHash');
+    expect(script).toContain('workerSelfTestModules.json');
     expect(script).toMatch(/(?:tests|coverage|\.git)/u);
     expect(script).toContain('path.relative');
   });
 
   it('exposes an offline self-test entrypoint and keeps image publication manual', () => {
     const liveReview = readRequired(liveReviewPath);
+    const selfTestModules = JSON.parse(readRequired(selfTestModulesPath));
     const workflow = readRequired(ciWorkflowPath);
     expect(liveReview).toContain("process.argv.includes('--self-test')");
     expect(liveReview).toContain('runWorkerSelfTest');
+    expect(selfTestModules).toHaveLength(6);
+    expect(selfTestModules.map((module: { id: string }) => module.id)).toContain('../k8s/reviewJobDispatchEngine');
     expect(workflow).toContain('file: Dockerfile.worker');
     expect(workflow).toContain('NODE_BASE_IMAGE=');
     expect(workflow).toContain('--self-test');

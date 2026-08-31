@@ -10,6 +10,7 @@ import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { logger } from '../utils/logger';
+import workerSelfTestModules from './workerSelfTestModules.json';
 
 export interface WorkerAuthConfig {
   appId: string;
@@ -25,14 +26,7 @@ const GH_EXEC_OPTIONS = {
 
 export const RECEIPT_ONLY_PATH = '/workspace/.review-yeti/receipt.json';
 
-const WORKER_SELF_TEST_MODULES = [
-  '../gateway/openRouterClient',
-  '../panel/panelEngine',
-  '../github/publicationReceipt',
-  '../k8s/reviewJobProjection',
-  '../k8s/reviewJobDispatchEngine',
-  'node:child_process',
-] as const;
+const WORKER_SELF_TEST_MODULES = workerSelfTestModules.map(({ id }) => id);
 
 export interface WorkerSelfTestResult {
   ok: true;

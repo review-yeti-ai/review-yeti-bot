@@ -19,13 +19,7 @@ const requiredDynamicPackages = [
   'typebox',
 ];
 
-const selfTestEntries = [
-  'dist/gateway/openRouterClient.js',
-  'dist/panel/panelEngine.js',
-  'dist/github/publicationReceipt.js',
-  'dist/k8s/reviewJobProjection.js',
-  'dist/k8s/reviewJobDispatchEngine.js',
-].map((relative) => path.resolve(packageRoot, relative));
+const workerModuleContractPath = path.resolve(packageRoot, 'src/cli/workerSelfTestModules.json');
 
 const forbiddenPathParts = new Set(['.git', 'tests', 'coverage']);
 
@@ -90,10 +84,20 @@ async function packageEntry(directory) {
   return entrypointPath;
 }
 
+async function loadSelfTestEntries() {
+  const modules = JSON.parse(await fs.readFile(workerModuleContractPath, 'utf8'));
+  if (!Array.isArray(modules)) throw new Error('worker self-test module contract is invalid');
+  return modules
+    .map((module) => module.entry)
+    .filter((entry) => typeof entry === 'string')
+    .map((entry) => path.resolve(packageRoot, entry));
+}
+
 async function main() {
   await fs.rm(outputRoot, { recursive: true, force: true });
   await fs.mkdir(outputRoot, { recursive: true });
   await fs.access(entrypoint);
+  const selfTestEntries = await loadSelfTestEntries();
 
   const dynamicPackageRoots = [];
   const dynamicPackageEntries = [];
