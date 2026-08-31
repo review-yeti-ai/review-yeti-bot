@@ -163,6 +163,23 @@ describe('receipt-only worker contract', () => {
       .rejects.toThrow('worker runtime manifest is invalid');
   });
 
+  it('propagates an admitted-module load failure from the self-test', async () => {
+    fsMocks.readFile.mockResolvedValue(Buffer.from(JSON.stringify({
+      version: 'ReviewYetiWorkerRuntime.v1',
+      entrypoint: 'dist/cli/runLiveReview.js',
+      files: [],
+    })));
+    const moduleLoader = vi.fn((moduleId: string) => {
+      if (moduleId === '../panel/panelEngine') throw new Error('module unavailable');
+      return undefined;
+    });
+
+    await expect(runWorkerSelfTest(
+      { REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
+      moduleLoader,
+    )).rejects.toThrow('module unavailable');
+  });
+
   it.each([
     ['receipt-only mode is unset', { REVIEW_RECEIPT_ONLY: undefined }],
     ['receipt-only mode is missing', { REVIEW_RECEIPT_ONLY: 'false' }],
