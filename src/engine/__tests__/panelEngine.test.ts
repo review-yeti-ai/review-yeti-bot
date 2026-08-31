@@ -129,4 +129,83 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
     expect(result.optionalFailures[0].id).toBe('opt-lane');
     expect(result.optionalFailures[0].error).toContain('Connection refused for optional lane');
   });
+
+  it('re-asks once when a fenced response repeats outputSchema instead of returning role fields', async () => {
+    const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+    (config.personas[0] as any).maxTurns = 2;
+    const calls: string[] = [];
+    const mockComplete = vi.fn().mockImplementation(async (req: any) => {
+      const allMessages = req.messages.map((message: any) => message.content).join('\n');
+      const nonce = allMessages.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)?.[1] || 'nonce';
+      const role = allMessages.includes('Role: ARBITER')
+        ? 'arbiter'
+        : allMessages.includes('Role: MODERATOR')
+          ? 'moderator'
+          : 'persona';
+      calls.push(role);
+      const correction = allMessages.includes('STRUCTURED_OUTPUT_CORRECTION');
+      const body = role === 'arbiter'
+        ? correction
+          ? { verdict: 'SHIP', rationale: 'Clean' }
+          : { outputSchema: { verdict: 'SHIP', rationale: 'Clean' } }
+        : role === 'moderator'
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return {
+        model: req.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${nonce}`,
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/main.ts', content: 'code' }],
+      repository: 'test/repo',
+      headSha: 'abc1234',
+      client: { complete: mockComplete } as any,
+    });
+
+    expect(result.arbiter.verdict).toBe('SHIP');
+    expect(calls).toEqual(['persona', 'moderator', 'arbiter', 'arbiter']);
+    expect(mockComplete).toHaveBeenCalledTimes(4);
+    expect(mockComplete.mock.calls[3][0].messages.at(-1).content).toContain('STRUCTURED_OUTPUT_CORRECTION');
+  });
+
+  it('fails closed after one structured-output correction instead of looping provider calls', async () => {
+    const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+    const mockComplete = vi.fn().mockImplementation(async (req: any) => {
+      const allMessages = req.messages.map((message: any) => message.content).join('\n');
+      const nonce = allMessages.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)?.[1] || 'nonce';
+      const role = allMessages.includes('Role: ARBITER')
+        ? 'arbiter'
+        : allMessages.includes('Role: MODERATOR')
+          ? 'moderator'
+          : 'persona';
+      const body = role === 'arbiter'
+        ? { outputSchema: { verdict: 'SHIP', rationale: 'still invalid' } }
+        : role === 'moderator'
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return {
+        model: req.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${nonce}`,
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/main.ts', content: 'code' }],
+      repository: 'test/repo',
+      headSha: 'abc1234',
+      client: { complete: mockComplete } as any,
+    })).rejects.toThrow(/arbiter failed closed.*invalid or missing verdict/i);
+    expect(mockComplete).toHaveBeenCalledTimes(4);
+    expect(mockComplete.mock.calls[3][0].messages.at(-1).content).toContain('STRUCTURED_OUTPUT_CORRECTION');
+  });
 });
