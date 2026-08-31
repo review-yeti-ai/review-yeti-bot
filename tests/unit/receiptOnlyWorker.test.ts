@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 const fsMocks = vi.hoisted(() => ({
   mkdir: vi.fn(async () => undefined),
+  readFile: vi.fn(),
   writeFile: vi.fn(async () => undefined),
 }));
 const executionMocks = vi.hoisted(() => ({
@@ -18,6 +20,7 @@ import {
   isReceiptOnlyWorker,
   runWorker,
   runReceiptOnlyWorker,
+  runWorkerSelfTest,
 } from '../../src/cli/runLiveReview';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
@@ -40,6 +43,7 @@ const validEnvironment = {
 describe('receipt-only worker contract', () => {
   beforeEach(() => {
     fsMocks.mkdir.mockClear();
+    fsMocks.readFile.mockReset();
     fsMocks.writeFile.mockClear();
     executionMocks.executePersonaPanel.mockClear();
     executionMocks.getGitHubAppInstallationToken.mockClear();
@@ -111,6 +115,69 @@ describe('receipt-only worker contract', () => {
     expect(liveRunner).toHaveBeenCalledOnce();
     expect(liveRunner).toHaveBeenCalledWith(environment);
     expect(fsMocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('self-tests the staged runtime manifest without network credentials', async () => {
+    const manifest = Buffer.from(JSON.stringify({
+      version: 'ReviewYetiWorkerRuntime.v1',
+      entrypoint: 'dist/cli/runLiveReview.js',
+      files: [],
+    }));
+    fsMocks.readFile.mockResolvedValue(manifest);
+
+    const moduleLoader = vi.fn();
+    const result = await runWorkerSelfTest(
+      { REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
+      moduleLoader,
+    );
+
+    expect(fsMocks.readFile).toHaveBeenCalledWith('/tmp/runtime-manifest.json');
+    expect(moduleLoader).toHaveBeenCalledTimes(6);
+    expect(new Set(moduleLoader.mock.calls.flat())).toEqual(new Set([
+      '../gateway/openRouterClient',
+      '../panel/panelEngine',
+      '../github/publicationReceipt',
+      '../k8s/reviewJobProjection',
+      '../k8s/reviewJobDispatchEngine',
+      'node:child_process',
+    ]));
+    expect(result.ok).toBe(true);
+    expect(result.runtimeManifestDigest).toBe(createHash('sha256').update(manifest).digest('hex'));
+    expect(result.loadedModuleIds).toContain('../gateway/openRouterClient');
+  });
+
+  it('fails closed when the runtime manifest is missing, malformed, or wrong-versioned', async () => {
+    fsMocks.readFile.mockRejectedValue(new Error('ENOENT'));
+    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+      .rejects.toThrow('worker runtime manifest is missing');
+
+    fsMocks.readFile.mockResolvedValueOnce(Buffer.from('{not-json'));
+    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+      .rejects.toThrow('worker runtime manifest is invalid');
+
+    fsMocks.readFile.mockResolvedValueOnce(Buffer.from(JSON.stringify({
+      version: 'ReviewYetiWorkerRuntime.v0',
+      entrypoint: 'dist/cli/runLiveReview.js',
+    })));
+    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+      .rejects.toThrow('worker runtime manifest is invalid');
+  });
+
+  it('propagates an admitted-module load failure from the self-test', async () => {
+    fsMocks.readFile.mockResolvedValue(Buffer.from(JSON.stringify({
+      version: 'ReviewYetiWorkerRuntime.v1',
+      entrypoint: 'dist/cli/runLiveReview.js',
+      files: [],
+    })));
+    const moduleLoader = vi.fn((moduleId: string) => {
+      if (moduleId === '../panel/panelEngine') throw new Error('module unavailable');
+      return undefined;
+    });
+
+    await expect(runWorkerSelfTest(
+      { REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
+      moduleLoader,
+    )).rejects.toThrow('module unavailable');
   });
 
   it.each([
