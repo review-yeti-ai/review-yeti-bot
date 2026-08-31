@@ -205,6 +205,32 @@ func TestPRReviewJobV1Alpha2ReconcilerFailsClosedOnPVCIdentityMismatch(t *testin
 	}
 }
 
+func TestPRReviewJobV1Alpha2ReconcilerReleasesLeaseWhenWorkerContractIsRejected(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.WorkerImage = "registry.digitalocean.com/calltelemetry/review-yeti-worker:latest"
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed", updated.Status.Phase)
+	}
+	if _, err := workspace.NewLeaseManager(kube).Acquire(context.Background(), review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, "run_22222222222222222222222222222222", now.Add(15*time.Minute), now.Add(time.Second)); err != nil {
+		t.Fatalf("lease remained held after rejected worker contract: %v", err)
+	}
+}
+
 func TestPRReviewJobV1Alpha2ReconcilerExpiresBeforeCreatingResources(t *testing.T) {
 	received := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	now := received.Add(15 * time.Minute)
