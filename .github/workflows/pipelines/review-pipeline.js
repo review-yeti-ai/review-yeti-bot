@@ -2520,8 +2520,9 @@ async function readChatCompletionResponse(
       // not prove that the model has produced usable output. Keep the TTFT watchdog active until
       // content or reasoning arrives; otherwise an empty 200 stream can consume the full total
       // deadline before the bounded recovery path starts.
-      if (!receivedFirstData
-        && (delta.length > 0 || message.length > 0 || deltaReasoning.length > 0 || messageReasoning.length > 0)) {
+      const hasUsableOutput = [...delta, ...message, ...deltaReasoning, ...messageReasoning]
+        .some((fragment) => typeof fragment === 'string' && fragment.trim().length > 0);
+      if (!receivedFirstData && hasUsableOutput) {
         receivedFirstData = true;
         onFirstData?.(Date.now() - streamStartedAt);
       }
