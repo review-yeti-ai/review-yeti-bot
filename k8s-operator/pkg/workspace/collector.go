@@ -35,10 +35,14 @@ const (
 	IdleWorkspaceTTL               = 30 * time.Minute
 	ReclamationLeaseDuration int32 = 120
 	PodListPageSize          int64 = 100
+	MaxPodListPages                = 10
 	FinalizerUpdateTimeout         = 30 * time.Second
 )
 
-var ErrWorkspaceClock = errors.New("workspace timestamp is in the future")
+var (
+	ErrWorkspaceClock           = errors.New("workspace timestamp is in the future")
+	ErrWorkspacePodHistoryLimit = errors.New("workspace Pod history exceeds the bounded page limit")
+)
 
 type ReclaimReason string
 
@@ -125,13 +129,6 @@ func (c *Collector) Reclaim(
 		return ReclaimResult{Reason: RetainedIdleWindow, RequeueAfter: remaining}, nil
 	}
 
-	activePod, err := c.hasActivePod(ctx, namespace, repositoryID, prNumber)
-	if err != nil {
-		return ReclaimResult{}, err
-	}
-	if activePod {
-		return ReclaimResult{Reason: RetainedActivePod}, nil
-	}
 	reclamationLease, claimed, err := c.claimReclamationLease(ctx, namespace, repositoryID, prNumber, now)
 	if err != nil {
 		return ReclaimResult{}, err
@@ -153,7 +150,7 @@ func (c *Collector) Reclaim(
 	if err := validateProtectedTerminatingPVC(terminating, namespace, repositoryID, prNumber); err != nil {
 		return ReclaimResult{}, err
 	}
-	activePod, err = c.hasActivePod(ctx, namespace, repositoryID, prNumber)
+	activePod, err := c.hasActivePod(ctx, namespace, repositoryID, prNumber)
 	if err != nil {
 		return ReclaimResult{}, err
 	}
@@ -318,7 +315,7 @@ func (c *Collector) hasActivePod(
 ) (bool, error) {
 	key := Key(repositoryID, prNumber)
 	continueToken := ""
-	for {
+	for page := 0; page < MaxPodListPages; page++ {
 		pods := &corev1.PodList{}
 		options := []client.ListOption{
 			client.InNamespace(namespace),
@@ -348,6 +345,7 @@ func (c *Collector) hasActivePod(
 		}
 		continueToken = pods.Continue
 	}
+	return false, ErrWorkspacePodHistoryLimit
 }
 
 func validatePodIdentity(metadata metav1.ObjectMeta, namespace string, repositoryID int64, prNumber int32) error {
