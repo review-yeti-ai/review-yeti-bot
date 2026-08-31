@@ -172,6 +172,15 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    # DOKS service routing may evaluate egress against the control-plane
+    # endpoint after translating the in-cluster Service IP. Keep that endpoint
+    # exact as well; do not replace it with a broad network range.
+    - to:
+        - ipBlock:
+            cidr: "${KUBERNETES_API_ENDPOINT_CIDR}"
+      ports:
+        - protocol: TCP
+          port: 443
     # Render KUBERNETES_API_CIDR from the cluster's control-plane endpoint.
     # A concrete CIDR is required; a broad 0.0.0.0/0 rule is forbidden.
     - to:
