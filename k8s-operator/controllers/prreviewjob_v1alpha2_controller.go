@@ -303,6 +303,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, re
 			if status.State.Running != nil && !status.State.Running.StartedAt.Time.IsZero() {
 				value := status.State.Running.StartedAt
 				processStartedAt = &value
+			} else if status.State.Terminated != nil && !status.State.Terminated.StartedAt.Time.IsZero() {
+				// A fast receipt-only worker can finish before the next reconcile,
+				// so Kubernetes may expose only its terminal state. Its immutable
+				// StartedAt still provides the process-start boundary.
+				value := status.State.Terminated.StartedAt
+				processStartedAt = &value
 			}
 			break
 		}
