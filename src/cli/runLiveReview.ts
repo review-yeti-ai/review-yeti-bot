@@ -10,6 +10,8 @@ import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
+import type { CtReviewConfigV3 } from '../config/schema';
+import type { PanelResult } from '../panel/panelEngine';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -86,6 +88,36 @@ export interface ProviderQualificationReceipt {
   completedAt: string;
 }
 
+export interface PanelQualificationReceipt {
+  version: 'ReviewYetiPanelQualification.v1';
+  status: 'succeeded';
+  runId: string;
+  deliveryId: string;
+  repositoryId: number;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  policyDigest: string;
+  configDigest: string;
+  providerId: string;
+  requestedModel: string;
+  resolvedModel: string;
+  resultDigest: string;
+  publicationMode: 'disabled';
+  providerCalls: number;
+  githubWrites: 0;
+  personaCount: number;
+  findingsCount: number;
+  quorumSatisfied: boolean;
+  verdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK';
+  usage: TokensUsed | null;
+  costUSD: number | null;
+  durationMs: number;
+  startedAt: string;
+  completedAt: string;
+}
+
 const RECEIPT_RUN_ID = /^run_[a-f0-9]{32}$/u;
 const RECEIPT_REPO = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const RECEIPT_SHA = /^[a-f0-9]{40}$/u;
@@ -107,9 +139,22 @@ function providerQualificationRequested(env: NodeJS.ProcessEnv): boolean {
   return receiptValue(env, 'REVIEW_PROVIDER_QUALIFICATION_ONLY') === 'true';
 }
 
+function panelQualificationRequested(env: NodeJS.ProcessEnv): boolean {
+  return receiptValue(env, 'REVIEW_PANEL_QUALIFICATION_ONLY') === 'true';
+}
+
 /** Provider qualification is opt-in and cannot share the receipt-only/live modes. */
 export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return providerQualificationRequested(env)
+    && !panelQualificationRequested(env)
+    && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
+}
+
+/** Panel qualification is opt-in and mutually exclusive with all other worker modes. */
+export function isPanelQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
+  return panelQualificationRequested(env)
+    && !providerQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
 }
@@ -118,19 +163,32 @@ function invalidProviderQualificationContract(): Error {
   return new Error('provider qualification worker contract is invalid');
 }
 
-function qualificationTimeoutMs(env: NodeJS.ProcessEnv): number {
+function invalidPanelQualificationContract(): Error {
+  return new Error('panel qualification worker contract is invalid');
+}
+
+function qualificationTimeoutMs(
+  env: NodeJS.ProcessEnv,
+  invalidContract: () => Error = invalidProviderQualificationContract,
+): number {
   const raw = receiptValue(env, 'REVIEW_QUALIFICATION_TIMEOUT_MS') || '120000';
   const timeoutMs = Number(raw);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 900_000) {
-    throw invalidProviderQualificationContract();
+    throw invalidContract();
   }
   return timeoutMs;
 }
 
-function providerQualificationIdentity(env: NodeJS.ProcessEnv): Omit<ProviderQualificationReceipt,
+type QualificationIdentity = Omit<ProviderQualificationReceipt,
   'version' | 'status' | 'providerId' | 'requestedModel' | 'resolvedModel' | 'responseDigest' |
   'responseChars' | 'publicationMode' | 'providerCalls' | 'githubWrites' | 'usage' | 'costUSD' |
-  'startedAt' | 'completedAt'> {
+  'startedAt' | 'completedAt'>;
+
+function qualificationIdentity(
+  env: NodeJS.ProcessEnv,
+  modeIsValid: (workerEnv: NodeJS.ProcessEnv) => boolean,
+  invalidContract: () => Error,
+): QualificationIdentity {
   const runId = receiptValue(env, 'REVIEW_RUN_ID');
   const deliveryId = receiptValue(env, 'REVIEW_DELIVERY_ID');
   const repositoryId = Number(receiptValue(env, 'REVIEW_REPOSITORY_ID'));
@@ -140,22 +198,33 @@ function providerQualificationIdentity(env: NodeJS.ProcessEnv): Omit<ProviderQua
   const baseSha = receiptValue(env, 'REVIEW_BASE_SHA');
   const policyDigest = receiptValue(env, 'REVIEW_POLICY_DIGEST');
   const configDigest = receiptValue(env, 'REVIEW_CONFIG_DIGEST');
-  if (!isProviderQualificationWorker(env)
+  if (!modeIsValid(env)
       || receiptValue(env, 'REVIEW_RECEIPT_PATH') !== RECEIPT_ONLY_PATH
       || !RECEIPT_RUN_ID.test(runId) || deliveryId.length < 1 || deliveryId.length > 512
       || !Number.isSafeInteger(repositoryId) || repositoryId < 1 || !RECEIPT_REPO.test(repo)
       || !Number.isSafeInteger(prNumber) || prNumber < 1 || !RECEIPT_SHA.test(headSha)
       || !RECEIPT_SHA.test(baseSha) || !RECEIPT_DIGEST.test(policyDigest)
       || !RECEIPT_DIGEST.test(configDigest)) {
-    throw invalidProviderQualificationContract();
+    throw invalidContract();
   }
   return { runId, deliveryId, repositoryId, repo, prNumber, headSha, baseSha, policyDigest, configDigest };
 }
 
-function qualificationModel(env: NodeJS.ProcessEnv): string {
+function providerQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIdentity {
+  return qualificationIdentity(env, isProviderQualificationWorker, invalidProviderQualificationContract);
+}
+
+function panelQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIdentity {
+  return qualificationIdentity(env, isPanelQualificationWorker, invalidPanelQualificationContract);
+}
+
+function qualificationModel(
+  env: NodeJS.ProcessEnv,
+  invalidContract: () => Error = invalidProviderQualificationContract,
+): string {
   const model = receiptValue(env, 'REVIEW_QUALIFICATION_MODEL');
   if (!model || model === 'openrouter/auto' || model === 'auto') {
-    throw invalidProviderQualificationContract();
+    throw invalidContract();
   }
   return model;
 }
@@ -223,6 +292,188 @@ export async function runProviderQualificationWorker(
     githubWrites: 0,
     usage: response.usage,
     costUSD,
+    startedAt,
+    completedAt,
+  };
+  await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+  await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8' });
+  return receipt;
+}
+
+type PanelQualificationRunner = (options: {
+  config: CtReviewConfigV3;
+  changedFiles: Array<{ path: string; patch?: string; content?: string }>;
+  repository: string;
+  headSha: string;
+  client: ReviewModelClient;
+  jobId?: string;
+}) => Promise<PanelResult>;
+
+const PANEL_QUALIFICATION_FIXTURE = [{
+  path: 'qualification-fixture.ts',
+  patch: [
+    'diff --git a/qualification-fixture.ts b/qualification-fixture.ts',
+    'new file mode 100644',
+    '--- /dev/null',
+    '+++ b/qualification-fixture.ts',
+    '@@ -0,0 +1,3 @@',
+    '+export function add(left: number, right: number): number {',
+    '+  return left + right;',
+    '+}',
+  ].join('\n'),
+}];
+
+function panelQualificationConfig(model: string, timeoutMs: number): CtReviewConfigV3 {
+  const perCallSeconds = Math.max(1, Math.floor(timeoutMs / 4_000));
+  const base = createDefaultV3Config();
+  return {
+    ...base,
+    quorum: 1,
+    personas: [{
+      id: 'qualification-lane',
+      enabled: true,
+      required: true,
+      charter: 'builtin:correctness',
+      paths: ['**'],
+      providers: ['qualification'],
+      maxTurns: 1,
+    }],
+    reviewers: {
+      execution: 'personas',
+      fallback: 'none',
+      overall_timeout_s: Math.max(1, Math.floor(timeoutMs / 1_000)),
+      providers: [{
+        id: 'qualification',
+        enabled: true,
+        model,
+        effort: 'low',
+        review_timeout_s: perCallSeconds,
+        arbiter_timeout_s: perCallSeconds,
+      }],
+      arbiter: { order: ['qualification'] },
+    },
+  } as CtReviewConfigV3;
+}
+
+function aggregatePanelUsage(result: PanelResult): TokensUsed | null {
+  const usages = [
+    ...result.personas.map((lane) => lane.usage),
+    result.moderator.usage,
+    result.arbiter.usage,
+  ].filter((usage): usage is TokensUsed => Boolean(usage));
+  if (usages.length === 0) return null;
+  return usages.reduce((total, usage) => ({
+    prompt: total.prompt + usage.prompt,
+    completion: total.completion + usage.completion,
+    total: total.total + usage.total,
+  }), { prompt: 0, completion: 0, total: 0 });
+}
+
+function aggregatePanelCost(result: PanelResult): number | null {
+  const costs = [
+    ...result.personas.map((lane) => lane.costUSD),
+    result.moderator.costUSD,
+    result.arbiter.costUSD,
+  ];
+  const knownCosts = costs.filter((cost): cost is number => cost !== null && Number.isFinite(cost));
+  if (knownCosts.length !== costs.length) return null;
+  return knownCosts.reduce((total, cost) => total + cost, 0);
+}
+
+function panelQualificationResultDigest(result: PanelResult): string {
+  return createHash('sha256').update(JSON.stringify({
+    headSha: result.headSha,
+    personas: result.personas.map((lane) => ({
+      id: lane.id,
+      providerId: lane.providerId,
+      model: lane.model,
+      decision: lane.decision,
+      findingsCount: lane.findings.length,
+    })),
+    optionalFailures: result.optionalFailures.map((failure) => failure.id),
+    quorum: result.quorum,
+    moderator: {
+      providerId: result.moderator.providerId,
+      model: result.moderator.model,
+      findingsCount: result.moderator.findings.length,
+    },
+    arbiter: {
+      providerId: result.arbiter.providerId,
+      model: result.arbiter.model,
+      verdict: result.arbiter.verdict,
+    },
+  })).digest('hex');
+}
+
+async function runWithQualificationDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`panel qualification exceeded ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Exercise one real panel, moderator, and arbiter path against a deterministic
+ * fixture. The result is an aggregate receipt only; no finding or provider
+ * response text is persisted and publication is impossible in this mode.
+ */
+export async function runPanelQualificationWorker(
+  env: NodeJS.ProcessEnv = process.env,
+  panelRunner: PanelQualificationRunner = executePersonaPanel,
+  client?: ReviewModelClient,
+): Promise<PanelQualificationReceipt> {
+  if (!isPanelQualificationWorker(env) || receiptValue(env, 'REVIEW_RECEIPT_PATH') !== RECEIPT_ONLY_PATH) {
+    throw invalidPanelQualificationContract();
+  }
+  const identity = panelQualificationIdentity(env);
+  const model = qualificationModel(env, invalidPanelQualificationContract);
+  const timeoutMs = qualificationTimeoutMs(env, invalidPanelQualificationContract);
+  const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
+  const startedAt = new Date().toISOString();
+  let providerCalls = 0;
+  const effectiveClient = client || qualificationClient(env);
+  const countingClient: ReviewModelClient = {
+    complete: async (request) => {
+      providerCalls += 1;
+      return effectiveClient.complete(request);
+    },
+  };
+  const result = await runWithQualificationDeadline(panelRunner({
+    config: panelQualificationConfig(model, timeoutMs),
+    changedFiles: PANEL_QUALIFICATION_FIXTURE,
+    repository: identity.repo,
+    headSha: identity.headSha,
+    client: countingClient,
+    jobId: identity.runId,
+  }), timeoutMs);
+  if (!result.quorum.satisfied || !result.arbiter?.verdict) throw invalidPanelQualificationContract();
+  const completedAt = new Date().toISOString();
+  const receipt: PanelQualificationReceipt = {
+    version: 'ReviewYetiPanelQualification.v1',
+    status: 'succeeded',
+    ...identity,
+    providerId,
+    requestedModel: model,
+    resolvedModel: result.arbiter.model,
+    resultDigest: panelQualificationResultDigest(result),
+    publicationMode: 'disabled',
+    providerCalls,
+    githubWrites: 0,
+    personaCount: result.personas.length,
+    findingsCount: result.personas.reduce((total, lane) => total + lane.findings.length, 0)
+      + result.moderator.findings.length,
+    quorumSatisfied: result.quorum.satisfied,
+    verdict: result.arbiter.verdict,
+    usage: aggregatePanelUsage(result),
+    costUSD: aggregatePanelCost(result),
+    durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
     startedAt,
     completedAt,
   };
@@ -503,7 +754,25 @@ export async function runWorker(
       costUSD: receipt.costUSD,
     });
   },
+  panelRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
+    const receipt = await runPanelQualificationWorker(workerEnv);
+    logger.info('Panel qualification worker completed without GitHub reads or writes', {
+      runId: receipt.runId,
+      providerId: receipt.providerId,
+      requestedModel: receipt.requestedModel,
+      resolvedModel: receipt.resolvedModel,
+      providerCalls: receipt.providerCalls,
+      verdict: receipt.verdict,
+      durationMs: receipt.durationMs,
+      costUSD: receipt.costUSD,
+    });
+  },
 ): Promise<void> {
+  if (panelQualificationRequested(env)) {
+    if (!isPanelQualificationWorker(env)) throw invalidPanelQualificationContract();
+    await panelRunner(env);
+    return;
+  }
   if (providerQualificationRequested(env)) {
     if (!isProviderQualificationWorker(env)) throw invalidProviderQualificationContract();
     await providerRunner(env);
