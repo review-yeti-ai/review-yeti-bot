@@ -102,6 +102,17 @@ describe('receipt-only worker contract', () => {
     expect(executionMocks.getGitHubAppInstallationToken).not.toHaveBeenCalled();
   });
 
+  it('routes normal mode to live execution without writing a receipt', async () => {
+    const liveRunner = vi.fn(async () => undefined);
+    const environment = { ...validEnvironment, REVIEW_RECEIPT_ONLY: 'false' };
+
+    await runWorker(environment, liveRunner);
+
+    expect(liveRunner).toHaveBeenCalledOnce();
+    expect(liveRunner).toHaveBeenCalledWith(environment);
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['receipt-only mode is unset', { REVIEW_RECEIPT_ONLY: undefined }],
     ['receipt-only mode is missing', { REVIEW_RECEIPT_ONLY: 'false' }],
