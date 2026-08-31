@@ -449,7 +449,7 @@ func TestReclaimPropagatesKubernetesFailures(t *testing.T) {
 		{name: "PVC delete", configure: func(c *operationErrorClient) { c.deletePVCErr = injected }},
 		{name: "PVC terminating reread", configure: func(c *operationErrorClient) { c.getPVCErr = injected }},
 		{name: "PVC delete not visible", configure: func(c *operationErrorClient) { c.clearPVCTerminationOnGet = true }},
-		{name: "lease create loses resourceVersion", configure: func(c *operationErrorClient) { c.clearLeaseCreateResourceVersion = true }, wantReclaimed: true},
+		{name: "lease renewal loses resourceVersion", configure: func(c *operationErrorClient) { c.clearLeaseUpdateResourceVersion = true }, wantReclaimed: true},
 		{name: "lease cleanup", configure: func(c *operationErrorClient) { c.deleteLeaseErr = injected }, wantReclaimed: true},
 	}
 	for _, test := range tests {
@@ -606,6 +606,58 @@ func TestConcurrentReclaimersAndWorkersCannotShareReclamationLease(t *testing.T)
 	}
 }
 
+func TestReclaimRevalidatesLeaseAfterFinalPodCheck(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	kube := &leaseTakeoverAfterFinalPodCheckClient{Client: base, now: now}
+
+	if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); !errors.Is(err, workspace.ErrLeaseHeld) {
+		t.Fatalf("lease takeover error = %v, want ErrLeaseHeld", err)
+	}
+	stored := assertPVCExists(t, base, pvc.Name)
+	if stored.DeletionTimestamp == nil || !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+		t.Fatal("lease takeover must leave the terminating PVC protected")
+	}
+}
+
+func TestFinalizerRemovalHasDeadlineShorterThanReclamationLease(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	injected := errors.New("stop after inspecting finalizer deadline")
+	kube := &finalizerDeadlineClient{Client: base, err: injected}
+
+	if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); !errors.Is(err, injected) {
+		t.Fatalf("finalizer update error = %v, want injected error", err)
+	}
+	if !kube.hasDeadline || kube.remaining <= 0 || kube.remaining > 30*time.Second {
+		t.Fatalf("finalizer deadline present = %v, remaining = %s", kube.hasDeadline, kube.remaining)
+	}
+	stored := assertPVCExists(t, base, pvc.Name)
+	if !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+		t.Fatal("bounded finalizer update failure removed workspace protection")
+	}
+}
+
+func TestReclaimAbortsIfLeaseExpiresBeforeFinalizerRemoval(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	kube := &leaseExpiryAfterFinalPodCheckClient{Client: base, expiredAt: now.Add(-time.Second)}
+
+	if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); !errors.Is(err, workspace.ErrLeaseHeld) {
+		t.Fatalf("expired reclamation Lease error = %v, want ErrLeaseHeld", err)
+	}
+	stored := assertPVCExists(t, base, pvc.Name)
+	if stored.DeletionTimestamp == nil || !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+		t.Fatal("expired reclamation Lease must leave the terminating PVC protected")
+	}
+}
+
 type deleteCaptureClient struct {
 	client.Client
 	pvcResourceVersion         string
@@ -673,8 +725,85 @@ type operationErrorClient struct {
 	deletePVCErr                    error
 	deleteLeaseErr                  error
 	clearPVCUpdateResourceVersion   bool
-	clearLeaseCreateResourceVersion bool
+	clearLeaseUpdateResourceVersion bool
 	clearPVCTerminationOnGet        bool
+}
+
+type leaseTakeoverAfterFinalPodCheckClient struct {
+	client.Client
+	now      time.Time
+	podLists int
+}
+
+func (c *leaseTakeoverAfterFinalPodCheckClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if err := c.Client.List(ctx, list, options...); err != nil {
+		return err
+	}
+	if _, ok := list.(*corev1.PodList); ok {
+		c.podLists++
+		if c.podLists == 2 {
+			lease := &coordinationv1.Lease{}
+			key := types.NamespacedName{Namespace: collectorNamespace, Name: workspace.LeaseName(123, 42)}
+			if err := c.Client.Get(ctx, key, lease); err != nil {
+				return err
+			}
+			holder := "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			duration := int32(900)
+			renewed := metav1.NewMicroTime(c.now)
+			lease.Spec.HolderIdentity = &holder
+			lease.Spec.LeaseDurationSeconds = &duration
+			lease.Spec.RenewTime = &renewed
+			return c.Client.Update(ctx, lease)
+		}
+	}
+	return nil
+}
+
+type finalizerDeadlineClient struct {
+	client.Client
+	err         error
+	hasDeadline bool
+	remaining   time.Duration
+}
+
+func (c *finalizerDeadlineClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
+	if pvc, ok := object.(*corev1.PersistentVolumeClaim); ok && pvc.DeletionTimestamp != nil && !contains(pvc.Finalizers, workspace.ProtectionFinalizer) {
+		deadline, hasDeadline := ctx.Deadline()
+		c.hasDeadline = hasDeadline
+		if hasDeadline {
+			c.remaining = time.Until(deadline)
+		}
+		return c.err
+	}
+	return c.Client.Update(ctx, object, options...)
+}
+
+type leaseExpiryAfterFinalPodCheckClient struct {
+	client.Client
+	expiredAt time.Time
+	podLists  int
+}
+
+func (c *leaseExpiryAfterFinalPodCheckClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if err := c.Client.List(ctx, list, options...); err != nil {
+		return err
+	}
+	if _, ok := list.(*corev1.PodList); ok {
+		c.podLists++
+		if c.podLists == 2 {
+			lease := &coordinationv1.Lease{}
+			key := types.NamespacedName{Namespace: collectorNamespace, Name: workspace.LeaseName(123, 42)}
+			if err := c.Client.Get(ctx, key, lease); err != nil {
+				return err
+			}
+			duration := int32(120)
+			renewedAt := metav1.NewMicroTime(c.expiredAt.Add(-time.Duration(duration) * time.Second))
+			lease.Spec.LeaseDurationSeconds = &duration
+			lease.Spec.RenewTime = &renewedAt
+			return c.Client.Update(ctx, lease)
+		}
+	}
+	return nil
 }
 
 type secondPodListErrorClient struct {
@@ -773,9 +902,6 @@ func (c *operationErrorClient) Create(ctx context.Context, object client.Object,
 		if err := c.Client.Create(ctx, object, options...); err != nil {
 			return err
 		}
-		if c.clearLeaseCreateResourceVersion {
-			object.SetResourceVersion("")
-		}
 		return nil
 	}
 	return c.Client.Create(ctx, object, options...)
@@ -787,6 +913,13 @@ func (c *operationErrorClient) Update(ctx context.Context, object client.Object,
 		if c.updateLeaseErr != nil {
 			return c.updateLeaseErr
 		}
+		if err := c.Client.Update(ctx, object, options...); err != nil {
+			return err
+		}
+		if c.clearLeaseUpdateResourceVersion {
+			object.SetResourceVersion("")
+		}
+		return nil
 	case *corev1.PersistentVolumeClaim:
 		if c.updatePVCErr != nil {
 			return c.updatePVCErr

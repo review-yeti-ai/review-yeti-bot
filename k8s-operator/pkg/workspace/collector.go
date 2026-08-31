@@ -35,6 +35,7 @@ const (
 	IdleWorkspaceTTL               = 30 * time.Minute
 	ReclamationLeaseDuration int32 = 120
 	PodListPageSize          int64 = 100
+	FinalizerUpdateTimeout         = 30 * time.Second
 )
 
 var ErrWorkspaceClock = errors.New("workspace timestamp is in the future")
@@ -106,6 +107,7 @@ func (c *Collector) Reclaim(
 	prNumber int32,
 	now time.Time,
 ) (ReclaimResult, error) {
+	operationStartedAt := time.Now()
 	if c == nil || c.client == nil || now.IsZero() || len(validation.IsDNS1123Label(namespace)) != 0 {
 		return ReclaimResult{}, ErrWorkspaceConfiguration
 	}
@@ -158,10 +160,19 @@ func (c *Collector) Reclaim(
 	if activePod {
 		return ReclaimResult{Reason: RetainedActivePod}, nil
 	}
+	reclamationLease, err = c.renewReclamationLease(
+		ctx, reclamationLease, namespace, repositoryID, prNumber,
+		now.Add(time.Since(operationStartedAt)),
+	)
+	if err != nil {
+		return ReclaimResult{}, err
+	}
 
 	updated := terminating.DeepCopy()
 	updated.Finalizers = removeString(updated.Finalizers, ProtectionFinalizer)
-	if err := c.client.Update(ctx, updated); err != nil {
+	finalizerContext, cancelFinalizerUpdate := context.WithTimeout(ctx, FinalizerUpdateTimeout)
+	defer cancelFinalizerUpdate()
+	if err := c.client.Update(finalizerContext, updated); err != nil {
 		return ReclaimResult{}, err
 	}
 	if updated.ResourceVersion == "" {
@@ -242,6 +253,47 @@ func (c *Collector) claimReclamationLease(
 		return nil, false, updateErr
 	}
 	return lease.DeepCopy(), true, nil
+}
+
+func (c *Collector) renewReclamationLease(
+	ctx context.Context,
+	claimed *coordinationv1.Lease,
+	namespace string,
+	repositoryID int64,
+	prNumber int32,
+	now time.Time,
+) (*coordinationv1.Lease, error) {
+	if claimed == nil || claimed.Spec.HolderIdentity == nil || *claimed.Spec.HolderIdentity == "" {
+		return nil, ErrLeaseState
+	}
+	leaseName := LeaseName(repositoryID, prNumber)
+	fresh := &coordinationv1.Lease{}
+	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: leaseName}, fresh); err != nil {
+		return nil, err
+	}
+	if fresh.DeletionTimestamp != nil {
+		return nil, ErrWorkspaceTerminating
+	}
+	if err := ValidateMetadata(fresh.ObjectMeta, namespace, leaseName, repositoryID, prNumber); err != nil {
+		return nil, err
+	}
+	if pointerString(fresh.Spec.HolderIdentity) != *claimed.Spec.HolderIdentity {
+		return nil, ErrLeaseHeld
+	}
+	expiresAt, err := expires(fresh)
+	if err != nil {
+		return nil, err
+	}
+	if !now.Before(expiresAt) {
+		return nil, ErrLeaseHeld
+	}
+	renewedAt := metav1.NewMicroTime(now.UTC())
+	fresh.Spec.LeaseDurationSeconds = int32Pointer(ReclamationLeaseDuration)
+	fresh.Spec.RenewTime = &renewedAt
+	if err := c.client.Update(ctx, fresh); err != nil {
+		return nil, err
+	}
+	return fresh.DeepCopy(), nil
 }
 
 func validateProtectedTerminatingPVC(
