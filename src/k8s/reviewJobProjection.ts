@@ -7,6 +7,8 @@ const repositoryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0
 const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const digestOnlyImagePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[a-f0-9]{64}$/u;
 
+export const TRUSTED_WORKER_IMAGE_REPOSITORY = 'registry.digitalocean.com/calltelemetry/review-yeti-worker';
+
 export interface ReviewJobProjectionInput {
   runId: string;
   deliveryId: string;
@@ -78,6 +80,9 @@ export function buildReviewJobProjection(
   if (!namespacePattern.test(input.namespace)) throw new Error('namespace must be a Kubernetes DNS label');
   if (!digestOnlyImagePattern.test(input.workerImage)) {
     throw new Error('a strict digest-pinned worker image is required');
+  }
+  if (!input.workerImage.startsWith(`${TRUSTED_WORKER_IMAGE_REPOSITORY}@sha256:`)) {
+    throw new Error(`worker image must use the trusted worker image repository ${TRUSTED_WORKER_IMAGE_REPOSITORY}`);
   }
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
     throw new Error('review projection timestamps must be finite');

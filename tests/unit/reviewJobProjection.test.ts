@@ -71,6 +71,12 @@ describe('buildReviewJobProjection', () => {
       .toThrow(/digest-pinned worker image/i);
   });
 
+  it('rejects a digest-pinned image from an untrusted repository', () => {
+    const workerImage = `attacker.example/review-yeti-worker@sha256:${'e'.repeat(64)}`;
+    expect(() => buildReviewJobProjection({ ...input, workerImage }, receivedAt + 60_000))
+      .toThrow(/trusted worker image repository/i);
+  });
+
   it('rejects malformed immutable review identity', () => {
     expect(() => buildReviewJobProjection({ ...input, headSha: 'main' }, receivedAt + 60_000)).toThrow(/head sha/i);
     expect(() => buildReviewJobProjection({ ...input, baseSha: 'main' }, receivedAt + 60_000)).toThrow(/base sha/i);
@@ -82,6 +88,16 @@ describe('buildReviewJobProjection', () => {
 
   it('rejects projection before the authenticated admission receipt time', () => {
     expect(() => buildReviewJobProjection(input, receivedAt - 1)).toThrow(/cannot precede admission receipt/i);
+  });
+
+  it.each([
+    ['repository id', { repositoryId: 0 }],
+    ['repository id', { repositoryId: 1.5 }],
+    ['pull request number', { prNumber: 0 }],
+    ['pull request number', { prNumber: 1.5 }],
+  ])('rejects invalid numeric %s', (field, override) => {
+    expect(() => buildReviewJobProjection({ ...input, ...override }, receivedAt + 60_000))
+      .toThrow(new RegExp(field, 'i'));
   });
 
   it('does not project caller-supplied secret material', () => {
