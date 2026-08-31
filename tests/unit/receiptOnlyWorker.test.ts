@@ -23,6 +23,8 @@ import {
   runWorkerSelfTest,
   isProviderQualificationWorker,
   runProviderQualificationWorker,
+  isPanelQualificationWorker,
+  runPanelQualificationWorker,
 } from '../../src/cli/runLiveReview';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
@@ -302,6 +304,126 @@ describe('provider qualification worker contract', () => {
       { ...providerEnvironment, REVIEW_PUBLICATION_MODE: 'enabled' },
       liveRunner,
     )).rejects.toThrow(/provider qualification worker contract/i);
+    expect(liveRunner).not.toHaveBeenCalled();
+  });
+});
+
+describe('panel qualification worker contract', () => {
+  const panelEnvironment = {
+    REVIEW_PANEL_QUALIFICATION_ONLY: 'true',
+    REVIEW_PROVIDER_QUALIFICATION_ONLY: 'false',
+    REVIEW_RECEIPT_ONLY: 'false',
+    REVIEW_PUBLICATION_MODE: 'disabled',
+    REVIEW_RECEIPT_PATH: receiptPathLiteral,
+    REVIEW_RUN_ID: 'run_77777777777777777777777777777777',
+    REVIEW_DELIVERY_ID: 'qualification:panel:1',
+    REVIEW_REPOSITORY_ID: '123',
+    REVIEW_REPO: 'calltelemetry/cisco-cdr',
+    REVIEW_PR_NUMBER: '42',
+    REVIEW_HEAD_SHA: 'a'.repeat(40),
+    REVIEW_BASE_SHA: 'b'.repeat(40),
+    REVIEW_POLICY_DIGEST: 'c'.repeat(64),
+    REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
+    REVIEW_QUALIFICATION_MODEL: 'deepseek/deepseek-v4-flash-0731',
+    REVIEW_QUALIFICATION_TIMEOUT_MS: '120000',
+    OPENROUTER_API_KEY: 'test-openrouter-key',
+  } as NodeJS.ProcessEnv;
+
+  it('requires an explicit panel mode and excludes the provider-only mode', () => {
+    expect(isPanelQualificationWorker(panelEnvironment)).toBe(true);
+    expect(isPanelQualificationWorker({ ...panelEnvironment, REVIEW_PANEL_QUALIFICATION_ONLY: 'false' })).toBe(false);
+    expect(isPanelQualificationWorker({ ...panelEnvironment, REVIEW_PROVIDER_QUALIFICATION_ONLY: 'true' })).toBe(false);
+    expect(isPanelQualificationWorker({ ...panelEnvironment, REVIEW_RECEIPT_ONLY: 'true' })).toBe(false);
+    expect(isPanelQualificationWorker({ ...panelEnvironment, REVIEW_PUBLICATION_MODE: 'enabled' })).toBe(false);
+  });
+
+  it('runs the injected panel once and persists only aggregate non-publishing telemetry', async () => {
+    const client = {
+      complete: vi.fn(async () => ({
+        model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        content: 'qualification response',
+        usage: null,
+        costUSD: null,
+        raw: {},
+      })),
+    };
+    const panelRunner = vi.fn(async (options: any) => {
+      expect(options.config.quorum).toBe(1);
+      expect(options.config.reviewers.fallback).toBe('none');
+      expect(options.config.reviewers.providers).toHaveLength(1);
+      expect(options.config.reviewers.providers[0].model).toBe(panelEnvironment.REVIEW_QUALIFICATION_MODEL);
+      expect(options.config.reviewers.arbiter.order).toEqual(['qualification']);
+      expect(options.changedFiles).toEqual([
+        expect.objectContaining({ path: 'qualification-fixture.ts' }),
+      ]);
+      for (let call = 0; call < 3; call += 1) {
+        await options.client.complete({
+          model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          messages: [],
+          timeoutMs: 1000,
+          stream: true,
+        });
+      }
+      return {
+        headSha: panelEnvironment.REVIEW_HEAD_SHA,
+        personas: [{
+          id: 'qualification-lane', required: true, providerId: 'qualification',
+          model: panelEnvironment.REVIEW_QUALIFICATION_MODEL, decision: 'APPROVE', findings: [],
+          usage: { prompt: 100, completion: 20, total: 120 }, costUSD: 0.001, durationMs: 250,
+        }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
+        moderator: {
+          providerId: 'qualification', model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          decision: 'RECONCILED', findings: [], usage: { prompt: 50, completion: 10, total: 60 },
+          costUSD: 0.0005, durationMs: 150,
+        },
+        arbiter: {
+          providerId: 'qualification', model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          verdict: 'SHIP', rationale: 'fixture is safe', usage: { prompt: 40, completion: 8, total: 48 },
+          costUSD: 0.0004, durationMs: 120,
+        },
+      };
+    });
+
+    const receipt = await runPanelQualificationWorker(panelEnvironment, panelRunner, client);
+
+    expect(panelRunner).toHaveBeenCalledOnce();
+    expect(client.complete).toHaveBeenCalledTimes(3);
+    expect(receipt).toMatchObject({
+      version: 'ReviewYetiPanelQualification.v1',
+      status: 'succeeded',
+      providerId: 'openrouter',
+      requestedModel: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      resolvedModel: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      publicationMode: 'disabled',
+      providerCalls: 3,
+      githubWrites: 0,
+      personaCount: 1,
+      findingsCount: 0,
+      verdict: 'SHIP',
+      usage: { prompt: 190, completion: 38, total: 228 },
+      costUSD: 0.0019,
+    });
+    expect(receipt.durationMs).toBeGreaterThanOrEqual(0);
+    expect(receipt.resultDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(JSON.stringify(receipt)).not.toContain('fixture is safe');
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      receiptPathLiteral,
+      `${JSON.stringify(receipt)}\n`,
+      { encoding: 'utf8' },
+    );
+  });
+
+  it('routes panel qualification before provider or live execution', async () => {
+    const panelRunner = vi.fn(async () => undefined);
+    const providerRunner = vi.fn(async () => undefined);
+    const liveRunner = vi.fn(async () => undefined);
+
+    await runWorker(panelEnvironment, liveRunner, providerRunner, panelRunner);
+
+    expect(panelRunner).toHaveBeenCalledWith(panelEnvironment);
+    expect(providerRunner).not.toHaveBeenCalled();
     expect(liveRunner).not.toHaveBeenCalled();
   });
 });
