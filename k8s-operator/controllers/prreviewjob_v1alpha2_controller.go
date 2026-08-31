@@ -210,17 +210,26 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context, review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job, now time.Time) (ctrl.Result, error) {
-	timingChanged, err := r.observeWorkerPod(ctx, review, worker, now)
+	jobCreatedAt := metav1.NewTime(now)
+	if !worker.CreationTimestamp.Time.IsZero() {
+		jobCreatedAt = worker.CreationTimestamp
+	}
+	timingChanged, err := observeTiming(review, reviewv1alpha2.DispatchStageJobCreated, jobCreatedAt)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	podTimingChanged, err := r.observeWorkerPod(ctx, review, worker, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	timingChanged = timingChanged || podTimingChanged
 	if worker.Status.Succeeded == 0 && worker.Status.Failed == 0 {
 		if review.Status.Phase != reviewv1alpha2.PhaseRunning || review.Status.JobName != worker.Name {
 			review.Status.JobName = worker.Name
 			review.Status.PVCName = workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
 			review.Status.LeaseName = workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
 			if review.Status.StartTime == nil {
-				review.Status.StartTime = timePtr(metav1.NewTime(now))
+				review.Status.StartTime = timePtr(jobCreatedAt)
 			}
 			if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseRunning, "WorkerObserved", "receipt-only worker Job is running"); err != nil {
 				return ctrl.Result{}, err
@@ -267,7 +276,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, re
 	changed := false
 	for index := range pods.Items {
 		pod := &pods.Items[index]
-		if pod.Labels["job-name"] != worker.Name {
+		if !podBelongsToWorkerJob(pod, worker) {
 			continue
 		}
 		var scheduledAt *metav1.Time
@@ -313,6 +322,24 @@ func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, re
 		}
 	}
 	return changed, nil
+}
+
+func podBelongsToWorkerJob(pod *corev1.Pod, worker *batchv1.Job) bool {
+	if pod == nil || worker == nil {
+		return false
+	}
+	if pod.Labels["job-name"] == worker.Name || pod.Labels["batch.kubernetes.io/job-name"] == worker.Name {
+		return true
+	}
+	if worker.UID == "" {
+		return false
+	}
+	for _, owner := range pod.OwnerReferences {
+		if owner.UID == worker.UID && owner.Kind == "Job" {
+			return true
+		}
+	}
+	return false
 }
 
 func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.DispatchTimingStage, at metav1.Time) (bool, error) {
