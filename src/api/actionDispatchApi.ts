@@ -72,6 +72,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         receivedAt,
         terminalDeadline: receivedAt + 900_000,
         payloadDigest: sha256(actionDispatchDigestInput(dispatch)),
+        publicationMode: dispatch.publishMode,
         identity: buildReviewRunIdentity({
           owner: dispatch.owner,
           repo: dispatch.repo,

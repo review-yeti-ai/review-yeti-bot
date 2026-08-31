@@ -3,6 +3,7 @@ import {
   ReviewAdmission,
   ReviewAdmissionInput,
   ReviewDispatchClaim,
+  PublicationMode,
   ReviewRun,
 } from '../review/reviewRun';
 
@@ -28,6 +29,11 @@ function milliseconds(value: unknown): number | undefined {
   return Number.isFinite(time) ? time : undefined;
 }
 
+function publicationMode(value: unknown): PublicationMode {
+  if (value === 'disabled' || value === 'app-gate') return value;
+  throw new Error('persisted publication mode is invalid');
+}
+
 function fromRow(row: any): ReviewRun {
   return {
     runId: row.run_id,
@@ -41,6 +47,7 @@ function fromRow(row: any): ReviewRun {
     deliveryId: row.delivery_id || undefined,
     receivedAt: milliseconds(row.received_at),
     terminalDeadline: milliseconds(row.terminal_deadline),
+    publicationMode: publicationMode(row.publication_mode),
     status: row.status,
     stage: row.stage,
     attempt: Number(row.attempt || 0),
@@ -60,6 +67,9 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   if (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0) throw new Error('repository id must be positive');
   if (!Number.isSafeInteger(input.installationId) || input.installationId <= 0) throw new Error('installation id must be positive');
   if (!/^[a-f0-9]{64}$/u.test(input.payloadDigest)) throw new Error('payload digest must be 64 lowercase hex characters');
+  if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
+    throw new Error('publication mode must be disabled or app-gate');
+  }
   if (!Number.isFinite(input.receivedAt) || input.terminalDeadline !== input.receivedAt + 900_000) {
     throw new Error('terminal deadline must be exactly 15 minutes after receipt');
   }
@@ -114,12 +124,16 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         if (!row || row.payload_digest !== input.payloadDigest || Number(row.repository_id) !== input.repositoryId) {
           throw new Error('delivery identity conflict: delivery id was already used for another payload or repository');
         }
+        if (row.publication_mode !== input.publicationMode) {
+          throw new Error('delivery publication mode conflict: delivery id was already used with another publication mode');
+        }
         await client.query('COMMIT');
         return {
           status: 'duplicate',
           deliveryId: input.deliveryId,
           repositoryId: input.repositoryId,
           installationId: input.installationId,
+          publicationMode: input.publicationMode,
           receivedAt: input.receivedAt,
           terminalDeadline: input.terminalDeadline,
           payloadDigest: input.payloadDigest,
@@ -153,14 +167,16 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
            (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha,
             snapshot_digest, config_digest, effective_policy_digest, effective_config_digest,
             index_epoch, identity, status, stage, attempt, artifacts, repository_id,
-            installation_id, delivery_id, received_at, terminal_deadline, created_at, updated_at)
+            installation_id, delivery_id, received_at, terminal_deadline, publication_mode,
+            created_at, updated_at)
          VALUES
            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9, $11, $12,
             'queued', 'admission', 0, '{}'::jsonb, $13, $14, $15,
-            to_timestamp($16 / 1000.0), to_timestamp($17 / 1000.0),
+            to_timestamp($16 / 1000.0), to_timestamp($17 / 1000.0), $18,
             to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))
          ON CONFLICT (identity_digest) DO UPDATE
            SET updated_at = review_runs.updated_at
+         WHERE review_runs.publication_mode = EXCLUDED.publication_mode
          RETURNING *`,
         [
           runId,
@@ -180,10 +196,13 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           input.deliveryId,
           input.receivedAt,
           input.terminalDeadline,
+          input.publicationMode,
         ],
       );
       const runRow = inserted.rows[0];
-      if (!runRow) throw new Error('review run admission did not return a run');
+      if (!runRow) {
+        throw new Error('review run publication mode conflict: the admitted identity already uses another publication mode');
+      }
 
       await client.query(
         'UPDATE github_deliveries SET run_id = $2 WHERE delivery_id = $1',
@@ -201,6 +220,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         deliveryId: input.deliveryId,
         repositoryId: input.repositoryId,
         installationId: input.installationId,
+        publicationMode: input.publicationMode,
         receivedAt: input.receivedAt,
         terminalDeadline: input.terminalDeadline,
         payloadDigest: input.payloadDigest,
@@ -217,7 +237,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   async claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null> {
     const result = await this.queryable.query(
       `WITH candidate AS (
-         SELECT outbox.run_id
+         SELECT outbox.run_id, runs.publication_mode
            FROM review_dispatch_outbox AS outbox
            JOIN review_runs AS runs ON runs.run_id = outbox.run_id
           WHERE runs.status = 'queued'
@@ -237,7 +257,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         WHERE outbox.run_id = candidate.run_id
           AND deliveries.delivery_id = outbox.delivery_id
        RETURNING outbox.run_id, outbox.delivery_id, deliveries.repository_id,
-                 deliveries.installation_id, outbox.lease_owner, outbox.lease_expires_at`,
+                 deliveries.installation_id, candidate.publication_mode,
+                 outbox.lease_owner, outbox.lease_expires_at`,
       [workerId, now, leaseMs],
     );
     const row = result.rows[0];
@@ -246,6 +267,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       deliveryId: row.delivery_id,
       repositoryId: Number(row.repository_id),
       installationId: Number(row.installation_id),
+      publicationMode: publicationMode(row.publication_mode),
       leaseOwner: row.lease_owner,
       leaseExpiresAt: milliseconds(row.lease_expires_at) || 0,
     } : null;
