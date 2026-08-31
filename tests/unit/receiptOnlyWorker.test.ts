@@ -4,20 +4,28 @@ const fsMocks = vi.hoisted(() => ({
   mkdir: vi.fn(async () => undefined),
   writeFile: vi.fn(async () => undefined),
 }));
+const executionMocks = vi.hoisted(() => ({
+  executePersonaPanel: vi.fn(),
+  getGitHubAppInstallationToken: vi.fn(),
+}));
 
 vi.mock('node:fs/promises', () => fsMocks);
+vi.mock('../../src/panel/panelEngine', () => ({ executePersonaPanel: executionMocks.executePersonaPanel }));
+vi.mock('../../src/github/appAuth', () => ({ getGitHubAppInstallationToken: executionMocks.getGitHubAppInstallationToken }));
 
 import {
   buildReceiptOnlyWorkerReceipt,
   isReceiptOnlyWorker,
-  RECEIPT_ONLY_PATH,
+  runWorker,
   runReceiptOnlyWorker,
 } from '../../src/cli/runLiveReview';
+
+const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
 
 const validEnvironment = {
   REVIEW_RECEIPT_ONLY: 'true',
   REVIEW_PUBLICATION_MODE: 'disabled',
-  REVIEW_RECEIPT_PATH: RECEIPT_ONLY_PATH,
+  REVIEW_RECEIPT_PATH: receiptPathLiteral,
   REVIEW_RUN_ID: 'run_11111111111111111111111111111111',
   REVIEW_DELIVERY_ID: 'actions:98765:2:123:42:head',
   REVIEW_REPOSITORY_ID: '123',
@@ -33,6 +41,8 @@ describe('receipt-only worker contract', () => {
   beforeEach(() => {
     fsMocks.mkdir.mockClear();
     fsMocks.writeFile.mockClear();
+    executionMocks.executePersonaPanel.mockClear();
+    executionMocks.getGitHubAppInstallationToken.mockClear();
   });
 
   it('recognizes only the explicit receipt-only mode', () => {
@@ -75,10 +85,21 @@ describe('receipt-only worker contract', () => {
     const receipt = await runReceiptOnlyWorker(validEnvironment);
     expect(fsMocks.mkdir).toHaveBeenCalledWith('/workspace/.review-yeti', { recursive: true });
     expect(fsMocks.writeFile).toHaveBeenCalledWith(
-      RECEIPT_ONLY_PATH,
+      receiptPathLiteral,
       `${JSON.stringify(receipt)}\n`,
       { encoding: 'utf8' },
     );
+  });
+
+  it('routes the worker entrypoint to receipt-only execution before provider or GitHub work', async () => {
+    await runWorker(validEnvironment);
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      receiptPathLiteral,
+      expect.any(String),
+      { encoding: 'utf8' },
+    );
+    expect(executionMocks.executePersonaPanel).not.toHaveBeenCalled();
+    expect(executionMocks.getGitHubAppInstallationToken).not.toHaveBeenCalled();
   });
 
   it.each([
