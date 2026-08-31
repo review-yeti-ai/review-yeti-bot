@@ -100,6 +100,34 @@ func TestAcquireLeaseRejectsDifferentActiveRun(t *testing.T) {
 	}
 }
 
+func TestReleaseLeaseOnlyClearsCurrentOwner(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	runID := "run_11111111111111111111111111111111"
+	manager := leaseClient(t)
+	if _, err := manager.Acquire(context.Background(), "ct-review-system", 123, 42, runID, now.Add(15*time.Minute), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Release(context.Background(), "ct-review-system", 123, 42, runID, now.Add(time.Minute)); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if _, err := manager.Acquire(context.Background(), "ct-review-system", 123, 42, "run_22222222222222222222222222222222", now.Add(15*time.Minute), now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("released lease should be reusable: %v", err)
+	}
+}
+
+func TestReleaseLeaseRejectsDifferentOwner(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	manager := leaseClient(t)
+	owner := "run_11111111111111111111111111111111"
+	other := "run_22222222222222222222222222222222"
+	if _, err := manager.Acquire(context.Background(), "ct-review-system", 123, 42, owner, now.Add(15*time.Minute), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Release(context.Background(), "ct-review-system", 123, 42, other, now.Add(time.Minute)); !errors.Is(err, workspace.ErrLeaseHeld) {
+		t.Fatalf("different owner release = %v, want ErrLeaseHeld", err)
+	}
+}
+
 func TestAcquireLeaseTakesExpiredLeaseWithResourceVersion(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 20, 0, 0, time.UTC)
 	labels, annotations := workspace.Metadata(123, 42)
