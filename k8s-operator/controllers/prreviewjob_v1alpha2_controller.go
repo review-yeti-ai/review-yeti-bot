@@ -158,10 +158,19 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		Now:              now,
 	})
 	if err != nil {
+		// The lease was acquired for this attempt, but no Job exists. Release it
+		// before recording a terminal contract failure so a later run is not
+		// stranded behind an invalid projection.
+		if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
+			return ctrl.Result{}, releaseErr
+		}
 		return ctrl.Result{}, r.fail(ctx, &review, "WorkerContractRejected", err.Error())
 	}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(&review, worker, r.Scheme); err != nil {
+			if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
+				return ctrl.Result{}, releaseErr
+			}
 			return ctrl.Result{}, err
 		}
 	}
