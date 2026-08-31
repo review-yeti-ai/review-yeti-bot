@@ -50,7 +50,7 @@ The image self-test passed on Node `24.20.0`. The operator was run locally with 
 - receipt-to-worker receipt: approximately `11.5s`
 - receipt-to-terminal status: approximately `13.9s`
 
-The backing `do-block-storage` volume was 1 GiB with reclaim policy `Delete`; it was removed during cleanup. No qualification object, Job, pod, PVC, or Lease remains. The versioned CRD is not a worker or route and may be removed before activation if the cluster should return to its pre-qualification API surface.
+The backing `do-block-storage` volume was 1 GiB with reclaim policy `Delete`; it was removed during cleanup. No qualification object, Job, pod, PVC, Lease, or versioned CRD remains. The worker/operator route is therefore back to its pre-qualification disabled state.
 
 ## Failures found and corrected
 
