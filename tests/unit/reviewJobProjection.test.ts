@@ -59,6 +59,20 @@ describe('buildReviewJobProjection', () => {
       .toThrow(/15 minutes/i);
     expect(() => buildReviewJobProjection(input, input.terminalDeadline - 119_999))
       .toThrow(/120 seconds/i);
+    expect(buildReviewJobProjection(input, input.terminalDeadline - 120_000).metadata.name)
+      .toBe(`ct-review-${'1'.repeat(32)}`);
+  });
+
+  it.each([
+    `run_${'1'.repeat(31)}`,
+    `run_${'A'.repeat(32)}`,
+    `job_${'1'.repeat(32)}`,
+  ])('rejects malformed run identity %s', (runId) => {
+    expect(() => buildReviewJobProjection({ ...input, runId }, receivedAt + 60_000)).toThrow(/run id/i);
+  });
+
+  it.each(['', 'x'.repeat(513)])('rejects invalid delivery identity', (deliveryId) => {
+    expect(() => buildReviewJobProjection({ ...input, deliveryId }, receivedAt + 60_000)).toThrow(/delivery id/i);
   });
 
   it.each([
@@ -88,6 +102,14 @@ describe('buildReviewJobProjection', () => {
 
   it('rejects projection before the authenticated admission receipt time', () => {
     expect(() => buildReviewJobProjection(input, receivedAt - 1)).toThrow(/cannot precede admission receipt/i);
+  });
+
+  it('rejects non-finite projection timestamps', () => {
+    expect(() => buildReviewJobProjection({ ...input, receivedAt: Number.POSITIVE_INFINITY }, receivedAt + 60_000))
+      .toThrow(/timestamps must be finite/i);
+    expect(() => buildReviewJobProjection({ ...input, terminalDeadline: Number.NaN }, receivedAt + 60_000))
+      .toThrow(/timestamps must be finite/i);
+    expect(() => buildReviewJobProjection(input, Number.POSITIVE_INFINITY)).toThrow(/timestamps must be finite/i);
   });
 
   it.each([
