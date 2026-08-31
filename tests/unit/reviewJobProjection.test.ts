@@ -73,9 +73,15 @@ describe('buildReviewJobProjection', () => {
 
   it('rejects malformed immutable review identity', () => {
     expect(() => buildReviewJobProjection({ ...input, headSha: 'main' }, receivedAt + 60_000)).toThrow(/head sha/i);
+    expect(() => buildReviewJobProjection({ ...input, baseSha: 'main' }, receivedAt + 60_000)).toThrow(/base sha/i);
     expect(() => buildReviewJobProjection({ ...input, policyDigest: 'c'.repeat(63) }, receivedAt + 60_000)).toThrow(/policy digest/i);
+    expect(() => buildReviewJobProjection({ ...input, configDigest: 'd'.repeat(63) }, receivedAt + 60_000)).toThrow(/config digest/i);
     expect(() => buildReviewJobProjection({ ...input, repo: '../other' }, receivedAt + 60_000)).toThrow(/repository/i);
     expect(() => buildReviewJobProjection({ ...input, namespace: 'INVALID_NS' }, receivedAt + 60_000)).toThrow(/namespace/i);
+  });
+
+  it('rejects projection before the authenticated admission receipt time', () => {
+    expect(() => buildReviewJobProjection(input, receivedAt - 1)).toThrow(/cannot precede admission receipt/i);
   });
 
   it('does not project caller-supplied secret material', () => {
