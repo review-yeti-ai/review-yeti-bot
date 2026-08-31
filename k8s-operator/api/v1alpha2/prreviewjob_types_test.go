@@ -98,3 +98,59 @@ func TestPRReviewJobV1Alpha2SchemeAndDeepCopy(t *testing.T) {
 		t.Fatal("status conditions were not deep copied")
 	}
 }
+
+func TestDispatchTimingStatusRecordsOnlyMonotonicLifecycleStages(t *testing.T) {
+	received := metav1.NewTime(time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC))
+	timing := v1alpha2.DispatchTimingStatus{}
+
+	for _, observation := range []struct {
+		stage v1alpha2.DispatchTimingStage
+		at    metav1.Time
+	}{
+		{v1alpha2.DispatchStageReceived, received},
+		{v1alpha2.DispatchStageJobCreated, metav1.NewTime(received.Add(2 * time.Second))},
+		{v1alpha2.DispatchStagePodScheduled, metav1.NewTime(received.Add(4 * time.Second))},
+		{v1alpha2.DispatchStageImageObserved, metav1.NewTime(received.Add(6 * time.Second))},
+		{v1alpha2.DispatchStageProcessStarted, metav1.NewTime(received.Add(8 * time.Second))},
+		{v1alpha2.DispatchStageCompleted, metav1.NewTime(received.Add(10 * time.Second))},
+	} {
+		changed, err := timing.Observe(observation.stage, observation.at)
+		if err != nil {
+			t.Fatalf("observe %s: %v", observation.stage, err)
+		}
+		if !changed {
+			t.Fatalf("first observation for %s was not recorded", observation.stage)
+		}
+	}
+	if err := timing.Validate(); err != nil {
+		t.Fatalf("valid timing rejected: %v", err)
+	}
+
+	changed, err := timing.Observe(v1alpha2.DispatchStageCompleted, metav1.NewTime(received.Add(20*time.Second)))
+	if err != nil {
+		t.Fatalf("re-observing a stage should be idempotent: %v", err)
+	}
+	if changed {
+		t.Fatal("re-observing a stage must preserve its first durable timestamp")
+	}
+}
+
+func TestDispatchTimingStatusRejectsBackwardOrUnknownObservations(t *testing.T) {
+	received := metav1.NewTime(time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC))
+	timing := v1alpha2.DispatchTimingStatus{}
+	if _, err := timing.Observe(v1alpha2.DispatchStageJobCreated, received); err == nil {
+		t.Fatal("job-created observation without receipt must fail closed")
+	}
+	if _, err := timing.Observe(v1alpha2.DispatchStageReceived, received); err != nil {
+		t.Fatalf("observe receipt: %v", err)
+	}
+	if _, err := timing.Observe(v1alpha2.DispatchStageJobCreated, metav1.NewTime(received.Add(-time.Second))); err == nil {
+		t.Fatal("backward job-created observation must fail closed")
+	}
+	if _, err := timing.Observe(v1alpha2.DispatchTimingStage("unknown"), received); err == nil {
+		t.Fatal("unknown timing stage must fail closed")
+	}
+	if err := timing.Validate(); err != nil {
+		t.Fatalf("failed observations should not corrupt timing: %v", err)
+	}
+}

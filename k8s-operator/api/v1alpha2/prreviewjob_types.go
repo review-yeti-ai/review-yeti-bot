@@ -16,7 +16,12 @@ limitations under the License.
 
 package v1alpha2
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"errors"
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // PRReviewJobPhase is the bounded Kubernetes execution phase.
 // +kubebuilder:validation:Enum=Queued;Running;Succeeded;Failed;Expired
@@ -64,17 +69,159 @@ type PRReviewJobSpec struct {
 	RunSecretName string `json:"runSecretName"`
 }
 
-// PRReviewJobStatus contains execution references only; PostgreSQL remains lifecycle authority.
+// DispatchTimingStage identifies one observable boundary in the receipt-only
+// worker lifecycle. These values are deliberately bounded so status cannot
+// become an unstructured event log.
+type DispatchTimingStage string
+
+const (
+	DispatchStageReceived       DispatchTimingStage = "received"
+	DispatchStageJobCreated     DispatchTimingStage = "jobCreated"
+	DispatchStagePodScheduled   DispatchTimingStage = "podScheduled"
+	DispatchStageImageObserved  DispatchTimingStage = "imageObserved"
+	DispatchStageProcessStarted DispatchTimingStage = "processStarted"
+	DispatchStageCompleted      DispatchTimingStage = "completed"
+)
+
+// DispatchTimingStatus is a durable, bounded lifecycle receipt. It contains
+// timestamps only; prompts, provider responses, credentials, and review
+// contents must never be written to the CR status.
+type DispatchTimingStatus struct {
+	ReceivedAt       *metav1.Time `json:"receivedAt,omitempty"`
+	JobCreatedAt     *metav1.Time `json:"jobCreatedAt,omitempty"`
+	PodScheduledAt   *metav1.Time `json:"podScheduledAt,omitempty"`
+	ImageObservedAt  *metav1.Time `json:"imageObservedAt,omitempty"`
+	ProcessStartedAt *metav1.Time `json:"processStartedAt,omitempty"`
+	CompletedAt      *metav1.Time `json:"completedAt,omitempty"`
+}
+
+// Observe records the first observation for a lifecycle stage. Repeated
+// observations are idempotent and never replace the original timestamp.
+// Every new observation is validated against the already-known stages.
+func (t *DispatchTimingStatus) Observe(stage DispatchTimingStage, at metav1.Time) (bool, error) {
+	if t == nil {
+		return false, errors.New("nil dispatch timing status")
+	}
+	if at.Time.IsZero() {
+		return false, errors.New("dispatch timing timestamp must be non-zero")
+	}
+	if !isKnownDispatchStage(stage) {
+		return false, fmt.Errorf("unknown dispatch timing stage %q", stage)
+	}
+	if stage != DispatchStageReceived && t.ReceivedAt == nil {
+		return false, errors.New("dispatch timing receipt must be observed before lifecycle stages")
+	}
+	if current := t.timestamp(stage); current != nil {
+		return false, nil
+	}
+
+	copy := at.DeepCopy()
+	switch stage {
+	case DispatchStageReceived:
+		t.ReceivedAt = copy
+	case DispatchStageJobCreated:
+		t.JobCreatedAt = copy
+	case DispatchStagePodScheduled:
+		t.PodScheduledAt = copy
+	case DispatchStageImageObserved:
+		t.ImageObservedAt = copy
+	case DispatchStageProcessStarted:
+		t.ProcessStartedAt = copy
+	case DispatchStageCompleted:
+		t.CompletedAt = copy
+	}
+	if err := t.Validate(); err != nil {
+		// Keep the status unchanged when a malformed or backward observation is
+		// presented. This is a fail-closed API boundary.
+		switch stage {
+		case DispatchStageReceived:
+			t.ReceivedAt = nil
+		case DispatchStageJobCreated:
+			t.JobCreatedAt = nil
+		case DispatchStagePodScheduled:
+			t.PodScheduledAt = nil
+		case DispatchStageImageObserved:
+			t.ImageObservedAt = nil
+		case DispatchStageProcessStarted:
+			t.ProcessStartedAt = nil
+		case DispatchStageCompleted:
+			t.CompletedAt = nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// Validate rejects zero timestamps and any backward lifecycle transition.
+func (t *DispatchTimingStatus) Validate() error {
+	if t == nil {
+		return errors.New("nil dispatch timing status")
+	}
+	ordered := []struct {
+		name string
+		at   *metav1.Time
+	}{
+		{"receivedAt", t.ReceivedAt},
+		{"jobCreatedAt", t.JobCreatedAt},
+		{"podScheduledAt", t.PodScheduledAt},
+		{"imageObservedAt", t.ImageObservedAt},
+		{"processStartedAt", t.ProcessStartedAt},
+		{"completedAt", t.CompletedAt},
+	}
+	var previous *metav1.Time
+	previousName := ""
+	for _, stage := range ordered {
+		if stage.at == nil {
+			continue
+		}
+		if stage.at.Time.IsZero() {
+			return fmt.Errorf("%s timestamp must be non-zero", stage.name)
+		}
+		if previous != nil && stage.at.Before(previous) {
+			return fmt.Errorf("%s precedes %s", stage.name, previousName)
+		}
+		previous = stage.at
+		previousName = stage.name
+	}
+	return nil
+}
+
+func (t *DispatchTimingStatus) timestamp(stage DispatchTimingStage) *metav1.Time {
+	switch stage {
+	case DispatchStageReceived:
+		return t.ReceivedAt
+	case DispatchStageJobCreated:
+		return t.JobCreatedAt
+	case DispatchStagePodScheduled:
+		return t.PodScheduledAt
+	case DispatchStageImageObserved:
+		return t.ImageObservedAt
+	case DispatchStageProcessStarted:
+		return t.ProcessStartedAt
+	case DispatchStageCompleted:
+		return t.CompletedAt
+	default:
+		return nil
+	}
+}
+
+func isKnownDispatchStage(stage DispatchTimingStage) bool {
+	return stage == DispatchStageReceived || stage == DispatchStageJobCreated || stage == DispatchStagePodScheduled || stage == DispatchStageImageObserved || stage == DispatchStageProcessStarted || stage == DispatchStageCompleted
+}
+
+// PRReviewJobStatus contains execution references and a bounded timing receipt;
+// PostgreSQL remains lifecycle authority.
 type PRReviewJobStatus struct {
-	Phase              PRReviewJobPhase   `json:"phase,omitempty"`
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	JobName            string             `json:"jobName,omitempty"`
-	PVCName            string             `json:"pvcName,omitempty"`
-	LeaseName          string             `json:"leaseName,omitempty"`
-	StartTime          *metav1.Time       `json:"startTime,omitempty"`
-	CompletionTime     *metav1.Time       `json:"completionTime,omitempty"`
-	Message            string             `json:"message,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	Phase              PRReviewJobPhase      `json:"phase,omitempty"`
+	ObservedGeneration int64                 `json:"observedGeneration,omitempty"`
+	JobName            string                `json:"jobName,omitempty"`
+	PVCName            string                `json:"pvcName,omitempty"`
+	LeaseName          string                `json:"leaseName,omitempty"`
+	StartTime          *metav1.Time          `json:"startTime,omitempty"`
+	CompletionTime     *metav1.Time          `json:"completionTime,omitempty"`
+	Timing             *DispatchTimingStatus `json:"timing,omitempty"`
+	Message            string                `json:"message,omitempty"`
+	Conditions         []metav1.Condition    `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
