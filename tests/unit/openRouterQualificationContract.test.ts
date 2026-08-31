@@ -76,6 +76,23 @@ describe('OpenRouter qualification contract', () => {
     });
   });
 
+  it('does not treat a role-only SSE envelope as the first usable token', async () => {
+    const wire = `data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant' } }] })}\n\n`;
+    const response = {
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(wire));
+        },
+        cancel() {},
+      }),
+    };
+
+    await expect(readChatCompletionResponse(response, true, 100, 100, 5)).rejects.toMatchObject({
+      timeoutKind: 'ttft',
+    });
+  });
+
   it('records reasoning_details text from the OpenRouter SSE wire shape', async () => {
     const fetchImplementation = async () => streamResponse([
       {

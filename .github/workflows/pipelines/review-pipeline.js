@@ -2493,10 +2493,6 @@ async function readChatCompletionResponse(
     const data = eventData.join('\n');
     eventData = [];
     if (!data || data === '[DONE]') return;
-    if (!receivedFirstData) {
-      receivedFirstData = true;
-      onFirstData?.(Date.now() - streamStartedAt);
-    }
     try {
       const payload = JSON.parse(data);
       latest = payload;
@@ -2520,6 +2516,15 @@ async function readChatCompletionResponse(
       else if (message.length > 0) chunks.push(...message);
       if (deltaReasoning.length > 0) reasoningChunks.push(...deltaReasoning);
       else if (messageReasoning.length > 0) reasoningChunks.push(...messageReasoning);
+      // A role-only or metadata-only envelope proves that the connection is open, but it does
+      // not prove that the model has produced usable output. Keep the TTFT watchdog active until
+      // content or reasoning arrives; otherwise an empty 200 stream can consume the full total
+      // deadline before the bounded recovery path starts.
+      if (!receivedFirstData
+        && (delta.length > 0 || message.length > 0 || deltaReasoning.length > 0 || messageReasoning.length > 0)) {
+        receivedFirstData = true;
+        onFirstData?.(Date.now() - streamStartedAt);
+      }
     } catch (_) {
       // Providers may terminate a stream with a partial final SSE frame. The
       // completed content accumulated so far remains valid and is parsed below.
