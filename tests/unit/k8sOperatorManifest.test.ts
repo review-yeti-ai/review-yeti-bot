@@ -20,6 +20,17 @@ function byKind(kind: string): Manifest {
 }
 
 describe('isolated DOKS operator manifest', () => {
+  it('builds a minimal static operator image from a pinned Go base', () => {
+    const dockerfile = fs.readFileSync(path.resolve(__dirname, '../../Dockerfile.operator'), 'utf8');
+    expect(dockerfile).toMatch(/^ARG GO_BASE_IMAGE=golang:1\.24-bookworm@sha256:[a-f0-9]{64}$/mu);
+    expect(dockerfile).toContain('FROM ${GO_BASE_IMAGE} AS build');
+    expect(dockerfile).toContain('COPY k8s-operator/go.mod k8s-operator/go.sum ./');
+    expect(dockerfile).toContain('CGO_ENABLED=0');
+    expect(dockerfile).toContain('FROM scratch');
+    expect(dockerfile).toContain('USER 1000:1000');
+    expect(dockerfile).not.toMatch(/:(?:latest|main)\b/u);
+  });
+
   it('is disabled and non-publishing by default', () => {
     const deployment = byKind('Deployment');
     expect(deployment.metadata).toMatchObject({
