@@ -950,7 +950,13 @@ describe('reviewWithModel', () => {
     expect(res.decision).toBe('ERROR');
     expect(res.error).toContain('total deadline');
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
+      expect.objectContaining({
+        outcome: 'transport_error',
+        failureClass: 'timeout',
+        timeoutKind: 'total',
+        reasoningPresent: true,
+        contentPresent: false,
+      }),
     ]));
   });
 
