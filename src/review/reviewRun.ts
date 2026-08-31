@@ -73,6 +73,14 @@ export interface ReviewDispatchClaim {
   repositoryId: number;
   installationId: number;
   publicationMode: PublicationMode;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  receivedAt: number;
+  terminalDeadline: number;
+  policyDigest: string;
+  configDigest: string;
   leaseOwner: string;
   leaseExpiresAt: number;
 }

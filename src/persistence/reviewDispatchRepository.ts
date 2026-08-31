@@ -81,7 +81,7 @@ export interface ReviewDispatchRepository {
   heartbeat(runId: string, workerId: string, now: number, leaseMs: number): Promise<boolean>;
   markProjected(runId: string, workerId: string, projectionName: string, now: number): Promise<boolean>;
   releaseForRetry(runId: string, workerId: string, now: number, availableAt: number): Promise<boolean>;
-  markTerminal(runId: string, now: number): Promise<boolean>;
+  markTerminal(runId: string, workerId: string, now: number, error: string): Promise<boolean>;
 }
 
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
@@ -237,7 +237,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   async claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null> {
     const result = await this.queryable.query(
       `WITH candidate AS (
-         SELECT outbox.run_id, runs.publication_mode
+         SELECT outbox.run_id, runs.publication_mode, runs.owner, runs.repo,
+                runs.pr_number, runs.head_sha, runs.base_sha, runs.received_at,
+                runs.terminal_deadline, runs.effective_policy_digest,
+                runs.effective_config_digest
            FROM review_dispatch_outbox AS outbox
            JOIN review_runs AS runs ON runs.run_id = outbox.run_id
           WHERE runs.status = 'queued'
@@ -258,6 +261,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           AND deliveries.delivery_id = outbox.delivery_id
        RETURNING outbox.run_id, outbox.delivery_id, deliveries.repository_id,
                  deliveries.installation_id, candidate.publication_mode,
+                 candidate.owner, candidate.repo, candidate.pr_number,
+                 candidate.head_sha, candidate.base_sha, candidate.received_at,
+                 candidate.terminal_deadline, candidate.effective_policy_digest,
+                 candidate.effective_config_digest,
                  outbox.lease_owner, outbox.lease_expires_at`,
       [workerId, now, leaseMs],
     );
@@ -268,6 +275,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       repositoryId: Number(row.repository_id),
       installationId: Number(row.installation_id),
       publicationMode: publicationMode(row.publication_mode),
+      repo: `${row.owner}/${row.repo}`,
+      prNumber: Number(row.pr_number),
+      headSha: row.head_sha,
+      baseSha: row.base_sha,
+      receivedAt: milliseconds(row.received_at) || 0,
+      terminalDeadline: milliseconds(row.terminal_deadline) || 0,
+      policyDigest: row.effective_policy_digest,
+      configDigest: row.effective_config_digest,
       leaseOwner: row.lease_owner,
       leaseExpiresAt: milliseconds(row.lease_expires_at) || 0,
     } : null;
@@ -309,14 +324,22 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return result.rows.length > 0;
   }
 
-  async markTerminal(runId: string, now: number): Promise<boolean> {
+  async markTerminal(runId: string, workerId: string, now: number, error: string): Promise<boolean> {
     const result = await this.queryable.query(
-      `UPDATE review_dispatch_outbox
-          SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
-              updated_at = to_timestamp($2 / 1000.0)
-        WHERE run_id = $1 AND status <> 'terminal'
-      RETURNING run_id`,
-      [runId, now],
+      `WITH terminalized AS (
+         UPDATE review_dispatch_outbox
+            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                updated_at = to_timestamp($3 / 1000.0)
+          WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+        RETURNING run_id
+       )
+       UPDATE review_runs AS runs
+          SET status = 'failed', error_text = $4, lease_owner = NULL,
+              lease_expires_at = NULL, updated_at = to_timestamp($3 / 1000.0)
+         FROM terminalized
+        WHERE runs.run_id = terminalized.run_id AND runs.status = 'queued'
+      RETURNING runs.run_id`,
+      [runId, workerId, now, error],
     );
     return result.rows.length > 0;
   }
