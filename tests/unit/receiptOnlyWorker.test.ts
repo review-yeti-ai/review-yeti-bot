@@ -1,8 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const fsMocks = vi.hoisted(() => ({
+  mkdir: vi.fn(async () => undefined),
+  writeFile: vi.fn(async () => undefined),
+}));
+
+vi.mock('node:fs/promises', () => fsMocks);
+
 import {
   buildReceiptOnlyWorkerReceipt,
   isReceiptOnlyWorker,
   RECEIPT_ONLY_PATH,
+  runReceiptOnlyWorker,
 } from '../../src/cli/runLiveReview';
 
 const validEnvironment = {
@@ -21,6 +30,11 @@ const validEnvironment = {
 } as NodeJS.ProcessEnv;
 
 describe('receipt-only worker contract', () => {
+  beforeEach(() => {
+    fsMocks.mkdir.mockClear();
+    fsMocks.writeFile.mockClear();
+  });
+
   it('recognizes only the explicit receipt-only mode', () => {
     expect(isReceiptOnlyWorker(validEnvironment)).toBe(true);
     expect(isReceiptOnlyWorker({ ...validEnvironment, REVIEW_RECEIPT_ONLY: 'false' })).toBe(false);
@@ -55,6 +69,16 @@ describe('receipt-only worker contract', () => {
     for (const forbidden of ['secret', 'token', 'api_key', 'private_key', 'openrouter']) {
       expect(serialized).not.toContain(forbidden);
     }
+  });
+
+  it('persists the receipt at the exact workspace path', async () => {
+    const receipt = await runReceiptOnlyWorker(validEnvironment);
+    expect(fsMocks.mkdir).toHaveBeenCalledWith('/workspace/.review-yeti', { recursive: true });
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      RECEIPT_ONLY_PATH,
+      `${JSON.stringify(receipt)}\n`,
+      { encoding: 'utf8' },
+    );
   });
 
   it.each([
