@@ -114,3 +114,30 @@ reviewed.
 Final post-fix receipt SHA-256:
 
 `0fd0f9ef503f50521272eef417061ed9f68bdce12e67b2acbe06a0e396056dc3`
+
+## Three-repetition clean-control result
+
+The next bounded gate ran three serial repetitions of the same clean control with the exact
+OpenRouter model, no fallback, streaming enabled, a 45-second attempt deadline, and one bounded
+retry. It finished within the 15-minute safety window but did not pass the terminal gate:
+
+| Repetition | Terminal | Attempts | Total latency | Terminal outcome | Partial output telemetry |
+| ---: | --- | ---: | ---: | --- | --- |
+| 1 | no | 2 | 48.530s | timeout, then malformed output | reasoning observed; no final content |
+| 2 | no | 2 | 92.254s | timeout, then timeout | reasoning observed; no final content |
+| 3 | yes | 2 | 61.816s | timeout, then parsed empty findings | reasoning observed before retry |
+
+All attempts returned HTTP 200. The two failed rows were fail-closed and produced no findings;
+the successful retry also produced zero findings. There were no false-positive clean approvals,
+but terminal completion was only 1/3 (33%) and every repetition required the recovery path.
+The partial-output fields show that these are reasoning-to-final-JSON stalls, not disconnected
+requests. This is not safe evidence for an OpenRouter production flip.
+
+The next targeted change is therefore recovery-only: keep the first attempt at the configured
+high reasoning effort, but disable optional reasoning on the single timeout retry so the retry
+reserves its bounded output budget for the required JSON object. This remains a same-route,
+receipt-only experiment until a new fixture run proves it.
+
+Three-repetition receipt SHA-256:
+
+`17778b12184cfcac467e8e960122888dfe749b8d4619011c7dd0923518ef941f`
