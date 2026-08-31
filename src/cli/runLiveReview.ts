@@ -146,16 +146,16 @@ export function resolveWorkerAuthConfig(env: NodeJS.ProcessEnv = process.env): W
   };
 }
 
-async function runLiveReviewMain() {
+export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
   const cliArgs = process.argv.slice(2);
   const positionalArgs = cliArgs.filter((value) => !value.startsWith('--'));
   const prValue = cliArgs.find((value) => value.startsWith('--pr='))?.slice('--pr='.length)
     || positionalArgs[0]
-    || process.env.PR_NUMBER
+    || env.PR_NUMBER
     || '1';
   const repo = cliArgs.find((value) => value.startsWith('--repo='))?.slice('--repo='.length)
     || positionalArgs[1]
-    || process.env.REPO
+    || env.REPO
     || 'JBJMLLC/ct-review-bot';
   const prNumber = parseInt(prValue, 10);
   if (!Number.isInteger(prNumber) || prNumber < 1) throw new Error(`invalid pull request number: ${prValue}`);
@@ -172,8 +172,8 @@ async function runLiveReviewMain() {
   // Initialize 10-persona Panel Engine
   const config = createDefaultV3Config();
   const client = new OpenRouterClient({
-    baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: process.env.OPENROUTER_REVIEW_FLEET_KEY || process.env.OPENROUTER_PR_REVIEW_API_KEY || requiredWorkerEnv(process.env, 'OPENROUTER_API_KEY'),
+    baseUrl: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    apiKey: env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || requiredWorkerEnv(env, 'OPENROUTER_API_KEY'),
   });
 
   // Parse files from diff
@@ -242,7 +242,7 @@ async function runLiveReviewMain() {
 
   const fullSummaryMarkdown = sections.join('\n');
 
-  const auth = resolveWorkerAuthConfig();
+  const auth = resolveWorkerAuthConfig(env);
   const tokenRes = await getGitHubAppInstallationToken(auth);
   if (!tokenRes.token.startsWith('ghs_')) {
     throw new Error('GitHub App token exchange returned a non-installation token');
@@ -279,7 +279,10 @@ async function runLiveReviewMain() {
 }
 
 /** Entrypoint used by both the live worker and the receipt-only qualification. */
-export async function runWorker(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function runWorker(
+  env: NodeJS.ProcessEnv = process.env,
+  liveRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = runLiveReviewMain,
+): Promise<void> {
   if (isReceiptOnlyWorker(env)) {
     const receipt = await runReceiptOnlyWorker(env);
     logger.info('Receipt-only worker completed without provider or GitHub calls', {
@@ -289,7 +292,7 @@ export async function runWorker(env: NodeJS.ProcessEnv = process.env): Promise<v
     });
     return;
   }
-  return runLiveReviewMain();
+  return liveRunner(env);
 }
 
 if (require.main === module) {
