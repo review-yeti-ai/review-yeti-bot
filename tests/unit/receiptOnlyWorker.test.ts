@@ -353,6 +353,7 @@ describe('panel qualification worker contract', () => {
       expect(options.config.reviewers.providers).toHaveLength(1);
       expect(options.config.reviewers.providers[0].model).toBe(panelEnvironment.REVIEW_QUALIFICATION_MODEL);
       expect(options.config.reviewers.arbiter.order).toEqual(['qualification']);
+      expect(options.config.personas[0].maxTurns).toBe(2);
       expect(options.changedFiles).toEqual([
         expect.objectContaining({ path: 'qualification-fixture.ts' }),
       ]);
