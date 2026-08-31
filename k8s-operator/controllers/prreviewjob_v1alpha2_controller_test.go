@@ -13,9 +13,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
+	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
 )
 
@@ -154,8 +156,16 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	if err := kube.Status().Update(context.Background(), &worker); err != nil {
 		t.Fatalf("mark worker succeeded: %v", err)
 	}
+	beforeWebhookToJob := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds")
+	beforeWebhookToCompletion := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds")
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("terminal reconcile: %v", err)
+	}
+	if got := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds"); got != beforeWebhookToJob+1 {
+		t.Fatalf("webhook-to-job histogram count = %d, want %d", got, beforeWebhookToJob+1)
+	}
+	if got := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds"); got != beforeWebhookToCompletion+1 {
+		t.Fatalf("webhook-to-completion histogram count = %d, want %d", got, beforeWebhookToCompletion+1)
 	}
 	var updated reviewv1alpha2.PRReviewJob
 	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
@@ -174,6 +184,22 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	if _, err := workspace.NewLeaseManager(kube).Acquire(context.Background(), review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, "run_22222222222222222222222222222222", now.Add(15*time.Minute), now.Add(time.Second)); err != nil {
 		t.Fatalf("released workspace lease should be acquirable: %v", err)
 	}
+}
+
+func histogramSampleCount(t *testing.T, name string) uint64 {
+	t.Helper()
+	operatorMetrics.RegisterMetrics()
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name || len(family.GetMetric()) == 0 {
+			continue
+		}
+		return family.GetMetric()[0].GetHistogram().GetSampleCount()
+	}
+	return 0
 }
 
 func TestPRReviewJobV1Alpha2ReconcilerFailsClosedOnPVCIdentityMismatch(t *testing.T) {

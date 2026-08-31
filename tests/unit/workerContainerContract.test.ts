@@ -59,7 +59,10 @@ describe('worker container contract', () => {
     expect(dockerfile).toMatch(/^FROM \$\{NODE_BASE_IMAGE\} AS build$/mu);
     expect(dockerfile).toMatch(/^FROM \$\{NODE_BASE_IMAGE\} AS worker$/mu);
     expect(dockerfile).toContain('ENTRYPOINT ["node", "/app/dist/cli/runLiveReview.js"]');
-    expect(dockerfile).toContain('USER node');
+    // Kubernetes runAsNonRoot admission must be able to prove the image user
+    // is non-root. A symbolic `USER node` is not verifiable by kubelet.
+    expect(dockerfile).toContain('USER 1000:1000');
+    expect(dockerfile).not.toMatch(/^USER node$/mu);
     expect(dockerfile).toContain('ENV NODE_ENV=production');
     expect(dockerfile).toContain('snapshot.debian.org/archive/debian/20260824T000000Z');
     expect(dockerfile).toContain('snapshot.debian.org/archive/debian-security/20260824T000000Z');

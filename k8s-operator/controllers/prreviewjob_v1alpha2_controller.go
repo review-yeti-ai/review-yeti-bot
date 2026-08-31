@@ -37,6 +37,7 @@ import (
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
 )
 
@@ -79,6 +80,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, r.fail(ctx, &review, "InvalidProjection", err.Error())
 	}
 	if !now.Before(review.Spec.TerminalDeadline.Time) {
+		r.recordDispatchTiming(&review, now)
 		return ctrl.Result{}, r.setPhase(ctx, &review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
 	}
 
@@ -221,10 +223,23 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	}
 	completed := metav1.NewTime(now)
 	review.Status.CompletionTime = &completed
+	r.recordDispatchTiming(review, completed.Time)
 	if worker.Status.Succeeded > 0 {
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", "receipt-only worker Job completed")
 	}
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", "receipt-only worker Job failed")
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) recordDispatchTiming(review *reviewv1alpha2.PRReviewJob, completedAt time.Time) {
+	timing := operatorMetrics.DispatchTiming{
+		ReceivedAt:       review.Spec.ReceivedAt.Time,
+		CompletedAt:      completedAt,
+		TerminalDeadline: review.Spec.TerminalDeadline.Time,
+	}
+	if review.Status.StartTime != nil {
+		timing.JobCreatedAt = review.Status.StartTime.Time
+	}
+	operatorMetrics.RecordDispatchTiming(timing)
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) activeWorkerJobs(ctx context.Context, namespace string) (int, error) {

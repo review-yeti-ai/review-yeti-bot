@@ -18,12 +18,96 @@ package metrics_test
 
 import (
 	"testing"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
 )
+
+func TestRecordDispatchTimingRecordsAvailableLifecycleDurations(t *testing.T) {
+	received := time.Unix(1_700_000_000, 0).UTC()
+	jobCreated := received.Add(3 * time.Second)
+	completed := jobCreated.Add(7 * time.Second)
+	deadline := received.Add(15 * time.Minute)
+
+	beforeJob := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds")
+	beforeTotal := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds")
+	beforeDeadline := testutil.ToFloat64(metrics.DeadlineMisses)
+
+	metrics.RecordDispatchTiming(metrics.DispatchTiming{
+		ReceivedAt:       received,
+		JobCreatedAt:     jobCreated,
+		CompletedAt:      completed,
+		TerminalDeadline: deadline,
+	})
+
+	if got := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds"); got != beforeJob+1 {
+		t.Fatalf("webhook-to-job histogram count = %d, want %d", got, beforeJob+1)
+	}
+	if got := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds"); got != beforeTotal+1 {
+		t.Fatalf("webhook-to-completion histogram count = %d, want %d", got, beforeTotal+1)
+	}
+	if got := testutil.ToFloat64(metrics.DeadlineMisses); got != beforeDeadline {
+		t.Fatalf("deadline misses = %f, want %f", got, beforeDeadline)
+	}
+}
+
+func TestRecordDispatchTimingRejectsNonMonotonicLifecycle(t *testing.T) {
+	received := time.Unix(1_700_000_000, 0).UTC()
+	beforeJob := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds")
+	beforeTotal := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds")
+
+	metrics.RecordDispatchTiming(metrics.DispatchTiming{
+		ReceivedAt:       received,
+		JobCreatedAt:     received.Add(-time.Second),
+		CompletedAt:      received.Add(time.Second),
+		TerminalDeadline: received.Add(15 * time.Minute),
+	})
+
+	if got := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds"); got != beforeJob {
+		t.Fatalf("invalid timing changed webhook-to-job histogram count to %d", got)
+	}
+	if got := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds"); got != beforeTotal {
+		t.Fatalf("invalid timing changed webhook-to-completion histogram count to %d", got)
+	}
+}
+
+func TestRecordDispatchTimingCountsDeadlineMiss(t *testing.T) {
+	received := time.Unix(1_700_000_000, 0).UTC()
+	before := testutil.ToFloat64(metrics.DeadlineMisses)
+
+	metrics.RecordDispatchTiming(metrics.DispatchTiming{
+		ReceivedAt:       received,
+		CompletedAt:      received.Add(16 * time.Minute),
+		TerminalDeadline: received.Add(15 * time.Minute),
+	})
+
+	if got := testutil.ToFloat64(metrics.DeadlineMisses); got != before+1 {
+		t.Fatalf("deadline misses = %f, want %f", got, before+1)
+	}
+}
+
+func histogramSampleCount(t *testing.T, name string) uint64 {
+	t.Helper()
+	metrics.RegisterMetrics()
+	metricFamilies, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range metricFamilies {
+		if family.GetName() != name {
+			continue
+		}
+		if len(family.GetMetric()) == 0 || family.GetMetric()[0].GetHistogram() == nil {
+			return 0
+		}
+		return family.GetMetric()[0].GetHistogram().GetSampleCount()
+	}
+	return 0
+}
 
 func TestRegisterMetrics(t *testing.T) {
 	// Call RegisterMetrics multiple times to verify idempotency and no panics
