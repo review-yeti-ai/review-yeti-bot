@@ -163,6 +163,15 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # The in-cluster kubernetes Service resolves to KUBERNETES_SERVICE_IP.
+    # Keep it as an exact /32 so controller-runtime can use the cluster API
+    # without opening arbitrary TCP/443 egress.
+    - to:
+        - ipBlock:
+            cidr: "${KUBERNETES_SERVICE_IP}/32"
+      ports:
+        - protocol: TCP
+          port: 443
     # Render KUBERNETES_API_CIDR from the cluster's control-plane endpoint.
     # A concrete CIDR is required; a broad 0.0.0.0/0 rule is forbidden.
     - to:
