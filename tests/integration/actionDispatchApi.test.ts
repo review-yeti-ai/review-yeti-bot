@@ -69,6 +69,7 @@ describe('POST /api/dispatch/action', () => {
       deliveryId: body.deliveryId,
       repositoryId: 123,
       installationId: 456,
+      publicationMode: 'disabled',
       terminalDeadline: expect.any(Number),
     }));
   });
