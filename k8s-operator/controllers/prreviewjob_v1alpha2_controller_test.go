@@ -123,6 +123,12 @@ func TestPRReviewJobV1Alpha2ReconcilerCreatesPVCThenHardenedWorkerJob(t *testing
 	if updated.Status.Phase != reviewv1alpha2.PhaseRunning || updated.Status.JobName != worker.Name {
 		t.Fatalf("status = %#v, want Running with worker name", updated.Status)
 	}
+	if updated.Status.Timing == nil || updated.Status.Timing.ReceivedAt == nil || updated.Status.Timing.JobCreatedAt == nil {
+		t.Fatalf("durable timing receipt = %#v, want receipt and Job creation timestamps", updated.Status.Timing)
+	}
+	if !updated.Status.Timing.ReceivedAt.Equal(&review.Spec.ReceivedAt) || !updated.Status.Timing.JobCreatedAt.Equal(&metav1.Time{Time: now}) {
+		t.Fatalf("durable timing receipt = %#v, want received=%s job-created=%s", updated.Status.Timing, review.Spec.ReceivedAt.Time, now)
+	}
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("idempotent reconcile: %v", err)
 	}
@@ -132,6 +138,68 @@ func TestPRReviewJobV1Alpha2ReconcilerCreatesPVCThenHardenedWorkerJob(t *testing
 	}
 	if len(workers.Items) != 1 {
 		t.Fatalf("worker Job count = %d, want 1", len(workers.Items))
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	observationNow := now.Add(6 * time.Second)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	currentNow := now
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return currentNow }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var worker batchv1.Job
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := metav1.NewTime(now.Add(2 * time.Second))
+	started := metav1.NewTime(now.Add(4 * time.Second))
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      worker.Name + "-pod",
+			Namespace: review.Namespace,
+			Labels: map[string]string{
+				"review-yeti.ai/run-id":    review.Spec.RunID,
+				"review-yeti.ai/component": "receipt-only-worker",
+				"job-name":                 worker.Name,
+			},
+		},
+		Status: corev1.PodStatus{
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue, LastTransitionTime: scheduled}},
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:    "reviewer-worker",
+				ImageID: "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				State:   corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: started}},
+			}},
+		},
+	}
+	if err := kube.Create(context.Background(), pod); err != nil {
+		t.Fatalf("create worker pod: %v", err)
+	}
+	currentNow = observationNow
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("observe worker pod: %v", err)
+	}
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Timing == nil || updated.Status.Timing.PodScheduledAt == nil || updated.Status.Timing.ImageObservedAt == nil || updated.Status.Timing.ProcessStartedAt == nil {
+		t.Fatalf("timing = %#v, want scheduled/image/process stages", updated.Status.Timing)
+	}
+	if !updated.Status.Timing.PodScheduledAt.Equal(&scheduled) || !updated.Status.Timing.ProcessStartedAt.Equal(&started) {
+		t.Fatalf("timing = %#v, want scheduled=%s started=%s", updated.Status.Timing, scheduled.Time, started.Time)
+	}
+	if !updated.Status.Timing.ImageObservedAt.Equal(&started) {
+		t.Fatalf("image observed at = %s, want safe process-start upper bound %s", updated.Status.Timing.ImageObservedAt.Time, started.Time)
 	}
 }
 

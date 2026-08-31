@@ -61,6 +61,7 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -79,7 +80,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	if err := validateProjectionWindow(&review); err != nil {
 		return ctrl.Result{}, r.fail(ctx, &review, "InvalidProjection", err.Error())
 	}
+	if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageReceived, review.Spec.ReceivedAt); err != nil {
+		return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
+	}
 	if !now.Before(review.Spec.TerminalDeadline.Time) {
+		if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageCompleted, metav1.NewTime(now)); err != nil {
+			return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
+		}
 		r.recordDispatchTiming(&review, now)
 		return ctrl.Result{}, r.setPhase(ctx, &review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
 	}
@@ -193,6 +200,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	review.Status.PVCName = pvcName
 	review.Status.LeaseName = workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
 	review.Status.StartTime = timePtr(metav1.NewTime(now))
+	if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageJobCreated, metav1.NewTime(now)); err != nil {
+		return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
+	}
 	if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseRunning, "WorkerCreated", "receipt-only worker Job created"); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -200,6 +210,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context, review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job, now time.Time) (ctrl.Result, error) {
+	timingChanged, err := r.observeWorkerPod(ctx, review, worker, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	if worker.Status.Succeeded == 0 && worker.Status.Failed == 0 {
 		if review.Status.Phase != reviewv1alpha2.PhaseRunning || review.Status.JobName != worker.Name {
 			review.Status.JobName = worker.Name
@@ -209,6 +223,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 				review.Status.StartTime = timePtr(metav1.NewTime(now))
 			}
 			if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseRunning, "WorkerObserved", "receipt-only worker Job is running"); err != nil {
+				return ctrl.Result{}, err
+			}
+		} else if timingChanged {
+			if err := r.Status().Update(ctx, review); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -221,8 +239,11 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	if err := r.markWorkspaceUsed(ctx, review, now); err != nil {
 		return ctrl.Result{}, err
 	}
-	completed := metav1.NewTime(now)
+	completed := terminalWorkerTime(worker, now)
 	review.Status.CompletionTime = &completed
+	if _, err := observeTiming(review, reviewv1alpha2.DispatchStageCompleted, completed); err != nil {
+		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
+	}
 	r.recordDispatchTiming(review, completed.Time)
 	if worker.Status.Succeeded > 0 {
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", "receipt-only worker Job completed")
@@ -230,11 +251,105 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", "receipt-only worker Job failed")
 }
 
+// observeWorkerPod records the stage timestamps that Kubernetes exposes on the
+// worker Pod. ImageObservedAt is intentionally named as an observation: the
+// Kubernetes API exposes an ImageID but not a durable image-pull timestamp.
+// When the process start is already visible, that timestamp is the safe upper
+// bound for image readiness and keeps the lifecycle receipt monotonic.
+func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job, now time.Time) (bool, error) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(review.Namespace), client.MatchingLabels{
+		"review-yeti.ai/run-id":    review.Spec.RunID,
+		"review-yeti.ai/component": job.ReceiptOnlyWorkerComponent,
+	}); err != nil {
+		return false, err
+	}
+	changed := false
+	for index := range pods.Items {
+		pod := &pods.Items[index]
+		if pod.Labels["job-name"] != worker.Name {
+			continue
+		}
+		var scheduledAt *metav1.Time
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionTrue && !condition.LastTransitionTime.Time.IsZero() {
+				value := condition.LastTransitionTime
+				scheduledAt = &value
+				break
+			}
+		}
+		if scheduledAt != nil {
+			if observed, err := observeTiming(review, reviewv1alpha2.DispatchStagePodScheduled, *scheduledAt); err == nil {
+				changed = changed || observed
+			}
+		}
+
+		var processStartedAt *metav1.Time
+		imageReady := false
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name != "reviewer-worker" {
+				continue
+			}
+			imageReady = status.ImageID != ""
+			if status.State.Running != nil && !status.State.Running.StartedAt.Time.IsZero() {
+				value := status.State.Running.StartedAt
+				processStartedAt = &value
+			}
+			break
+		}
+		if imageReady {
+			imageObservedAt := metav1.NewTime(now)
+			if processStartedAt != nil && imageObservedAt.After(processStartedAt.Time) {
+				imageObservedAt = *processStartedAt
+			}
+			if observed, err := observeTiming(review, reviewv1alpha2.DispatchStageImageObserved, imageObservedAt); err == nil {
+				changed = changed || observed
+			}
+		}
+		if processStartedAt != nil {
+			if observed, err := observeTiming(review, reviewv1alpha2.DispatchStageProcessStarted, *processStartedAt); err == nil {
+				changed = changed || observed
+			}
+		}
+	}
+	return changed, nil
+}
+
+func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.DispatchTimingStage, at metav1.Time) (bool, error) {
+	if review.Status.Timing == nil {
+		review.Status.Timing = &reviewv1alpha2.DispatchTimingStatus{}
+	}
+	return review.Status.Timing.Observe(stage, at)
+}
+
+func terminalWorkerTime(worker *batchv1.Job, fallback time.Time) metav1.Time {
+	if worker.Status.CompletionTime != nil && !worker.Status.CompletionTime.Time.IsZero() {
+		return *worker.Status.CompletionTime
+	}
+	for _, condition := range worker.Status.Conditions {
+		if (condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) && condition.Status == corev1.ConditionTrue && !condition.LastTransitionTime.IsZero() {
+			return condition.LastTransitionTime
+		}
+	}
+	return metav1.NewTime(fallback)
+}
+
 func (r *PRReviewJobV1Alpha2Reconciler) recordDispatchTiming(review *reviewv1alpha2.PRReviewJob, completedAt time.Time) {
 	timing := operatorMetrics.DispatchTiming{
 		ReceivedAt:       review.Spec.ReceivedAt.Time,
 		CompletedAt:      completedAt,
 		TerminalDeadline: review.Spec.TerminalDeadline.Time,
+	}
+	if review.Status.Timing != nil {
+		if review.Status.Timing.ReceivedAt != nil {
+			timing.ReceivedAt = review.Status.Timing.ReceivedAt.Time
+		}
+		if review.Status.Timing.JobCreatedAt != nil {
+			timing.JobCreatedAt = review.Status.Timing.JobCreatedAt.Time
+		}
+		if review.Status.Timing.CompletedAt != nil {
+			timing.CompletedAt = review.Status.Timing.CompletedAt.Time
+		}
 	}
 	if review.Status.StartTime != nil {
 		timing.JobCreatedAt = review.Status.StartTime.Time

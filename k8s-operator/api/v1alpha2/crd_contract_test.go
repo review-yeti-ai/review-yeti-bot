@@ -105,3 +105,28 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		t.Fatal("prNumber minimum must be one")
 	}
 }
+
+func TestV1Alpha2CRDExposesBoundedTimingReceipt(t *testing.T) {
+	status := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	timing, ok := status.Properties["timing"]
+	if !ok {
+		t.Fatal("status.timing is missing")
+	}
+	want := []string{"completedAt", "imageObservedAt", "jobCreatedAt", "podScheduledAt", "processStartedAt", "receivedAt"}
+	got := make([]string, 0, len(timing.Properties))
+	for field := range timing.Properties {
+		got = append(got, field)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("timing fields mismatch\n got: %v\nwant: %v", got, want)
+	}
+	if timing.XPreserveUnknownFields != nil && *timing.XPreserveUnknownFields {
+		t.Fatal("timing must not preserve unknown fields")
+	}
+	for field, schema := range timing.Properties {
+		if schema.Type != "string" || schema.Format != "date-time" {
+			t.Fatalf("timing.%s schema = %#v, want date-time string", field, schema)
+		}
+	}
+}
