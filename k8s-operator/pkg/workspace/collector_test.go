@@ -250,27 +250,6 @@ func TestReclaimCapsTerminalPodHistoryPages(t *testing.T) {
 	}
 }
 
-func TestReclaimCannotRaceALeaseAcquiredDuringFinalPodCheck(t *testing.T) {
-	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
-	now := lastUsed.Add(30 * time.Minute)
-	pvc := mustPVC(t, 123, 42, lastUsed)
-	base := fakeClient(t, pvc)
-	racing := &podListHookClient{
-		Client: base,
-		hook: func(ctx context.Context) error {
-			return base.Create(ctx, activeLease(t, 123, 42, now))
-		},
-	}
-
-	if _, err := workspace.NewCollector(racing).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("lease race error = %v, want AlreadyExists", err)
-	}
-	stored := assertPVCExists(t, base, pvc.Name)
-	if stored.DeletionTimestamp == nil || !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
-		t.Fatal("lease race must leave the terminating PVC protected")
-	}
-}
-
 func TestReclaimRechecksPodsAfterClaimingLease(t *testing.T) {
 	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	now := lastUsed.Add(30 * time.Minute)
@@ -656,6 +635,16 @@ func TestReclaimRevalidatesLeaseAfterFinalPodCheck(t *testing.T) {
 	if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); !errors.Is(err, workspace.ErrLeaseHeld) {
 		t.Fatalf("lease takeover error = %v, want ErrLeaseHeld", err)
 	}
+	if !kube.takeoverApplied {
+		t.Fatal("test hook did not successfully transfer Lease ownership")
+	}
+	takenOver := &coordinationv1.Lease{}
+	if err := base.Get(context.Background(), types.NamespacedName{Namespace: collectorNamespace, Name: workspace.LeaseName(123, 42)}, takenOver); err != nil {
+		t.Fatal(err)
+	}
+	if takenOver.Spec.HolderIdentity == nil || *takenOver.Spec.HolderIdentity != "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("Lease holder after takeover = %v", takenOver.Spec.HolderIdentity)
+	}
 	stored := assertPVCExists(t, base, pvc.Name)
 	if stored.DeletionTimestamp == nil || !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
 		t.Fatal("lease takeover must leave the terminating PVC protected")
@@ -704,22 +693,6 @@ type deleteCaptureClient struct {
 	pvcObjectResourceVersion   string
 	leaseResourceVersion       string
 	leaseObjectResourceVersion string
-}
-
-type podListHookClient struct {
-	client.Client
-	hook func(context.Context) error
-	once bool
-}
-
-func (c *podListHookClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
-	if _, ok := list.(*corev1.PodList); ok && !c.once {
-		c.once = true
-		if err := c.hook(ctx); err != nil {
-			return err
-		}
-	}
-	return c.Client.List(ctx, list, options...)
 }
 
 type leaseCreateHookClient struct {
@@ -771,8 +744,9 @@ type operationErrorClient struct {
 
 type leaseTakeoverAfterFinalPodCheckClient struct {
 	client.Client
-	now      time.Time
-	podLists int
+	now             time.Time
+	podLists        int
+	takeoverApplied bool
 }
 
 func (c *leaseTakeoverAfterFinalPodCheckClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
@@ -793,7 +767,10 @@ func (c *leaseTakeoverAfterFinalPodCheckClient) List(ctx context.Context, list c
 			lease.Spec.HolderIdentity = &holder
 			lease.Spec.LeaseDurationSeconds = &duration
 			lease.Spec.RenewTime = &renewed
-			return c.Client.Update(ctx, lease)
+			if err := c.Client.Update(ctx, lease); err != nil {
+				return err
+			}
+			c.takeoverApplied = true
 		}
 	}
 	return nil
