@@ -219,6 +219,28 @@ func TestAcquireLeaseRejectsMalformedHeldLeaseState(t *testing.T) {
 	}
 }
 
+func TestValidateLeaseForUseRequiresCurrentHolderAndUnexpiredLease(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	runID := "run_11111111111111111111111111111111"
+	labels, annotations := workspace.Metadata(123, 42)
+	duration := int32(120)
+	holder := runID
+	renewed := metav1.NewMicroTime(now)
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: workspace.LeaseName(123, 42), Namespace: "ct-review-system", Labels: labels, Annotations: annotations},
+		Spec:       coordinationv1.LeaseSpec{HolderIdentity: &holder, LeaseDurationSeconds: &duration, RenewTime: &renewed},
+	}
+	if err := workspace.ValidateLeaseForUse(lease, "ct-review-system", 123, 42, runID, now); err != nil {
+		t.Fatalf("current unexpired lease rejected: %v", err)
+	}
+	if err := workspace.ValidateLeaseForUse(lease, "ct-review-system", 123, 42, "run_22222222222222222222222222222222", now); !errors.Is(err, workspace.ErrLeaseHeld) {
+		t.Fatalf("wrong holder error = %v, want ErrLeaseHeld", err)
+	}
+	if err := workspace.ValidateLeaseForUse(lease, "ct-review-system", 123, 42, runID, now.Add(120*time.Second)); !errors.Is(err, workspace.ErrLeaseHeld) {
+		t.Fatalf("expired lease error = %v, want ErrLeaseHeld", err)
+	}
+}
+
 func TestAcquireLeaseUsesAcquireTimeWhenRenewTimeIsAbsent(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	labels, annotations := workspace.Metadata(123, 42)
