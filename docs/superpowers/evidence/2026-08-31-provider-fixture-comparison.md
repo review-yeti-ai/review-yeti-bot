@@ -63,11 +63,11 @@ production provider flip.
 
 ## Decision and next bounded gate
 
-Keep production routing unchanged. The next improvement should be a code-level semantic-output
-watchdog: distinguish “an SSE envelope arrived” from “usable content or reasoning arrived,” and
-abort a stream that has produced only an empty role/metadata envelope within a shorter bounded
-window. The watchdog must preserve the existing one-retry/fail-closed contract, emit a distinct
-telemetry timeout kind, and be covered by deterministic stream tests before another live run.
+Keep production routing unchanged. A code-level semantic-output watchdog is now landed: it
+distinguishes “an SSE envelope arrived” from “usable content or reasoning arrived,” and keeps the
+TTFT budget active for empty role/metadata envelopes. Timeout receipts also retain bounded
+partial-output presence so a future RCA can distinguish an empty stream from reasoning that never
+reached a final JSON object.
 
 The next live gate is still manual and receipt-only: three repetitions of the isolated clean
 control plus the two defect fixtures, serially, with the same exact model and no fallback. Do not
@@ -84,3 +84,33 @@ The local sanitized receipts used for this evidence were:
 | `openrouter-quality-lanes-2026-08-31.json` | `3642195d18296c56475f8f29c87348b81ad1d06252350908402a011de0d9b891` |
 | `openrouter-clean-repeat-2026-08-31.json` | `3e1f4e399e55bb843d198dc5638459ebaa16de144e40769ddf8599f09171993f` |
 | `fireworks-quality-lanes-2026-08-31.json` | `a73a9c871cbba9dcdb4ccd4117b05312fe843c3dc1c8f4d19494e4732c619b86` |
+
+## Post-fix watchdog verification
+
+The semantic-output watchdog and partial-timeout telemetry were landed in PRs #350, #352, and
+#353. The parser now keeps TTFT active until non-whitespace content or reasoning arrives, and a
+timeout receipt records whether partial content or reasoning was observed before cancellation.
+
+One manual repeat of the same OpenRouter clean control after the final merge completed on its
+first attempt:
+
+| Field | Value |
+| --- | --- |
+| Model | `deepseek/deepseek-v4-flash-0731` |
+| Terminal | `true` |
+| Latency | 20.998s |
+| TTFT | 73ms |
+| HTTP status | 200 |
+| Output | direct JSON, streamed, 724 completion tokens |
+| Content / reasoning present | `true` / `true` |
+| Findings | `0` |
+| Router metadata | direct, `atl`, attempt 1 |
+
+This is a successful post-fix sample, not a reliability qualification. The next gate remains a
+manual three-repetition run over the two defect fixtures and the clean control, serially, with no
+fallback or publication. The production route stays unchanged until that larger receipt set is
+reviewed.
+
+Final post-fix receipt SHA-256:
+
+`0fd0f9ef503f50521272eef417061ed9f68bdce12e67b2acbe06a0e396056dc3`
