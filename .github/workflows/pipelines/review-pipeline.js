@@ -533,12 +533,19 @@ function buildTransportDispatchPlans(laneCount, transports, mode = 'ordered', se
   return Array.from({ length: laneCount }, (_unused, laneIndex) => {
     const primaryIndex = (offset + laneIndex) % weightedSlots.length;
     const ordered = [];
+    const seen = new Set();
     for (let slotOffset = 0; slotOffset < weightedSlots.length; slotOffset += 1) {
       const transport = weightedSlots[(primaryIndex + slotOffset) % weightedSlots.length];
-      if (!ordered.includes(transport)) ordered.push(transport);
+      if (!seen.has(transport)) {
+        seen.add(transport);
+        ordered.push(transport);
+      }
     }
     for (const transport of candidates) {
-      if (!ordered.includes(transport)) ordered.push(transport);
+      if (!seen.has(transport)) {
+        seen.add(transport);
+        ordered.push(transport);
+      }
     }
     return ordered;
   });
