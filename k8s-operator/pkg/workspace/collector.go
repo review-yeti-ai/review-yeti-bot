@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -33,6 +34,7 @@ import (
 const (
 	IdleWorkspaceTTL               = 30 * time.Minute
 	ReclamationLeaseDuration int32 = 120
+	PodListPageSize          int64 = 100
 )
 
 var ErrWorkspaceClock = errors.New("workspace timestamp is in the future")
@@ -77,7 +79,10 @@ func (c *Collector) Touch(
 	if err := ValidatePVC(pvc, namespace, repositoryID, prNumber); err != nil {
 		return err
 	}
-	lastUsed, _ := time.Parse(time.RFC3339Nano, pvc.Annotations[LastUsedAtAnnotation])
+	lastUsed, err := time.Parse(time.RFC3339Nano, pvc.Annotations[LastUsedAtAnnotation])
+	if err != nil {
+		return ErrWorkspaceConfiguration
+	}
 	if now.Before(lastUsed) {
 		return ErrWorkspaceClock
 	}
@@ -88,8 +93,11 @@ func (c *Collector) Touch(
 }
 
 // Reclaim removes an exact PR workspace only after its 30-minute idle window
-// has elapsed and both Lease and Pod evidence prove it is unused. The final
-// delete is guarded by the resourceVersion returned by the finalizer update.
+// has elapsed and both Lease and Pod evidence prove it is unused. Every
+// workspace Pod creator must acquire the same Lease through LeaseManager before
+// creating or using a Pod. Reclamation holds a unique Lease, issues a
+// resourceVersion-guarded delete while ProtectionFinalizer still protects the
+// PVC, rechecks Pods, and only then removes that finalizer.
 func (c *Collector) Reclaim(
 	ctx context.Context,
 	pvc *corev1.PersistentVolumeClaim,
@@ -104,7 +112,10 @@ func (c *Collector) Reclaim(
 	if err := ValidatePVC(pvc, namespace, repositoryID, prNumber); err != nil {
 		return ReclaimResult{}, err
 	}
-	lastUsed, _ := time.Parse(time.RFC3339Nano, pvc.Annotations[LastUsedAtAnnotation])
+	lastUsed, err := time.Parse(time.RFC3339Nano, pvc.Annotations[LastUsedAtAnnotation])
+	if err != nil {
+		return ReclaimResult{}, ErrWorkspaceConfiguration
+	}
 	if now.Before(lastUsed) {
 		return ReclaimResult{}, ErrWorkspaceClock
 	}
@@ -126,6 +137,20 @@ func (c *Collector) Reclaim(
 	if !claimed {
 		return ReclaimResult{Reason: RetainedActiveLease}, nil
 	}
+	if pvc.ResourceVersion == "" {
+		return ReclaimResult{}, ErrWorkspaceConfiguration
+	}
+	observedResourceVersion := pvc.ResourceVersion
+	if err := c.client.Delete(ctx, pvc.DeepCopy(), client.Preconditions{ResourceVersion: &observedResourceVersion}); err != nil {
+		return ReclaimResult{}, err
+	}
+	terminating := &corev1.PersistentVolumeClaim{}
+	if err := c.client.Get(ctx, client.ObjectKeyFromObject(pvc), terminating); err != nil {
+		return ReclaimResult{}, err
+	}
+	if err := validateProtectedTerminatingPVC(terminating, namespace, repositoryID, prNumber); err != nil {
+		return ReclaimResult{}, err
+	}
 	activePod, err = c.hasActivePod(ctx, namespace, repositoryID, prNumber)
 	if err != nil {
 		return ReclaimResult{}, err
@@ -134,17 +159,13 @@ func (c *Collector) Reclaim(
 		return ReclaimResult{Reason: RetainedActivePod}, nil
 	}
 
-	updated := pvc.DeepCopy()
+	updated := terminating.DeepCopy()
 	updated.Finalizers = removeString(updated.Finalizers, ProtectionFinalizer)
 	if err := c.client.Update(ctx, updated); err != nil {
 		return ReclaimResult{}, err
 	}
 	if updated.ResourceVersion == "" {
 		return ReclaimResult{}, ErrWorkspaceConfiguration
-	}
-	resourceVersion := updated.ResourceVersion
-	if err := c.client.Delete(ctx, updated, client.Preconditions{ResourceVersion: &resourceVersion}); err != nil {
-		return ReclaimResult{}, err
 	}
 	leaseResourceVersion := reclamationLease.ResourceVersion
 	if leaseResourceVersion == "" {
@@ -163,7 +184,7 @@ func (c *Collector) claimReclamationLease(
 	prNumber int32,
 	now time.Time,
 ) (*coordinationv1.Lease, bool, error) {
-	holderIdentity := "reclaimer_" + Key(repositoryID, prNumber)[:32]
+	holderIdentity := "reclaimer_" + string(uuid.NewUUID())
 	leaseName := LeaseName(repositoryID, prNumber)
 	lease := &coordinationv1.Lease{}
 	err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: leaseName}, lease)
@@ -196,7 +217,7 @@ func (c *Collector) claimReclamationLease(
 		return nil, false, err
 	}
 	previousHolder := pointerString(lease.Spec.HolderIdentity)
-	if previousHolder != "" && previousHolder != holderIdentity {
+	if previousHolder != "" {
 		expiresAt, expiresErr := expires(lease)
 		if expiresErr != nil {
 			return nil, false, expiresErr
@@ -223,6 +244,20 @@ func (c *Collector) claimReclamationLease(
 	return lease.DeepCopy(), true, nil
 }
 
+func validateProtectedTerminatingPVC(
+	pvc *corev1.PersistentVolumeClaim,
+	namespace string,
+	repositoryID int64,
+	prNumber int32,
+) error {
+	if pvc == nil || pvc.DeletionTimestamp == nil {
+		return ErrWorkspaceConfiguration
+	}
+	validationCopy := pvc.DeepCopy()
+	validationCopy.DeletionTimestamp = nil
+	return ValidatePVC(validationCopy, namespace, repositoryID, prNumber)
+}
+
 func (c *Collector) hasActivePod(
 	ctx context.Context,
 	namespace string,
@@ -230,20 +265,37 @@ func (c *Collector) hasActivePod(
 	prNumber int32,
 ) (bool, error) {
 	key := Key(repositoryID, prNumber)
-	pods := &corev1.PodList{}
-	if err := c.client.List(ctx, pods, client.InNamespace(namespace), client.MatchingLabels{WorkspaceHashLabel: key[:63]}); err != nil {
-		return false, err
-	}
-	for index := range pods.Items {
-		pod := &pods.Items[index]
-		if err := validatePodIdentity(pod.ObjectMeta, namespace, repositoryID, prNumber); err != nil {
+	continueToken := ""
+	for {
+		pods := &corev1.PodList{}
+		options := []client.ListOption{
+			client.InNamespace(namespace),
+			client.MatchingLabels{WorkspaceHashLabel: key[:63]},
+			client.Limit(PodListPageSize),
+		}
+		if continueToken != "" {
+			options = append(options, client.Continue(continueToken))
+		}
+		if err := c.client.List(ctx, pods, options...); err != nil {
 			return false, err
 		}
-		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
-			return true, nil
+		for index := range pods.Items {
+			pod := &pods.Items[index]
+			if err := validatePodIdentity(pod.ObjectMeta, namespace, repositoryID, prNumber); err != nil {
+				return false, err
+			}
+			if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
+				return true, nil
+			}
 		}
+		if pods.Continue == "" {
+			return false, nil
+		}
+		if pods.Continue == continueToken {
+			return false, ErrWorkspaceConfiguration
+		}
+		continueToken = pods.Continue
 	}
-	return false, nil
 }
 
 func validatePodIdentity(metadata metav1.ObjectMeta, namespace string, repositoryID int64, prNumber int32) error {
