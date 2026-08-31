@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.7
+ARG NODE_BASE_IMAGE
+
+FROM ${NODE_BASE_IMAGE} AS build
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
+COPY tsconfig*.json ./
+COPY src ./src
+COPY scripts ./scripts
+RUN npm run build:backend \
+ && node scripts/stage-worker-runtime.mjs /out
+
+FROM ${NODE_BASE_IMAGE} AS worker
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build --chown=node:node /out/ /app/
+USER node
+ENV NODE_ENV=production
+ENTRYPOINT ["node", "/app/dist/cli/runLiveReview.js"]
