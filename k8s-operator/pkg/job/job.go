@@ -45,8 +45,12 @@ const (
 	ReceiptOnlyWorkerComponent = "receipt-only-worker"
 	// Jobs are disposable execution records. The reusable PR workspace has a
 	// separate, exact 1,800-second idle reclamation policy.
-	JobTTLSeconds            = int32(300)
-	MaxActiveDeadlineSeconds = int64(900)
+	JobTTLSeconds = int32(300)
+	// Keep a one-minute publication/failure-conclusion reserve inside the
+	// original 15-minute run deadline. The worker itself may never consume the
+	// full admission window.
+	MaxActiveDeadlineSeconds = int64(840)
+	DeadlineReserveSeconds   = int64(60)
 	MinRemainingSeconds      = int64(120)
 )
 
@@ -206,9 +210,13 @@ func remainingDeadlineSeconds(deadline, now time.Time) (int64, error) {
 	// Floor rather than ceil: an integer Kubernetes deadline must not extend
 	// past the authenticated terminal deadline when `now` includes fractions
 	// of a second.
-	seconds := int64(math.Floor(remaining.Seconds()))
+	seconds := int64(math.Floor(remaining.Seconds())) - DeadlineReserveSeconds
 	if seconds <= 0 || seconds > MaxActiveDeadlineSeconds {
-		return 0, ErrJobDeadline
+		if seconds > MaxActiveDeadlineSeconds {
+			seconds = MaxActiveDeadlineSeconds
+		} else {
+			return 0, ErrJobDeadline
+		}
 	}
 	return seconds, nil
 }

@@ -101,8 +101,8 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if result.Name != review.Name+"-worker" || result.Namespace != jobNamespace {
 		t.Fatalf("job identity = %s/%s", result.Namespace, result.Name)
 	}
-	if result.Spec.ActiveDeadlineSeconds == nil || *result.Spec.ActiveDeadlineSeconds != 900 {
-		t.Fatalf("active deadline = %v, want 900", result.Spec.ActiveDeadlineSeconds)
+	if result.Spec.ActiveDeadlineSeconds == nil || *result.Spec.ActiveDeadlineSeconds != 840 {
+		t.Fatalf("active deadline = %v, want 840", result.Spec.ActiveDeadlineSeconds)
 	}
 	if result.Spec.BackoffLimit == nil || *result.Spec.BackoffLimit != 0 {
 		t.Fatalf("backoff limit = %v, want 0", result.Spec.BackoffLimit)
@@ -182,9 +182,9 @@ func TestBuildWorkerJobNeverExtendsTerminalDeadline(t *testing.T) {
 		now      time.Time
 		wantSecs int64
 	}{
-		{name: "mid-run", now: received.Add(8 * time.Minute), wantSecs: 420},
-		{name: "fractional floor", now: received.Add(12*time.Minute + 30*time.Second + 500*time.Millisecond), wantSecs: 149},
-		{name: "last permitted window", now: received.Add(13 * time.Minute), wantSecs: 120},
+		{name: "mid-run", now: received.Add(8 * time.Minute), wantSecs: 360},
+		{name: "fractional floor", now: received.Add(12*time.Minute + 30*time.Second + 500*time.Millisecond), wantSecs: 89},
+		{name: "last permitted window", now: received.Add(13 * time.Minute), wantSecs: 60},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			review := reviewFixture(received)
