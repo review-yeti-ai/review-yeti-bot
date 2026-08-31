@@ -47,6 +47,41 @@ type LeaseAcquireResult struct {
 	HeldUntil      time.Time
 }
 
+// ValidateLeaseForUse proves that a worker is still holding the exact
+// repository/PR lease immediately before its Job is created.  Callers must
+// fetch the Lease close to creation time; an old successful acquisition is not
+// sufficient evidence because the lease may have expired or been reclaimed.
+func ValidateLeaseForUse(
+	lease *coordinationv1.Lease,
+	namespace string,
+	repositoryID int64,
+	prNumber int32,
+	runID string,
+	now time.Time,
+) error {
+	if lease == nil || now.IsZero() || len(validation.IsDNS1123Label(namespace)) != 0 ||
+		Key(repositoryID, prNumber) == "" || !runIDPattern.MatchString(runID) {
+		return ErrLeaseState
+	}
+	if lease.DeletionTimestamp != nil {
+		return ErrWorkspaceTerminating
+	}
+	if err := ValidateMetadata(lease.ObjectMeta, namespace, LeaseName(repositoryID, prNumber), repositoryID, prNumber); err != nil {
+		return err
+	}
+	if pointerString(lease.Spec.HolderIdentity) != runID {
+		return ErrLeaseHeld
+	}
+	expiresAt, err := expires(lease)
+	if err != nil {
+		return err
+	}
+	if !now.Before(expiresAt) {
+		return ErrLeaseHeld
+	}
+	return nil
+}
+
 type TakeoverEvidence struct {
 	PreviousRunID   string
 	AllPodsTerminal bool
