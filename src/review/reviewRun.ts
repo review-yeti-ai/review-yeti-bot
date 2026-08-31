@@ -3,6 +3,7 @@ import type { PiStage } from './piWorkflow';
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 export type ReviewRunStatus = 'queued' | 'running' | 'publishing' | 'succeeded' | 'failed' | 'cancelled' | 'superseded';
+export type PublicationMode = 'disabled' | 'app-gate';
 
 export interface ReviewRunIdentity {
   owner: string;
@@ -26,6 +27,7 @@ export interface ReviewRun {
   deliveryId?: string;
   receivedAt?: number;
   terminalDeadline?: number;
+  publicationMode?: PublicationMode;
   status: ReviewRunStatus;
   stage: PiStage;
   attempt: number;
@@ -47,6 +49,7 @@ export interface ReviewAdmissionInput {
   receivedAt: number;
   terminalDeadline: number;
   payloadDigest: string;
+  publicationMode: PublicationMode;
   identity: ReviewRunIdentity;
   effectivePolicyDigest?: string;
   indexEpoch?: number;
@@ -57,6 +60,7 @@ export interface ReviewAdmission {
   deliveryId: string;
   repositoryId: number;
   installationId: number;
+  publicationMode: PublicationMode;
   receivedAt: number;
   terminalDeadline: number;
   payloadDigest: string;
@@ -68,6 +72,7 @@ export interface ReviewDispatchClaim {
   deliveryId: string;
   repositoryId: number;
   installationId: number;
+  publicationMode: PublicationMode;
   leaseOwner: string;
   leaseExpiresAt: number;
 }
