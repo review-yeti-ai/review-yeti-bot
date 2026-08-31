@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 
@@ -12,6 +14,39 @@ function documents(): Array<Record<string, any>> {
     .replaceAll('${CT_REVIEW_JOB_DISPATCHER_IMAGE}', dispatcherImage)
     .replaceAll('${CT_REVIEW_WORKER_IMAGE}', workerImage);
   return yaml.loadAll(source).filter(Boolean) as Array<Record<string, any>>;
+}
+
+function runDeployScript(overrides: Record<string, string> = {}) {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-job-dispatcher-test-'));
+  const binaryDirectory = path.join(temporaryDirectory, 'bin');
+  const kubectlLog = path.join(temporaryDirectory, 'kubectl.log');
+  fs.mkdirSync(binaryDirectory);
+  fs.writeFileSync(path.join(binaryDirectory, 'kubectl'), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_KUBECTL_LOG"
+case "$*" in
+  *"get secret ct-review-job-dispatcher-runtime"*) printf 'DATABASE_URL\\nDATABASE_CA_CERT\\n' ;;
+  *"get deployment ct-review-job-dispatcher"*) printf '0' ;;
+esac
+`);
+  fs.writeFileSync(path.join(binaryDirectory, 'envsubst'), '#!/usr/bin/env bash\ncat\n');
+  fs.chmodSync(path.join(binaryDirectory, 'kubectl'), 0o755);
+  fs.chmodSync(path.join(binaryDirectory, 'envsubst'), 0o755);
+  const result = spawnSync('bash', ['scripts/deploy-review-job-dispatcher.sh'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${binaryDirectory}:${process.env.PATH || ''}`,
+      FAKE_KUBECTL_LOG: kubectlLog,
+      CT_REVIEW_JOB_DISPATCHER_IMAGE: dispatcherImage,
+      CT_REVIEW_WORKER_IMAGE: workerImage,
+      ...overrides,
+    },
+  });
+  const calls = fs.existsSync(kubectlLog) ? fs.readFileSync(kubectlLog, 'utf8') : '';
+  fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  return { ...result, calls };
 }
 
 describe('zero-replica review job dispatcher deployment', () => {
@@ -100,6 +135,28 @@ describe('zero-replica review job dispatcher deployment', () => {
     for (const forbidden of ['rollout restart', 'kubectl scale', 'workspace-pvc', 'worker-rbac', 'bot-deployment']) {
       expect(script).not.toContain(forbidden);
     }
+  });
+
+  it('executes the guarded zero-replica render for trusted immutable images', () => {
+    const result = runDeployScript();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls).toContain('apply --server-side -f k8s/namespace.yaml');
+    expect(result.calls).toContain('apply --server-side -f');
+    expect(result.calls).toContain("get deployment ct-review-job-dispatcher -o jsonpath={.spec.replicas}");
+    expect(result.stdout).toContain('zero replicas');
+  });
+
+  it.each([
+    ['mutable dispatcher tag', { CT_REVIEW_JOB_DISPATCHER_IMAGE: 'registry.digitalocean.com/calltelemetry/ct-review-bot:latest' }],
+    ['untrusted dispatcher repository', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `attacker.example/ct-review-bot@sha256:${'a'.repeat(64)}` }],
+    ['uppercase dispatcher digest', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `registry.digitalocean.com/calltelemetry/ct-review-bot@sha256:${'A'.repeat(64)}` }],
+    ['short dispatcher digest', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `registry.digitalocean.com/calltelemetry/ct-review-bot@sha256:${'a'.repeat(63)}` }],
+    ['mutable worker tag', { CT_REVIEW_WORKER_IMAGE: 'registry.digitalocean.com/calltelemetry/review-yeti-worker:latest' }],
+    ['untrusted worker repository', { CT_REVIEW_WORKER_IMAGE: `attacker.example/review-yeti-worker@sha256:${'b'.repeat(64)}` }],
+  ])('refuses %s before any Kubernetes apply', (_name, overrides) => {
+    const result = runDeployScript(overrides);
+    expect(result.status).toBe(2);
+    expect(result.calls).not.toContain('apply');
   });
 
   it('uses only in-cluster Kubernetes identity and excludes GitHub/provider clients', () => {
