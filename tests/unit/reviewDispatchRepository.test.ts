@@ -157,6 +157,15 @@ describe('PostgresReviewDispatchRepository', () => {
       repository_id: 123,
       installation_id: 456,
       publication_mode: 'disabled',
+      owner: identity.owner,
+      repo: identity.repo,
+      pr_number: identity.prNumber,
+      head_sha: identity.headSha,
+      base_sha: identity.baseSha,
+      received_at: new Date(1_000),
+      terminal_deadline: new Date(901_000),
+      effective_policy_digest: identity.configDigest,
+      effective_config_digest: identity.configDigest,
       lease_owner: 'dispatcher-a',
       lease_expires_at: new Date(31_000),
     }] }));
@@ -164,8 +173,38 @@ describe('PostgresReviewDispatchRepository', () => {
     const claim = await repository.claimNext('dispatcher-a', 1_000, 30_000);
     expect(claim?.runId).toBe(row.run_id);
     expect(claim?.publicationMode).toBe('disabled');
+    expect(claim).toEqual(expect.objectContaining({
+      repo: 'calltelemetry/cisco-cdr',
+      prNumber: 42,
+      headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      receivedAt: 1_000,
+      terminalDeadline: 901_000,
+      policyDigest: identity.configDigest,
+      configDigest: identity.configDigest,
+    }));
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE OF outbox SKIP LOCKED/u);
     expect(await repository.heartbeat(row.run_id, 'dispatcher-a', 2_000, 30_000)).toBe(true);
+  });
+
+  it('terminalizes both the outbox and run only for the owning dispatcher lease', async () => {
+    const query = vi.fn(async () => ({ rows: [{ run_id: row.run_id }] }));
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
+    await expect(repository.markTerminal(
+      row.run_id,
+      'dispatcher-a',
+      1_000,
+      'review job projection rejected',
+    )).resolves.toBe(true);
+    expect(query.mock.calls[0][0]).toMatch(/WITH terminalized AS/u);
+    expect(query.mock.calls[0][0]).toMatch(/UPDATE review_runs/u);
+    expect(query.mock.calls[0][0]).toMatch(/lease_owner = \$2 AND status = 'claimed'/u);
+    expect(query.mock.calls[0][1]).toEqual([
+      row.run_id,
+      'dispatcher-a',
+      1_000,
+      'review job projection rejected',
+    ]);
   });
 
   it('defines migration-safe delivery and outbox tables', () => {
