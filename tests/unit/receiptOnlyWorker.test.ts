@@ -146,6 +146,23 @@ describe('receipt-only worker contract', () => {
     expect(result.loadedModuleIds).toContain('../gateway/openRouterClient');
   });
 
+  it('fails closed when the runtime manifest is missing, malformed, or wrong-versioned', async () => {
+    fsMocks.readFile.mockRejectedValue(new Error('ENOENT'));
+    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+      .rejects.toThrow('worker runtime manifest is missing');
+
+    fsMocks.readFile.mockResolvedValueOnce(Buffer.from('{not-json'));
+    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+      .rejects.toThrow('worker runtime manifest is invalid');
+
+    fsMocks.readFile.mockResolvedValueOnce(Buffer.from(JSON.stringify({
+      version: 'ReviewYetiWorkerRuntime.v0',
+      entrypoint: 'dist/cli/runLiveReview.js',
+    })));
+    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+      .rejects.toThrow('worker runtime manifest is invalid');
+  });
+
   it.each([
     ['receipt-only mode is unset', { REVIEW_RECEIPT_ONLY: undefined }],
     ['receipt-only mode is missing', { REVIEW_RECEIPT_ONLY: 'false' }],
