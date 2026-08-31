@@ -30,6 +30,36 @@ type resourceVersionRecordingClient struct {
 	updatedResourceVersion string
 }
 
+var errKubernetesOperation = errors.New("synthetic Kubernetes operation failure")
+
+type operationFailingClient struct {
+	client.Client
+	failGet    bool
+	failCreate bool
+	failUpdate bool
+}
+
+func (c *operationFailingClient) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if c.failGet {
+		return errKubernetesOperation
+	}
+	return c.Client.Get(ctx, key, object, options...)
+}
+
+func (c *operationFailingClient) Create(ctx context.Context, object client.Object, options ...client.CreateOption) error {
+	if c.failCreate {
+		return errKubernetesOperation
+	}
+	return c.Client.Create(ctx, object, options...)
+}
+
+func (c *operationFailingClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
+	if c.failUpdate {
+		return errKubernetesOperation
+	}
+	return c.Client.Update(ctx, object, options...)
+}
+
 func (c *resourceVersionRecordingClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
 	c.updatedResourceVersion = object.GetResourceVersion()
 	return c.Client.Update(ctx, object, options...)
@@ -150,6 +180,116 @@ func TestAcquireLeaseFailsClosedForLateOrInvalidIdentity(t *testing.T) {
 		if _, err := manager.Acquire(context.Background(), "ct-review-system", 123, 42, test.runID, test.deadline, now); err == nil {
 			t.Fatalf("invalid acquire must fail: %#v", test)
 		}
+	}
+}
+
+func TestAcquireLeaseFailsClosedForUnboundedDuration(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	manager := leaseClient(t)
+	if _, err := manager.Acquire(
+		context.Background(), "ct-review-system", 123, 42,
+		"run_11111111111111111111111111111111", now.Add(70*365*24*time.Hour), now,
+	); !errors.Is(err, workspace.ErrLeaseState) {
+		t.Fatalf("unbounded deadline error = %v, want ErrLeaseState", err)
+	}
+}
+
+func TestAcquireLeaseRejectsMalformedHeldLeaseState(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	labels, annotations := workspace.Metadata(123, 42)
+	holder := "run_11111111111111111111111111111111"
+	duration := int32(60)
+	for name, spec := range map[string]coordinationv1.LeaseSpec{
+		"missing duration":    {HolderIdentity: &holder},
+		"missing lease times": {HolderIdentity: &holder, LeaseDurationSeconds: &duration},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lease := &coordinationv1.Lease{
+				ObjectMeta: metav1.ObjectMeta{Name: workspace.LeaseName(123, 42), Namespace: "ct-review-system", Labels: labels, Annotations: annotations},
+				Spec:       spec,
+			}
+			manager := leaseClient(t, lease)
+			if _, err := manager.Acquire(
+				context.Background(), "ct-review-system", 123, 42,
+				holder, now.Add(15*time.Minute), now,
+			); !errors.Is(err, workspace.ErrLeaseState) {
+				t.Fatalf("malformed held lease error = %v, want ErrLeaseState", err)
+			}
+		})
+	}
+}
+
+func TestAcquireLeaseUsesAcquireTimeWhenRenewTimeIsAbsent(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	labels, annotations := workspace.Metadata(123, 42)
+	holder := "run_11111111111111111111111111111111"
+	acquiredAt := metav1.NewMicroTime(now)
+	duration := int32(60)
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: workspace.LeaseName(123, 42), Namespace: "ct-review-system", Labels: labels, Annotations: annotations},
+		Spec:       coordinationv1.LeaseSpec{HolderIdentity: &holder, AcquireTime: &acquiredAt, LeaseDurationSeconds: &duration},
+	}
+	manager := leaseClient(t, lease)
+	result, err := manager.Acquire(
+		context.Background(), "ct-review-system", 123, 42,
+		"run_22222222222222222222222222222222", now.Add(15*time.Minute), now.Add(30*time.Second),
+	)
+	if !errors.Is(err, workspace.ErrLeaseHeld) || !result.HeldUntil.Equal(now.Add(time.Minute)) {
+		t.Fatalf("AcquireTime fallback = %#v, %v", result, err)
+	}
+}
+
+func TestAcquireLeaseClaimsAnExistingUnheldLease(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	labels, annotations := workspace.Metadata(123, 42)
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{
+		Name: workspace.LeaseName(123, 42), Namespace: "ct-review-system", Labels: labels, Annotations: annotations,
+	}}
+	manager := leaseClient(t, lease)
+	result, err := manager.Acquire(
+		context.Background(), "ct-review-system", 123, 42,
+		"run_11111111111111111111111111111111", now.Add(15*time.Minute), now,
+	)
+	if err != nil || !result.Acquired {
+		t.Fatalf("unheld lease acquisition = %#v, %v", result, err)
+	}
+}
+
+func TestAcquireLeasePropagatesKubernetesClientFailures(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	scheme := runtime.NewScheme()
+	if err := coordinationv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	labels, annotations := workspace.Metadata(123, 42)
+	holder := "run_11111111111111111111111111111111"
+	renewed := metav1.NewMicroTime(now)
+	duration := int32(960)
+	existing := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: workspace.LeaseName(123, 42), Namespace: "ct-review-system", Labels: labels, Annotations: annotations},
+		Spec:       coordinationv1.LeaseSpec{HolderIdentity: &holder, RenewTime: &renewed, LeaseDurationSeconds: &duration},
+	}
+	tests := map[string]*operationFailingClient{
+		"get": {
+			Client: fake.NewClientBuilder().WithScheme(scheme).Build(), failGet: true,
+		},
+		"create": {
+			Client: fake.NewClientBuilder().WithScheme(scheme).Build(), failCreate: true,
+		},
+		"update": {
+			Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing.DeepCopy()).Build(), failUpdate: true,
+		},
+	}
+	for name, failingClient := range tests {
+		t.Run(name, func(t *testing.T) {
+			manager := workspace.NewLeaseManager(failingClient)
+			if _, err := manager.Acquire(
+				context.Background(), "ct-review-system", 123, 42,
+				holder, now.Add(15*time.Minute), now,
+			); !errors.Is(err, errKubernetesOperation) {
+				t.Fatalf("%s failure = %v, want synthetic Kubernetes error", name, err)
+			}
+		})
 	}
 }
 

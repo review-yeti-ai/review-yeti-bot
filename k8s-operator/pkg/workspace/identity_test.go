@@ -70,6 +70,8 @@ func TestValidateMetadataRejectsCrossPRAndTamperedIdentity(t *testing.T) {
 		"hash label": func(candidate *metav1.ObjectMeta) {
 			candidate.Labels[workspace.WorkspaceHashLabel] = workspace.Key(123, 43)[:63]
 		},
+		"namespace":     func(candidate *metav1.ObjectMeta) { candidate.Namespace = "other-system" },
+		"resource name": func(candidate *metav1.ObjectMeta) { candidate.Name = workspace.PVCName(123, 43) },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -79,5 +81,24 @@ func TestValidateMetadataRejectsCrossPRAndTamperedIdentity(t *testing.T) {
 				t.Fatalf("tampered metadata error = %v, want ErrWorkspaceIdentity", err)
 			}
 		})
+	}
+}
+
+func TestInvalidIdentityProducesNoResourceMetadata(t *testing.T) {
+	for _, identity := range []struct {
+		repositoryID int64
+		prNumber     int32
+	}{
+		{repositoryID: 0, prNumber: 42},
+		{repositoryID: 123, prNumber: 0},
+	} {
+		if workspace.PVCName(identity.repositoryID, identity.prNumber) != "" ||
+			workspace.LeaseName(identity.repositoryID, identity.prNumber) != "" {
+			t.Fatalf("invalid identity produced a Kubernetes resource name: %#v", identity)
+		}
+		labels, annotations := workspace.Metadata(identity.repositoryID, identity.prNumber)
+		if labels != nil || annotations != nil {
+			t.Fatalf("invalid identity produced metadata: labels=%v annotations=%v", labels, annotations)
+		}
 	}
 }

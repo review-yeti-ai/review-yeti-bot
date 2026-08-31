@@ -56,6 +56,38 @@ func TestTerminatingPVCIsNeverAcquired(t *testing.T) {
 	}
 }
 
+func TestBuildPVCRejectsInvalidInputs(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		namespace    string
+		repositoryID int64
+		prNumber     int32
+		now          time.Time
+	}{
+		{name: "invalid namespace", namespace: "INVALID_NAMESPACE", repositoryID: 123, prNumber: 42, now: now},
+		{name: "zero repository", namespace: "ct-review-system", repositoryID: 0, prNumber: 42, now: now},
+		{name: "negative repository", namespace: "ct-review-system", repositoryID: -1, prNumber: 42, now: now},
+		{name: "zero pull request", namespace: "ct-review-system", repositoryID: 123, prNumber: 0, now: now},
+		{name: "negative pull request", namespace: "ct-review-system", repositoryID: 123, prNumber: -1, now: now},
+		{name: "zero timestamp", namespace: "ct-review-system", repositoryID: 123, prNumber: 42, now: time.Time{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pvc, err := workspace.BuildPVC(test.namespace, test.repositoryID, test.prNumber, test.now)
+			if pvc != nil || !errors.Is(err, workspace.ErrWorkspaceConfiguration) {
+				t.Fatalf("BuildPVC = %#v, %v, want nil ErrWorkspaceConfiguration", pvc, err)
+			}
+		})
+	}
+}
+
+func TestValidatePVCRejectsNil(t *testing.T) {
+	if err := workspace.ValidatePVC(nil, "ct-review-system", 123, 42); !errors.Is(err, workspace.ErrWorkspaceConfiguration) {
+		t.Fatalf("nil PVC error = %v, want ErrWorkspaceConfiguration", err)
+	}
+}
+
 func TestValidatePVCRejectsIdentityStorageAndOwnershipExpansion(t *testing.T) {
 	base, err := workspace.BuildPVC("ct-review-system", 123, 42, time.Now())
 	if err != nil {
