@@ -60,7 +60,11 @@ describe('worker container contract', () => {
     expect(dockerfile).toContain('ENTRYPOINT ["node", "/app/dist/cli/runLiveReview.js"]');
     expect(dockerfile).toContain('USER node');
     expect(dockerfile).toContain('ENV NODE_ENV=production');
-    expect(dockerfile).toContain('apt-get install -y --no-install-recommends ca-certificates git ripgrep');
+    expect(dockerfile).toContain('snapshot.debian.org/archive/debian/20260824T000000Z');
+    expect(dockerfile).toContain('snapshot.debian.org/archive/debian-security/20260824T000000Z');
+    expect(dockerfile).toContain('ca-certificates=20250419~deb12u1');
+    expect(dockerfile).toContain('git=1:2.39.5-0+deb12u3');
+    expect(dockerfile).toContain('ripgrep=13.0.0-4+b2');
     expect(dockerfile).toContain('rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx');
     expect(dockerfile).not.toMatch(/HEALTHCHECK/u);
     expect(dockerfile).not.toMatch(/CMD \["node", "dist\/index\.js"\]/u);

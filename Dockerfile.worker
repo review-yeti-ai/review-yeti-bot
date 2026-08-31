@@ -12,10 +12,18 @@ RUN npm run build:backend \
  && node scripts/stage-worker-runtime.mjs /out
 
 FROM ${NODE_BASE_IMAGE} AS worker
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
+RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot \
+ && sed -i \
+      -e 's|^URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260824T000000Z|' \
+      -e 's|^URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260824T000000Z|' \
+      /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates=20250419~deb12u1 \
+      git=1:2.39.5-0+deb12u3 \
+      ripgrep=13.0.0-4+b2 \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99snapshot
 WORKDIR /app
 COPY --from=build --chown=node:node /out/ /app/
 USER node
