@@ -26,6 +26,8 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
  && rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99snapshot
 WORKDIR /app
 COPY --from=build --chown=node:node /out/ /app/
-USER node
+# Use a numeric identity so Kubernetes can verify runAsNonRoot before the
+# container starts. The Node base image's `node` account is uid/gid 1000.
+USER 1000:1000
 ENV NODE_ENV=production
 ENTRYPOINT ["node", "/app/dist/cli/runLiveReview.js"]

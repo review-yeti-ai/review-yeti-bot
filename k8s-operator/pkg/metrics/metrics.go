@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -43,6 +44,29 @@ var (
 		Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 	})
 
+	// WebhookToJobDurationSeconds tracks the time from durable review receipt
+	// to creation of the receipt-only worker Job.
+	WebhookToJobDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ct_operator_webhook_to_job_duration_seconds",
+		Help:    "Duration from review receipt to worker Job creation in seconds.",
+		Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600, 900},
+	})
+
+	// WebhookToCompletionDurationSeconds tracks the time from durable review
+	// receipt to a terminal worker outcome.
+	WebhookToCompletionDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ct_operator_webhook_to_completion_duration_seconds",
+		Help:    "Duration from review receipt to terminal outcome in seconds.",
+		Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600, 900, 1800},
+	})
+
+	// DeadlineMisses counts terminal outcomes recorded after the immutable
+	// fifteen-minute review deadline.
+	DeadlineMisses = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ct_operator_deadline_misses_total",
+		Help: "Number of review outcomes recorded after the fifteen-minute deadline.",
+	})
+
 	registerOnce sync.Once
 )
 
@@ -54,6 +78,9 @@ func RegisterMetrics() {
 			ActiveJobs,
 			QueuedJobs,
 			JobDurationSeconds,
+			WebhookToJobDurationSeconds,
+			WebhookToCompletionDurationSeconds,
+			DeadlineMisses,
 		)
 	})
 }
@@ -68,5 +95,49 @@ func UpdateQueueMetrics(activeCount, queuedCount int) {
 func RecordJobDuration(seconds float64) {
 	if seconds >= 0 {
 		JobDurationSeconds.Observe(seconds)
+	}
+}
+
+// DispatchTiming contains the lifecycle timestamps the operator can observe
+// without receiving provider credentials, prompts, or review contents.
+// Zero timestamps are allowed for stages that have not happened yet.
+type DispatchTiming struct {
+	ReceivedAt       time.Time
+	JobCreatedAt     time.Time
+	CompletedAt      time.Time
+	TerminalDeadline time.Time
+}
+
+// RecordDispatchTiming records every valid lifecycle span available in timing.
+// A non-monotonic record is ignored in full so a malformed receipt cannot
+// create a misleading partial histogram sample.
+func RecordDispatchTiming(timing DispatchTiming) {
+	if timing.ReceivedAt.IsZero() {
+		return
+	}
+	if !timing.JobCreatedAt.IsZero() && timing.JobCreatedAt.Before(timing.ReceivedAt) {
+		return
+	}
+	if !timing.CompletedAt.IsZero() && timing.CompletedAt.Before(timing.ReceivedAt) {
+		return
+	}
+	if !timing.JobCreatedAt.IsZero() && !timing.CompletedAt.IsZero() && timing.CompletedAt.Before(timing.JobCreatedAt) {
+		return
+	}
+	if !timing.TerminalDeadline.IsZero() && timing.TerminalDeadline.Before(timing.ReceivedAt) {
+		return
+	}
+
+	if !timing.JobCreatedAt.IsZero() {
+		WebhookToJobDurationSeconds.Observe(timing.JobCreatedAt.Sub(timing.ReceivedAt).Seconds())
+	}
+	if !timing.CompletedAt.IsZero() {
+		WebhookToCompletionDurationSeconds.Observe(timing.CompletedAt.Sub(timing.ReceivedAt).Seconds())
+		if !timing.TerminalDeadline.IsZero() && timing.CompletedAt.After(timing.TerminalDeadline) {
+			DeadlineMisses.Inc()
+		}
+	}
+	if !timing.JobCreatedAt.IsZero() && !timing.CompletedAt.IsZero() {
+		RecordJobDuration(timing.CompletedAt.Sub(timing.JobCreatedAt).Seconds())
 	}
 }

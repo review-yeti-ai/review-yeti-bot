@@ -104,6 +104,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	allowPrivilegeEscalation := false
 	readOnlyRootFilesystem := true
 	runAsNonRoot := true
+	runAsUser := int64(1000)
+	runAsGroup := int64(1000)
+	fsGroup := int64(1000)
+	fsGroupChangePolicy := corev1.FSGroupChangeOnRootMismatch
 	container := corev1.Container{
 		Name:            "reviewer-worker",
 		Image:           spec.WorkerImage,
@@ -123,6 +127,8 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{corev1.Capability("ALL")}},
 			ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
 			RunAsNonRoot:             &runAsNonRoot,
+			RunAsUser:                &runAsUser,
+			RunAsGroup:               &runAsGroup,
 		},
 		Env: []corev1.EnvVar{
 			{Name: "REVIEW_RUN_ID", Value: spec.RunID},
@@ -162,8 +168,15 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
 					AutomountServiceAccountToken: &automountToken,
-					SecurityContext:              &corev1.PodSecurityContext{RunAsNonRoot: &runAsNonRoot, SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
-					Containers:                   []corev1.Container{container},
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot:        &runAsNonRoot,
+						RunAsUser:           &runAsUser,
+						RunAsGroup:          &runAsGroup,
+						FSGroup:             &fsGroup,
+						FSGroupChangePolicy: &fsGroupChangePolicy,
+						SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					Containers: []corev1.Container{container},
 					Volumes: []corev1.Volume{
 						{Name: "workspace", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: input.WorkspacePVCName, ReadOnly: false}}},
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
