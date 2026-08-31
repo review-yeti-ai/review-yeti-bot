@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { executePersonaPanel } from '../panel/panelEngine';
 import { generatePRSummary } from '../review/summaryEngine';
@@ -19,6 +21,104 @@ const GH_EXEC_OPTIONS = {
   maxBuffer: 64 * 1024 * 1024,
   timeout: 120_000,
 };
+
+export const RECEIPT_ONLY_PATH = '/workspace/.review-yeti/receipt.json';
+
+export interface ReceiptOnlyWorkerReceipt {
+  version: 'ReviewYetiReceiptOnly.v1';
+  status: 'succeeded';
+  runId: string;
+  deliveryId: string;
+  repositoryId: number;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  policyDigest: string;
+  configDigest: string;
+  publicationMode: 'disabled';
+  providerCalls: 0;
+  githubWrites: 0;
+  startedAt: string;
+  completedAt: string;
+}
+
+const RECEIPT_RUN_ID = /^run_[a-f0-9]{32}$/u;
+const RECEIPT_REPO = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
+const RECEIPT_SHA = /^[a-f0-9]{40}$/u;
+const RECEIPT_DIGEST = /^[a-f0-9]{64}$/u;
+
+function receiptValue(env: NodeJS.ProcessEnv, name: string): string {
+  return env[name]?.trim() || '';
+}
+
+function invalidReceiptContract(): Error {
+  return new Error('receipt-only worker contract is invalid');
+}
+
+export function isReceiptOnlyWorker(env: NodeJS.ProcessEnv = process.env): boolean {
+  return receiptValue(env, 'REVIEW_RECEIPT_ONLY') === 'true';
+}
+
+/**
+ * Validate and construct the local receipt used by the non-publishing worker
+ * qualification. This function reads only immutable, non-secret projection
+ * fields and deliberately has no GitHub or provider client dependency.
+ */
+export function buildReceiptOnlyWorkerReceipt(
+  env: NodeJS.ProcessEnv,
+  startedAt: string,
+  completedAt: string,
+): ReceiptOnlyWorkerReceipt {
+  const runId = receiptValue(env, 'REVIEW_RUN_ID');
+  const deliveryId = receiptValue(env, 'REVIEW_DELIVERY_ID');
+  const repositoryId = Number(receiptValue(env, 'REVIEW_REPOSITORY_ID'));
+  const repo = receiptValue(env, 'REVIEW_REPO');
+  const prNumber = Number(receiptValue(env, 'REVIEW_PR_NUMBER'));
+  const headSha = receiptValue(env, 'REVIEW_HEAD_SHA');
+  const baseSha = receiptValue(env, 'REVIEW_BASE_SHA');
+  const policyDigest = receiptValue(env, 'REVIEW_POLICY_DIGEST');
+  const configDigest = receiptValue(env, 'REVIEW_CONFIG_DIGEST');
+  const startedMs = Date.parse(startedAt);
+  const completedMs = Date.parse(completedAt);
+  if (!isReceiptOnlyWorker(env) || receiptValue(env, 'REVIEW_PUBLICATION_MODE') !== 'disabled' ||
+      receiptValue(env, 'REVIEW_RECEIPT_PATH') !== RECEIPT_ONLY_PATH ||
+      !RECEIPT_RUN_ID.test(runId) || deliveryId.length < 1 || deliveryId.length > 512 ||
+      !Number.isSafeInteger(repositoryId) || repositoryId < 1 || !RECEIPT_REPO.test(repo) ||
+      !Number.isSafeInteger(prNumber) || prNumber < 1 || !RECEIPT_SHA.test(headSha) ||
+      !RECEIPT_SHA.test(baseSha) || !RECEIPT_DIGEST.test(policyDigest) ||
+      !RECEIPT_DIGEST.test(configDigest) || !Number.isFinite(startedMs) ||
+      !Number.isFinite(completedMs) || completedMs < startedMs) {
+    throw invalidReceiptContract();
+  }
+  return {
+    version: 'ReviewYetiReceiptOnly.v1',
+    status: 'succeeded',
+    runId,
+    deliveryId,
+    repositoryId,
+    repo,
+    prNumber,
+    headSha,
+    baseSha,
+    policyDigest,
+    configDigest,
+    publicationMode: 'disabled',
+    providerCalls: 0,
+    githubWrites: 0,
+    startedAt,
+    completedAt,
+  };
+}
+
+export async function runReceiptOnlyWorker(env: NodeJS.ProcessEnv = process.env): Promise<ReceiptOnlyWorkerReceipt> {
+  const startedAt = new Date().toISOString();
+  const completedAt = new Date().toISOString();
+  const receipt = buildReceiptOnlyWorkerReceipt(env, startedAt, completedAt);
+  await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+  await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8' });
+  return receipt;
+}
 
 function requiredWorkerEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
@@ -47,6 +147,15 @@ export function resolveWorkerAuthConfig(env: NodeJS.ProcessEnv = process.env): W
 }
 
 async function main() {
+  if (isReceiptOnlyWorker()) {
+    const receipt = await runReceiptOnlyWorker();
+    logger.info('Receipt-only worker completed without provider or GitHub calls', {
+      runId: receipt.runId,
+      repositoryId: receipt.repositoryId,
+      prNumber: receipt.prNumber,
+    });
+    return;
+  }
   const cliArgs = process.argv.slice(2);
   const positionalArgs = cliArgs.filter((value) => !value.startsWith('--'));
   const prValue = cliArgs.find((value) => value.startsWith('--pr='))?.slice('--pr='.length)
