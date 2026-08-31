@@ -191,6 +191,51 @@ func (m *LeaseManager) Acquire(
 	return LeaseAcquireResult{Acquired: true, Lease: lease.DeepCopy(), HolderIdentity: runID}, nil
 }
 
+// Release clears a lease only when the caller still owns it. A release is
+// intentionally an optimistic update: a newer run that has already taken the
+// lease wins the race and the old worker cannot clear that ownership.
+func (m *LeaseManager) Release(
+	ctx context.Context,
+	namespace string,
+	repositoryID int64,
+	prNumber int32,
+	runID string,
+	now time.Time,
+) error {
+	if m == nil || m.client == nil || now.IsZero() || !runIDPattern.MatchString(runID) {
+		return ErrLeaseState
+	}
+	name := LeaseName(repositoryID, prNumber)
+	if name == "" || len(validation.IsDNS1123Label(namespace)) != 0 {
+		return ErrLeaseState
+	}
+	lease := &coordinationv1.Lease{}
+	if err := m.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, lease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if lease.DeletionTimestamp != nil {
+		return ErrWorkspaceTerminating
+	}
+	if err := ValidateMetadata(lease.ObjectMeta, namespace, name, repositoryID, prNumber); err != nil {
+		return err
+	}
+	if pointerString(lease.Spec.HolderIdentity) == "" {
+		return nil
+	}
+	if pointerString(lease.Spec.HolderIdentity) != runID {
+		return ErrLeaseHeld
+	}
+	lease.Spec.HolderIdentity = nil
+	lease.Spec.LeaseDurationSeconds = nil
+	lease.Spec.AcquireTime = nil
+	releasedAt := metav1.NewMicroTime(now.UTC())
+	lease.Spec.RenewTime = &releasedAt
+	return m.client.Update(ctx, lease)
+}
+
 func expires(lease *coordinationv1.Lease) (time.Time, error) {
 	if lease.Spec.LeaseDurationSeconds == nil || *lease.Spec.LeaseDurationSeconds <= 0 {
 		return time.Time{}, ErrLeaseState
