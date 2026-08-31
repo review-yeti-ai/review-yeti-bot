@@ -80,6 +80,27 @@ func (in *PRReviewJobStatus) DeepCopyInto(out *PRReviewJobStatus) {
 	if in.CompletionTime != nil {
 		out.CompletionTime = in.CompletionTime.DeepCopy()
 	}
+	if in.Timing != nil {
+		out.Timing = new(DispatchTimingStatus)
+		if in.Timing.ReceivedAt != nil {
+			out.Timing.ReceivedAt = in.Timing.ReceivedAt.DeepCopy()
+		}
+		if in.Timing.JobCreatedAt != nil {
+			out.Timing.JobCreatedAt = in.Timing.JobCreatedAt.DeepCopy()
+		}
+		if in.Timing.PodScheduledAt != nil {
+			out.Timing.PodScheduledAt = in.Timing.PodScheduledAt.DeepCopy()
+		}
+		if in.Timing.ImageObservedAt != nil {
+			out.Timing.ImageObservedAt = in.Timing.ImageObservedAt.DeepCopy()
+		}
+		if in.Timing.ProcessStartedAt != nil {
+			out.Timing.ProcessStartedAt = in.Timing.ProcessStartedAt.DeepCopy()
+		}
+		if in.Timing.CompletedAt != nil {
+			out.Timing.CompletedAt = in.Timing.CompletedAt.DeepCopy()
+		}
+	}
 	if in.Conditions != nil {
 		out.Conditions = make([]metav1.Condition, len(in.Conditions))
 		for i := range in.Conditions {

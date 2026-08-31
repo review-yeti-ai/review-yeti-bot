@@ -223,6 +223,28 @@ spec:
               startTime:
                 format: date-time
                 type: string
+              timing:
+                description: DispatchTimingStatus is a durable, bounded lifecycle receipt. It contains timestamps only; prompts, provider responses, credentials, and review contents must never be written to the CR status.
+                properties:
+                  completedAt:
+                    format: date-time
+                    type: string
+                  imageObservedAt:
+                    format: date-time
+                    type: string
+                  jobCreatedAt:
+                    format: date-time
+                    type: string
+                  podScheduledAt:
+                    format: date-time
+                    type: string
+                  processStartedAt:
+                    format: date-time
+                    type: string
+                  receivedAt:
+                    format: date-time
+                    type: string
+                type: object
             type: object
         required:
         - spec
