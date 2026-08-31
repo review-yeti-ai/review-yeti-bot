@@ -20,6 +20,7 @@
     "build": "npm run build:frontend && npm run build:backend",
     "start": "node dist/index.js",
     "start:dispatch": "node dist/dispatchIndex.js",
+    "start:review-job-dispatcher": "node dist/reviewJobDispatcherIndex.js",
     "dev": "ts-node src/index.ts",
     "pretest": "npm run test:artifacts",
     "test": "vitest run",
