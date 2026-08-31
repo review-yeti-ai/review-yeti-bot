@@ -78,6 +78,9 @@ const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
 const DEFAULT_PERSONA_CONCURRENCY = 3;
 const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 16;
 const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
+const SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL = 1;
+const DEFAULT_PROVIDER_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
+const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 5_000;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 // Streaming responses need both an inactivity watchdog and a total generation
 // budget. Without the latter, a provider can emit a never-ending sequence of
@@ -490,6 +493,66 @@ function resolvePersonaConcurrency(value = process.env.REVIEW_YETI_MAX_CONCURREN
   return parsed;
 }
 
+function resolveDispatchMode(value = process.env.REVIEW_YETI_DISPATCH_MODE) {
+  const normalized = String(value || 'ordered').trim().toLowerCase();
+  if (!['ordered', 'striped'].includes(normalized)) {
+    throw new Error('REVIEW_YETI_DISPATCH_MODE must be ordered or striped');
+  }
+  return normalized;
+}
+
+function normalizeDispatchWeight(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 25 ? parsed : 1;
+}
+
+function stableDispatchOffset(seed, length) {
+  if (!Number.isSafeInteger(length) || length < 1) return 0;
+  const digest = createHash('sha256').update(String(seed || 'review-yeti'), 'utf8').digest();
+  return digest.readUInt32BE(0) % length;
+}
+
+/**
+ * Assign one primary transport to each review lane without multiplying model calls. In striped
+ * mode the transport's dispatch weight controls how often it is selected; the remaining healthy
+ * transports stay attached in deterministic order as lane-local failovers. Ordered mode preserves
+ * the historical behavior exactly.
+ */
+function buildTransportDispatchPlans(laneCount, transports, mode = 'ordered', seed = '') {
+  if (!Number.isSafeInteger(laneCount) || laneCount < 0) throw new Error('laneCount must be a non-negative integer');
+  const candidates = Array.isArray(transports) ? transports.filter(Boolean) : [];
+  if (laneCount === 0) return [];
+  if (candidates.length === 0) return Array.from({ length: laneCount }, () => []);
+  if (resolveDispatchMode(mode) === 'ordered' || candidates.length === 1) {
+    return Array.from({ length: laneCount }, () => [...candidates]);
+  }
+
+  const weightedSlots = candidates.flatMap((transport) =>
+    Array.from({ length: normalizeDispatchWeight(transport.dispatchWeight ?? transport.dispatch_weight) }, () => transport));
+  const offset = stableDispatchOffset(seed, weightedSlots.length);
+  return Array.from({ length: laneCount }, (_unused, laneIndex) => {
+    const primaryIndex = (offset + laneIndex) % weightedSlots.length;
+    const ordered = [];
+    for (let slotOffset = 0; slotOffset < weightedSlots.length; slotOffset += 1) {
+      const transport = weightedSlots[(primaryIndex + slotOffset) % weightedSlots.length];
+      if (!ordered.includes(transport)) ordered.push(transport);
+    }
+    for (const transport of candidates) {
+      if (!ordered.includes(transport)) ordered.push(transport);
+    }
+    return ordered;
+  });
+}
+
+function summarizeTransportDispatchPlans(plans) {
+  const counts = new Map();
+  for (const plan of Array.isArray(plans) ? plans : []) {
+    const primary = plan?.[0]?.name || plan?.[0]?.provider || 'default';
+    counts.set(primary, (counts.get(primary) || 0) + 1);
+  }
+  return [...counts.entries()].map(([name, count]) => `${name}=${count}`).join(', ');
+}
+
 async function mapWithConcurrency(items, concurrency, mapper) {
   if (!Array.isArray(items) || items.length === 0) return [];
   const limit = Math.min(resolvePersonaConcurrency(concurrency), items.length);
@@ -516,14 +579,16 @@ class AsyncSemaphore {
     this.waiters = [];
   }
 
-  async acquire(timeoutMs) {
+  async acquire(timeoutMs, timeoutError = 'capacity_wait_timeout') {
     if (this.active >= this.limit) {
       await new Promise((resolve, reject) => {
         const waiter = { resolve, timer: null };
         waiter.timer = setTimeout(() => {
           const index = this.waiters.indexOf(waiter);
           if (index >= 0) this.waiters.splice(index, 1);
-          reject(new Error('ollama_capacity_wait_timeout'));
+          const error = new Error(timeoutError);
+          error.code = 'provider_capacity_wait_timeout';
+          reject(error);
         }, timeoutMs);
         this.waiters.push(waiter);
       });
@@ -545,10 +610,110 @@ class AsyncSemaphore {
   }
 }
 
-// This process-local ceiling prevents an unsafe persona/partition override from driving one
-// action job past the measured Ollama Cloud burst boundary. It does not coordinate separate
-// GitHub jobs; the normal review default remains three concurrent persona lanes.
-const ollamaRequestSemaphore = new AsyncSemaphore(OLLAMA_MAX_IN_FLIGHT_REQUESTS);
+function normalizePositiveInteger(value, fallback = null, maximum = 100) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : fallback;
+}
+
+function isSyntheticTransport(transport = {}, baseUrl = '') {
+  const name = String(transport.name || transport.provider || '').toLowerCase();
+  const url = String(baseUrl || transport.baseUrl || transport.base_url || '').toLowerCase();
+  return name.includes('synthetic') || url.includes('api.synthetic.new');
+}
+
+function resolveTransportCapacityPolicy(transport = {}, baseUrl = '') {
+  const explicitLimit = normalizePositiveInteger(transport.maxInFlight ?? transport.max_in_flight);
+  const maxInFlight = explicitLimit
+    ?? (isSyntheticTransport(transport, baseUrl)
+      ? SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL
+      : isOllamaTransport(transport, baseUrl)
+        ? OLLAMA_MAX_IN_FLIGHT_REQUESTS
+        : null);
+  if (!maxInFlight) return null;
+  const requestedScope = String(
+    transport.concurrencyScope || transport.concurrency_scope || transport.capacityScope || transport.capacity_scope || '',
+  ).trim().toLowerCase();
+  const scope = requestedScope === 'model' || requestedScope === 'provider'
+    ? requestedScope
+    : isSyntheticTransport(transport, baseUrl) ? 'model' : 'provider';
+  const waitTimeoutMs = normalizePositiveInteger(
+    transport.capacityWaitTimeoutMs ?? transport.capacity_wait_timeout_ms,
+    DEFAULT_PROVIDER_CAPACITY_WAIT_TIMEOUT_MS,
+    180_000,
+  );
+  return { maxInFlight, scope, waitTimeoutMs };
+}
+
+class ProviderCapacityManager {
+  constructor() {
+    this.pools = new Map();
+    this.configuredLimits = new Map();
+  }
+
+  capacityKey(transport, baseUrl, scope) {
+    const provider = normalizeTelemetryProvider(transport.provider || transport.name)
+      || (isSyntheticTransport(transport, baseUrl)
+        ? 'synthetic'
+        : `custom-${createHash('sha256').update(JSON.stringify([
+            normalizeTelemetryIdentifier(transport.provider) || '',
+            normalizeTelemetryIdentifier(transport.name) || '',
+            String(baseUrl || transport.baseUrl || transport.base_url || '').replace(/\/+$/, '').toLowerCase(),
+          ]), 'utf8').digest('hex').slice(0, 16)}`);
+    const model = normalizeTelemetryIdentifier(transport.model) || 'default';
+    return scope === 'model' ? `${provider}:model:${model}` : `${provider}:provider`;
+  }
+
+  configure(transports) {
+    for (const transport of Array.isArray(transports) ? transports : []) {
+      const baseUrl = transport.baseUrl || transport.base_url || '';
+      const policy = resolveTransportCapacityPolicy(transport, baseUrl);
+      if (!policy) continue;
+      const key = this.capacityKey(transport, baseUrl, policy.scope);
+      const existingLimit = this.configuredLimits.get(key);
+      if (existingLimit !== undefined && existingLimit !== policy.maxInFlight) {
+        throw new Error(`provider capacity limit conflict for ${key}`);
+      }
+      this.configuredLimits.set(key, policy.maxInFlight);
+    }
+  }
+
+  async acquire(transport, baseUrl, requestTimeoutMs) {
+    const policy = resolveTransportCapacityPolicy(transport, baseUrl);
+    if (!policy) return { release: () => {}, waitMs: 0, policy: null };
+    const key = this.capacityKey(transport, baseUrl, policy.scope);
+    const configuredLimit = this.configuredLimits.get(key);
+    if (configuredLimit !== undefined && configuredLimit !== policy.maxInFlight) {
+      throw new Error(`provider capacity limit conflict for ${key}`);
+    }
+    if (configuredLimit === undefined) this.configuredLimits.set(key, policy.maxInFlight);
+    const existing = this.pools.get(key);
+    if (existing && existing.limit !== policy.maxInFlight) {
+      throw new Error(`provider capacity limit conflict for ${key}`);
+    }
+    const pool = existing || {
+      limit: policy.maxInFlight,
+      semaphore: new AsyncSemaphore(policy.maxInFlight),
+    };
+    if (!existing) this.pools.set(key, pool);
+    const waitStartedMs = Date.now();
+    const waitTimeoutMs = Math.min(policy.waitTimeoutMs, normalizePositiveInteger(requestTimeoutMs, policy.waitTimeoutMs, 180_000));
+    const release = await pool.semaphore.acquire(waitTimeoutMs, 'provider_capacity_wait_timeout');
+    return {
+      release,
+      waitMs: Math.max(0, Date.now() - waitStartedMs),
+      policy,
+    };
+  }
+
+  reset() {
+    this.pools.clear();
+    this.configuredLimits.clear();
+  }
+}
+
+// Process-local capacity protects concurrent persona/partition lanes in one Action job. Cross-job
+// quota pressure is handled by the provider's response plus the scoped run circuit breaker.
+const globalProviderCapacityManager = new ProviderCapacityManager();
 
 // Whitelabel display name used in the posted comment. Override with BOT_NAME.
 const BOT_LABEL = process.env.BOT_NAME || 'AI Review Panel';
@@ -980,6 +1145,8 @@ function resolveModelConfig(env = process.env) {
             resolvedKey = env.ANTHROPIC_API_KEY || '';
           } else if (nameLower.includes('gemini') || urlLower.includes('googleapis.com')) {
             resolvedKey = env.GEMINI_API_KEY || '';
+          } else if (nameLower.includes('synthetic') || urlLower.includes('api.synthetic.new')) {
+            resolvedKey = env.SYNTHETIC_API_KEY || '';
           } else if (nameLower.includes('openai') || urlLower.includes('openai.com')) {
             resolvedKey = env.OPENAI_API_KEY || '';
           } else {
@@ -988,6 +1155,7 @@ function resolveModelConfig(env = process.env) {
         }
         return {
           name: t.name || t.provider || 'default',
+          apiKeyEnv: keyEnv,
           baseUrl: (t.base_url || t.baseUrl || baseUrl).replace(/\/+$/, ''),
           apiKey: resolvedKey,
           model: t.model || model,
@@ -1017,6 +1185,13 @@ function resolveModelConfig(env = process.env) {
           connectTimeoutMs: t.connect_timeout_ms || t.connectTimeoutMs,
           ttftTimeoutMs: t.ttft_ms || t.ttftMs || t.ttft_timeout_ms || t.ttftTimeoutMs,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
+          dispatchWeight: t.dispatch_weight ?? t.dispatchWeight,
+          maxInFlight: t.max_in_flight ?? t.maxInFlight,
+          concurrencyScope: t.concurrency_scope || t.concurrencyScope || t.capacity_scope || t.capacityScope,
+          capacityWaitTimeoutMs: t.capacity_wait_timeout_ms ?? t.capacityWaitTimeoutMs,
+          circuitBreakerScope: t.circuit_breaker_scope || t.circuitBreakerScope,
+          rateLimit: t.rate_limit || t.rateLimit,
+          quotaProbe: t.quota_probe || t.quotaProbe,
         };
       }).filter((t) => Boolean(t.apiKey))
     : [];
@@ -1091,7 +1266,65 @@ function resolveModelConfig(env = process.env) {
     model: (transports.length > 0 ? transports[0].model : model),
     maxDiffChars,
     transports,
+    dispatchMode: resolveDispatchMode(env.REVIEW_YETI_DISPATCH_MODE),
   };
+}
+
+function normalizeQuotaNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function normalizeSyntheticQuotaSnapshot(payload) {
+  const subscription = payload?.subscription;
+  if (!subscription || typeof subscription !== 'object' || Array.isArray(subscription)) return null;
+  const renewsAt = typeof subscription.renewsAt === 'string' && Number.isFinite(Date.parse(subscription.renewsAt))
+    ? subscription.renewsAt
+    : null;
+  return {
+    limit: normalizeQuotaNumber(subscription.limit),
+    requests: normalizeQuotaNumber(subscription.requests),
+    renewsAt,
+  };
+}
+
+async function probeSyntheticQuota(transport, fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_QUOTA_PROBE_TIMEOUT_MS) {
+  if (!transport?.apiKey) return { status: 'unavailable', reason: 'missing_key' };
+  const transportName = normalizeTelemetryProvider(transport.name || transport.provider);
+  const keyEnv = String(transport.apiKeyEnv || transport.api_key_env || '').trim();
+  let endpointIsSynthetic = false;
+  try {
+    const endpoint = new URL(transport.baseUrl || transport.base_url || '');
+    endpointIsSynthetic = endpoint.protocol === 'https:' && endpoint.hostname === 'api.synthetic.new';
+  } catch (_) {}
+  if (transportName !== 'synthetic' || keyEnv !== 'SYNTHETIC_API_KEY' || !endpointIsSynthetic) {
+    return { status: 'unavailable', reason: 'untrusted_transport' };
+  }
+  try {
+    const response = await fetchImpl('https://api.synthetic.new/v2/quotas', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${transport.apiKey}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(normalizePositiveInteger(timeoutMs, DEFAULT_QUOTA_PROBE_TIMEOUT_MS, 30_000)),
+    });
+    if (!response.ok) {
+      return { status: 'unavailable', responseStatus: normalizeTelemetryStatus(response.status) };
+    }
+    const snapshot = normalizeSyntheticQuotaSnapshot(await response.json());
+    return snapshot ? { status: 'available', snapshot } : { status: 'unavailable', reason: 'invalid_shape' };
+  } catch (_) {
+    return { status: 'unavailable', reason: 'request_failed' };
+  }
+}
+
+async function probeConfiguredTransportQuotas(transports, options = {}) {
+  const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
+  const probes = (Array.isArray(transports) ? transports : [])
+    .filter((transport) => String(transport.quotaProbe || transport.quota_probe || '').trim().toLowerCase() === 'synthetic-v2')
+    .map(async (transport) => ({
+      transport: normalizeTelemetryProvider(transport.name || transport.provider) || 'synthetic',
+      result: await probeSyntheticQuota(transport, fetchImpl, options.timeoutMs),
+    }));
+  return Promise.all(probes);
 }
 
 function trustedOpenRouterInputsFromEnv(env = process.env) {
@@ -1723,6 +1956,8 @@ function normalizeModelResponseAttempt(entry = {}) {
     outputContract: normalizeOutputContractTelemetry(entry.outputContract),
     ...(entry.routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(entry.routerMetadata) } : {}),
   };
+  const capacityWaitMs = normalizeTelemetryDuration(entry.capacityWaitMs);
+  if (capacityWaitMs > 0) normalized.capacityWaitMs = capacityWaitMs;
   if (requestFingerprint) normalized.requestFingerprint = requestFingerprint;
   if (generationIdDigest) normalized.generationIdDigest = generationIdDigest;
   return normalized;
@@ -1778,6 +2013,7 @@ const TELEMETRY_OUTCOME_CLASSES = new Set([
   'timeout',
   'transient_socket',
   'provider_rate_limit',
+  'provider_capacity',
   'provider_error',
   'malformed_output',
   'unknown',
@@ -1785,11 +2021,13 @@ const TELEMETRY_OUTCOME_CLASSES = new Set([
 
 const TELEMETRY_RECOVERY_ACTIONS = new Set([
   'bounded_retry',
+  'rate_limit_retry',
   'model_fallback',
   'structured_output_fallback',
 ]);
 
 const OPENROUTER_MAX_RETRY_AFTER_MS = 5_000;
+const MAX_PARSED_RETRY_AFTER_MS = 86_400_000;
 // OpenRouter rejects recovery requests whose `models` array contains more than
 // three entries. Keep the bounded recovery deterministic by retaining the
 // policy's canonical order after removing the failed model.
@@ -1854,6 +2092,7 @@ function normalizeTelemetryProvider(value) {
   if (provider === 'openinference') return 'openinference';
   if (/^(?:direct-)?fireworks(?:-.+)?$/.test(provider)) return 'fireworks';
   if (/^ollama(?:-.+)?$/.test(provider)) return 'ollama';
+  if (/^synthetic(?:-.+)?$/.test(provider)) return 'synthetic';
   if (/^anthropic(?:-.+)?$/.test(provider)) return 'anthropic';
   if (/^(?:google|gemini)(?:-.+)?$/.test(provider)) return 'gemini';
   if (/^openai(?:-.+)?$/.test(provider)) return 'openai';
@@ -1997,6 +2236,7 @@ function classifyTelemetryHttpFailure(status) {
 
 function classifyTelemetryTransportError(error) {
   const message = String(error?.message || error || '');
+  if (/provider_capacity_wait_timeout|capacity_wait_timeout/i.test(message)) return 'provider_capacity';
   if (/AbortError|aborted|timeout|deadline|stalled/i.test(message)) return 'timeout';
   if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
@@ -2017,7 +2257,7 @@ function classifyTelemetryTimeoutKind(error) {
   return null;
 }
 
-function parseRetryAfterMs(response) {
+function parseRawRetryAfterMs(response) {
   const raw = typeof response?.headers?.get === 'function'
     ? response.headers.get('retry-after')
     : response?.headers?.['retry-after'] ?? response?.headers?.['Retry-After'];
@@ -2025,11 +2265,32 @@ function parseRetryAfterMs(response) {
   const value = String(raw).trim();
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(OPENROUTER_MAX_RETRY_AFTER_MS, Math.floor(seconds * 1_000));
+    return Math.min(MAX_PARSED_RETRY_AFTER_MS, Math.floor(seconds * 1_000));
   }
   const dateMs = Date.parse(value);
   if (!Number.isFinite(dateMs)) return 0;
-  return Math.min(OPENROUTER_MAX_RETRY_AFTER_MS, Math.max(0, dateMs - Date.now()));
+  return Math.min(MAX_PARSED_RETRY_AFTER_MS, Math.max(0, dateMs - Date.now()));
+}
+
+function parseRetryAfterMs(response) {
+  return Math.min(OPENROUTER_MAX_RETRY_AFTER_MS, parseRawRetryAfterMs(response));
+}
+
+function resolveTransportRateLimitPolicy(transport = {}) {
+  const policy = transport.rateLimit || transport.rate_limit;
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
+    return { maxRetries: 0, maxRetryAfterMs: 0, scope: 'provider' };
+  }
+  const scope = String(policy.scope || '').trim().toLowerCase() === 'model' ? 'model' : 'provider';
+  const configuredRetries = Number(policy.max_retries ?? policy.maxRetries);
+  return {
+    // The review request loop has one bounded recovery slot. Accepting a larger value here would
+    // advertise retries that can never execute and would make the central deadline math false.
+    // Central policy rejects values above one; direct callers are safely clamped to that envelope.
+    maxRetries: Number.isSafeInteger(configuredRetries) && configuredRetries >= 1 ? 1 : 0,
+    maxRetryAfterMs: normalizePositiveInteger(policy.max_retry_after_ms ?? policy.maxRetryAfterMs, 0, 30_000) || 0,
+    scope,
+  };
 }
 
 function resolveOpenRouterErrorCode(payload) {
@@ -2344,20 +2605,51 @@ class RunTransportCircuitBreaker {
     this.reasons = new Map();
   }
 
-  trip(transportName, reason) {
-    if (!transportName) return;
-    this.tripped.add(transportName);
-    this.reasons.set(transportName, String(reason || 'unspecified failure'));
-    console.log(`[Circuit Breaker] Tripped transport '${transportName}' for current run: ${reason}`);
+  keysFor(transport) {
+    if (typeof transport === 'string') {
+      const transportName = normalizeTelemetryIdentifier(transport)?.toLowerCase() || transport;
+      const provider = normalizeTelemetryProvider(transport) || transportName;
+      return [`transport:${transportName}`, `provider:${provider}`, `model:${provider}:default`];
+    }
+    if (!transport || typeof transport !== 'object') return [];
+    const transportName = normalizeTelemetryIdentifier(transport.name || transport.provider)?.toLowerCase() || 'default';
+    const provider = normalizeTelemetryProvider(transport.provider || transport.name) || transportName;
+    const model = normalizeTelemetryIdentifier(transport.model) || 'default';
+    return [
+      `transport:${transportName}`,
+      `provider:${provider}`,
+      `model:${provider}:${model}`,
+    ];
   }
 
-  isTripped(transportName) {
-    return Boolean(transportName && this.tripped.has(transportName));
+  trip(transport, reason, failureClass = 'unknown') {
+    const keys = this.keysFor(transport);
+    if (keys.length === 0) return;
+    const rateLimitPolicy = typeof transport === 'object' ? resolveTransportRateLimitPolicy(transport) : null;
+    const configuredScope = String(
+      typeof transport === 'object'
+        ? transport.circuitBreakerScope || transport.circuit_breaker_scope || ''
+        : '',
+    ).trim().toLowerCase();
+    const scope = failureClass === 'http_429' || failureClass === 'provider_rate_limit'
+      ? rateLimitPolicy?.scope || 'provider'
+      : configuredScope === 'model' || configuredScope === 'provider'
+        ? configuredScope
+        : 'transport';
+    const key = scope === 'model' ? keys[2] : scope === 'provider' ? keys[1] : keys[0];
+    if (!key) return;
+    this.tripped.add(key);
+    this.reasons.set(key, String(reason || 'unspecified failure'));
+    console.log(`[Circuit Breaker] Tripped ${scope} capacity '${key}' for current run: ${reason}`);
+  }
+
+  isTripped(transport) {
+    return this.keysFor(transport).some((key) => this.tripped.has(key));
   }
 
   filterCandidates(transports) {
     if (!Array.isArray(transports) || transports.length <= 1) return transports;
-    const healthy = transports.filter((t) => !this.isTripped(t.name || t.provider));
+    const healthy = transports.filter((transport) => !this.isTripped(transport));
     // If all are tripped, don't return empty array; return original so at least one attempt is made
     return healthy.length > 0 ? healthy : transports;
   }
@@ -2687,6 +2979,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   let outputContract = null;
   let routerMetadata = null;
   let requestFingerprint = null;
+  let totalCapacityWaitMs = 0;
   const responseAttempts = [];
   const noteRetryReason = (reason) => {
     const normalized = normalizeTelemetryOutcomeClass(reason);
@@ -2715,6 +3008,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     outputContract: normalizeOutputContractTelemetry(outputContract),
     ...(routerMetadata ? { routerMetadata: normalizeOpenRouterMetadata(routerMetadata) } : {}),
     ...(requestFingerprint ? { requestFingerprint } : {}),
+    ...(totalCapacityWaitMs > 0 ? { capacityWaitMs: normalizeTelemetryDuration(totalCapacityWaitMs) } : {}),
     responseAttempts: normalizeModelResponseAttempts(responseAttempts),
   });
   let requestOptions = null;
@@ -2804,7 +3098,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         }];
 
     const circuitBreaker = options.circuitBreaker || globalRunCircuitBreaker;
+    const capacityManager = options.capacityManager || globalProviderCapacityManager;
+    capacityManager.configure(allTransports);
     const candidateTransports = circuitBreaker.filterCandidates(allTransports);
+    const allowAllTrippedFallback = candidateTransports.length > 0
+      && candidateTransports.every((transport) => circuitBreaker.isTripped(transport));
 
     let lastError = null;
     let fallbackAttempt = 0;
@@ -2812,6 +3110,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     for (let i = 0; i < candidateTransports.length; i++) {
       const transport = candidateTransports[i];
       const transportName = transport.name || transport.provider || 'default';
+      if (!allowAllTrippedFallback && circuitBreaker.isTripped(transport)) {
+        console.warn(`[Persona: ${persona.id}] Circuit breaker bypass: skipping newly tripped transport '${transportName}'...`);
+        fallbackAttempt++;
+        continue;
+      }
       const requestModel = transport.model || cfg.model;
       const transportApiKey = transport.apiKey || transport.api_key || cfg.apiKey;
       const transportBaseUrl = (transport.baseUrl || transport.base_url || cfg.baseUrl).replace(/\/+$/, '');
@@ -2932,7 +3235,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const maxFetchAttempts = 2;
       let formatRecoveryAttempted = false;
       let providerRecoveryAttempted = false;
+      let directRateLimitRetries = 0;
       let structuredOutputFallbackAttempted = false;
+      const rateLimitPolicy = resolveTransportRateLimitPolicy(transport);
       const prepareDirectFormatRecovery = () => {
         if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
@@ -2993,6 +3298,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         routerMetadata = null;
         generationIdDigest = null;
         const attemptStartedMs = Date.now();
+        let attemptCapacityWaitMs = 0;
         let attemptResponseStatus = null;
         let responseAttemptRecorded = false;
         requestFingerprint = requestFingerprintForAttempt(
@@ -3035,17 +3341,19 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             routerMetadata,
             requestFingerprint,
             generationIdDigest,
+            ...(attemptCapacityWaitMs > 0 ? { capacityWaitMs: attemptCapacityWaitMs } : {}),
             ...overrides,
           });
           if (entry) responseAttempts.push(entry);
         };
         const streamAbortController = streamEnabled ? new AbortController() : null;
         let responseHeaderTimer = null;
-        let releaseOllamaCapacity = null;
+        let releaseProviderCapacity = null;
         try {
-          if (isOllamaTransport(transport, transportBaseUrl)) {
-            releaseOllamaCapacity = await ollamaRequestSemaphore.acquire(OLLAMA_CAPACITY_WAIT_TIMEOUT_MS);
-          }
+          const capacityLease = await capacityManager.acquire(transport, transportBaseUrl, transportTimeoutMs);
+          releaseProviderCapacity = capacityLease.release;
+          attemptCapacityWaitMs = capacityLease.waitMs;
+          totalCapacityWaitMs += attemptCapacityWaitMs;
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
               () => streamAbortController.abort(streamInactivityError(transportTimeoutMs, 'request')),
@@ -3118,7 +3426,13 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 providerRecoveryAttempted = true;
                 recoveryAction = 'model_fallback';
                 const retryAfterMs = parseRetryAfterMs(response);
-                if (retryAfterMs > 0) await sleep(retryAfterMs);
+                if (retryAfterMs > 0) {
+                  if (releaseProviderCapacity) {
+                    releaseProviderCapacity();
+                    releaseProviderCapacity = null;
+                  }
+                  await sleep(retryAfterMs);
+                }
                 continue;
               }
             } catch (_) {
@@ -3129,10 +3443,31 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               providerRecoveryAttempted = true;
               recoveryAction = 'bounded_retry';
               const retryAfterMs = parseRetryAfterMs(response);
-              if (retryAfterMs > 0) await sleep(retryAfterMs);
+              if (retryAfterMs > 0) {
+                if (releaseProviderCapacity) {
+                  releaseProviderCapacity();
+                  releaseProviderCapacity = null;
+                }
+                await sleep(retryAfterMs);
+              }
               continue;
             }
-            circuitBreaker.trip(transportName, errMsg);
+            if (!isOpenRouterTransport && outcomeClass === 'http_429' &&
+              directRateLimitRetries < rateLimitPolicy.maxRetries && fetchAttempts < maxFetchAttempts) {
+              const retryAfterMs = parseRawRetryAfterMs(response);
+              if (retryAfterMs > 0 && retryAfterMs <= rateLimitPolicy.maxRetryAfterMs) {
+                directRateLimitRetries += 1;
+                recoveryAction = 'rate_limit_retry';
+                console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned HTTP 429; honoring bounded Retry-After before retry ${directRateLimitRetries}/${rateLimitPolicy.maxRetries}...`);
+                if (releaseProviderCapacity) {
+                  releaseProviderCapacity();
+                  releaseProviderCapacity = null;
+                }
+                await sleep(retryAfterMs);
+                continue;
+              }
+            }
+            circuitBreaker.trip(transport, errMsg, outcomeClass);
             if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned ${errMsg}; trying next transport...`);
               lastError = errMsg;
@@ -3193,7 +3528,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               recoveryAction = 'model_fallback';
               continue;
             }
-            circuitBreaker.trip(transportName, message);
+            circuitBreaker.trip(transport, message, providerFailureClass);
             if (i < candidateTransports.length - 1) {
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
               lastError = message;
@@ -3238,7 +3573,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                   continue;
                 }
                 if (i < candidateTransports.length - 1) {
-                  circuitBreaker.trip(transportName, message);
+                  circuitBreaker.trip(transport, message, providerFailureClass);
                   console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
                   lastError = message;
                   fallbackAttempt++;
@@ -3352,6 +3687,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           });
           if (typeof err.contentPresent === 'boolean') contentPresent = err.contentPresent;
           if (typeof err.reasoningPresent === 'boolean') reasoningPresent = err.reasoningPresent;
+          if (err?.code === 'provider_capacity_wait_timeout') {
+            lastError = 'provider_capacity_wait_timeout';
+            failureClass = 'provider_capacity';
+            noteRetryReason('provider_capacity');
+            if (i < candidateTransports.length - 1) {
+              console.warn(`[Persona: ${persona.id}] Capacity wait for '${transportName}' exceeded its bounded queue budget; trying next transport...`);
+              fallbackAttempt++;
+              break;
+            }
+            return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: lastError });
+          }
           if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
           if (attemptFailureClass === 'timeout' && prepareOpenRouterTimeoutRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
@@ -3364,7 +3710,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           lastError = err.message;
           failureClass = classifyTelemetryTransportError(err);
           if (failureClass !== 'unknown') noteRetryReason(failureClass);
-          circuitBreaker.trip(transportName, err.message);
+          circuitBreaker.trip(transport, err.message, failureClass);
           if (i < candidateTransports.length - 1) {
             console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' exception (${err.message}); trying next transport...`);
             fallbackAttempt++;
@@ -3372,7 +3718,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
           return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: err.message });
         } finally {
-          if (releaseOllamaCapacity) releaseOllamaCapacity();
+          if (releaseProviderCapacity) releaseProviderCapacity();
           if (responseHeaderTimer) clearTimeout(responseHeaderTimer);
           if (heartbeatTimer) clearInterval(heartbeatTimer);
         }
@@ -4800,6 +5146,9 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
         ? { requestFingerprint: normalizeTelemetryDigest(result.requestFingerprint) }
         : {}),
       responseAttempts: normalizeModelResponseAttempts(result.responseAttempts),
+      ...(normalizeTelemetryDuration(result.capacityWaitMs) > 0
+        ? { capacityWaitMs: normalizeTelemetryDuration(result.capacityWaitMs) }
+        : {}),
     };
   });
 
@@ -5021,6 +5370,18 @@ async function main() {
     && !process.env.GITHUB_EVENT_PATH;
   if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
 
+  if (modelConfig.enabled) {
+    const quotaProbes = await probeConfiguredTransportQuotas(modelConfig.transports);
+    for (const probe of quotaProbes) {
+      if (probe.result.status === 'available') {
+        const snapshot = probe.result.snapshot;
+        console.log(`[Quota] ${probe.transport} advisory snapshot: requests=${snapshot.requests ?? 'unknown'} limit=${snapshot.limit ?? 'unknown'} renews_at=${snapshot.renewsAt ?? 'unknown'}. Concurrency remains policy-owned.`);
+      } else {
+        console.warn(`[Quota] ${probe.transport} advisory quota snapshot unavailable; continuing with policy-owned concurrency and provider failover.`);
+      }
+    }
+  }
+
   // Determine active/enabled personas from dispatch payload, local YAML config, or environment
   const payload = prContext.eventData?.client_payload || {};
   const fileRoster = loadPersonaFiles(configRoot);
@@ -5062,17 +5423,27 @@ async function main() {
   } else {
     if (modelConfig.enabled) {
       const personaConcurrency = resolvePersonaConcurrency();
+      const dispatchMode = resolveDispatchMode(modelConfig.dispatchMode);
+      const dispatchSeed = [prContext.repo, prContext.prNumber, prContext.headSha].filter(Boolean).join(':');
       if (partitionPlan && partitionPlan.partitions.length > 1) {
         console.log(`[Bounded Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) across ${partitionPlan.partitions.length} partitions to ${modelConfig.model} with concurrency ${personaConcurrency}...`);
         const reviewJobs = partitionPlan.partitions.flatMap((partition) =>
           enabledPersonas.map((persona) => ({ partition, persona }))
         );
+        const transportPlans = buildTransportDispatchPlans(
+          reviewJobs.length,
+          modelConfig.transports,
+          dispatchMode,
+          dispatchSeed,
+        );
+        console.log(`[Dispatch] mode=${dispatchMode} primary lanes: ${summarizeTransportDispatchPlans(transportPlans)}`);
         const reviewResults = await mapWithConcurrency(
           reviewJobs,
           personaConcurrency,
-          async ({ partition, persona }) => {
+          async ({ partition, persona }, jobIndex) => {
             const partitionOptions = {
               ...modelConfig,
+              transports: transportPlans[jobIndex],
               partition,
               partitionPlan,
               maxDiffChars: safeDiffCapacityChars,
@@ -5139,10 +5510,23 @@ async function main() {
         });
       } else {
         console.log(`[Bounded Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl} with concurrency ${personaConcurrency}...`);
+        const transportPlans = buildTransportDispatchPlans(
+          enabledPersonas.length,
+          modelConfig.transports,
+          dispatchMode,
+          dispatchSeed,
+        );
+        console.log(`[Dispatch] mode=${dispatchMode} primary lanes: ${summarizeTransportDispatchPlans(transportPlans)}`);
         personaResults = await mapWithConcurrency(
           enabledPersonas,
           personaConcurrency,
-          (persona) => reviewWithModel(persona, reviewDiffFiles, prContext, sessionContext, modelConfig)
+          (persona, personaIndex) => reviewWithModel(
+            persona,
+            reviewDiffFiles,
+            prContext,
+            sessionContext,
+            { ...modelConfig, transports: transportPlans[personaIndex] },
+          )
         );
       }
 
@@ -5271,7 +5655,10 @@ module.exports = {
   DEFAULT_MODEL,
   OLLAMA_MAX_IN_FLIGHT_REQUESTS,
   OLLAMA_CAPACITY_WAIT_TIMEOUT_MS,
+  SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL,
   AsyncSemaphore,
+  ProviderCapacityManager,
+  globalProviderCapacityManager,
   DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
   DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS,
@@ -5337,11 +5724,19 @@ module.exports = {
   isSubscriptionLane,
   calculateSafeDiffCapacity,
   resolvePersonaConcurrency,
+  resolveDispatchMode,
+  buildTransportDispatchPlans,
+  summarizeTransportDispatchPlans,
   mapWithConcurrency,
   getStaticModelContext,
   formatCost,
   normalizeTelemetryDigest,
   requestFingerprintForAttempt,
+  resolveTransportCapacityPolicy,
+  resolveTransportRateLimitPolicy,
+  normalizeSyntheticQuotaSnapshot,
+  probeSyntheticQuota,
+  probeConfiguredTransportQuotas,
   shaPartitionManager,
   main,
 };

@@ -440,6 +440,54 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
   });
 });
 
+describe('capacity-aware transport dispatch', () => {
+  const transports = [
+    { name: 'openrouter-primary', dispatchWeight: 3 },
+    { name: 'synthetic', dispatchWeight: 1 },
+    { name: 'gemini', dispatchWeight: 1 },
+    { name: 'ollama', dispatchWeight: 1 },
+  ];
+
+  it('preserves the shared transport order in ordered mode', () => {
+    const plans = pipeline.buildTransportDispatchPlans(3, transports, 'ordered', 'head-a');
+    expect(plans).toHaveLength(3);
+    expect(plans.every((plan: any[]) => plan.map((transport) => transport.name).join(',') ===
+      'openrouter-primary,synthetic,gemini,ollama')).toBe(true);
+  });
+
+  it('stripes six persona lanes according to 3:1:1:1 weights without multiplying calls', () => {
+    const plans = pipeline.buildTransportDispatchPlans(6, transports, 'striped', 'head-a');
+    const counts = plans.map((plan: any[]) => plan[0].name)
+      .reduce((result: Record<string, number>, name: string) => {
+        result[name] = (result[name] || 0) + 1;
+        return result;
+      }, {});
+
+    expect(plans).toHaveLength(6);
+    expect(counts).toEqual({
+      'openrouter-primary': 3,
+      synthetic: 1,
+      gemini: 1,
+      ollama: 1,
+    });
+    expect(plans.every((plan: any[]) => new Set(plan.map((transport) => transport.name)).size === 4)).toBe(true);
+  });
+
+  it('is deterministic for an exact head while rotating the primary sequence across heads', () => {
+    const first = pipeline.buildTransportDispatchPlans(6, transports, 'striped', 'head-a');
+    const repeated = pipeline.buildTransportDispatchPlans(6, transports, 'striped', 'head-a');
+    const changed = pipeline.buildTransportDispatchPlans(6, transports, 'striped', 'head-b');
+
+    expect(repeated.map((plan: any[]) => plan[0].name)).toEqual(first.map((plan: any[]) => plan[0].name));
+    expect(changed.map((plan: any[]) => plan[0].name)).not.toEqual(first.map((plan: any[]) => plan[0].name));
+  });
+
+  it('rejects unknown dispatch modes instead of silently changing routing', () => {
+    expect(() => pipeline.buildTransportDispatchPlans(1, transports, 'equal-ish', 'head-a'))
+      .toThrow('REVIEW_YETI_DISPATCH_MODE must be ordered or striped');
+  });
+});
+
 describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', () => {
   const workflow = fs.readFileSync(workflowPath, 'utf-8');
   const action = fs.readFileSync(path.join(rootRepoDir, 'action.yml'), 'utf-8');
