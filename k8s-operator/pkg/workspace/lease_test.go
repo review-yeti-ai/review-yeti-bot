@@ -239,6 +239,12 @@ func TestValidateLeaseForUseRequiresCurrentHolderAndUnexpiredLease(t *testing.T)
 	if err := workspace.ValidateLeaseForUse(lease, "ct-review-system", 123, 42, runID, now.Add(120*time.Second)); !errors.Is(err, workspace.ErrLeaseHeld) {
 		t.Fatalf("expired lease error = %v, want ErrLeaseHeld", err)
 	}
+	terminating := lease.DeepCopy()
+	deletionTimestamp := metav1.NewTime(now)
+	terminating.DeletionTimestamp = &deletionTimestamp
+	if err := workspace.ValidateLeaseForUse(terminating, "ct-review-system", 123, 42, runID, now); !errors.Is(err, workspace.ErrWorkspaceTerminating) {
+		t.Fatalf("terminating lease error = %v, want ErrWorkspaceTerminating", err)
+	}
 }
 
 func TestAcquireLeaseUsesAcquireTimeWhenRenewTimeIsAbsent(t *testing.T) {
