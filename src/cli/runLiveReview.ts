@@ -336,7 +336,9 @@ function panelQualificationConfig(model: string, timeoutMs: number): CtReviewCon
       charter: 'builtin:correctness',
       paths: ['**'],
       providers: ['qualification'],
-      maxTurns: 1,
+      // One extra turn is reserved for a strict structured-output correction. This is still
+      // bounded and does not permit open-ended exploration in the qualification worker.
+      maxTurns: 2,
     }],
     reviewers: {
       execution: 'personas',

@@ -162,7 +162,12 @@ describe('Empirical Verification: Persona Store Defaults & Onboarding Diagnostic
           const promptText = messages.map((m: any) => m.content).join('\n');
           const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
           const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
-          const content = `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify({ verdict: 'SHIP' })}\nCT_REVIEW_END:${reqNonce}`;
+          const responseBody = promptText.includes('Role: ARBITER')
+            ? { verdict: 'SHIP' }
+            : promptText.includes('Role: MODERATOR')
+              ? { decision: 'RECONCILED', findings: [] }
+              : { decision: 'APPROVE', findings: [] };
+          const content = `CT_REVIEW_BEGIN:${reqNonce}\n${JSON.stringify(responseBody)}\nCT_REVIEW_END:${reqNonce}`;
           return {
             ok: true,
             status: 200,

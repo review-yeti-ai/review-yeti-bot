@@ -390,6 +390,47 @@ function parseFenced<T>(content: string, expectedNonce: string): T {
   }
 }
 
+/**
+ * Fencing proves that the model used the requested nonce, but it does not prove that the
+ * fenced JSON is the result object rather than a copied prompt/schema example. Keep the role
+ * contracts explicit so malformed structured output gets one bounded corrective turn and then
+ * fails closed.
+ */
+function structuredOutputContractError(role: string, value: any): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return `${role} response must be a JSON object`;
+  if (role === 'persona') {
+    if (!['APPROVE', 'FINDINGS'].includes(value.decision)) return 'persona response must include top-level decision';
+    if (!Array.isArray(value.findings)) return 'persona response must include top-level findings array';
+    return null;
+  }
+  if (role === 'moderator') {
+    if (!Array.isArray(value.findings)) return 'moderator response must include top-level findings array';
+    return null;
+  }
+  if (role === 'arbiter') {
+    if (!['SHIP', 'FIX_FIRST', 'BLOCK', 'APPROVE', 'PASSED', 'SUCCESS', 'REJECT', 'FAILED'].includes(value.verdict)) {
+      return 'arbiter response must include top-level verdict';
+    }
+    if (typeof value.rationale !== 'string' || !value.rationale.trim()) return 'arbiter response must include non-empty rationale';
+  }
+  return null;
+}
+
+function structuredOutputCorrection(role: string, nonceValue: string, reason: string): string {
+  const shape = role === 'persona'
+    ? '{"decision":"APPROVE|FINDINGS","findings":[]}'
+    : role === 'moderator'
+      ? '{"decision":"RECONCILED","findings":[]}'
+      : '{"verdict":"SHIP|FIX_FIRST|BLOCK","rationale":"brief evidence-based explanation"}';
+  return [
+    'STRUCTURED_OUTPUT_CORRECTION',
+    `Your previous fenced response was invalid: ${reason}.`,
+    'Return the actual result object, not the request, an example, or an outputSchema wrapper.',
+    `Use exactly these top-level fields for the ${role} role: ${shape}.`,
+    `Keep the exact single nonce fence CT_REVIEW_BEGIN:${nonceValue} and CT_REVIEW_END:${nonceValue}.`,
+  ].join('\n');
+}
+
 function provider(config: CtReviewConfigV3, id: ProviderId) {
   const spec = config.reviewers.providers.find((candidate) => candidate.id === id && candidate.enabled);
   if (!spec) throw new PanelConfigurationError(`provider ${id} is not enabled`);
@@ -512,6 +553,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   let finalResponse: OpenRouterResponse | null = null;
   let parsedResult: any = null;
   let turnsCount = 1;
+  let structuredCorrectionAttempts = 0;
 
   for (let iter = 0; iter < maxTurns; iter++) {
     const response = await client.complete({
@@ -524,10 +566,20 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
     // Check if output contains valid fenced evaluation
     try {
-      parsedResult = parseFenced(response.content, requestNonce);
-      if (parsedResult) {
+      const candidate = parseFenced(response.content, requestNonce);
+      const contractError = structuredOutputContractError(role, candidate);
+      if (!contractError) {
+        parsedResult = candidate;
         break; // Successfully completed evaluation
       }
+      if (structuredCorrectionAttempts >= 1 || iter + 1 >= maxTurns) {
+        parsedResult = candidate;
+        break;
+      }
+      structuredCorrectionAttempts += 1;
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'user', content: structuredOutputCorrection(role, requestNonce, contractError) });
+      continue;
     } catch (fenceErr: any) {
       if (iter + 1 >= maxTurns) {
         break;
@@ -763,8 +815,9 @@ async function runPersona(
             maxTurns: effectiveMaxTurns,
             effort: effectiveEffort,
           });
-          if (!result.parsed) {
-            throw new Error('invalid empty persona response');
+          if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
+              || !Array.isArray(result.parsed.findings)) {
+            throw new Error('invalid persona response contract');
           }
           // The panel may receive either a unified diff or context-only file content. Strict
           // field validation is safe in both cases; final publication performs diff anchoring when
@@ -1043,7 +1096,7 @@ export async function executePersonaPanel(options: {
         personaEvidence: personas,
         outputSchema: { decision: 'RECONCILED', findings: [] },
       });
-      if (!run.parsed) {
+      if (!run.parsed || !Array.isArray(run.parsed.findings)) {
         throw new PanelConfigurationError('moderator returned invalid decision structure');
       }
       run.parsed.decision = 'RECONCILED';
