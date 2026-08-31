@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { executePersonaPanel } from '../panel/panelEngine';
@@ -23,6 +24,22 @@ const GH_EXEC_OPTIONS = {
 };
 
 export const RECEIPT_ONLY_PATH = '/workspace/.review-yeti/receipt.json';
+
+const WORKER_SELF_TEST_MODULES = [
+  '../gateway/openRouterClient',
+  '../panel/panelEngine',
+  '../github/publicationReceipt',
+  '../k8s/reviewJobProjection',
+  '../k8s/reviewJobDispatchEngine',
+  'node:child_process',
+] as const;
+
+export interface WorkerSelfTestResult {
+  ok: true;
+  nodeVersion: string;
+  runtimeManifestDigest: string;
+  loadedModuleIds: string[];
+}
 
 export interface ReceiptOnlyWorkerReceipt {
   version: 'ReviewYetiReceiptOnly.v1';
@@ -118,6 +135,45 @@ export async function runReceiptOnlyWorker(env: NodeJS.ProcessEnv = process.env)
   await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
   await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8' });
   return receipt;
+}
+
+/**
+ * Offline image self-test. It loads the worker's admitted code paths and verifies
+ * the staged runtime manifest without opening a provider, GitHub, or subprocess.
+ */
+export async function runWorkerSelfTest(
+  env: NodeJS.ProcessEnv = process.env,
+  moduleLoader: (moduleId: string) => unknown = require,
+): Promise<WorkerSelfTestResult> {
+  const manifestPath = env.REVIEW_RUNTIME_MANIFEST_PATH?.trim() || '/app/runtime-manifest.json';
+  let manifestBytes: Buffer;
+  try {
+    manifestBytes = await readFile(manifestPath);
+  } catch {
+    throw new Error('worker runtime manifest is missing');
+  }
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(manifestBytes.toString('utf8'));
+  } catch {
+    throw new Error('worker runtime manifest is invalid');
+  }
+  if (!manifest || typeof manifest !== 'object' ||
+      (manifest as { version?: unknown }).version !== 'ReviewYetiWorkerRuntime.v1' ||
+      (manifest as { entrypoint?: unknown }).entrypoint !== 'dist/cli/runLiveReview.js') {
+    throw new Error('worker runtime manifest is invalid');
+  }
+  const loadedModuleIds: string[] = [];
+  for (const moduleId of WORKER_SELF_TEST_MODULES) {
+    moduleLoader(moduleId);
+    loadedModuleIds.push(moduleId);
+  }
+  return {
+    ok: true,
+    nodeVersion: process.versions.node,
+    runtimeManifestDigest: createHash('sha256').update(manifestBytes).digest('hex'),
+    loadedModuleIds,
+  };
 }
 
 function requiredWorkerEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -296,7 +352,10 @@ export async function runWorker(
 }
 
 if (require.main === module) {
-  runWorker().catch((err) => {
+  const command = process.argv.includes('--self-test')
+    ? runWorkerSelfTest().then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
+    : runWorker();
+  command.catch((err) => {
     logger.error('Failed live ct-review-bot review dispatch', { error: err.message });
     process.exit(1);
   });

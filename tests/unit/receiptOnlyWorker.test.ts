@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fsMocks = vi.hoisted(() => ({
   mkdir: vi.fn(async () => undefined),
+  readFile: vi.fn(),
   writeFile: vi.fn(async () => undefined),
 }));
 const executionMocks = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ import {
   isReceiptOnlyWorker,
   runWorker,
   runReceiptOnlyWorker,
+  runWorkerSelfTest,
 } from '../../src/cli/runLiveReview';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
@@ -40,6 +42,7 @@ const validEnvironment = {
 describe('receipt-only worker contract', () => {
   beforeEach(() => {
     fsMocks.mkdir.mockClear();
+    fsMocks.readFile.mockReset();
     fsMocks.writeFile.mockClear();
     executionMocks.executePersonaPanel.mockClear();
     executionMocks.getGitHubAppInstallationToken.mockClear();
@@ -111,6 +114,27 @@ describe('receipt-only worker contract', () => {
     expect(liveRunner).toHaveBeenCalledOnce();
     expect(liveRunner).toHaveBeenCalledWith(environment);
     expect(fsMocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('self-tests the staged runtime manifest without network credentials', async () => {
+    const manifest = Buffer.from(JSON.stringify({
+      version: 'ReviewYetiWorkerRuntime.v1',
+      entrypoint: 'dist/cli/runLiveReview.js',
+      files: [],
+    }));
+    fsMocks.readFile.mockResolvedValue(manifest);
+
+    const moduleLoader = vi.fn();
+    const result = await runWorkerSelfTest(
+      { REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
+      moduleLoader,
+    );
+
+    expect(fsMocks.readFile).toHaveBeenCalledWith('/tmp/runtime-manifest.json');
+    expect(moduleLoader).toHaveBeenCalledTimes(6);
+    expect(result.ok).toBe(true);
+    expect(result.runtimeManifestDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(result.loadedModuleIds).toContain('../gateway/openRouterClient');
   });
 
   it.each([

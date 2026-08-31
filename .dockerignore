@@ -7,6 +7,17 @@ tests
 *.log
 tmp
 Dockerfile
+Dockerfile.worker
 .dockerignore
 .gitignore
 README.md
+CHANGELOG.md
+PROJECT.md
+TEST_INFRA.md
+TEST_READY.md
+docs
+assets
+eval-baselines
+fixtures
+legacy_public
+public
