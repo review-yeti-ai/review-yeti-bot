@@ -8,6 +8,7 @@ import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { OpenRouterClient } from '../gateway/openRouterClient';
+import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
@@ -54,6 +55,37 @@ export interface ReceiptOnlyWorkerReceipt {
   completedAt: string;
 }
 
+/**
+ * A provider qualification receipt proves only that one explicitly selected
+ * provider completed a streamed request. It intentionally contains no review
+ * content, credentials, GitHub writes, or publication decision.
+ */
+export interface ProviderQualificationReceipt {
+  version: 'ReviewYetiProviderQualification.v1';
+  status: 'succeeded';
+  runId: string;
+  deliveryId: string;
+  repositoryId: number;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  policyDigest: string;
+  configDigest: string;
+  providerId: string;
+  requestedModel: string;
+  resolvedModel: string;
+  responseDigest: string;
+  responseChars: number;
+  publicationMode: 'disabled';
+  providerCalls: 1;
+  githubWrites: 0;
+  usage: TokensUsed | null;
+  costUSD: number | null;
+  startedAt: string;
+  completedAt: string;
+}
+
 const RECEIPT_RUN_ID = /^run_[a-f0-9]{32}$/u;
 const RECEIPT_REPO = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const RECEIPT_SHA = /^[a-f0-9]{40}$/u;
@@ -69,6 +101,134 @@ function invalidReceiptContract(): Error {
 
 export function isReceiptOnlyWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return receiptValue(env, 'REVIEW_RECEIPT_ONLY') === 'true';
+}
+
+function providerQualificationRequested(env: NodeJS.ProcessEnv): boolean {
+  return receiptValue(env, 'REVIEW_PROVIDER_QUALIFICATION_ONLY') === 'true';
+}
+
+/** Provider qualification is opt-in and cannot share the receipt-only/live modes. */
+export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
+  return providerQualificationRequested(env)
+    && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
+}
+
+function invalidProviderQualificationContract(): Error {
+  return new Error('provider qualification worker contract is invalid');
+}
+
+function qualificationTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = receiptValue(env, 'REVIEW_QUALIFICATION_TIMEOUT_MS') || '120000';
+  const timeoutMs = Number(raw);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 900_000) {
+    throw invalidProviderQualificationContract();
+  }
+  return timeoutMs;
+}
+
+function providerQualificationIdentity(env: NodeJS.ProcessEnv): Omit<ProviderQualificationReceipt,
+  'version' | 'status' | 'providerId' | 'requestedModel' | 'resolvedModel' | 'responseDigest' |
+  'responseChars' | 'publicationMode' | 'providerCalls' | 'githubWrites' | 'usage' | 'costUSD' |
+  'startedAt' | 'completedAt'> {
+  const runId = receiptValue(env, 'REVIEW_RUN_ID');
+  const deliveryId = receiptValue(env, 'REVIEW_DELIVERY_ID');
+  const repositoryId = Number(receiptValue(env, 'REVIEW_REPOSITORY_ID'));
+  const repo = receiptValue(env, 'REVIEW_REPO');
+  const prNumber = Number(receiptValue(env, 'REVIEW_PR_NUMBER'));
+  const headSha = receiptValue(env, 'REVIEW_HEAD_SHA');
+  const baseSha = receiptValue(env, 'REVIEW_BASE_SHA');
+  const policyDigest = receiptValue(env, 'REVIEW_POLICY_DIGEST');
+  const configDigest = receiptValue(env, 'REVIEW_CONFIG_DIGEST');
+  if (!isProviderQualificationWorker(env)
+      || receiptValue(env, 'REVIEW_RECEIPT_PATH') !== RECEIPT_ONLY_PATH
+      || !RECEIPT_RUN_ID.test(runId) || deliveryId.length < 1 || deliveryId.length > 512
+      || !Number.isSafeInteger(repositoryId) || repositoryId < 1 || !RECEIPT_REPO.test(repo)
+      || !Number.isSafeInteger(prNumber) || prNumber < 1 || !RECEIPT_SHA.test(headSha)
+      || !RECEIPT_SHA.test(baseSha) || !RECEIPT_DIGEST.test(policyDigest)
+      || !RECEIPT_DIGEST.test(configDigest)) {
+    throw invalidProviderQualificationContract();
+  }
+  return { runId, deliveryId, repositoryId, repo, prNumber, headSha, baseSha, policyDigest, configDigest };
+}
+
+function qualificationModel(env: NodeJS.ProcessEnv): string {
+  const model = receiptValue(env, 'REVIEW_QUALIFICATION_MODEL');
+  if (!model || model === 'openrouter/auto' || model === 'auto') {
+    throw invalidProviderQualificationContract();
+  }
+  return model;
+}
+
+function qualificationClient(env: NodeJS.ProcessEnv): OpenRouterClient {
+  return new OpenRouterClient({
+    baseUrl: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    apiKey: env.OPENROUTER_REVIEW_FLEET_KEY
+      || env.OPENROUTER_PR_REVIEW_API_KEY
+      || requiredWorkerEnv(env, 'OPENROUTER_API_KEY'),
+  });
+}
+
+/**
+ * Run one bounded, streamed provider request without reading GitHub or
+ * invoking the panel/publication paths. This is the only worker mode that may
+ * use a provider during qualification, and it is never selected implicitly.
+ */
+export async function runProviderQualificationWorker(
+  env: NodeJS.ProcessEnv = process.env,
+  client: ReviewModelClient = qualificationClient(env),
+): Promise<ProviderQualificationReceipt> {
+  const identity = providerQualificationIdentity(env);
+  const model = qualificationModel(env);
+  const timeoutMs = qualificationTimeoutMs(env);
+  const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
+  const startedAt = new Date().toISOString();
+  const response = await client.complete({
+    model,
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a provider transport qualification endpoint. Do not inspect or review code. Return exactly the text QUALIFICATION_OK.',
+      },
+      { role: 'user', content: 'Reply with exactly QUALIFICATION_OK.' },
+    ],
+    timeoutMs,
+    ttftTimeoutMs: Math.min(timeoutMs, 30_000),
+    stream: true,
+    maxTokens: 256,
+    temperature: 0,
+    metadata: {
+      qualificationMode: 'provider-only',
+      runId: identity.runId,
+      providerId,
+    },
+    jobId: identity.runId,
+  });
+  if (!response.content.trim()) throw invalidProviderQualificationContract();
+  const completedAt = new Date().toISOString();
+  const costUSD = response.costUSD !== null && Number.isFinite(response.costUSD) && response.costUSD >= 0
+    ? response.costUSD
+    : null;
+  const receipt: ProviderQualificationReceipt = {
+    version: 'ReviewYetiProviderQualification.v1',
+    status: 'succeeded',
+    ...identity,
+    providerId,
+    requestedModel: model,
+    resolvedModel: response.model,
+    responseDigest: createHash('sha256').update(response.content).digest('hex'),
+    responseChars: response.content.length,
+    publicationMode: 'disabled',
+    providerCalls: 1,
+    githubWrites: 0,
+    usage: response.usage,
+    costUSD,
+    startedAt,
+    completedAt,
+  };
+  await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+  await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8' });
+  return receipt;
 }
 
 /**
@@ -332,7 +492,23 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
 export async function runWorker(
   env: NodeJS.ProcessEnv = process.env,
   liveRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = runLiveReviewMain,
+  providerRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
+    const receipt = await runProviderQualificationWorker(workerEnv);
+    logger.info('Provider qualification worker completed without GitHub reads or writes', {
+      runId: receipt.runId,
+      providerId: receipt.providerId,
+      requestedModel: receipt.requestedModel,
+      resolvedModel: receipt.resolvedModel,
+      responseChars: receipt.responseChars,
+      costUSD: receipt.costUSD,
+    });
+  },
 ): Promise<void> {
+  if (providerQualificationRequested(env)) {
+    if (!isProviderQualificationWorker(env)) throw invalidProviderQualificationContract();
+    await providerRunner(env);
+    return;
+  }
   if (isReceiptOnlyWorker(env)) {
     const receipt = await runReceiptOnlyWorker(env);
     logger.info('Receipt-only worker completed without provider or GitHub calls', {
