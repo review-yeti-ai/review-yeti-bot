@@ -2,7 +2,7 @@
 BINARY_NAME ?= bin/manager
 MAIN_SRC ?= main.go
 CRD_DIR ?= config/crd/bases
-CRD_FILE ?= $(CRD_DIR)/review.calltelemetry.com_prreviewjobs.yaml
+CRD_FILES ?= $(CRD_DIR)/review.calltelemetry.com_prreviewjobs.yaml $(CRD_DIR)/review-yeti.ai_prreviewjobs.yaml
 
 # Go Toolchain Settings
 GOOS ?= $(shell go env GOOS)
@@ -26,9 +26,11 @@ test:
 
 ## crd: Validate CRD manifest existence and structure
 crd:
-	@echo "==> Verifying CRD manifest..."
-	@test -f $(CRD_FILE) || (echo "Error: $(CRD_FILE) missing!" && exit 1)
-	@echo "CRD manifest $(CRD_FILE) present and verified."
+	@echo "==> Verifying CRD manifests..."
+	@for crd in $(CRD_FILES); do \
+		test -f "$$crd" || (echo "Error: $$crd missing!" && exit 1); \
+		echo "CRD manifest $$crd present and verified."; \
+	done
 
 ## clean: Clean build binaries and coverage outputs
 clean:
