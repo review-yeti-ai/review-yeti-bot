@@ -146,16 +146,7 @@ export function resolveWorkerAuthConfig(env: NodeJS.ProcessEnv = process.env): W
   };
 }
 
-async function main() {
-  if (isReceiptOnlyWorker()) {
-    const receipt = await runReceiptOnlyWorker();
-    logger.info('Receipt-only worker completed without provider or GitHub calls', {
-      runId: receipt.runId,
-      repositoryId: receipt.repositoryId,
-      prNumber: receipt.prNumber,
-    });
-    return;
-  }
+async function runLiveReviewMain() {
   const cliArgs = process.argv.slice(2);
   const positionalArgs = cliArgs.filter((value) => !value.startsWith('--'));
   const prValue = cliArgs.find((value) => value.startsWith('--pr='))?.slice('--pr='.length)
@@ -287,8 +278,22 @@ async function main() {
   logger.info('Successfully posted ct-review-bot review comment', { publishRes });
 }
 
+/** Entrypoint used by both the live worker and the receipt-only qualification. */
+export async function runWorker(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (isReceiptOnlyWorker(env)) {
+    const receipt = await runReceiptOnlyWorker(env);
+    logger.info('Receipt-only worker completed without provider or GitHub calls', {
+      runId: receipt.runId,
+      repositoryId: receipt.repositoryId,
+      prNumber: receipt.prNumber,
+    });
+    return;
+  }
+  return runLiveReviewMain();
+}
+
 if (require.main === module) {
-  main().catch((err) => {
+  runWorker().catch((err) => {
     logger.error('Failed live ct-review-bot review dispatch', { error: err.message });
     process.exit(1);
   });
