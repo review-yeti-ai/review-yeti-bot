@@ -21,6 +21,8 @@ import {
   runWorker,
   runReceiptOnlyWorker,
   runWorkerSelfTest,
+  isProviderQualificationWorker,
+  runProviderQualificationWorker,
 } from '../../src/cli/runLiveReview';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
@@ -210,5 +212,96 @@ describe('receipt-only worker contract', () => {
         ? 'not-a-time'
         : '2026-08-31T13:00:00.250Z';
     expect(() => buildReceiptOnlyWorkerReceipt(environment, effectiveStartedAt, completedAt)).toThrow(/receipt-only worker contract/i);
+  });
+});
+
+describe('provider qualification worker contract', () => {
+  const providerEnvironment = {
+    REVIEW_PROVIDER_QUALIFICATION_ONLY: 'true',
+    REVIEW_RECEIPT_ONLY: 'false',
+    REVIEW_PUBLICATION_MODE: 'disabled',
+    REVIEW_RECEIPT_PATH: receiptPathLiteral,
+    REVIEW_RUN_ID: 'run_22222222222222222222222222222222',
+    REVIEW_DELIVERY_ID: 'qualification:provider:1',
+    REVIEW_REPOSITORY_ID: '123',
+    REVIEW_REPO: 'calltelemetry/cisco-cdr',
+    REVIEW_PR_NUMBER: '42',
+    REVIEW_HEAD_SHA: 'a'.repeat(40),
+    REVIEW_BASE_SHA: 'b'.repeat(40),
+    REVIEW_POLICY_DIGEST: 'c'.repeat(64),
+    REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
+    REVIEW_QUALIFICATION_MODEL: 'deepseek/deepseek-v4-flash-0731',
+    REVIEW_QUALIFICATION_TIMEOUT_MS: '120000',
+    OPENROUTER_API_KEY: 'test-openrouter-key',
+  } as NodeJS.ProcessEnv;
+
+  it('requires an explicit provider qualification mode and never treats receipt-only as provider mode', () => {
+    expect(isProviderQualificationWorker(providerEnvironment)).toBe(true);
+    expect(isProviderQualificationWorker({ ...providerEnvironment, REVIEW_PROVIDER_QUALIFICATION_ONLY: 'false' })).toBe(false);
+    expect(isProviderQualificationWorker({ ...providerEnvironment, REVIEW_RECEIPT_ONLY: 'true' })).toBe(false);
+    expect(isProviderQualificationWorker({ ...providerEnvironment, REVIEW_PUBLICATION_MODE: 'enabled' })).toBe(false);
+  });
+
+  it('calls the injected provider once and persists only bounded telemetry with publication disabled', async () => {
+    const client = {
+      complete: vi.fn(async () => ({
+        model: 'deepseek/deepseek-v4-flash-0731',
+        content: 'QUALIFICATION_OK',
+        usage: { prompt: 31, completion: 7, total: 38 },
+        costUSD: 0.000123,
+        raw: { secret: 'must not be persisted' },
+      })),
+    };
+
+    const receipt = await runProviderQualificationWorker(providerEnvironment, client);
+
+    expect(client.complete).toHaveBeenCalledOnce();
+    expect(client.complete).toHaveBeenCalledWith(expect.objectContaining({
+      model: providerEnvironment.REVIEW_QUALIFICATION_MODEL,
+      stream: true,
+      maxTokens: 256,
+      timeoutMs: 120000,
+    }));
+    expect(receipt).toMatchObject({
+      version: 'ReviewYetiProviderQualification.v1',
+      status: 'succeeded',
+      providerId: 'openrouter',
+      requestedModel: providerEnvironment.REVIEW_QUALIFICATION_MODEL,
+      resolvedModel: 'deepseek/deepseek-v4-flash-0731',
+      publicationMode: 'disabled',
+      providerCalls: 1,
+      githubWrites: 0,
+      usage: { prompt: 31, completion: 7, total: 38 },
+      costUSD: 0.000123,
+    });
+    expect(receipt.responseDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(JSON.stringify(receipt)).not.toContain('must not be persisted');
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      receiptPathLiteral,
+      `${JSON.stringify(receipt)}\n`,
+      { encoding: 'utf8' },
+    );
+  });
+
+  it('routes provider qualification before live execution and keeps receipt-only routing unchanged', async () => {
+    const providerRunner = vi.fn(async () => undefined);
+    const liveRunner = vi.fn(async () => undefined);
+
+    await runWorker(providerEnvironment, liveRunner, providerRunner);
+
+    expect(providerRunner).toHaveBeenCalledWith(providerEnvironment);
+    expect(liveRunner).not.toHaveBeenCalled();
+    expect(executionMocks.executePersonaPanel).not.toHaveBeenCalled();
+    expect(executionMocks.getGitHubAppInstallationToken).not.toHaveBeenCalled();
+  });
+
+  it('fails closed instead of falling through to live execution for an invalid qualification mode', async () => {
+    const liveRunner = vi.fn(async () => undefined);
+
+    await expect(runWorker(
+      { ...providerEnvironment, REVIEW_PUBLICATION_MODE: 'enabled' },
+      liveRunner,
+    )).rejects.toThrow(/provider qualification worker contract/i);
+    expect(liveRunner).not.toHaveBeenCalled();
   });
 });
