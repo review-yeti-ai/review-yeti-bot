@@ -84,10 +84,11 @@ describe('isolated DOKS operator manifest', () => {
     const allowed = policies.find((candidate) => candidate.metadata.name === 'ct-review-yeti-operator-allowed');
     expect(allowed).toBeDefined();
     const ports = (allowed?.spec.egress ?? []).flatMap((entry: Manifest) => entry.ports ?? []).map((port: Manifest) => port.port);
-    expect(ports.sort((left: number, right: number) => left - right)).toEqual([53, 53, 443, 443]);
+    expect(ports.sort((left: number, right: number) => left - right)).toEqual([53, 53, 443, 443, 443]);
     const apiRules = (allowed?.spec.egress ?? []).filter((entry: Manifest) => entry.ports?.some((port: Manifest) => port.port === 443));
     expect(apiRules.map((entry: Manifest) => entry.to)).toEqual([
       [{ ipBlock: { cidr: '${KUBERNETES_SERVICE_IP}/32' } }],
+      [{ ipBlock: { cidr: '${KUBERNETES_API_ENDPOINT_CIDR}' } }],
       [{ ipBlock: { cidr: '${KUBERNETES_API_CIDR}' } }],
     ]);
     expect(JSON.stringify(allowed)).not.toContain('0.0.0.0/0');
