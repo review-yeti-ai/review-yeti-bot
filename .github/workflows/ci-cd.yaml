@@ -98,6 +98,48 @@ jobs:
           cache-from: type=gha,mode=max,scope=bot-${{ github.ref_name }}
           cache-to: type=gha,mode=max,scope=bot-${{ github.ref_name }}
 
+      - id: worker-base
+        name: Resolve reviewed worker base image
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^NODE_BASE_IMAGE=//p' .github/worker-image.env | head -n 1)"
+          [[ "$image" =~ ^node:24-bookworm-slim@sha256:[a-f0-9]{64}$ ]]
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - id: worker
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856 # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.worker
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
+          tags: ${{ env.REGISTRY }}/review-yeti-worker:${{ github.sha }}
+          cache-from: type=gha,mode=max,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+      - name: Run immutable worker self-test
+        env:
+          WORKER_IMAGE: ${{ env.REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKER_IMAGE" =~ ^${REGISTRY}/review-yeti-worker@sha256:[a-f0-9]{64}$ ]]
+          docker pull "$WORKER_IMAGE"
+          docker run --platform linux/amd64 --rm --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            "$WORKER_IMAGE" --self-test
+
+      - name: Enforce worker image size gates
+        env:
+          WORKER_IMAGE: ${{ env.REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
+          SERVICE_IMAGE: ${{ env.REGISTRY }}/ct-review-bot@${{ steps.bot.outputs.digest }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
+
       - id: omniroute
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856 # v7.3.0
         with:
