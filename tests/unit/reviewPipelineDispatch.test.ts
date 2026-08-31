@@ -455,6 +455,13 @@ describe('capacity-aware transport dispatch', () => {
       'openrouter-primary,synthetic,gemini,ollama')).toBe(true);
   });
 
+  it('preserves ordered dispatch when no mode is supplied', () => {
+    const plans = pipeline.buildTransportDispatchPlans(3, transports);
+    expect(plans).toHaveLength(3);
+    expect(plans.every((plan: any[]) => plan.map((transport) => transport.name).join(',') ===
+      'openrouter-primary,synthetic,gemini,ollama')).toBe(true);
+  });
+
   it('stripes six persona lanes according to 3:1:1:1 weights without multiplying calls', () => {
     const plans = pipeline.buildTransportDispatchPlans(6, transports, 'striped', 'head-a');
     const counts = plans.map((plan: any[]) => plan[0].name)
@@ -470,7 +477,28 @@ describe('capacity-aware transport dispatch', () => {
       gemini: 1,
       ollama: 1,
     });
-    expect(plans.every((plan: any[]) => new Set(plan.map((transport) => transport.name)).size === 4)).toBe(true);
+    expect(plans.map((plan: any[]) => plan.map((transport) => transport.name))).toEqual([
+      ['synthetic', 'gemini', 'ollama', 'openrouter-primary'],
+      ['gemini', 'ollama', 'openrouter-primary', 'synthetic'],
+      ['ollama', 'openrouter-primary', 'synthetic', 'gemini'],
+      ['openrouter-primary', 'synthetic', 'gemini', 'ollama'],
+      ['openrouter-primary', 'synthetic', 'gemini', 'ollama'],
+      ['openrouter-primary', 'synthetic', 'gemini', 'ollama'],
+    ]);
+  });
+
+  it('normalizes invalid dispatch weights to one without dropping primary eligibility', () => {
+    const invalidWeights = [
+      { name: 'zero', dispatchWeight: 0 },
+      { name: 'too-large', dispatchWeight: 26 },
+      { name: 'fractional', dispatchWeight: 1.5 },
+      { name: 'non-numeric', dispatchWeight: 'heavy' },
+    ];
+    const plans = pipeline.buildTransportDispatchPlans(4, invalidWeights, 'striped', 'invalid-weights');
+    const primaries = plans.map((plan: any[]) => plan[0].name);
+
+    expect(new Set(primaries)).toEqual(new Set(invalidWeights.map((transport) => transport.name)));
+    expect(plans.every((plan: any[]) => plan.length === invalidWeights.length)).toBe(true);
   });
 
   it('is deterministic for an exact head while rotating the primary sequence across heads', () => {
