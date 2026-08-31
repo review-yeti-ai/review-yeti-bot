@@ -23,6 +23,12 @@ owns provider routing. The service-only sections below—including `reviews`, `c
 `knowledge_base`, `path_filters`, `auto_review`, `dials`, and CodeRabbit translation—do not select
 the public Action panel.
 
+Managed callers may set the Action input `dispatch-mode` to `ordered` or `striped`. A striped
+transport plan can carry `dispatch_weight`, `max_in_flight`, `concurrency_scope`,
+`capacity_wait_timeout_ms`, `rate_limit`, and `quota_probe`. These fields are trusted caller policy,
+not pull-request configuration. Synthetic's supported quota probe identifier is `synthetic-v2`;
+its result is telemetry only and does not override explicit concurrency.
+
 ### Pi workflow runtime bootstrap
 
 `review-engine` defaults to `legacy`. Selecting `pi-workflow` requires the caller workflow to
