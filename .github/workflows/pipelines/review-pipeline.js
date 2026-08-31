@@ -2448,6 +2448,16 @@ function streamTotalDeadlineError(timeoutMs) {
   return error;
 }
 
+function hasMeaningfulFragments(fragments) {
+  return fragments.some((fragment) => typeof fragment === 'string' && fragment.trim().length > 0);
+}
+
+function annotateStreamTimeout(error, chunks, reasoningChunks) {
+  error.contentPresent = hasMeaningfulFragments(chunks);
+  error.reasoningPresent = hasMeaningfulFragments(reasoningChunks);
+  return error;
+}
+
 async function withStreamInactivityTimeout(promise, timeoutMs, onTimeout) {
   let timer = null;
   try {
@@ -2520,8 +2530,12 @@ async function readChatCompletionResponse(
       // not prove that the model has produced usable output. Keep the TTFT watchdog active until
       // content or reasoning arrives; otherwise an empty 200 stream can consume the full total
       // deadline before the bounded recovery path starts.
-      const hasUsableOutput = [...delta, ...message, ...deltaReasoning, ...messageReasoning]
-        .some((fragment) => typeof fragment === 'string' && fragment.trim().length > 0);
+      const hasUsableOutput = hasMeaningfulFragments([
+        ...delta,
+        ...message,
+        ...deltaReasoning,
+        ...messageReasoning,
+      ]);
       if (!receivedFirstData && hasUsableOutput) {
         receivedFirstData = true;
         onFirstData?.(Date.now() - streamStartedAt);
@@ -2565,7 +2579,7 @@ async function readChatCompletionResponse(
     // the total lane deadline instead of nondeterministically reporting stream inactivity.
     if (totalDeadlineAt && Date.now() + 10 >= totalDeadlineAt) {
       cancelStream();
-      throw streamTotalDeadlineError(totalTimeoutMs);
+      throw annotateStreamTimeout(streamTotalDeadlineError(totalTimeoutMs), chunks, reasoningChunks);
     }
   };
 
@@ -2587,10 +2601,10 @@ async function readChatCompletionResponse(
             reader.read(),
             readBudgetMs,
             () => {
-              const timeoutError = streamInactivityError(
+              const timeoutError = annotateStreamTimeout(streamInactivityError(
                 readBudgetMs,
                 receivedFirstData ? 'inactivity' : 'ttft',
-              );
+              ), chunks, reasoningChunks);
               // Reject the read race before cancellation can resolve reader.read() as { done: true }
               // and turn a watchdog failure into the misleading `empty_sse` outcome.
               queueMicrotask(() => {
@@ -3330,7 +3344,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           recordResponseAttempt('transport_error', {
             failureClass: attemptFailureClass,
             ...(timeoutKind ? { timeoutKind } : {}),
+            ...(typeof err.contentPresent === 'boolean' ? { contentPresent: err.contentPresent } : {}),
+            ...(typeof err.reasoningPresent === 'boolean' ? { reasoningPresent: err.reasoningPresent } : {}),
           });
+          if (typeof err.contentPresent === 'boolean') contentPresent = err.contentPresent;
+          if (typeof err.reasoningPresent === 'boolean') reasoningPresent = err.reasoningPresent;
           if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
           if (attemptFailureClass === 'timeout' && prepareOpenRouterTimeoutRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
