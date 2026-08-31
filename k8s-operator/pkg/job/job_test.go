@@ -145,6 +145,16 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if result.Spec.Template.Spec.SecurityContext == nil || result.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil || !*result.Spec.Template.Spec.SecurityContext.RunAsNonRoot {
 		t.Fatalf("pod security context is not non-root: %#v", result.Spec.Template.Spec.SecurityContext)
 	}
+	if result.Spec.Template.Spec.SecurityContext.RunAsUser == nil || *result.Spec.Template.Spec.SecurityContext.RunAsUser != 1000 ||
+		result.Spec.Template.Spec.SecurityContext.RunAsGroup == nil || *result.Spec.Template.Spec.SecurityContext.RunAsGroup != 1000 {
+		t.Fatalf("pod numeric identity = user %v/group %v, want 1000/1000", result.Spec.Template.Spec.SecurityContext.RunAsUser, result.Spec.Template.Spec.SecurityContext.RunAsGroup)
+	}
+	if result.Spec.Template.Spec.SecurityContext.FSGroup == nil || *result.Spec.Template.Spec.SecurityContext.FSGroup != 1000 {
+		t.Fatalf("pod fsGroup = %v, want 1000", result.Spec.Template.Spec.SecurityContext.FSGroup)
+	}
+	if result.Spec.Template.Spec.SecurityContext.FSGroupChangePolicy == nil || *result.Spec.Template.Spec.SecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("pod fsGroupChangePolicy = %v, want OnRootMismatch", result.Spec.Template.Spec.SecurityContext.FSGroupChangePolicy)
+	}
 	if result.Spec.Template.Spec.SecurityContext.SeccompProfile == nil || result.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Fatalf("pod seccomp profile = %#v", result.Spec.Template.Spec.SecurityContext.SeccompProfile)
 	}
