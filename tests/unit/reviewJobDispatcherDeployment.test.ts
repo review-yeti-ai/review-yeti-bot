@@ -20,6 +20,7 @@ function runDeployScript(overrides: Record<string, string> = {}) {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-job-dispatcher-test-'));
   const binaryDirectory = path.join(temporaryDirectory, 'bin');
   const kubectlLog = path.join(temporaryDirectory, 'kubectl.log');
+  const renderedManifest = path.join(temporaryDirectory, 'rendered.yaml');
   fs.mkdirSync(binaryDirectory);
   fs.writeFileSync(path.join(binaryDirectory, 'kubectl'), `#!/usr/bin/env bash
 set -euo pipefail
@@ -28,8 +29,20 @@ case "$*" in
   *"get secret ct-review-job-dispatcher-runtime"*) printf 'DATABASE_URL\\nDATABASE_CA_CERT\\n' ;;
   *"get deployment ct-review-job-dispatcher"*) printf '0' ;;
 esac
+if [[ "$*" == *"apply --server-side -f "*"/review-job-dispatcher.yaml" ]]; then
+  cp "\${@: -1}" "$FAKE_RENDERED_MANIFEST"
+fi
 `);
-  fs.writeFileSync(path.join(binaryDirectory, 'envsubst'), '#!/usr/bin/env bash\ncat\n');
+  fs.writeFileSync(path.join(binaryDirectory, 'envsubst'), [
+    '#!/usr/bin/env node',
+    "let input = '';",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data', (chunk) => { input += chunk; });",
+    "process.stdin.on('end', () => process.stdout.write(input",
+    "  .replaceAll('${CT_REVIEW_JOB_DISPATCHER_IMAGE}', process.env.CT_REVIEW_JOB_DISPATCHER_IMAGE || '')",
+    "  .replaceAll('${CT_REVIEW_WORKER_IMAGE}', process.env.CT_REVIEW_WORKER_IMAGE || '')));",
+    '',
+  ].join('\n'));
   fs.chmodSync(path.join(binaryDirectory, 'kubectl'), 0o755);
   fs.chmodSync(path.join(binaryDirectory, 'envsubst'), 0o755);
   const result = spawnSync('bash', ['scripts/deploy-review-job-dispatcher.sh'], {
@@ -39,14 +52,16 @@ esac
       ...process.env,
       PATH: `${binaryDirectory}:${process.env.PATH || ''}`,
       FAKE_KUBECTL_LOG: kubectlLog,
+      FAKE_RENDERED_MANIFEST: renderedManifest,
       CT_REVIEW_JOB_DISPATCHER_IMAGE: dispatcherImage,
       CT_REVIEW_WORKER_IMAGE: workerImage,
       ...overrides,
     },
   });
   const calls = fs.existsSync(kubectlLog) ? fs.readFileSync(kubectlLog, 'utf8') : '';
+  const rendered = fs.existsSync(renderedManifest) ? fs.readFileSync(renderedManifest, 'utf8') : '';
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
-  return { ...result, calls };
+  return { ...result, calls, rendered };
 }
 
 describe('zero-replica review job dispatcher deployment', () => {
@@ -144,6 +159,9 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(result.calls).toContain('apply --server-side -f');
     expect(result.calls).toContain("get deployment ct-review-job-dispatcher -o jsonpath={.spec.replicas}");
     expect(result.stdout).toContain('zero replicas');
+    expect(result.rendered).toContain(`image: ${dispatcherImage}`);
+    expect(result.rendered).toContain(`REVIEW_JOB_WORKER_IMAGE: "${workerImage}"`);
+    expect(result.rendered).not.toContain('${');
   });
 
   it.each([
