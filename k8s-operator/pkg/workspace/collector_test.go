@@ -1,0 +1,719 @@
+package workspace_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
+)
+
+const collectorNamespace = "ct-review-system"
+
+func TestTouchPVCResetsIdleWindowOnlyForSamePR(t *testing.T) {
+	ctx := context.Background()
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(25 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	pvc.ResourceVersion = "7"
+	kube := fakeClient(t, pvc)
+	collector := workspace.NewCollector(kube)
+
+	if err := collector.Touch(ctx, pvc.DeepCopy(), collectorNamespace, 123, 42, now); err != nil {
+		t.Fatalf("touch same PR workspace: %v", err)
+	}
+	stored := &corev1.PersistentVolumeClaim{}
+	if err := kube.Get(ctx, types.NamespacedName{Namespace: collectorNamespace, Name: pvc.Name}, stored); err != nil {
+		t.Fatalf("get touched PVC: %v", err)
+	}
+	if got := stored.Annotations[workspace.LastUsedAtAnnotation]; got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("last-used-at = %q, want %q", got, now.Format(time.RFC3339Nano))
+	}
+
+	foreign := stored.DeepCopy()
+	if err := collector.Touch(ctx, foreign, collectorNamespace, 123, 43, now.Add(time.Minute)); !errors.Is(err, workspace.ErrWorkspaceIdentity) {
+		t.Fatalf("cross-PR touch error = %v, want ErrWorkspaceIdentity", err)
+	}
+	unchanged := &corev1.PersistentVolumeClaim{}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(stored), unchanged); err != nil {
+		t.Fatal(err)
+	}
+	if got := unchanged.Annotations[workspace.LastUsedAtAnnotation]; got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("cross-PR touch mutated last-used-at to %q", got)
+	}
+}
+
+func TestTouchPVCRejectsClockRollbackAndStaleResourceVersion(t *testing.T) {
+	ctx := context.Background()
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	pvc.ResourceVersion = "7"
+	kube := fakeClient(t, pvc)
+	collector := workspace.NewCollector(kube)
+
+	if err := collector.Touch(ctx, pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(-time.Nanosecond)); !errors.Is(err, workspace.ErrWorkspaceClock) {
+		t.Fatalf("clock rollback error = %v, want ErrWorkspaceClock", err)
+	}
+	stale := pvc.DeepCopy()
+	stale.ResourceVersion = "6"
+	if err := collector.Touch(ctx, stale, collectorNamespace, 123, 42, lastUsed.Add(time.Minute)); !apierrors.IsConflict(err) {
+		t.Fatalf("stale touch error = %v, want conflict", err)
+	}
+}
+
+func TestReclaimRetainsAt1799SecondsAndDeletesAt1800(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+
+	t.Run("closed PR trigger at 1799 seconds remains retained", func(t *testing.T) {
+		pvc := mustPVC(t, 123, 42, lastUsed)
+		kube := fakeClient(t, pvc)
+		result, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(1799*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Reclaimed || result.RequeueAfter != time.Second || result.Reason != workspace.RetainedIdleWindow {
+			t.Fatalf("result = %#v, want retained for one second", result)
+		}
+		assertPVCExists(t, kube, pvc.Name)
+	})
+
+	t.Run("idle workspace is deleted at exactly 1800 seconds", func(t *testing.T) {
+		pvc := mustPVC(t, 123, 42, lastUsed)
+		pvc.ResourceVersion = "11"
+		base := fakeClient(t, pvc)
+		capturing := &deleteCaptureClient{Client: base}
+		result, err := workspace.NewCollector(capturing).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(1800*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Reclaimed || result.Reason != workspace.ReclaimedIdleWorkspace {
+			t.Fatalf("result = %#v, want reclaimed", result)
+		}
+		if capturing.pvcResourceVersion == "" || capturing.pvcResourceVersion != capturing.pvcObjectResourceVersion {
+			t.Fatalf("PVC delete precondition = %q, object resourceVersion = %q", capturing.pvcResourceVersion, capturing.pvcObjectResourceVersion)
+		}
+		if capturing.leaseResourceVersion == "" || capturing.leaseResourceVersion != capturing.leaseObjectResourceVersion {
+			t.Fatalf("Lease delete precondition = %q, object resourceVersion = %q", capturing.leaseResourceVersion, capturing.leaseObjectResourceVersion)
+		}
+		stored := &corev1.PersistentVolumeClaim{}
+		err = base.Get(context.Background(), client.ObjectKeyFromObject(pvc), stored)
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("deleted PVC lookup error = %v, want not found", err)
+		}
+	})
+}
+
+func TestReclaimIsBlockedByActiveLeaseOrNonterminalPod(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+
+	tests := []struct {
+		name   string
+		object client.Object
+		reason workspace.ReclaimReason
+	}{
+		{name: "active lease", object: activeLease(t, 123, 42, now), reason: workspace.RetainedActiveLease},
+		{name: "pending pod", object: workspacePod(123, 42, corev1.PodPending), reason: workspace.RetainedActivePod},
+		{name: "running pod", object: workspacePod(123, 42, corev1.PodRunning), reason: workspace.RetainedActivePod},
+		{name: "unknown pod", object: workspacePod(123, 42, corev1.PodUnknown), reason: workspace.RetainedActivePod},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pvc := mustPVC(t, 123, 42, lastUsed)
+			kube := fakeClient(t, pvc, test.object)
+			result, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Reclaimed || result.Reason != test.reason {
+				t.Fatalf("result = %#v, want retained for %s", result, test.reason)
+			}
+			stored := assertPVCExists(t, kube, pvc.Name)
+			if !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+				t.Fatal("protection finalizer removed while workspace was active")
+			}
+		})
+	}
+}
+
+func TestReclaimAllowsExpiredLeaseAndTerminalPods(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	lease := activeLease(t, 123, 42, lastUsed)
+	*lease.Spec.LeaseDurationSeconds = 60
+	succeeded := workspacePod(123, 42, corev1.PodSucceeded)
+	succeeded.Name = "succeeded"
+	failed := workspacePod(123, 42, corev1.PodFailed)
+	failed.Name = "failed"
+	kube := fakeClient(t, pvc, lease, succeeded, failed)
+
+	result, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reclaimed {
+		t.Fatalf("result = %#v, want reclaimed", result)
+	}
+}
+
+func TestReclaimCannotRaceALeaseAcquiredDuringPodCheck(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	racing := &podListHookClient{
+		Client: base,
+		hook: func(ctx context.Context) error {
+			return base.Create(ctx, activeLease(t, 123, 42, now))
+		},
+	}
+
+	result, err := workspace.NewCollector(racing).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reclaimed || result.Reason != workspace.RetainedActiveLease {
+		t.Fatalf("result = %#v, want active lease retention", result)
+	}
+	stored := assertPVCExists(t, base, pvc.Name)
+	if !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+		t.Fatal("lease race removed workspace protection")
+	}
+}
+
+func TestReclaimRechecksPodsAfterClaimingLease(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	racing := &leaseCreateHookClient{
+		Client: base,
+		hook: func(ctx context.Context) error {
+			return base.Create(ctx, workspacePod(123, 42, corev1.PodRunning))
+		},
+	}
+
+	result, err := workspace.NewCollector(racing).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reclaimed || result.Reason != workspace.RetainedActivePod {
+		t.Fatalf("result = %#v, want active pod retention", result)
+	}
+	stored := assertPVCExists(t, base, pvc.Name)
+	if !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+		t.Fatal("pod race removed workspace protection")
+	}
+}
+
+func TestReclaimFailsClosedBeforeRemovingFinalizer(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+
+	tests := []struct {
+		name   string
+		mutate func(*corev1.PersistentVolumeClaim) client.Object
+	}{
+		{
+			name: "future last-used timestamp",
+			mutate: func(pvc *corev1.PersistentVolumeClaim) client.Object {
+				pvc.Annotations[workspace.LastUsedAtAnnotation] = now.Add(time.Second).Format(time.RFC3339Nano)
+				return nil
+			},
+		},
+		{
+			name: "tampered active pod metadata",
+			mutate: func(_ *corev1.PersistentVolumeClaim) client.Object {
+				pod := workspacePod(123, 42, corev1.PodRunning)
+				pod.Annotations[workspace.WorkspaceKeyAnnotation] = workspace.Key(123, 43)
+				return pod
+			},
+		},
+		{
+			name: "tampered active pod label",
+			mutate: func(_ *corev1.PersistentVolumeClaim) client.Object {
+				pod := workspacePod(123, 42, corev1.PodRunning)
+				pod.Labels[workspace.RepositoryIDLabel] = "999"
+				return pod
+			},
+		},
+		{
+			name: "malformed lease",
+			mutate: func(_ *corev1.PersistentVolumeClaim) client.Object {
+				lease := activeLease(t, 123, 42, now)
+				lease.Spec.RenewTime = nil
+				lease.Spec.AcquireTime = nil
+				return lease
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pvc := mustPVC(t, 123, 42, lastUsed)
+			extra := test.mutate(pvc)
+			objects := []client.Object{pvc}
+			if extra != nil {
+				objects = append(objects, extra)
+			}
+			kube := fakeClient(t, objects...)
+			if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); err == nil {
+				t.Fatal("unsafe state must fail closed")
+			}
+			stored := assertPVCExists(t, kube, pvc.Name)
+			if !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+				t.Fatal("protection finalizer removed before safety checks passed")
+			}
+		})
+	}
+}
+
+func TestCollectorRejectsInvalidInvocation(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	pvc := mustPVC(t, 123, 42, now)
+	var nilCollector *workspace.Collector
+
+	touchTests := []struct {
+		name      string
+		collector *workspace.Collector
+		pvc       *corev1.PersistentVolumeClaim
+		now       time.Time
+	}{
+		{name: "nil collector", collector: nilCollector, pvc: pvc, now: now},
+		{name: "nil client", collector: workspace.NewCollector(nil), pvc: pvc, now: now},
+		{name: "zero time", collector: workspace.NewCollector(fakeClient(t, pvc)), pvc: pvc, now: time.Time{}},
+		{name: "nil PVC", collector: workspace.NewCollector(fakeClient(t, pvc)), pvc: nil, now: now},
+	}
+	for _, test := range touchTests {
+		t.Run("touch "+test.name, func(t *testing.T) {
+			if err := test.collector.Touch(context.Background(), test.pvc, collectorNamespace, 123, 42, test.now); err == nil {
+				t.Fatal("invalid touch must fail")
+			}
+		})
+	}
+
+	reclaimTests := []struct {
+		name      string
+		collector *workspace.Collector
+		pvc       *corev1.PersistentVolumeClaim
+		namespace string
+		now       time.Time
+	}{
+		{name: "nil collector", collector: nilCollector, pvc: pvc, namespace: collectorNamespace, now: now},
+		{name: "nil client", collector: workspace.NewCollector(nil), pvc: pvc, namespace: collectorNamespace, now: now},
+		{name: "zero time", collector: workspace.NewCollector(fakeClient(t, pvc)), pvc: pvc, namespace: collectorNamespace},
+		{name: "invalid namespace", collector: workspace.NewCollector(fakeClient(t, pvc)), pvc: pvc, namespace: "INVALID_NAMESPACE", now: now},
+		{name: "nil PVC", collector: workspace.NewCollector(fakeClient(t, pvc)), pvc: nil, namespace: collectorNamespace, now: now},
+	}
+	for _, test := range reclaimTests {
+		t.Run("reclaim "+test.name, func(t *testing.T) {
+			if _, err := test.collector.Reclaim(context.Background(), test.pvc, test.namespace, 123, 42, test.now); err == nil {
+				t.Fatal("invalid reclaim must fail")
+			}
+		})
+	}
+}
+
+func TestReclaimPreservesForeignFinalizers(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	pvc.Finalizers = append(pvc.Finalizers, "kubernetes.io/pvc-protection")
+	kube := fakeClient(t, pvc)
+
+	result, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reclaimed {
+		t.Fatalf("result = %#v, want accepted reclamation", result)
+	}
+	terminating := assertPVCExists(t, kube, pvc.Name)
+	if terminating.DeletionTimestamp == nil || contains(terminating.Finalizers, workspace.ProtectionFinalizer) || !contains(terminating.Finalizers, "kubernetes.io/pvc-protection") {
+		t.Fatalf("foreign finalizer handling = timestamp %v, finalizers %v", terminating.DeletionTimestamp, terminating.Finalizers)
+	}
+}
+
+func TestReclaimPropagatesKubernetesFailures(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	injected := errors.New("injected kubernetes failure")
+
+	tests := []struct {
+		name          string
+		existingLease func(*testing.T) *coordinationv1.Lease
+		configure     func(*operationErrorClient)
+		wantReclaimed bool
+	}{
+		{name: "pod list", configure: func(c *operationErrorClient) { c.listPodsErr = injected }},
+		{name: "lease get", configure: func(c *operationErrorClient) { c.getLeaseErr = injected }},
+		{name: "lease create", configure: func(c *operationErrorClient) { c.createLeaseErr = injected }},
+		{
+			name: "lease update",
+			existingLease: func(t *testing.T) *coordinationv1.Lease {
+				lease := activeLease(t, 123, 42, lastUsed)
+				*lease.Spec.LeaseDurationSeconds = 60
+				return lease
+			},
+			configure: func(c *operationErrorClient) { c.updateLeaseErr = injected },
+		},
+		{name: "PVC update", configure: func(c *operationErrorClient) { c.updatePVCErr = injected }},
+		{name: "PVC update loses resourceVersion", configure: func(c *operationErrorClient) { c.clearPVCUpdateResourceVersion = true }},
+		{name: "PVC delete", configure: func(c *operationErrorClient) { c.deletePVCErr = injected }},
+		{name: "lease create loses resourceVersion", configure: func(c *operationErrorClient) { c.clearLeaseCreateResourceVersion = true }, wantReclaimed: true},
+		{name: "lease cleanup", configure: func(c *operationErrorClient) { c.deleteLeaseErr = injected }, wantReclaimed: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pvc := mustPVC(t, 123, 42, lastUsed)
+			objects := []client.Object{pvc}
+			if test.existingLease != nil {
+				objects = append(objects, test.existingLease(t))
+			}
+			base := fakeClient(t, objects...)
+			failing := &operationErrorClient{Client: base}
+			test.configure(failing)
+			result, err := workspace.NewCollector(failing).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now)
+			if err == nil {
+				t.Fatal("injected failure must be returned")
+			}
+			if result.Reclaimed != test.wantReclaimed {
+				t.Fatalf("reclaimed = %v, want %v", result.Reclaimed, test.wantReclaimed)
+			}
+		})
+	}
+}
+
+func TestReclaimTreatsMissingLeaseDuringCleanupAsComplete(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	kube := &operationErrorClient{Client: base, deleteLeaseErr: apierrors.NewNotFound(coordinationv1.Resource("leases"), "gone")}
+
+	result, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reclaimed {
+		t.Fatalf("result = %#v, want reclaimed", result)
+	}
+}
+
+func TestReclaimFailsClosedWhenPostClaimPodCheckFails(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	kube := &secondPodListErrorClient{Client: base, err: errors.New("post-claim pod list failed")}
+
+	if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(30*time.Minute)); err == nil {
+		t.Fatal("post-claim Pod list failure must fail closed")
+	}
+	stored := assertPVCExists(t, base, pvc.Name)
+	if !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+		t.Fatal("post-claim Pod list failure removed workspace protection")
+	}
+}
+
+func TestReclaimRejectsPodReturnedOutsideRequestedNamespace(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	kube := &wrongNamespacePodClient{Client: base, pod: workspacePod(123, 42, corev1.PodRunning)}
+	kube.pod.Namespace = "other-namespace"
+
+	if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(30*time.Minute)); !errors.Is(err, workspace.ErrWorkspaceIdentity) {
+		t.Fatalf("wrong-namespace Pod error = %v, want ErrWorkspaceIdentity", err)
+	}
+}
+
+func TestReclaimRejectsTerminatingOrMismatchedLease(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	tests := map[string]func(*coordinationv1.Lease){
+		"terminating": func(lease *coordinationv1.Lease) {
+			deleted := metav1.NewTime(now)
+			lease.DeletionTimestamp = &deleted
+			lease.Finalizers = []string{"test-protection"}
+		},
+		"mismatched identity": func(lease *coordinationv1.Lease) {
+			lease.Labels[workspace.RepositoryIDLabel] = "999"
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			pvc := mustPVC(t, 123, 42, lastUsed)
+			lease := activeLease(t, 123, 42, lastUsed)
+			*lease.Spec.LeaseDurationSeconds = 60
+			mutate(lease)
+			kube := fakeClient(t, pvc, lease)
+			if _, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); err == nil {
+				t.Fatal("unsafe lease must fail closed")
+			}
+			stored := assertPVCExists(t, kube, pvc.Name)
+			if !contains(stored.Finalizers, workspace.ProtectionFinalizer) {
+				t.Fatal("unsafe lease removed workspace protection")
+			}
+		})
+	}
+}
+
+func TestReclaimRenewsOwnLeaseAndIncrementsExistingTransitions(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	base := fakeClient(t, pvc)
+	racing := &leaseCreateHookClient{
+		Client: base,
+		hook: func(ctx context.Context) error {
+			return base.Create(ctx, workspacePod(123, 42, corev1.PodRunning))
+		},
+	}
+	if _, err := workspace.NewCollector(racing).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Delete(context.Background(), workspacePod(123, 42, corev1.PodRunning)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.NewCollector(base).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	pvc2 := mustPVC(t, 123, 43, lastUsed)
+	lease2 := activeLease(t, 123, 43, lastUsed)
+	transitions := int32(4)
+	lease2.Spec.LeaseTransitions = &transitions
+	*lease2.Spec.LeaseDurationSeconds = 60
+	kube2 := fakeClient(t, pvc2, lease2)
+	if _, err := workspace.NewCollector(kube2).Reclaim(context.Background(), pvc2.DeepCopy(), collectorNamespace, 123, 43, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type deleteCaptureClient struct {
+	client.Client
+	pvcResourceVersion         string
+	pvcObjectResourceVersion   string
+	leaseResourceVersion       string
+	leaseObjectResourceVersion string
+}
+
+type podListHookClient struct {
+	client.Client
+	hook func(context.Context) error
+	once bool
+}
+
+func (c *podListHookClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if _, ok := list.(*corev1.PodList); ok && !c.once {
+		c.once = true
+		if err := c.hook(ctx); err != nil {
+			return err
+		}
+	}
+	return c.Client.List(ctx, list, options...)
+}
+
+type leaseCreateHookClient struct {
+	client.Client
+	hook func(context.Context) error
+}
+
+func (c *leaseCreateHookClient) Create(ctx context.Context, object client.Object, options ...client.CreateOption) error {
+	if err := c.Client.Create(ctx, object, options...); err != nil {
+		return err
+	}
+	if _, ok := object.(*coordinationv1.Lease); ok {
+		return c.hook(ctx)
+	}
+	return nil
+}
+
+type operationErrorClient struct {
+	client.Client
+	getLeaseErr                     error
+	listPodsErr                     error
+	createLeaseErr                  error
+	updateLeaseErr                  error
+	updatePVCErr                    error
+	deletePVCErr                    error
+	deleteLeaseErr                  error
+	clearPVCUpdateResourceVersion   bool
+	clearLeaseCreateResourceVersion bool
+}
+
+type secondPodListErrorClient struct {
+	client.Client
+	err   error
+	calls int
+}
+
+func (c *secondPodListErrorClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if _, ok := list.(*corev1.PodList); ok {
+		c.calls++
+		if c.calls == 2 {
+			return c.err
+		}
+	}
+	return c.Client.List(ctx, list, options...)
+}
+
+type wrongNamespacePodClient struct {
+	client.Client
+	pod *corev1.Pod
+}
+
+func (c *wrongNamespacePodClient) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
+	if pods, ok := list.(*corev1.PodList); ok {
+		pods.Items = []corev1.Pod{*c.pod.DeepCopy()}
+		return nil
+	}
+	return errors.New("unexpected list type")
+}
+
+func (c *operationErrorClient) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if _, ok := object.(*coordinationv1.Lease); ok && c.getLeaseErr != nil {
+		return c.getLeaseErr
+	}
+	return c.Client.Get(ctx, key, object, options...)
+}
+
+func (c *operationErrorClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if _, ok := list.(*corev1.PodList); ok && c.listPodsErr != nil {
+		return c.listPodsErr
+	}
+	return c.Client.List(ctx, list, options...)
+}
+
+func (c *operationErrorClient) Create(ctx context.Context, object client.Object, options ...client.CreateOption) error {
+	if _, ok := object.(*coordinationv1.Lease); ok {
+		if c.createLeaseErr != nil {
+			return c.createLeaseErr
+		}
+		if err := c.Client.Create(ctx, object, options...); err != nil {
+			return err
+		}
+		if c.clearLeaseCreateResourceVersion {
+			object.SetResourceVersion("")
+		}
+		return nil
+	}
+	return c.Client.Create(ctx, object, options...)
+}
+
+func (c *operationErrorClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
+	switch object.(type) {
+	case *coordinationv1.Lease:
+		if c.updateLeaseErr != nil {
+			return c.updateLeaseErr
+		}
+	case *corev1.PersistentVolumeClaim:
+		if c.updatePVCErr != nil {
+			return c.updatePVCErr
+		}
+		if c.clearPVCUpdateResourceVersion {
+			object.SetResourceVersion("")
+			return nil
+		}
+	}
+	return c.Client.Update(ctx, object, options...)
+}
+
+func (c *operationErrorClient) Delete(ctx context.Context, object client.Object, options ...client.DeleteOption) error {
+	switch object.(type) {
+	case *coordinationv1.Lease:
+		if c.deleteLeaseErr != nil {
+			return c.deleteLeaseErr
+		}
+	case *corev1.PersistentVolumeClaim:
+		if c.deletePVCErr != nil {
+			return c.deletePVCErr
+		}
+	}
+	return c.Client.Delete(ctx, object, options...)
+}
+
+func (c *deleteCaptureClient) Delete(ctx context.Context, object client.Object, options ...client.DeleteOption) error {
+	deleteOptions := (&client.DeleteOptions{}).ApplyOptions(options)
+	if deleteOptions.Preconditions != nil && deleteOptions.Preconditions.ResourceVersion != nil {
+		switch object.(type) {
+		case *corev1.PersistentVolumeClaim:
+			c.pvcResourceVersion = *deleteOptions.Preconditions.ResourceVersion
+			c.pvcObjectResourceVersion = object.GetResourceVersion()
+		case *coordinationv1.Lease:
+			c.leaseResourceVersion = *deleteOptions.Preconditions.ResourceVersion
+			c.leaseObjectResourceVersion = object.GetResourceVersion()
+		}
+	}
+	return c.Client.Delete(ctx, object, options...)
+}
+
+func fakeClient(t *testing.T, objects ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinationv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+}
+
+func mustPVC(t *testing.T, repositoryID int64, prNumber int32, lastUsed time.Time) *corev1.PersistentVolumeClaim {
+	t.Helper()
+	pvc, err := workspace.BuildPVC(collectorNamespace, repositoryID, prNumber, lastUsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pvc
+}
+
+func activeLease(t *testing.T, repositoryID int64, prNumber int32, now time.Time) *coordinationv1.Lease {
+	t.Helper()
+	labels, annotations := workspace.Metadata(repositoryID, prNumber)
+	holder := "run_0123456789abcdef0123456789abcdef"
+	duration := int32(120)
+	renewed := metav1.NewMicroTime(now)
+	return &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: workspace.LeaseName(repositoryID, prNumber), Namespace: collectorNamespace,
+			Labels: labels, Annotations: annotations,
+		},
+		Spec: coordinationv1.LeaseSpec{HolderIdentity: &holder, LeaseDurationSeconds: &duration, RenewTime: &renewed},
+	}
+}
+
+func workspacePod(repositoryID int64, prNumber int32, phase corev1.PodPhase) *corev1.Pod {
+	labels, annotations := workspace.Metadata(repositoryID, prNumber)
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "review-pod", Namespace: collectorNamespace, Labels: labels, Annotations: annotations},
+		Status:     corev1.PodStatus{Phase: phase},
+	}
+}
+
+func assertPVCExists(t *testing.T, kube client.Client, name string) *corev1.PersistentVolumeClaim {
+	t.Helper()
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: collectorNamespace, Name: name}, pvc); err != nil {
+		t.Fatalf("PVC %s must exist: %v", name, err)
+	}
+	return pvc
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
