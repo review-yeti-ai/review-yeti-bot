@@ -103,19 +103,34 @@ describe('receipt-only worker contract', () => {
   });
 
   it.each([
+    ['receipt-only mode is unset', { REVIEW_RECEIPT_ONLY: undefined }],
     ['receipt-only mode is missing', { REVIEW_RECEIPT_ONLY: 'false' }],
     ['publication is enabled', { REVIEW_PUBLICATION_MODE: 'enabled' }],
     ['receipt path is outside the workspace', { REVIEW_RECEIPT_PATH: '/tmp/receipt.json' }],
     ['run ID is malformed', { REVIEW_RUN_ID: 'not-a-run-id' }],
+    ['delivery ID is empty', { REVIEW_DELIVERY_ID: '' }],
+    ['delivery ID is too long', { REVIEW_DELIVERY_ID: 'x'.repeat(513) }],
+    ['repository ID is zero', { REVIEW_REPOSITORY_ID: '0' }],
+    ['repository ID is not an integer', { REVIEW_REPOSITORY_ID: '1.5' }],
     ['repository is malformed', { REVIEW_REPO: 'calltelemetry' }],
+    ['pull request number is zero', { REVIEW_PR_NUMBER: '0' }],
+    ['pull request number is not an integer', { REVIEW_PR_NUMBER: '1.5' }],
     ['head SHA is malformed', { REVIEW_HEAD_SHA: 'A'.repeat(40) }],
+    ['base SHA is malformed', { REVIEW_BASE_SHA: 'B'.repeat(40) }],
+    ['policy digest is malformed', { REVIEW_POLICY_DIGEST: 'C'.repeat(64) }],
+    ['config digest is malformed', { REVIEW_CONFIG_DIGEST: 'D'.repeat(64) }],
+    ['started timestamp is invalid', {}],
+    ['completed timestamp is invalid', {}],
     ['timestamps are reversed', {}],
   ])('rejects %s', (_reason, override) => {
     const environment = { ...validEnvironment, ...override };
     const startedAt = '2026-08-31T13:00:00.000Z';
+    const effectiveStartedAt = _reason === 'started timestamp is invalid' ? 'not-a-time' : startedAt;
     const completedAt = _reason === 'timestamps are reversed'
       ? '2026-08-31T12:59:59.999Z'
-      : '2026-08-31T13:00:00.250Z';
-    expect(() => buildReceiptOnlyWorkerReceipt(environment, startedAt, completedAt)).toThrow(/receipt-only worker contract/i);
+      : _reason === 'completed timestamp is invalid'
+        ? 'not-a-time'
+        : '2026-08-31T13:00:00.250Z';
+    expect(() => buildReceiptOnlyWorkerReceipt(environment, effectiveStartedAt, completedAt)).toThrow(/receipt-only worker contract/i);
   });
 });
