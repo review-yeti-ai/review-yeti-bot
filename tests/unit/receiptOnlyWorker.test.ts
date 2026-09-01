@@ -463,14 +463,22 @@ describe('full-panel qualification worker contract', () => {
   });
 
   it('executes six scoped personas plus moderator and arbiter on a representative fixture', async () => {
+    let activeCalls = 0;
+    let maxActiveCalls = 0;
     const client = {
-      complete: vi.fn(async () => ({
-        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
-        content: 'qualification response',
-        usage: { prompt: 100, completion: 20, total: 120 },
-        costUSD: 0.001,
-        raw: {},
-      })),
+      complete: vi.fn(async () => {
+        activeCalls += 1;
+        maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        activeCalls -= 1;
+        return {
+          model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          content: 'qualification response',
+          usage: { prompt: 100, completion: 20, total: 120 },
+          costUSD: 0.001,
+          raw: {},
+        };
+      }),
     };
     const panelRunner = vi.fn(async (options: any) => {
       expect(options.config.personas).toHaveLength(6);
@@ -484,9 +492,11 @@ describe('full-panel qualification worker contract', () => {
         'src/auth/session.ts', 'src/dispatcher/worker.ts', 'Dockerfile', 'k8s/review-job.yaml',
         'package.json', 'LICENSE',
       ]));
-      for (let call = 0; call < 8; call += 1) {
-        await options.client.complete({ model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL, messages: [], stream: true });
-      }
+      await Promise.all(Array.from({ length: 8 }, () => options.client.complete({
+        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        messages: [],
+        stream: true,
+      })));
       const personaResult = (id: string) => ({
         id, required: true, providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
         decision: 'APPROVE' as const, findings: [], usage: { prompt: 100, completion: 20, total: 120 },
@@ -514,6 +524,7 @@ describe('full-panel qualification worker contract', () => {
 
     expect(panelRunner).toHaveBeenCalledOnce();
     expect(client.complete).toHaveBeenCalledTimes(8);
+    expect(maxActiveCalls).toBeLessThanOrEqual(3);
     expect(receipt).toMatchObject({
       version: 'ReviewYetiPanelQualification.v1',
       profile: 'full-panel',
