@@ -434,6 +434,7 @@ const FULL_PANEL_QUALIFICATION_PERSONAS = [
   },
 ] as const;
 const FULL_PANEL_MIN_PROVIDER_CALLS = FULL_PANEL_QUALIFICATION_PERSONAS.length + 2;
+const FULL_PANEL_MAX_TURNS = 3;
 
 const FULL_PANEL_QUALIFICATION_FIXTURE = [
   {
@@ -537,7 +538,10 @@ function fullPanelQualificationConfig(model: string, timeoutMs: number): CtRevie
       charter: persona.charter,
       paths: [...persona.paths],
       providers: ['qualification'],
-      maxTurns: 2,
+      // One initial answer plus two bounded format/tool corrections. The
+      // qualification profile must exercise the same recovery behavior that
+      // production lanes rely on without permitting open-ended exploration.
+      maxTurns: FULL_PANEL_MAX_TURNS,
     })),
     reviewers: {
       execution: 'personas',
