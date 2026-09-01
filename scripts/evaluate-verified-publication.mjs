@@ -106,7 +106,7 @@ const TELEMETRY_ENUMS = Object.freeze({
   findingsSource: new Set(['content', 'reasoning', 'none']),
   contentSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
   reasoningSizeBucket: new Set(['empty', 'tiny', 'small', 'medium', 'large', 'oversize']),
-  timeoutKind: new Set(['request', 'ttft', 'inactivity', 'total']),
+  timeoutKind: new Set(['connect', 'request', 'ttft', 'inactivity', 'total']),
 });
 const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_validated_json', 'unknown']);
 const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
@@ -114,7 +114,7 @@ const ATTEMPT_OUTCOMES = new Set(['parsed', 'malformed_output', 'http_error', 'p
 // OpenRouter may report the resolved upstream adapter separately from the gateway transport.
 // OpenInference is a legitimate response-reported label seen in the retained evaluation
 // corpus and must survive the sanitized attempt boundary for attribution checks.
-const ATTEMPT_PROVIDERS = new Set(['fireworks', 'ollama', 'openrouter', 'openrouter-fallback', 'openinference', 'anthropic', 'gemini', 'openai', 'default']);
+const ATTEMPT_PROVIDERS = new Set(['fireworks', 'ollama', 'synthetic', 'openrouter', 'openrouter-fallback', 'openinference', 'anthropic', 'gemini', 'openai', 'default']);
 const ATTEMPT_FAILURE_CLASSES = new Set([
   'http_429',
   'http_4xx',

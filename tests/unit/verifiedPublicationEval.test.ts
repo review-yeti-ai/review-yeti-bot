@@ -329,6 +329,32 @@ describe('grading mirror', () => {
     });
   });
 
+  it('retains connect-timeout attribution in bounded qualification telemetry', () => {
+    expect(captureLaneTelemetry({
+      provider: 'synthetic',
+      transport: 'synthetic',
+      responseAttempts: [{
+        attempt: 1,
+        outcome: 'transport_error',
+        provider: 'synthetic',
+        transport: 'synthetic',
+        failureClass: 'timeout',
+        timeoutKind: 'connect',
+      }],
+    })).toEqual({
+      provider: 'synthetic',
+      transport: 'synthetic',
+      responseAttempts: [{
+        attempt: 1,
+        outcome: 'transport_error',
+        provider: 'synthetic',
+        transport: 'synthetic',
+        failureClass: 'timeout',
+        timeoutKind: 'connect',
+      }],
+    });
+  });
+
   it('retains only sanitized OpenRouter router metadata in lane telemetry', () => {
     expect(captureLaneTelemetry({
       provider: 'openrouter',

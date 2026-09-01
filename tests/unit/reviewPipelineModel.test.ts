@@ -233,7 +233,7 @@ describe('resolveModelConfig', () => {
     expect(cfg.transports[2].model).toBe('openai/gpt-5.6-luna:high');
   });
 
-  it('retains central stream and reasoning fields in an explicit transport plan', () => {
+  it('retains central stream, reasoning, and timeout fields in an explicit transport plan', () => {
     const cfg = resolveModelConfig({
       FIREWORKS_PR_REVIEW_API_KEY: 'fw-key',
       REVIEW_YETI_TRANSPORTS: JSON.stringify([{
@@ -246,6 +246,10 @@ describe('resolveModelConfig', () => {
         reasoning_effort: 'high',
         perf_metrics_in_response: true,
         structured_output_mode: 'json_schema',
+        timeout_ms: 120000,
+        connect_timeout_ms: 15000,
+        ttft_ms: 60000,
+        stall_ms: 20000,
       }]),
     });
 
@@ -255,6 +259,10 @@ describe('resolveModelConfig', () => {
       reasoningEffort: 'high',
       perfMetricsInResponse: true,
       structuredOutputMode: 'json_schema',
+      timeoutMs: 120000,
+      connectTimeoutMs: 15000,
+      ttftTimeoutMs: 60000,
+      stallTimeoutMs: 20000,
     });
   });
 
@@ -910,6 +918,150 @@ describe('reviewWithModel', () => {
       stream: true,
       reasoning: { effort: 'high' },
     });
+  });
+
+  it('counts native OpenRouter SDK reasoning chunks as meaningful TTFT output', async () => {
+    const encoder = new TextEncoder();
+    let cancelled = false;
+    const reasoningFrame = `data: ${JSON.stringify({
+      id: 'chatcmpl-sdk-reasoning',
+      object: 'chat.completion.chunk',
+      created: 1_700_000_000,
+      model: 'deepseek/deepseek-v4-flash-0731',
+      choices: [{
+        index: 0,
+        finish_reason: null,
+        delta: { reasoning_details: [{ type: 'reasoning.text', text: 'checking the diff' }] },
+      }],
+    })}\n\n`;
+    const terminalFrames = [
+      JSON.stringify({
+        id: 'chatcmpl-sdk-reasoning',
+        object: 'chat.completion.chunk',
+        created: 1_700_000_000,
+        model: 'deepseek/deepseek-v4-flash-0731',
+        choices: [{ index: 0, finish_reason: null, delta: { content: '{"findings":[]}' } }],
+      }),
+      '[DONE]',
+    ].map((frame) => `data: ${frame}\n\n`).join('');
+    const fetchImplementation = async () => new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(reasoningFrame));
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        if (cancelled) return;
+        controller.enqueue(encoder.encode(terminalFrames));
+        controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-primary',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+        timeoutMs: 500,
+        ttftTimeoutMs: 50,
+      }],
+    });
+
+    expect(result).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      reasoningPresent: true,
+      attemptCount: 1,
+      ttftMs: expect.any(Number),
+    });
+  });
+
+  it('classifies the response-header watchdog as a connect timeout with its real deadline', async () => {
+    const fetchImplementation = async (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const rejectOnAbort = () => reject(init.signal?.reason || new DOMException('aborted', 'AbortError'));
+      if (init.signal?.aborted) rejectOnAbort();
+      else init.signal?.addEventListener('abort', rejectOnAbort, { once: true });
+    });
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'synthetic',
+        baseUrl: 'https://api.synthetic.new/openai/v1',
+        apiKey: 'synthetic-key',
+        model: 'hf:zai-org/GLM-5.3-Flash',
+        stream: true,
+        timeoutMs: 300,
+        connectTimeoutMs: 40,
+      }],
+    });
+
+    expect(result.decision).toBe('ERROR');
+    expect(result.error).toContain('response headers exceeded connection deadline of 40ms');
+    expect(result.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: 'transport_error',
+        failureClass: 'timeout',
+        timeoutKind: 'connect',
+      }),
+    ]));
+  });
+
+  it('uses the central stall deadline after meaningful streamed output', async () => {
+    const config = resolveModelConfig({
+      SYNTHETIC_API_KEY: 'synthetic-key',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([{
+        name: 'synthetic',
+        base_url: 'https://api.synthetic.new/openai/v1',
+        api_key_env: 'SYNTHETIC_API_KEY',
+        model: 'hf:zai-org/GLM-5.3-Flash',
+        stream: true,
+        timeout_ms: 300,
+        connect_timeout_ms: 100,
+        ttft_ms: 100,
+        stall_ms: 40,
+      }]),
+    });
+    const fetchImplementation = async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'working' } }] })}\n\n`,
+        ));
+      },
+      cancel() {},
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+
+    const started = Date.now();
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...config,
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+    });
+
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(result.decision).toBe('ERROR');
+    expect(result.error).toContain('Streaming response inactive for 40ms');
+    expect(result.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: 'transport_error',
+        failureClass: 'timeout',
+        timeoutKind: 'inactivity',
+        reasoningPresent: true,
+      }),
+    ]));
   });
 
   it('recovers malformed primary OpenRouter output before using a fallback transport', async () => {
