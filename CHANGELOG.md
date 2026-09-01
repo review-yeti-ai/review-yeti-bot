@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.19.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.4...v1.19.5) (2026-09-01)
+
+
+### Bug Fixes
+
+* **qualification:** align DOKS panel with OpenRouter contract ([#375](https://github.com/review-yeti-ai/review-yeti-bot/issues/375)) ([6af33f7](https://github.com/review-yeti-ai/review-yeti-bot/commit/6af33f7e179bc8e99a8faec96dbd23654481c032))
+* **review:** keep timeout quarantine lane-local ([#377](https://github.com/review-yeti-ai/review-yeti-bot/issues/377)) ([5405565](https://github.com/review-yeti-ai/review-yeti-bot/commit/54055651a8f42d09014ef99c423a71982bf31e44))
+
 ## [1.19.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.3...v1.19.4) (2026-09-01)
 
 
