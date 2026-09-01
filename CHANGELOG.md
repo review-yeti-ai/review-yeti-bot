@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.19.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.18.0...v1.19.0) (2026-09-01)
+
+
+### Features
+
+* **review:** bound trusted repair delta reviews ([#362](https://github.com/review-yeti-ai/review-yeti-bot/issues/362)) ([663f666](https://github.com/review-yeti-ai/review-yeti-bot/commit/663f666be8eebe04b66dab5989c8ef11cfe970e7))
+
+
+### Bug Fixes
+
+* **doks:** make runtime install checks executable ([d6ee241](https://github.com/review-yeti-ai/review-yeti-bot/commit/d6ee2417a6f7a40686f415e4b2fe85f6ad44d73d))
+
 ## [1.18.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.17.0...v1.18.0) (2026-09-01)
 
 
