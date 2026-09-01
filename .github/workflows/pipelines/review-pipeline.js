@@ -74,7 +74,12 @@ try {
   }
 }
 
-const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
+const OPENROUTER_DIRECT_PRIMARY_MODEL = 'deepseek/deepseek-v4-flash-0731';
+const OPENROUTER_DIRECT_FALLBACK_MODEL = 'z-ai/glm-5.3-flash';
+const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
+const DEFAULT_MODEL = process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL !== OPENROUTER_AUTO_MODEL
+  ? process.env.OPENROUTER_MODEL
+  : OPENROUTER_DIRECT_PRIMARY_MODEL;
 const DEFAULT_PERSONA_CONCURRENCY = 3;
 const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 16;
 const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
@@ -1117,6 +1122,17 @@ function hasExplicitTransportHandoff(env = process.env) {
   );
 }
 
+function resolveDirectOpenRouterModel(value) {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return normalized && normalized !== OPENROUTER_AUTO_MODEL
+    ? normalized
+    : OPENROUTER_DIRECT_PRIMARY_MODEL;
+}
+
+function isOpenRouterEndpoint(value) {
+  return String(value || '').replace(/\/+$/, '').toLowerCase() === 'https://openrouter.ai/api/v1';
+}
+
 function resolveModelConfig(env = process.env) {
   const apiKey = env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || env.OPENROUTER_API_KEY || '';
   // Older callers passed the selected provider's URL/model through the legacy OpenRouter
@@ -1126,7 +1142,11 @@ function resolveModelConfig(env = process.env) {
   const baseUrl = explicitTransportHandoff
     ? 'https://openrouter.ai/api/v1'
     : (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-  const model = explicitTransportHandoff ? 'openrouter/auto' : (env.OPENROUTER_MODEL || 'openrouter/auto');
+  const model = explicitTransportHandoff
+    ? OPENROUTER_DIRECT_PRIMARY_MODEL
+    : (isOpenRouterEndpoint(baseUrl)
+      ? resolveDirectOpenRouterModel(env.OPENROUTER_MODEL)
+      : (env.OPENROUTER_MODEL || OPENROUTER_DIRECT_PRIMARY_MODEL));
   const dynamicDefaultDiff = calculateSafeDiffCapacity(model);
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || dynamicDefaultDiff;
 
@@ -1164,15 +1184,19 @@ function resolveModelConfig(env = process.env) {
             resolvedKey = env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || env.OPENROUTER_API_KEY || '';
           }
         }
+        const configuredModel = t.model || model;
+        const effectiveModel = isOpenRouterEndpoint(t.base_url || t.baseUrl || baseUrl)
+          ? resolveDirectOpenRouterModel(configuredModel)
+          : configuredModel;
         return {
           name: t.name || t.provider || 'default',
           apiKeyEnv: keyEnv,
           baseUrl: (t.base_url || t.baseUrl || baseUrl).replace(/\/+$/, ''),
           apiKey: resolvedKey,
-          model: t.model || model,
+          model: effectiveModel,
           models: Array.isArray(t.models)
             ? t.models.filter((candidate) => typeof candidate === 'string' && candidate.trim())
-            : undefined,
+            : (isOpenRouterEndpoint(t.base_url || t.baseUrl || baseUrl) && effectiveModel !== OPENROUTER_AUTO_MODEL ? [] : undefined),
           provider: t.provider,
           compat: t.compat || t.compatibility,
           providerRouting: t.provider_routing || t.providerRouting,
@@ -1209,7 +1233,52 @@ function resolveModelConfig(env = process.env) {
 
   if (transports.length === 0) {
     const autoTransports = [];
-    if (env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY) {
+    // When the OpenRouter key is available, make the production default an explicit
+    // two-model direct route. This deliberately bypasses Auto Router and keeps the
+    // only model-level fallback visible in the transport plan: DeepSeek first, GLM second.
+    // Other provider keys remain available to callers that do not configure OpenRouter,
+    // but are not silently mixed into this route.
+    if (apiKey && isOpenRouterEndpoint(baseUrl)) {
+      autoTransports.push({
+        name: 'openrouter-deepseek-v4-flash-0731',
+        baseUrl,
+        apiKey,
+        model: OPENROUTER_DIRECT_PRIMARY_MODEL,
+        models: [],
+        provider: 'openrouter',
+        compat: 'openrouter',
+        stream: true,
+        reasoningEffort: 'high',
+        timeoutMs: 90_000,
+        ttftTimeoutMs: 30_000,
+        connectTimeoutMs: 30_000,
+      });
+      autoTransports.push({
+        name: 'openrouter-glm-5.3-flash-fallback',
+        baseUrl,
+        apiKey,
+        model: OPENROUTER_DIRECT_FALLBACK_MODEL,
+        models: [],
+        provider: 'openrouter',
+        compat: 'openrouter',
+        stream: true,
+        reasoningEffort: 'high',
+        timeoutMs: 90_000,
+        ttftTimeoutMs: 30_000,
+        connectTimeoutMs: 30_000,
+      });
+    } else if (apiKey) {
+      autoTransports.push({
+        name: 'openrouter',
+        baseUrl,
+        apiKey,
+        model,
+        compat: 'openrouter',
+        stream: true,
+        timeoutMs: 90_000,
+      });
+    }
+    if (!apiKey && (env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY)) {
       autoTransports.push({
         name: 'fireworks',
         baseUrl: (env.FIREWORKS_BASE_URL || 'https://api.fireworks.ai/inference/v1').replace(/\/+$/, ''),
@@ -1218,7 +1287,7 @@ function resolveModelConfig(env = process.env) {
         timeoutMs: 120_000,
       });
     }
-    if (env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY) {
+    if (!apiKey && (env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY)) {
       autoTransports.push({
         name: 'ollama',
         baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com/v1').replace(/\/+$/, ''),
@@ -1227,7 +1296,7 @@ function resolveModelConfig(env = process.env) {
         timeoutMs: 90_000,
       });
     }
-    if (env.ANTHROPIC_API_KEY) {
+    if (!apiKey && env.ANTHROPIC_API_KEY) {
       autoTransports.push({
         name: 'anthropic',
         baseUrl: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1').replace(/\/+$/, ''),
@@ -1236,7 +1305,7 @@ function resolveModelConfig(env = process.env) {
         timeoutMs: 120_000,
       });
     }
-    if (env.GEMINI_API_KEY) {
+    if (!apiKey && env.GEMINI_API_KEY) {
       autoTransports.push({
         name: 'gemini',
         baseUrl: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/, ''),
@@ -1245,23 +1314,12 @@ function resolveModelConfig(env = process.env) {
         timeoutMs: 90_000,
       });
     }
-    if (env.OPENAI_API_KEY) {
+    if (!apiKey && env.OPENAI_API_KEY) {
       autoTransports.push({
         name: 'openai',
         baseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
         apiKey: env.OPENAI_API_KEY,
         model: env.OPENAI_MODEL || 'openai/gpt-5.6-luna:high',
-        timeoutMs: 90_000,
-      });
-    }
-    if (apiKey) {
-      autoTransports.push({
-        name: 'openrouter',
-        baseUrl,
-        apiKey,
-        model: model || 'deepseek/deepseek-v4-flash-0731:high',
-        compat: 'openrouter',
-        stream: true,
         timeoutMs: 90_000,
       });
     }
@@ -1342,7 +1400,11 @@ function trustedOpenRouterInputsFromEnv(env = process.env) {
   const explicitTransportHandoff = hasExplicitTransportHandoff(env);
   return {
     'llm-base-url': explicitTransportHandoff ? 'https://openrouter.ai/api/v1' : env.OPENROUTER_BASE_URL,
-    model: explicitTransportHandoff ? 'openrouter/auto' : env.OPENROUTER_MODEL,
+    // A legacy handoff used the auto-router alias as a policy placeholder. Resolve that alias
+    // at the trusted action boundary so it can never reach an active request plan.
+    model: explicitTransportHandoff
+      ? OPENROUTER_DIRECT_PRIMARY_MODEL
+      : (env.OPENROUTER_MODEL ? resolveDirectOpenRouterModel(env.OPENROUTER_MODEL) : undefined),
     'allowed-models': env.OPENROUTER_ALLOWED_MODELS,
     'data-collection': env.OPENROUTER_DATA_COLLECTION,
     'cost-quality-tradeoff': env.OPENROUTER_COST_QUALITY_TRADEOFF,
@@ -3116,8 +3178,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           baseUrl: requestOptions?.baseUrl || cfg.baseUrl,
           apiKey: cfg.apiKey,
           model: requestOptions?.model || cfg.model,
+          models: requestOptions?.model && requestOptions.model !== OPENROUTER_AUTO_MODEL ? [] : undefined,
           provider: requestOptions?.provider,
-          plugins: requestOptions?.plugins,
+          plugins: requestOptions?.model === OPENROUTER_AUTO_MODEL ? requestOptions?.plugins : undefined,
           name: 'default',
           stream: false,
           timeoutMs: options.timeoutMs || 90_000,

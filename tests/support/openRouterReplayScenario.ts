@@ -25,19 +25,19 @@ export const openRouterReplayPersonas = {
   security: {
     id: 'security',
     name: 'Security Replay Reviewer',
-    model: 'openrouter/auto',
+    model: 'deepseek/deepseek-v4-flash-0731',
     charter: 'Check only for unvalidated request input crossing a security boundary.',
   },
   testing: {
     id: 'testing',
     name: 'Testing Replay Reviewer',
-    model: 'openrouter/auto',
+    model: 'deepseek/deepseek-v4-flash-0731',
     charter: 'Check only whether changed behavior has tests.',
   },
   documentation: {
     id: 'documentation',
     name: 'Documentation Replay Reviewer',
-    model: 'openrouter/auto',
+    model: 'deepseek/deepseek-v4-flash-0731',
     charter: 'Check only whether public behavior changes are documented.',
   },
 };

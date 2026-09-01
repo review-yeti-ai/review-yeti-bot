@@ -26,6 +26,10 @@ const TRANSPORT_BY_PROFILE = Object.freeze({
   'fireworks-breakglass': 'fireworks',
   'ollama-evaluation': 'ollama',
 });
+const OPENROUTER_DIRECT_MODELS = new Set([
+  'deepseek/deepseek-v4-flash-0731',
+  'z-ai/glm-5.3-flash',
+]);
 
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -65,6 +69,9 @@ function normalizeProfile(profile) {
   const model = typeof profile.model === 'string' ? profile.model.trim() : '';
   if (!model || model.length > 200 || /[\x00-\x1F\x7F]/.test(model) || /(?:^|[^a-z0-9])(?:bearer\s+|sk-(?:proj-)?|gh[ps]_|github_pat_|xox[baprs]-)[a-z0-9]/i.test(model)) {
     throw new Error(`execution profile ${id} model must be a bounded, credential-free identifier`);
+  }
+  if (id === 'openrouter-primary' && !OPENROUTER_DIRECT_MODELS.has(model)) {
+    throw new Error('openrouter-primary must use an approved direct model, not the OpenRouter auto-router');
   }
 
   rejectUnknownKeys(profile.timeouts, ['connect_ms', 'request_ms', 'stall_ms', 'ttft_ms'], `execution profile ${id}.timeouts`);

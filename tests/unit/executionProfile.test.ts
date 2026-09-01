@@ -36,7 +36,7 @@ describe('canonical execution-profile contract', () => {
       id: 'openrouter-primary',
       transport: 'openrouter',
       base_url_class: 'openrouter-gateway',
-      model: 'openrouter/auto',
+      model: 'deepseek/deepseek-v4-flash-0731',
       compatibility_mode: 'openrouter',
       streaming: true,
       structured_output: 'strict',

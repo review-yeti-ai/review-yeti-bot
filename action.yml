@@ -45,9 +45,9 @@ inputs:
     required: false
     default: 'https://openrouter.ai/api/v1'
   model:
-    description: 'Trusted workflow/base-config OpenRouter model control. Defaults to the production auto-router alias.'
+    description: 'Trusted workflow/base-config OpenRouter model control. Defaults to direct DeepSeek V4 Flash 0731; GLM 5.3 Flash is the explicit fallback.'
     required: false
-    default: 'openrouter/auto'
+    default: 'deepseek/deepseek-v4-flash-0731'
   action-sha:
     description: >-
       Exact 40-hex commit SHA of the Review Yeti action source. Required when review-engine is
@@ -81,14 +81,14 @@ inputs:
     default: 'disabled'
   openrouter-allowed-models:
     description: >-
-      Trusted workflow/base-config OpenRouter auto-router fleet, as comma-separated model IDs.
-      Defaults to the manifest-approved five-model fleet; this is not read from PR-head config.
+      Trusted workflow/base-config OpenRouter model allowlist, as comma-separated model IDs.
+      Defaults to the direct DeepSeek V4 Flash 0731 plus GLM 5.3 Flash pair; this is not read from PR-head config.
     required: false
     default: ''
   openrouter-cost-quality-tradeoff:
     description: >-
-      Trusted workflow/base-config OpenRouter auto-router cost_quality_tradeoff integer (0-10).
-      Defaults to the policy manifest value; this is not read from PR-head config.
+      Legacy trusted routing-quality integer (0-10), retained for policy compatibility. Direct
+      DeepSeek/GLM routing does not send this auto-router control; this is not read from PR-head config.
     required: false
     default: ''
   openrouter-data-collection:
