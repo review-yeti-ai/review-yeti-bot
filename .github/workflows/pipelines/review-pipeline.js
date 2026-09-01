@@ -1117,8 +1117,9 @@ function calculateSafeDiffCapacity(modelOrTokens, options = {}) {
 /**
  * Resolves LLM endpoint configuration from the environment.
  *
- * Review execution is deliberately pinned to OpenRouter. The action accepts no implicit
- * provider fallback and never turns a missing key into a heuristic green review.
+ * Review execution defaults to the direct OpenRouter pair. When the caller explicitly provisions
+ * the optional Ollama and Synthetic credentials, those providers are appended as deterministic
+ * fallbacks; a missing optional credential never creates a synthetic transport or green result.
  *
  * @returns {{enabled: boolean, apiKey: string, baseUrl: string, model: string, maxDiffChars: number}}
  */
@@ -1242,9 +1243,9 @@ function resolveModelConfig(env = process.env) {
     const autoTransports = [];
     // When the OpenRouter key is available, make the production default an explicit
     // two-model direct route. This deliberately bypasses Auto Router and keeps the
-    // only model-level fallback visible in the transport plan: DeepSeek first, GLM second.
-    // Other provider keys remain available to callers that do not configure OpenRouter,
-    // but are not silently mixed into this route.
+    // model-level fallback visible in the transport plan: DeepSeek first, GLM second.
+    // Explicitly provisioned Ollama and Synthetic credentials are then appended as
+    // provider fallbacks, preserving the direct OpenRouter pair as the primary route.
     if (apiKey && isOpenRouterEndpoint(baseUrl)) {
       autoTransports.push({
         name: 'openrouter-deepseek-v4-flash-0731',
@@ -1285,6 +1286,10 @@ function resolveModelConfig(env = process.env) {
         timeoutMs: 90_000,
       });
     }
+
+    // Preserve the legacy direct-provider order when OpenRouter is not configured.
+    // Fireworks remains the first direct fallback in that mode; it is not silently
+    // mixed into the OpenRouter route when an OpenRouter key is present.
     if (!apiKey && (env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY)) {
       autoTransports.push({
         name: 'fireworks',
@@ -1294,15 +1299,38 @@ function resolveModelConfig(env = process.env) {
         timeoutMs: 120_000,
       });
     }
-    if (!apiKey && (env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY)) {
+
+    // These providers are opt-in fallbacks. They are intentionally added even when
+    // OpenRouter is configured, but only when their own credentials are present.
+    // This keeps provider selection explicit and makes a provider outage recoverable
+    // without re-enabling OpenRouter Auto Router.
+    if (env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY) {
       autoTransports.push({
         name: 'ollama',
         baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com/v1').replace(/\/+$/, ''),
         apiKey: env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY,
         model: env.OLLAMA_MODEL || 'deepseek-v4-flash:cloud',
+        stream: true,
+        reasoningEffort: 'high',
         timeoutMs: 90_000,
+        ttftTimeoutMs: 30_000,
+        connectTimeoutMs: 30_000,
       });
     }
+    if (env.SYNTHETIC_API_KEY) {
+      autoTransports.push({
+        name: 'synthetic',
+        baseUrl: (env.SYNTHETIC_BASE_URL || 'https://api.synthetic.new/openai/v1').replace(/\/+$/, ''),
+        apiKey: env.SYNTHETIC_API_KEY,
+        model: env.SYNTHETIC_MODEL || 'glm-5.2',
+        stream: true,
+        reasoningEffort: 'high',
+        timeoutMs: 90_000,
+        ttftTimeoutMs: 30_000,
+        connectTimeoutMs: 30_000,
+      });
+    }
+
     if (!apiKey && env.ANTHROPIC_API_KEY) {
       autoTransports.push({
         name: 'anthropic',

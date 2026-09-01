@@ -19,6 +19,10 @@ inputs:
     description: 'Ollama API key for Ollama Cloud or endpoint.'
     required: false
     default: ''
+  synthetic-api-key:
+    description: 'Synthetic API key for the direct GLM fallback endpoint.'
+    required: false
+    default: ''
   anthropic-api-key:
     description: 'Anthropic API key for direct Claude reviews.'
     required: false
@@ -457,6 +461,7 @@ runs:
         FIREWORKS_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_API_KEY }}
         OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}
         OLLAMA_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_API_KEY }}
+        SYNTHETIC_API_KEY: ${{ inputs.synthetic-api-key || env.SYNTHETIC_API_KEY }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key || env.ANTHROPIC_API_KEY }}
         GEMINI_API_KEY: ${{ inputs.gemini-api-key || env.GEMINI_API_KEY }}
         OPENAI_API_KEY: ${{ inputs.openai-api-key || env.OPENAI_API_KEY }}
