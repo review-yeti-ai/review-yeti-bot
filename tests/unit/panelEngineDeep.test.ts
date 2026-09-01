@@ -99,6 +99,111 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(panelResult.arbiter.verdict).toBe('SHIP');
   });
 
+  it('applies one OpenRouter request contract and trace identity to every panel role', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = opts.messages[1].content as string;
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const body = prompt.includes('Role: ARBITER')
+        ? { verdict: 'SHIP', rationale: 'The parity fixture is safe.' }
+        : prompt.includes('Role: MODERATOR')
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return {
+        model: opts.model,
+        content: JSON.stringify({ nonce, ...body }),
+        usage: { prompt: 5, completion: 5, total: 10 },
+        costUSD: 0.00005,
+        raw: {},
+      };
+    });
+
+    await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-request-parity',
+      client: mockClient as unknown as OmniRouteClient,
+      jobId: 'run_11111111111111111111111111111111',
+      requestPolicy: {
+        stream: true,
+        ttftTimeoutMs: 30_000,
+        maxTokens: 24_576,
+        models: ['z-ai/glm-5.3-flash'],
+        responseFormat: { type: 'json_object' },
+        provider: {
+          allow_fallbacks: true,
+          require_parameters: true,
+          ignore: ['morph', 'fireworks'],
+          data_collection: 'deny',
+        },
+        metadata: { qualificationMode: 'full-panel' },
+      },
+    } as any);
+
+    expect(mockClient.complete).toHaveBeenCalledTimes(4);
+    const requests = mockClient.complete.mock.calls.map(([request]: any[]) => request);
+    expect(requests.every((request: any) => request.messages[1].content.includes(`"nonce"`))).toBe(true);
+    expect(requests.map((request: any) => request.persona).sort()).toEqual([
+      'arbiter', 'correct-lane', 'moderator', 'sec-lane',
+    ]);
+    for (const request of requests) {
+      expect(request).toMatchObject({
+        jobId: 'run_11111111111111111111111111111111',
+        stream: true,
+        ttftTimeoutMs: 30_000,
+        maxTokens: 24_576,
+        models: ['z-ai/glm-5.3-flash'],
+        responseFormat: { type: 'json_object' },
+        provider: {
+          allow_fallbacks: true,
+          require_parameters: true,
+          ignore: ['morph', 'fireworks'],
+          data_collection: 'deny',
+        },
+        metadata: {
+          qualificationMode: 'full-panel',
+          role: expect.any(String),
+          persona: expect.any(String),
+        },
+      });
+    }
+  });
+
+  it('fails closed when native JSON returns the wrong request nonce', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = opts.messages[1].content as string;
+      const body = prompt.includes('Role: ARBITER')
+        ? { verdict: 'SHIP', rationale: 'Wrong nonce must still fail.' }
+        : prompt.includes('Role: MODERATOR')
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return {
+        model: 'deepseek/deepseek-v4-flash-0731',
+        content: JSON.stringify({ nonce: 'wrong-request', ...body }),
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-wrong-native-nonce',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: {
+        responseFormat: { type: 'json_object' },
+      },
+    })).rejects.toThrow('required persona failure');
+  });
+
   it('uses fallback provider when primary provider fails in persona lane', async () => {
     const config = buildDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts' }];

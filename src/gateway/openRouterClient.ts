@@ -42,6 +42,8 @@ export interface OpenRouterMessage {
 
 export interface OpenRouterRequest {
   model: string;
+  /** Ordered OpenRouter model fallbacks after the primary `model`. */
+  models?: string[];
   messages: OpenRouterMessage[];
   timeoutMs: number;
   jobId?: string;
@@ -94,6 +96,7 @@ export interface OpenRouterClientOptions {
 export function buildOpenRouterChatRequest(request: OpenRouterRequest): Record<string, unknown> {
   return {
     model: normalizeOpenRouterModel(request.model),
+    ...(request.models !== undefined ? { models: request.models.map(normalizeOpenRouterModel) } : {}),
     messages: request.messages,
     stream: request.stream ?? true,
     ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
@@ -184,6 +187,7 @@ function toSdkResponseFormat(responseFormat?: Record<string, unknown>): Record<s
 export function buildOpenRouterSdkChatRequest(request: OpenRouterRequest): Record<string, unknown> {
   return {
     model: normalizeOpenRouterModel(request.model),
+    ...(request.models !== undefined ? { models: request.models.map(normalizeOpenRouterModel) } : {}),
     messages: request.messages,
     stream: request.stream ?? true,
     ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
@@ -1452,24 +1456,62 @@ export class OpenRouterClient implements ReviewModelClient {
 
       return { model, content, usage, costUSD, raw: data };
     } catch (error: any) {
-      if (error instanceof OpenRouterResponseError || error instanceof OpenRouterConnectionError || error instanceof UpstreamCapacityRejectionError) throw error;
-      if (error instanceof OpenRouterTimeoutError) throw error;
-      const status = sdkErrorStatus(error);
-      if (status && status >= 400) {
-        throw new OpenRouterResponseError(`OpenRouter HTTP ${status}: ${sdkErrorMessage(error)}`, status);
+      let classifiedError: Error;
+      if (error instanceof OpenRouterResponseError
+          || error instanceof OpenRouterConnectionError
+          || error instanceof UpstreamCapacityRejectionError
+          || error instanceof OpenRouterTimeoutError) {
+        classifiedError = error;
+      } else {
+        const status = sdkErrorStatus(error);
+        const sdkMessage = sdkErrorMessage(error);
+        if (status && status >= 400) {
+          classifiedError = new OpenRouterResponseError(`OpenRouter HTTP ${status}: ${sdkMessage}`, status);
+        } else if (request.stream !== false && /malformed json|response validation failed/i.test(sdkMessage)) {
+          classifiedError = new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
+        } else if (error?.name === 'ResponseValidationError') {
+          classifiedError = new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
+        } else if (requestDeadlineExpired || error?.name === 'AbortError' || controller.signal.aborted) {
+          classifiedError = new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`, 'request');
+        } else {
+          logger.error('OpenRouter SDK network failure or timeout', { error: sdkMessage, model: request.model });
+          classifiedError = new OpenRouterConnectionError(`OpenRouter SDK connection failure for model ${request.model}: ${sdkMessage}`);
+        }
       }
-      const sdkMessage = sdkErrorMessage(error);
-      if (request.stream !== false && /malformed json|response validation failed/i.test(sdkMessage)) {
-        throw new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
+
+      if (request.jobId) {
+        const responseStatus = classifiedError instanceof OpenRouterResponseError
+          ? classifiedError.status
+          : undefined;
+        const failureClass = classifiedError instanceof OpenRouterTimeoutError
+          ? 'timeout'
+          : responseStatus === 429
+            ? 'rate_limit'
+            : responseStatus !== undefined && responseStatus >= 500
+              ? 'provider_5xx'
+              : classifiedError instanceof UpstreamCapacityRejectionError
+                ? 'provider_capacity'
+                : classifiedError instanceof OpenRouterConnectionError
+                  ? 'connection'
+                  : 'response';
+        LiveStreamBus.getInstance().publishEvent({
+          jobId: request.jobId,
+          timestamp: new Date(this.now()).toISOString(),
+          type: 'openrouter:metric',
+          persona: request.persona || 'openrouter',
+          data: {
+            outcome: 'failed',
+            failureClass,
+            requestedModel: effectiveModel,
+            provider: request.providerId || 'openrouter',
+            latencyMs: this.now() - started,
+            ...(responseStatus !== undefined ? { responseStatus } : {}),
+            ...(classifiedError instanceof OpenRouterTimeoutError ? { timeoutKind: classifiedError.kind } : {}),
+            ...(generationId ? { generationId } : {}),
+          },
+        });
       }
-      if (error?.name === 'ResponseValidationError') {
-        throw new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkErrorMessage(error)}`);
-      }
-      if (requestDeadlineExpired || error?.name === 'AbortError' || controller.signal.aborted) {
-        throw new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`, 'request');
-      }
-      logger.error('OpenRouter SDK network failure or timeout', { error: sdkMessage, model: request.model });
-      throw new OpenRouterConnectionError(`OpenRouter SDK connection failure for model ${request.model}: ${sdkMessage}`);
+      throw classifiedError;
     } finally {
       clearTimeout(timeout);
     }

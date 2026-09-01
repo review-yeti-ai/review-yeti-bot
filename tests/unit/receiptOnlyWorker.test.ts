@@ -448,7 +448,7 @@ describe('full-panel qualification worker contract', () => {
     REVIEW_BASE_SHA: 'b'.repeat(40),
     REVIEW_POLICY_DIGEST: 'c'.repeat(64),
     REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
-    REVIEW_QUALIFICATION_MODEL: 'z-ai/glm-5.3-flash',
+    REVIEW_QUALIFICATION_MODEL: 'deepseek/deepseek-v4-flash-0731',
     REVIEW_QUALIFICATION_TIMEOUT_MS: '600000',
     OPENROUTER_API_KEY: 'test-openrouter-key',
   } as NodeJS.ProcessEnv;
@@ -493,6 +493,27 @@ describe('full-panel qualification worker contract', () => {
       expect(options.config.personas.every((persona: any) => persona.maxTurns === 3)).toBe(true);
       expect(options.config.reviewers.providers).toHaveLength(1);
       expect(options.config.reviewers.providers[0].model).toBe(fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL);
+      expect(options.requestPolicy).toEqual({
+        stream: true,
+        ttftTimeoutMs: 30_000,
+        maxTokens: 24_576,
+        models: ['z-ai/glm-5.3-flash'],
+        responseFormat: { type: 'json_object' },
+        provider: {
+          allow_fallbacks: true,
+          require_parameters: true,
+          ignore: ['morph', 'fireworks'],
+          sort: 'throughput',
+          preferred_min_throughput: { p90: 40 },
+          preferred_max_latency: { p99: 3 },
+          data_collection: 'deny',
+        },
+        metadata: {
+          qualificationMode: 'full-panel',
+          runId: fullPanelEnvironment.REVIEW_RUN_ID,
+          providerId: 'openrouter',
+        },
+      });
       expect(options.changedFiles.map((file: any) => file.path)).toEqual(expect.arrayContaining([
         'src/auth/session.ts', 'src/dispatcher/worker.ts', 'Dockerfile', 'k8s/review-job.yaml',
         'package.json', 'LICENSE',
@@ -550,6 +571,100 @@ describe('full-panel qualification worker contract', () => {
       `${JSON.stringify(receipt)}\n`,
       { encoding: 'utf8' },
     );
+  });
+
+  it('retains the GLM fallback for an alternate non-GLM primary model', async () => {
+    const alternateEnvironment = {
+      ...fullPanelEnvironment,
+      REVIEW_QUALIFICATION_MODEL: '~deepseek/deepseek-v4-flash-latest',
+    };
+    const panelRunner = vi.fn(async (options: any) => {
+      expect(options.requestPolicy.models).toEqual(['z-ai/glm-5.3-flash']);
+      throw new Error('stop after request-policy assertion');
+    });
+
+    await expect(runFullPanelQualificationWorker(
+      alternateEnvironment,
+      panelRunner,
+      { complete: vi.fn() } as any,
+    )).rejects.toThrow('stop after request-policy assertion');
+  });
+
+  it('persists a sanitized partial receipt when the full panel fails closed', async () => {
+    const client = {
+      complete: vi.fn(async () => ({
+        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        content: 'partial qualification response',
+        usage: { prompt: 17, completion: 3, total: 20 },
+        costUSD: 0.0001,
+        raw: { secret: 'must never be persisted' },
+      })),
+    };
+    const panelRunner = vi.fn(async (options: any) => {
+      await options.client.complete({
+        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        messages: [],
+        timeoutMs: 1000,
+        persona: 'licensing',
+      });
+      throw new Error('Bearer support-secret invalid JSON inside nonce fence');
+    });
+
+    await expect(runFullPanelQualificationWorker(fullPanelEnvironment, panelRunner, client))
+      .rejects.toThrow('invalid JSON inside nonce fence');
+
+    expect(fsMocks.writeFile).toHaveBeenCalledOnce();
+    const persisted = JSON.parse(String(fsMocks.writeFile.mock.calls[0][1]));
+    expect(persisted).toMatchObject({
+      version: 'ReviewYetiPanelQualification.v1',
+      profile: 'full-panel',
+      status: 'failed',
+      providerId: 'openrouter',
+      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      publicationMode: 'disabled',
+      providerCalls: 1,
+      githubWrites: 0,
+      failureClass: 'structured_output',
+      expectedPersonaCount: 6,
+    });
+    expect(persisted.attempts).toEqual([expect.objectContaining({
+      attempt: 1,
+      persona: 'licensing',
+      outcome: 'completed',
+      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      resolvedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      usage: { prompt: 17, completion: 3, total: 20 },
+      costUSD: 0.0001,
+    })]);
+    expect(JSON.stringify(persisted)).not.toContain('support-secret');
+    expect(JSON.stringify(persisted)).not.toContain('must never be persisted');
+  });
+
+  it('persists a failed receipt when a completed panel misses the acceptance gate', async () => {
+    const panelRunner = vi.fn(async () => ({
+      headSha: fullPanelEnvironment.REVIEW_HEAD_SHA,
+      personas: [],
+      optionalFailures: [{ id: 'licensing', error: 'private response detail' }],
+      quorum: { required: 1, distinctProviders: [], satisfied: false },
+      moderator: {
+        providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        decision: 'RECONCILED' as const, findings: [], usage: null, costUSD: null, durationMs: 0,
+      },
+      arbiter: {
+        providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        verdict: 'BLOCK' as const, rationale: 'not persisted', usage: null, costUSD: null, durationMs: 0,
+      },
+    }));
+
+    await expect(runFullPanelQualificationWorker(fullPanelEnvironment, panelRunner, {
+      complete: vi.fn(),
+    } as any)).rejects.toThrow(/full-panel qualification worker contract/i);
+
+    expect(fsMocks.writeFile).toHaveBeenCalledOnce();
+    const persisted = JSON.parse(String(fsMocks.writeFile.mock.calls[0][1]));
+    expect(persisted).toMatchObject({ status: 'failed', failureClass: 'panel_failure', providerCalls: 0 });
+    expect(JSON.stringify(persisted)).not.toContain('private response detail');
+    expect(JSON.stringify(persisted)).not.toContain('not persisted');
   });
 
   it('routes full-panel qualification before the existing panel and live modes', async () => {
