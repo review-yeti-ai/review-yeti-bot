@@ -16,6 +16,7 @@ const {
   readChatCompletionResponse,
 } = pipeline;
 const persona = PERSONA_CHARTERS.find((candidate: any) => candidate.id === 'security');
+const testingPersona = PERSONA_CHARTERS.find((candidate: any) => candidate.id === 'testing');
 const diffFiles = [{
   path: 'src/api/user.ts',
   patch: 'diff --git a/src/api/user.ts b/src/api/user.ts\n@@ -1,2 +1,2 @@\n+const id = req.query.id;\n',
@@ -66,6 +67,119 @@ function streamResponse(frames: any[], { model = 'openai/gpt-5.6-luna', provider
 }
 
 describe('OpenRouter qualification contract', () => {
+  it('shares the complete review context prefix across personas and varies only the final assignment', async () => {
+    const requestBodies: any[] = [];
+    const fetchImplementation = async (_url: string, init: any) => {
+      requestBodies.push(JSON.parse(init.body));
+      return streamResponse([{ choices: [{ delta: { content: '{"findings":[]}' } }] }]);
+    };
+    const prContext = {
+      repo: 'calltelemetry/example',
+      prNumber: 17,
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      title: 'Cache-friendly review',
+    };
+
+    for (const reviewer of [persona, testingPersona]) {
+      const result = await reviewWithModel(reviewer, diffFiles, prContext, null, {
+        openRouterPolicy: policy,
+        transports: [openRouterTransport()],
+        fetchImplementation,
+        circuitBreaker: new RunTransportCircuitBreaker(),
+      });
+      expect(result.decision).toBe('APPROVE');
+    }
+
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0].messages).toHaveLength(3);
+    expect(requestBodies[1].messages).toHaveLength(3);
+    expect(requestBodies[0].messages.slice(0, 2)).toEqual(requestBodies[1].messages.slice(0, 2));
+    expect(requestBodies[0].messages[0]).toMatchObject({ role: 'system' });
+    expect(requestBodies[0].messages[1]).toMatchObject({
+      role: 'user',
+      content: expect.stringContaining('Unified diff under review:'),
+    });
+    expect(requestBodies[0].messages[2]).toMatchObject({
+      role: 'user',
+      content: expect.stringContaining(persona.charter),
+    });
+    expect(requestBodies[1].messages[2]).toMatchObject({
+      role: 'user',
+      content: expect.stringContaining(testingPersona.charter),
+    });
+    expect(requestBodies[0].messages[2]).not.toEqual(requestBodies[1].messages[2]);
+    expect(requestBodies[0].session_id).toMatch(/^review-yeti-v1-[a-f0-9]{48}$/);
+    expect(requestBodies[0].session_id).toBe(requestBodies[1].session_id);
+    expect(requestBodies[0].prompt_cache_key).toBe(requestBodies[0].session_id);
+    expect(requestBodies[1].prompt_cache_key).toBe(requestBodies[1].session_id);
+  });
+
+  it('invalidates the OpenRouter prompt cache identity when the exact review content changes', async () => {
+    const sessionIds: string[] = [];
+    const fetchImplementation = async (_url: string, init: any) => {
+      sessionIds.push(JSON.parse(init.body).session_id);
+      return streamResponse([{ choices: [{ delta: { content: '{"findings":[]}' } }] }]);
+    };
+    const commonOptions = {
+      openRouterPolicy: policy,
+      transports: [openRouterTransport()],
+      fetchImplementation,
+      circuitBreaker: new RunTransportCircuitBreaker(),
+    };
+
+    await reviewWithModel(persona, diffFiles, {
+      repo: 'calltelemetry/example',
+      prNumber: 17,
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+    }, null, commonOptions);
+    await reviewWithModel(persona, [{
+      ...diffFiles[0],
+      patch: `${diffFiles[0].patch}+const changed = true;\n`,
+    }], {
+      repo: 'calltelemetry/example',
+      prNumber: 17,
+      baseSha: 'a'.repeat(40),
+      headSha: 'c'.repeat(40),
+    }, null, commonOptions);
+
+    expect(sessionIds).toHaveLength(2);
+    expect(sessionIds[0]).toMatch(/^review-yeti-v1-[a-f0-9]{48}$/);
+    expect(sessionIds[1]).toMatch(/^review-yeti-v1-[a-f0-9]{48}$/);
+    expect(sessionIds[0]).not.toBe(sessionIds[1]);
+  });
+
+  it('does not send OpenRouter cache-routing fields to direct providers', async () => {
+    let requestBody: any;
+    const fetchImplementation = async (_url: string, init: any) => {
+      requestBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }),
+      };
+    };
+
+    const result = await reviewWithModel(persona, diffFiles, { repo: 'o/r', prNumber: 1 }, null, {
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'direct-test-key',
+        model: 'deepseek-v4-flash:cloud',
+      }],
+      fetchImplementation,
+      circuitBreaker: new RunTransportCircuitBreaker(),
+    });
+
+    expect(result.decision).toBe('APPROVE');
+    expect(requestBody.messages).toHaveLength(2);
+    expect(requestBody.messages[0].content).toContain(persona.charter);
+    expect(requestBody).not.toHaveProperty('session_id');
+    expect(requestBody).not.toHaveProperty('prompt_cache_key');
+  });
+
   it('enforces the distinct time-to-first-token deadline for a real SSE body', async () => {
     const response = {
       headers: new Headers({ 'content-type': 'text/event-stream' }),
@@ -139,7 +253,13 @@ describe('OpenRouter qualification contract', () => {
         { choices: [{ delta: { reasoning: 'checking the diff' } }] },
         { choices: [{ delta: { content: '{"findings":[]}' } }] },
       ], {
-        usage: { prompt_tokens: 101, completion_tokens: 23, total_tokens: 124, cost: 0.0042 },
+        usage: {
+          prompt_tokens: 101,
+          completion_tokens: 23,
+          total_tokens: 124,
+          cost: 0.0042,
+          prompt_tokens_details: { cached_tokens: 80, cache_write_tokens: 21 },
+        },
       });
     };
 
@@ -157,6 +277,8 @@ describe('OpenRouter qualification contract', () => {
       provider: 'openrouter',
       inputTokens: 101,
       outputTokens: 23,
+      cachedInputTokens: 80,
+      cacheWriteTokens: 21,
       cost: 0.0042,
       responseMode: 'stream',
       findingsSource: 'content',
@@ -173,6 +295,8 @@ describe('OpenRouter qualification contract', () => {
         provider: 'openrouter',
         responseStatus: 200,
         outputTokens: 23,
+        cachedInputTokens: 80,
+        cacheWriteTokens: 21,
         responseMode: 'stream',
         outputShape: 'direct_json_object',
         requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
