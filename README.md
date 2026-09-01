@@ -188,6 +188,20 @@ The central budget is also fixed here: two investigation turns, one 24-request p
 budget, an 860-second lane deadline with a two-minute non-generation reserve and a 40-second
 job-cap reserve, and a 60-second OpenRouter first-token budget.
 
+## One-time OpenRouter qualification
+
+The manually dispatched `One-time OpenRouter qualification` workflow is the bounded proof path
+for the direct DeepSeek-to-GLM route. It is not scheduled and cannot publish a review or mutate
+provider policy. A full run executes the three fixed fixtures twice with two calls in flight, which
+matches the OpenRouter transport's provider-scoped capacity instead of allowing a third lane to
+expire in the local queue. The child process is capped at ten minutes and the workflow at fifteen.
+
+The sanitized receipt separates integrity from acceptance. Integrity proves exact refs, fixture
+identity, request shape, and OpenRouter attribution. Acceptance fails closed unless all six rows
+terminate, at least three of the four defect rows detect their defect, and neither clean row
+produces a false positive. Failed evidence is still uploaded by the workflow for diagnosis, but it
+cannot be mistaken for a successful qualification or authorize activation.
+
 ## One-time Fireworks/Ollama comparison
 
 When an operator wants evidence for moving more work to Ollama, use the manually dispatched

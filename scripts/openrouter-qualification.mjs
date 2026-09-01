@@ -30,18 +30,20 @@ export const QUALIFICATION_MODEL_OVERRIDES = Object.freeze([
   QUALIFICATION_DEEPSEEK_MODEL,
   QUALIFICATION_GLM_MODEL,
 ]);
-// Three fixtures may each use the bounded two-attempt, 90-second request envelope. The declared
-// two-repetition run uses three concurrent lanes, so its worst case is two 180-second waves with
-// a four-minute margin while leaving the parent workflow below its non-negotiable 15-minute cap.
+// Three fixtures may each use the bounded two-attempt, 90-second request envelope. The production
+// OpenRouter transport admits two in-flight requests, so qualification uses three two-lane waves
+// instead of dispatching a third lane that can only expire in the local capacity queue. The
+// resulting nine-minute request envelope retains a one-minute child-process margin and remains
+// below the parent workflow's non-negotiable 15-minute cap.
 export const QUALIFICATION_CHILD_TIMEOUT_MS = 10 * 60_000;
 export const QUALIFICATION_HEARTBEAT_MS = 15_000;
 export const QUALIFICATION_DEFAULT_REPETITIONS = 1;
 export const QUALIFICATION_MAX_REPETITIONS = 2;
 export const QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE = 2;
-export const QUALIFICATION_CONCURRENCY = 3;
+export const QUALIFICATION_CONCURRENCY = 2;
 export const QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY = 1;
-export const QUALIFICATION_MAX_CONCURRENCY = 3;
-export const QUALIFICATION_BUDGET_MARGIN_MS = 4 * 60_000;
+export const QUALIFICATION_MAX_CONCURRENCY = 2;
+export const QUALIFICATION_BUDGET_MARGIN_MS = 60_000;
 export const QUALIFICATION_OUTPUT_CONTRACT_MODES = Object.freeze(['json_object', 'json_schema']);
 export const QUALIFICATION_DEFAULT_OUTPUT_CONTRACT_MODE = 'json_object';
 // OpenRouter's documented default routing is health-aware and load-balanced. An explicit `sort`
@@ -598,6 +600,45 @@ export function summarizeRows(
   };
 }
 
+export function buildQualificationAcceptanceGate(
+  evaluation,
+  repetitions = QUALIFICATION_DEFAULT_REPETITIONS,
+  fixtureIds = FIXTURE_IDS,
+) {
+  const expectedRepetitions = normalizeQualificationRepetitions(repetitions);
+  const expectedFixtureIds = fixtureIds.map((fixtureId) => normalizeQualificationFixtureId(fixtureId)).filter(Boolean);
+  const expectedRuns = expectedFixtureIds.length * expectedRepetitions;
+  const expectedDefectRuns = expectedFixtureIds
+    .filter((fixtureId) => fixtureId !== 'clean-behavioural-guard')
+    .length * expectedRepetitions;
+  const minimumDetectedDefectRuns = Math.ceil(expectedDefectRuns * 0.75);
+  const rows = Number.isSafeInteger(Number(evaluation?.rows)) ? Number(evaluation.rows) : 0;
+  const erroredRuns = Number.isSafeInteger(Number(evaluation?.errored_runs)) ? Number(evaluation.errored_runs) : expectedRuns;
+  const detectedDefectRuns = Number.isSafeInteger(Number(evaluation?.detected_defect_runs))
+    ? Number(evaluation.detected_defect_runs)
+    : 0;
+  const falsePositiveRuns = Number.isSafeInteger(Number(evaluation?.false_positive_runs))
+    ? Number(evaluation.false_positive_runs)
+    : expectedRuns;
+  const terminalRuns = Math.max(0, Math.min(rows, rows - erroredRuns));
+  const terminalCompletionPassed = evaluation?.status === 'completed'
+    && rows === expectedRuns
+    && terminalRuns === expectedRuns;
+  const defectDetectionPassed = detectedDefectRuns >= minimumDetectedDefectRuns;
+  const cleanPrecisionPassed = falsePositiveRuns === 0;
+  return {
+    expected_runs: expectedRuns,
+    terminal_runs: terminalRuns,
+    minimum_detected_defect_runs: minimumDetectedDefectRuns,
+    detected_defect_runs: detectedDefectRuns,
+    false_positive_runs: falsePositiveRuns,
+    terminal_completion_passed: terminalCompletionPassed,
+    defect_detection_passed: defectDetectionPassed,
+    clean_precision_passed: cleanPrecisionPassed,
+    passed: terminalCompletionPassed && defectDetectionPassed && cleanPrecisionPassed,
+  };
+}
+
 function readEvaluation(pathname, exitCode, repetitions = QUALIFICATION_DEFAULT_REPETITIONS, fixtureIds = FIXTURE_IDS) {
   try {
     return summarizeRows(JSON.parse(readFileSync(pathname, 'utf8')).rows, exitCode, repetitions, fixtureIds);
@@ -642,6 +683,7 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
       },
     repetitions,
     concurrency: input.concurrency ?? (input.fixtureId ? QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY : QUALIFICATION_CONCURRENCY),
+    max_in_flight: handoff[0].max_in_flight,
   };
   const integrity = {
     exact_bot_sha_bound: SHA_PATTERN.test(String(input.botSha || '')),
@@ -650,6 +692,8 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     request_contract_valid: contract.stream
       && contract.max_output_tokens === maxTokens
       && contract.reasoning_effort === OPENROUTER_REASONING_EFFORT
+      && Number.isSafeInteger(contract.max_in_flight)
+      && contract.max_in_flight >= contract.concurrency
       && (input.providerSlug
         ? contract.provider_routing.mode === 'pinned'
           && contract.provider_routing.profile === routingProfile
@@ -664,6 +708,11 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     child_completed: childTimedOut !== true && evaluation.status === 'completed',
   };
   integrity.passed = Object.values(integrity).every(Boolean);
+  const acceptance = buildQualificationAcceptanceGate(
+    evaluation,
+    repetitions,
+    input.fixtureId ? [input.fixtureId] : FIXTURE_IDS,
+  );
   const promptContract = {
     evaluator_arm: COMPARISON_EVALUATION_ARM,
     charter: 'current-testing',
@@ -697,12 +746,13 @@ export function buildQualificationReceipt({ input, policy, handoff, evaluation, 
     prompt_contract: promptContract,
     request_contract: contract,
     integrity_gate: integrity,
+    acceptance_gate: acceptance,
     authoritative_arm: 'none',
     production_authority: 'unchanged',
     activation_authorized: false,
     publication: 'none',
     provider_mutation: 'none',
-    promotion_gate: 'manual_review_required',
+    promotion_gate: acceptance.passed ? 'manual_review_required' : 'blocked',
     decision: 'evidence_only',
     evaluation: receiptEvaluation,
   };
@@ -769,11 +819,11 @@ async function main() {
     outputDir: process.env.RUNNER_TEMP,
     runId: process.env.GITHUB_RUN_ID || 'manual',
   });
-  console.log(`[OpenRouter qualification] receipt=${result.receiptPath} digest=${result.digest} status=${result.receipt.evaluation.status} integrity=${result.receipt.integrity_gate.passed} authoritative=none production-authority=unchanged publication=none`);
+  console.log(`[OpenRouter qualification] receipt=${result.receiptPath} digest=${result.digest} status=${result.receipt.evaluation.status} integrity=${result.receipt.integrity_gate.passed} acceptance=${result.receipt.acceptance_gate.passed} authoritative=none production-authority=unchanged publication=none`);
   if (process.env.GITHUB_OUTPUT) {
-    writeFileSync(process.env.GITHUB_OUTPUT, `receipt-path=${result.receiptPath}\nreceipt-digest=${result.digest}\nintegrity=${String(result.receipt.integrity_gate.passed)}\n`, { flag: 'a' });
+    writeFileSync(process.env.GITHUB_OUTPUT, `receipt-path=${result.receiptPath}\nreceipt-digest=${result.digest}\nintegrity=${String(result.receipt.integrity_gate.passed)}\nacceptance=${String(result.receipt.acceptance_gate.passed)}\n`, { flag: 'a' });
   }
-  if (!result.receipt.integrity_gate.passed) process.exitCode = 1;
+  if (!result.receipt.integrity_gate.passed || !result.receipt.acceptance_gate.passed) process.exitCode = 1;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

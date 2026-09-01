@@ -83,7 +83,7 @@ on:
         default: ''
         type: string
       concurrency:
-        description: 'Isolated fixture concurrency (1 serial by default; max 3)'
+        description: 'Isolated fixture concurrency (1 serial by default; max 2 to match transport capacity)'
         required: false
         default: ''
         type: string
@@ -186,12 +186,13 @@ jobs:
           FIXTURE_ID_INPUT: ${{ inputs.fixture_id }}
           CONCURRENCY_INPUT: ${{ inputs.concurrency }}
         run: |
-          echo "::notice::Dispatching one direct OpenRouter qualification arm; fixture_scope=${FIXTURE_ID_INPUT:-all-three} concurrency=${CONCURRENCY_INPUT:-isolated-default} output_contract_mode=${OUTPUT_CONTRACT_MODE_INPUT}."
+          echo "::notice::Dispatching one direct OpenRouter qualification arm; fixture_scope=${FIXTURE_ID_INPUT:-all-three} concurrency=${CONCURRENCY_INPUT:-policy-bounded-default} output_contract_mode=${OUTPUT_CONTRACT_MODE_INPUT}."
           echo "::notice::Routing profile=${ROUTING_PROFILE_INPUT}; default_uptime omits explicit sort so OpenRouter can apply its documented health-aware routing."
           echo "::notice::Requested max_tokens=${MAX_TOKENS_INPUT}; provider/model limits and hard deadlines remain authoritative, with no harness-imposed token ceiling."
           if [ -n "${PROVIDER_SLUG_INPUT}" ]; then echo "::notice::Provider pin is qualification-only: ${PROVIDER_SLUG_INPUT}; production routing is unchanged."; fi
           if [ -n "${MODEL_INPUT}" ]; then echo "::notice::Model override is qualification-only: ${MODEL_INPUT}; production routing is unchanged."; fi
           echo '::notice::The arm has a 10-minute hard wall-clock deadline; workflow maximum is 15 minutes.'
+          echo '::notice::The receipt fails closed unless every lane terminates, defect recall meets the declared gate, and clean fixtures produce no false positives.'
           echo '::notice::Timeouts produce a failed sanitized receipt; they never trigger publication or provider mutation.'
 
       - name: Run bounded OpenRouter qualification

@@ -30,6 +30,7 @@ import {
   QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY,
   QUALIFICATION_HEARTBEAT_MS,
   buildArmEnvironment,
+  buildQualificationAcceptanceGate,
   buildQualificationReceipt,
   buildTransportHandoff,
   normalizeChildTimeoutMs,
@@ -75,6 +76,7 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.match(workflow, /Fixed repetitions per fixture \(1 or 2/u);
   assert.match(workflow, /fixture_id:/u);
   assert.match(workflow, /concurrency:/u);
+  assert.match(workflow, /policy-bounded-default/u);
   assert.match(workflow, /model:/u);
   const announceStep = workflow.split('      - name: Announce bounded OpenRouter dispatch', 2)[1]?.split('      - name: Run bounded OpenRouter qualification', 1)[0] || '';
   assert.match(announceStep, /OUTPUT_CONTRACT_MODE_INPUT:/u);
@@ -106,7 +108,7 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.equal(validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0] }).fixtureId, FIXTURE_IDS[0]);
   assert.equal(validateQualificationInput(input).concurrency, QUALIFICATION_CONCURRENCY);
   assert.equal(validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0] }).concurrency, QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY);
-  assert.equal(validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 3 }).concurrency, 3);
+  assert.equal(validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 2 }).concurrency, 2);
   assert.equal(normalizeQualificationConcurrency('', true), QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY);
   assert.equal(normalizeQualificationConcurrency(QUALIFICATION_MAX_CONCURRENCY, true), QUALIFICATION_MAX_CONCURRENCY);
   assert.equal(normalizeQualificationFixtureId(), null);
@@ -126,9 +128,9 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.equal(normalizeQualificationOutputContractMode(), 'json_object');
   assert.equal(normalizeQualificationRepetitions(), 1);
   assert.equal(QUALIFICATION_MAX_REPETITIONS, 2);
-  assert.equal(QUALIFICATION_CONCURRENCY, 3);
+  assert.equal(QUALIFICATION_CONCURRENCY, 2);
   assert.equal(QUALIFICATION_MAX_ATTEMPTS_PER_FIXTURE, 2);
-  assert.equal(QUALIFICATION_BUDGET_MARGIN_MS, 4 * 60_000);
+  assert.equal(QUALIFICATION_BUDGET_MARGIN_MS, 60_000);
   assert.ok(qualificationWorstCaseMs(2) <= QUALIFICATION_CHILD_TIMEOUT_MS - QUALIFICATION_BUDGET_MARGIN_MS);
   for (const [field, value] of [['confirm', 'yes'], ['repository', 'invalid'], ['baseSha', 'short'], ['botReleaseTag', 'main'], ['botRoot', 'relative']]) {
     assert.throws(() => validateQualificationInput({ ...input, [field]: value }), /confirm|repository|SHA|botReleaseTag|absolute/u);
@@ -140,7 +142,7 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
   assert.throws(() => validateQualificationInput({ ...input, fixtureId: 'missing-fixture' }), /fixtureId/u);
   assert.throws(() => validateQualificationInput({ ...input, concurrency: 1 }), /isolated fixture/u);
   assert.throws(() => validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 0 }), /concurrency/u);
-  assert.throws(() => validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 4 }), /concurrency/u);
+  assert.throws(() => validateQualificationInput({ ...input, fixtureId: FIXTURE_IDS[0], concurrency: 3 }), /concurrency/u);
   assert.throws(() => normalizeQualificationMaxTokens(Number.MAX_SAFE_INTEGER + 1), /maxTokens/u);
   assert.throws(() => validateQualificationInput({ ...input, headSha: input.baseSha }), /must differ/u);
 });
@@ -202,6 +204,7 @@ test('handoff contains exactly one direct OpenRouter transport under the common 
   assert.equal(handoff[0].max_tokens, OPENROUTER_MAX_OUTPUT_TOKENS);
   assert.equal(handoff[0].reasoning_effort, OPENROUTER_REASONING_EFFORT);
   assert.equal(handoff[0].stream, true);
+  assert.equal(handoff[0].max_in_flight, QUALIFICATION_CONCURRENCY);
   assert.equal(handoff[0].structured_output_mode, 'json_object');
   assert.equal(handoff[0].provider_routing.sort, undefined);
   assert.equal(handoff[0].provider_routing.allow_fallbacks, true);
@@ -378,10 +381,11 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
     assert.deepEqual(JSON.parse(captured.env.REVIEW_YETI_TRANSPORTS).map((transport) => transport.name), [OPENROUTER_TRANSPORT]);
     assert.deepEqual(captured.args.slice(1, 5), ['lanes', '--arm', 'candidate', '--fixture']);
     assert.equal(captured.args[captured.args.indexOf('--repetitions') + 1], '1');
-    assert.equal(captured.args[captured.args.indexOf('--concurrency') + 1], '3');
+    assert.equal(captured.args[captured.args.indexOf('--concurrency') + 1], '2');
     assert.equal(captured.args[captured.args.indexOf('--max-tokens') + 1], '65536');
     assert.equal(result.receipt.schema, 'review-yeti.openrouter-qualification.v1');
     assert.equal(result.receipt.integrity_gate.passed, true);
+    assert.equal(result.receipt.acceptance_gate.passed, true);
     assert.equal(result.receipt.authoritative_arm, 'none');
     assert.equal(result.receipt.production_authority, 'unchanged');
     assert.equal(result.receipt.activation_authorized, false);
@@ -396,6 +400,46 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }
+});
+
+test('full qualification fails closed unless terminals, recall, and precision meet the agreed gate', () => {
+  const rows = [1, 2].flatMap((repetition) => FIXTURE_IDS.map((fixtureId, index) => ({
+    fixtureId,
+    repetition,
+    category: index === 2 ? 'clean' : 'defect',
+    detected: index !== 2,
+    falsePositive: false,
+    errored: false,
+    latencyMs: 10,
+    provider: 'openrouter',
+    transport: OPENROUTER_TRANSPORT,
+    responseAttempts: [{ attempt: 1, outcome: 'parsed', provider: 'openrouter', transport: 'openrouter' }],
+  })));
+  const passing = buildQualificationAcceptanceGate(summarizeRows(rows, 0, 2), 2, FIXTURE_IDS);
+  assert.deepEqual(passing, {
+    expected_runs: 6,
+    terminal_runs: 6,
+    minimum_detected_defect_runs: 3,
+    detected_defect_runs: 4,
+    false_positive_runs: 0,
+    terminal_completion_passed: true,
+    defect_detection_passed: true,
+    clean_precision_passed: true,
+    passed: true,
+  });
+
+  const terminalFailure = summarizeRows(rows.map((row, index) => index === 0 ? { ...row, errored: true, detected: false } : row), 0, 2);
+  assert.equal(buildQualificationAcceptanceGate(terminalFailure, 2, FIXTURE_IDS).passed, false);
+
+  const recallFailure = summarizeRows(rows.map((row, index) => row.category === 'defect' && index !== 0
+    ? { ...row, detected: false }
+    : row), 0, 2);
+  assert.equal(buildQualificationAcceptanceGate(recallFailure, 2, FIXTURE_IDS).defect_detection_passed, false);
+
+  const falsePositive = summarizeRows(rows.map((row) => row.category === 'clean'
+    ? { ...row, falsePositive: true }
+    : row), 0, 2);
+  assert.equal(buildQualificationAcceptanceGate(falsePositive, 2, FIXTURE_IDS).clean_precision_passed, false);
 });
 
 test('receipt integrity fails closed on missing or misattributed evidence', () => {
@@ -564,7 +608,7 @@ test('isolated fixture evidence can validate one fixture serially', () => {
   });
   assert.deepEqual(receipt.fixture_ids, [fixtureId]);
   assert.equal(receipt.request_contract.concurrency, 1);
-  const parallelValidated = validateQualificationInput({ ...input, fixtureId, concurrency: 3 });
+  const parallelValidated = validateQualificationInput({ ...input, fixtureId, concurrency: 2 });
   const parallelReceipt = buildQualificationReceipt({
     input: parallelValidated,
     policy,
@@ -572,7 +616,7 @@ test('isolated fixture evidence can validate one fixture serially', () => {
     evaluation: { status: 'completed', rows: 2, fixture_set_valid: true, provider_attribution_valid: true },
     childTimedOut: false,
   });
-  assert.equal(parallelReceipt.request_contract.concurrency, 3);
+  assert.equal(parallelReceipt.request_contract.concurrency, 2);
 });
 
 test('single-repetition callers may omit repetition, but duplicates fail closed', () => {
