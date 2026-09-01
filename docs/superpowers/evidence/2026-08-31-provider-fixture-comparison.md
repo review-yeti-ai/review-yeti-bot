@@ -141,3 +141,32 @@ receipt-only experiment until a new fixture run proves it.
 Three-repetition receipt SHA-256:
 
 `17778b12184cfcac467e8e960122888dfe749b8d4619011c7dd0923518ef941f`
+
+## Full fixture result after reasoning-disabled recovery
+
+After PR #356, the same exact OpenRouter model was run against the two seeded defects and the
+clean control, three serial repetitions each. The lane kept the first attempt at high reasoning,
+used a 45-second per-attempt deadline, and allowed only one same-route retry with optional
+reasoning disabled. No fallback, publication, or GitHub write was enabled.
+
+| Fixture | Terminal | Detector result | Clean false positives | Recovery use | Latency range |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `active-skip-marker-left-in-suite` | 3/3 | 3/3 detected | — | 0/3 | 3.372–10.163s |
+| `vacuous-default-value-test` | 3/3 | 1/3 detected | — | 3/3 | 55.665–69.170s |
+| `clean-behavioural-guard` | 3/3 | — | 0/3 | 3/3 | 46.196–47.186s |
+
+The aggregate terminal result is 9/9 (100%), with 4/6 seeded defects detected (67%) and 0/3
+clean false positives. Every clean row and every vacuous-defect row first timed out while
+optional reasoning was enabled; the retry then returned a directly parsed JSON object. The
+active-marker defect completed on the first attempt each time. This confirms that the bounded
+retry restores terminal output, but it also makes the latency and recall tradeoff explicit: the
+vacuous defect remains inconsistent and the clean path pays roughly 46–47 seconds while waiting
+for the first attempt to expire.
+
+This is evidence for a safer recovery mechanism, not approval to promote OpenRouter. Keep the
+production route unchanged until a quality-focused follow-up improves the vacuous-defect recall
+without weakening the clean-control result or the 15-minute job bound.
+
+Full nine-row receipt SHA-256:
+
+`3c00510d3ad2c8c47e6d5f51053b72855b4df79b86c742cb9d9da117acbe9bbd`
