@@ -139,6 +139,10 @@ inputs:
     description: 'Base64 encoded JSON transport plan.'
     required: false
     default: ''
+  dispatch-mode:
+    description: 'Persona transport assignment mode: ordered preserves one shared fallback list; striped assigns weighted primary transports per lane.'
+    required: false
+    default: 'ordered'
   context7-api-key:
     description: 'Context7 API key for documentation evidence retrieval.'
     required: false
@@ -439,6 +443,7 @@ runs:
         OPENROUTER_PR_REVIEW_API_KEY: ${{ inputs.openrouter-api-key || env.OPENROUTER_PR_REVIEW_API_KEY }}
         REVIEW_YETI_TRANSPORTS: ${{ inputs.transports }}
         REVIEW_YETI_TRANSPORT_PLAN_B64: ${{ inputs.transport-plan-b64 }}
+        REVIEW_YETI_DISPATCH_MODE: ${{ inputs.dispatch-mode }}
         CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
         LINEAR_API_KEY: ${{ inputs.linear-api-key || env.LINEAR_API_KEY }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
