@@ -74,7 +74,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	if isTerminalPhase(review.Status.Phase) {
-		return ctrl.Result{}, nil
+		return r.reconcileTerminalWorkspace(ctx, &review)
 	}
 	now := r.clock()
 	if err := validateProjectionWindow(&review); err != nil {
@@ -419,6 +419,48 @@ func (r *PRReviewJobV1Alpha2Reconciler) markWorkspaceUsed(ctx context.Context, r
 	}
 	pvc.Annotations[workspace.LastUsedAtAnnotation] = now.UTC().Format(time.RFC3339Nano)
 	return r.Update(ctx, &pvc)
+}
+
+// reconcileTerminalWorkspace keeps the PR-scoped PVC lifecycle moving after
+// the worker Job has reached a terminal phase. The PVC is intentionally not
+// owned by the review CR, so it must be reclaimed through the guarded
+// workspace collector rather than Kubernetes owner-reference garbage
+// collection. Returning the collector's bounded requeue allows the exact
+// 30-minute idle boundary to be observed even when no further Kubernetes
+// event arrives for the terminal review.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	pvcName := workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
+	if pvcName == "" {
+		return ctrl.Result{}, nil
+	}
+	var pvc corev1.PersistentVolumeClaim
+	if err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: pvcName}, &pvc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	result, err := workspace.NewCollector(r.Client).Reclaim(
+		ctx,
+		&pvc,
+		review.Namespace,
+		review.Spec.RepositoryID,
+		review.Spec.PRNumber,
+		r.clock(),
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if result.RequeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: result.RequeueAfter}, nil
+	}
+	if result.Reason == workspace.RetainedActiveLease || result.Reason == workspace.RetainedActivePod {
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) setPhase(ctx context.Context, review *reviewv1alpha2.PRReviewJob, phase reviewv1alpha2.PRReviewJobPhase, reason, message string) error {

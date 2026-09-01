@@ -115,7 +115,15 @@ func (c *Collector) Reclaim(
 	if c == nil || c.client == nil || now.IsZero() || len(validation.IsDNS1123Label(namespace)) != 0 {
 		return ReclaimResult{}, ErrWorkspaceConfiguration
 	}
-	if err := ValidatePVC(pvc, namespace, repositoryID, prNumber); err != nil {
+	validationPVC := pvc
+	if pvc != nil && pvc.DeletionTimestamp != nil {
+		// A prior guarded delete may have succeeded while the finalizer update
+		// lost a resource-version race. Keep the identity and protection checks,
+		// but allow this retry to finish the already-started deletion.
+		validationPVC = pvc.DeepCopy()
+		validationPVC.DeletionTimestamp = nil
+	}
+	if err := ValidatePVC(validationPVC, namespace, repositoryID, prNumber); err != nil {
 		return ReclaimResult{}, err
 	}
 	lastUsed, err := time.Parse(time.RFC3339Nano, pvc.Annotations[LastUsedAtAnnotation])
@@ -139,9 +147,11 @@ func (c *Collector) Reclaim(
 	if pvc.ResourceVersion == "" {
 		return ReclaimResult{}, ErrWorkspaceConfiguration
 	}
-	observedResourceVersion := pvc.ResourceVersion
-	if err := c.client.Delete(ctx, pvc.DeepCopy(), client.Preconditions{ResourceVersion: &observedResourceVersion}); err != nil {
-		return ReclaimResult{}, err
+	if pvc.DeletionTimestamp == nil {
+		observedResourceVersion := pvc.ResourceVersion
+		if err := c.client.Delete(ctx, pvc.DeepCopy(), client.Preconditions{ResourceVersion: &observedResourceVersion}); err != nil {
+			return ReclaimResult{}, err
+		}
 	}
 	terminating := &corev1.PersistentVolumeClaim{}
 	if err := c.client.Get(ctx, client.ObjectKeyFromObject(pvc), terminating); err != nil {
