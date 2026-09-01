@@ -209,7 +209,7 @@ steps:
   - uses: review-yeti-ai/review-yeti-bot@v1
     with:
       incremental-review: 'true'
-      incremental-trusted-workflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@'
+      incremental-trusted-workflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@main,calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1'
       max-review-assignments: '24'
 ```
 

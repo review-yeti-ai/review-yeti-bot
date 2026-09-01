@@ -128,8 +128,8 @@ inputs:
     default: '60000'
   incremental-trusted-workflow:
     description: >-
-      Exact trusted reusable-workflow path prefix that must appear in the parent artifact's
-      completed GitHub run, for example owner/repo/.github/workflows/review.yml@.
+      Comma-separated exact trusted reusable-workflow references that may appear in the parent
+      artifact's completed GitHub run, for example owner/repo/.github/workflows/review.yml@v1.
     required: false
     default: ''
   config-ref:

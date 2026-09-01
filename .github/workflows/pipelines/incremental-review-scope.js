@@ -175,7 +175,8 @@ async function resolveIncrementalReviewScope(options) {
     fallbackReason: options.enabled ? 'no_trusted_parent' : 'disabled',
   });
   if (!options.enabled) return { reviewedDiffText: options.fullDiffText, scope: fullScope, parentReport: null };
-  if (!options.token || !options.repo || !options.prNumber || !options.baseSha || !options.headSha || !options.trustedWorkflow) {
+  const trustedWorkflows = String(options.trustedWorkflow || '').split(',').map((item) => item.trim()).filter(Boolean);
+  if (!options.token || !options.repo || !options.prNumber || !options.baseSha || !options.headSha || trustedWorkflows.length < 1) {
     return { reviewedDiffText: options.fullDiffText, scope: { ...fullScope, fallbackReason: 'missing_identity' }, parentReport: null };
   }
 
@@ -197,7 +198,7 @@ async function resolveIncrementalReviewScope(options) {
         `${apiBase}/repos/${options.repo}/actions/runs/${runId}`);
       const run = await runResponse.json();
       const trustedReference = (Array.isArray(run.referenced_workflows) ? run.referenced_workflows : [])
-        .find((reference) => String(reference?.path || '').startsWith(options.trustedWorkflow));
+        .find((reference) => trustedWorkflows.includes(String(reference?.path || '')));
       if (run.status !== 'completed' || !['pull_request', 'pull_request_target'].includes(run.event)) continue;
       if (!trustedReference || !/^[0-9a-f]{40}$/iu.test(String(trustedReference.sha || ''))) continue;
       if (run.head_sha !== artifact.workflow_run?.head_sha || Number(run.run_attempt) < 1) continue;

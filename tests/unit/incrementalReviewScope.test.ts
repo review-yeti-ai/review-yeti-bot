@@ -32,7 +32,7 @@ function parentReport(planDigest: string) {
 
 describe('trusted incremental review scope', () => {
   it('binds evidence reuse to the action, base policy, persona order, and diff budget', () => {
-    const common = { actionSha: 'd'.repeat(40), baseSha: BASE, personaIds: PERSONAS, maxDiffChars: 24000, maxIncrementalDiffChars: 60000, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@' };
+    const common = { actionSha: 'd'.repeat(40), baseSha: BASE, personaIds: PERSONAS, maxDiffChars: 24000, maxIncrementalDiffChars: 60000, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@main,calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1' };
     const digest = scope.buildReviewScopePlanDigest(common);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
     expect(scope.buildReviewScopePlanDigest(common)).toBe(digest);
@@ -109,7 +109,7 @@ describe('trusted incremental review scope', () => {
       personaIds: PERSONAS,
       maxDiffChars: 24000,
       maxIncrementalDiffChars: 60000,
-      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@',
+      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@main,calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
       fullDiffText,
       planDigest,
       parseDiff: pipeline.parseDiff,
