@@ -244,9 +244,11 @@ describe('version 3 configurable persona panel', () => {
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     })).rejects.toThrow(/arbiter failed closed.*nonce-fenced/i);
+    // Each configured arbiter receives one bounded format correction before its
+    // unfenced response is rejected and the panel advances to the next fallback.
     expect(complete.mock.calls.filter(([arg]) =>
       JSON.stringify(arg.messages).includes('arbiter'),
-    )).toHaveLength(2);
+    )).toHaveLength(4);
   });
 
   it('excludes disabled and out-of-scope personas', async () => {

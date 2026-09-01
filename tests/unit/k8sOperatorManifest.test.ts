@@ -57,6 +57,10 @@ describe('isolated DOKS operator manifest', () => {
     expect(resources).not.toContain('nodes');
     const eventRule = role.rules.find((rule: Manifest) => rule.resources?.includes('events'));
     expect(eventRule).toEqual({ apiGroups: [''], resources: ['events'], verbs: ['create'] });
+    for (const resource of ['persistentvolumeclaims', 'leases']) {
+      const rule = role.rules.find((candidate: Manifest) => candidate.resources?.includes(resource));
+      expect(rule?.verbs).toContain('delete');
+    }
     expect(manifests().some((candidate) => candidate.kind === 'ClusterRole' || candidate.kind === 'ClusterRoleBinding')).toBe(false);
   });
 
