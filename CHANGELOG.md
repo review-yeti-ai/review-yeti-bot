@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.0...v1.19.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **operator:** allow namespaced event recording ([c8291b1](https://github.com/review-yeti-ai/review-yeti-bot/commit/c8291b104693d4477dc289d83c6abd60fee91c72))
+
 ## [1.19.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.18.0...v1.19.0) (2026-09-01)
 
 
