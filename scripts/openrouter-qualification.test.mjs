@@ -148,8 +148,9 @@ test('input requires immutable coordinates and an explicit confirmation', () => 
 test('allows only the two explicit production models as qualification overrides', () => {
   assert.deepEqual(QUALIFICATION_MODEL_OVERRIDES, [QUALIFICATION_DEEPSEEK_MODEL, QUALIFICATION_GLM_MODEL]);
   assert.equal(normalizeQualificationModel(), null);
-  assert.equal(normalizeQualificationModel('~DEEPSEEK/DEEPSEEK-V4-FLASH-LATEST'), QUALIFICATION_DEEPSEEK_MODEL);
+  assert.equal(normalizeQualificationModel('DEEPSEEK/DEEPSEEK-V4-FLASH-0731'), QUALIFICATION_DEEPSEEK_MODEL);
   assert.equal(normalizeQualificationModel('Z-AI/GLM-5.3-FLASH'), QUALIFICATION_GLM_MODEL);
+  assert.throws(() => normalizeQualificationModel('~deepseek/deepseek-v4-flash-latest'), /model/u);
   assert.throws(() => normalizeQualificationModel('google/gemini-3.7-flash'), /model/u);
 
   const validated = validateQualificationInput({ ...input, model: QUALIFICATION_GLM_MODEL });

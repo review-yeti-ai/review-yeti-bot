@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "a2b58016750ddda9c2e7ee73c8fc3a41b671286b4df0467903b30e95d96323b6",
+  "normalized_plan_sha256": "e05ca950ad3b6ef0509f1f2f686081c6c8753ff05f61d126d83340f9168b480f",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -12,7 +12,7 @@
     "dispatch": {
       "mode": "striped",
       "weights": {
-        "openrouter-primary": 3,
+        "openrouter-primary": 2,
         "synthetic": 1
       }
     },
@@ -25,7 +25,7 @@
       {
         "name": "openrouter-primary",
         "base_url_class": "openrouter-gateway",
-        "model": "~deepseek/deepseek-v4-flash-latest",
+        "model": "deepseek/deepseek-v4-flash-0731",
         "models": [
           "z-ai/glm-5.3-flash"
         ],
@@ -34,7 +34,7 @@
           "connect_ms": 20000,
           "request_ms": 90000,
           "stall_ms": 20000,
-          "ttft_ms": 30000
+          "ttft_ms": 60000
         },
         "max_output_tokens": 24576,
         "streaming": true,
@@ -73,9 +73,9 @@
           "data_collection": "deny"
         },
         "capacity": {
-          "max_in_flight": 3,
+          "max_in_flight": 2,
           "concurrency_scope": "provider",
-          "wait_timeout_ms": 30000
+          "wait_timeout_ms": 120000
         },
         "quota": {
           "probe": "none"
@@ -102,7 +102,7 @@
           "connect_ms": 15000,
           "request_ms": 120000,
           "stall_ms": 20000,
-          "ttft_ms": 30000
+          "ttft_ms": 60000
         },
         "max_output_tokens": 24576,
         "streaming": true,

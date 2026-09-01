@@ -86,7 +86,7 @@ jobs:
           jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "synthetic"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-primary"' policy/review-yeti.json
-          grep -Fq '"model": "~deepseek/deepseek-v4-flash-latest"' policy/review-yeti.json
+          grep -Fq '"model": "deepseek/deepseek-v4-flash-0731"' policy/review-yeti.json
           grep -Fq '"models": ["z-ai/glm-5.3-flash"]' policy/review-yeti.json
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
@@ -104,7 +104,7 @@ jobs:
           grep -Fq 'SYNTHETIC_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.SYNTHETIC_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'llm-base-url: https://openrouter.ai/api/v1' .github/workflows/review-yeti.yml
-          grep -Fq "model: '~deepseek/deepseek-v4-flash-latest'" .github/workflows/review-yeti.yml
+          grep -Fq "model: 'deepseek/deepseek-v4-flash-0731'" .github/workflows/review-yeti.yml
           grep -Fq 'action-sha:' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-data-collection:' .github/workflows/review-yeti.yml
           grep -Fq 'max-diff-chars:' .github/workflows/review-yeti.yml

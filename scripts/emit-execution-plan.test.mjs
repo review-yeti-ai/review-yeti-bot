@@ -29,7 +29,7 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(fixture.plan.transport_order, ['openrouter-primary', 'synthetic']);
   assert.deepEqual(fixture.plan.dispatch, {
     mode: 'striped',
-    weights: { 'openrouter-primary': 3, synthetic: 1 },
+    weights: { 'openrouter-primary': 2, synthetic: 1 },
   });
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
@@ -53,7 +53,12 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
     max_retry_after_ms: 5000,
   });
   assert.equal(openrouter.reasoning.wire_shape, 'reasoning.effort');
-  assert.equal(openrouter.model, '~deepseek/deepseek-v4-flash-latest');
+  assert.equal(openrouter.model, 'deepseek/deepseek-v4-flash-0731');
+  assert.deepEqual(openrouter.capacity, {
+    max_in_flight: 2,
+    concurrency_scope: 'provider',
+    wait_timeout_ms: 120000,
+  });
   assert.deepEqual(openrouter.models, ['z-ai/glm-5.3-flash']);
   assert.equal(openrouter.request_extensions.plugins, undefined);
   assert.equal(openrouter.quarantine.on_timeout, false);

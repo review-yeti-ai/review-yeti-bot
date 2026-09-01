@@ -26,9 +26,9 @@ test('materializes the committed provider order and routing into the local CLI c
   assert.equal(config.github_action.openrouter.stream, true);
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
-  assert.equal(config.github_action.openrouter.ttft_ms, 30000);
+  assert.equal(config.github_action.openrouter.ttft_ms, 60000);
   assert.equal(config.github_action.openrouter.data_collection, 'deny');
-  assert.equal(config.github_action.openrouter.model, '~deepseek/deepseek-v4-flash-latest');
+  assert.equal(config.github_action.openrouter.model, 'deepseek/deepseek-v4-flash-0731');
   assert.deepEqual(config.github_action.openrouter.models, ['z-ai/glm-5.3-flash']);
   assert.deepEqual(config.github_action.openrouter.ignore_providers, ['morph', 'fireworks']);
   // Must track policy/review-yeti.json rather than restating a provider preference.
@@ -63,10 +63,10 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.LANE_CALL_BUDGET, '24');
   assert.equal(env.OPENROUTER_STREAM, 'true');
   assert.equal(env.OPENROUTER_TIMEOUT_MS, String(openrouterTransport.timeout_ms));
-  assert.equal(env.OPENROUTER_TTFT_MS, '30000');
+  assert.equal(env.OPENROUTER_TTFT_MS, '60000');
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   const openrouter = JSON.parse(env.REVIEW_YETI_TRANSPORTS).find((transport) => transport.name === 'openrouter-primary');
-  assert.equal(openrouter.model, '~deepseek/deepseek-v4-flash-latest');
+  assert.equal(openrouter.model, 'deepseek/deepseek-v4-flash-0731');
   assert.deepEqual(openrouter.models, ['z-ai/glm-5.3-flash']);
   assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
 });
@@ -91,10 +91,10 @@ test('builds the delegated invocation without changing source identity', () => {
       base: 'a'.repeat(40),
       head: 'b'.repeat(40),
       output: 'review.json',
-      model: '~deepseek/deepseek-v4-flash-latest',
+      model: 'deepseek/deepseek-v4-flash-0731',
       json: true,
     }),
-    ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--output', 'review.json', '--model', '~deepseek/deepseek-v4-flash-latest', '--json'],
+    ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--output', 'review.json', '--model', 'deepseek/deepseek-v4-flash-0731', '--json'],
   );
 });
 

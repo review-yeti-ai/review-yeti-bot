@@ -42,10 +42,10 @@ if [item.get('name') for item in transports] != ['openrouter-primary', 'syntheti
 if review.get('dispatch_mode') != 'striped':
     raise SystemExit('policy must use striped persona dispatch')
 if {item.get('name'): item.get('dispatch_weight') for item in transports} != {
-    'openrouter-primary': 3,
+    'openrouter-primary': 2,
     'synthetic': 1,
 }:
-    raise SystemExit('active provider weights must keep OpenRouter primary at 3:1')
+    raise SystemExit('active provider weights must keep bounded OpenRouter primary at 2:1')
 # Measured ablation 2026-08-20 (live, N=8 reps x 9 fixtures x 3 arms, errored runs counted as
 # failures): reasoning_effort=max scored recall 0.425 [0.29-0.58] with 25/72 errors, versus the
 # provider default (unset) at 0.750 [0.60-0.86] with 7/72 -- non-overlapping CIs and 3.5x the
@@ -94,10 +94,12 @@ if not openrouter:
     raise SystemExit('policy must define the openrouter-primary transport')
 if openrouter.get('stream') is not True:
     raise SystemExit('openrouter-primary must use streaming for provider attribution')
-if openrouter.get('model') != '~deepseek/deepseek-v4-flash-latest':
-    raise SystemExit('openrouter-primary must use DeepSeek V4 Flash Latest')
+if openrouter.get('model') != 'deepseek/deepseek-v4-flash-0731':
+    raise SystemExit('openrouter-primary must use the explicit DeepSeek V4 Flash 0731 route')
 if openrouter.get('models') != ['z-ai/glm-5.3-flash']:
     raise SystemExit('openrouter-primary must use GLM-5.3 Flash as its only model fallback')
+if (openrouter.get('max_in_flight'), openrouter.get('capacity_wait_timeout_ms')) != (2, 120000):
+    raise SystemExit('openrouter-primary must bound large-diff concurrency and queue admission at 2/120000ms')
 if 'plugins' in openrouter:
     raise SystemExit('openrouter-primary must not use the Auto Router plugin')
 if openrouter.get('structured_output') != 'strict':
@@ -180,8 +182,8 @@ if max_passes * lane_deadline_ms > job_cap_ms:
 # On a non-streaming fallback, the "TTFT" abort wraps the entire request rather than just the wait
 # for a first byte. The committed policy declares streaming on every transport, so a tight TTFT is
 # legitimate here; the invariant for any future non-streaming change is exercised below.
-if not str(review.get('openrouter_ttft_ms', '')).isdigit() or int(review['openrouter_ttft_ms']) < 1:
-    raise SystemExit('openrouter_ttft_ms must be a positive integer string')
+if review.get('openrouter_ttft_ms') != '60000':
+    raise SystemExit('openrouter_ttft_ms must preserve the qualified 60000ms large-diff first-token budget')
 print('policy budget source passed')
 PY
 

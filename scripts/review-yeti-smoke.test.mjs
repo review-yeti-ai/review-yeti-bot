@@ -33,7 +33,7 @@ function policyFixture() {
       openrouter_max_attempts: '2',
       openrouter_timeout_ms: '90000',
       openrouter_stream: 'true',
-      openrouter_ttft_ms: '30000',
+      openrouter_ttft_ms: '60000',
       stall_ms: '20000',
       budget: { lane_deadline_ms: '860000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
@@ -61,10 +61,10 @@ function policyFixture() {
     },
   };
   for (const transport of policy.review_yeti.transports) {
-    transport.dispatch_weight = transport.name === 'openrouter-primary' ? 3 : 1;
-    transport.max_in_flight = transport.name === 'openrouter-primary' ? 3 : transport.name === 'synthetic' ? 5 : 1;
+    transport.dispatch_weight = transport.name === 'openrouter-primary' ? 2 : 1;
+    transport.max_in_flight = transport.name === 'openrouter-primary' ? 2 : transport.name === 'synthetic' ? 5 : 1;
     transport.concurrency_scope = transport.name === 'synthetic' ? 'model' : 'provider';
-    transport.capacity_wait_timeout_ms = transport.name === 'synthetic' ? 120000 : 30000;
+    transport.capacity_wait_timeout_ms = ['openrouter-primary', 'synthetic'].includes(transport.name) ? 120000 : 30000;
     transport.rate_limit = { scope: 'provider', max_retries: 1, max_retry_after_ms: 5000 };
     if (transport.name === 'synthetic') transport.quota_probe = 'synthetic-v2';
   }
@@ -121,6 +121,10 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   assert.equal(openrouter.quarantine_on_timeout, false);
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
   assert.equal(openrouter.max_tokens, 24_576);
+  assert.equal(openrouter.dispatch_weight, 2);
+  assert.equal(openrouter.max_in_flight, 2);
+  assert.equal(openrouter.concurrency_scope, 'provider');
+  assert.equal(openrouter.capacity_wait_timeout_ms, 120_000);
   // Post review-yeti-bot#163: the lane deadline bounds the dead-transport connect+stall envelope
   // plus the declared overhead reserve, not the sum of timeout_ms (an actively-streaming call is
   // never killed by a duration cap). Mirrors the same inequality emit-policy.mjs enforces.
@@ -298,6 +302,20 @@ test('the smoke suite rejects policy drift before any network request', () => {
   const policy = policyFixture();
   policy.review_yeti.transports.reverse();
   assert.throws(() => validatePolicy(policy), /transport order/);
+});
+
+test('the smoke suite rejects unbounded OpenRouter admission before any network request', () => {
+  for (const [key, value] of [
+    ['dispatch_weight', 3],
+    ['max_in_flight', 3],
+    ['concurrency_scope', 'model'],
+    ['capacity_wait_timeout_ms', 30_000],
+  ]) {
+    const policy = policyFixture();
+    const openrouter = policy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary');
+    openrouter[key] = value;
+    assert.throws(() => validatePolicy(policy), /bounded 2:1 striping/);
+  }
 });
 
 test('the smoke suite rejects weakened OpenRouter routing before any network request', () => {

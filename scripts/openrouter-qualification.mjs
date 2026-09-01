@@ -24,7 +24,7 @@ export const OPENROUTER_TIMEOUT_MS = 90_000;
 export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
 export const OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
 export const OPENROUTER_REASONING_EFFORT = 'high';
-export const QUALIFICATION_DEEPSEEK_MODEL = '~deepseek/deepseek-v4-flash-latest';
+export const QUALIFICATION_DEEPSEEK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 export const QUALIFICATION_GLM_MODEL = 'z-ai/glm-5.3-flash';
 export const QUALIFICATION_MODEL_OVERRIDES = Object.freeze([
   QUALIFICATION_DEEPSEEK_MODEL,

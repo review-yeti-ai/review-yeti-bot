@@ -112,7 +112,7 @@ pins by design — see example-meta ADR 0431 for the decision record and revisit
 ## Fireworks timeout debug
 
 The hosted panel uses `openrouter-ttft-ms` across the enabled model transports. Fireworks, Gemini,
-Ollama, and the OpenRouter route all stream their responses, so the 30-second TTFT deadline
+Ollama, and the OpenRouter route all stream their responses, so the 60-second TTFT deadline
 measures the first SSE token rather than a fully buffered JSON body. OpenRouter requires
 BF16/FP16 endpoints, sorts the eligible provider catalog by throughput, applies a p90
 throughput floor and p99 latency preference, and allows eligible hosts to fall over.
@@ -159,18 +159,21 @@ used for one-time qualification, but it is not sufficient evidence for productio
 The workflow references only the GitHub secret; neither policy nor workflow files contain the
 credential value.
 
-The action uses deterministic weighted striping across persona lanes: OpenRouter has weight 3 and
+The action uses deterministic weighted striping across persona lanes: OpenRouter has weight 2 and
 Synthetic has weight 1, so OpenRouter remains primary by volume while Synthetic receives normal
 review work rather than waiting for an outage. Each lane still carries the other healthy transport
 as a fallback, and the total remains one baseline model call per persona. Gemini, Ollama, and
 Fireworks remain declared for explicit qualification, but their `enabled: false` settings keep them
 out of production admission. Re-enabling Gemini or Ollama later adds its existing weight-1 stripe
-without changing consumer repositories. The runtime requires compatible
+without changing consumer repositories. OpenRouter admits at most two provider-scoped calls at a
+time and lets later lanes wait up to 120 seconds for a slot. This keeps a six-persona large-diff
+panel from presenting four large prompts to the gateway concurrently or abandoning queued work at
+the former 30-second admission limit. The runtime requires compatible
 request parameters, the policy's
 `strict` output marker, and throughput-ranked provider routing while delegating endpoint eligibility
 to OpenRouter's live policy except for the account-level Morph and Fireworks exclusions recorded
 after their verified incidents. Model selection is explicit: OpenRouter receives
-`~deepseek/deepseek-v4-flash-latest` first and `z-ai/glm-5.3-flash` as its only model fallback via
+`deepseek/deepseek-v4-flash-0731` first and `z-ai/glm-5.3-flash` as its only model fallback via
 the documented `models` array; the Auto Router alias and plugin are not used. In the current hosted
 panel, `strict` is a policy declaration: the runtime sends JSON mode
 (`response_format: { type: "json_object" }`) and validates the terminal payload, but it does not
@@ -183,7 +186,7 @@ and endpoint-selection recovery.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
 budget, an 860-second lane deadline with a two-minute non-generation reserve and a 40-second
-job-cap reserve, and a 30-second OpenRouter first-token budget.
+job-cap reserve, and a 60-second OpenRouter first-token budget.
 
 ## One-time Fireworks/Ollama comparison
 
@@ -240,7 +243,7 @@ they do not alter the provider order, verdict gate, or activation boundary.
   `stall_ms` after connecting (no SSE chunk, including `reasoning_content`), the call is declared
   dead and the lane fails over. This matches the engine's own default and is declared in policy so
   it participates in the lane-deadline invariant below and is tunable without an engine change.
-- **openrouter_ttft_ms = 30000ms.** The action uses this value as the OpenRouter first-token/connect
+- **openrouter_ttft_ms = 60000ms.** The action uses this value as the OpenRouter first-token/connect
   budget. Because every configured transport streams, TTFT is measured at the first SSE chunk and
   does not cap a generation after streaming has begun.
 

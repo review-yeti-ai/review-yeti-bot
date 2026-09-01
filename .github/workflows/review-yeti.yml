@@ -129,7 +129,7 @@ jobs:
           llm-api-key: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           llm-base-url: https://openrouter.ai/api/v1
           action-sha: ${{ steps.resolved.outputs.sha }}
-          model: '~deepseek/deepseek-v4-flash-latest'
+          model: 'deepseek/deepseek-v4-flash-0731'
           transports: ${{ steps.smoke.outputs.healthy_transports }}
           transport-plan-b64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
           dispatch-mode: ${{ steps.policy.outputs.dispatch_mode }}

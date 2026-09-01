@@ -36,7 +36,7 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   data_collection: 'deny',
 });
 export const EXPECTED_OPENROUTER_MODELS = Object.freeze([
-  '~deepseek/deepseek-v4-flash-latest',
+  'deepseek/deepseek-v4-flash-0731',
   'z-ai/glm-5.3-flash',
 ]);
 export const EXPECTED_OPENROUTER_MODEL = EXPECTED_OPENROUTER_MODELS[0];
@@ -175,7 +175,13 @@ export function validatePolicy(policy) {
   }
   if (openrouter?.model !== EXPECTED_OPENROUTER_MODEL
       || JSON.stringify(openrouter?.models) !== JSON.stringify(EXPECTED_OPENROUTER_MODELS.slice(1))) {
-    throw new Error('OpenRouter must use only the approved DeepSeek V4 Flash Latest primary and GLM-5.3 Flash fallback models');
+    throw new Error('OpenRouter must use only the approved DeepSeek V4 Flash 0731 primary and GLM-5.3 Flash fallback models');
+  }
+  if (openrouter?.dispatch_weight !== 2
+      || openrouter?.max_in_flight !== 2
+      || openrouter?.concurrency_scope !== 'provider'
+      || openrouter?.capacity_wait_timeout_ms !== 120000) {
+    throw new Error('OpenRouter must use bounded 2:1 striping with two provider-scoped slots and a 120-second admission wait');
   }
   // The approved route leaves reasoning selection to the model/provider contract; pinning `max`
   // would force a previously measured worst-performing arm.
