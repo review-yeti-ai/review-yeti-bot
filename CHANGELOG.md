@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.21.0...v1.21.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** trust GitHub normalized workflow refs ([#395](https://github.com/review-yeti-ai/review-yeti-bot/issues/395)) ([389f8cc](https://github.com/review-yeti-ai/review-yeti-bot/commit/389f8cc51aa0e2ffd78f8c2ab0195b247d2d610c))
+
 ## [1.21.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.5...v1.21.0) (2026-09-01)
 
 
