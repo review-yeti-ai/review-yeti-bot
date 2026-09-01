@@ -2956,20 +2956,23 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         formatRecoveryAttempted = true;
         recoveryAction = 'bounded_retry';
         noteRetryReason('timeout');
-        // A timeout with no usable stream cannot identify a failed upstream model. Retry the
-        // same OpenRouter route without the auto-router plugin. Preserve the admitted reasoning
-        // effort so a transport recovery does not silently downgrade review semantics.
+        // A timeout with no parseable final object cannot identify a failed upstream model. Retry
+        // the same OpenRouter route without the auto-router plugin, but disable optional reasoning
+        // on this one recovery attempt so the bounded output budget is reserved for JSON. The
+        // initial attempt still uses the persona's admitted reasoning effort.
         delete requestBody.plugins;
+        requestBody.reasoning = { effort: 'none' };
         requestBody.max_tokens = Math.max(requestBody.max_tokens, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
         requestBody.messages[0].content += [
           '',
           'TIMEOUT RECOVERY:',
           '- The prior generation produced no usable streamed output before the transport deadline.',
+          '- Disable optional reasoning for this recovery attempt and reserve the output budget for the required findings object.',
           '- Re-evaluate the complete diff against the review charter and return the required findings object.',
           '- Do not assume the change is clean; include every finding that meets the review criteria.',
           '- Do not emit prose or markdown outside the required findings object.',
         ].join('\n');
-        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with the admitted reasoning effort and auto-routing disabled before failing closed...`);
+        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with optional reasoning disabled and auto-routing disabled before failing closed...`);
         return true;
       };
 
