@@ -82,6 +82,8 @@ if (synthetic.get('max_in_flight'), synthetic.get('concurrency_scope'), syntheti
     5, 'model', 'synthetic-v2'
 ):
     raise SystemExit('Synthetic must retain the five-pack per-model ceiling plus quota-bounded admission')
+if synthetic.get('quarantine_on_timeout') is not False:
+    raise SystemExit('Synthetic timeouts must remain lane-local so one slow lane cannot quarantine the transport for the run')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
 budget = review.get('budget')

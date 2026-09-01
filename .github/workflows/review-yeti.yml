@@ -170,6 +170,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Upload Review Yeti provider telemetry
+        if: always() && steps.review.outputs.provider-telemetry-path != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.review.outputs.provider-telemetry-path }}
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Enforce exact-head Review Yeti verdict
         if: always()
         env:

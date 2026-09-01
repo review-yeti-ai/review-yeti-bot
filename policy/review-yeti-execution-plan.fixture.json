@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "e05ca950ad3b6ef0509f1f2f686081c6c8753ff05f61d126d83340f9168b480f",
+  "normalized_plan_sha256": "28b4dbfe1c75c8bfd83073ef5ceb7d6c990ebf4e6219289e31abae68d74cf3cc",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -140,7 +140,7 @@
           }
         },
         "quarantine": {
-          "on_timeout": "runtime-default-uncharacterized"
+          "on_timeout": false
         }
       }
     ]

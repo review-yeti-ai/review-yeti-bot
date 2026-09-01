@@ -558,6 +558,12 @@ grep -Fq 'EXPECTED_OLD_V1_SHA: ${{ steps.expected-v1.outputs.sha }}' "$repo_root
 grep -Fq 'PROMOTION_RECEIPT_PATH: ${{ runner.temp }}/review-yeti-v1-promotion-receipt.json' "$repo_root/.github/workflows/promote-v1.yml"
 grep -Fq 'actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0' "$repo_root/.github/workflows/promote-v1.yml"
 grep -Fq 'actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0' "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq "if: always() && steps.review.outputs.provider-telemetry-path != ''" "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.run_attempt }}' "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'path: ${{ steps.review.outputs.provider-telemetry-path }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
 
 echo "promote-v1 behavioral contract passed"

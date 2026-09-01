@@ -113,6 +113,7 @@
           "max_retry_after_ms": 5000
         },
         "structured_output": "strict",
+        "quarantine_on_timeout": false,
         "reasoning_effort": "high"
       },
       {

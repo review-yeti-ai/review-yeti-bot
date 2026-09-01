@@ -55,7 +55,7 @@ function policyFixture() {
         },
         { name: 'gemini', enabled: false, base_url: EXPECTED_GEMINI_BASE_URL, api_key_env: 'GEMINI_API_KEY', model: EXPECTED_GEMINI_MODEL, compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
         { name: 'ollama', enabled: false, base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'high' },
-        { name: 'synthetic', enabled: true, base_url: EXPECTED_SYNTHETIC_BASE_URL, api_key_env: 'SYNTHETIC_API_KEY', model: EXPECTED_SYNTHETIC_MODEL, compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
+        { name: 'synthetic', enabled: true, base_url: EXPECTED_SYNTHETIC_BASE_URL, api_key_env: 'SYNTHETIC_API_KEY', model: EXPECTED_SYNTHETIC_MODEL, compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', quarantine_on_timeout: false, reasoning_effort: 'high' },
         { name: 'fireworks', enabled: false, base_url: 'https://api.fireworks.ai/inference/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'accounts/fireworks/models/deepseek-v4-flash-0731', compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, max_tokens: 24576, stream: true, structured_output: 'strict', perf_metrics_in_response: true, reasoning_effort: 'high' },
       ],
     },
@@ -119,6 +119,7 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
+  assert.equal(transports.find((transport) => transport.name === 'synthetic').quarantine_on_timeout, false);
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
   assert.equal(openrouter.max_tokens, 24_576);
   assert.equal(openrouter.dispatch_weight, 2);
@@ -135,6 +136,16 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
       * Number(policy.review_yeti.openrouter_max_attempts)
       * Number(policy.review_yeti.budget.max_investigation_turns)
       + Number(policy.review_yeti.budget.lane_overhead_ms),
+  );
+});
+
+test('every active transport keeps lane timeouts out of the run-scoped quarantine', () => {
+  const policy = policyFixture();
+  delete policy.review_yeti.transports.find((transport) => transport.name === 'synthetic').quarantine_on_timeout;
+
+  assert.throws(
+    () => validatePolicy(policy),
+    /active transport synthetic must keep timeouts lane-local/,
   );
 });
 

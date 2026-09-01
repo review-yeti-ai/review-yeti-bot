@@ -189,7 +189,11 @@ export function validatePolicy(policy) {
     throw new Error("OpenRouter must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
   }
   if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
-  if (openrouter?.quarantine_on_timeout !== false) throw new Error('OpenRouter must own timeout rerouting');
+  for (const transport of enabledTransports) {
+    if (transport.quarantine_on_timeout !== false) {
+      throw new Error(`active transport ${transport.name} must keep timeouts lane-local`);
+    }
+  }
   if (policy.review_yeti?.openrouter_max_attempts !== '2') throw new Error('each transport must retain one retry');
   if (policy.review_yeti?.openrouter_stream !== 'true') throw new Error('OpenRouter must use streaming for provider attribution');
   if (openrouter?.timeout_ms !== Number(policy.review_yeti?.openrouter_timeout_ms)) {
