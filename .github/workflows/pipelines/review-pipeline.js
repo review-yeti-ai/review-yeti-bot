@@ -395,10 +395,12 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
     if (result && typeof result.getReader === 'function') {
       const upstream = result;
       const encoder = new TextEncoder();
+      let upstreamReader = null;
       const body = new ReadableStream({
         start(controller) {
           (async () => {
             const reader = upstream.getReader();
+            upstreamReader = reader;
             let emittedChunks = 0;
             try {
               while (true) {
@@ -438,13 +440,30 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
               }
               controller.error(error);
             } finally {
+              // The official SDK and our raw compatibility reader consume a tee of the same
+              // response. Release the compatibility branch even when the SDK branch errors or
+              // the downstream review cancels; otherwise an aborted OpenRouter attempt can keep
+              // the composite Action's Node process alive after a terminal verdict is published.
+              cancelCapturedRawBody('sdk stream released');
+              if (upstreamReader === reader) upstreamReader = null;
               reader.releaseLock?.();
             }
           })();
         },
         cancel(reason) {
-          cancelCapturedRawBody(reason);
-          return upstream.cancel?.(reason);
+          cancelCapturedRawBody(reason || 'downstream stream cancelled');
+          try {
+            // `start` holds a reader lock while the stream is active, so cancelling the stream
+            // object itself throws. Cancel the held reader first and use the stream only before
+            // that reader has been acquired.
+            const cancellation = upstreamReader?.cancel?.(reason) ?? upstream.cancel?.(reason);
+            // Cancellation is cleanup, not part of the review result. Some upstream readers do
+            // not settle cancellation after a deadline; waiting for that promise would recreate
+            // the post-verdict hang this path is meant to prevent.
+            if (cancellation?.catch) void cancellation.catch(() => {});
+          } catch (_) {
+            // The review request has already been classified; cleanup remains best effort.
+          }
         },
       });
       return {
@@ -5967,6 +5986,7 @@ module.exports = {
   resolveActionSubmoduleMetadata,
   planDiffBudget,
   reviewWithModel,
+  callOpenRouterSdk,
   analyzeFindingsPayload,
   parseFindingsPayload,
   normalizeModelFinishReason,
