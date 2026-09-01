@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.17.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.16.0...v1.17.0) (2026-09-01)
+
+
+### Features
+
+* **action:** add opt-in durable DOKS dispatch ([#316](https://github.com/review-yeti-ai/review-yeti-bot/issues/316)) ([fca07f6](https://github.com/review-yeti-ai/review-yeti-bot/commit/fca07f6d87b867a2082b5ea74b30c5a9cf9a9187))
+* **dispatch:** add fail-closed review job projection ([#323](https://github.com/review-yeti-ai/review-yeti-bot/issues/323)) ([54bf862](https://github.com/review-yeti-ai/review-yeti-bot/commit/54bf862cd2bc7ce7d1b58928d864d64f9d3b457b))
+* **dispatch:** add inert Kubernetes job projector ([#324](https://github.com/review-yeti-ai/review-yeti-bot/issues/324)) ([165a865](https://github.com/review-yeti-ai/review-yeti-bot/commit/165a865de9d0e6ea4fed5ff2cc7b9b6e1fc76a86))
+* **dispatch:** add isolated DOKS admission service ([#318](https://github.com/review-yeti-ai/review-yeti-bot/issues/318)) ([d959330](https://github.com/review-yeti-ai/review-yeti-bot/commit/d9593305e93b68b4603153c4ed7bbc2744f91bf8))
+* **operator:** add isolated PR workspace primitives ([#326](https://github.com/review-yeti-ai/review-yeti-bot/issues/326)) ([e42561a](https://github.com/review-yeti-ai/review-yeti-bot/commit/e42561abb5a847e5fdd614454580f3116ca56afa))
+* **operator:** add race-safe workspace reclamation ([#327](https://github.com/review-yeti-ai/review-yeti-bot/issues/327)) ([5170c65](https://github.com/review-yeti-ai/review-yeti-bot/commit/5170c65e5049a9b3337885cf947995da6fbda8fd))
+* **operator:** add receipt-only worker job contract ([f170010](https://github.com/review-yeti-ai/review-yeti-bot/commit/f1700100e79ff18b80ff5f099b8700af56cad119))
+* **operator:** add receipt-only worker job contract ([2bde694](https://github.com/review-yeti-ai/review-yeti-bot/commit/2bde694d2909af67728ae056c36a0424452b8285))
+* **operator:** define immutable review job v1alpha2 ([#325](https://github.com/review-yeti-ai/review-yeti-bot/issues/325)) ([9da4167](https://github.com/review-yeti-ai/review-yeti-bot/commit/9da41675572eed65d4da4c94d488b1642920b0c2))
+* **operator:** persist bounded dispatch timing receipt ([#333](https://github.com/review-yeti-ai/review-yeti-bot/issues/333)) ([85733e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/85733e4202f1ee558ff71b97b6a92081ad8b2514))
+* **operator:** record DOKS dispatch lifecycle timings ([#332](https://github.com/review-yeti-ai/review-yeti-bot/issues/332)) ([734a4ec](https://github.com/review-yeti-ai/review-yeti-bot/commit/734a4ecefcca810c440aa6c21e90d6f1aed5beba))
+* **operator:** wire disabled v1alpha2 receipt controller ([6e52d81](https://github.com/review-yeti-ai/review-yeti-bot/commit/6e52d819685b6ab50043cca631aee87573b3ce6c))
+* **operator:** wire disabled v1alpha2 receipt controller ([7d0c828](https://github.com/review-yeti-ai/review-yeti-bot/commit/7d0c828bce8dcbb59efebb550d032d73dd103980))
+* retain partial stream timeout telemetry ([#353](https://github.com/review-yeti-ai/review-yeti-bot/issues/353)) ([339974d](https://github.com/review-yeti-ai/review-yeti-bot/commit/339974dcf370f561df97df18779367a26bfd8b3f))
+* **review:** add capacity-aware provider dispatch ([#342](https://github.com/review-yeti-ai/review-yeti-bot/issues/342)) ([ab73676](https://github.com/review-yeti-ai/review-yeti-bot/commit/ab73676a1884a5b014d9e982fffc9a6eba1175f7))
+* **worker:** add bounded panel qualification mode ([#346](https://github.com/review-yeti-ai/review-yeti-bot/issues/346)) ([c2e8ca6](https://github.com/review-yeti-ai/review-yeti-bot/commit/c2e8ca676eac9ed1189f4e858c7dcf6c5a4236af))
+* **worker:** add bounded provider qualification mode ([#344](https://github.com/review-yeti-ai/review-yeti-bot/issues/344)) ([57d2d1e](https://github.com/review-yeti-ai/review-yeti-bot/commit/57d2d1e1a52a432196298d8ccc276dd0a30dd0a2))
+* **worker:** add immutable worker image contract ([0c2bc4c](https://github.com/review-yeti-ai/review-yeti-bot/commit/0c2bc4c24265df79944ebc6f6f8dfc9e51b500b9))
+* **worker:** add immutable worker image contract ([351b994](https://github.com/review-yeti-ai/review-yeti-bot/commit/351b994187a0a88afdf6a78548f17139464e57cb))
+* **worker:** enforce receipt-only execution mode ([5b9523d](https://github.com/review-yeti-ai/review-yeti-bot/commit/5b9523d2a2c3b142faac6edcb3a1a0ffdec05a4d))
+* **worker:** enforce receipt-only execution mode ([ee8eb9c](https://github.com/review-yeti-ai/review-yeti-bot/commit/ee8eb9cf79cfcae5e44c63be37cdc8cea7cc3e2e))
+
+
+### Bug Fixes
+
+* **action:** accept GitHub pipeline OIDC endpoint ([#319](https://github.com/review-yeti-ai/review-yeti-bot/issues/319)) ([558d650](https://github.com/review-yeti-ai/review-yeti-bot/commit/558d6507cc74eef0674b0b92f13e753d0a71d4b6))
+* **action:** allow GitHub vstoken OIDC endpoint ([#320](https://github.com/review-yeti-ai/review-yeti-bot/issues/320)) ([d62b8b1](https://github.com/review-yeti-ai/review-yeti-bot/commit/d62b8b166ce7dd2fe233b305dff71953970b8f4c))
+* **action:** trust GitHub OIDC service domain ([#321](https://github.com/review-yeti-ai/review-yeti-bot/issues/321)) ([924d36f](https://github.com/review-yeti-ai/review-yeti-bot/commit/924d36f4a52208d243b33b22bc3824e0350dea16))
+* disable reasoning on timeout recovery ([#356](https://github.com/review-yeti-ai/review-yeti-bot/issues/356)) ([5959363](https://github.com/review-yeti-ai/review-yeti-bot/commit/5959363ad07def6c3efa0be66dede1a14cc8b095))
+* **dispatch:** persist publication mode fail closed ([#322](https://github.com/review-yeti-ai/review-yeti-bot/issues/322)) ([427e96b](https://github.com/review-yeti-ai/review-yeti-bot/commit/427e96bda3969031e6fe66ff3434baf8eb0807e6))
+* ignore empty streamed deltas for TTFT ([#352](https://github.com/review-yeti-ai/review-yeti-bot/issues/352)) ([40c2e6e](https://github.com/review-yeti-ai/review-yeti-bot/commit/40c2e6e3b36ae69da7a825a65030e9d848fc84eb))
+* keep TTFT open until usable streamed output ([#350](https://github.com/review-yeti-ai/review-yeti-bot/issues/350)) ([af63949](https://github.com/review-yeti-ai/review-yeti-bot/commit/af63949a29d32287166ef2cb45c6602912f6adf9))
+* **operator:** allow in-cluster API service ([#337](https://github.com/review-yeti-ai/review-yeti-bot/issues/337)) ([4988143](https://github.com/review-yeti-ai/review-yeti-bot/commit/49881439768078f3c6ce3438e9c86453e6672645))
+* **operator:** allow translated DOKS API endpoint ([#340](https://github.com/review-yeti-ai/review-yeti-bot/issues/340)) ([10c463f](https://github.com/review-yeti-ai/review-yeti-bot/commit/10c463fbb0b5b582d463b9f6ae0d5b9608db9ea6))
+* **operator:** record fast worker start timing ([#341](https://github.com/review-yeti-ai/review-yeti-bot/issues/341)) ([c9d6dbe](https://github.com/review-yeti-ai/review-yeti-bot/commit/c9d6dbe8d0de95bba81079509aa43ac3b24cb9ee))
+* **operator:** release lease after rejected worker ([fe6ce95](https://github.com/review-yeti-ai/review-yeti-bot/commit/fe6ce9595f04d0d41b54cd26c97aff550e20fb85))
+* recover bounded structured panel output ([#347](https://github.com/review-yeti-ai/review-yeti-bot/issues/347)) ([0674691](https://github.com/review-yeti-ai/review-yeti-bot/commit/06746910a36ccbb31fd58b8ee434d9ec042c7eea))
+* **worker:** preserve injected live environment ([a5a958e](https://github.com/review-yeti-ai/review-yeti-bot/commit/a5a958e0b39d22cac5687390d818251267258b7e))
+
 ## [1.16.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.15.6...v1.16.0) (2026-08-30)
 
 
