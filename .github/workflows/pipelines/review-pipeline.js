@@ -2376,6 +2376,21 @@ function isOpenRouterTransport(transport = {}) {
   return name.includes('openrouter') || baseUrl === 'https://openrouter.ai/api/v1';
 }
 
+/**
+ * Some OpenRouter model endpoints reject a reasoning-disabled request outright. Keep that
+ * provider capability at the transport boundary so timeout/format recovery cannot turn a
+ * recoverable stream into a deterministic 400. An explicit reasoning-required transport flag
+ * is additive; the known GLM Flash endpoint is the only built-in model exception until the
+ * provider exposes a capability discovery endpoint we can trust.
+ */
+function resolveOpenRouterRecoveryReasoning(transport = {}, model = '') {
+  const configured = transport.reasoningRequired ?? transport.reasoning_required;
+  const configuredRequired = configured === true || String(configured || '').toLowerCase() === 'true';
+  const modelText = `${model} ${transport.model || ''}`.toLowerCase();
+  const modelRequiresReasoning = /(?:^|[\s/:_-])glm[-/]?5\.3[-/]flash(?:$|[\s/:_-])/i.test(modelText);
+  return configuredRequired || modelRequiresReasoning ? { effort: 'low' } : { effort: 'none' };
+}
+
 const REASONING_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
@@ -2957,22 +2972,28 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         recoveryAction = 'bounded_retry';
         noteRetryReason('timeout');
         // A timeout with no parseable final object cannot identify a failed upstream model. Retry
-        // the same OpenRouter route without the auto-router plugin, but disable optional reasoning
-        // on this one recovery attempt so the bounded output budget is reserved for JSON. The
-        // initial attempt still uses the persona's admitted reasoning effort.
+        // the same OpenRouter route without the auto-router plugin. Preserve required reasoning
+        // capabilities (for example, GLM Flash rejects a disabled request) while keeping the
+        // recovery effort low where the endpoint requires it. The initial attempt still uses the
+        // persona's admitted reasoning effort.
         delete requestBody.plugins;
-        requestBody.reasoning = { effort: 'none' };
+        const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestModel);
+        requestBody.reasoning = recoveryReasoning;
         requestBody.max_tokens = Math.max(requestBody.max_tokens, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
+        const recoveryReasoningInstruction = recoveryReasoning.effort === 'none'
+          ? '- Disable optional reasoning for this recovery attempt and reserve the output budget for the required findings object.'
+          : '- Keep required reasoning at low effort for this recovery attempt so you can re-check the diff while reserving output budget for the required findings object.';
         requestBody.messages[0].content += [
           '',
           'TIMEOUT RECOVERY:',
           '- The prior generation produced no usable streamed output before the transport deadline.',
-          '- Disable optional reasoning for this recovery attempt and reserve the output budget for the required findings object.',
+          recoveryReasoningInstruction,
           '- Re-evaluate the complete diff against the review charter and return the required findings object.',
           '- Do not assume the change is clean; include every finding that meets the review criteria.',
+          '- Do not return a summary, decision, or alternate key; the only top-level key is `findings` and its value is an array.',
           '- Do not emit prose or markdown outside the required findings object.',
         ].join('\n');
-        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with optional reasoning disabled and auto-routing disabled before failing closed...`);
+        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with ${recoveryReasoning.effort === 'none' ? 'optional reasoning disabled' : 'low required reasoning'} and auto-routing disabled before failing closed...`);
         return true;
       };
 
@@ -3297,32 +3318,35 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             }
             if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
               formatRecoveryAttempted = true;
-              // The final OpenRouter transport may be pinned to the same
-              // reasoning-heavy model that already exhausted its answer
-              // budget on the direct transports. Keep the already-admitted
-              // OpenRouter model: account guardrails can reject a different
-              // model even when the central fleet allows it. Disable optional
-              // reasoning so the bounded retry reserves its output budget for
-              // JSON, and remove the auto-router-only plugin while retaining
-              // the provider privacy policy.
+              // The final OpenRouter transport may be pinned to the same reasoning-heavy model
+              // that already exhausted its answer budget on the direct transports. Keep the
+              // already-admitted OpenRouter model: account guardrails can reject a different
+              // model even when the central fleet allows it. Remove the auto-router-only plugin
+              // while retaining the provider privacy policy, and honor model-specific reasoning
+              // requirements.
+              let recoveryReasoning = null;
               if (isOpenRouterTransport) {
                 delete requestBody.plugins;
+                recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestModel);
               }
               requestBody.max_tokens = Math.max(
                 requestBody.max_tokens,
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
               );
-              if (isOpenRouterTransport) requestBody.reasoning = { effort: 'none' };
+              if (isOpenRouterTransport) requestBody.reasoning = recoveryReasoning;
               else if (isDirectReasoning) requestBody.reasoning_effort = 'none';
               else requestBody.reasoning_effort = 'low';
+              const recoveryReasoningInstruction = !isOpenRouterTransport || recoveryReasoning?.effort === 'none'
+                ? '- Keep reasoning brief and reserve output tokens for the final JSON object.'
+                : '- Keep required reasoning at low effort and reserve output tokens for the final JSON object.';
               requestBody.messages[0].content += [
                 '',
                 'FORMAT RECOVERY:',
                 `- Your prior response did not satisfy the canonical findings contract${findingsValidation?.error ? ` (${findingsValidation.error}).` : '.'}`,
-                '- Keep reasoning brief and reserve output tokens for the final JSON object.',
+                recoveryReasoningInstruction,
                 '- Return only {"findings":[]} or the required findings object.',
               ].join('\n');
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with reasoning disabled and a larger answer budget...`);
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with ${!isOpenRouterTransport || recoveryReasoning?.effort === 'none' ? 'reasoning disabled' : 'low required reasoning'} and a larger answer budget...`);
               continue;
             }
             return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: contractFailure });
