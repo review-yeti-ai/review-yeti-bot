@@ -27,6 +27,10 @@ jobs:
           ref: ${{ inputs.sha }}
           fetch-depth: 0
           fetch-tags: true
+          # The bounded recovery path must use the same workflow-capable token
+          # as automatic promotion or workflow-bearing releases cannot move v1.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          persist-credentials: true
 
       - name: Validate released main commit
         id: release
