@@ -183,6 +183,25 @@ sanitized run receipt and provider billing rather than assuming one request per 
 
 ## Configuration
 
+### Provider dispatch and capacity
+
+The `dispatch-mode` action input defaults to `ordered`, preserving the historical shared provider
+fallback list. Centrally managed fleets can select `striped`: each persona lane receives one
+deterministic weighted primary transport, while the other healthy transports remain lane-local
+fallbacks. Striping changes distribution without sending the same persona to every provider or
+multiplying baseline calls.
+
+Transport plans may declare positive `dispatch_weight`, `max_in_flight`, and
+`capacity_wait_timeout_ms` values, `concurrency_scope` (`provider` or `model`), and a bounded
+`rate_limit` policy. Zero does not disable a recognized provider's safety
+ceiling; use the provider's admission boolean in central policy instead. Synthetic additionally
+supports `quota_probe: synthetic-v2`; the probe is advisory because the documented response reports
+subscription request fields but not the complete weekly-credit or concurrency state. When no
+explicit capacity is supplied, Synthetic defaults to one in-flight request per model and legacy
+Ollama callers retain their prior process-local ceiling. Direct HTTP 429 retries occur only when a
+positive `Retry-After` fits the transport's declared maximum; longer waits immediately use the next
+healthy transport.
+
 ### Which reviewers run
 
 Five reviewers apply to essentially any codebase and are **on by default**:

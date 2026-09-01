@@ -36,7 +36,7 @@ function delayedFetch(delayMs: number) {
   return { impl, peak: () => peak };
 }
 
-async function runReviews(count: number, transport: any, fetchImpl: any) {
+async function runReviews(count: number, transport: any, fetchImpl: any, capacityManager = new pipeline.ProviderCapacityManager()) {
   return Promise.all(Array.from({ length: count }, (_unused, index) => pipeline.reviewWithModel(
     persona,
     diffFiles,
@@ -46,6 +46,7 @@ async function runReviews(count: number, transport: any, fetchImpl: any) {
       transports: [transport],
       fetchImpl,
       circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager,
     },
   )));
 }
@@ -54,7 +55,7 @@ describe('Ollama request concurrency', () => {
   it('bounds capacity wait time and remains usable after a timed-out waiter', async () => {
     const semaphore = new pipeline.AsyncSemaphore(1);
     const release = await semaphore.acquire(100);
-    await expect(semaphore.acquire(5)).rejects.toThrow('ollama_capacity_wait_timeout');
+    await expect(semaphore.acquire(5)).rejects.toThrow('capacity_wait_timeout');
     release();
     const releaseAfterTimeout = await semaphore.acquire(100);
     releaseAfterTimeout();
@@ -75,7 +76,7 @@ describe('Ollama request concurrency', () => {
     expect(fetch.peak()).toBe(16);
   });
 
-  it('does not apply the Ollama ceiling to unrelated transports', async () => {
+  it('defaults Synthetic to one in-flight request per model', async () => {
     const fetch = delayedFetch(15);
     const results = await runReviews(20, {
       name: 'synthetic',
@@ -86,7 +87,72 @@ describe('Ollama request concurrency', () => {
     }, fetch.impl);
 
     expect(results.every((result: any) => result.decision === 'APPROVE')).toBe(true);
-    expect(fetch.peak()).toBe(20);
+    expect(fetch.peak()).toBe(pipeline.SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL);
+    expect(fetch.peak()).toBe(1);
+    expect(results.some((result: any) => result.responseAttempts.some((attempt: any) => attempt.capacityWaitMs > 0))).toBe(true);
+  });
+
+  it('lets different Synthetic models run concurrently without sharing a model queue', async () => {
+    const fetch = delayedFetch(15);
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    const models = ['hf:zai-org/GLM-5.3-Flash', 'hf:zai-org/GLM-4.7-Flash'];
+    const results = await Promise.all(models.flatMap((model) =>
+      Array.from({ length: 4 }, (_unused, index) => pipeline.reviewWithModel(
+        persona,
+        diffFiles,
+        { repo: 'fixture/repository', prNumber: `${model}-${index}` },
+        null,
+        {
+          transports: [{
+            name: 'synthetic',
+            baseUrl: 'https://api.synthetic.new/openai/v1',
+            apiKey: 'test-key',
+            model,
+            stream: false,
+          }],
+          fetchImpl: fetch.impl,
+          circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+          capacityManager,
+        },
+      )),
+    ));
+
+    expect(results.every((result: any) => result.decision === 'APPROVE')).toBe(true);
+    expect(fetch.peak()).toBe(2);
+  });
+
+  it('keeps unrelated custom transport capacity pools isolated', () => {
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    expect(() => capacityManager.configure([{
+      name: 'custom-a',
+      baseUrl: 'https://a.example/v1',
+      model: 'model-a',
+      maxInFlight: 1,
+      concurrencyScope: 'provider',
+    }, {
+      name: 'custom-b',
+      baseUrl: 'https://b.example/v1',
+      model: 'model-b',
+      maxInFlight: 2,
+      concurrencyScope: 'provider',
+    }])).not.toThrow();
+  });
+
+  it('rejects conflicting provider-scoped limits before a request is dispatched', () => {
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    expect(() => capacityManager.configure([{
+      name: 'openrouter-primary',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'model-a',
+      maxInFlight: 3,
+      concurrencyScope: 'provider',
+    }, {
+      name: 'openrouter-fallback',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'model-b',
+      maxInFlight: 2,
+      concurrencyScope: 'provider',
+    }])).toThrow('provider capacity limit conflict for openrouter:provider');
   });
 
   it('releases Ollama capacity after request failures', async () => {
