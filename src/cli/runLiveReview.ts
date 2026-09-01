@@ -424,12 +424,12 @@ const FULL_PANEL_QUALIFICATION_PERSONAS = [
   },
   {
     id: 'dependencies',
-    charter: 'Review dependency compatibility, vulnerability exposure, lockfile integrity, and upgrade safety.',
+    charter: 'builtin:contract',
     paths: ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'],
   },
   {
     id: 'licensing',
-    charter: 'Review license notices, attribution, and distribution obligations for changed dependencies and files.',
+    charter: 'builtin:docs',
     paths: ['LICENSE', 'NOTICE', 'package.json'],
   },
 ] as const;
