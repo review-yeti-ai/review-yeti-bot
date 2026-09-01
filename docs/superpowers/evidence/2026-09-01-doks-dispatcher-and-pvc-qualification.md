@@ -1,11 +1,12 @@
 # DOKS dispatcher, worker, and workspace qualification — 2026-09-01
 
 Status: the manual Action admission path and the DOKS worker path both
-completed without publication. A lifecycle defect was found: the deployed
-v1alpha2 operator recorded `last-used-at` but did not invoke the existing
-guarded workspace collector after a terminal review, so an idle PVC could not
-reach its 30-minute reclamation check. The fix is covered by a regression test
-and is being released separately from the production Action deployment.
+completed without publication. A lifecycle defect was found and fixed: the
+deployed v1alpha2 operator recorded `last-used-at` but did not invoke the
+existing guarded workspace collector after a terminal review, and its Role
+omitted the two delete verbs required by that collector. The fix is covered by
+regression tests and is live in the operator-only deployment; the production
+Action deployment remains unchanged.
 
 ## Manual Action admission
 
@@ -63,11 +64,11 @@ The production deployments were unchanged during this work:
 
 - `ct-review-action-dispatch`: 2/2 Ready, image digest unchanged
 - `ct-review-job-dispatcher`: 1/1 Ready
-- `ct-review-yeti-operator`: 1/1 Ready before the lifecycle-fix rollout
+- `ct-review-yeti-operator`: 1/1 Ready at `sha256:c976628f6afa0cdbe8907c806557b2677c92f44d206f8d6f81b6cfec3a226f09`
 - `ACTION_DISPATCH_ALLOW_APP_GATE=false`
 
-The next deployment is operator-only: release the collector hook, verify the
-terminal review requeues at 1,799 seconds and reclaims an idle workspace at
-1,800 seconds, then leave the Action and dispatcher images/configuration alone.
-No scheduled workload, traffic split, or production publication is part of
-this qualification.
+After the Role patch and operator rollout, the previously stuck workspace
+entered deletion and both the PVC and reclamation Lease disappeared. The CR
+remained `Succeeded` with its original timing receipt. No unrelated PV for the
+claim remained. No scheduled workload, traffic split, or production
+publication is part of this qualification.
