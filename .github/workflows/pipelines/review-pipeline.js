@@ -1234,6 +1234,11 @@ function resolveModelConfig(env = process.env) {
           concurrencyScope: t.concurrency_scope || t.concurrencyScope || t.capacity_scope || t.capacityScope,
           capacityWaitTimeoutMs: t.capacity_wait_timeout_ms ?? t.capacityWaitTimeoutMs,
           circuitBreakerScope: t.circuit_breaker_scope || t.circuitBreakerScope,
+          quarantineOnTimeout: typeof t.quarantine_on_timeout === 'boolean'
+            ? t.quarantine_on_timeout
+            : typeof t.quarantineOnTimeout === 'boolean'
+              ? t.quarantineOnTimeout
+              : undefined,
           rateLimit: t.rate_limit || t.rateLimit,
           quotaProbe: t.quota_probe || t.quotaProbe,
         };
@@ -2732,8 +2737,15 @@ class RunTransportCircuitBreaker {
   }
 
   trip(transport, reason, failureClass = 'unknown') {
+    if (failureClass === 'timeout'
+      && typeof transport === 'object'
+      && transport?.quarantineOnTimeout === false) {
+      const transportName = normalizeTelemetryIdentifier(transport.name || transport.provider)?.toLowerCase() || 'default';
+      console.log(`[Circuit Breaker] Preserved transport '${transportName}' after lane-local timeout because timeout quarantine is disabled.`);
+      return false;
+    }
     const keys = this.keysFor(transport);
-    if (keys.length === 0) return;
+    if (keys.length === 0) return false;
     const rateLimitPolicy = typeof transport === 'object' ? resolveTransportRateLimitPolicy(transport) : null;
     const configuredScope = String(
       typeof transport === 'object'
@@ -2746,10 +2758,11 @@ class RunTransportCircuitBreaker {
         ? configuredScope
         : 'transport';
     const key = scope === 'model' ? keys[2] : scope === 'provider' ? keys[1] : keys[0];
-    if (!key) return;
+    if (!key) return false;
     this.tripped.add(key);
     this.reasons.set(key, String(reason || 'unspecified failure'));
     console.log(`[Circuit Breaker] Tripped ${scope} capacity '${key}' for current run: ${reason}`);
+    return true;
   }
 
   isTripped(transport) {
