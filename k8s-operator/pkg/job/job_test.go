@@ -133,6 +133,9 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "true" || envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
 		t.Fatalf("receipt-only env missing: %#v", container.Env)
 	}
+	if envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "" || envValue(container, "OPENROUTER_API_KEY") != "" {
+		t.Fatalf("receipt-only worker unexpectedly exposes qualification env: %#v", container.Env)
+	}
 	if envValue(container, "REVIEW_RUN_ID") != review.Spec.RunID || envValue(container, "REVIEW_RECEIPT_PATH") != "/workspace/.review-yeti/receipt.json" {
 		t.Fatalf("immutable run env missing: %#v", container.Env)
 	}
@@ -182,6 +185,38 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("receipt-only job contains forbidden credential marker %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+	review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+	result, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("build full-panel qualification job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if envValue(container, "REVIEW_RECEIPT_ONLY") != "" {
+		t.Fatalf("full-panel worker must not be receipt-only: %#v", container.Env)
+	}
+	if envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "true" ||
+		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
+		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" ||
+		envValue(container, "REVIEW_RECEIPT_PATH") != job.ReceiptPath {
+		t.Fatalf("full-panel qualification env missing: %#v", container.Env)
+	}
+	var apiKey *corev1.EnvVar
+	for index := range container.Env {
+		if container.Env[index].Name == "OPENROUTER_API_KEY" {
+			apiKey = &container.Env[index]
+			break
+		}
+	}
+	if apiKey == nil || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil ||
+		apiKey.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || apiKey.ValueFrom.SecretKeyRef.Key != "OPENROUTER_API_KEY" {
+		t.Fatalf("full-panel qualification secret reference = %#v", apiKey)
 	}
 }
 
@@ -253,6 +288,20 @@ func TestBuildWorkerJobRejectsUnsafeProjection(t *testing.T) {
 			review.Spec.TerminalDeadline = metav1.NewTime(now.Add(10 * time.Minute))
 		}},
 		{name: "missing review name", mutate: func(review *v1alpha2.PRReviewJob) { review.Name = "" }},
+		{name: "model without qualification profile", mutate: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+		}},
+		{name: "qualification profile without model", mutate: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+		}},
+		{name: "auto router qualification model", mutate: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+			review.Spec.QualificationModel = "openrouter/auto"
+		}},
+		{name: "unknown qualification profile", mutate: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.QualificationProfile = "provider-qualification"
+			review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
