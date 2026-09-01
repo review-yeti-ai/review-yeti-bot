@@ -23,12 +23,12 @@ try {
 if (!channelPattern.test(review.action_channel || '')) {
   throw new Error('review_yeti.action_channel is not a permitted release channel');
 }
-for (const key of ['lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_investigation_turns']) {
+for (const key of ['lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_review_assignments', 'max_investigation_turns']) {
   if (!/^[1-9][0-9]*$/.test(String(budget[key] ?? ''))) {
     throw new Error(`review_yeti.budget.${key} must be a positive integer string`);
   }
 }
-for (const key of ['openrouter_timeout_ms', 'openrouter_ttft_ms', 'openrouter_max_attempts', 'stall_ms']) {
+for (const key of ['openrouter_timeout_ms', 'openrouter_ttft_ms', 'openrouter_max_attempts', 'stall_ms', 'max_incremental_diff_chars']) {
   if (!/^[1-9][0-9]*$/.test(String(review[key] ?? ''))) {
     throw new Error(`review_yeti.${key} must be a positive integer string`);
   }
@@ -88,6 +88,9 @@ if (openrouterTransport.stall_ms !== stallMs) {
 }
 if (Number(budget.lane_deadline_ms) < openrouterTimeoutMs * openrouterMaxAttempts) {
   throw new Error('review_yeti.budget.lane_deadline_ms must cover the OpenRouter request retry envelope');
+}
+if (openrouterTransport.capacity_wait_timeout_ms < openrouterTimeoutMs * openrouterMaxAttempts) {
+  throw new Error('openrouter-primary.capacity_wait_timeout_ms must cover the OpenRouter request retry envelope');
 }
 
 // A lane advances through the enabled transports in order, retrying each transport up to
@@ -174,8 +177,10 @@ const outputs = {
   stall_ms: review.stall_ms,
   lane_deadline_ms: budget.lane_deadline_ms,
   lane_call_budget: budget.lane_call_budget,
+  max_review_assignments: budget.max_review_assignments,
   max_investigation_turns: budget.max_investigation_turns,
   max_diff_chars: review.max_diff_chars,
+  max_incremental_diff_chars: review.max_incremental_diff_chars,
   max_file_diff_chars: review.max_file_diff_chars,
   max_passes: review.max_passes,
   exclude: review.exclude,

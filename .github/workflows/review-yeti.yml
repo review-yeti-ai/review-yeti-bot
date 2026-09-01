@@ -4,6 +4,7 @@ on:
   workflow_call: {}
 
 permissions:
+  actions: read
   contents: read
   issues: write
   pull-requests: write
@@ -135,6 +136,11 @@ jobs:
           dispatch-mode: ${{ steps.policy.outputs.dispatch_mode }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
+          incremental-review: 'true'
+          incremental-trusted-workflow: ${{ job.workflow_ref }}
+          incremental-trusted-workflow-sha: ${{ job.workflow_sha }}
+          max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}
+          max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}
           personas: ${{ steps.policy.outputs.personas }}
           # Library-documentation evidence tool (review-yeti-bot#101). The
           # action forwards this to CONTEXT7_API_KEY in the panel env; the

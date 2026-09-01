@@ -564,6 +564,12 @@ grep -Fq "if: always() && steps.review.outputs.provider-telemetry-path != ''" "$
 grep -Fq 'name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.run_attempt }}' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'path: ${{ steps.review.outputs.provider-telemetry-path }}' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'actions: read' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq "incremental-review: 'true'" "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'incremental-trusted-workflow: ${{ job.workflow_ref }}' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'incremental-trusted-workflow-sha: ${{ job.workflow_sha }}' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
 
 echo "promote-v1 behavioral contract passed"

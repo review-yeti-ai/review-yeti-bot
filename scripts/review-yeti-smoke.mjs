@@ -188,8 +188,8 @@ export function validatePolicy(policy) {
   if (openrouter?.dispatch_weight !== 2
       || openrouter?.max_in_flight !== 2
       || openrouter?.concurrency_scope !== 'provider'
-      || openrouter?.capacity_wait_timeout_ms !== 120000) {
-    throw new Error('OpenRouter must use bounded 2:1 striping with two provider-scoped slots and a 120-second admission wait');
+      || openrouter?.capacity_wait_timeout_ms !== 180000) {
+    throw new Error('OpenRouter must use bounded 2:1 striping with two provider-scoped slots and a 180-second admission wait');
   }
   // The approved route leaves reasoning selection to the model/provider contract; pinning `max`
   // would force a previously measured worst-performing arm.

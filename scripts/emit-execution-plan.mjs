@@ -25,6 +25,7 @@ const ALLOWED_REVIEW_KEYS = [
   'budget',
   'max_diff_chars',
   'max_file_diff_chars',
+  'max_incremental_diff_chars',
   'max_passes',
   'exclude',
 ];
@@ -33,6 +34,7 @@ const ALLOWED_BUDGET_KEYS = [
   'lane_overhead_ms',
   'lane_call_budget',
   'max_investigation_turns',
+  'max_review_assignments',
 ];
 const ALLOWED_TRANSPORT_KEYS = [
   'name',
@@ -226,6 +228,12 @@ export function buildExecutionPlan(policy) {
       deadline_ms: Number(review.budget.lane_deadline_ms),
       overhead_ms: Number(review.budget.lane_overhead_ms),
       max_investigation_turns: Number(review.budget.max_investigation_turns),
+      max_review_assignments: Number(review.budget.max_review_assignments),
+    },
+    scope: {
+      max_diff_chars: Number(review.max_diff_chars),
+      max_file_diff_chars: Number(review.max_file_diff_chars),
+      max_incremental_diff_chars: Number(review.max_incremental_diff_chars),
     },
     transports: transports.map((transport) => {
       const gatewayRouting = transport.provider_routing ?? null;

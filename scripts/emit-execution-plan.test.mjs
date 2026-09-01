@@ -31,6 +31,12 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
     mode: 'striped',
     weights: { 'openrouter-primary': 2, synthetic: 1 },
   });
+  assert.deepEqual(fixture.plan.scope, {
+    max_diff_chars: 2000000,
+    max_file_diff_chars: 60000,
+    max_incremental_diff_chars: 60000,
+  });
+  assert.equal(fixture.plan.lane.max_review_assignments, 24);
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
     [
@@ -57,7 +63,7 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(openrouter.capacity, {
     max_in_flight: 2,
     concurrency_scope: 'provider',
-    wait_timeout_ms: 120000,
+    wait_timeout_ms: 180000,
   });
   assert.deepEqual(openrouter.models, ['z-ai/glm-5.3-flash']);
   assert.equal(openrouter.request_extensions.plugins, undefined);

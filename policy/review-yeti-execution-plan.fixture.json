@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "28b4dbfe1c75c8bfd83073ef5ceb7d6c990ebf4e6219289e31abae68d74cf3cc",
+  "normalized_plan_sha256": "111209b12d76ab885db9cdede889a40f2b234e28e14512e18ca0ff6a4f327c4d",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -19,7 +19,13 @@
     "lane": {
       "deadline_ms": 860000,
       "overhead_ms": 120000,
-      "max_investigation_turns": 2
+      "max_investigation_turns": 2,
+      "max_review_assignments": 24
+    },
+    "scope": {
+      "max_diff_chars": 2000000,
+      "max_file_diff_chars": 60000,
+      "max_incremental_diff_chars": 60000
     },
     "transports": [
       {
@@ -75,7 +81,7 @@
         "capacity": {
           "max_in_flight": 2,
           "concurrency_scope": "provider",
-          "wait_timeout_ms": 120000
+          "wait_timeout_ms": 180000
         },
         "quota": {
           "probe": "none"

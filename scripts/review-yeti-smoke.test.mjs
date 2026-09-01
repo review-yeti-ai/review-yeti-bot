@@ -66,7 +66,11 @@ function policyFixture() {
     transport.dispatch_weight = transport.name === 'openrouter-primary' ? 2 : 1;
     transport.max_in_flight = transport.name === 'openrouter-primary' ? 2 : transport.name === 'synthetic' ? 5 : 1;
     transport.concurrency_scope = transport.name === 'synthetic' ? 'model' : 'provider';
-    transport.capacity_wait_timeout_ms = ['openrouter-primary', 'synthetic'].includes(transport.name) ? 120000 : 30000;
+    transport.capacity_wait_timeout_ms = transport.name === 'openrouter-primary'
+      ? 180000
+      : transport.name === 'synthetic'
+        ? 120000
+        : 30000;
     transport.rate_limit = { scope: 'provider', max_retries: 1, max_retry_after_ms: 5000 };
     if (transport.name === 'synthetic') transport.quota_probe = 'synthetic-v2';
   }
@@ -127,7 +131,7 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   assert.equal(openrouter.dispatch_weight, 2);
   assert.equal(openrouter.max_in_flight, 2);
   assert.equal(openrouter.concurrency_scope, 'provider');
-  assert.equal(openrouter.capacity_wait_timeout_ms, 120_000);
+  assert.equal(openrouter.capacity_wait_timeout_ms, 180_000);
   // Post review-yeti-bot#163: the lane deadline bounds the dead-transport connect+stall envelope
   // plus the declared overhead reserve, not the sum of timeout_ms (an actively-streaming call is
   // never killed by a duration cap). Mirrors the same inequality emit-policy.mjs enforces.

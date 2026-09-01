@@ -89,7 +89,7 @@ if review.get('openrouter_max_attempts') != '2':
 budget = review.get('budget')
 if not isinstance(budget, dict):
     raise SystemExit('policy must keep lane limits in review_yeti.budget')
-for key in ('lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_investigation_turns'):
+for key in ('lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_review_assignments', 'max_investigation_turns'):
     if key not in budget:
         raise SystemExit(f'policy budget is missing {key}')
 if not openrouter:
@@ -100,8 +100,8 @@ if openrouter.get('model') != 'deepseek/deepseek-v4-flash-0731':
     raise SystemExit('openrouter-primary must use the explicit DeepSeek V4 Flash 0731 route')
 if openrouter.get('models') != ['z-ai/glm-5.3-flash']:
     raise SystemExit('openrouter-primary must use GLM-5.3 Flash as its only model fallback')
-if (openrouter.get('max_in_flight'), openrouter.get('capacity_wait_timeout_ms')) != (2, 120000):
-    raise SystemExit('openrouter-primary must bound large-diff concurrency and queue admission at 2/120000ms')
+if (openrouter.get('max_in_flight'), openrouter.get('capacity_wait_timeout_ms')) != (2, 180000):
+    raise SystemExit('openrouter-primary must bound large-diff concurrency and queue admission at 2/180000ms')
 if 'plugins' in openrouter:
     raise SystemExit('openrouter-primary must not use the Auto Router plugin')
 if openrouter.get('structured_output') != 'strict':
@@ -215,6 +215,12 @@ if key.startswith('transport.'):
             transport[field] = int(value)
         except ValueError:
             transport[field] = value
+elif key.startswith('review.'):
+    _, field = key.split('.', 1)
+    if value == '__missing__':
+        review.pop(field, None)
+    else:
+        review[field] = value
 else:
     budget = review.setdefault('budget', {})
     if value == '__missing__':
@@ -356,7 +362,7 @@ lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
 max_investigation_turns = int(review['budget']['max_investigation_turns'])
 retry_connect_ms = min(
-    180_000,
+    80_000,
     (lane_deadline_ms // (len(transports) * max_attempts * max_investigation_turns)) + 10_000,
 )
 for transport in transports:
@@ -497,6 +503,9 @@ grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
 grep -q '^lane_call_budget<<' "$tmp_dir/valid.output"
 grep -qx '24' "$tmp_dir/valid.output"
+grep -q '^max_review_assignments<<' "$tmp_dir/valid.output"
+grep -q '^max_incremental_diff_chars<<' "$tmp_dir/valid.output"
+grep -qx '60000' "$tmp_dir/valid.output"
 
 run_case valid-lane-deadline lane_deadline_ms 860000 0
 grep -q '^lane_deadline_ms<<' "$tmp_dir/valid-lane-deadline.output"
@@ -514,7 +523,16 @@ done
 run_case missing lane_call_budget __missing__ 1
 grep -q 'lane_call_budget must be a positive integer string' "$tmp_dir/missing.log"
 
-for key in lane_deadline_ms lane_overhead_ms max_investigation_turns; do
+for value in 0 -1 abc ''; do
+  name="invalid-max-incremental-diff-chars-${value:-empty}"
+  run_case "$name" review.max_incremental_diff_chars "$value" 1
+  grep -q 'review_yeti.max_incremental_diff_chars must be a positive integer string' "$tmp_dir/${name}.log"
+done
+
+run_case missing-max-incremental-diff-chars review.max_incremental_diff_chars __missing__ 1
+grep -q 'review_yeti.max_incremental_diff_chars must be a positive integer string' "$tmp_dir/missing-max-incremental-diff-chars.log"
+
+for key in lane_deadline_ms lane_overhead_ms max_review_assignments max_investigation_turns; do
   for value in 0 -1 abc ''; do
     name="invalid-${key}-${value:-empty}"
     run_case "$name" "$key" "$value" 1
@@ -626,6 +644,8 @@ done
 
 run_openrouter_timeout_mismatch_case
 run_short_lane_deadline_case
+run_case invalid-openrouter-capacity-wait transport.0.capacity_wait_timeout_ms 179999 1
+grep -q 'openrouter-primary.capacity_wait_timeout_ms must cover the OpenRouter request retry envelope' "$tmp_dir/invalid-openrouter-capacity-wait.log"
 run_transport_overhead_overflow_case
 
 echo "emit-policy lane_call_budget contract passed"
