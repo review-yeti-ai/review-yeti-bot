@@ -1323,7 +1323,7 @@ function resolveModelConfig(env = process.env) {
         name: 'synthetic',
         baseUrl: (env.SYNTHETIC_BASE_URL || 'https://api.synthetic.new/openai/v1').replace(/\/+$/, ''),
         apiKey: env.SYNTHETIC_API_KEY,
-        model: env.SYNTHETIC_MODEL || 'glm-5.2',
+        model: env.SYNTHETIC_MODEL || 'glm-5.3-flash',
         stream: true,
         reasoningEffort: 'high',
         timeoutMs: 90_000,
