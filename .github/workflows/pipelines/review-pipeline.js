@@ -5620,6 +5620,7 @@ async function main() {
   const fullDiffText = prContext.diffText;
   const maxIncrementalDiffChars = Math.max(1, Number.parseInt(process.env.MAX_INCREMENTAL_DIFF_CHARS || '60000', 10) || 60000);
   const trustedWorkflow = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW || '').trim();
+  const trustedWorkflowSha = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW_SHA || '').trim().toLowerCase();
   const planDigest = buildReviewScopePlanDigest({
     actionSha: process.env.REVIEW_YETI_ACTION_SHA,
     baseSha: prContext.baseSha,
@@ -5627,6 +5628,7 @@ async function main() {
     maxDiffChars: safeDiffCapacityChars,
     maxIncrementalDiffChars,
     trustedWorkflow,
+    trustedWorkflowSha,
   });
   let scopeResolution;
   try {
@@ -5642,6 +5644,7 @@ async function main() {
       maxDiffChars: safeDiffCapacityChars,
       maxIncrementalDiffChars,
       trustedWorkflow,
+      trustedWorkflowSha,
       fullDiffText,
       planDigest,
       parseDiff,

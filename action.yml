@@ -132,8 +132,15 @@ inputs:
     default: '60000'
   incremental-trusted-workflow:
     description: >-
-      Comma-separated exact trusted reusable-workflow references that may appear in the parent
-      artifact's completed GitHub run, for example owner/repo/.github/workflows/review.yml@v1.
+      Comma-separated exact reusable-workflow references that may appear in the parent artifact's
+      completed GitHub run. Reuse also requires incremental-trusted-workflow-sha to match the
+      resolved workflow commit recorded by GitHub.
+    required: false
+    default: ''
+  incremental-trusted-workflow-sha:
+    description: >-
+      Exact 40-character commit SHA of the reusable workflow trusted for this run. A matching
+      workflow path without this immutable provenance binding cannot authorize evidence reuse.
     required: false
     default: ''
   config-ref:
@@ -481,6 +488,7 @@ runs:
         REVIEW_YETI_INCREMENTAL_REVIEW: ${{ inputs.incremental-review }}
         MAX_INCREMENTAL_DIFF_CHARS: ${{ inputs.max-incremental-diff-chars }}
         REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW: ${{ inputs.incremental-trusted-workflow }}
+        REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW_SHA: ${{ inputs.incremental-trusted-workflow-sha }}
         REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
