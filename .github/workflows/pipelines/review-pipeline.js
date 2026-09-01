@@ -218,7 +218,7 @@ function sdkChunkToWire(chunk) {
       ...(choice.finishReason !== undefined ? { finish_reason: choice.finishReason } : {}),
       delta: choice.delta ? {
         ...choice.delta,
-        ...(choice.reasoningDetails ? { reasoning_details: choice.reasoningDetails } : {}),
+        ...(choice.delta.reasoningDetails ? { reasoning_details: choice.delta.reasoningDetails } : {}),
         ...(choice.toolCalls ? { tool_calls: choice.toolCalls } : {}),
       } : choice.delta,
     })) : chunk.choices,
@@ -1228,6 +1228,7 @@ function resolveModelConfig(env = process.env) {
           maxTokens: t.max_tokens || t.maxTokens || t.max_output_tokens || t.maxOutputTokens,
           connectTimeoutMs: t.connect_timeout_ms || t.connectTimeoutMs,
           ttftTimeoutMs: t.ttft_ms || t.ttftMs || t.ttft_timeout_ms || t.ttftTimeoutMs,
+          stallTimeoutMs: t.stall_ms || t.stallMs || t.stall_timeout_ms || t.stallTimeoutMs,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
           dispatchWeight: t.dispatch_weight ?? t.dispatchWeight,
           maxInFlight: t.max_in_flight ?? t.maxInFlight,
@@ -1815,7 +1816,7 @@ const MODEL_RESPONSE_ATTEMPT_OUTCOMES = new Set([
   'transport_error',
 ]);
 const MODEL_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'missing', 'other']);
-const MODEL_TIMEOUT_KINDS = new Set(['request', 'ttft', 'inactivity', 'total']);
+const MODEL_TIMEOUT_KINDS = new Set(['connect', 'request', 'ttft', 'inactivity', 'total']);
 const MAX_MODEL_RESPONSE_ATTEMPTS = 8;
 const MAX_TELEMETRY_TOKEN_COUNT = 1_000_000;
 
@@ -2351,7 +2352,7 @@ function classifyTelemetryHttpFailure(status) {
 function classifyTelemetryTransportError(error) {
   const message = String(error?.message || error || '');
   if (/provider_capacity_wait_timeout|capacity_wait_timeout/i.test(message)) return 'provider_capacity';
-  if (/AbortError|aborted|timeout|deadline|stalled/i.test(message)) return 'timeout';
+  if (/AbortError|aborted|timeout|deadline|stalled|inactive|inactivity/i.test(message)) return 'timeout';
   if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
   return 'unknown';
@@ -2864,7 +2865,14 @@ function reasoningFragments(value) {
  * but consume SSE deltas when the central handoff explicitly requests streaming.
  */
 function streamInactivityError(timeoutMs, timeoutKind = 'inactivity') {
-  const error = new Error(`Streaming response stalled for ${timeoutMs}ms`);
+  const message = timeoutKind === 'connect'
+    ? `Streaming response headers exceeded connection deadline of ${timeoutMs}ms`
+    : timeoutKind === 'ttft'
+      ? `Streaming response produced no meaningful output within TTFT deadline of ${timeoutMs}ms`
+      : timeoutKind === 'inactivity'
+        ? `Streaming response inactive for ${timeoutMs}ms`
+        : `Streaming request exceeded deadline of ${timeoutMs}ms`;
+  const error = new Error(message);
   error.name = 'TimeoutError';
   error.timeoutKind = timeoutKind;
   return error;
@@ -3275,11 +3283,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       );
       const ttftTimeoutMs = Math.min(
         transportTimeoutMs,
-        Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms) > 0
-          ? Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms)
+        Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms || transport.ttft_ms) > 0
+          ? Number(transport.ttftTimeoutMs || transport.ttft_timeout_ms || transport.ttft_ms)
           : isOpenRouterTransport
             ? DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS
             : transportTimeoutMs,
+      );
+      const inactivityTimeoutMs = Math.min(
+        transportTimeoutMs,
+        Number(transport.stallTimeoutMs || transport.stall_timeout_ms || transport.stall_ms) > 0
+          ? Number(transport.stallTimeoutMs || transport.stall_timeout_ms || transport.stall_ms)
+          : transportTimeoutMs,
       );
 
       resultBase = {
@@ -3533,7 +3547,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           totalCapacityWaitMs += attemptCapacityWaitMs;
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
-              () => streamAbortController.abort(streamInactivityError(attemptTimeoutMs, 'request')),
+              () => streamAbortController.abort(streamInactivityError(
+                Math.min(connectTimeoutMs, attemptTimeoutMs),
+                'connect',
+              )),
               Math.min(connectTimeoutMs, attemptTimeoutMs),
             );
           }
@@ -3690,7 +3707,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           const payload = await readChatCompletionResponse(
             response,
             streamEnabled,
-            attemptTimeoutMs,
+            inactivityTimeoutMs,
             streamTotalTimeoutMs,
             ttftTimeoutMs,
             (value) => {
