@@ -490,6 +490,7 @@ describe('full-panel qualification worker contract', () => {
         'builtin:correctness', 'builtin:contract', 'builtin:docs',
       ]);
       expect(options.config.personas.every((persona: any) => persona.required)).toBe(true);
+      expect(options.config.personas.every((persona: any) => persona.maxTurns === 3)).toBe(true);
       expect(options.config.reviewers.providers).toHaveLength(1);
       expect(options.config.reviewers.providers[0].model).toBe(fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL);
       expect(options.changedFiles.map((file: any) => file.path)).toEqual(expect.arrayContaining([
