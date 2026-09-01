@@ -81,6 +81,133 @@ export type PanelRequestPolicy = Pick<OpenRouterRequest,
   'stream' | 'ttftTimeoutMs' | 'maxTokens' | 'models' | 'temperature' |
   'responseFormat' | 'provider' | 'plugins' | 'metadata'>;
 
+type StructuredOutputRole = 'persona' | 'moderator' | 'arbiter';
+
+/**
+ * Keep the provider-facing schema deliberately narrow.  The application validator remains the
+ * authoritative second layer because OpenRouter documents that strict enforcement can vary by
+ * upstream endpoint.  `suggestion` is required but nullable so the schema is compatible with
+ * strict JSON-schema implementations while preserving the existing optional UI field.
+ */
+const FINDING_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    severity: { type: 'string', enum: ['P0', 'P1', 'P2'] },
+    path: { type: 'string' },
+    line: { type: 'integer', minimum: 1 },
+    title: { type: 'string' },
+    body: { type: 'string' },
+    suggestion: { type: ['string', 'null'] },
+  },
+  required: ['severity', 'path', 'line', 'title', 'body', 'suggestion'],
+  additionalProperties: false,
+} as const;
+
+/** Build the role-specific OpenRouter `json_schema` response format. */
+export function buildPanelResponseFormat(
+  role: string,
+  payload: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const normalizedRole = role as StructuredOutputRole;
+  const findingItems = { ...FINDING_OUTPUT_SCHEMA };
+  const personaProperties: Record<string, unknown> = {
+    nonce: { type: 'string' },
+    decision: { type: 'string', enum: ['APPROVE', 'FINDINGS'] },
+    findings: { type: 'array', items: findingItems },
+  };
+  const personaRequired = ['nonce', 'decision', 'findings'];
+  if (normalizedRole === 'persona' && payload.persona === 'review_flowchart') {
+    personaProperties.mermaidDiagram = { type: 'string' };
+    personaRequired.push('mermaidDiagram');
+  }
+
+  const schema = normalizedRole === 'persona'
+    ? {
+        type: 'object',
+        properties: personaProperties,
+        required: personaRequired,
+        additionalProperties: false,
+      }
+    : normalizedRole === 'moderator'
+      ? {
+          type: 'object',
+          properties: {
+            nonce: { type: 'string' },
+            decision: { type: 'string', enum: ['RECONCILED'] },
+            findings: { type: 'array', items: findingItems },
+          },
+          required: ['nonce', 'decision', 'findings'],
+          additionalProperties: false,
+        }
+      : {
+          type: 'object',
+          properties: {
+            nonce: { type: 'string' },
+            verdict: { type: 'string', enum: ['SHIP', 'FIX_FIRST', 'BLOCK'] },
+            rationale: { type: 'string' },
+          },
+          required: ['nonce', 'verdict', 'rationale'],
+          additionalProperties: false,
+        };
+
+  const names: Record<StructuredOutputRole, string> = {
+    persona: 'ct_review_persona_v1',
+    moderator: 'ct_review_moderator_v1',
+    arbiter: 'ct_review_arbiter_v1',
+  };
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: names[normalizedRole] || 'ct_review_panel_v1',
+      strict: true,
+      schema,
+    },
+  };
+}
+
+function structuredOutputSchema(role: string, payload: Record<string, unknown>): Record<string, unknown> {
+  const format = buildPanelResponseFormat(role, payload);
+  return (format.json_schema as Record<string, unknown>).schema as Record<string, unknown>;
+}
+
+function structuredOutputExample(role: string, nonceValue: string, payload: Record<string, unknown>): string {
+  if (role === 'persona') {
+    const example: Record<string, unknown> = {
+      nonce: nonceValue,
+      decision: 'FINDINGS',
+      findings: [{
+        severity: 'P1',
+        path: 'src/example.ts',
+        line: 12,
+        title: 'Concrete defect title',
+        body: 'Explain the failure and the conditions that trigger it.',
+        suggestion: 'Describe a concrete fix, or use null when none is needed.',
+      }],
+    };
+    if (payload.persona === 'review_flowchart') example.mermaidDiagram = 'flowchart TD\n  A[Start] --> B[Review]';
+    return JSON.stringify(example, null, 2);
+  }
+  if (role === 'moderator') {
+    return JSON.stringify({
+      nonce: nonceValue,
+      decision: 'RECONCILED',
+      findings: [{
+        severity: 'P1',
+        path: 'src/example.ts',
+        line: 12,
+        title: 'Reconciled defect title',
+        body: 'Explain the evidence-backed defect retained by the moderator.',
+        suggestion: null,
+      }],
+    }, null, 2);
+  }
+  return JSON.stringify({
+    nonce: nonceValue,
+    verdict: 'SHIP',
+    rationale: 'Brief evidence-based explanation of the binding decision.',
+  }, null, 2);
+}
+
 export class PanelConfigurationError extends Error {
   constructor(message: string) {
     super(message);
@@ -427,6 +554,7 @@ function structuredOutputContractError(role: string, value: any): string | null 
     return null;
   }
   if (role === 'moderator') {
+    if (value.decision !== 'RECONCILED') return 'moderator response must include decision RECONCILED';
     if (!Array.isArray(value.findings)) return 'moderator response must include top-level findings array';
     return null;
   }
@@ -439,26 +567,36 @@ function structuredOutputContractError(role: string, value: any): string | null 
   return null;
 }
 
-function structuredOutputCorrection(role: string, nonceValue: string, reason: string, nativeJson = false): string {
-  const shape = role === 'persona'
-    ? '{"decision":"APPROVE|FINDINGS","findings":[]}'
-    : role === 'moderator'
-      ? '{"decision":"RECONCILED","findings":[]}'
-      : '{"verdict":"SHIP|FIX_FIRST|BLOCK","rationale":"brief evidence-based explanation"}';
+function structuredOutputCorrection(
+  role: string,
+  nonceValue: string,
+  reason: string,
+  nativeJson = false,
+  payload: Record<string, unknown> = {},
+): string {
+  const schema = structuredOutputSchema(role, payload);
   const common = [
     'STRUCTURED_OUTPUT_CORRECTION',
     `Your previous structured response was invalid: ${reason}.`,
     'Return the actual result object, not the request, an example, or an outputSchema wrapper.',
-    `Use exactly these top-level fields for the ${role} role: ${shape}.`,
+    `Validate the ${role} response against this exact strict JSON Schema; do not add, rename, omit, or nest fields:`,
+    JSON.stringify(schema, null, 2),
+    'Finding severity is an enum and must be exactly P0, P1, or P2. Never coerce HIGH, CRITICAL, MAJOR, or another label into a valid severity.',
   ];
   return [
     ...common,
     ...(nativeJson
       ? [
           `Add the exact top-level field "nonce":"${nonceValue}".`,
+          `For reference, a valid ${role} response is:`,
+          structuredOutputExample(role, nonceValue, payload),
           'Return only one valid JSON object with no Markdown or plaintext fences.',
         ]
-      : [`Keep the exact single nonce fence CT_REVIEW_BEGIN:${nonceValue} and CT_REVIEW_END:${nonceValue}.`]),
+      : [
+          `Keep the exact single nonce fence CT_REVIEW_BEGIN:${nonceValue} and CT_REVIEW_END:${nonceValue}.`,
+          `For reference, a valid ${role} response is:`,
+          structuredOutputExample(role, nonceValue, payload),
+        ]),
   ].join('\n');
 }
 
@@ -507,6 +645,13 @@ async function invoke(
   const nativeJsonMode = ['json_object', 'json_schema'].includes(
     String(options?.requestPolicy?.responseFormat?.type || '').toLowerCase(),
   );
+  // Older callers supplied json_object. Upgrade that compatibility request in-place to the
+  // role-specific strict schema so providers receive the same contract the prompt describes.
+  // Fenced callers retain their established protocol and do not receive a provider schema.
+  const roleResponseFormat = nativeJsonMode ? buildPanelResponseFormat(role, payload) : undefined;
+  const requestPolicy = roleResponseFormat
+    ? { ...(options?.requestPolicy || {}), responseFormat: roleResponseFormat }
+    : options?.requestPolicy;
 
   // Extract changed files, rules, and charter cleanly for prompt formatting
   const changedFiles = Array.isArray(payload.changedFiles) ? payload.changedFiles : [];
@@ -547,11 +692,11 @@ async function invoke(
       ? [
           'Return only one valid JSON object with no Markdown or plaintext fences.',
           `The object MUST contain the exact top-level field "nonce":"${requestNonce}".`,
-          role === 'persona'
-            ? JSON.stringify({ nonce: requestNonce, decision: 'APPROVE', findings: [] }, null, 2)
-            : role === 'moderator'
-              ? JSON.stringify({ nonce: requestNonce, decision: 'RECONCILED', findings: [] }, null, 2)
-              : JSON.stringify({ nonce: requestNonce, verdict: 'SHIP', rationale: 'brief evidence-based explanation' }, null, 2),
+          'The response MUST validate against this exact strict JSON Schema; no additional properties are allowed:',
+          JSON.stringify(structuredOutputSchema(role, payload), null, 2),
+          'Finding severity is an enum and must be exactly P0, P1, or P2. Never coerce HIGH, CRITICAL, MAJOR, or another label into a valid severity.',
+          'Valid response example:',
+          structuredOutputExample(role, requestNonce, payload),
         ]
       : [
           `You MUST return your evaluation strictly inside a single valid JSON object enclosed between the exact fences:`,
@@ -597,7 +742,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   \`\`\`
 - NOTE: All file reads are limited to the workspace. File writes, shell execution, Linear/Productlane/GitHub actions, custom MCPs, and arbitrary local paths are strictly prohibited and will be rejected.
 - ${nativeJsonMode
-    ? `You MUST return one JSON object containing the exact top-level field "nonce":"${requestNonce}" with no Markdown or plaintext fences.`
+    ? `You MUST return one JSON object containing the exact top-level field "nonce":"${requestNonce}" that validates against the role-specific strict JSON Schema in the user message, with no Markdown or plaintext fences.`
     : `You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`}`,
     },
     { role: 'user', content: prompt },
@@ -611,7 +756,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   for (let iter = 0; iter < maxTurns; iter++) {
     const requestPersona = options?.persona || personaName;
     const response = await client.complete({
-      ...(options?.requestPolicy || {}),
+      ...(requestPolicy || {}),
       model,
       messages,
       timeoutMs,
@@ -619,7 +764,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       persona: requestPersona,
       ...(options?.providerId ? { providerId: options.providerId } : {}),
       metadata: {
-        ...(options?.requestPolicy?.metadata || {}),
+        ...(requestPolicy?.metadata || {}),
         role,
         persona: requestPersona,
       },
@@ -650,7 +795,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       }
       structuredCorrectionAttempts += 1;
       messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user', content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode) });
+      messages.push({ role: 'user', content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode, payload) });
       continue;
     } catch (fenceErr: any) {
       if (iter + 1 >= maxTurns) {
@@ -750,7 +895,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         messages.push({ role: 'assistant', content: response.content });
         messages.push({
           role: 'user',
-          content: structuredOutputCorrection(role, requestNonce, fenceErr instanceof Error ? fenceErr.message : String(fenceErr), nativeJsonMode),
+          content: structuredOutputCorrection(role, requestNonce, fenceErr instanceof Error ? fenceErr.message : String(fenceErr), nativeJsonMode, payload),
         });
         continue;
       }

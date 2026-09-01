@@ -40,7 +40,13 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     const spec = crdSchema().properties.spec;
     expect(projection.apiVersion).toBe('review-yeti.ai/v1alpha2');
     expect(Object.keys(projection.spec).sort()).toEqual([...spec.required].sort());
-    expect(Object.keys(spec.properties).sort()).toEqual([...spec.required].sort());
+    expect(Object.keys(spec.properties).sort()).toEqual([
+      ...spec.required,
+      'qualificationModel',
+      'qualificationProfile',
+    ].sort());
+    expect(projection.spec).not.toHaveProperty('qualificationModel');
+    expect(projection.spec).not.toHaveProperty('qualificationProfile');
     expect(JSON.stringify(projection.spec)).not.toMatch(/privateKey|providerApiKey|installationToken|callbackToken/u);
   });
 
