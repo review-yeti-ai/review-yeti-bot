@@ -720,7 +720,7 @@ class ProviderCapacityManager {
     }
   }
 
-  async acquire(transport, baseUrl, requestTimeoutMs) {
+  async acquire(transport, baseUrl, _requestTimeoutMs) {
     const policy = resolveTransportCapacityPolicy(transport, baseUrl);
     if (!policy) return { release: () => {}, waitMs: 0, policy: null };
     const key = this.capacityKey(transport, baseUrl, policy.scope);
@@ -739,8 +739,12 @@ class ProviderCapacityManager {
     };
     if (!existing) this.pools.set(key, pool);
     const waitStartedMs = Date.now();
-    const waitTimeoutMs = Math.min(policy.waitTimeoutMs, normalizePositiveInteger(requestTimeoutMs, policy.waitTimeoutMs, 180_000));
-    const release = await pool.semaphore.acquire(waitTimeoutMs, 'provider_capacity_wait_timeout');
+    // Queue admission and provider generation are distinct phases. Starting the request budget
+    // while a lane is still waiting for a slot makes capacity_wait_timeout_ms ineffective whenever
+    // it is intentionally larger than timeout_ms, and leaves the admitted request no generation
+    // budget. The caller starts all connection/TTFT/total request timers only after this lease is
+    // acquired, so the policy's queue budget is the sole bound here.
+    const release = await pool.semaphore.acquire(policy.waitTimeoutMs, 'provider_capacity_wait_timeout');
     return {
       release,
       waitMs: Math.max(0, Date.now() - waitStartedMs),
