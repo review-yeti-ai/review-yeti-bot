@@ -97,6 +97,15 @@ describe('trusted incremental review scope', () => {
           patch: '@@ -10,2 +10,3 @@\n-const endpoint = input.url;\n+const endpoint = new URL("/quota", trustedBaseUrl);\n+headers.Authorization = `Bearer ${apiKey}`;',
         }],
       }), { status: 200 }),
+      new Response([
+        'diff --git a/scripts/quota.mjs b/scripts/quota.mjs',
+        '--- a/scripts/quota.mjs',
+        '+++ b/scripts/quota.mjs',
+        '@@ -10,2 +10,3 @@',
+        '-const endpoint = input.url;',
+        '+const endpoint = new URL("/quota", trustedBaseUrl);',
+        '+headers.Authorization = `Bearer ${apiKey}`;',
+      ].join('\n'), { status: 200 }),
     ];
 
     const result = await scope.resolveIncrementalReviewScope({

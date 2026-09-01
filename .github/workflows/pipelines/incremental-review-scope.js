@@ -226,14 +226,18 @@ async function resolveIncrementalReviewScope(options) {
       if (!Array.isArray(comparison.files) || comparison.files.length < 1 || comparison.files.length > MAX_DELTA_FILES) continue;
       if (comparison.files.some((file) => typeof file.patch !== 'string')) continue;
 
-      const deltaDiffText = comparison.files.map((file) => {
-        const previous = file.previous_filename || file.filename;
-        return `diff --git a/${previous} b/${file.filename}\n--- a/${previous}\n+++ b/${file.filename}\n${file.patch}\n`;
-      }).join('');
+      // The JSON `files[].patch` field may be truncated. Fetch GitHub's canonical diff media
+      // separately, then prove its parsed file set matches the bounded comparison metadata.
+      const diffResponse = await githubRequest(fetchImplementation, options.token,
+        `${apiBase}/repos/${options.repo}/compare/${extracted.report.headSha}...${options.headSha}`,
+        'application/vnd.github.diff');
+      const deltaDiffText = await diffResponse.text();
       if (!deltaDiffText || deltaDiffText.length > Number(options.maxIncrementalDiffChars) || deltaDiffText.length >= String(options.fullDiffText).length) continue;
 
       const deltaFiles = options.parseDiff(deltaDiffText);
       if (deltaFiles.length !== comparison.files.length) continue;
+      const expectedPaths = new Set(comparison.files.map((file) => String(file.filename || '')));
+      if (deltaFiles.some((file) => !expectedPaths.has(String(file.path || '')))) continue;
       const reviewedPersonaIds = selectIncrementalPersonaIds(extracted.report, deltaFiles, options.personaIds);
       if (reviewedPersonaIds.length < 1) continue;
       const reusedPersonaIds = options.personaIds.filter((personaId) => !reviewedPersonaIds.includes(personaId));
