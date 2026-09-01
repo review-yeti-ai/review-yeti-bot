@@ -108,6 +108,16 @@ jobs:
           RESOLVED_REF_SHA: ${{ steps.resolved.outputs.ref_sha }}
         run: .exampleorg-review-actions/scripts/validate-release-provenance.sh
 
+      # The reusable-workflow identity fields belong to the runtime `job` context.
+      # Capture them in a step before passing them to an action: GitHub rejects the
+      # `job` context when it is referenced directly from an action `with:` block.
+      - name: Resolve immutable reusable workflow identity
+        id: workflow_identity
+        env:
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: .exampleorg-review-actions/scripts/emit-workflow-identity.sh
+
       # Preflight admission (QA-380): the smoke step proves which transports are healthy before
       # any persona runs. The highest-priority healthy transport seeds legacy action fields, and the
       # action receives only the healthy subset for weighted per-lane primary assignment and failover. This prevents
@@ -137,8 +147,8 @@ jobs:
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
           incremental-review: 'true'
-          incremental-trusted-workflow: ${{ job.workflow_ref }}
-          incremental-trusted-workflow-sha: ${{ job.workflow_sha }}
+          incremental-trusted-workflow: ${{ steps.workflow_identity.outputs.workflow_ref }}
+          incremental-trusted-workflow-sha: ${{ steps.workflow_identity.outputs.workflow_sha }}
           max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}
           max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}
           personas: ${{ steps.policy.outputs.personas }}

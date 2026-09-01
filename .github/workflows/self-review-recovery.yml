@@ -1,0 +1,27 @@
+name: Review Yeti hotfix recovery
+
+# One-PR recovery caller for the reusable-workflow startup regression introduced
+# by PR #172. The normal pull_request_target caller is base-owned and therefore
+# cannot consume its own repair until main advances. This same-repository-only
+# caller runs the repaired workflow on the exact hotfix head and emits the real
+# required `review / Review Yeti` check. Remove this file immediately after the
+# repair reaches main.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    if: >-
+      github.repository == 'exampleorg/example-review-actions' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'fix/reusable-workflow-identity-handoff'
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@fix/reusable-workflow-identity-handoff
+    secrets: inherit

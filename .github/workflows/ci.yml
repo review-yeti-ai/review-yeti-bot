@@ -44,6 +44,8 @@ jobs:
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
           bash -n scripts/validate-review-request.sh
           bash -n scripts/validate-caller-workflow.sh
+          bash -n scripts/emit-workflow-identity.sh
+          bash -n scripts/emit-workflow-identity.test.sh
           bash -n scripts/check-review-verdict.sh
           bash -n scripts/promote-v1.sh
           bash -n scripts/self-cancel-run.sh
@@ -59,6 +61,7 @@ jobs:
           bash -n scripts/check-review-verdict.test.sh
           bash -n scripts/self-cancel-run.test.sh
           bash scripts/validate-caller-workflow.test.sh
+          bash scripts/emit-workflow-identity.test.sh
           bash scripts/promote-v1.test.sh
           bash scripts/validate-review-request.test.sh
           bash scripts/check-review-verdict.test.sh

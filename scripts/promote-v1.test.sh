@@ -566,8 +566,17 @@ grep -Fq 'name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.r
 grep -Fq 'path: ${{ steps.review.outputs.provider-telemetry-path }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'actions: read' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq "incremental-review: 'true'" "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq 'incremental-trusted-workflow: ${{ job.workflow_ref }}' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq 'incremental-trusted-workflow-sha: ${{ job.workflow_sha }}' "$repo_root/.github/workflows/review-yeti.yml"
+workflow_identity_step="$({
+  sed -n \
+    '/^      - name: Resolve immutable reusable workflow identity$/,/^      - name: Run Review Yeti review panel$/p' \
+    "$repo_root/.github/workflows/review-yeti.yml"
+} | sed '$d')"
+grep -Fq 'id: workflow_identity' <<<"$workflow_identity_step"
+grep -Fq 'WORKFLOW_REF: ${{ job.workflow_ref }}' <<<"$workflow_identity_step"
+grep -Fq 'WORKFLOW_SHA: ${{ job.workflow_sha }}' <<<"$workflow_identity_step"
+grep -Fq 'run: .exampleorg-review-actions/scripts/emit-workflow-identity.sh' <<<"$workflow_identity_step"
+grep -Fq 'incremental-trusted-workflow: ${{ steps.workflow_identity.outputs.workflow_ref }}' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'incremental-trusted-workflow-sha: ${{ steps.workflow_identity.outputs.workflow_sha }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
