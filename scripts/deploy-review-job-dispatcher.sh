@@ -27,7 +27,7 @@ kubectl apply --server-side -f k8s/namespace.yaml
 # Go-template variables are interpreted by kubectl.
 # shellcheck disable=SC2016
 secret_keys="$(kubectl -n ct-review-system get secret ct-review-job-dispatcher-runtime \
-  -o go-template='{{range $key, $value := .data}}{{printf "%s\\n" $key}}{{end}}' | LC_ALL=C sort)"
+  -o go-template='{{range $key, $value := .data}}{{printf "%s\n" $key}}{{end}}' | LC_ALL=C sort)"
 if [[ "$secret_keys" != $'DATABASE_CA_CERT\nDATABASE_URL' ]]; then
   echo "deploy-review-job-dispatcher: runtime secret must contain exactly DATABASE_CA_CERT and DATABASE_URL" >&2
   exit 2
