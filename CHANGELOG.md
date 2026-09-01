@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.18.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.17.0...v1.18.0) (2026-09-01)
+
+
+### Features
+
+* **doks:** add inert review runtime installer ([#361](https://github.com/review-yeti-ai/review-yeti-bot/issues/361)) ([f7a964a](https://github.com/review-yeti-ai/review-yeti-bot/commit/f7a964aa4ca8c722433c7fc0feffc544ecf005c1))
+
+
+### Bug Fixes
+
+* bound OpenRouter 5xx recovery after timeout ([#360](https://github.com/review-yeti-ai/review-yeti-bot/issues/360)) ([f65b6d9](https://github.com/review-yeti-ai/review-yeti-bot/commit/f65b6d9d7194046176ce1af67ba0a5795c8cad04))
+* respect reasoning-required OpenRouter models ([#358](https://github.com/review-yeti-ai/review-yeti-bot/issues/358)) ([0fae773](https://github.com/review-yeti-ai/review-yeti-bot/commit/0fae77361f4e918a871c77bcad47a242480508cb))
+
 ## [1.17.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.16.0...v1.17.0) (2026-09-01)
 
 
