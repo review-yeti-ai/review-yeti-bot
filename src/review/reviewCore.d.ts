@@ -37,9 +37,21 @@ export interface CanonicalArbitration {
   findings: ReviewFinding[];
 }
 
+export interface CoverageGap {
+  path?: string;
+  reason?: string;
+}
+
 export interface ArbitrationOptions {
   changedFiles?: ReviewChangedFile[];
   coverageComplete?: boolean;
+  /**
+   * Named evidence/coverage artifacts that caused `coverageComplete` to be false (e.g. a
+   * submodule policy decision or a failed `.gitmodules` fetch). When a clean persona panel is
+   * forced BLOCK by coverage alone, computeArbitration names these in the rationale instead of
+   * reusing the clean-panel "Quorum satisfied" sentence (REL-491).
+   */
+  coverageGaps?: Array<string | CoverageGap>;
   candidateVerdict?: CanonicalVerdict;
   rationale?: string;
 }
@@ -57,6 +69,7 @@ export interface ReviewFindingsValidation {
   error?: string;
 }
 export function validateReviewFindings(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFindingsValidation;
+export function describeCoverageGaps(coverageGaps?: Array<string | CoverageGap>): string[];
 export function computeArbitration(
   personaResults: ReviewLane[],
   expectedPersonas?: number,

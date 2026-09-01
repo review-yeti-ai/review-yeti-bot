@@ -102,4 +102,59 @@ describe('canonical review contract differential', () => {
     expect(action.status).toBe('INCOMPLETE_REVIEW');
     expect(action.quorumSatisfied).toBe(false);
   });
+
+  // REL-491: calltelemetry/ct-release#1360 (runs 33469453744, 33469858871) — all 3 personas
+  // APPROVE, zero findings, zero failed lanes, yet the verdict was BLOCK with a rationale that
+  // asserted BOTH "Quorum satisfied for release." and "must remain blocked" in the same sentence,
+  // because a coverage-only signal (unrelated to persona execution) forced `incomplete=true` and
+  // the incomplete branch appended its blocking clause onto the clean-panel sentence verbatim
+  // instead of replacing it.
+  describe('REL-491: coverage-only incompleteness never contradicts a clean panel', () => {
+    it('never asserts both "quorum satisfied" and "must remain blocked" when coverage alone forces BLOCK', () => {
+      const action = actionVerdict(lanes, 2, { coverageComplete: false });
+      const app = computeAppVerdict({ lanes, expectedLanes: 2, changedFiles, coverageComplete: false });
+
+      expect(action).toEqual(app);
+      expect(action.verdict).toBe('BLOCK');
+      expect(action.status).toBe('INCOMPLETE_REVIEW');
+
+      // The defect: concatenating the clean-panel sentence with the block clause produced text
+      // that simultaneously claims the quorum is satisfied and that merge approval is blocked.
+      const assertsQuorumSatisfied = /quorum satisfied/i.test(action.rationale);
+      const assertsBlocked = /must remain blocked|merge approval remains blocked/i.test(action.rationale);
+      expect(assertsQuorumSatisfied && assertsBlocked).toBe(false);
+    });
+
+    it('names the concrete missing artifact instead of a generic boilerplate restatement', () => {
+      const app = computeAppVerdict({
+        lanes,
+        expectedLanes: 2,
+        changedFiles,
+        coverageComplete: false,
+        coverageGaps: [{ path: 'k8s', reason: 'submodule change is not bound to a valid pinned commit transition' }],
+      });
+
+      expect(app.verdict).toBe('BLOCK');
+      expect(app.rationale).toContain('k8s');
+      expect(app.rationale).toContain('submodule change is not bound to a valid pinned commit transition');
+      expect(/quorum satisfied/i.test(app.rationale)).toBe(false);
+    });
+
+    it('still logs a named gap even when the caller does not supply coverageGaps, rather than a bare boolean', () => {
+      const app = computeAppVerdict({ lanes, expectedLanes: 2, changedFiles, coverageComplete: false });
+
+      // No caller-supplied gap detail: the rationale must still not silently restate the
+      // clean-panel sentence, and must say evidence/coverage is the reason, not findings.
+      expect(app.rationale).toMatch(/evidence\/coverage gap/i);
+      expect(/quorum satisfied/i.test(app.rationale)).toBe(false);
+    });
+
+    it('never renders "0 persona lane(s) failed" when no lane actually failed', () => {
+      const action = actionVerdict(lanes, 2, { coverageComplete: false });
+      const app = computeAppVerdict({ lanes, expectedLanes: 2, changedFiles, coverageComplete: false });
+
+      expect(action.rationale).not.toMatch(/0 persona lane\(s\) failed/i);
+      expect(app.rationale).not.toMatch(/0 persona lane\(s\) failed/i);
+    });
+  });
 });
