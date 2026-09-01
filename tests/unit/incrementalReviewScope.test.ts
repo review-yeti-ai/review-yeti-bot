@@ -32,7 +32,7 @@ function parentReport(planDigest: string) {
 
 describe('trusted incremental review scope', () => {
   it('binds evidence reuse to the action, base policy, persona order, and diff budget', () => {
-    const common = { actionSha: 'd'.repeat(40), baseSha: BASE, personaIds: PERSONAS, maxDiffChars: 24000, maxIncrementalDiffChars: 60000, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@main,calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1' };
+    const common = { actionSha: 'd'.repeat(40), baseSha: BASE, personaIds: PERSONAS, maxDiffChars: 24000, maxIncrementalDiffChars: 60000, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1', trustedWorkflowSha: 'e'.repeat(40) };
     const digest = scope.buildReviewScopePlanDigest(common);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
     expect(scope.buildReviewScopePlanDigest(common)).toBe(digest);
@@ -41,7 +41,37 @@ describe('trusted incremental review scope', () => {
     expect(scope.buildReviewScopePlanDigest({ ...common, baseSha: 'e'.repeat(40) })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, maxDiffChars: 24001 })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, maxIncrementalDiffChars: 60001 })).not.toBe(digest);
-    expect(scope.buildReviewScopePlanDigest({ ...common, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1' })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/heads/main' })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, trustedWorkflowSha: 'f'.repeat(40) })).not.toBe(digest);
+  });
+
+  it('requires the trusted workflow path and its resolved immutable SHA', () => {
+    const trustedPath = 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1';
+    const trustedSha = 'd'.repeat(40);
+    expect(scope.isTrustedWorkflowReference({ path: trustedPath, sha: trustedSha }, [trustedPath], trustedSha)).toBe(true);
+    expect(scope.isTrustedWorkflowReference({ path: trustedPath, sha: 'e'.repeat(40) }, [trustedPath], trustedSha)).toBe(false);
+    expect(scope.isTrustedWorkflowReference({ path: `${trustedPath}-other`, sha: trustedSha }, [trustedPath], trustedSha)).toBe(false);
+    expect(scope.isTrustedWorkflowReference({ path: trustedPath, sha: 'not-a-sha' }, [trustedPath], trustedSha)).toBe(false);
+  });
+
+  it('fails closed to a full review when immutable workflow provenance is absent', async () => {
+    const common = {
+      enabled: true,
+      token: 'token',
+      repo: 'calltelemetry/example',
+      prNumber: 17,
+      baseSha: BASE,
+      headSha: HEAD,
+      personaIds: PERSONAS,
+      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+      fullDiffText: 'full diff',
+      planDigest: 'f'.repeat(64),
+    };
+    for (const trustedWorkflowSha of ['', 'not-a-sha']) {
+      const result = await scope.resolveIncrementalReviewScope({ ...common, trustedWorkflowSha });
+      expect(result.scope).toMatchObject({ mode: 'full', fallbackReason: 'missing_identity' });
+      expect(result.reviewedDiffText).toBe('full diff');
+    }
   });
 
   it('reruns the prior blocking owner, a broad reviewer, and delta-relevant specialists', () => {
@@ -93,7 +123,7 @@ describe('trusted incremental review scope', () => {
       new Response(JSON.stringify({
         status: 'completed', event: 'pull_request_target', head_sha: PARENT, run_attempt: 1,
         referenced_workflows: [{
-          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
           sha: 'd'.repeat(40),
         }],
       }), { status: 200 }),
@@ -126,7 +156,8 @@ describe('trusted incremental review scope', () => {
       personaIds: PERSONAS,
       maxDiffChars: 24000,
       maxIncrementalDiffChars: 60000,
-      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@main,calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+      trustedWorkflowSha: 'd'.repeat(40),
       fullDiffText,
       planDigest,
       parseDiff: pipeline.parseDiff,
