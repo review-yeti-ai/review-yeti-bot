@@ -58,13 +58,15 @@ for (const transport of review.transports) {
   if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !transport.compat) {
     throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
   }
-  for (const key of ['timeout_ms', 'connect_timeout_ms']) {
+  for (const key of ['timeout_ms', 'connect_timeout_ms', 'ttft_ms', 'stall_ms']) {
     if (!Number.isInteger(transport[key]) || transport[key] < 1 || transport[key] > 180000) {
       throw new Error(`transport ${transport.name}.${key} must be an integer between 1ms and 180000ms`);
     }
   }
-  if (transport.connect_timeout_ms > transport.timeout_ms) {
-    throw new Error(`transport ${transport.name}.connect_timeout_ms must not exceed timeout_ms`);
+  for (const key of ['connect_timeout_ms', 'ttft_ms', 'stall_ms']) {
+    if (transport[key] > transport.timeout_ms) {
+      throw new Error(`transport ${transport.name}.${key} must not exceed timeout_ms`);
+    }
   }
   validateTransportEnvelope(transport);
 }
@@ -77,6 +79,12 @@ if (!fireworksTransport || fireworksTransport.enabled !== false) {
 }
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
   throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');
+}
+if (openrouterTransport.ttft_ms !== openrouterTtftMs) {
+  throw new Error('openrouter-primary.ttft_ms must equal review_yeti.openrouter_ttft_ms');
+}
+if (openrouterTransport.stall_ms !== stallMs) {
+  throw new Error('openrouter-primary.stall_ms must equal review_yeti.stall_ms');
 }
 if (Number(budget.lane_deadline_ms) < openrouterTimeoutMs * openrouterMaxAttempts) {
   throw new Error('review_yeti.budget.lane_deadline_ms must cover the OpenRouter request retry envelope');
@@ -106,7 +114,6 @@ if (!Number.isSafeInteger(laneOverheadMs) || laneOverheadMs < 1) {
 }
 checkDeadTransportEnvelope({
   transports: enabledTransports,
-  stallMs,
   maxAttempts,
   maxInvestigationTurns,
   laneOverheadMs,

@@ -51,6 +51,11 @@ if (new Set(names).size !== names.length) {
 if (plan.some((entry) => entry?.stream !== true)) {
   throw new Error('all transports must stream');
 }
+for (const key of ['timeout_ms', 'connect_timeout_ms', 'ttft_ms', 'stall_ms']) {
+  if (plan.some((entry) => !Number.isSafeInteger(entry?.[key]) || entry[key] < 1)) {
+    throw new Error(`every transport must carry ${key} as a positive safe integer`);
+  }
+}
 if (process.env.ALLOW_POLICY_SUBSET === 'true') {
   const admittedPolicyTransports = policyTransports.filter((transport) => names.includes(transport.name));
   const quotaBoundSubset = plan.length === admittedPolicyTransports.length
@@ -74,6 +79,10 @@ if (process.env.ALLOW_POLICY_SUBSET === 'true') {
   }
 } else if (JSON.stringify(plan) !== JSON.stringify(policyTransports)) {
   throw new Error('transport handoff does not exactly match policy');
+}
+if (plan.some((entry) => ['connect_timeout_ms', 'ttft_ms', 'stall_ms']
+  .some((key) => entry[key] > entry.timeout_ms))) {
+  throw new Error('transport handoff deadlines must not exceed timeout_ms');
 }
 
 console.log(`transport_plan_entries=${plan.length} stream=true`);

@@ -44,6 +44,8 @@ const ALLOWED_TRANSPORT_KEYS = [
   'compat',
   'timeout_ms',
   'connect_timeout_ms',
+  'ttft_ms',
+  'stall_ms',
   'max_tokens',
   'stream',
   'structured_output',
@@ -210,8 +212,6 @@ export function buildExecutionPlan(policy) {
   const review = policy.review_yeti;
   const transports = review.transports.filter((transport) => transport.enabled === true);
   const maxAttempts = Number(review.openrouter_max_attempts);
-  const stallTimeoutMs = Number(review.stall_ms);
-  const ttftTimeoutMs = Number(review.openrouter_ttft_ms);
 
   return {
     schema: 'exampleorg.review-execution-plan.v1',
@@ -239,8 +239,8 @@ export function buildExecutionPlan(policy) {
         timeouts: {
           connect_ms: transport.connect_timeout_ms,
           request_ms: transport.timeout_ms,
-          stall_ms: stallTimeoutMs,
-          ttft_ms: ttftTimeoutMs,
+          stall_ms: transport.stall_ms,
+          ttft_ms: transport.ttft_ms,
         },
         max_output_tokens: configuredOrUnknown(transport.max_tokens),
         streaming: transport.stream,

@@ -74,6 +74,10 @@ export function validatePolicy(policy) {
   ]) {
     if (!positiveSafeInteger(value)) throw new Error(`Review Yeti ${label} must be a positive safe integer`);
   }
+  const centralStallMs = Number(policy.review_yeti?.stall_ms);
+  if (!positiveSafeInteger(centralStallMs)) {
+    throw new Error('review_yeti.stall_ms must be a positive integer string');
+  }
 
   const names = transports.map((transport) => transport.name);
   if (new Set(names).size !== names.length) throw new Error('transport names must be unique');
@@ -95,14 +99,18 @@ export function validatePolicy(policy) {
     if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !['openai', 'openrouter'].includes(transport.compat)) {
       throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
     }
-    if (!positiveSafeInteger(transport.timeout_ms) || !positiveSafeInteger(transport.connect_timeout_ms)) {
-      throw new Error(`transport ${transport.name} timeout budgets must be positive safe integers`);
+    for (const key of ['timeout_ms', 'connect_timeout_ms', 'ttft_ms', 'stall_ms']) {
+      if (!positiveSafeInteger(transport[key])) {
+        throw new Error(`transport ${transport.name} ${key} must be a positive safe integer`);
+      }
     }
     if (transport.max_tokens !== undefined && !positiveSafeInteger(Number(transport.max_tokens))) {
       throw new Error(`transport ${transport.name} max_tokens must be a positive safe integer when declared`);
     }
-    if (transport.connect_timeout_ms > transport.timeout_ms) {
-      throw new Error(`transport ${transport.name} connect timeout must not exceed timeout`);
+    for (const key of ['connect_timeout_ms', 'ttft_ms', 'stall_ms']) {
+      if (transport[key] > transport.timeout_ms) {
+        throw new Error(`transport ${transport.name} ${key} must not exceed timeout_ms`);
+      }
     }
     validateTransportEnvelope(transport);
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
@@ -199,6 +207,12 @@ export function validatePolicy(policy) {
   if (openrouter?.timeout_ms !== Number(policy.review_yeti?.openrouter_timeout_ms)) {
     throw new Error('OpenRouter transport timeout must match the central request timeout');
   }
+  if (openrouter?.ttft_ms !== Number(policy.review_yeti?.openrouter_ttft_ms)) {
+    throw new Error('OpenRouter transport TTFT must match the central request TTFT');
+  }
+  if (openrouter?.stall_ms !== centralStallMs) {
+    throw new Error('OpenRouter transport stall must match the central stall timeout');
+  }
   const maxAttempts = Number(policy.review_yeti?.openrouter_max_attempts);
   const maxInvestigationTurns = Number(budget.max_investigation_turns);
   // Shared with emit-policy.mjs via lane-deadline-invariant.mjs so the two enforcement points
@@ -206,7 +220,6 @@ export function validatePolicy(policy) {
   // stall_ms validation, then missing lane_overhead_ms in the arithmetic entirely).
   checkDeadTransportEnvelope({
     transports: enabledTransports,
-    stallMs: Number(policy.review_yeti?.stall_ms),
     maxAttempts,
     maxInvestigationTurns,
     laneOverheadMs: Number(budget.lane_overhead_ms),

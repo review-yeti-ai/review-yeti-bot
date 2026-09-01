@@ -61,6 +61,8 @@ function policyFixture() {
     },
   };
   for (const transport of policy.review_yeti.transports) {
+    transport.ttft_ms = Math.min(60_000, transport.timeout_ms);
+    transport.stall_ms = 20_000;
     transport.dispatch_weight = transport.name === 'openrouter-primary' ? 2 : 1;
     transport.max_in_flight = transport.name === 'openrouter-primary' ? 2 : transport.name === 'synthetic' ? 5 : 1;
     transport.concurrency_scope = transport.name === 'synthetic' ? 'model' : 'provider';
@@ -131,8 +133,10 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   // never killed by a duration cap). Mirrors the same inequality emit-policy.mjs enforces.
   assert.ok(
     Number(policy.review_yeti.budget.lane_deadline_ms)
-      >= (transports.reduce((sum, transport) => sum + transport.connect_timeout_ms, 0)
-        + transports.length * Number(policy.review_yeti.stall_ms))
+      >= transports.reduce(
+        (sum, transport) => sum + transport.connect_timeout_ms + transport.stall_ms,
+        0,
+      )
       * Number(policy.review_yeti.openrouter_max_attempts)
       * Number(policy.review_yeti.budget.max_investigation_turns)
       + Number(policy.review_yeti.budget.lane_overhead_ms),
@@ -147,6 +151,45 @@ test('every active transport keeps lane timeouts out of the run-scoped quarantin
     () => validatePolicy(policy),
     /active transport synthetic must keep timeouts lane-local/,
   );
+});
+
+test('every transport carries explicit TTFT and stall deadlines into smoke admission', () => {
+  for (const key of ['ttft_ms', 'stall_ms']) {
+    const policy = policyFixture();
+    delete policy.review_yeti.transports.find((transport) => transport.name === 'synthetic')[key];
+
+    assert.throws(
+      () => validatePolicy(policy),
+      new RegExp(`transport synthetic ${key} must be a positive safe integer`),
+    );
+  }
+});
+
+test('transport liveness deadlines cannot exceed the hard request ceiling', () => {
+  for (const key of ['connect_timeout_ms', 'ttft_ms', 'stall_ms']) {
+    const policy = policyFixture();
+    const synthetic = policy.review_yeti.transports.find((transport) => transport.name === 'synthetic');
+    synthetic[key] = synthetic.timeout_ms + 1;
+
+    assert.throws(
+      () => validatePolicy(policy),
+      new RegExp(`transport synthetic ${key} must not exceed timeout_ms`),
+    );
+  }
+});
+
+test('compatibility timing aliases cannot drift from the emitted transport contract', () => {
+  const ttftPolicy = policyFixture();
+  ttftPolicy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary').ttft_ms += 1;
+  assert.throws(() => validatePolicy(ttftPolicy), /OpenRouter transport TTFT must match/);
+
+  const heterogeneousPolicy = policyFixture();
+  heterogeneousPolicy.review_yeti.transports.find((transport) => transport.name === 'synthetic').stall_ms += 1;
+  assert.doesNotThrow(() => validatePolicy(heterogeneousPolicy));
+
+  const stallPolicy = policyFixture();
+  stallPolicy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary').stall_ms += 1;
+  assert.throws(() => validatePolicy(stallPolicy), /OpenRouter transport stall must match/);
 });
 
 test('the committed OpenRouter primary leaves provider identity unpinned', () => {
@@ -346,9 +389,9 @@ test('the smoke suite rejects a policy whose dead-transport connect+stall envelo
   // connect+stall envelope the fixture's own transports produce, everything else unchanged.
   const policy = policyFixture();
   const transports = policy.review_yeti.transports.filter((transport) => transport.enabled === true);
-  const stallMs = Number(policy.review_yeti.stall_ms);
   const connectSum = transports.reduce((sum, transport) => sum + transport.connect_timeout_ms, 0);
-  const envelope = (connectSum + transports.length * stallMs)
+  const stallSum = transports.reduce((sum, transport) => sum + transport.stall_ms, 0);
+  const envelope = (connectSum + stallSum)
     * Number(policy.review_yeti.openrouter_max_attempts)
     * Number(policy.review_yeti.budget.max_investigation_turns);
   policy.review_yeti.budget.lane_deadline_ms = String(envelope + Number(policy.review_yeti.budget.lane_overhead_ms) - 1);

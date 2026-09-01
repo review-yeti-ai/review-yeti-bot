@@ -130,7 +130,7 @@ if review.get('openrouter_stream') != 'true':
 for transport in review.get('transports', []):
     if transport.get('stream') is not True:
         raise SystemExit(f'{transport.get("name")} must stream')
-    for key in ('timeout_ms', 'connect_timeout_ms'):
+    for key in ('timeout_ms', 'connect_timeout_ms', 'ttft_ms', 'stall_ms'):
         value = transport.get(key)
         if type(value) is not int or not 1 <= value <= 180_000:
             raise SystemExit(f"{transport.get('name', '<unnamed>')} {key} must be between 1ms and 180000ms")
@@ -150,15 +150,15 @@ lane_deadline_ms = int(budget['lane_deadline_ms'])
 lane_overhead_ms = int(budget['lane_overhead_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
 max_investigation_turns = int(budget['max_investigation_turns'])
-stall_ms = int(review['stall_ms'])
 transport_connect_sum_ms = sum(t['connect_timeout_ms'] for t in transports)
-stall_envelope_ms = transport_connect_sum_ms + len(transports) * stall_ms
+transport_stall_sum_ms = sum(t['stall_ms'] for t in transports)
+stall_envelope_ms = transport_connect_sum_ms + transport_stall_sum_ms
 worst_case_dead_call_ms = stall_envelope_ms * max_attempts * max_investigation_turns
 required_lane_budget_ms = worst_case_dead_call_ms + lane_overhead_ms
 if required_lane_budget_ms > lane_deadline_ms:
     raise SystemExit(
         f'worst-case dead-transport budget ({worst_case_dead_call_ms}ms = ({transport_connect_sum_ms}ms '
-        f'connect + {len(transports)} x {stall_ms}ms stall) across {len(transports)} transports x '
+        f'connect + {transport_stall_sum_ms}ms stall) across {len(transports)} transports x '
         f'{max_attempts} attempts x {max_investigation_turns} turns) plus lane overhead reserve '
         f'({lane_overhead_ms}ms) exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); '
         'a full sequential failover of never-connecting or never-streaming transports could never '
@@ -311,7 +311,7 @@ for transport in transports:
     transport['timeout_ms'] = max(transport.get('timeout_ms', 30_000), overflow_connect_ms)
 # A generated cap can otherwise land exactly on the lane deadline. Nudge the fixture deadline just
 # below the resulting sum while keeping the retry-envelope check valid.
-overflow_sum = overflow_connect_ms * len(transports) + len(transports) * int(review['stall_ms'])
+overflow_sum = overflow_connect_ms * len(transports) + sum(item['stall_ms'] for item in transports)
 if overflow_sum <= lane_deadline_ms:
     lane_deadline_ms = overflow_sum - 1
     review['budget']['lane_deadline_ms'] = str(lane_deadline_ms)
@@ -401,9 +401,8 @@ review = policy['review_yeti']
 budget = review['budget']
 budget['lane_overhead_ms'] = '120000'
 transports = [item for item in review['transports'] if item.get('enabled') is True]
-stall_ms = int(review['stall_ms'])
 raw_dead_call_budget = (
-    (sum(item['connect_timeout_ms'] for item in transports) + len(transports) * stall_ms)
+    sum(item['connect_timeout_ms'] + item['stall_ms'] for item in transports)
     * int(review['openrouter_max_attempts'])
     * int(budget['max_investigation_turns'])
 )
@@ -446,6 +445,7 @@ source, destination, stream_scope = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
 review['openrouter_ttft_ms'] = '30000'
+next(item for item in review['transports'] if item['name'] == 'openrouter-primary')['ttft_ms'] = 30_000
 if stream_scope == 'transport':
     review['transports'][0]['stream'] = False
 elif stream_scope == 'global':
@@ -525,7 +525,7 @@ for key in lane_deadline_ms lane_overhead_ms max_investigation_turns; do
   grep -q "review_yeti.budget.${key} must be a positive integer string" "$tmp_dir/${name}.log"
 done
 
-for field in timeout_ms connect_timeout_ms; do
+for field in timeout_ms connect_timeout_ms ttft_ms stall_ms; do
   for value in 0 -1 180001 true 1.5 ''; do
     name="invalid-transport-${field}-${value:-empty}"
     run_case "$name" "transport.3.${field}" "$value" 1

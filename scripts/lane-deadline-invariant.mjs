@@ -12,43 +12,51 @@
 
 /**
  * @param {object} params
- * @param {Array<{connect_timeout_ms: number}>} params.transports
- * @param {number} params.stallMs
+ * @param {Array<{name?: string, connect_timeout_ms: number, stall_ms: number}>} params.transports
  * @param {number} params.maxAttempts
  * @param {number} params.maxInvestigationTurns
  * @param {number} params.laneOverheadMs
  * @param {number} params.laneDeadlineMs
- * @returns {{ transportConnectSumMs: number, stallEnvelopeMs: number, worstCaseDeadCallMs: number, requiredLaneBudgetMs: number }}
- * @throws {Error} if stallMs/laneOverheadMs are not positive safe integers, or if the computed
+ * @returns {{ transportConnectSumMs: number, transportStallSumMs: number, stallEnvelopeMs: number, worstCaseDeadCallMs: number, requiredLaneBudgetMs: number }}
+ * @throws {Error} if a transport stall/laneOverheadMs is not a positive safe integer, or if the computed
  *   dead-transport envelope plus overhead exceeds laneDeadlineMs.
  */
 export function checkDeadTransportEnvelope({
   transports,
-  stallMs,
   maxAttempts,
   maxInvestigationTurns,
   laneOverheadMs,
   laneDeadlineMs,
 }) {
-  if (!Number.isSafeInteger(stallMs) || stallMs < 1) {
-    throw new Error('review_yeti.stall_ms must be a positive integer string');
+  const invalidStall = transports.find(
+    (transport) => !Number.isSafeInteger(transport.stall_ms) || transport.stall_ms < 1,
+  );
+  if (invalidStall) {
+    throw new Error(`transport ${invalidStall.name || '<unnamed>'}.stall_ms must be a positive safe integer`);
   }
   if (!Number.isSafeInteger(laneOverheadMs) || laneOverheadMs < 1) {
     throw new Error('review_yeti.budget.lane_overhead_ms must be a positive integer string');
   }
   const transportConnectSumMs = transports.reduce((sum, transport) => sum + transport.connect_timeout_ms, 0);
-  const stallEnvelopeMs = transportConnectSumMs + transports.length * stallMs;
+  const transportStallSumMs = transports.reduce((sum, transport) => sum + transport.stall_ms, 0);
+  const stallEnvelopeMs = transportConnectSumMs + transportStallSumMs;
   const worstCaseDeadCallMs = stallEnvelopeMs * maxAttempts * maxInvestigationTurns;
   const requiredLaneBudgetMs = worstCaseDeadCallMs + laneOverheadMs;
   if (requiredLaneBudgetMs > laneDeadlineMs) {
     throw new Error(
       `worst-case dead-transport budget (${worstCaseDeadCallMs}ms = (${transportConnectSumMs}ms connect `
-      + `+ ${transports.length} x ${stallMs}ms stall) across ${transports.length} transports `
+      + `+ ${transportStallSumMs}ms stall) across ${transports.length} transports `
       + `x ${maxAttempts} attempts x ${maxInvestigationTurns} turns) plus lane overhead reserve `
       + `(${laneOverheadMs}ms) exceeds review_yeti.budget.lane_deadline_ms (${laneDeadlineMs}ms); a full `
       + 'sequential failover of never-connecting or never-streaming transports could never finish the '
       + 'last transport',
     );
   }
-  return { transportConnectSumMs, stallEnvelopeMs, worstCaseDeadCallMs, requiredLaneBudgetMs };
+  return {
+    transportConnectSumMs,
+    transportStallSumMs,
+    stallEnvelopeMs,
+    worstCaseDeadCallMs,
+    requiredLaneBudgetMs,
+  };
 }

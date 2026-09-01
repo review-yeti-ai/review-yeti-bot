@@ -81,6 +81,23 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   }
 });
 
+test('derives execution deadlines from each transport handoff contract', () => {
+  const plan = buildExecutionPlan(committedPolicy);
+  for (const configured of committedPolicy.review_yeti.transports) {
+    assert.equal(Number.isSafeInteger(configured.ttft_ms), true, `${configured.name}.ttft_ms must be explicit`);
+    assert.equal(Number.isSafeInteger(configured.stall_ms), true, `${configured.name}.stall_ms must be explicit`);
+  }
+  for (const transport of plan.transports) {
+    const configured = committedPolicy.review_yeti.transports.find((candidate) => candidate.name === transport.name);
+    assert.deepEqual(transport.timeouts, {
+      connect_ms: configured.connect_timeout_ms,
+      request_ms: configured.timeout_ms,
+      stall_ms: configured.stall_ms,
+      ttft_ms: configured.ttft_ms,
+    });
+  }
+});
+
 test('rejects unknown keys at every execution-policy object boundary', () => {
   const cases = [
     ['policy', (policy) => { policy.unexpected = true; }],

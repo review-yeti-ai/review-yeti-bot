@@ -239,25 +239,24 @@ they do not alter the provider order, verdict gate, or activation boundary.
   off immediately after the former 90-second limit. These values were raised from a previous
   75000/30000/45000 once the CI invariant below stopped modeling them as a wall-clock sum (see
   exampleorg/example-meta ADR 0337 for the full decision).
-- **stall_ms = 20000.** The engine's liveness window: if a transport goes silent for a full
+- **stall_ms = 20000 per transport.** The engine's liveness window: if a transport goes silent for a full
   `stall_ms` after connecting (no SSE chunk, including `reasoning_content`), the call is declared
   dead and the lane fails over. This matches the engine's own default and is declared in policy so
   it participates in the lane-deadline invariant below and is tunable without an engine change.
-- **openrouter_ttft_ms = 60000ms.** The action uses this value as the OpenRouter first-token/connect
+- **ttft_ms = 60000 per transport.** The action uses this value as the first-meaningful-output
   budget. Because every configured transport streams, TTFT is measured at the first SSE chunk and
   does not cap a generation after streaming has begun.
 
 A provider that never connects, goes silent for a full `stall_ms` window, or reaches its total
 `timeout_ms` ceiling fails over or fails closed.
 
-**Two timeout knobs, kept in lockstep.** The policy carries both a per-transport `timeout_ms`
-(embedded in the `transports` JSON blob emitted by `emit-policy.mjs`, covering all five configured
-transports including OpenRouter) and a separate top-level `openrouter_timeout_ms` /
-`openrouter_ttft_ms` pair, forwarded as the dedicated `openrouter-timeout-ms` / `openrouter-ttft-ms`
-action inputs. Which one the OpenRouter-compat code path in the hosted action actually honors is
-not visible from this repository. The OpenRouter transport timeout (90000) and
-`openrouter_timeout_ms` ("90000") are kept in lockstep so that ambiguity can't leave either one
-silently carrying a stale budget.
+**One explicit deadline contract per transport.** Every emitted transport now carries
+`timeout_ms`, `connect_timeout_ms`, `ttft_ms`, and `stall_ms`; the handoff validator rejects a plan
+that loses any one of them. The released runtime consumes those transport fields directly. The
+top-level `openrouter_timeout_ms`, `openrouter_ttft_ms`, and `stall_ms` fields remain compatibility
+aliases for existing callers. Policy validation keeps them in lockstep with the OpenRouter
+transport so they cannot silently diverge; other transports remain free to use their own
+provider-qualified liveness windows.
 
 **Streaming is an invariant.** Every transport declares `stream: true` and the global
 `openrouter_stream` flag is `"true"`. Each persona lane owns one active request at a time, while
@@ -272,7 +271,7 @@ transport's `timeout_ms` as a total generation ceiling. The separate policy-load
 guards the faster **dead-transport** path: a transport that
 never produces a first byte (`connect_timeout_ms`) or that goes silent after connecting for a full
 `stall_ms` interval. `emit-policy.mjs` enforces
-`(sum(transport.connect_timeout_ms) + transports.length * stall_ms) * openrouter_max_attempts * max_investigation_turns + budget.lane_overhead_ms <= budget.lane_deadline_ms`
+`sum(transport.connect_timeout_ms + transport.stall_ms) * openrouter_max_attempts * max_investigation_turns + budget.lane_overhead_ms <= budget.lane_deadline_ms`
 at policy-load time (both in the reusable workflow and in CI) -- summed over however many
 enabled transports the policy admits, not a hardcoded count -- and `scripts/emit-policy.test.sh` and
 `scripts/review-yeti-smoke.mjs` (a previously-drifted duplicate of the same check) re-check the

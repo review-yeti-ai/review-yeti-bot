@@ -18,6 +18,8 @@ function transport(name, overrides = {}) {
     compat: 'openai',
     timeout_ms: 30_000,
     connect_timeout_ms: 10_000,
+    ttft_ms: 20_000,
+    stall_ms: 10_000,
     stream: true,
     ...overrides,
   };
@@ -116,6 +118,17 @@ test('rejects a non-streaming transport even when the policy contains it', () =>
   const result = runValidator(transports);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /all transports must stream/);
+});
+
+test('rejects a handoff that loses an explicit timing deadline', () => {
+  for (const key of ['ttft_ms', 'stall_ms']) {
+    const configured = transport('primary');
+    const admitted = { ...configured };
+    delete admitted[key];
+    const result = runValidator([configured], [admitted], undefined, true);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`every transport must carry ${key}`));
+  }
 });
 
 test('fails closed when a policy transport omits the enabled boolean', () => {
