@@ -7,11 +7,12 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
-import { OpenRouterClient } from '../gateway/openRouterClient';
+import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import type { CtReviewConfigV3 } from '../config/schema';
 import type { PanelResult } from '../panel/panelEngine';
+import type { PanelRequestPolicy } from '../panel/panelEngine';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -128,6 +129,47 @@ export interface FullPanelQualificationReceipt extends PanelQualificationReceipt
   profile: 'full-panel';
   expectedPersonaCount: 6;
   optionalFailureCount: 0;
+}
+
+export interface FullPanelQualificationAttemptReceipt {
+  attempt: number;
+  persona: string;
+  providerId: string;
+  requestedModel: string;
+  resolvedModel?: string;
+  outcome: 'completed' | 'failed';
+  durationMs: number;
+  usage?: TokensUsed | null;
+  costUSD?: number | null;
+  failureClass?: string;
+  timeoutKind?: string;
+  responseStatus?: number;
+}
+
+export interface FailedFullPanelQualificationReceipt {
+  version: 'ReviewYetiPanelQualification.v1';
+  profile: 'full-panel';
+  status: 'failed';
+  runId: string;
+  deliveryId: string;
+  repositoryId: number;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  policyDigest: string;
+  configDigest: string;
+  providerId: string;
+  requestedModel: string;
+  publicationMode: 'disabled';
+  providerCalls: number;
+  githubWrites: 0;
+  expectedPersonaCount: 6;
+  failureClass: string;
+  attempts: FullPanelQualificationAttemptReceipt[];
+  durationMs: number;
+  startedAt: string;
+  completedAt: string;
 }
 
 const RECEIPT_RUN_ID = /^run_[a-f0-9]{32}$/u;
@@ -341,6 +383,7 @@ type PanelQualificationRunner = (options: {
   headSha: string;
   client: ReviewModelClient;
   jobId?: string;
+  requestPolicy?: PanelRequestPolicy;
 }) => Promise<PanelResult>;
 
 /**
@@ -435,6 +478,47 @@ const FULL_PANEL_QUALIFICATION_PERSONAS = [
 ] as const;
 const FULL_PANEL_MIN_PROVIDER_CALLS = FULL_PANEL_QUALIFICATION_PERSONAS.length + 2;
 const FULL_PANEL_MAX_TURNS = 3;
+const FULL_PANEL_MAX_ATTEMPT_RECEIPTS = 32;
+const FULL_PANEL_FALLBACK_MODEL = 'z-ai/glm-5.3-flash';
+
+function fullPanelRequestPolicy(
+  model: string,
+  identity: QualificationIdentity,
+  providerId: string,
+): PanelRequestPolicy {
+  return {
+    stream: true,
+    ttftTimeoutMs: 30_000,
+    maxTokens: 24_576,
+    models: model === FULL_PANEL_FALLBACK_MODEL ? [] : [FULL_PANEL_FALLBACK_MODEL],
+    responseFormat: { type: 'json_object' },
+    provider: {
+      allow_fallbacks: true,
+      require_parameters: true,
+      ignore: ['morph', 'fireworks'],
+      sort: 'throughput',
+      preferred_min_throughput: { p90: 40 },
+      preferred_max_latency: { p99: 3 },
+      data_collection: 'deny',
+    },
+    metadata: {
+      qualificationMode: 'full-panel',
+      runId: identity.runId,
+      providerId,
+    },
+  };
+}
+
+function qualificationFailureClass(error: unknown): string {
+  if (error instanceof OpenRouterTimeoutError) return `timeout_${error.kind}`;
+  if (error instanceof OpenRouterResponseError) {
+    if (error.status === 429) return 'rate_limit';
+    if (error.status !== undefined && error.status >= 500) return 'provider_5xx';
+  }
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (/(?:invalid json|structured output|nonce fence|response contract)/iu.test(message)) return 'structured_output';
+  return 'panel_failure';
+}
 
 const FULL_PANEL_QUALIFICATION_FIXTURE = [
   {
@@ -707,27 +791,89 @@ export async function runFullPanelQualificationWorker(
   const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
   const startedAt = new Date().toISOString();
   let providerCalls = 0;
+  const attempts: FullPanelQualificationAttemptReceipt[] = [];
   const effectiveClient = client || qualificationClient(env);
   const countingClient: ReviewModelClient = {
     complete: async (request) => {
       providerCalls += 1;
-      return effectiveClient.complete(request);
+      const attempt = providerCalls;
+      const attemptStarted = Date.now();
+      try {
+        const response = await effectiveClient.complete(request);
+        if (attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
+          attempts.push({
+            attempt,
+            persona: request.persona || 'unknown',
+            providerId: request.providerId || providerId,
+            requestedModel: request.model,
+            resolvedModel: response.model,
+            outcome: 'completed',
+            durationMs: Math.max(0, Date.now() - attemptStarted),
+            usage: response.usage,
+            costUSD: response.costUSD,
+          });
+        }
+        return response;
+      } catch (error: any) {
+        if (attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
+          attempts.push({
+            attempt,
+            persona: request.persona || 'unknown',
+            providerId: request.providerId || providerId,
+            requestedModel: request.model,
+            outcome: 'failed',
+            durationMs: Math.max(0, Date.now() - attemptStarted),
+            failureClass: qualificationFailureClass(error),
+            ...(error instanceof OpenRouterTimeoutError ? { timeoutKind: error.kind } : {}),
+            ...(error instanceof OpenRouterResponseError && error.status !== undefined
+              ? { responseStatus: error.status }
+              : {}),
+          });
+        }
+        throw error;
+      }
     },
   };
   const boundedClient = new BoundedQualificationClient(countingClient, 3);
-  const result = await runWithQualificationDeadline(panelRunner({
-    config: fullPanelQualificationConfig(model, timeoutMs),
-    changedFiles: FULL_PANEL_QUALIFICATION_FIXTURE,
-    repository: identity.repo,
-    headSha: identity.headSha,
-    client: boundedClient,
-    jobId: identity.runId,
-  }), timeoutMs);
-  if (!result.quorum.satisfied || !result.arbiter?.verdict
-      || result.personas.length !== FULL_PANEL_QUALIFICATION_PERSONAS.length
-      || result.optionalFailures.length > 0
-      || providerCalls < FULL_PANEL_MIN_PROVIDER_CALLS) {
-    throw invalidFullPanelQualificationContract();
+  let result: PanelResult;
+  try {
+    result = await runWithQualificationDeadline(panelRunner({
+      config: fullPanelQualificationConfig(model, timeoutMs),
+      changedFiles: FULL_PANEL_QUALIFICATION_FIXTURE,
+      repository: identity.repo,
+      headSha: identity.headSha,
+      client: boundedClient,
+      jobId: identity.runId,
+      requestPolicy: fullPanelRequestPolicy(model, identity, providerId),
+    }), timeoutMs);
+    if (!result.quorum.satisfied || !result.arbiter?.verdict
+        || result.personas.length !== FULL_PANEL_QUALIFICATION_PERSONAS.length
+        || result.optionalFailures.length > 0
+        || providerCalls < FULL_PANEL_MIN_PROVIDER_CALLS) {
+      throw invalidFullPanelQualificationContract();
+    }
+  } catch (error) {
+    const completedAt = new Date().toISOString();
+    const failedReceipt: FailedFullPanelQualificationReceipt = {
+      version: 'ReviewYetiPanelQualification.v1',
+      profile: 'full-panel',
+      status: 'failed',
+      ...identity,
+      providerId,
+      requestedModel: model,
+      publicationMode: 'disabled',
+      providerCalls,
+      githubWrites: 0,
+      expectedPersonaCount: 6,
+      failureClass: qualificationFailureClass(error),
+      attempts,
+      durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+      startedAt,
+      completedAt,
+    };
+    await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+    await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(failedReceipt)}\n`, { encoding: 'utf8' });
+    throw error;
   }
   const completedAt = new Date().toISOString();
   const receipt: FullPanelQualificationReceipt = {

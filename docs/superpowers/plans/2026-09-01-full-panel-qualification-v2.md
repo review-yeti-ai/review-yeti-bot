@@ -1,13 +1,14 @@
 # Full-panel DOKS qualification v2
 
-**Status:** worker implemented; one manual DOKS execution completed and failed
-closed in the licensing lane. See
+**Status:** worker implemented; the first manual DOKS execution failed closed
+in the licensing lane. The provider-native JSON and diagnostic-receipt
+remediation is implemented and awaits a new digest-pinned manual run. See
 `docs/superpowers/evidence/2026-09-01-doks-full-panel-v2.md`.
 
 ## Purpose
 
-Exercise the complete Review Yeti panel path against one explicitly selected
-OpenRouter model: six scoped personas, the moderator, and the arbiter. The
+Exercise the complete Review Yeti panel path through the explicit OpenRouter
+DeepSeek-to-GLM fallback route: six scoped personas, the moderator, and the arbiter. The
 run is a qualification measurement only. It must not publish to GitHub, alter
 the production route, or create a scheduled canary.
 
@@ -21,7 +22,8 @@ Set all of the following in the disposable qualification Job:
 - `REVIEW_RECEIPT_ONLY=false`
 - `REVIEW_PUBLICATION_MODE=disabled`
 - `REVIEW_RECEIPT_PATH=/workspace/.review-yeti/receipt.json`
-- one exact `REVIEW_QUALIFICATION_MODEL` (for example `z-ai/glm-5.3-flash`)
+- one exact primary `REVIEW_QUALIFICATION_MODEL`; non-GLM primaries receive the
+  centrally approved `z-ai/glm-5.3-flash` model fallback
 - `REVIEW_QUALIFICATION_TIMEOUT_MS` no greater than `900000`
 
 The worker rejects mixed modes, `openrouter/auto`, missing identity digests,
@@ -39,6 +41,13 @@ The aggregate `ReviewYetiPanelQualification.v1` receipt records:
 - aggregate prompt/completion/total tokens, provider-reported cost, duration,
   model resolution, verdict, and a result digest;
 - `publicationMode: disabled` and `githubWrites: 0`.
+
+Every provider request uses native `json_object` output with the request nonce
+inside the JSON object, a 24,576-token output allowance, a 30-second TTFT
+deadline, provider capability enforcement, privacy denial, and the central
+throughput/latency routing preferences. A failed run also writes a bounded,
+sanitized receipt containing attempt identity, duration, status/timeout class,
+usage, and cost without response text or credentials.
 
 The six lanes are security, performance, architecture, testing, dependencies,
 and licensing. All six are required for this qualification, so a missing lane
@@ -63,9 +72,10 @@ Accept only when:
 5. production Action/dispatcher/operator images and provider policy are
    unchanged.
 
-This is a full-engine and transport measurement. It is not a quality-parity
-claim and it does not exercise the central Action's striped multi-transport
-planner; that remains a separate, explicitly designed experiment.
+This is a full-engine and OpenRouter route measurement. It is not a
+quality-parity claim and it does not exercise the central Action's striped
+multi-transport planner; that remains a separate, explicitly designed
+experiment.
 
 ## Rollback
 
@@ -75,9 +85,7 @@ GitHub Action path unchanged.
 
 ## Next decision
 
-Do not repeat the same Job unchanged. The next bounded change must address the
-provider-independent structured-output contract (or add a provider-native JSON
-response mode with an explicit nonce field) and add a focused regression test
-for malformed fenced JSON. Re-run exactly one disposable full-panel Job only
-after that change; production routing and the operator admission contract stay
-unchanged until a complete sanitized receipt is observed.
+Build and push one digest-pinned worker image containing the native JSON request
+contract and sanitized failure receipts, then run exactly one disposable
+full-panel Job. Production routing and the operator admission contract stay
+unchanged until a complete sanitized success receipt is observed.

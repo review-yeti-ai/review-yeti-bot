@@ -52,3 +52,14 @@ Pods remain. Production remained unchanged:
   `sha256:c976628f6afa0cdbe8907c806557b2677c92f44d206f8d6f81b6cfec3a226f09`
 - `ct-review-job-dispatcher`: 1/1,
   `sha256:db2d14e07cf28ac11ba46fa391934e26805fb175f9aa69180a194ff7e2342e54`
+
+## Remediation prepared after RCA
+
+No second cluster run is claimed in this evidence record. The next worker
+revision now sends provider-native `json_object` requests with the nonce inside
+the object, propagates the DeepSeek-to-GLM fallback and provider routing policy
+to every persona/moderator/arbiter call, and preserves per-attempt usage/cost
+plus a sanitized failure receipt. OpenRouter failures also retain the
+generation identifier and classified status for support correlation. Focused
+regression coverage protects both request parity and fail-closed nonce
+validation; a new digest-pinned manual run remains required for runtime proof.

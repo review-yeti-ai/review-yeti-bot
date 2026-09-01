@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
+import { LiveStreamBus } from '../../src/live/liveStreamBus';
 import {
   buildOpenRouterChatRequest,
+  buildOpenRouterSdkChatRequest,
   normalizeOpenRouterModel,
   OpenRouterClient,
   OpenRouterConnectionError,
@@ -81,9 +83,10 @@ describe('OpenRouterClient', () => {
   });
 
   it('builds a stable OpenRouter request with routing, privacy, and structured-output controls', () => {
-    expect(buildOpenRouterChatRequest({
+    const parityRequest = {
       ...request,
       model: 'openrouter/5.6-luna-high',
+      models: ['z-ai/glm-5.3-flash'],
       reasoningEffort: 'high',
       maxTokens: 24_576,
       temperature: 0,
@@ -96,8 +99,11 @@ describe('OpenRouterClient', () => {
       },
       plugins: [{ id: 'auto-router', allowed_models: ['openai/gpt-5.6-luna'] }],
       metadata: { 'x-ct-test': 'replay' },
-    })).toEqual({
+    } as any;
+
+    expect(buildOpenRouterChatRequest(parityRequest)).toEqual({
       model: 'openai/gpt-5.6-luna',
+      models: ['z-ai/glm-5.3-flash'],
       messages: request.messages,
       stream: false,
       max_tokens: 24_576,
@@ -112,6 +118,19 @@ describe('OpenRouterClient', () => {
       },
       plugins: [{ id: 'auto-router', allowed_models: ['openai/gpt-5.6-luna'] }],
       metadata: { 'x-ct-test': 'replay' },
+    });
+
+    expect(buildOpenRouterSdkChatRequest(parityRequest)).toMatchObject({
+      model: 'openai/gpt-5.6-luna',
+      models: ['z-ai/glm-5.3-flash'],
+      maxTokens: 24_576,
+      responseFormat: { type: 'json_object' },
+      provider: {
+        allowFallbacks: true,
+        requireParameters: true,
+        ignore: ['morph', 'fireworks'],
+        dataCollection: 'deny',
+      },
     });
   });
 
@@ -313,6 +332,42 @@ describe('OpenRouterClient', () => {
       name: 'OpenRouterResponseError',
     });
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains generation attribution and a sanitized failure class for failed requests', async () => {
+    const jobId = 'run_22222222222222222222222222222222';
+    const bus = LiveStreamBus.getInstance();
+    bus.clearHistory(jobId);
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'upstream capacity token must not enter telemetry' },
+    }), {
+      status: 503,
+      headers: {
+        'content-type': 'application/json',
+        'x-generation-id': 'gen-support-503',
+      },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({
+      ...request,
+      jobId,
+      persona: 'licensing',
+      providerId: 'openrouter',
+    })).rejects.toMatchObject({ status: 503 });
+
+    expect(bus.getHistory(jobId)).toContainEqual(expect.objectContaining({
+      type: 'openrouter:metric',
+      persona: 'licensing',
+      data: expect.objectContaining({
+        outcome: 'failed',
+        failureClass: 'provider_5xx',
+        responseStatus: 503,
+        generationId: 'gen-support-503',
+      }),
+    }));
+    expect(JSON.stringify(bus.getHistory(jobId))).not.toContain('capacity token');
+    bus.clearHistory(jobId);
   });
 
   it('rejects malformed streaming frames instead of accepting partial JSON', async () => {
