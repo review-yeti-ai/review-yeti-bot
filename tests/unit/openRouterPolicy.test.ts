@@ -25,13 +25,10 @@ describe('openrouter review policy', () => {
     expect(DEFAULT_OPENROUTER_REVIEW_POLICY).toEqual(manifest);
     expect(resolved).toMatchObject({
       base_url: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      model: 'deepseek/deepseek-v4-flash-0731',
       allowed_models: [
-        'openai/gpt-5.6-luna',
-        'moonshotai/kimi-k2.6',
-        'tencent/hy3',
-        'z-ai/glm-5.2',
-        'google/gemini-3.5-flash-lite',
+        'deepseek/deepseek-v4-flash-0731',
+        'z-ai/glm-5.3-flash',
       ],
       data_collection: 'deny',
       cost_quality_tradeoff: 7,
@@ -39,15 +36,12 @@ describe('openrouter review policy', () => {
     expect(resolved.policy_fingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it('allows only the canonical five-model fleet with the alias resolved as the execution model', () => {
+  it('uses the direct two-model fleet as the default execution policy', () => {
     const resolved = resolveOpenRouterReviewPolicy({});
-    expect(resolved.model).toBe('openrouter/auto');
+    expect(resolved.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(resolved.allowed_models).toEqual([
-      'openai/gpt-5.6-luna',
-      'moonshotai/kimi-k2.6',
-      'tencent/hy3',
-      'z-ai/glm-5.2',
-      'google/gemini-3.5-flash-lite',
+      'deepseek/deepseek-v4-flash-0731',
+      'z-ai/glm-5.3-flash',
     ]);
     expect(resolved.allowed_models).not.toContain('openrouter/auto');
     expect(resolved.allowed_models).not.toContain('openrouter/openai/gpt-4o');
@@ -84,6 +78,7 @@ describe('openrouter review policy', () => {
       actionInputs: {
         model: 'google/gemini-3.5-flash-lite',
         'llm-base-url': 'https://openrouter.ai/api/v1/',
+        'allowed-models': 'google/gemini-3.5-flash-lite',
       },
       trustedConfig: {
         github_action: {
@@ -178,7 +173,7 @@ describe('openrouter review policy', () => {
     expect(second.policy_fingerprint).toBe(first.policy_fingerprint);
   });
 
-  it('builds non-secret request options with the policy fingerprint and OpenRouter provider preferences', () => {
+  it('converts a legacy auto-router override into the direct two-model request policy', () => {
     const resolved = resolveOpenRouterReviewPolicy({
       trustedConfig: {
         github_action: {
@@ -194,23 +189,17 @@ describe('openrouter review policy', () => {
       },
     });
 
+    expect(resolved).toMatchObject({
+      model: 'deepseek/deepseek-v4-flash-0731',
+      allowed_models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
+    });
     expect(buildOpenRouterRequestOptions(resolved)).toEqual({
       baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      model: 'deepseek/deepseek-v4-flash-0731',
       policyFingerprint: resolved.policy_fingerprint,
       provider: {
         data_collection: 'deny',
       },
-      plugins: [
-        {
-          id: 'auto-router',
-          allowed_models: [
-            'tencent/hy3',
-            'google/gemini-3.5-flash-lite',
-          ],
-          cost_quality_tradeoff: 4,
-        },
-      ],
     });
   });
 });
