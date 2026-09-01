@@ -112,6 +112,26 @@ inputs:
     description: 'Maximum reviewers a resolved roster may contain. Each is one model request per push, so this bounds what a configuration change can spend.'
     required: false
     default: '25'
+  max-review-assignments:
+    description: 'Hard pre-dispatch cap on partition-by-persona model assignments for one run.'
+    required: false
+    default: '24'
+  incremental-review:
+    description: >-
+      Reuse complete exact-parent Review Yeti evidence and review only a bounded repair delta.
+      Requires actions: read. Any missing or invalid evidence falls back to the full PR diff.
+    required: false
+    default: 'false'
+  max-incremental-diff-chars:
+    description: 'Maximum trusted repair-delta size; larger follow-up changes fall back to the full PR diff.'
+    required: false
+    default: '60000'
+  incremental-trusted-workflow:
+    description: >-
+      Exact trusted reusable-workflow path prefix that must appear in the parent artifact's
+      completed GitHub run, for example owner/repo/.github/workflows/review.yml@.
+    required: false
+    default: ''
   config-ref:
     description: >-
       Git ref to read .ct-review.yaml and .ct-review/personas from. Defaults to the pull
@@ -452,6 +472,11 @@ runs:
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
         MAX_PERSONAS: ${{ inputs.max-personas }}
+        MAX_REVIEW_ASSIGNMENTS: ${{ inputs.max-review-assignments }}
+        REVIEW_YETI_INCREMENTAL_REVIEW: ${{ inputs.incremental-review }}
+        MAX_INCREMENTAL_DIFF_CHARS: ${{ inputs.max-incremental-diff-chars }}
+        REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW: ${{ inputs.incremental-trusted-workflow }}
+        REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
         CT_REVIEW_CONFIG_DIR: ${{ runner.temp }}/ct-review-config
