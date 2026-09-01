@@ -51,10 +51,12 @@ describe('isolated DOKS operator manifest', () => {
     expect(role.metadata.namespace).toBe('ct-review-system');
     const resources = role.rules.flatMap((rule: Manifest) => rule.resources ?? []);
     expect(resources).toEqual(expect.arrayContaining([
-      'prreviewjobs', 'prreviewjobs/status', 'jobs', 'pods', 'persistentvolumeclaims', 'leases',
+      'prreviewjobs', 'prreviewjobs/status', 'jobs', 'pods', 'events', 'persistentvolumeclaims', 'leases',
     ]));
     expect(resources).not.toContain('secrets');
     expect(resources).not.toContain('nodes');
+    const eventRule = role.rules.find((rule: Manifest) => rule.resources?.includes('events'));
+    expect(eventRule).toEqual({ apiGroups: [''], resources: ['events'], verbs: ['create'] });
     expect(manifests().some((candidate) => candidate.kind === 'ClusterRole' || candidate.kind === 'ClusterRoleBinding')).toBe(false);
   });
 
