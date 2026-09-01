@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.3...v1.20.4) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** bind repair reuse to workflow sha ([#389](https://github.com/review-yeti-ai/review-yeti-bot/issues/389)) ([30780a9](https://github.com/review-yeti-ai/review-yeti-bot/commit/30780a95e4cfee0cfe69cde0c2a6347c114f9231))
+
 ## [1.20.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.2...v1.20.3) (2026-09-01)
 
 
