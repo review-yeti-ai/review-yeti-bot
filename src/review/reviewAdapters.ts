@@ -16,6 +16,7 @@ export function computeAppVerdict(options: AppVerdictOptions): CanonicalArbitrat
   return computeArbitration(options.lanes, options.expectedLanes, {
     changedFiles: options.changedFiles as ReviewChangedFile[] | undefined,
     coverageComplete: options.coverageComplete,
+    coverageGaps: options.coverageGaps,
     candidateVerdict: options.candidateVerdict,
     rationale: options.rationale,
   });
