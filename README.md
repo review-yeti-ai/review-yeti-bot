@@ -154,6 +154,14 @@ instead of copying this example:
           llm-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
+For OpenRouter requests, the Action keeps the invariant review rules and exact PR evidence as a
+stable prompt prefix, then appends the persona assignment. A deterministic, content-derived
+`session_id`/`prompt_cache_key` keeps repeated requests for that exact evidence cache-affine without
+reusing a reviewer response. Changing the diff or retained review context rotates the identity.
+Recovery instructions are appended after the shared prefix, and provider-reported cache reads and
+writes are retained as `cachedInputTokens` and `cacheWriteTokens` in provider telemetry. This is
+provider prompt caching only; the Action does not enable whole-response or semantic caching.
+
 ## Why this rather than a hosted review service
 
 - **You own the prompts.** Reviewer charters are markdown files in your repository. When the bot
