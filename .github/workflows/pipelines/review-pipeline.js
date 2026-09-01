@@ -81,6 +81,10 @@ const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
 const SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL = 1;
 const DEFAULT_PROVIDER_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 5_000;
+// A provider 5xx after a bounded recovery is usually transient. Allow one additional
+// OpenRouter attempt, but keep that attempt short so the action cannot turn a provider outage
+// into an unbounded review lane.
+const OPENROUTER_PROVIDER_RETRY_TIMEOUT_MS = 30_000;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 // Streaming responses need both an inactivity watchdog and a total generation
 // budget. Without the latter, a provider can emit a never-ending sequence of
@@ -3254,7 +3258,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       if (heartbeatTimer?.unref) heartbeatTimer.unref();
 
       let fetchAttempts = 0;
-      const maxFetchAttempts = 2;
+      let maxFetchAttempts = 2;
+      let nextAttemptTimeoutMs = transportTimeoutMs;
+      let shortProviderRetryAttempted = false;
       let formatRecoveryAttempted = false;
       let providerRecoveryAttempted = false;
       let directRateLimitRetries = 0;
@@ -3310,6 +3316,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       };
 
       while (fetchAttempts < maxFetchAttempts) {
+        const attemptTimeoutMs = nextAttemptTimeoutMs;
+        nextAttemptTimeoutMs = transportTimeoutMs;
         fetchAttempts++;
         attemptCount++;
         // Describe only the current response attempt. Cross-attempt instability is
@@ -3378,14 +3386,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         let responseHeaderTimer = null;
         let releaseProviderCapacity = null;
         try {
-          const capacityLease = await capacityManager.acquire(transport, transportBaseUrl, transportTimeoutMs);
+          const capacityLease = await capacityManager.acquire(transport, transportBaseUrl, attemptTimeoutMs);
           releaseProviderCapacity = capacityLease.release;
           attemptCapacityWaitMs = capacityLease.waitMs;
           totalCapacityWaitMs += attemptCapacityWaitMs;
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
-              () => streamAbortController.abort(streamInactivityError(transportTimeoutMs, 'request')),
-              connectTimeoutMs,
+              () => streamAbortController.abort(streamInactivityError(attemptTimeoutMs, 'request')),
+              Math.min(connectTimeoutMs, attemptTimeoutMs),
             );
           }
           let response;
@@ -3396,7 +3404,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               apiKey: transportApiKey,
               requestBody,
               fetchImpl,
-              signal: streamAbortController?.signal || AbortSignal.timeout(transportTimeoutMs),
+              signal: streamAbortController?.signal || AbortSignal.timeout(attemptTimeoutMs),
             });
             response = sdkResult.response;
             sdkError = sdkResult.sdkError;
@@ -3409,7 +3417,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 Authorization: `Bearer ${transportApiKey}`,
               },
               body: JSON.stringify(requestBody),
-              signal: streamAbortController?.signal || AbortSignal.timeout(transportTimeoutMs),
+              signal: streamAbortController?.signal || AbortSignal.timeout(attemptTimeoutMs),
             });
           }
           if (responseHeaderTimer) {
@@ -3480,6 +3488,30 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               }
               continue;
             }
+            // A timeout/format recovery can consume the normal two-attempt envelope before the
+            // gateway returns a transient 5xx. Give that specific sequence one final short
+            // retry; never add a third full provider window to an otherwise healthy lane.
+            if (isOpenRouterTransport
+              && outcomeClass === 'http_5xx'
+              && fetchAttempts >= maxFetchAttempts
+              && (formatRecoveryAttempted || providerRecoveryAttempted)
+              && !shortProviderRetryAttempted) {
+              shortProviderRetryAttempted = true;
+              maxFetchAttempts += 1;
+              providerRecoveryAttempted = true;
+              recoveryAction = 'bounded_retry';
+              nextAttemptTimeoutMs = Math.min(transportTimeoutMs, OPENROUTER_PROVIDER_RETRY_TIMEOUT_MS);
+              const retryAfterMs = parseRetryAfterMs(response);
+              if (retryAfterMs > 0) {
+                if (releaseProviderCapacity) {
+                  releaseProviderCapacity();
+                  releaseProviderCapacity = null;
+                }
+                await sleep(Math.min(retryAfterMs, nextAttemptTimeoutMs));
+              }
+              console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' returned HTTP 5xx after recovery; allowing one short provider retry before failing closed...`);
+              continue;
+            }
             if (!isOpenRouterTransport && outcomeClass === 'http_429' &&
               directRateLimitRetries < rateLimitPolicy.maxRetries && fetchAttempts < maxFetchAttempts) {
               const retryAfterMs = parseRawRetryAfterMs(response);
@@ -3512,12 +3544,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           // lane alive indefinitely. Format recovery gets the same bounded
           // window rather than a special exemption.
           const streamTotalTimeoutMs = streamEnabled
-            ? Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, transportTimeoutMs)
+            ? Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, attemptTimeoutMs)
             : 0;
           const payload = await readChatCompletionResponse(
             response,
             streamEnabled,
-            transportTimeoutMs,
+            attemptTimeoutMs,
             streamTotalTimeoutMs,
             ttftTimeoutMs,
             (value) => {
