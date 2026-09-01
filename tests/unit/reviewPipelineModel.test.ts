@@ -191,6 +191,33 @@ describe('resolveModelConfig', () => {
     expect(cfg.transports[1].model).toBe('z-ai/glm-5.3-flash');
   });
 
+  it('appends explicitly provisioned Ollama and Synthetic fallbacks after the direct OpenRouter pair', () => {
+    const cfg = resolveModelConfig({
+      OPENROUTER_API_KEY: 'sk-or-789',
+      OLLAMA_API_KEY: 'ollama-key-xyz',
+      SYNTHETIC_API_KEY: 'synthetic-key-abc',
+    });
+
+    expect(cfg.transports.map((transport: any) => transport.name)).toEqual([
+      'openrouter-deepseek-v4-flash-0731',
+      'openrouter-glm-5.3-flash-fallback',
+      'ollama',
+      'synthetic',
+    ]);
+    expect(cfg.transports[2]).toMatchObject({
+      baseUrl: 'https://ollama.com/v1',
+      model: 'deepseek-v4-flash:cloud',
+      stream: true,
+      reasoningEffort: 'high',
+    });
+    expect(cfg.transports[3]).toMatchObject({
+      baseUrl: 'https://api.synthetic.new/openai/v1',
+      model: 'glm-5.2',
+      stream: true,
+      reasoningEffort: 'high',
+    });
+  });
+
   it('supports direct Gemini, OpenAI, and Ollama provider keys with modern defaults', () => {
     const cfg = resolveModelConfig({
       GEMINI_API_KEY: 'gem-key-abc',
