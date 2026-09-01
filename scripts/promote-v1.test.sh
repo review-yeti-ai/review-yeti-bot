@@ -564,8 +564,12 @@ grep -Fq "if: always() && steps.review.outputs.provider-telemetry-path != ''" "$
 grep -Fq 'name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.run_attempt }}' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'path: ${{ steps.review.outputs.provider-telemetry-path }}' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq 'actions: read' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq "incremental-review: 'true'" "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'actions: read' "$repo_root/.github/workflows/self-review.yml"
+if grep -Fq 'actions: read' "$repo_root/.github/workflows/review-yeti.yml"; then
+  echo "reusable workflow must not request Actions access before consumer callers grant it" >&2
+  exit 1
+fi
+grep -Fq "incremental-review: 'false'" "$repo_root/.github/workflows/review-yeti.yml"
 workflow_identity_step="$({
   sed -n \
     '/^      - name: Resolve immutable reusable workflow identity$/,/^      - name: Run Review Yeti review panel$/p' \

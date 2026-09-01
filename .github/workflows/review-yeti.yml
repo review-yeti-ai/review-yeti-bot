@@ -4,7 +4,6 @@ on:
   workflow_call: {}
 
 permissions:
-  actions: read
   contents: read
   issues: write
   pull-requests: write
@@ -146,7 +145,10 @@ jobs:
           dispatch-mode: ${{ steps.policy.outputs.dispatch_mode }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
-          incremental-review: 'true'
+          # Rollout guard: GitHub rejects a reusable workflow before job creation when
+          # it requests actions:read but the thin consumer caller has not granted it.
+          # Keep artifact-backed reuse off until every caller permission is landed.
+          incremental-review: 'false'
           incremental-trusted-workflow: ${{ steps.workflow_identity.outputs.workflow_ref }}
           incremental-trusted-workflow-sha: ${{ steps.workflow_identity.outputs.workflow_sha }}
           max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}
