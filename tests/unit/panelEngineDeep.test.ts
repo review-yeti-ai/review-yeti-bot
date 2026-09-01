@@ -151,13 +151,13 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       'arbiter', 'correct-lane', 'moderator', 'sec-lane',
     ]);
     for (const request of requests) {
+      const role = request.metadata.role;
       expect(request).toMatchObject({
         jobId: 'run_11111111111111111111111111111111',
         stream: true,
         ttftTimeoutMs: 30_000,
         maxTokens: 24_576,
         models: ['z-ai/glm-5.3-flash'],
-        responseFormat: { type: 'json_object' },
         provider: {
           allow_fallbacks: true,
           require_parameters: true,
@@ -170,6 +170,27 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
           persona: expect.any(String),
         },
       });
+      expect(request.responseFormat).toMatchObject({
+        type: 'json_schema',
+        json_schema: {
+          strict: true,
+          name: `ct_review_${role}_v1`,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+          },
+        },
+      });
+      const schema = request.responseFormat.json_schema.schema;
+      expect(schema.required).toContain('nonce');
+      if (role === 'persona' || role === 'moderator') {
+        expect(schema.required).toContain('findings');
+        expect(schema.properties.findings.items.properties.severity.enum).toEqual(['P0', 'P1', 'P2']);
+      }
+      if (role === 'arbiter') {
+        expect(schema.required).toEqual(['nonce', 'verdict', 'rationale']);
+        expect(schema.properties.verdict.enum).toEqual(['SHIP', 'FIX_FIRST', 'BLOCK']);
+      }
     }
   });
 
@@ -202,6 +223,65 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         responseFormat: { type: 'json_object' },
       },
     })).rejects.toThrow('required persona failure');
+  });
+
+  it('retries an invalid severity without coercing it and includes the complete schema in correction', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    const calls: any[] = [];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = opts.messages[1].content as string;
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const role = opts.metadata.role;
+      const correcting = opts.messages.some((message: any) => String(message.content).includes('STRUCTURED_OUTPUT_CORRECTION'));
+      calls.push({ role, correcting, request: opts });
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Passes.' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.persona === 'sec-lane' && !correcting) {
+        return {
+          model: opts.model,
+          content: JSON.stringify({ nonce, decision: 'FINDINGS', findings: [{
+            severity: 'HIGH', path: 'src/security/auth.ts', line: 1, title: 'Bad severity', body: 'The provider used a non-contract severity.', suggestion: null,
+          }] }),
+          usage: null,
+          costUSD: null,
+          raw: {},
+        };
+      }
+      if (opts.persona === 'sec-lane') {
+        return {
+          model: opts.model,
+          content: JSON.stringify({ nonce, decision: 'FINDINGS', findings: [{
+            severity: 'P1', path: 'src/security/auth.ts', line: 1, title: 'Corrected severity', body: 'The provider returned a contract-compliant finding.', suggestion: null,
+          }] }),
+          usage: null,
+          costUSD: null,
+          raw: {},
+        };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-invalid-severity',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_object' } },
+    });
+
+    expect(result.personas.find((persona) => persona.id === 'sec-lane')?.findings[0].severity).toBe('P1');
+    const correction = calls.find((call) => call.role === 'persona' && call.correcting);
+    expect(correction).toBeDefined();
+    expect(correction.request.messages.at(-1).content).toContain('P0');
+    expect(correction.request.messages.at(-1).content).toContain('P1');
+    expect(correction.request.messages.at(-1).content).toContain('severity');
   });
 
   it('uses fallback provider when primary provider fails in persona lane', async () => {

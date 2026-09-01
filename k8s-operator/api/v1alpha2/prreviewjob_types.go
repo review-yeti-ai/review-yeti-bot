@@ -67,6 +67,18 @@ type PRReviewJobSpec struct {
 	WorkerImage string `json:"workerImage"`
 	// +kubebuilder:validation:Pattern=`^ct-review-run-[a-f0-9]{32}$`
 	RunSecretName string `json:"runSecretName"`
+	// QualificationProfile is optional. An omitted profile preserves the
+	// production-safe receipt-only worker contract. The only admitted
+	// non-default profile is the manual, non-publishing full-panel lane.
+	// +kubebuilder:validation:Enum=full-panel
+	// +optional
+	QualificationProfile string `json:"qualificationProfile,omitempty"`
+	// QualificationModel is required by the full-panel qualification profile
+	// and is never accepted for the default receipt-only worker.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +optional
+	QualificationModel string `json:"qualificationModel,omitempty"`
 }
 
 // DispatchTimingStage identifies one observable boundary in the receipt-only
