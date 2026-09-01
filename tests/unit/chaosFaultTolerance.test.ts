@@ -6,6 +6,35 @@ const pipelinePath = path.resolve(__dirname, '../../.github/workflows/pipelines/
 const { reviewWithModel, RunTransportCircuitBreaker } = require(pipelinePath);
 
 describe('Chaos & Fault Tolerance Suite', () => {
+  it('keeps an explicitly non-quarantining transport available after a lane timeout', () => {
+    const breaker = new RunTransportCircuitBreaker();
+    const openrouter = {
+      name: 'openrouter-primary',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash-0731',
+      quarantineOnTimeout: false,
+    };
+
+    breaker.trip(openrouter, 'Streaming response exceeded total deadline', 'timeout');
+
+    expect(breaker.isTripped(openrouter)).toBe(false);
+    expect(breaker.filterCandidates([openrouter])).toEqual([openrouter]);
+  });
+
+  it('still quarantines an explicitly non-timeout-quarantining transport after a provider 5xx', () => {
+    const breaker = new RunTransportCircuitBreaker();
+    const openrouter = {
+      name: 'openrouter-primary',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash-0731',
+      quarantineOnTimeout: false,
+    };
+
+    breaker.trip(openrouter, 'HTTP 503: upstream unavailable', 'http_5xx');
+
+    expect(breaker.isTripped(openrouter)).toBe(true);
+  });
+
   it('recovers automatically from transient socket resets (ECONNRESET) on retry attempt 2', async () => {
     let callCount = 0;
     const mockFetch = async (url: string, init: any) => {
