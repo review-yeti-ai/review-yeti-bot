@@ -259,17 +259,6 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         body: {
           ...common('deepseek/deepseek-v4-flash-0731', 24576),
           reasoning: { effort: 'high' },
-          plugins: [{
-            id: 'auto-router',
-            allowed_models: [
-              'openai/gpt-5.6-luna',
-              'moonshotai/kimi-k2.6',
-              'tencent/hy3',
-              'z-ai/glm-5.2',
-              'google/gemini-3.5-flash-lite',
-            ],
-            cost_quality_tradeoff: 7,
-          }],
           provider: {
             allow_fallbacks: true,
             require_parameters: true,
@@ -314,7 +303,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
     expect(captured['openrouter-fallback'].body).not.toHaveProperty('seed');
     expect(captured.ollama.body.seed).toBe(144208749);
     expect(captured['openrouter-fallback'].body).toHaveProperty('provider');
-    expect(captured['openrouter-fallback'].body).toHaveProperty('plugins');
+    expect(captured['openrouter-fallback'].body).not.toHaveProperty('plugins');
   });
 
   it('categorizes smoke/panel semantic parity and the remaining OpenRouter routing drift', async () => {
@@ -348,7 +337,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
       },
       'openrouter-fallback': {
         model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
-        perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'panel-only',
+        perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'equal',
         temperature: 'prompt-specific-difference', max_tokens: 'prompt-specific-difference',
       },
     });

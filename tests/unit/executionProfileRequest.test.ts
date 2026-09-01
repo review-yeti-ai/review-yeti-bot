@@ -15,13 +15,10 @@ const persona = { id: 'testing', name: 'Testing Specialist', charter: 'Check tes
 const diffFiles = [{ path: 'src/example.ts', patch: '@@ -0,0 +1 @@\n+export const value = 1;' }];
 const openRouterPolicy = {
   base_url: 'https://openrouter.ai/api/v1',
-  model: 'openrouter/auto',
+  model: 'deepseek/deepseek-v4-flash-0731',
   allowed_models: [
-    'openai/gpt-5.6-luna',
-    'moonshotai/kimi-k2.6',
-    'tencent/hy3',
-    'z-ai/glm-5.2',
-    'google/gemini-3.5-flash-lite',
+    'deepseek/deepseek-v4-flash-0731',
+    'z-ai/glm-5.3-flash',
   ],
   data_collection: 'deny',
   cost_quality_tradeoff: 7,
@@ -78,7 +75,7 @@ describe('Rank 4 execution-profile request parity', () => {
     expect(buildExecutionProfileRequest(profile('openrouter-primary'), current)).toEqual(unchanged);
     expect(current).toEqual(unchanged);
     const missingModel = { ...current, model: undefined };
-    expect(buildExecutionProfileRequest(profile('openrouter-primary'), missingModel).model).toBe('openrouter/auto');
+    expect(buildExecutionProfileRequest(profile('openrouter-primary'), missingModel).model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(missingModel.model).toBeUndefined();
     expect(() => buildExecutionProfileRequest({ ...current, id: 'openrouter-primary' })).toThrow(/canonical frozen profile/i);
   });
@@ -158,8 +155,8 @@ describe('Rank 4 execution-profile request parity', () => {
       response_format: { type: 'json_object' },
       reasoning: { effort: 'high' },
       provider: { data_collection: 'deny' },
-      plugins: [{ id: 'auto-router' }],
     });
+    expect(openRouter.plugins).toBeUndefined();
     expect(openRouter.reasoning_effort).toBeUndefined();
     expect(openRouter.perf_metrics_in_response).toBeUndefined();
 

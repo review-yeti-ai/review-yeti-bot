@@ -29,7 +29,8 @@ function openRouterTransport() {
     compat: 'openrouter',
     baseUrl: 'https://openrouter.ai/api/v1',
     apiKey: 'qualification-test-key',
-    model: 'openrouter/auto',
+    model: policy.allowed_models[0],
+    models: [policy.allowed_models[1]],
     stream: true,
     reasoning_effort: 'high',
   };
@@ -183,13 +184,14 @@ describe('OpenRouter qualification contract', () => {
     expect(calls[0].headers['X-OpenRouter-Metadata']).toBe('enabled');
     expect(calls[0].headers.Accept).toBe('text/event-stream');
     expect(calls[0].body).toMatchObject({
-      model: 'openrouter/auto',
+      model: policy.allowed_models[0],
+      models: [policy.allowed_models[1]],
       stream: true,
       reasoning: { effort: 'high' },
       response_format: { type: 'json_object' },
       provider: { data_collection: 'deny' },
-      plugins: [{ id: 'auto-router', allowed_models: policy.allowed_models }],
     });
+    expect(calls[0].body).not.toHaveProperty('plugins');
     expect(calls[0].body).not.toHaveProperty('reasoning_effort');
   });
 
@@ -256,7 +258,7 @@ describe('OpenRouter qualification contract', () => {
           text: async () => JSON.stringify({
             error: {
               code: 'upstream_unavailable',
-              message: 'openai/gpt-5.6-luna is temporarily unavailable',
+              message: `${policy.allowed_models[0]} is temporarily unavailable`,
             },
           }),
         };
@@ -286,12 +288,12 @@ describe('OpenRouter qualification contract', () => {
     });
     expect(calls).toHaveLength(2);
     expect(calls[1]).toMatchObject({
-      model: 'openai/gpt-5.6-luna',
-      models: policy.allowed_models.slice(1, 4),
+      model: policy.allowed_models[0],
+      models: [policy.allowed_models[1]],
       provider: { data_collection: 'deny', require_parameters: true },
       response_format: { type: 'json_object' },
     });
-    expect(calls[1].models).toHaveLength(3);
+    expect(calls[1].models).toHaveLength(1);
     expect(calls[1]).not.toHaveProperty('plugins');
     expect(calls[1]).not.toHaveProperty('reasoning');
   });

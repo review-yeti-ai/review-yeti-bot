@@ -21,7 +21,7 @@ describe('Dispatch path: persona resolution defaults', () => {
     const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, {
       OPENROUTER_API_KEY: 'test-openrouter-key',
       OPENROUTER_MODEL: 'openrouter/auto',
-      OPENROUTER_ALLOWED_MODELS: 'openai/gpt-5.6-luna,z-ai/glm-5.2',
+      OPENROUTER_ALLOWED_MODELS: 'deepseek/deepseek-v4-flash-0731,z-ai/glm-5.3-flash',
       OPENROUTER_COST_QUALITY_TRADEOFF: '4',
       OPENROUTER_DATA_COLLECTION: 'deny',
     });
@@ -29,10 +29,10 @@ describe('Dispatch path: persona resolution defaults', () => {
     expect(runtime.modelConfig).toMatchObject({
       enabled: true,
       baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      model: 'deepseek/deepseek-v4-flash-0731',
       openRouterPolicy: {
-        model: 'openrouter/auto',
-        allowed_models: ['openai/gpt-5.6-luna', 'z-ai/glm-5.2'],
+        model: 'deepseek/deepseek-v4-flash-0731',
+        allowed_models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
         data_collection: 'deny',
         cost_quality_tradeoff: 4,
       },
@@ -45,7 +45,8 @@ describe('Dispatch path: persona resolution defaults', () => {
       parsed: {
         github_action: {
           openrouter: {
-            allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
+            model: 'deepseek/deepseek-v4-flash-0731',
+            allowed_models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
             cost_quality_tradeoff: 3,
             data_collection: 'deny',
           },
@@ -56,8 +57,8 @@ describe('Dispatch path: persona resolution defaults', () => {
     });
 
     expect(runtime.modelConfig.openRouterPolicy).toMatchObject({
-      model: 'openrouter/auto',
-      allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
+      model: 'deepseek/deepseek-v4-flash-0731',
+      allowed_models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
       data_collection: 'deny',
       cost_quality_tradeoff: 3,
     });
@@ -68,7 +69,7 @@ describe('Dispatch path: persona resolution defaults', () => {
       OPENROUTER_API_KEY: 'test-openrouter-key',
       OPENROUTER_ALLOWED_MODELS: 'openai/not-approved',
       OPENROUTER_DATA_COLLECTION: 'deny',
-    })).toThrow('canonical five-model fleet');
+    })).toThrow('canonical approved model set');
   });
 
   it('keeps OpenRouter policy canonical when a legacy caller supplies a provider transport handoff', () => {
@@ -88,7 +89,7 @@ describe('Dispatch path: persona resolution defaults', () => {
 
     expect(runtime.modelConfig.openRouterPolicy).toMatchObject({
       base_url: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      model: 'deepseek/deepseek-v4-flash-0731',
     });
     expect(runtime.modelConfig.transports[0]).toMatchObject({
       name: 'fireworks',
@@ -177,7 +178,7 @@ describe('Dispatch path: persona resolution defaults', () => {
       modelConfig: {
         enabled: true,
         baseUrl: 'https://openrouter.ai/api/v1',
-        model: 'openrouter/auto',
+        model: 'deepseek/deepseek-v4-flash-0731',
         maxDiffChars: 12000,
       },
     });
