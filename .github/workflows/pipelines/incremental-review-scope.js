@@ -12,7 +12,7 @@ function sha256(value) {
   return createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
 }
 
-function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffChars, maxIncrementalDiffChars, trustedWorkflow }) {
+function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffChars, maxIncrementalDiffChars, trustedWorkflow, trustedWorkflowSha }) {
   return sha256(JSON.stringify({
     schemaVersion: SCOPE_SCHEMA_VERSION,
     actionSha: String(actionSha || 'unbound').toLowerCase(),
@@ -21,7 +21,15 @@ function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffCha
     maxDiffChars: Number(maxDiffChars) || 0,
     maxIncrementalDiffChars: Number(maxIncrementalDiffChars) || 0,
     trustedWorkflow: String(trustedWorkflow || ''),
+    trustedWorkflowSha: String(trustedWorkflowSha || '').toLowerCase(),
   }));
+}
+
+function isTrustedWorkflowReference(reference, trustedWorkflows, trustedWorkflowSha) {
+  const resolvedSha = String(reference?.sha || '').toLowerCase();
+  return trustedWorkflows.includes(String(reference?.path || ''))
+    && /^[0-9a-f]{40}$/u.test(resolvedSha)
+    && resolvedSha === String(trustedWorkflowSha || '').toLowerCase();
 }
 
 function createFullReviewScope({ fullDiffText, planDigest, fallbackReason = null }) {
@@ -176,7 +184,9 @@ async function resolveIncrementalReviewScope(options) {
   });
   if (!options.enabled) return { reviewedDiffText: options.fullDiffText, scope: fullScope, parentReport: null };
   const trustedWorkflows = String(options.trustedWorkflow || '').split(',').map((item) => item.trim()).filter(Boolean);
-  if (!options.token || !options.repo || !options.prNumber || !options.baseSha || !options.headSha || trustedWorkflows.length < 1) {
+  const trustedWorkflowSha = String(options.trustedWorkflowSha || '').toLowerCase();
+  if (!options.token || !options.repo || !options.prNumber || !options.baseSha || !options.headSha
+    || trustedWorkflows.length < 1 || !/^[0-9a-f]{40}$/u.test(trustedWorkflowSha)) {
     return { reviewedDiffText: options.fullDiffText, scope: { ...fullScope, fallbackReason: 'missing_identity' }, parentReport: null };
   }
 
@@ -198,9 +208,9 @@ async function resolveIncrementalReviewScope(options) {
         `${apiBase}/repos/${options.repo}/actions/runs/${runId}`);
       const run = await runResponse.json();
       const trustedReference = (Array.isArray(run.referenced_workflows) ? run.referenced_workflows : [])
-        .find((reference) => trustedWorkflows.includes(String(reference?.path || '')));
+        .find((reference) => isTrustedWorkflowReference(reference, trustedWorkflows, trustedWorkflowSha));
       if (run.status !== 'completed' || !['pull_request', 'pull_request_target'].includes(run.event)) continue;
-      if (!trustedReference || !/^[0-9a-f]{40}$/iu.test(String(trustedReference.sha || ''))) continue;
+      if (!trustedReference) continue;
       if (run.head_sha !== artifact.workflow_run?.head_sha || Number(run.run_attempt) < 1) continue;
       if (!String(artifact.name).endsWith(`-${run.run_attempt}`)) continue;
 
@@ -271,6 +281,7 @@ async function resolveIncrementalReviewScope(options) {
 module.exports = {
   SCOPE_SCHEMA_VERSION,
   buildReviewScopePlanDigest,
+  isTrustedWorkflowReference,
   createFullReviewScope,
   isCompleteTrustedReport,
   selectIncrementalPersonaIds,
