@@ -63,6 +63,10 @@ jobs:
           max-diff-chars: ${{ vars.MAX_DIFF_CHARS || '24000' }}
           # Use only the role-scoped review key; generic provider secrets are not admitted here.
           llm-api-key: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          # Optional direct fallbacks. They are only admitted when their own keys are present;
+          # OpenRouter remains the primary direct DeepSeek -> GLM route.
+          ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}
+          synthetic-api-key: ${{ secrets.CT_REVIEW_SYNTHETIC_API_KEY || secrets.SYNTHETIC_API_KEY }}
           llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
