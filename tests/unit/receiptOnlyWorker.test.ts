@@ -25,6 +25,8 @@ import {
   runProviderQualificationWorker,
   isPanelQualificationWorker,
   runPanelQualificationWorker,
+  isFullPanelQualificationWorker,
+  runFullPanelQualificationWorker,
 } from '../../src/cli/runLiveReview';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
@@ -424,6 +426,126 @@ describe('panel qualification worker contract', () => {
     await runWorker(panelEnvironment, liveRunner, providerRunner, panelRunner);
 
     expect(panelRunner).toHaveBeenCalledWith(panelEnvironment);
+    expect(providerRunner).not.toHaveBeenCalled();
+    expect(liveRunner).not.toHaveBeenCalled();
+  });
+});
+
+describe('full-panel qualification worker contract', () => {
+  const fullPanelEnvironment = {
+    REVIEW_FULL_PANEL_QUALIFICATION_ONLY: 'true',
+    REVIEW_PANEL_QUALIFICATION_ONLY: 'false',
+    REVIEW_PROVIDER_QUALIFICATION_ONLY: 'false',
+    REVIEW_RECEIPT_ONLY: 'false',
+    REVIEW_PUBLICATION_MODE: 'disabled',
+    REVIEW_RECEIPT_PATH: receiptPathLiteral,
+    REVIEW_RUN_ID: 'run_88888888888888888888888888888888',
+    REVIEW_DELIVERY_ID: 'qualification:full-panel:1',
+    REVIEW_REPOSITORY_ID: '123',
+    REVIEW_REPO: 'calltelemetry/cisco-cdr',
+    REVIEW_PR_NUMBER: '42',
+    REVIEW_HEAD_SHA: 'a'.repeat(40),
+    REVIEW_BASE_SHA: 'b'.repeat(40),
+    REVIEW_POLICY_DIGEST: 'c'.repeat(64),
+    REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
+    REVIEW_QUALIFICATION_MODEL: 'z-ai/glm-5.3-flash',
+    REVIEW_QUALIFICATION_TIMEOUT_MS: '600000',
+    OPENROUTER_API_KEY: 'test-openrouter-key',
+  } as NodeJS.ProcessEnv;
+
+  it('requires an explicit full-panel mode and excludes every other worker mode', () => {
+    expect(isFullPanelQualificationWorker(fullPanelEnvironment)).toBe(true);
+    expect(isFullPanelQualificationWorker({ ...fullPanelEnvironment, REVIEW_FULL_PANEL_QUALIFICATION_ONLY: 'false' })).toBe(false);
+    expect(isFullPanelQualificationWorker({ ...fullPanelEnvironment, REVIEW_PANEL_QUALIFICATION_ONLY: 'true' })).toBe(false);
+    expect(isFullPanelQualificationWorker({ ...fullPanelEnvironment, REVIEW_PROVIDER_QUALIFICATION_ONLY: 'true' })).toBe(false);
+    expect(isFullPanelQualificationWorker({ ...fullPanelEnvironment, REVIEW_RECEIPT_ONLY: 'true' })).toBe(false);
+    expect(isFullPanelQualificationWorker({ ...fullPanelEnvironment, REVIEW_PUBLICATION_MODE: 'enabled' })).toBe(false);
+  });
+
+  it('executes six scoped personas plus moderator and arbiter on a representative fixture', async () => {
+    const client = {
+      complete: vi.fn(async () => ({
+        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        content: 'qualification response',
+        usage: { prompt: 100, completion: 20, total: 120 },
+        costUSD: 0.001,
+        raw: {},
+      })),
+    };
+    const panelRunner = vi.fn(async (options: any) => {
+      expect(options.config.personas).toHaveLength(6);
+      expect(options.config.personas.map((persona: any) => persona.id)).toEqual([
+        'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
+      ]);
+      expect(options.config.personas.every((persona: any) => persona.required)).toBe(true);
+      expect(options.config.reviewers.providers).toHaveLength(1);
+      expect(options.config.reviewers.providers[0].model).toBe(fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL);
+      expect(options.changedFiles.map((file: any) => file.path)).toEqual(expect.arrayContaining([
+        'src/auth/session.ts', 'src/dispatcher/worker.ts', 'Dockerfile', 'k8s/review-job.yaml',
+        'package.json', 'LICENSE',
+      ]));
+      for (let call = 0; call < 8; call += 1) {
+        await options.client.complete({ model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL, messages: [], stream: true });
+      }
+      const personaResult = (id: string) => ({
+        id, required: true, providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        decision: 'APPROVE' as const, findings: [], usage: { prompt: 100, completion: 20, total: 120 },
+        costUSD: 0.001, durationMs: 250,
+      });
+      return {
+        headSha: fullPanelEnvironment.REVIEW_HEAD_SHA,
+        personas: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'].map(personaResult),
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
+        moderator: {
+          providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          decision: 'RECONCILED' as const, findings: [], usage: { prompt: 100, completion: 20, total: 120 },
+          costUSD: 0.001, durationMs: 150,
+        },
+        arbiter: {
+          providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          verdict: 'SHIP' as const, rationale: 'qualification completed', usage: { prompt: 100, completion: 20, total: 120 },
+          costUSD: 0.001, durationMs: 120,
+        },
+      };
+    });
+
+    const receipt = await runFullPanelQualificationWorker(fullPanelEnvironment, panelRunner, client);
+
+    expect(panelRunner).toHaveBeenCalledOnce();
+    expect(client.complete).toHaveBeenCalledTimes(8);
+    expect(receipt).toMatchObject({
+      version: 'ReviewYetiPanelQualification.v1',
+      profile: 'full-panel',
+      status: 'succeeded',
+      providerId: 'openrouter',
+      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      publicationMode: 'disabled',
+      providerCalls: 8,
+      githubWrites: 0,
+      personaCount: 6,
+      expectedPersonaCount: 6,
+      optionalFailureCount: 0,
+      findingsCount: 0,
+      verdict: 'SHIP',
+    });
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      receiptPathLiteral,
+      `${JSON.stringify(receipt)}\n`,
+      { encoding: 'utf8' },
+    );
+  });
+
+  it('routes full-panel qualification before the existing panel and live modes', async () => {
+    const fullPanelRunner = vi.fn(async () => undefined);
+    const panelRunner = vi.fn(async () => undefined);
+    const providerRunner = vi.fn(async () => undefined);
+    const liveRunner = vi.fn(async () => undefined);
+
+    await runWorker(fullPanelEnvironment, liveRunner, providerRunner, panelRunner, fullPanelRunner);
+
+    expect(fullPanelRunner).toHaveBeenCalledWith(fullPanelEnvironment);
+    expect(panelRunner).not.toHaveBeenCalled();
     expect(providerRunner).not.toHaveBeenCalled();
     expect(liveRunner).not.toHaveBeenCalled();
   });
