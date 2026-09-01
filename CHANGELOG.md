@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.2...v1.19.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** upgrade Synthetic fallback to GLM 5.3 Flash ([1f4b25e](https://github.com/review-yeti-ai/review-yeti-bot/commit/1f4b25e859cd2792a8e713d506f2c35b3c19fb60))
+
 ## [1.19.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.1...v1.19.2) (2026-09-01)
 
 
