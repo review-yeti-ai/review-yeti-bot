@@ -343,6 +343,50 @@ type PanelQualificationRunner = (options: {
   jobId?: string;
 }) => Promise<PanelResult>;
 
+/**
+ * Match the central OpenRouter policy's three in-flight request cap during a
+ * full-panel qualification. The panel engine intentionally starts applicable
+ * personas together; this wrapper preserves that scheduling while preventing
+ * one provider from being flooded by six simultaneous streams.
+ */
+class BoundedQualificationClient implements ReviewModelClient {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(
+    private readonly delegate: ReviewModelClient,
+    private readonly maxInFlight: number,
+  ) {
+    if (!Number.isSafeInteger(maxInFlight) || maxInFlight < 1) {
+      throw new Error('qualification concurrency limit must be positive');
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.maxInFlight) {
+      this.active += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    this.active += 1;
+  }
+
+  private release(): void {
+    this.active -= 1;
+    const next = this.waiters.shift();
+    next?.();
+  }
+
+  async complete(request: Parameters<ReviewModelClient['complete']>[0]): ReturnType<ReviewModelClient['complete']> {
+    await this.acquire();
+    try {
+      return await this.delegate.complete(request);
+    } finally {
+      this.release();
+    }
+  }
+}
+
 const PANEL_QUALIFICATION_FIXTURE = [{
   path: 'qualification-fixture.ts',
   patch: [
@@ -597,10 +641,10 @@ export async function runPanelQualificationWorker(
   let providerCalls = 0;
   const effectiveClient = client || qualificationClient(env);
   const countingClient: ReviewModelClient = {
-    complete: async (request) => {
-      providerCalls += 1;
-      return effectiveClient.complete(request);
-    },
+      complete: async (request) => {
+        providerCalls += 1;
+        return effectiveClient.complete(request);
+      },
   };
   const result = await runWithQualificationDeadline(panelRunner({
     config: panelQualificationConfig(model, timeoutMs),
@@ -666,12 +710,13 @@ export async function runFullPanelQualificationWorker(
       return effectiveClient.complete(request);
     },
   };
+  const boundedClient = new BoundedQualificationClient(countingClient, 3);
   const result = await runWithQualificationDeadline(panelRunner({
     config: fullPanelQualificationConfig(model, timeoutMs),
     changedFiles: FULL_PANEL_QUALIFICATION_FIXTURE,
     repository: identity.repo,
     headSha: identity.headSha,
-    client: countingClient,
+    client: boundedClient,
     jobId: identity.runId,
   }), timeoutMs);
   if (!result.quorum.satisfied || !result.arbiter?.verdict
