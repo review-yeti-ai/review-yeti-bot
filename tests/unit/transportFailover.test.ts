@@ -344,7 +344,7 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[1].reasoning).toEqual({ effort: 'none' });
     expect(requestBodies[1].provider).toEqual({ data_collection: 'deny' });
     expect(requestBodies[1].plugins).toBeUndefined();
-    expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
+    expect(requestBodies[1].messages.at(-1).content).toContain('FORMAT RECOVERY');
   });
 
   it('keeps the bounded default for unknown direct-compatible transports', async () => {
