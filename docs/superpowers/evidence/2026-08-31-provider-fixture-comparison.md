@@ -191,3 +191,72 @@ unchanged.
 GLM capability-recovery receipt SHA-256:
 
 `ff2b099a55d75995f0bb858ca4b81006f1d9e0bba9f8d6691486283134f93cfd`
+
+## Remaining-blocker RCA and bounded 5xx recovery
+
+The GLM receipt exposed two separate problems, not one:
+
+1. The transport sequence `HTTP 200 stream timeout → recovery request → HTTP 500` exhausted
+   the fixed two-attempt envelope. The second response was classified correctly as `http_5xx`,
+   but there was no remaining attempt, so a transient gateway error became a terminal review
+   error.
+2. The clean-control findings were valid semantic counterexamples to the fixture's
+   literal-token assertion (bracket access, `run:` checkout, and environment indirection), not
+   malformed JSON or a disconnected stream. The fixture is labelled clean even though its
+   implementation does not enforce the property described in its comment. Suppressing these
+   findings would be test hacking; GLM therefore remains quality-blocked until the corpus is
+   independently adjudicated or the implementation is corrected.
+
+The transport fix is intentionally narrow. After a recovery has already been attempted, an
+OpenRouter 5xx may use exactly one additional retry. That retry is capped at 30 seconds (or the
+lower configured transport timeout), honours a bounded `Retry-After`, preserves the model's
+reasoning capability, and remains fail-closed if it cannot produce canonical findings JSON. The
+normal two-attempt envelope is unchanged for healthy requests, direct providers, and ordinary
+format recovery; the action still has no scheduler or canary path.
+
+The regression test reproduces both observed sequences: timeout → 500 → parsed response, and
+500 → 500 → parsed response. The focused model, OpenRouter contract, failover, rate-limit, and
+charter suites pass 114/114 tests. A fresh three-row GLM clean-control receipt completed 3/3
+terminally, but produced the same semantic finding on all three rows (1/3, 1/3, and 1/3
+findings). That confirms the remaining quality blocker is reproducible model/corpus semantics,
+not the transport 500 path.
+
+Production routing and the deployed image remain unchanged. The next promotion gate is a
+human-adjudicated corpus decision plus a full, manual GLM fixture run showing no unaccepted clean
+findings; until then, keep DeepSeek/GLM qualification-only and do not flip the review action.
+
+Bounded clean-control receipt SHA-256:
+
+`5081a4157d198132b3085f53cf10d6375567581cdfb1a5d08fe8c68c7898610c`
+
+The follow-up full matrix run used the same exact GLM route, three serial repetitions per fixture,
+and the same 45-second per-attempt bound. It completed all 39 rows with no terminal errors:
+
+| Metric | Result |
+| --- | ---: |
+| Terminal rows | 39/39 |
+| Seeded defect rows detected | 20/21 (95.2%) |
+| Clean rows with findings | 4/18 (22.2%) |
+| First-attempt timeouts recovered | 3 |
+| Output-contract breaches | 0 |
+| Median / P95 row latency | 11.787s / 60.721s |
+| Measured provider cost | $0.009097 |
+
+Only three rows needed timeout recovery; all three recovered to canonical JSON. No HTTP 5xx was
+observed in this sample, so the new 5xx branch remains covered by the deterministic regression
+tests rather than being presented as a live provider-rate estimate. The terminal blocker is
+resolved, but the 4/18 clean findings (three from the behavioural-guard control and one from the
+per-key isolation control) still prevent a GLM quality promotion.
+
+A generic scope-boundary instruction was tested against the two affected clean controls. It did
+not change the result (4/6 clean rows still carried the same concrete findings), so it was not
+retained. This preserves recall and avoids teaching the reviewer to ignore real semantic coverage
+gaps merely to improve a benchmark label.
+
+Scope-boundary experiment receipt SHA-256:
+
+`2b7a637ff1c0ceb7cb0dbe9c977a1e7f557fcd678b2d2ac2c7484ceddd3f2c8c`
+
+Full-matrix receipt SHA-256:
+
+`1d8161cc40f5c69d4c69638671ca0c9cf65c4697746d3f0e8d11c8fa24187107`
