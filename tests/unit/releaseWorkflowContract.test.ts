@@ -38,8 +38,12 @@ describe('release workflow contract', () => {
 
   it('promotes rolling v1 only downstream of the canonical validated release job', () => {
     const workflow = fs.readFileSync(canonicalPath, 'utf8');
+    const promotionJob = workflow.split('  promote-rolling-v1:', 2)[1] || '';
+    const rollingWorkflow = fs.readFileSync(rollingPath, 'utf8');
     expect(workflow).toMatch(/promote-rolling-v1:[\s\S]*needs:\s*validate-and-release/u);
     expect(workflow).toContain('git push origin v1 --force');
-    expect(fs.readFileSync(rollingPath, 'utf8')).toContain('unreleased_recovery');
+    expect(promotionJob).toContain('token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}');
+    expect(rollingWorkflow).toContain('token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}');
+    expect(rollingWorkflow).toContain('unreleased_recovery');
   });
 });

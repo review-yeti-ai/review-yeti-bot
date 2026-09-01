@@ -182,6 +182,11 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ needs.validate-and-release.outputs.version }}
+          # A rolling tag that advances across workflow-file changes requires a token with
+          # workflow scope. The built-in GitHub App token is rejected even after the release
+          # benchmark succeeds; use the same bounded release credential that created the signed
+          # semver tag, with the built-in token retained only for repositories where it suffices.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
           fetch-tags: true
 
