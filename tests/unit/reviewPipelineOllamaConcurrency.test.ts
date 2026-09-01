@@ -61,6 +61,26 @@ describe('Ollama request concurrency', () => {
     releaseAfterTimeout();
   });
 
+  it('does not spend the provider request timeout while waiting for capacity', async () => {
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    const transport = {
+      name: 'openrouter-primary',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'deepseek/deepseek-v4-flash-0731',
+      maxInFlight: 1,
+      concurrencyScope: 'provider',
+      capacityWaitTimeoutMs: 200,
+    };
+    const first = await capacityManager.acquire(transport, transport.baseUrl, 10);
+    const queued = capacityManager.acquire(transport, transport.baseUrl, 10);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    first.release();
+
+    const second = await queued;
+    expect(second.waitMs).toBeGreaterThan(10);
+    second.release();
+  });
+
   it('caps direct Ollama requests below the measured cloud burst boundary', async () => {
     const fetch = delayedFetch(15);
     const results = await runReviews(20, {
