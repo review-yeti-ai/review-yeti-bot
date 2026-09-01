@@ -336,10 +336,35 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         ]);
         let changedFiles = changedFilesFromGitHub;
         const getSubmoduleUrls = (github as unknown as { getSubmoduleUrls?: (owner: string, repo: string, ref: string) => Promise<Record<string, string>> }).getSubmoduleUrls?.bind(github);
+        // REL-491: this .gitmodules fetch previously had no retry and no failure logging. A
+        // transient GitHub API error (timeout, 5xx) silently returned/threw as if the repository
+        // had no submodule metadata, which forwards into a submodule policy decision of BLOCK /
+        // INCOMPLETE_REVIEW with nothing in the logs naming the artifact that actually failed.
+        // Retry once (bounded) before accepting the failure, and always name the artifact and
+        // the exact error when a fetch does not recover.
+        const fetchSubmoduleUrlsLogged = async (ref: string): Promise<Record<string, string>> => {
+          if (typeof getSubmoduleUrls !== 'function') return {};
+          const artifact = `.gitmodules@${ref} (${owner}/${repo})`;
+          try {
+            return await getSubmoduleUrls(owner, repo, ref);
+          } catch (firstError: any) {
+            logger.warn(`Submodule coverage evidence fetch failed, retrying once: ${artifact}`, {
+              error: firstError?.message || firstError,
+            });
+            try {
+              return await getSubmoduleUrls(owner, repo, ref);
+            } catch (secondError: any) {
+              logger.warn(`Submodule coverage evidence fetch failed after bounded retry: ${artifact}`, {
+                error: secondError?.message || secondError,
+              });
+              throw secondError;
+            }
+          }
+        };
         if (typeof getSubmoduleUrls === 'function' && changedFiles.some((file) => file.isSubmodule || file.submoduleCandidate || file.mode === '160000')) {
           const [baseUrls, headUrls] = await Promise.all([
-            getSubmoduleUrls(owner, repo, snapshot.baseSha),
-            getSubmoduleUrls(owner, repo, headSha),
+            fetchSubmoduleUrlsLogged(snapshot.baseSha),
+            fetchSubmoduleUrlsLogged(headSha),
           ]);
           changedFiles = changedFiles.map((file) => {
             const oldSubmoduleUrl = baseUrls[file.path];
@@ -382,9 +407,17 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         await durablePersist('config', config as unknown as import('./review/reviewRun').JsonValue);
         const submodulePolicy = ((config as any).submodules || createDefaultV4Config().submodules) as SubmodulePolicy;
         const submoduleDecisions = changedFiles.map((file) => resolveSubmoduleDecision(file, submodulePolicy));
-        const submoduleCoverageComplete = !submoduleDecisions.some((decision) =>
+        const submoduleCoverageGaps = submoduleDecisions.filter((decision) =>
           decision.decision === 'BLOCK' || decision.decision === 'INCOMPLETE_REVIEW',
         );
+        const submoduleCoverageComplete = submoduleCoverageGaps.length === 0;
+        // REL-491: name every artifact that forced coverage incomplete, not just the boolean.
+        // The verdict rationale threads this through `computeAppVerdict`'s `coverageGaps` option
+        // so a BLOCK never has to fall back to a generic "coverage incomplete" restatement of the
+        // clean-panel sentence.
+        if (!submoduleCoverageComplete) {
+          logger.warn(`Submodule coverage incomplete for ${repoFull}#${prNumber}: ${submoduleCoverageGaps.map((gap) => `${gap.path} (${gap.reason})`).join('; ')}`);
+        }
         const reviewChangedFiles = changedFiles.filter((_file, index) => submoduleDecisions[index].decision !== 'IGNORE');
         await durableTransition('submodules');
         await durablePersist('submodules', {
@@ -452,6 +485,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           expectedLanes: panel.personas.length,
           changedFiles: reviewChangedFiles,
           coverageComplete: submoduleCoverageComplete && panel.optionalFailures.length === 0,
+          coverageGaps: submoduleCoverageGaps.map((gap) => ({ path: gap.path, reason: gap.reason })),
           candidateVerdict: panel.arbiter.verdict,
           rationale: panel.arbiter.rationale,
         });
