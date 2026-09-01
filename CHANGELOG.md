@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.1...v1.19.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* abort settled review transport attempts ([#369](https://github.com/review-yeti-ai/review-yeti-bot/issues/369)) ([9687b98](https://github.com/review-yeti-ai/review-yeti-bot/commit/9687b98385b124daa8cad4453e29a9067c65cbc1))
+
 ## [1.19.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.0...v1.19.1) (2026-09-01)
 
 
