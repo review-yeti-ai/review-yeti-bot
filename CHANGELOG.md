@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.1...v1.20.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* advance OpenRouter timeout recovery to fallback model ([#383](https://github.com/review-yeti-ai/review-yeti-bot/issues/383)) ([12f74ad](https://github.com/review-yeti-ai/review-yeti-bot/commit/12f74add0a6a0dc9102e7b7e2709c174efde3923))
+
 ## [1.20.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.0...v1.20.1) (2026-09-01)
 
 
