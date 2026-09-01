@@ -25,6 +25,9 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ inputs.sha }}
+          # Keep the manual recovery path capable of moving v1 across a reviewed workflow-file
+          # change. The built-in GitHub App token cannot update that ref without workflow scope.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
           fetch-tags: true
 
