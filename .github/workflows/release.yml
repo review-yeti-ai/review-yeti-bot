@@ -184,6 +184,10 @@ jobs:
           ref: ${{ needs.validate-and-release.outputs.version }}
           fetch-depth: 0
           fetch-tags: true
+          # Moving v1 across a commit that changes workflow-owned action code
+          # requires a workflow-capable token; GITHUB_TOKEN is rejected by GitHub.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          persist-credentials: true
 
       - name: Promote only the tested release commit
         env:
