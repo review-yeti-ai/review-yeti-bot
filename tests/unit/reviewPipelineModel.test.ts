@@ -912,6 +912,80 @@ describe('reviewWithModel', () => {
     });
   });
 
+  it('recovers malformed primary OpenRouter output before using a fallback transport', async () => {
+    const openRouterBodies: any[] = [];
+    let fallbackCalls = 0;
+    const sseResponse = (content: string) => {
+      const frames = [
+        JSON.stringify({
+          id: 'chatcmpl-primary-format-recovery',
+          object: 'chat.completion.chunk',
+          created: 1_700_000_000,
+          model: 'deepseek/deepseek-v4-flash-0731',
+          choices: [{ index: 0, finish_reason: null, delta: { content } }],
+        }),
+        '[DONE]',
+      ].map((frame) => `data: ${frame}\n\n`).join('');
+      return new Response(frames, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+    const fetchImplementation = async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes('openrouter.ai')) {
+        openRouterBodies.push(JSON.parse(String(init.body)));
+        return sseResponse(openRouterBodies.length === 1
+          ? 'analysis without findings JSON'
+          : '{"findings":[]}');
+      }
+      fallbackCalls += 1;
+      return sseResponse('{"findings":[]}');
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [
+        {
+          name: 'openrouter-primary',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          apiKey: 'or-key',
+          model: 'deepseek/deepseek-v4-flash-0731',
+          provider: 'openrouter',
+          reasoning_effort: 'high',
+          stream: true,
+          timeoutMs: 25,
+        },
+        {
+          name: 'synthetic-fallback',
+          baseUrl: 'https://api.synthetic.new/v1',
+          apiKey: 'syn-key',
+          model: 'hf:zai-org/GLM-5.3-Flash',
+          provider: 'synthetic',
+          reasoning_effort: 'high',
+          stream: true,
+          timeoutMs: 25,
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      attemptCount: 2,
+      retryReasons: ['malformed_output'],
+      recoveryAction: 'bounded_retry',
+    });
+    expect(openRouterBodies).toHaveLength(2);
+    expect(fallbackCalls).toBe(0);
+    expect(openRouterBodies[0]).toHaveProperty('reasoning', { effort: 'high' });
+    expect(openRouterBodies[1]).toHaveProperty('reasoning', { effort: 'none' });
+    expect(openRouterBodies[1]).not.toHaveProperty('plugins');
+    expect(openRouterBodies[1].messages[0].content).toContain('FORMAT RECOVERY:');
+    expect(openRouterBodies[1].messages[0].content).toContain('canonical findings contract');
+  });
+
   it('treats the streaming timeout as inactivity instead of total generation time', async () => {
     const frames = [
       `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":' } }] })}\n\n`,

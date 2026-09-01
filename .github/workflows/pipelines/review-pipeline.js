@@ -3413,6 +3413,35 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with ${recoveryReasoning.effort === 'none' ? 'optional reasoning disabled' : 'low required reasoning'} and auto-routing disabled before failing closed...`);
         return true;
       };
+      const prepareOpenRouterFormatRecovery = (findingsError) => {
+        if (!isOpenRouterTransport || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
+        formatRecoveryAttempted = true;
+        recoveryAction = 'bounded_retry';
+        noteRetryReason('malformed_output');
+        // Keep the already-admitted OpenRouter model: account guardrails can reject a
+        // different model even when the central fleet allows it. Remove the
+        // auto-router-only plugin while retaining the provider privacy policy, and
+        // honor model-specific reasoning requirements.
+        delete requestBody.plugins;
+        const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestModel);
+        requestBody.reasoning = recoveryReasoning;
+        requestBody.max_tokens = Math.max(
+          requestBody.max_tokens,
+          DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
+        );
+        const recoveryReasoningInstruction = recoveryReasoning.effort === 'none'
+          ? '- Keep reasoning brief and reserve output tokens for the final JSON object.'
+          : '- Keep required reasoning at low effort and reserve output tokens for the final JSON object.';
+        requestBody.messages[0].content += [
+          '',
+          'FORMAT RECOVERY:',
+          `- Your prior response did not satisfy the canonical findings contract${findingsError ? ` (${findingsError}).` : '.'}`,
+          recoveryReasoningInstruction,
+          '- Return only {"findings":[]} or the required findings object.',
+        ].join('\n');
+        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with ${recoveryReasoning.effort === 'none' ? 'reasoning disabled' : 'low required reasoning'} and a larger answer budget before failover...`);
+        return true;
+      };
 
       while (fetchAttempts < maxFetchAttempts) {
         const attemptTimeoutMs = nextAttemptTimeoutMs;
@@ -3783,6 +3812,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             // before abandoning it for a different provider. This keeps a healthy
             // Ollama/Fireworks lane useful without accepting malformed output.
             if (prepareDirectFormatRecovery()) continue;
+            if (prepareOpenRouterFormatRecovery(findingsValidation?.error)) continue;
             if (i < candidateTransports.length - 1) {
               lastError = contractFailure;
               console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' returned a non-canonical findings response; trying next transport...`);
@@ -3791,35 +3821,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             }
             if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
               formatRecoveryAttempted = true;
-              // The final OpenRouter transport may be pinned to the same reasoning-heavy model
-              // that already exhausted its answer budget on the direct transports. Keep the
-              // already-admitted OpenRouter model: account guardrails can reject a different
-              // model even when the central fleet allows it. Remove the auto-router-only plugin
-              // while retaining the provider privacy policy, and honor model-specific reasoning
-              // requirements.
-              let recoveryReasoning = null;
-              if (isOpenRouterTransport) {
-                delete requestBody.plugins;
-                recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestModel);
-              }
               requestBody.max_tokens = Math.max(
                 requestBody.max_tokens,
                 DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
               );
-              if (isOpenRouterTransport) requestBody.reasoning = recoveryReasoning;
-              else if (isDirectReasoning) requestBody.reasoning_effort = 'none';
+              if (isDirectReasoning) requestBody.reasoning_effort = 'none';
               else requestBody.reasoning_effort = 'low';
-              const recoveryReasoningInstruction = !isOpenRouterTransport || recoveryReasoning?.effort === 'none'
-                ? '- Keep reasoning brief and reserve output tokens for the final JSON object.'
-                : '- Keep required reasoning at low effort and reserve output tokens for the final JSON object.';
               requestBody.messages[0].content += [
                 '',
                 'FORMAT RECOVERY:',
                 `- Your prior response did not satisfy the canonical findings contract${findingsValidation?.error ? ` (${findingsValidation.error}).` : '.'}`,
-                recoveryReasoningInstruction,
+                '- Keep reasoning brief and reserve output tokens for the final JSON object.',
                 '- Return only {"findings":[]} or the required findings object.',
               ].join('\n');
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with ${!isOpenRouterTransport || recoveryReasoning?.effort === 'none' ? 'reasoning disabled' : 'low required reasoning'} and a larger answer budget...`);
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with reasoning disabled and a larger answer budget...`);
               continue;
             }
             return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: contractFailure });
