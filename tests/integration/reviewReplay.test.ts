@@ -9,8 +9,8 @@ import {
   openRouterReplayDiffFiles,
   openRouterReplayPersonas,
   openRouterReplayPolicy,
-  openRouterReplaySystemPrompts,
-  openRouterReplayUserPrompt,
+  openRouterReplayMessages,
+  openRouterReplayCacheIdentity,
   runOpenRouterReplay,
 } from '../support/openRouterReplayScenario';
 
@@ -65,11 +65,10 @@ describe('review pipeline cassette replay', () => {
         'user-agent': 'speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk',
       },
       body: {
-        messages: [
-          { role: 'system', content: openRouterReplaySystemPrompts.testing },
-          { role: 'user', content: openRouterReplayUserPrompt },
-        ],
+        messages: openRouterReplayMessages.testing,
         model: 'deepseek/deepseek-v4-flash-0731',
+        prompt_cache_key: openRouterReplayCacheIdentity,
+        session_id: openRouterReplayCacheIdentity,
         provider: {
           data_collection: 'deny',
         },

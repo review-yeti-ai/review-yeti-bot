@@ -1134,8 +1134,9 @@ describe('reviewWithModel', () => {
     expect(openRouterBodies[0]).toHaveProperty('reasoning', { effort: 'high' });
     expect(openRouterBodies[1]).toHaveProperty('reasoning', { effort: 'none' });
     expect(openRouterBodies[1]).not.toHaveProperty('plugins');
-    expect(openRouterBodies[1].messages[0].content).toContain('FORMAT RECOVERY:');
-    expect(openRouterBodies[1].messages[0].content).toContain('canonical findings contract');
+    expect(openRouterBodies[1].messages.slice(0, 2)).toEqual(openRouterBodies[0].messages.slice(0, 2));
+    expect(openRouterBodies[1].messages.at(-1).content).toContain('FORMAT RECOVERY:');
+    expect(openRouterBodies[1].messages.at(-1).content).toContain('canonical findings contract');
   });
 
   it('treats the streaming timeout as inactivity instead of total generation time', async () => {
@@ -1285,10 +1286,11 @@ describe('reviewWithModel', () => {
     expect(calls[0]).toHaveProperty('reasoning', { effort: 'high' });
     expect(calls[1]).toHaveProperty('reasoning', { effort: 'none' });
     expect(calls[1]).not.toHaveProperty('plugins');
-    expect(calls[1].messages[0].content).toContain('Re-evaluate the complete diff');
-    expect(calls[1].messages[0].content).toContain('Disable optional reasoning');
-    expect(calls[1].messages[0].content).toContain('Do not return a summary, decision, or alternate key');
-    expect(calls[1].messages[0].content).not.toContain('return only {"findings":[]}');
+    expect(calls[1].messages.slice(0, 2)).toEqual(calls[0].messages.slice(0, 2));
+    expect(calls[1].messages.at(-1).content).toContain('Re-evaluate the complete diff');
+    expect(calls[1].messages.at(-1).content).toContain('Disable optional reasoning');
+    expect(calls[1].messages.at(-1).content).toContain('Do not return a summary, decision, or alternate key');
+    expect(calls[1].messages.at(-1).content).not.toContain('return only {"findings":[]}');
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
       expect.objectContaining({ attempt: 1, outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
       expect.objectContaining({ attempt: 2, outcome: 'parsed', failureClass: null }),
@@ -1447,8 +1449,9 @@ describe('reviewWithModel', () => {
     expect(calls).toHaveLength(2);
     expect(calls[0]).toHaveProperty('reasoning', { effort: 'high' });
     expect(calls[1]).toHaveProperty('reasoning', { effort: 'low' });
-    expect(calls[1].messages[0].content).toContain('Keep required reasoning at low effort');
-    expect(calls[1].messages[0].content).toContain('only top-level key is `findings`');
+    expect(calls[1].messages.slice(0, 2)).toEqual(calls[0].messages.slice(0, 2));
+    expect(calls[1].messages.at(-1).content).toContain('Keep required reasoning at low effort');
+    expect(calls[1].messages.at(-1).content).toContain('only top-level key is `findings`');
   });
 
   it('allows one short OpenRouter provider retry after timeout recovery returns a 5xx', async () => {
@@ -2217,7 +2220,7 @@ describe('reviewWithModel', () => {
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, {
       augmentedHeader: 'PREVIOUS TURN: the author rejected the orgId nit.',
     }, { apiKey: 'k', fetchImpl: impl });
-    const system = calls[0].body.messages.find((m: any) => m.role === 'system').content;
-    expect(system).toContain('PREVIOUS TURN');
+    const evidence = calls[0].body.messages.find((m: any) => m.role === 'user' && m.content.includes('Unified diff under review:')).content;
+    expect(evidence).toContain('PREVIOUS TURN');
   });
 });
