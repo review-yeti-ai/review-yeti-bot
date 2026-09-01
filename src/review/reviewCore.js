@@ -194,6 +194,30 @@ function isFailedLane(lane) {
   return Boolean(lane && (lane.error || lane.status === 'ERROR' || lane.decision === 'ERROR'));
 }
 
+/**
+ * Names the concrete evidence/coverage artifact(s) that forced a review incomplete, instead of a
+ * bare boolean. `coverageGaps` entries may be a plain string reason or a `{ path, reason }` row
+ * (the shape submodule-policy callers already compute per changed file); both are normalized into
+ * a short human-readable list. Returns an empty array when the caller supplied no gap detail --
+ * callers should treat that as a signal to log a warning at the point coverageComplete was set to
+ * false, since a nameless gap is exactly the silent-degradation failure mode REL-491 found.
+ */
+function describeCoverageGaps(coverageGaps) {
+  const rows = Array.isArray(coverageGaps) ? coverageGaps : [];
+  return rows
+    .map((gap) => {
+      if (typeof gap === 'string') return gap.trim();
+      if (gap && typeof gap === 'object') {
+        const path = typeof gap.path === 'string' ? gap.path.trim() : '';
+        const reason = typeof gap.reason === 'string' ? gap.reason.trim() : '';
+        if (path && reason) return `${path} (${reason})`;
+        return path || reason || '';
+      }
+      return '';
+    })
+    .filter(Boolean);
+}
+
 function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const results = Array.isArray(personaResults) ? personaResults : [];
   const expected = Number.isInteger(expectedPersonas) ? expectedPersonas : results.length;
@@ -252,15 +276,37 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const verdict = incomplete ? 'BLOCK' : candidateVerdict;
   const status = incomplete ? 'INCOMPLETE_REVIEW' : verdict;
 
+  // A clean persona panel (zero failed lanes, every expected lane completed, no blocking
+  // findings) can still be forced incomplete by a coverage/evidence gap that has nothing to do
+  // with persona execution -- a submodule policy decision, a transient .gitmodules fetch failure,
+  // etc. `rationale` above was computed for that clean-panel outcome and reads
+  // "Quorum satisfied for release."; reusing it verbatim once coverage forces BLOCK produces a
+  // self-contradictory verdict (REL-491: "Quorum satisfied for release... must remain blocked.").
+  // Replace it with a rationale that leads with the block and names the concrete missing
+  // artifact, instead of restating the now-false clean-panel sentence.
+  const coverageOnlyBlock = incomplete
+    && expected > 0
+    && failedLanes.length === 0
+    && completedResults.length === expected
+    && !coverageComplete;
+  let finalRationale = rationale;
+  if (coverageOnlyBlock) {
+    const gapNames = describeCoverageGaps(options.coverageGaps);
+    const coverageReason = gapNames.length > 0
+      ? `Evidence/coverage gap: ${gapNames.join('; ')}.`
+      : 'Evidence/coverage gap: coverage was marked incomplete without a named artifact; check run logs for the missing check.';
+    finalRationale = `${completedResults.length} of ${expected} persona evaluation(s) completed with no blocking findings, but merge approval remains blocked. ${coverageReason}`;
+  } else if (incomplete) {
+    finalRationale = `${rationale} Review is incomplete; publication and merge approval must remain blocked until every expected lane and coverage check completes.`;
+  }
+
   return {
     totalPersonas: expected,
     completedPersonas: completedResults.length,
     quorumSatisfied,
     verdict,
     status,
-    rationale: incomplete
-      ? `${rationale} Review is incomplete; publication and merge approval must remain blocked until every expected lane and coverage check completes.`
-      : rationale,
+    rationale: finalRationale,
     thresholds: { blockP1, fixP2 },
     metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length },
     findings,
@@ -275,5 +321,6 @@ module.exports = {
   sanitizeFinding,
   sanitizeFindings,
   validateReviewFindings,
+  describeCoverageGaps,
   computeArbitration,
 };

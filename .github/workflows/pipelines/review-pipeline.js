@@ -1588,12 +1588,8 @@ function loadActionSubmoduleUrls(repoRoot, parentRepository) {
   }
 }
 
-async function fetchActionSubmoduleUrlsAtRef(parentRepository, ref, options = {}) {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(String(parentRepository || ''))) return {};
-  if (!/^[0-9a-f]{40}$/iu.test(String(ref || ''))) return {};
-
+async function fetchActionSubmoduleUrlsAtRefOnce(parentRepository, ref, options, artifact) {
   const fetchImpl = options.fetchImplementation || globalThis.fetch;
-  if (typeof fetchImpl !== 'function') return {};
   const token = options.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
   const headers = {
     Accept: 'application/vnd.github+json',
@@ -1601,24 +1597,50 @@ async function fetchActionSubmoduleUrlsAtRef(parentRepository, ref, options = {}
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
-  try {
-    const response = await fetchImpl(
-      `https://api.github.com/repos/${parentRepository}/contents/.gitmodules?ref=${encodeURIComponent(ref)}`,
-      {
-        headers,
-        signal: options.signal || AbortSignal.timeout(options.timeoutMs || 10_000),
-      },
-    );
-    if (!response?.ok) return {};
-    const payload = await response.json();
-    if (payload?.type !== 'file' || payload?.encoding !== 'base64' || typeof payload?.content !== 'string') return {};
-    const content = Buffer.from(payload.content.replace(/\s+/gu, ''), 'base64').toString('utf8');
-    return parseActionSubmoduleUrls(content, parentRepository);
-  } catch (_) {
-    // Missing or inaccessible metadata remains fail-closed in
-    // applyActionSubmodulePolicy when the repository policy requires it.
-    return {};
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${parentRepository}/contents/.gitmodules?ref=${encodeURIComponent(ref)}`,
+    {
+      headers,
+      signal: options.signal || AbortSignal.timeout(options.timeoutMs || 10_000),
+    },
+  );
+  if (response?.status === 404) return { ok: true, urls: {} }; // no .gitmodules at this ref: a real, non-transient answer.
+  if (!response?.ok) return { ok: false, error: `GitHub API ${response?.status ?? 'unknown'} fetching ${artifact}` };
+  const payload = await response.json();
+  if (payload?.type !== 'file' || payload?.encoding !== 'base64' || typeof payload?.content !== 'string') {
+    return { ok: false, error: `unexpected .gitmodules content response for ${artifact}` };
   }
+  const content = Buffer.from(payload.content.replace(/\s+/gu, ''), 'base64').toString('utf8');
+  return { ok: true, urls: parseActionSubmoduleUrls(content, parentRepository) };
+}
+
+async function fetchActionSubmoduleUrlsAtRef(parentRepository, ref, options = {}) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(String(parentRepository || ''))) return {};
+  if (!/^[0-9a-f]{40}$/iu.test(String(ref || ''))) return {};
+
+  const fetchImpl = options.fetchImplementation || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') return {};
+
+  const artifact = `.gitmodules@${ref} (${parentRepository})`;
+  // REL-491: this fetch previously swallowed every failure -- timeout, 5xx, malformed payload --
+  // into the same silent `{}` as a genuine "no .gitmodules" answer, with no log line and no
+  // retry. A transient failure here forwards straight into applyActionSubmodulePolicy's
+  // coverageComplete=false / BLOCK path with nothing in the run log naming the artifact that
+  // actually failed. Retry once (bounded) before accepting the failure, and always log which
+  // artifact failed and why.
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const result = await fetchActionSubmoduleUrlsAtRefOnce(parentRepository, ref, options, artifact);
+      if (result.ok) return result.urls;
+      console.warn(`[Submodules] Evidence fetch failed (attempt ${attempt}/2): ${result.error}`);
+    } catch (error) {
+      console.warn(`[Submodules] Evidence fetch failed (attempt ${attempt}/2): ${artifact} — ${error?.message || error}`);
+    }
+  }
+  console.warn(`[Submodules] Evidence fetch did not recover after bounded retry, treating as unresolved: ${artifact}`);
+  // Missing or inaccessible metadata after the bounded retry remains fail-closed in
+  // applyActionSubmodulePolicy when the repository policy requires it.
+  return {};
 }
 
 function hasActionSubmoduleCandidate(file) {
@@ -1664,6 +1686,15 @@ function hasPinnedGitlinkTransition(file) {
 
 function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY, options = {}) {
   let coverageComplete = true;
+  // REL-491: previously a single boolean absorbed every reason coverage went incomplete, so the
+  // eventual BLOCK rationale could only restate generic boilerplate instead of naming the file
+  // and reason. Collect one { path, reason } row per triggering condition so callers (and the
+  // arbitration rationale) can name the concrete artifact instead of a bare "incomplete" flag.
+  const coverageGaps = [];
+  const flagIncomplete = (path, reason) => {
+    coverageComplete = false;
+    coverageGaps.push({ path, reason });
+  };
   const files = [];
   for (const file of Array.isArray(diffFiles) ? diffFiles : []) {
     const patchTransition = parseGitlinkPatch(file.patch);
@@ -1673,7 +1704,7 @@ function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY
       // ordinary text can contain that literal. Keep it as a normal file so
       // changed-line sanitization remains strict, and fail closed until native
       // mode metadata confirms the submodule boundary.
-      coverageComplete = false;
+      flagIncomplete(file.path, 'ambiguous gitlink transition: Subproject commit marker present without native gitlink mode metadata');
       files.push(file);
       continue;
     }
@@ -1699,14 +1730,22 @@ function applyActionSubmodulePolicy(diffFiles, policy = DEFAULT_SUBMODULE_POLICY
         : {}),
     };
     if (policy.mode === 'ignore') continue;
-    if (policy.require_pinned_commit && !hasPinnedGitlinkTransition(submoduleFile)) coverageComplete = false;
-    if (policy.mode === 'recursive') coverageComplete = false;
+    if (policy.require_pinned_commit && !hasPinnedGitlinkTransition(submoduleFile)) {
+      flagIncomplete(file.path, 'submodule change is not bound to a valid pinned commit transition');
+    }
+    if (policy.mode === 'recursive') {
+      flagIncomplete(file.path, 'recursive submodule content inspection requires an explicitly resolved nested snapshot');
+    }
     const urlChangePolicy = policy.url_change ?? 'block';
-    if (hasActionSubmoduleUrlChange(submoduleFile) && urlChangePolicy === 'block') coverageComplete = false;
-    if ((policy.allowed_hosts?.length || policy.allowed_repositories?.length) && resolveActionSubmoduleOrigin(submoduleFile, policy, options) === 'blocked') coverageComplete = false;
+    if (hasActionSubmoduleUrlChange(submoduleFile) && urlChangePolicy === 'block') {
+      flagIncomplete(file.path, 'submodule URL changed and policy requires blocking URL changes');
+    }
+    if ((policy.allowed_hosts?.length || policy.allowed_repositories?.length) && resolveActionSubmoduleOrigin(submoduleFile, policy, options) === 'blocked') {
+      flagIncomplete(file.path, 'submodule host/repository is not in the configured allowlist');
+    }
     files.push(submoduleFile);
   }
-  return { files, coverageComplete };
+  return { files, coverageComplete, coverageGaps };
 }
 
 function hasActionSubmoduleUrlChange(file) {
@@ -5610,6 +5649,14 @@ async function main() {
     const resolvedBase = Object.keys(baseSubmoduleUrls).length;
     const resolvedHead = Object.keys(submoduleUrls).length;
     console.log(`[Submodules] Exact-ref metadata entries: base=${resolvedBase}, head=${resolvedHead}; coverage=${submoduleReview.coverageComplete ? 'complete' : 'incomplete'}.`);
+    if (!submoduleReview.coverageComplete) {
+      // REL-491: name every artifact that forced coverage incomplete instead of only logging the
+      // boolean -- a "complete/incomplete" log line gave no way to tell a genuine policy block
+      // from a transient metadata-fetch failure after the fact.
+      for (const gap of submoduleReview.coverageGaps) {
+        console.log(`[Submodules] Coverage gap: ${gap.path} — ${gap.reason}`);
+      }
+    }
   }
   const reviewDiffFiles = submoduleReview.files;
   if (reviewDiffFiles.length === 0) {
@@ -5872,6 +5919,7 @@ async function main() {
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
       changedFiles: reviewDiffFiles,
       coverageComplete: submoduleReview.coverageComplete,
+      coverageGaps: submoduleReview.coverageGaps,
     });
   }
 

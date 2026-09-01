@@ -59,6 +59,38 @@ describe('Action v4 policy boundary', () => {
     expect(result.coverageComplete).toBe(false);
   });
 
+  // REL-491: `coverageComplete` used to be a bare boolean with no record of which file or policy
+  // condition tripped it, so a downstream BLOCK verdict could only restate generic boilerplate.
+  it('names the path and reason for every condition that forces coverage incomplete', () => {
+    const result = pipeline.applyActionSubmodulePolicy([
+      { path: 'vendor/lib', patch: '-Subproject commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+Subproject commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+    ], { mode: 'recursive', require_pinned_commit: true });
+
+    expect(result.coverageComplete).toBe(false);
+    expect(result.coverageGaps).toEqual([
+      expect.objectContaining({
+        path: 'vendor/lib',
+        reason: expect.stringContaining('Subproject commit marker present without native gitlink mode metadata'),
+      }),
+    ]);
+  });
+
+  it('names a recursive-mode gap for a native gitlink with valid pinned metadata', () => {
+    const result = pipeline.applyActionSubmodulePolicy([
+      {
+        path: 'k8s',
+        mode: '160000',
+        oldSha: 'a'.repeat(40),
+        newSha: 'b'.repeat(40),
+      },
+    ], { mode: 'recursive', require_pinned_commit: true });
+
+    expect(result.coverageComplete).toBe(false);
+    expect(result.coverageGaps).toContainEqual(
+      expect.objectContaining({ path: 'k8s', reason: expect.stringContaining('recursive submodule content inspection') }),
+    );
+  });
+
   it('accepts a native gitlink when trusted checkout metadata supplies its origin', () => {
     const result = pipeline.applyActionSubmodulePolicy([
       { path: 'vendor/lib', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40) },
@@ -113,6 +145,86 @@ describe('Action v4 policy boundary', () => {
       submoduleUrls: urls,
     });
     expect(result.coverageComplete).toBe(true);
+  });
+
+  // REL-491: a transient GitHub API failure fetching .gitmodules previously produced the same
+  // silent `{}` as a genuine "no .gitmodules" answer, with no retry and no log line naming the
+  // artifact -- indistinguishable from a real policy decision after the fact.
+  it('retries once (bounded) on a transient fetch failure before degrading', async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+    try {
+      let attempt = 0;
+      const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/proto.git\n';
+      const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
+        'calltelemetry/cisco-cdr',
+        'a'.repeat(40),
+        {
+          fetchImplementation: async () => {
+            attempt += 1;
+            if (attempt === 1) throw new Error('network unreachable');
+            return {
+              ok: true,
+              json: async () => ({
+                type: 'file',
+                encoding: 'base64',
+                content: Buffer.from(gitmodules).toString('base64'),
+              }),
+            };
+          },
+        },
+      );
+
+      expect(attempt).toBe(2);
+      expect(urls).toEqual({ proto: 'git@github.com:calltelemetry/proto.git' });
+      expect(warnings.some((line) => line.includes('.gitmodules') && line.includes('network unreachable'))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('degrades to unresolved (not a thrown exception) and logs the artifact after both attempts fail', async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+    try {
+      let attempt = 0;
+      const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
+        'calltelemetry/cisco-cdr',
+        'a'.repeat(40),
+        {
+          fetchImplementation: async () => {
+            attempt += 1;
+            throw new Error('GitHub API 503');
+          },
+        },
+      );
+
+      expect(attempt).toBe(2);
+      expect(urls).toEqual({});
+      expect(warnings.filter((line) => line.includes('.gitmodules')).length).toBeGreaterThanOrEqual(2);
+      expect(warnings.some((line) => line.includes('did not recover after bounded retry'))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('treats a genuine 404 (no .gitmodules at this ref) as a real answer, not a retryable failure', async () => {
+    let attempt = 0;
+    const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
+      'calltelemetry/cisco-cdr',
+      'a'.repeat(40),
+      {
+        fetchImplementation: async () => {
+          attempt += 1;
+          return { ok: false, status: 404 };
+        },
+      },
+    );
+
+    expect(attempt).toBe(1);
+    expect(urls).toEqual({});
   });
 
   it('keeps a standard same-mode gitlink diff complete after exact-ref metadata resolution', async () => {
