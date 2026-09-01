@@ -1069,6 +1069,43 @@ describe('reviewWithModel', () => {
     ]));
   });
 
+  it('aborts every timed-out OpenRouter SDK attempt before the lane returns', async () => {
+    const requestSignals: AbortSignal[] = [];
+    let abortEvents = 0;
+    const fetchImplementation = async (_input: string | URL | Request, init: RequestInit = {}) => {
+      if (init.signal) {
+        requestSignals.push(init.signal);
+        init.signal.addEventListener('abort', () => { abortEvents += 1; }, { once: true });
+      }
+      return new Response(new ReadableStream({
+        start() {},
+      }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      timeoutMs: 25,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-primary',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+      }],
+    });
+
+    expect(result.decision).toBe('ERROR');
+    expect(requestSignals).toHaveLength(2);
+    expect(requestSignals.every((signal) => signal.aborted)).toBe(true);
+    expect(abortEvents).toBe(2);
+  });
+
   it('keeps required reasoning enabled for GLM OpenRouter timeout recovery', async () => {
     const calls: any[] = [];
     const stalledResponse = () => ({
