@@ -187,7 +187,8 @@ function dispositionFor(pathValue: string): string | null {
   if (/^transports\[\*\]\.(privacy\.data_collection|routing\.provider\.data_collection)$/.test(pathValue)) return 'translated-via-action-policy';
   if (/^transports\[\*\]\.retry\.(max_attempts|classification)$/.test(pathValue)) return 'runtime-owned-uncharacterized';
   if (/^transports\[\*\]\.routing\.(ignore_providers(?:\[\*\])?|provider(?:\..*)?)/.test(pathValue)) return 'consumed';
-  if (/^transports\[\*\]\.(timeouts\.(connect_ms|stall_ms|ttft_ms)|quarantine\.on_timeout)$/.test(pathValue)) return 'dropped-by-runtime-mapper';
+  if (pathValue === 'transports[*].quarantine.on_timeout') return 'consumed';
+  if (/^transports\[\*\]\.timeouts\.(connect_ms|stall_ms|ttft_ms)$/.test(pathValue)) return 'dropped-by-runtime-mapper';
   return null;
 }
 
@@ -207,11 +208,17 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
     const paths = [...new Set(leafPaths(fixture.plan).map(normalizePlanPath))].sort();
     expect(paths.filter((entry) => dispositionFor(entry) === null)).toEqual([]);
     expect(paths.filter((entry) => dispositionFor(entry) === 'dropped-by-runtime-mapper')).toEqual([
-      'transports[*].quarantine.on_timeout',
       'transports[*].timeouts.connect_ms',
       'transports[*].timeouts.stall_ms',
       'transports[*].timeouts.ttft_ms',
     ]);
+  });
+
+  it('preserves the timeout quarantine decision through the Action runtime mapper', () => {
+    const runtime = resolveFixtureRuntime();
+
+    expect(runtime.modelConfig.transports.find((transport: any) => transport.name === 'openrouter-fallback'))
+      .toMatchObject({ quarantineOnTimeout: false });
   });
 
   it('snapshots the final credential-free request shape for every configured transport', async () => {
