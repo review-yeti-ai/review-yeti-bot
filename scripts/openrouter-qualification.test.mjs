@@ -18,6 +18,7 @@ import {
   OPENROUTER_TRANSPORT,
   QUALIFICATION_CHILD_TIMEOUT_MS,
   QUALIFICATION_BUDGET_MARGIN_MS,
+  QUALIFICATION_CLEAN_FIXTURE_ID,
   QUALIFICATION_CONCURRENCY,
   QUALIFICATION_ISOLATED_DEFAULT_CONCURRENCY,
   QUALIFICATION_MAX_CONCURRENCY,
@@ -97,6 +98,28 @@ test('OpenRouter qualification is manual-only and capped at fifteen minutes', ()
   assert.match(provenanceStep, /PROVENANCE_TOKEN:\s*\$\{\{ github\.token \}\}/u);
   assert.doesNotMatch(provenanceStep, /PROVENANCE_TOKEN:.*CROSS_REPO_TOKEN/u);
   assert.match(workflow, /publication or provider mutation/u);
+});
+
+test('qualification uses a human-adjudicated clean sentinel', () => {
+  assert.equal(QUALIFICATION_CLEAN_FIXTURE_ID, 'table-driven-consolidation-preserves-coverage');
+  assert.ok(FIXTURE_IDS.includes(QUALIFICATION_CLEAN_FIXTURE_ID));
+  assert.ok(!FIXTURE_IDS.includes('clean-behavioural-guard'));
+  const repetitions = 2;
+  const rows = Array.from({ length: repetitions }, (_, index) => index + 1).flatMap((repetition) => (
+    FIXTURE_IDS.map((fixtureId) => ({
+      fixtureId,
+      repetition,
+      category: fixtureId === QUALIFICATION_CLEAN_FIXTURE_ID ? 'clean' : 'defect',
+      detected: fixtureId !== QUALIFICATION_CLEAN_FIXTURE_ID,
+      falsePositive: false,
+      errored: false,
+      responseAttempts: [{ attempt: 1, outcome: 'parsed', transport: 'openrouter' }],
+      transport: OPENROUTER_TRANSPORT,
+    }))
+  ));
+  const gate = buildQualificationAcceptanceGate(summarizeRows(rows, 0, repetitions), repetitions);
+  assert.equal(gate.minimum_detected_defect_runs, 3);
+  assert.equal(gate.passed, true);
 });
 
 test('input requires immutable coordinates and an explicit confirmation', () => {

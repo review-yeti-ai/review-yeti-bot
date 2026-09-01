@@ -14,7 +14,11 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
-import { verifyBotRelease, verifyPullRequest } from './openrouter-qualification.mjs';
+import {
+  QUALIFICATION_CLEAN_FIXTURE_ID,
+  verifyBotRelease,
+  verifyPullRequest,
+} from './openrouter-qualification.mjs';
 
 export const PI_QUALIFICATION_SCHEMA = 'review-yeti.pi-openrouter-qualification.v1';
 export const PI_QUALIFICATION_CONFIRMATION = 'QUALIFY_PI';
@@ -34,7 +38,9 @@ export const PI_MAX_REPETITIONS = 2;
 export const FIXTURE_IDS = Object.freeze([
   'vacuous-default-value-test',
   'format-evadable-absence-guard',
-  'clean-behavioural-guard',
+  // The former behavioural-guard control has real semantic bypasses and cannot measure false
+  // positives. Use the same independently adjudicated clean sentinel as the direct runner.
+  QUALIFICATION_CLEAN_FIXTURE_ID,
 ]);
 
 const SHA_PATTERN = /^[a-f0-9]{40,64}$/iu;

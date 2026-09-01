@@ -202,6 +202,12 @@ terminate, at least three of the four defect rows detect their defect, and neith
 produces a false positive. Failed evidence is still uploaded by the workflow for diagnosis, but it
 cannot be mistaken for a successful qualification or authorize activation.
 
+The clean sentinel is `table-driven-consolidation-preserves-coverage`. The former
+`clean-behavioural-guard` fixture is intentionally excluded from this promotion gate after human
+adjudication found real semantic bypasses in its literal-token implementation. Treating those
+findings as false positives would reward a model for overlooking a defect; changing the sentinel
+preserves the review charter and does not add fixture-specific model instructions.
+
 ## One-time Fireworks/Ollama comparison
 
 When an operator wants evidence for moving more work to Ollama, use the manually dispatched

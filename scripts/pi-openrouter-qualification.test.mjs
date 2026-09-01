@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  FIXTURE_IDS,
   PI_AUTHORING_SHA,
   PI_CODING_AGENT_VERSION,
   PI_ENGINE_VERSION,
@@ -62,6 +63,11 @@ test('Pi mode is manual-only, parallel, and capped at fifteen minutes', () => {
   assert.equal(PI_QUALIFICATION_CONCURRENCY, 3);
   assert.equal(PI_QUALIFICATION_TIMEOUT_MS, 600_000);
   assert.ok(PI_ROW_TIMEOUT_MS * 2 <= PI_QUALIFICATION_TIMEOUT_MS);
+});
+
+test('Pi qualification uses the same human-adjudicated clean sentinel', () => {
+  assert.ok(FIXTURE_IDS.includes('table-driven-consolidation-preserves-coverage'));
+  assert.ok(!FIXTURE_IDS.includes('clean-behavioural-guard'));
 });
 
 test('Pi qualification requires exact immutable coordinates and dedicated confirmation', () => {
@@ -183,7 +189,7 @@ test('summary distinguishes first-pass parsing, repair, terminal errors, quality
       outputIssueCounts: { invalid_json: 1, invalid_enum: 2 },
     },
     {
-      fixtureId: 'clean-behavioural-guard', repetition: 1, category: 'clean',
+      fixtureId: 'table-driven-consolidation-preserves-coverage', repetition: 1, category: 'clean',
       detected: false, falsePositive: true, errored: false, latencyMs: 200,
       firstAttemptParseable: false, repairAttempts: 0, localRepairCount: 1, terminalParsed: true,
       provider: 'openrouter', model: PI_MODEL, inputTokens: 5, outputTokens: 6, costUsd: 0.02,
@@ -229,7 +235,7 @@ test('receipt is sanitized, non-authoritative, exact-ref bound, and fails integr
       specSha256: `sha256:${'3'.repeat(64)}`, resultSchemaSha256: `sha256:${'4'.repeat(64)}`,
     },
     {
-      fixtureId: 'clean-behavioural-guard', repetition: 1, category: 'clean',
+      fixtureId: 'table-driven-consolidation-preserves-coverage', repetition: 1, category: 'clean',
       detected: false, falsePositive: false, errored: false, latencyMs: 90,
       firstAttemptParseable: true, repairAttempts: 0, terminalParsed: true,
       provider: 'openrouter', model: PI_MODEL, inputTokens: 9, outputTokens: 18, costUsd: 0.01,
@@ -278,12 +284,12 @@ test('qualification dispatches six sterile rows with no more than three children
     },
     {
       ...defectFixture,
-      id: 'clean-behavioural-guard',
+      id: 'table-driven-consolidation-preserves-coverage',
       category: 'clean',
-      title: 'Anchor the base-SHA guard on the semantic token',
+      title: 'Consolidate the marker-routing cases into a table-driven test',
       expectedPaths: [],
       mustMatch: [],
-      files: [{ path: 'tests/test_workflow_guard.py', patch: '@@ -1 +1 @@\n-old\n+good\n' }],
+      files: [{ path: 'tests/marker-routing.test.ts', patch: '@@ -1 +1 @@\n-old\n+good\n' }],
     },
   ];
   writeFileSync(path.join(fixtureRoot, 'evaluation-matrix.json'), JSON.stringify({ personaId: 'testing', fixtures }));
@@ -329,7 +335,7 @@ test('qualification dispatches six sterile rows with no more than three children
       intentSha256: `sha256:${'a'.repeat(64)}`,
       specSha256: `sha256:${'b'.repeat(64)}`,
       resultSchemaSha256: `sha256:${'c'.repeat(64)}`,
-      findings: fixtureId === 'clean-behavioural-guard' ? [] : [{ path: childInput.fixture.files[0].path, line: 1, title: 'defect', body: 'defect' }],
+      findings: fixtureId === 'table-driven-consolidation-preserves-coverage' ? [] : [{ path: childInput.fixture.files[0].path, line: 1, title: 'defect', body: 'defect' }],
     }));
     const child = new EventEmitter();
     child.kill = () => true;

@@ -61,8 +61,13 @@ const OPENROUTER_ATTEMPT_TRANSPORTS = Object.freeze(['openrouter', OPENROUTER_TR
 export const FIXTURE_IDS = Object.freeze([
   'vacuous-default-value-test',
   'format-evadable-absence-guard',
-  'clean-behavioural-guard',
+  // The behavioural-guard fixture was independently adjudicated as mislabeled: its literal
+  // token scan does not cover bracket access, run-step checkout, or environment indirection.
+  // Keep the precision gate meaningful with an existing clean control whose table-driven
+  // rewrite preserves the same cases and assertions.
+  'table-driven-consolidation-preserves-coverage',
 ]);
+export const QUALIFICATION_CLEAN_FIXTURE_ID = 'table-driven-consolidation-preserves-coverage';
 
 export function normalizeQualificationFixtureId(value = '') {
   const normalized = String(value ?? '').trim();
@@ -609,7 +614,7 @@ export function buildQualificationAcceptanceGate(
   const expectedFixtureIds = fixtureIds.map((fixtureId) => normalizeQualificationFixtureId(fixtureId)).filter(Boolean);
   const expectedRuns = expectedFixtureIds.length * expectedRepetitions;
   const expectedDefectRuns = expectedFixtureIds
-    .filter((fixtureId) => fixtureId !== 'clean-behavioural-guard')
+    .filter((fixtureId) => fixtureId !== QUALIFICATION_CLEAN_FIXTURE_ID)
     .length * expectedRepetitions;
   const minimumDetectedDefectRuns = Math.ceil(expectedDefectRuns * 0.75);
   const rows = Number.isSafeInteger(Number(evaluation?.rows)) ? Number(evaluation.rows) : 0;
