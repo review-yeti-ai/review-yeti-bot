@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.4...v1.20.5) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** separate capacity and request deadlines ([#391](https://github.com/review-yeti-ai/review-yeti-bot/issues/391)) ([412ddb8](https://github.com/review-yeti-ai/review-yeti-bot/commit/412ddb8ea967a4bd71024e46c251c703e3cb65bd))
+
 ## [1.20.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.3...v1.20.4) (2026-09-01)
 
 
