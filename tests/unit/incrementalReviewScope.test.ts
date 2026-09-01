@@ -38,6 +38,10 @@ describe('trusted incremental review scope', () => {
     expect(scope.buildReviewScopePlanDigest(common)).toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, personaIds: [...PERSONAS].reverse() })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, actionSha: 'e'.repeat(40) })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, baseSha: 'e'.repeat(40) })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, maxDiffChars: 24001 })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, maxIncrementalDiffChars: 60001 })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1' })).not.toBe(digest);
   });
 
   it('reruns the prior blocking owner, a broad reviewer, and delta-relevant specialists', () => {
@@ -68,6 +72,10 @@ describe('trusted incremental review scope', () => {
     };
     expect(scope.isCompleteTrustedReport(parentReport(digest), expected)).toBe(true);
     expect(scope.isCompleteTrustedReport(parentReport('0'.repeat(64)), expected)).toBe(false);
+    expect(scope.isCompleteTrustedReport({ ...parentReport(digest), repository: 'other/example' }, expected)).toBe(false);
+    expect(scope.isCompleteTrustedReport({ ...parentReport(digest), baseSha: 'e'.repeat(40) }, expected)).toBe(false);
+    expect(scope.isCompleteTrustedReport({ ...parentReport(digest), headSha: HEAD }, expected)).toBe(false);
+    expect(scope.isCompleteTrustedReport({ ...parentReport(digest), headSha: 'not-a-sha' }, expected)).toBe(false);
     const incomplete = parentReport(digest);
     incomplete.lanes[0].decision = 'ERROR';
     expect(scope.isCompleteTrustedReport(incomplete, expected)).toBe(false);
