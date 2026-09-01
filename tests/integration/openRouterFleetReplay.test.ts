@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { runOpenRouterReplay } from '../support/openRouterReplayScenario';
 
 describe('OpenRouter fleet cassette replay', () => {
-  it('runs the same multi-persona auto-router scenario twice deterministically', async () => {
+  it('runs the same multi-persona direct-model scenario twice deterministically', async () => {
     const first = await runOpenRouterReplay('complete-multi-persona.json');
     const second = await runOpenRouterReplay('complete-multi-persona.json');
 
@@ -14,7 +14,7 @@ describe('OpenRouter fleet cassette replay', () => {
     expect(first.policyFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(first.requestFingerprints).toHaveLength(3);
     expect(new Set(first.requestFingerprints).size).toBe(3);
-    expect(first.comment).toContain('Model-backed (`openrouter/auto`)');
+    expect(first.comment).toContain('Model-backed (`deepseek/deepseek-v4-flash-0731`)');
     expect(first.comment).not.toContain('src/not-in-diff.ts');
   });
 });

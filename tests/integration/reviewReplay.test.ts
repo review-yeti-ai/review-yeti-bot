@@ -51,7 +51,7 @@ async function runModelReplay() {
 }
 
 describe('review pipeline cassette replay', () => {
-  it('replays the exact OpenRouter auto-router policy request and zero-findings response', async () => {
+  it('replays the exact direct OpenRouter policy request and zero-findings response', async () => {
     const result = await runOpenRouterReplay('zero-findings.json', [openRouterReplayPersonas.testing]);
     const interaction = result.cassette.interactions[0];
 
@@ -69,18 +69,7 @@ describe('review pipeline cassette replay', () => {
           { role: 'system', content: openRouterReplaySystemPrompts.testing },
           { role: 'user', content: openRouterReplayUserPrompt },
         ],
-        model: 'openrouter/auto',
-        plugins: [{
-          id: 'auto-router',
-          allowed_models: [
-            'openai/gpt-5.6-luna',
-            'moonshotai/kimi-k2.6',
-            'tencent/hy3',
-            'z-ai/glm-5.2',
-            'google/gemini-3.5-flash-lite',
-          ],
-          cost_quality_tradeoff: 7,
-        }],
+        model: 'deepseek/deepseek-v4-flash-0731',
         provider: {
           data_collection: 'deny',
         },
@@ -102,7 +91,7 @@ describe('review pipeline cassette replay', () => {
         id: 'chatcmpl-replay',
         object: 'chat.completion',
         created: 1700000000,
-        model: 'openrouter/auto',
+        model: 'deepseek/deepseek-v4-flash-0731',
         system_fingerprint: null,
         choices: [{
           index: 0,

@@ -218,7 +218,7 @@ async function main() {
   }
 
   const outputPath = path.resolve(process.cwd(), argument('out', 'artifacts/openrouter-live-proof.json'));
-  const model = argument('model', process.env.OPENROUTER_MODEL || 'openrouter/auto');
+  const model = argument('model', process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731');
   const baseUrl = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
   const timeoutMs = positiveInteger(argument('timeout-ms', DEFAULT_TIMEOUT_MS), DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
   const ttftTimeoutMs = positiveInteger(argument('ttft-timeout-ms', DEFAULT_TTFT_TIMEOUT_MS), DEFAULT_TTFT_TIMEOUT_MS, timeoutMs);
@@ -256,6 +256,10 @@ async function main() {
           baseUrl,
           apiKey,
           model,
+          // An explicit empty models list is the request-boundary marker for a
+          // direct model call. It prevents the legacy policy's auto-router plugin
+          // from being inherited by this manual proof.
+          models: [],
           stream: true,
           reasoning_effort: 'high',
           timeoutMs,
