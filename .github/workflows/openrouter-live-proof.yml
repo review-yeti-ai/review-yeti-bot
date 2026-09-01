@@ -14,7 +14,7 @@ on:
       model:
         description: 'OpenRouter model route'
         required: false
-        default: openrouter/auto
+        default: deepseek/deepseek-v4-flash-0731
         type: string
       timeout_ms:
         description: 'Per-attempt total timeout in milliseconds (capped at 10 minutes)'

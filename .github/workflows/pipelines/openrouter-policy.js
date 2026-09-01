@@ -7,7 +7,11 @@ const path = require('path');
 const MANIFEST_PATH = path.resolve(__dirname, '../../../src/config/openrouter-review-policy.json');
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
+const OPENROUTER_DIRECT_PRIMARY_MODEL = 'deepseek/deepseek-v4-flash-0731';
+const OPENROUTER_DIRECT_FALLBACK_MODEL = 'z-ai/glm-5.3-flash';
 const CANONICAL_ALLOWED_MODELS = Object.freeze([
+  'deepseek/deepseek-v4-flash-0731',
+  'z-ai/glm-5.3-flash',
   'openai/gpt-5.6-luna',
   'moonshotai/kimi-k2.6',
   'tencent/hy3',
@@ -55,7 +59,7 @@ function normalizeAllowedModels(value) {
     throw new Error('OpenRouter review policy allowed_models must be an array');
   }
   if (value.length === 0) {
-    throw new Error('OpenRouter review policy allowed_models must be a non-empty subset of the canonical five');
+    throw new Error('OpenRouter review policy allowed_models must be a non-empty subset of the canonical approved model set');
   }
 
   const normalized = value.map((entry) => {
@@ -71,7 +75,7 @@ function normalizeAllowedModels(value) {
 
   for (const model of normalized) {
     if (!CANONICAL_ALLOWED_MODEL_SET.has(model)) {
-      throw new Error(`OpenRouter review policy allowed_models entry "${model}" is not in the canonical five-model fleet`);
+      throw new Error(`OpenRouter review policy allowed_models entry "${model}" is not in the canonical approved model set`);
     }
   }
 
@@ -116,7 +120,7 @@ function validateOpenRouterReviewPolicy(policy) {
   }
 
   if (normalized.model !== OPENROUTER_AUTO_MODEL && !CANONICAL_ALLOWED_MODEL_SET.has(normalized.model)) {
-    throw new Error(`OpenRouter review policy model "${normalized.model}" must be ${OPENROUTER_AUTO_MODEL} or one of the canonical five model IDs`);
+    throw new Error(`OpenRouter review policy model "${normalized.model}" must be ${OPENROUTER_AUTO_MODEL} or one of the canonical approved model IDs`);
   }
 
   if (normalized.model !== OPENROUTER_AUTO_MODEL && !normalized.allowed_models.includes(normalized.model)) {
@@ -184,6 +188,14 @@ function resolveOpenRouterReviewPolicy({ actionInputs, trustedConfig } = {}) {
     ...Object.fromEntries(Object.entries(inputOverlay).filter(([, value]) => value !== undefined)),
   };
 
+  // Keep legacy callers safe while removing Auto Router from the active route. A stale trusted
+  // config that still names the alias is converted to the explicit two-model direct pair before
+  // validation, so it cannot reintroduce gateway-side model selection.
+  if (merged.model === OPENROUTER_AUTO_MODEL) {
+    merged.model = OPENROUTER_DIRECT_PRIMARY_MODEL;
+    merged.allowed_models = [OPENROUTER_DIRECT_PRIMARY_MODEL, OPENROUTER_DIRECT_FALLBACK_MODEL];
+  }
+
   if (merged.cost_quality_tradeoff !== undefined && typeof merged.cost_quality_tradeoff !== 'number') {
     const parsed = Number(merged.cost_quality_tradeoff);
     merged.cost_quality_tradeoff = Number.isNaN(parsed) ? merged.cost_quality_tradeoff : parsed;
@@ -207,13 +219,17 @@ function buildOpenRouterRequestOptions(policy) {
     provider: {
       data_collection: validated.data_collection,
     },
-    plugins: [
-      {
-        id: 'auto-router',
-        allowed_models: validated.allowed_models,
-        cost_quality_tradeoff: validated.cost_quality_tradeoff,
-      },
-    ],
+    // The checked-in production policy is direct-model. Only an explicitly requested legacy
+    // auto-router policy may carry the plugin, so a direct transport can never inherit it.
+    ...(validated.model === OPENROUTER_AUTO_MODEL ? {
+      plugins: [
+        {
+          id: 'auto-router',
+          allowed_models: validated.allowed_models,
+          cost_quality_tradeoff: validated.cost_quality_tradeoff,
+        },
+      ],
+    } : {}),
   };
 
   return requestOptions;

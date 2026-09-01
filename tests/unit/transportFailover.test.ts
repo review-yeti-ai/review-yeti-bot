@@ -169,7 +169,8 @@ describe('Multi-Transport Fast Failover', () => {
             compat: 'openrouter',
             baseUrl: 'https://openrouter.ai/api/v1',
             apiKey: 'or-key',
-            model: 'openrouter/auto',
+            model: 'deepseek/deepseek-v4-flash-0731',
+            models: [],
           },
         ],
       },
@@ -179,13 +180,8 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].body).not.toHaveProperty('plugins');
     expect(requestBodies[0].body).not.toHaveProperty('provider');
-    expect(requestBodies[1].body.plugins).toEqual([
-      {
-        id: 'auto-router',
-        allowed_models: policy.allowed_models,
-        cost_quality_tradeoff: policy.cost_quality_tradeoff,
-      },
-    ]);
+    expect(requestBodies[1].body.plugins).toBeUndefined();
+    expect(requestBodies[1].body.model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(requestBodies[1].body.provider).toEqual({ data_collection: policy.data_collection });
   });
 
