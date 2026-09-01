@@ -3413,15 +3413,31 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const prepareOpenRouterTimeoutRecovery = () => {
         if (!isOpenRouterTransport || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
-        recoveryAction = 'bounded_retry';
         noteRetryReason('timeout');
-        // A timeout with no parseable final object cannot identify a failed upstream model. Retry
-        // the same OpenRouter route without the auto-router plugin. Preserve required reasoning
-        // capabilities (for example, GLM Flash rejects a disabled request) while keeping the
-        // recovery effort low where the endpoint requires it. The initial attempt still uses the
-        // persona's admitted reasoning effort.
+        // A hard client deadline is enough evidence to stop asking the same primary model to do
+        // the same work. When central policy supplied an explicit model fallback, advance to it
+        // for the one admitted recovery attempt. This avoids the observed failure mode where a
+        // reasoning-disabled retry terminates quickly but loses review recall. If no explicit
+        // fallback exists, preserve the legacy bounded same-model retry.
+        const timeoutFallbackModels = Array.isArray(requestBody.models)
+          ? requestBody.models
+            .map((model) => String(model || '').trim())
+            .filter((model) => model && model !== requestBody.model)
+          : [];
+        const timeoutFallbackModel = timeoutFallbackModels.shift() || null;
+        if (timeoutFallbackModel) {
+          requestBody.model = timeoutFallbackModel;
+          if (timeoutFallbackModels.length > 0) requestBody.models = timeoutFallbackModels;
+          else delete requestBody.models;
+          recoveryAction = 'model_fallback';
+        } else {
+          recoveryAction = 'bounded_retry';
+        }
+        // Remove auto-router-only behavior and preserve model-specific reasoning requirements.
+        // GLM Flash, for example, rejects a disabled reasoning request, so its explicit fallback
+        // uses low effort while the initial DeepSeek request still uses the admitted high effort.
         delete requestBody.plugins;
-        const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestModel);
+        const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestBody.model);
         requestBody.reasoning = recoveryReasoning;
         requestBody.max_tokens = Math.max(requestBody.max_tokens, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
         const recoveryReasoningInstruction = recoveryReasoning.effort === 'none'
@@ -3437,7 +3453,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           '- Do not return a summary, decision, or alternate key; the only top-level key is `findings` and its value is an array.',
           '- Do not emit prose or markdown outside the required findings object.',
         ].join('\n');
-        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with ${recoveryReasoning.effort === 'none' ? 'optional reasoning disabled' : 'low required reasoning'} and auto-routing disabled before failing closed...`);
+        const recoveryRoute = timeoutFallbackModel
+          ? `explicit fallback model ${requestBody.model}`
+          : `the same model ${requestBody.model}`;
+        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' timed out before producing output; retrying once with ${recoveryRoute}, ${recoveryReasoning.effort === 'none' ? 'optional reasoning disabled' : 'low required reasoning'}, and auto-routing disabled before failing closed...`);
         return true;
       };
       const prepareOpenRouterFormatRecovery = (findingsError) => {
@@ -3720,7 +3739,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           routerMetadata = normalizeOpenRouterMetadata(payload?.openrouter_metadata);
           const responseBase = {
             ...resultBase,
-            model: resolveResponseModel(payload, requestModel),
+            model: resolveResponseModel(payload, requestBody.model),
             provider: resolveResponseProvider(payload, configuredProvider),
             transport: transportName,
             cost: extractResponseCost(payload),
