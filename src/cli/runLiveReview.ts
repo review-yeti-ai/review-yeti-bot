@@ -7,11 +7,12 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
-import { OpenRouterClient } from '../gateway/openRouterClient';
+import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import type { CtReviewConfigV3 } from '../config/schema';
 import type { PanelResult } from '../panel/panelEngine';
+import type { PanelRequestPolicy } from '../panel/panelEngine';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -118,6 +119,59 @@ export interface PanelQualificationReceipt {
   completedAt: string;
 }
 
+/**
+ * Full-panel qualification keeps the v1 aggregate receipt shape while adding
+ * an explicit profile and expected-lane count. This makes a six-persona run
+ * distinguishable from the legacy single-lane panel probe without changing
+ * any live-review or publication contract.
+ */
+export interface FullPanelQualificationReceipt extends PanelQualificationReceipt {
+  profile: 'full-panel';
+  expectedPersonaCount: 6;
+  optionalFailureCount: 0;
+}
+
+export interface FullPanelQualificationAttemptReceipt {
+  attempt: number;
+  persona: string;
+  providerId: string;
+  requestedModel: string;
+  resolvedModel?: string;
+  outcome: 'completed' | 'failed';
+  durationMs: number;
+  usage?: TokensUsed | null;
+  costUSD?: number | null;
+  failureClass?: string;
+  timeoutKind?: string;
+  responseStatus?: number;
+}
+
+export interface FailedFullPanelQualificationReceipt {
+  version: 'ReviewYetiPanelQualification.v1';
+  profile: 'full-panel';
+  status: 'failed';
+  runId: string;
+  deliveryId: string;
+  repositoryId: number;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  policyDigest: string;
+  configDigest: string;
+  providerId: string;
+  requestedModel: string;
+  publicationMode: 'disabled';
+  providerCalls: number;
+  githubWrites: 0;
+  expectedPersonaCount: 6;
+  failureClass: string;
+  attempts: FullPanelQualificationAttemptReceipt[];
+  durationMs: number;
+  startedAt: string;
+  completedAt: string;
+}
+
 const RECEIPT_RUN_ID = /^run_[a-f0-9]{32}$/u;
 const RECEIPT_REPO = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const RECEIPT_SHA = /^[a-f0-9]{40}$/u;
@@ -143,6 +197,10 @@ function panelQualificationRequested(env: NodeJS.ProcessEnv): boolean {
   return receiptValue(env, 'REVIEW_PANEL_QUALIFICATION_ONLY') === 'true';
 }
 
+function fullPanelQualificationRequested(env: NodeJS.ProcessEnv): boolean {
+  return receiptValue(env, 'REVIEW_FULL_PANEL_QUALIFICATION_ONLY') === 'true';
+}
+
 /** Provider qualification is opt-in and cannot share the receipt-only/live modes. */
 export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return providerQualificationRequested(env)
@@ -154,6 +212,20 @@ export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.e
 /** Panel qualification is opt-in and mutually exclusive with all other worker modes. */
 export function isPanelQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return panelQualificationRequested(env)
+    && !fullPanelQualificationRequested(env)
+    && !providerQualificationRequested(env)
+    && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
+}
+
+function invalidFullPanelQualificationContract(): Error {
+  return new Error('full-panel qualification worker contract is invalid');
+}
+
+/** Full-panel qualification is explicit, non-publishing, and mutually exclusive. */
+export function isFullPanelQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
+  return fullPanelQualificationRequested(env)
+    && !panelQualificationRequested(env)
     && !providerQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
@@ -216,6 +288,10 @@ function providerQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIde
 
 function panelQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIdentity {
   return qualificationIdentity(env, isPanelQualificationWorker, invalidPanelQualificationContract);
+}
+
+function fullPanelQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIdentity {
+  return qualificationIdentity(env, isFullPanelQualificationWorker, invalidFullPanelQualificationContract);
 }
 
 function qualificationModel(
@@ -307,7 +383,52 @@ type PanelQualificationRunner = (options: {
   headSha: string;
   client: ReviewModelClient;
   jobId?: string;
+  requestPolicy?: PanelRequestPolicy;
 }) => Promise<PanelResult>;
+
+/**
+ * Match the central OpenRouter policy's three in-flight request cap during a
+ * full-panel qualification. The panel engine intentionally starts applicable
+ * personas together; this wrapper preserves that scheduling while preventing
+ * one provider from being flooded by six simultaneous streams.
+ */
+class BoundedQualificationClient implements ReviewModelClient {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(
+    private readonly delegate: ReviewModelClient,
+    private readonly maxInFlight: number,
+  ) {
+    if (!Number.isSafeInteger(maxInFlight) || maxInFlight < 1) {
+      throw new Error('qualification concurrency limit must be positive');
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.maxInFlight) {
+      this.active += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    this.active += 1;
+  }
+
+  private release(): void {
+    this.active -= 1;
+    const next = this.waiters.shift();
+    next?.();
+  }
+
+  async complete(request: Parameters<ReviewModelClient['complete']>[0]): ReturnType<ReviewModelClient['complete']> {
+    await this.acquire();
+    try {
+      return await this.delegate.complete(request);
+    } finally {
+      this.release();
+    }
+  }
+}
 
 const PANEL_QUALIFICATION_FIXTURE = [{
   path: 'qualification-fixture.ts',
@@ -322,6 +443,137 @@ const PANEL_QUALIFICATION_FIXTURE = [{
     '+}',
   ].join('\n'),
 }];
+
+const FULL_PANEL_QUALIFICATION_PERSONAS = [
+  {
+    id: 'security',
+    charter: 'builtin:security',
+    paths: ['src/**', '.github/**', 'k8s/**'],
+  },
+  {
+    id: 'performance',
+    charter: 'builtin:performance',
+    paths: ['src/**'],
+  },
+  {
+    id: 'architecture',
+    charter: 'builtin:constitutional-goals',
+    paths: ['src/**', 'Dockerfile', 'k8s/**'],
+  },
+  {
+    id: 'testing',
+    charter: 'builtin:correctness',
+    paths: ['src/**', 'tests/**'],
+  },
+  {
+    id: 'dependencies',
+    charter: 'builtin:contract',
+    paths: ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'],
+  },
+  {
+    id: 'licensing',
+    charter: 'builtin:docs',
+    paths: ['LICENSE', 'NOTICE', 'package.json'],
+  },
+] as const;
+const FULL_PANEL_MIN_PROVIDER_CALLS = FULL_PANEL_QUALIFICATION_PERSONAS.length + 2;
+const FULL_PANEL_MAX_TURNS = 3;
+const FULL_PANEL_MAX_ATTEMPT_RECEIPTS = 32;
+const FULL_PANEL_FALLBACK_MODEL = 'z-ai/glm-5.3-flash';
+
+function fullPanelRequestPolicy(
+  model: string,
+  identity: QualificationIdentity,
+  providerId: string,
+): PanelRequestPolicy {
+  return {
+    stream: true,
+    ttftTimeoutMs: 30_000,
+    maxTokens: 24_576,
+    models: model === FULL_PANEL_FALLBACK_MODEL ? [] : [FULL_PANEL_FALLBACK_MODEL],
+    responseFormat: { type: 'json_object' },
+    provider: {
+      allow_fallbacks: true,
+      require_parameters: true,
+      ignore: ['morph', 'fireworks'],
+      sort: 'throughput',
+      preferred_min_throughput: { p90: 40 },
+      preferred_max_latency: { p99: 3 },
+      data_collection: 'deny',
+    },
+    metadata: {
+      qualificationMode: 'full-panel',
+      runId: identity.runId,
+      providerId,
+    },
+  };
+}
+
+function qualificationFailureClass(error: unknown): string {
+  if (error instanceof OpenRouterTimeoutError) return `timeout_${error.kind}`;
+  if (error instanceof OpenRouterResponseError) {
+    if (error.status === 429) return 'rate_limit';
+    if (error.status !== undefined && error.status >= 500) return 'provider_5xx';
+  }
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (/(?:invalid json|structured output|nonce fence|response contract)/iu.test(message)) return 'structured_output';
+  return 'panel_failure';
+}
+
+const FULL_PANEL_QUALIFICATION_FIXTURE = [
+  {
+    path: 'src/auth/session.ts',
+    content: [
+      'export function loadSession(request: { headers: Record<string, string | undefined> }) {',
+      '  const token = request.headers.authorization?.replace("Bearer ", "");',
+      '  return token ? { token, authenticated: true } : { authenticated: false };',
+      '}',
+    ].join('\n'),
+  },
+  {
+    path: 'src/dispatcher/worker.ts',
+    content: [
+      'export async function dispatch(jobs: Array<() => Promise<void>>) {',
+      '  for (const job of jobs) await job();',
+      '}',
+    ].join('\n'),
+  },
+  {
+    path: 'Dockerfile',
+    content: [
+      'FROM node:24-alpine',
+      'WORKDIR /app',
+      'COPY package*.json ./',
+      'RUN npm ci --omit=dev',
+      'COPY . .',
+      'CMD ["node", "dist/worker.js"]',
+    ].join('\n'),
+  },
+  {
+    path: 'k8s/review-job.yaml',
+    content: [
+      'apiVersion: batch/v1',
+      'kind: Job',
+      'metadata:',
+      '  name: review-job',
+      'spec:',
+      '  template:',
+      '    spec:',
+      '      containers:',
+      '        - name: worker',
+      '          image: review-yeti:qualification',
+      '      restartPolicy: Never',
+    ].join('\n'),
+  },
+  {
+    path: 'package.json',
+    content: JSON.stringify({ name: 'qualification-fixture', dependencies: { example: '^1.0.0' } }, null, 2),
+  },
+  {
+    path: 'LICENSE',
+    content: 'Copyright (c) CallTelemetry\n\nPermission is hereby granted, free of charge, to use this software.',
+  },
+];
 
 function panelQualificationConfig(model: string, timeoutMs: number): CtReviewConfigV3 {
   const perCallSeconds = Math.max(1, Math.floor(timeoutMs / 4_000));
@@ -340,6 +592,41 @@ function panelQualificationConfig(model: string, timeoutMs: number): CtReviewCon
       // bounded and does not permit open-ended exploration in the qualification worker.
       maxTurns: 2,
     }],
+    reviewers: {
+      execution: 'personas',
+      fallback: 'none',
+      overall_timeout_s: Math.max(1, Math.floor(timeoutMs / 1_000)),
+      providers: [{
+        id: 'qualification',
+        enabled: true,
+        model,
+        effort: 'low',
+        review_timeout_s: perCallSeconds,
+        arbiter_timeout_s: perCallSeconds,
+      }],
+      arbiter: { order: ['qualification'] },
+    },
+  } as CtReviewConfigV3;
+}
+
+function fullPanelQualificationConfig(model: string, timeoutMs: number): CtReviewConfigV3 {
+  const perCallSeconds = Math.max(1, Math.floor(timeoutMs / 4_000));
+  const base = createDefaultV3Config();
+  return {
+    ...base,
+    quorum: 1,
+    personas: FULL_PANEL_QUALIFICATION_PERSONAS.map((persona) => ({
+      id: persona.id,
+      enabled: true,
+      required: true,
+      charter: persona.charter,
+      paths: [...persona.paths],
+      providers: ['qualification'],
+      // One initial answer plus two bounded format/tool corrections. The
+      // qualification profile must exercise the same recovery behavior that
+      // production lanes rely on without permitting open-ended exploration.
+      maxTurns: FULL_PANEL_MAX_TURNS,
+    })),
     reviewers: {
       execution: 'personas',
       fallback: 'none',
@@ -442,10 +729,10 @@ export async function runPanelQualificationWorker(
   let providerCalls = 0;
   const effectiveClient = client || qualificationClient(env);
   const countingClient: ReviewModelClient = {
-    complete: async (request) => {
-      providerCalls += 1;
-      return effectiveClient.complete(request);
-    },
+      complete: async (request) => {
+        providerCalls += 1;
+        return effectiveClient.complete(request);
+      },
   };
   const result = await runWithQualificationDeadline(panelRunner({
     config: panelQualificationConfig(model, timeoutMs),
@@ -459,6 +746,141 @@ export async function runPanelQualificationWorker(
   const completedAt = new Date().toISOString();
   const receipt: PanelQualificationReceipt = {
     version: 'ReviewYetiPanelQualification.v1',
+    status: 'succeeded',
+    ...identity,
+    providerId,
+    requestedModel: model,
+    resolvedModel: result.arbiter.model,
+    resultDigest: panelQualificationResultDigest(result),
+    publicationMode: 'disabled',
+    providerCalls,
+    githubWrites: 0,
+    personaCount: result.personas.length,
+    findingsCount: result.personas.reduce((total, lane) => total + lane.findings.length, 0)
+      + result.moderator.findings.length,
+    quorumSatisfied: result.quorum.satisfied,
+    verdict: result.arbiter.verdict,
+    usage: aggregatePanelUsage(result),
+    costUSD: aggregatePanelCost(result),
+    durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+    startedAt,
+    completedAt,
+  };
+  await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+  await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8' });
+  return receipt;
+}
+
+/**
+ * Execute the complete six-persona panel, moderator, and arbiter path against
+ * a representative multi-file fixture. This mode is deliberately opt-in and
+ * non-publishing so it can be run by the DOKS dispatcher for timing and
+ * terminal-reliability measurements without changing production reviews.
+ */
+export async function runFullPanelQualificationWorker(
+  env: NodeJS.ProcessEnv = process.env,
+  panelRunner: PanelQualificationRunner = executePersonaPanel,
+  client?: ReviewModelClient,
+): Promise<FullPanelQualificationReceipt> {
+  if (!isFullPanelQualificationWorker(env) || receiptValue(env, 'REVIEW_RECEIPT_PATH') !== RECEIPT_ONLY_PATH) {
+    throw invalidFullPanelQualificationContract();
+  }
+  const identity = fullPanelQualificationIdentity(env);
+  const model = qualificationModel(env, invalidFullPanelQualificationContract);
+  const timeoutMs = qualificationTimeoutMs(env, invalidFullPanelQualificationContract);
+  const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
+  const startedAt = new Date().toISOString();
+  let providerCalls = 0;
+  const attempts: FullPanelQualificationAttemptReceipt[] = [];
+  const effectiveClient = client || qualificationClient(env);
+  const countingClient: ReviewModelClient = {
+    complete: async (request) => {
+      providerCalls += 1;
+      const attempt = providerCalls;
+      const attemptStarted = Date.now();
+      try {
+        const response = await effectiveClient.complete(request);
+        if (attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
+          attempts.push({
+            attempt,
+            persona: request.persona || 'unknown',
+            providerId: request.providerId || providerId,
+            requestedModel: request.model,
+            resolvedModel: response.model,
+            outcome: 'completed',
+            durationMs: Math.max(0, Date.now() - attemptStarted),
+            usage: response.usage,
+            costUSD: response.costUSD,
+          });
+        }
+        return response;
+      } catch (error: any) {
+        if (attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
+          attempts.push({
+            attempt,
+            persona: request.persona || 'unknown',
+            providerId: request.providerId || providerId,
+            requestedModel: request.model,
+            outcome: 'failed',
+            durationMs: Math.max(0, Date.now() - attemptStarted),
+            failureClass: qualificationFailureClass(error),
+            ...(error instanceof OpenRouterTimeoutError ? { timeoutKind: error.kind } : {}),
+            ...(error instanceof OpenRouterResponseError && error.status !== undefined
+              ? { responseStatus: error.status }
+              : {}),
+          });
+        }
+        throw error;
+      }
+    },
+  };
+  const boundedClient = new BoundedQualificationClient(countingClient, 3);
+  let result: PanelResult;
+  try {
+    result = await runWithQualificationDeadline(panelRunner({
+      config: fullPanelQualificationConfig(model, timeoutMs),
+      changedFiles: FULL_PANEL_QUALIFICATION_FIXTURE,
+      repository: identity.repo,
+      headSha: identity.headSha,
+      client: boundedClient,
+      jobId: identity.runId,
+      requestPolicy: fullPanelRequestPolicy(model, identity, providerId),
+    }), timeoutMs);
+    if (!result.quorum.satisfied || !result.arbiter?.verdict
+        || result.personas.length !== FULL_PANEL_QUALIFICATION_PERSONAS.length
+        || result.optionalFailures.length > 0
+        || providerCalls < FULL_PANEL_MIN_PROVIDER_CALLS) {
+      throw invalidFullPanelQualificationContract();
+    }
+  } catch (error) {
+    const completedAt = new Date().toISOString();
+    const failedReceipt: FailedFullPanelQualificationReceipt = {
+      version: 'ReviewYetiPanelQualification.v1',
+      profile: 'full-panel',
+      status: 'failed',
+      ...identity,
+      providerId,
+      requestedModel: model,
+      publicationMode: 'disabled',
+      providerCalls,
+      githubWrites: 0,
+      expectedPersonaCount: 6,
+      failureClass: qualificationFailureClass(error),
+      attempts,
+      durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+      startedAt,
+      completedAt,
+    };
+    await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+    await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(failedReceipt)}\n`, { encoding: 'utf8' });
+    throw error;
+  }
+  const completedAt = new Date().toISOString();
+  const receipt: FullPanelQualificationReceipt = {
+    version: 'ReviewYetiPanelQualification.v1',
+    profile: 'full-panel',
+    expectedPersonaCount: 6,
+    optionalFailureCount: 0,
     status: 'succeeded',
     ...identity,
     providerId,
@@ -769,7 +1191,25 @@ export async function runWorker(
       costUSD: receipt.costUSD,
     });
   },
+  fullPanelRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
+    const receipt = await runFullPanelQualificationWorker(workerEnv);
+    logger.info('Full-panel qualification worker completed without GitHub writes', {
+      runId: receipt.runId,
+      providerId: receipt.providerId,
+      requestedModel: receipt.requestedModel,
+      providerCalls: receipt.providerCalls,
+      personaCount: receipt.personaCount,
+      verdict: receipt.verdict,
+      durationMs: receipt.durationMs,
+      costUSD: receipt.costUSD,
+    });
+  },
 ): Promise<void> {
+  if (fullPanelQualificationRequested(env)) {
+    if (!isFullPanelQualificationWorker(env)) throw invalidFullPanelQualificationContract();
+    await fullPanelRunner(env);
+    return;
+  }
   if (panelQualificationRequested(env)) {
     if (!isPanelQualificationWorker(env)) throw invalidPanelQualificationContract();
     await panelRunner(env);

@@ -314,6 +314,47 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	}
 }
 
+func TestPRReviewJobV1Alpha2ReconcilerReclaimsIdleWorkspaceAfterTerminalReview(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	review := v1alpha2Review(lastUsed.Add(-30 * time.Minute))
+	review.Status.Phase = reviewv1alpha2.PhaseSucceeded
+	completion := metav1.NewTime(lastUsed)
+	review.Status.CompletionTime = &completion
+	pvc, err := workspace.BuildPVC(review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, lastUsed)
+	if err != nil {
+		t.Fatalf("build PVC: %v", err)
+	}
+	kube := fake.NewClientBuilder().WithScheme(v1alpha2Scheme(t)).WithObjects(review, pvc).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	currentNow := lastUsed.Add(29*time.Minute + 59*time.Second)
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: v1alpha2Scheme(t), Now: func() time.Time { return currentNow }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile before idle TTL: %v", err)
+	}
+	if result.RequeueAfter != time.Second {
+		t.Fatalf("requeue after 1799 seconds = %s, want 1s", result.RequeueAfter)
+	}
+	var retained corev1.PersistentVolumeClaim
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: pvc.Name}, &retained); err != nil {
+		t.Fatalf("get retained PVC: %v", err)
+	}
+
+	currentNow = lastUsed.Add(30 * time.Minute)
+	result, err = reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile at idle TTL: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("requeue after reclamation = %s, want zero", result.RequeueAfter)
+	}
+	var reclaimed corev1.PersistentVolumeClaim
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: pvc.Name}, &reclaimed); err == nil {
+		t.Fatal("idle terminal review must reclaim its workspace PVC")
+	}
+}
+
 func histogramSampleCount(t *testing.T, name string) uint64 {
 	t.Helper()
 	operatorMetrics.RegisterMetrics()

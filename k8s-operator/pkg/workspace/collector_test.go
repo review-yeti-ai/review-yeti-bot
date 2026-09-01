@@ -440,6 +440,28 @@ func TestReclaimPreservesForeignFinalizers(t *testing.T) {
 	}
 }
 
+func TestReclaimResumesAlreadyTerminatingPVC(t *testing.T) {
+	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	now := lastUsed.Add(30 * time.Minute)
+	pvc := mustPVC(t, 123, 42, lastUsed)
+	deletionStarted := metav1.NewTime(now.Add(-time.Second))
+	pvc.DeletionTimestamp = &deletionStarted
+	pvc.ResourceVersion = "7"
+	kube := fakeClient(t, pvc)
+
+	result, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reclaimed || result.Reason != workspace.ReclaimedIdleWorkspace {
+		t.Fatalf("result = %#v, want reclaimed terminating workspace", result)
+	}
+	stored := &corev1.PersistentVolumeClaim{}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(pvc), stored); !apierrors.IsNotFound(err) {
+		t.Fatalf("reclaimed PVC lookup error = %v, want not found", err)
+	}
+}
+
 func TestReclaimPropagatesKubernetesFailures(t *testing.T) {
 	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	now := lastUsed.Add(30 * time.Minute)
