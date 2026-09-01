@@ -520,6 +520,9 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 	if container.Image != review.Spec.WorkerImage || container.ImagePullPolicy != corev1.PullIfNotPresent {
 		return false
 	}
+	if !managedWorkerEnvMatches(review, container.Env) {
+		return false
+	}
 	if worker.Spec.Template.Spec.AutomountServiceAccountToken == nil || *worker.Spec.Template.Spec.AutomountServiceAccountToken {
 		return false
 	}
@@ -529,6 +532,47 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 		}
 	}
 	return false
+}
+
+func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.EnvVar) bool {
+	receiptOnly := envValue(env, job.ReceiptOnlyEnv)
+	fullPanel := envValue(env, job.FullPanelQualificationEnv)
+	model := envValue(env, job.QualificationModelEnv)
+	if review.Spec.QualificationProfile == job.FullPanelQualificationProfile {
+		if receiptOnly != "" || fullPanel != "true" || model != review.Spec.QualificationModel {
+			return false
+		}
+		secretRefs := 0
+		for _, variable := range env {
+			if variable.Name != "OPENROUTER_API_KEY" {
+				continue
+			}
+			secretRefs++
+			if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
+				variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "OPENROUTER_API_KEY" {
+				return false
+			}
+		}
+		return secretRefs == 1
+	}
+	if receiptOnly != "true" || fullPanel != "" || model != "" {
+		return false
+	}
+	for _, variable := range env {
+		if variable.Name == "OPENROUTER_API_KEY" {
+			return false
+		}
+	}
+	return true
+}
+
+func envValue(env []corev1.EnvVar, name string) string {
+	for _, variable := range env {
+		if variable.Name == name {
+			return variable.Value
+		}
+	}
+	return ""
 }
 
 func timePtr(value metav1.Time) *metav1.Time { return &value }
