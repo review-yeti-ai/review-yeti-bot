@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.0...v1.20.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** release cancelled OpenRouter streams ([#381](https://github.com/review-yeti-ai/review-yeti-bot/issues/381)) ([cd91241](https://github.com/review-yeti-ai/review-yeti-bot/commit/cd9124140e01f333090b6a4f60f81a1f35ff841c))
+
 ## [1.20.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.5...v1.20.0) (2026-09-01)
 
 
