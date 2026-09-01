@@ -147,9 +147,13 @@ async function capturePanelRequests() {
             timeout_ms: transport.timeoutMs,
             body: {
               ...body,
-              messages: body.messages.map((message: any) => ({
+              messages: body.messages.map((message: any, index: number) => ({
                 role: message.role,
-                content: message.role === 'system' ? '<panel-system-prompt>' : '<panel-user-prompt>',
+                content: message.role === 'system'
+                  ? '<panel-system-prompt>'
+                  : index === 1
+                    ? '<panel-evidence-prompt>'
+                    : '<panel-assignment-prompt>',
               })),
             },
           };
@@ -230,7 +234,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
       model,
       messages: [
         { role: 'system', content: '<panel-system-prompt>' },
-        { role: 'user', content: '<panel-user-prompt>' },
+        { role: 'user', content: '<panel-evidence-prompt>' },
       ],
       temperature,
       max_tokens: maxTokens,
@@ -268,7 +272,14 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         timeout_ms: 90000,
         body: {
           ...common('deepseek/deepseek-v4-flash-0731', 24576),
+          messages: [
+            { role: 'system', content: '<panel-system-prompt>' },
+            { role: 'user', content: '<panel-evidence-prompt>' },
+            { role: 'user', content: '<panel-assignment-prompt>' },
+          ],
           reasoning: { effort: 'high' },
+          session_id: 'review-yeti-v1-11a37010bca3ef6ace2fb892cd3d5969b2d4eff6fa878bce',
+          prompt_cache_key: 'review-yeti-v1-11a37010bca3ef6ace2fb892cd3d5969b2d4eff6fa878bce',
           provider: {
             allow_fallbacks: true,
             require_parameters: true,

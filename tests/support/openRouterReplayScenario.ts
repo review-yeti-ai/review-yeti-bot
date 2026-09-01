@@ -42,12 +42,6 @@ export const openRouterReplayPersonas = {
   },
 };
 
-export const openRouterReplaySystemPrompts = {
-  security: expectedSystemPrompt(openRouterReplayPersonas.security),
-  testing: expectedSystemPrompt(openRouterReplayPersonas.testing),
-  documentation: expectedSystemPrompt(openRouterReplayPersonas.documentation),
-};
-
 export const openRouterReplayUserPrompt = [
   'Repository: calltelemetry/ct-review-bot',
   'Pull request: #42',
@@ -63,33 +57,16 @@ export const openRouterReplayUserPrompt = [
   '',
 ].join('\n');
 
-function expectedSystemPrompt(persona: { name: string; charter: string }): string {
-  return [
-    `You are ${persona.name}, one reviewer on a code review panel.`,
-    '',
-    'Your charter:',
-    persona.charter,
-    '',
-    '',
-    'Review the unified diff supplied by the user against your charter and nothing else.',
-    'Another reviewer covers every other concern; staying in your lane is what makes the panel work.',
-    '',
-    'Rules:',
-    '- Report only defects you can point to in the diff. Do not speculate about unseen code.',
-    '- Use the exact file path from the diff headers and calculate the line number from the hunk headers (@@ -oldStart,oldCount +newStart,newCount @@).',
-    '- Every finding must name what breaks and under what conditions. If you cannot, do not report it.',
-    '- Severity: P0 = exploitable, data-losing or outage-causing. P1 = a defect that must be fixed before merge. P2 = worth doing, safe to merge without.',
-    '- P1 and P0 are rare. When unsure between two levels, choose the lower one.',
-    '- If the diff is clean by your charter, return an empty findings array. Finding nothing is the expected result on most changes, and is more useful than a speculative finding.',
-    '',
-    'Evidence boundary:',
-    '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
-    '- If the supplied evidence does not prove a defect, return no finding.',
-    '',
-    'Respond with JSON only, in exactly this shape:',
-    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
-  ].join('\n');
-}
+export const openRouterReplayMessages = Object.fromEntries(
+  Object.entries(openRouterReplayPersonas).map(([id, persona]) => [
+    id,
+    pipeline.buildOpenRouterReviewMessages(persona, openRouterReplayUserPrompt),
+  ]),
+);
+
+export const openRouterReplayCacheIdentity = pipeline.openRouterPromptCacheIdentity(
+  openRouterReplayMessages.security,
+);
 
 export function openRouterCassettePath(name: string): string {
   return path.join(rootRepoDir, 'tests/fixtures/cassettes/openrouter', name);
