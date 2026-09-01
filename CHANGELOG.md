@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.20.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.5...v1.20.0) (2026-09-01)
+
+
+### Features
+
+* **qualification:** add strict panel schemas and opt-in operator profile ([#378](https://github.com/review-yeti-ai/review-yeti-bot/issues/378)) ([58d6964](https://github.com/review-yeti-ai/review-yeti-bot/commit/58d6964cae6e586e720d339f2c29dc18bc423f56))
+
+
+### Bug Fixes
+
+* **review:** honor streamed reasoning and timeout policy ([#379](https://github.com/review-yeti-ai/review-yeti-bot/issues/379)) ([8b226a2](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b226a2d2009a2621d60ba5bd5d96bbffb6c973b))
+
 ## [1.19.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.4...v1.19.5) (2026-09-01)
 
 
