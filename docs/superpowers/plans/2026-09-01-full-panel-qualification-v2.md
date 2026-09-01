@@ -1,6 +1,8 @@
 # Full-panel DOKS qualification v2
 
-**Status:** implemented in the worker; manual DOKS execution remains pending.
+**Status:** worker implemented; one manual DOKS execution completed and failed
+closed in the licensing lane. See
+`docs/superpowers/evidence/2026-09-01-doks-full-panel-v2.md`.
 
 ## Purpose
 
@@ -70,3 +72,12 @@ planner; that remains a separate, explicitly designed experiment.
 There is no activation switch to roll back. If the Job fails, delete its
 disposable resources and leave the existing receipt-only operator and central
 GitHub Action path unchanged.
+
+## Next decision
+
+Do not repeat the same Job unchanged. The next bounded change must address the
+provider-independent structured-output contract (or add a provider-native JSON
+response mode with an explicit nonce field) and add a focused regression test
+for malformed fenced JSON. Re-run exactly one disposable full-panel Job only
+after that change; production routing and the operator admission contract stay
+unchanged until a complete sanitized receipt is observed.
