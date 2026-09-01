@@ -25,11 +25,35 @@ function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffCha
   }));
 }
 
+function splitWorkflowReference(value) {
+  const workflowReference = String(value || '');
+  const separator = workflowReference.lastIndexOf('@');
+  if (separator < 1 || separator === workflowReference.length - 1) return null;
+  return {
+    path: workflowReference.slice(0, separator),
+    ref: workflowReference.slice(separator + 1),
+  };
+}
+
 function isTrustedWorkflowReference(reference, trustedWorkflows, trustedWorkflowSha) {
   const resolvedSha = String(reference?.sha || '').toLowerCase();
-  return trustedWorkflows.includes(String(reference?.path || ''))
-    && /^[0-9a-f]{40}$/u.test(resolvedSha)
-    && resolvedSha === String(trustedWorkflowSha || '').toLowerCase();
+  if (!/^[0-9a-f]{40}$/u.test(resolvedSha)
+    || resolvedSha !== String(trustedWorkflowSha || '').toLowerCase()) return false;
+
+  const candidatePath = String(reference?.path || '');
+  return trustedWorkflows.some((trustedWorkflow) => {
+    if (candidatePath === trustedWorkflow) return true;
+
+    // GitHub's run API shortens the `path` suffix to `@v1`, while job.workflow_ref
+    // reports `@refs/heads/v1`. Accept that representation only when the API's
+    // separate ref field proves the exact full ref and the workflow path is unchanged.
+    const trusted = splitWorkflowReference(trustedWorkflow);
+    const candidate = splitWorkflowReference(candidatePath);
+    if (!trusted || !candidate || trusted.path !== candidate.path) return false;
+    if (String(reference?.ref || '') !== trusted.ref) return false;
+    const shortRef = trusted.ref.replace(/^refs\/(?:heads|tags)\//u, '');
+    return shortRef !== trusted.ref && candidate.ref === shortRef;
+  });
 }
 
 function createFullReviewScope({ fullDiffText, planDigest, fallbackReason = null }) {

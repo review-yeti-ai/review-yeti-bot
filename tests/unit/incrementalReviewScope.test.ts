@@ -49,6 +49,16 @@ describe('trusted incremental review scope', () => {
     const trustedPath = 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1';
     const trustedSha = 'd'.repeat(40);
     expect(scope.isTrustedWorkflowReference({ path: trustedPath, sha: trustedSha }, [trustedPath], trustedSha)).toBe(true);
+    expect(scope.isTrustedWorkflowReference({
+      path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+      ref: 'refs/tags/v1',
+      sha: trustedSha,
+    }, [trustedPath], trustedSha)).toBe(true);
+    expect(scope.isTrustedWorkflowReference({
+      path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+      ref: 'refs/heads/v1',
+      sha: trustedSha,
+    }, [trustedPath], trustedSha)).toBe(false);
     expect(scope.isTrustedWorkflowReference({ path: trustedPath, sha: 'e'.repeat(40) }, [trustedPath], trustedSha)).toBe(false);
     expect(scope.isTrustedWorkflowReference({ path: `${trustedPath}-other`, sha: trustedSha }, [trustedPath], trustedSha)).toBe(false);
     expect(scope.isTrustedWorkflowReference({ path: trustedPath, sha: 'not-a-sha' }, [trustedPath], trustedSha)).toBe(false);
@@ -123,7 +133,8 @@ describe('trusted incremental review scope', () => {
       new Response(JSON.stringify({
         status: 'completed', event: 'pull_request_target', head_sha: PARENT, run_attempt: 1,
         referenced_workflows: [{
-          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+          ref: 'refs/tags/v1',
           sha: 'd'.repeat(40),
         }],
       }), { status: 200 }),
