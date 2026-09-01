@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.3...v1.19.4) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** recover malformed primary route before failover ([#373](https://github.com/review-yeti-ai/review-yeti-bot/issues/373)) ([965cc98](https://github.com/review-yeti-ai/review-yeti-bot/commit/965cc98f83c7d00a43163008cbf39210639bccc9))
+
 ## [1.19.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.19.2...v1.19.3) (2026-09-01)
 
 
