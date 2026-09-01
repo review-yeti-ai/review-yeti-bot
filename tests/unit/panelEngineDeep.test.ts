@@ -202,6 +202,62 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     ).rejects.toThrow('required persona failure');
   });
 
+  it('sends one structured correction when a fenced finding has an invalid severity', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts' }];
+    const personaAttempts = new Map<string, number>();
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = opts.messages[1].content as string;
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const requestNonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      if (prompt.includes('Role: ARBITER')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${requestNonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Passes after validation.' })}\nCT_REVIEW_END:${requestNonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+      if (prompt.includes('Role: MODERATOR')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${requestNonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${requestNonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+
+      const personaMatch = prompt.match(/\[Persona: ([^\]]+)\]/);
+      const persona = personaMatch ? personaMatch[1] : 'unknown';
+      const attempt = (personaAttempts.get(persona) || 0) + 1;
+      personaAttempts.set(persona, attempt);
+      const body = persona === 'sec-lane' && attempt === 1
+        ? { decision: 'FINDINGS', findings: [{ severity: 'P3', path: 'src/security/auth.ts', line: 1, title: 'Invalid severity', body: 'This must be corrected.' }] }
+        : { decision: 'APPROVE', findings: [] };
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${requestNonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${requestNonce}`,
+        usage: null,
+        costUSD: null,
+      };
+    });
+
+    const panelResult = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-invalid-finding-recovery',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect(panelResult.personas).toHaveLength(2);
+    expect(personaAttempts.get('sec-lane')).toBe(2);
+    expect(mockClient.complete.mock.calls.some(([request]: any[]) =>
+      request.messages.some((message: any) => message.content.includes('STRUCTURED_OUTPUT_CORRECTION')),
+    )).toBe(true);
+  });
+
   it('supports BLOCK arbiter verdict with rationale', async () => {
     const config = buildDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts' }];

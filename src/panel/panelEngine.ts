@@ -465,6 +465,7 @@ async function invoke(
   options?: {
     maxTurns?: number;
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    validateParsed?: (value: unknown) => string | null;
   }
 ): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number }> {
   const requestNonce = nonce();
@@ -567,7 +568,14 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
     // Check if output contains valid fenced evaluation
     try {
       const candidate = parseFenced(response.content, requestNonce);
-      const contractError = structuredOutputContractError(role, candidate);
+      let contractError = structuredOutputContractError(role, candidate);
+      if (!contractError && options?.validateParsed) {
+        try {
+          contractError = options.validateParsed(candidate);
+        } catch (error: any) {
+          contractError = error instanceof Error ? error.message : String(error);
+        }
+      }
       if (!contractError) {
         parsedResult = candidate;
         break; // Successfully completed evaluation
@@ -814,6 +822,20 @@ async function runPersona(
           }, {
             maxTurns: effectiveMaxTurns,
             effort: effectiveEffort,
+            validateParsed: (candidate) => {
+              try {
+                const findings = validateFindings((candidate as any)?.findings);
+                if ((candidate as any)?.decision === 'APPROVE' && findings.length > 0) {
+                  return 'APPROVE cannot contain findings';
+                }
+                if ((candidate as any)?.decision === 'FINDINGS' && findings.length === 0) {
+                  return 'FINDINGS requires at least one finding';
+                }
+                return null;
+              } catch (error: any) {
+                return error instanceof Error ? error.message : String(error);
+              }
+            },
           });
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {
@@ -1095,6 +1117,15 @@ export async function executePersonaPanel(options: {
         headSha,
         personaEvidence: personas,
         outputSchema: { decision: 'RECONCILED', findings: [] },
+      }, {
+        validateParsed: (candidate) => {
+          try {
+            validateFindings((candidate as any)?.findings);
+            return null;
+          } catch (error: any) {
+            return error instanceof Error ? error.message : String(error);
+          }
+        },
       });
       if (!run.parsed || !Array.isArray(run.parsed.findings)) {
         throw new PanelConfigurationError('moderator returned invalid decision structure');
