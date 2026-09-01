@@ -212,7 +212,7 @@ describe('resolveModelConfig', () => {
     });
     expect(cfg.transports[3]).toMatchObject({
       baseUrl: 'https://api.synthetic.new/openai/v1',
-      model: 'glm-5.2',
+      model: 'glm-5.3-flash',
       stream: true,
       reasoningEffort: 'high',
     });
