@@ -1014,11 +1014,65 @@ describe('reviewWithModel', () => {
     expect(calls[1]).not.toHaveProperty('plugins');
     expect(calls[1].messages[0].content).toContain('Re-evaluate the complete diff');
     expect(calls[1].messages[0].content).toContain('Disable optional reasoning');
+    expect(calls[1].messages[0].content).toContain('Do not return a summary, decision, or alternate key');
     expect(calls[1].messages[0].content).not.toContain('return only {"findings":[]}');
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
       expect.objectContaining({ attempt: 1, outcome: 'transport_error', failureClass: 'timeout', timeoutKind: 'total' }),
       expect.objectContaining({ attempt: 2, outcome: 'parsed', failureClass: null }),
     ]));
+  });
+
+  it('keeps required reasoning enabled for GLM OpenRouter timeout recovery', async () => {
+    const calls: any[] = [];
+    const stalledResponse = () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({ start() {} }),
+    });
+    const recoveredResponse = () => {
+      const wire = [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":[]}' } }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(wire));
+            controller.close();
+          },
+        }),
+      };
+    };
+    const fetchImplementation = async (_url: string, init: any) => {
+      calls.push(JSON.parse(init.body));
+      return calls.length === 1 ? stalledResponse() : recoveredResponse();
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      timeoutMs: 25,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-glm',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'z-ai/glm-5.3-flash',
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+      }],
+    });
+
+    expect(res).toMatchObject({ decision: 'APPROVE', findings: [], attemptCount: 2, recoveryAction: 'bounded_retry' });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toHaveProperty('reasoning', { effort: 'high' });
+    expect(calls[1]).toHaveProperty('reasoning', { effort: 'low' });
+    expect(calls[1].messages[0].content).toContain('Keep required reasoning at low effort');
+    expect(calls[1].messages[0].content).toContain('only top-level key is `findings`');
   });
 
   it('fails closed when a streaming response becomes idle', async () => {
