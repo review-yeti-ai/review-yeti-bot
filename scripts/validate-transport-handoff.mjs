@@ -24,9 +24,18 @@ try {
   throw new Error(`could not decode transport handoff: ${error.message}`);
 }
 
-const policyTransports = policy.review_yeti?.transports;
-if (!Array.isArray(policyTransports) || policyTransports.length === 0) {
+const configuredPolicyTransports = policy.review_yeti?.transports;
+if (!Array.isArray(configuredPolicyTransports) || configuredPolicyTransports.length === 0) {
   throw new Error('policy must define at least one transport');
+}
+if (configuredPolicyTransports.some((transport) => typeof transport?.enabled !== 'boolean')) {
+  throw new Error('every policy transport must declare enabled as a boolean');
+}
+const policyTransports = Array.isArray(configuredPolicyTransports)
+  ? configuredPolicyTransports.filter((transport) => transport.enabled === true)
+  : configuredPolicyTransports;
+if (!Array.isArray(policyTransports) || policyTransports.length === 0) {
+  throw new Error('policy must enable at least one transport');
 }
 if (!Array.isArray(plan) || plan.length === 0) {
   throw new Error('transport handoff must contain at least one transport');
@@ -44,7 +53,23 @@ if (plan.some((entry) => entry?.stream !== true)) {
 }
 if (process.env.ALLOW_POLICY_SUBSET === 'true') {
   const admittedPolicyTransports = policyTransports.filter((transport) => names.includes(transport.name));
-  if (JSON.stringify(plan) !== JSON.stringify(admittedPolicyTransports)) {
+  const quotaBoundSubset = plan.length === admittedPolicyTransports.length
+    && plan.every((transport, index) => {
+      const configured = admittedPolicyTransports[index];
+      if (JSON.stringify(transport) === JSON.stringify(configured)) return true;
+      if (configured?.quota_probe !== 'synthetic-v2'
+          || transport?.name !== configured.name
+          || !Number.isSafeInteger(transport.max_in_flight)
+          || transport.max_in_flight < 1
+          || transport.max_in_flight > configured.max_in_flight) {
+        return false;
+      }
+      return JSON.stringify(transport) === JSON.stringify({
+        ...configured,
+        max_in_flight: transport.max_in_flight,
+      });
+    });
+  if (!quotaBoundSubset) {
     throw new Error('admitted transport handoff is not an exact ordered subset of policy');
   }
 } else if (JSON.stringify(plan) !== JSON.stringify(policyTransports)) {

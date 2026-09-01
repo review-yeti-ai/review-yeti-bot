@@ -65,7 +65,6 @@ jobs:
         id: smoke
         working-directory: .exampleorg-review-actions
         env:
-          FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
@@ -109,8 +108,8 @@ jobs:
         run: .exampleorg-review-actions/scripts/validate-release-provenance.sh
 
       # Preflight admission (QA-380): the smoke step proves which transports are healthy before
-      # any persona runs. The highest-priority healthy transport seeds the panel, and the action
-      # receives only the healthy subset in configured order for per-lane failover. This prevents
+      # any persona runs. The highest-priority healthy transport seeds legacy action fields, and the
+      # action receives only the healthy subset for weighted per-lane primary assignment and failover. This prevents
       # every lane from rediscovering the same known provider failure while retaining automatic
       # failover among the transports that passed the real request shape. Zero healthy transports
       # still hard-fails before this step.
@@ -118,12 +117,11 @@ jobs:
         id: review
         uses: ./.review-yeti-bot
         env:
-          FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
-          OPENROUTER_API_KEY: ${{ steps.smoke.outputs.resolved_transport == 'openrouter-fallback' && secrets.OPENROUTER_REVIEW_FLEET_KEY || steps.smoke.outputs.resolved_transport == 'ollama' && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
         with:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
@@ -134,6 +132,7 @@ jobs:
           model: '~deepseek/deepseek-v4-flash-latest'
           transports: ${{ steps.smoke.outputs.healthy_transports }}
           transport-plan-b64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
+          dispatch-mode: ${{ steps.policy.outputs.dispatch_mode }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
           personas: ${{ steps.policy.outputs.personas }}

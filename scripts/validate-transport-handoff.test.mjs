@@ -11,6 +11,7 @@ const validatorPath = join(repoRoot, 'scripts', 'validate-transport-handoff.mjs'
 function transport(name, overrides = {}) {
   return {
     name,
+    enabled: true,
     base_url: `https://${name}.test/v1`,
     api_key_env: `${name.toUpperCase()}_API_KEY`,
     model: `${name}-model`,
@@ -75,6 +76,26 @@ test('accepts only an exact ordered policy subset for post-smoke admission', () 
   }
 });
 
+test('accepts only a downward Synthetic quota-capacity clamp after smoke admission', () => {
+  const primary = transport('primary');
+  const synthetic = transport('synthetic', {
+    max_in_flight: 5,
+    quota_probe: 'synthetic-v2',
+  });
+  const clamped = [primary, { ...synthetic, max_in_flight: 2 }];
+  const accepted = runValidator([primary, synthetic], clamped, undefined, true);
+  assert.equal(accepted.status, 0, `stdout=${accepted.stdout}\nstderr=${accepted.stderr}`);
+
+  for (const rejected of [
+    [primary, { ...synthetic, max_in_flight: 6 }],
+    [primary, { ...synthetic, timeout_ms: 1, max_in_flight: 2 }],
+  ]) {
+    const result = runValidator([primary, synthetic], rejected, undefined, true);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /admitted transport handoff is not an exact ordered subset of policy/);
+  }
+});
+
 test('rejects a noncanonical base64 handoff instead of silently normalizing it', () => {
   const transports = [transport('primary'), transport('fallback')];
   const canonical = Buffer.from(JSON.stringify(transports), 'utf8').toString('base64');
@@ -95,4 +116,19 @@ test('rejects a non-streaming transport even when the policy contains it', () =>
   const result = runValidator(transports);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /all transports must stream/);
+});
+
+test('fails closed when a policy transport omits the enabled boolean', () => {
+  const missingEnabled = transport('primary');
+  delete missingEnabled.enabled;
+  const result = runValidator([missingEnabled]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /every policy transport must declare enabled as a boolean/);
+});
+
+test('excludes disabled transports from the production handoff contract', () => {
+  const enabled = transport('primary');
+  const disabled = transport('diagnostic-only', { enabled: false });
+  const result = runValidator([enabled, disabled], [enabled]);
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
 });

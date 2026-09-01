@@ -3,8 +3,8 @@
 /**
  * One-time, read-only OpenRouter qualification probe.
  *
- * This is deliberately separate from the Fireworks/Ollama comparison. It runs one direct
- * OpenRouter transport over a small fixture slice, writes only sanitized evidence, and cannot
+ * It runs one direct OpenRouter transport over a small fixture slice, writes only sanitized
+ * evidence, and cannot
  * publish a review, mutate policy, or authorize a provider switch.
  */
 import { createHash } from 'node:crypto';
@@ -18,7 +18,7 @@ import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 export const QUALIFICATION_SCHEMA = 'review-yeti.openrouter-qualification.v1';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
 export const OPENROUTER_PROFILE = 'openrouter-direct-90s-24576-evaluation';
-export const OPENROUTER_TRANSPORT = 'openrouter-fallback';
+export const OPENROUTER_TRANSPORT = 'openrouter-primary';
 export const COMPARISON_EVALUATION_ARM = 'candidate';
 export const OPENROUTER_TIMEOUT_MS = 90_000;
 export const OPENROUTER_CONNECT_TIMEOUT_MS = 30_000;
@@ -53,7 +53,7 @@ export const QUALIFICATION_DEFAULT_ROUTING_PROFILE = 'default_uptime';
 export const QUALIFICATION_SYNTHETIC_PROMPT_IDENTITY = 'single-fixed-fixture-contract';
 // The bot's telemetry normalizer reports the canonical OpenRouter transport as
 // `openrouter` on response attempts, while the handoff and row-level transport
-// retain `openrouter-fallback`. Accept both representations only after the row
+// retain `openrouter-primary`. Accept both representations only after the row
 // itself proves the exact admitted handoff.
 const OPENROUTER_ATTEMPT_TRANSPORTS = Object.freeze(['openrouter', OPENROUTER_TRANSPORT]);
 export const FIXTURE_IDS = Object.freeze([

@@ -79,18 +79,21 @@ jobs:
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "gemini"' policy/review-yeti.json
+          jq -e '.review_yeti.transports[] | select(.name == "gemini") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
+          jq -e '.review_yeti.transports[] | select(.name == "fireworks") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "ollama"' policy/review-yeti.json
+          jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "synthetic"' policy/review-yeti.json
-          grep -Fq '"name": "openrouter-fallback"' policy/review-yeti.json
+          grep -Fq '"name": "openrouter-primary"' policy/review-yeti.json
           grep -Fq '"model": "~deepseek/deepseek-v4-flash-latest"' policy/review-yeti.json
           grep -Fq '"models": ["z-ai/glm-5.3-flash"]' policy/review-yeti.json
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
-          jq -e '.review_yeti.transports[] | select(.name == "openrouter-fallback") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
-          jq -e '.review_yeti.transports[] | select(.name == "openrouter-fallback") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
+          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
+          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml

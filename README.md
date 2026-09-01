@@ -111,8 +111,8 @@ pins by design — see example-meta ADR 0431 for the decision record and revisit
 
 ## Fireworks timeout debug
 
-The hosted panel uses `openrouter-ttft-ms` across the model transports. Fireworks, Ollama,
-and the OpenRouter fallback all stream their responses, so the 30-second TTFT deadline
+The hosted panel uses `openrouter-ttft-ms` across the enabled model transports. Fireworks, Gemini,
+Ollama, and the OpenRouter route all stream their responses, so the 30-second TTFT deadline
 measures the first SSE token rather than a fully buffered JSON body. OpenRouter requires
 BF16/FP16 endpoints, sorts the eligible provider catalog by throughput, applies a p90
 throughput floor and p99 latency preference, and allows eligible hosts to fall over.
@@ -126,22 +126,30 @@ doppler run --project example-workspace --config prd -- \
 ```
 
 The script never prints the API key. Both probes are streaming and record their first-byte
-receipt without printing credentials or response content.
+receipt without printing credentials or response content. Fireworks is disabled in the production
+transport plan; this probe remains available for an explicitly dispatched diagnostic comparison.
 
 ## Provider order
 
 The current standard transport plan is deliberately limited and ordered:
 
-1. Gemini (`GEMINI_API_KEY`) as the primary reviewer
-2. Ollama (`OLLAMA_PR_REVIEW_API_KEY`)
-3. Synthetic (`SYNTHETIC_API_KEY`)
-4. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`) as the direct break-glass fallback
-5. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`) as the final rollback-only fallback
+1. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`) as the primary reviewer
+2. Synthetic (`SYNTHETIC_API_KEY`)
+3. Gemini (`GEMINI_API_KEY`, `enabled: false`) retained for quick re-enable
+4. Ollama (`OLLAMA_PR_REVIEW_API_KEY`, `enabled: false`) retained for explicit qualification
+5. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`, `enabled: false`) retained for explicit qualification only
 
 Synthetic is a direct OpenAI-compatible transport using `hf:zai-org/GLM-5.3-Flash`. This is the
 current catalog model selected for its supported high reasoning, JSON mode, structured outputs,
 and low published subscription price; Synthetic does not currently expose a DeepSeek V4 0731 model
 identifier. The model is deliberately explicit rather than using a moving `syn:` alias.
+Synthetic is admitted with a policy ceiling of `max_in_flight: 5` and
+`concurrency_scope: model`. Synthetic documents one concurrent request per model and 500 rolling
+five-hour requests per subscription pack. Hosted admission derives `/v2/quotas` only from the
+already validated `https://api.synthetic.new` provider origin, derives a live pack count only from
+an exact 500-request multiple, clamps the handoff at or below the five-slot policy ceiling, and
+fails safe to one slot when the endpoint or its under-development response shape is unavailable.
+Weekly-credit state remains telemetry rather than a concurrency signal.
 
 `OLLAMA_PR_REVIEW_API_KEY` is sourced from the masked Doppler secret in
 `example-workspace/prd` and synchronized to the repository's GitHub Actions secret of the same name.
@@ -151,11 +159,14 @@ used for one-time qualification, but it is not sufficient evidence for productio
 The workflow references only the GitHub secret; neither policy nor workflow files contain the
 credential value.
 
-The action starts each model turn at Gemini and advances through the declared order when a
-transport fails. Fireworks remains the direct rollback target if the subscription transports are
-unavailable or quality regresses; reverting the central policy is a separate guarded change. The
-OpenRouter entry remains last so it can provide a final emergency route without changing the
-requested primary chain. It requires compatible request parameters, the policy's
+The action uses deterministic weighted striping across persona lanes: OpenRouter has weight 3 and
+Synthetic has weight 1, so OpenRouter remains primary by volume while Synthetic receives normal
+review work rather than waiting for an outage. Each lane still carries the other healthy transport
+as a fallback, and the total remains one baseline model call per persona. Gemini, Ollama, and
+Fireworks remain declared for explicit qualification, but their `enabled: false` settings keep them
+out of production admission. Re-enabling Gemini or Ollama later adds its existing weight-1 stripe
+without changing consumer repositories. The runtime requires compatible
+request parameters, the policy's
 `strict` output marker, and throughput-ranked provider routing while delegating endpoint eligibility
 to OpenRouter's live policy except for the account-level Morph and Fireworks exclusions recorded
 after their verified incidents. Model selection is explicit: OpenRouter receives
@@ -165,8 +176,10 @@ panel, `strict` is a policy declaration: the runtime sends JSON mode
 (`response_format: { type: "json_object" }`) and validates the terminal payload, but it does not
 enforce one cross-provider JSON Schema. Each caller must expose the five named environment
 variables through its inherited GitHub Actions secrets. Fireworks stays on the default serverless
-tier. All five transports use `high` reasoning. Each transport gets one retry, and OpenRouter owns
-endpoint selection after a timeout.
+tier. All five transports use `high` reasoning. Provider/model semaphores bound concurrency;
+direct HTTP 429 responses retry only when `Retry-After` fits the declared five-second retry budget,
+then fail over under a provider-scoped circuit breaker. OpenRouter retains its own model fallback
+and endpoint-selection recovery.
 
 The central budget is also fixed here: two investigation turns, one 24-request per-lane call
 budget, an 860-second lane deadline with a two-minute non-generation reserve and a 40-second
@@ -216,11 +229,11 @@ output-contract provenance per fixture and records whether policy intent, the ob
 mode, provider capability, and terminal parsing were reported. These fields are evidence only:
 they do not alter the provider order, verdict gate, or activation boundary.
 
-- **timeout_ms = 120000 for Fireworks, 90000 for Gemini, Ollama, Synthetic, and the OpenRouter fallback.** Since
-  `review-yeti-bot` PR #163, an actively-streaming response is never aborted by a duration cap --
-  the engine's stall/idle timer re-arms on every SSE chunk -- so `timeout_ms` is now primarily a
-  ceiling on the non-streaming fallback path and a sanity bound (1ms-180000ms), not a budget that
-  every healthy call is assumed to burn in full. These values were raised from a previous
+- **timeout_ms = 120000 for Synthetic and disabled Fireworks, 90000 for Gemini, Ollama, and the OpenRouter route.**
+  Streaming body reads re-arm the engine's stall/idle timer on every SSE chunk, while the released
+  runtime also enforces `timeout_ms` as the hard total wall-clock ceiling for each generation.
+  Synthetic's ceiling is 120 seconds because a hosted exact-head run remained healthy but was cut
+  off immediately after the former 90-second limit. These values were raised from a previous
   75000/30000/45000 once the CI invariant below stopped modeling them as a wall-clock sum (see
   exampleorg/example-meta ADR 0337 for the full decision).
 - **stall_ms = 20000.** The engine's liveness window: if a transport goes silent for a full
@@ -231,9 +244,8 @@ they do not alter the provider order, verdict gate, or activation boundary.
   budget. Because every configured transport streams, TTFT is measured at the first SSE chunk and
   does not cap a generation after streaming has begun.
 
-A provider that never connects, or that goes silent for a full `stall_ms` window, fails over or
-fails closed; a healthy, actively-streaming provider cannot stretch a hosted job past what a
-duration cap used to allow, because there no longer is one.
+A provider that never connects, goes silent for a full `stall_ms` window, or reaches its total
+`timeout_ms` ceiling fails over or fails closed.
 
 **Two timeout knobs, kept in lockstep.** The policy carries both a per-transport `timeout_ms`
 (embedded in the `transports` JSON blob emitted by `emit-policy.mjs`, covering all five configured
@@ -245,40 +257,36 @@ not visible from this repository. The OpenRouter transport timeout (90000) and
 silently carrying a stale budget.
 
 **Streaming is an invariant.** Every transport declares `stream: true` and the global
-`openrouter_stream` flag is `"true"`. The action's single-slot streaming gate serializes the full
-Gemini-to-Ollama-to-Synthetic-to-Fireworks-to-OpenRouter transport plan per persona, so a failover never opens a sibling SSE stream
-over the active one. `emit-policy.mjs` rejects a future policy that makes only one transport
+`openrouter_stream` flag is `"true"`. Each persona lane owns one active request at a time, while
+provider/model semaphores permit independent providers to stream concurrently without exceeding
+their declared capacity. `emit-policy.mjs` rejects a future policy that makes only one transport
 non-streaming while retaining a tight TTFT budget; `scripts/emit-policy.test.sh` exercises that
 counterfactual. This keeps provider attribution and first-token telemetry intact without disabling
 SSE to hide upstream failures.
 
-**Lane-deadline arithmetic invariant (dead-transport envelope, not a timeout_ms sum).** Since an
-actively-streaming call is never aborted by a duration cap, `timeout_ms` no longer bounds a lane's
-worst-case wall time and summing it across every transport, attempt, and investigation turn (the
-pre-#163 model) would reject healthy configurations that could never actually exceed the deadline
--- exactly the failure mode that once forced Fireworks' `timeout_ms` down from a requested 120000
-to 75000. What genuinely bounds the worst case is the **dead-transport** path: a transport that
+**Lane-deadline arithmetic invariant (dead-transport envelope).** The runtime applies each
+transport's `timeout_ms` as a total generation ceiling. The separate policy-load invariant below
+guards the faster **dead-transport** path: a transport that
 never produces a first byte (`connect_timeout_ms`) or that goes silent after connecting for a full
 `stall_ms` interval. `emit-policy.mjs` enforces
 `(sum(transport.connect_timeout_ms) + transports.length * stall_ms) * openrouter_max_attempts * max_investigation_turns + budget.lane_overhead_ms <= budget.lane_deadline_ms`
 at policy-load time (both in the reusable workflow and in CI) -- summed over however many
-transports the policy declares, not a hardcoded count -- and `scripts/emit-policy.test.sh` and
+enabled transports the policy admits, not a hardcoded count -- and `scripts/emit-policy.test.sh` and
 `scripts/review-yeti-smoke.mjs` (a previously-drifted duplicate of the same check) re-check the
 same inequality against the committed policy plus counterfactual fixtures that violate it.
 Separately,
 `max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
 (`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
-of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 5 transports at
-`connect_timeout_ms` `15000 + 20000 + 15000 + 15000 + 20000 = 85000`, plus `5 x 20000 = 100000` stall reserve,
-`(85000 + 100000) x 2 attempts x 2 turns + 120000 overhead = 860000 <= 860000`, and
+of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 2 enabled transports at
+`connect_timeout_ms` `20000 + 15000 = 35000`, plus `2 x 20000 = 40000` stall reserve,
+`(35000 + 40000) x 2 attempts x 2 turns + 120000 overhead = 420000 <= 860000`, and
 `max_passes(1) x lane_deadline_ms(860000) = 860000 <= 900000` (the 15-minute job cap, leaving
-40s for workflow setup, publishing, and verdict enforcement). The remaining reserve is intentionally
-small but bounded; the workflow's hard 15-minute job timeout remains the final backstop. Validation,
+40s for workflow setup, publishing, and verdict enforcement). The workflow's hard 15-minute job
+timeout remains the final backstop. Validation,
 failover dispatch, and evidence work are accounted for by the lane overhead reserve rather than by
 an unbounded wait. This still guards against a repeat of the incident that
 originally motivated this invariant -- a full sequential failover of transports that never connect
-or never stream must still finish inside the lane deadline -- while no longer treating a slow but
-healthy, actively-streaming generation as if it were that failure.
+or never stream must still finish inside the lane deadline.
 
 Before the model action starts, the reusable workflow runs `scripts/review-yeti-smoke.mjs` against
 each configured transport using a bounded, review-shaped JSON request. The smoke test records only
@@ -288,9 +296,10 @@ handoff and verifies that it exactly matches the checked-out policy, has unique 
 every entry. Its contract tests run in the central validation workflow so
 provider order, OpenRouter routing, response validation, fallback behavior, and policy-drift
 rejection are checked before a release can advance. The smoke result is also an admission filter:
-the action receives only transports that passed preflight, in configured order. A known-unhealthy
-provider therefore remains configured and visible in telemetry but cannot consume every lane's
-runtime budget before healthy failover begins.
+the action receives only transports that passed preflight. The runtime then applies the configured
+striped weights to that healthy subset and retains deterministic lane-local failover order. A
+known-unhealthy provider therefore remains configured and visible in telemetry but cannot consume
+every lane's runtime budget before healthy failover begins.
 
 ## CLI-first local reviews
 

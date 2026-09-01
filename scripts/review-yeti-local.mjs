@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
+import { getEnabledTransports, loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 import { loadMcpConfig, summarizeMcpConfig, validateMcpConfig } from './review-yeti-mcp.mjs';
 
 const SHA_PATTERN = /^[a-f0-9]{40,64}$/iu;
@@ -33,7 +33,8 @@ export function loadLocalPolicy(policyPath) {
 export function buildLocalConfig(policy) {
   const review = policy.review_yeti;
   const budget = review.budget;
-  const openrouter = review.transports.find((transport) => transport.compat === 'openrouter');
+  const transports = getEnabledTransports(policy);
+  const openrouter = transports.find((transport) => transport.compat === 'openrouter');
   const routing = openrouter.provider_routing || {};
 
   return {
@@ -48,7 +49,8 @@ export function buildLocalConfig(policy) {
       max_investigation_turns: integer(budget.max_investigation_turns, 'max_investigation_turns'),
     },
     github_action: {
-      transports: review.transports,
+      dispatch_mode: review.dispatch_mode,
+      transports,
       openrouter: {
       model: openrouter.model,
       data_collection: routing.data_collection,
@@ -70,6 +72,7 @@ export function buildLocalEnvironment(policy, configDir, baseEnv = process.env, 
   const review = policy.review_yeti;
   const budget = review.budget;
   const personas = splitList(review.personas);
+  const transports = getEnabledTransports(policy);
 
   const environment = {
     ...baseEnv,
@@ -78,7 +81,8 @@ export function buildLocalEnvironment(policy, configDir, baseEnv = process.env, 
     GITHUB_ACTIONS: 'false',
     GITHUB_OUTPUT: '',
     REVIEW_YETI_CONFIG_DIR: configDir,
-    REVIEW_YETI_TRANSPORTS: JSON.stringify(review.transports),
+    REVIEW_YETI_TRANSPORTS: JSON.stringify(transports),
+    REVIEW_YETI_DISPATCH_MODE: review.dispatch_mode,
     ACTIVE_PERSONAS: personas.join(','),
     MAX_PERSONAS: String(personas.length),
     MAX_DIFF_CHARS: String(review.max_diff_chars),
@@ -95,6 +99,10 @@ export function buildLocalEnvironment(policy, configDir, baseEnv = process.env, 
   };
   if (mcpConfig !== undefined) environment.MCP_CONFIG_JSON = JSON.stringify(validateMcpConfig(mcpConfig));
   else delete environment.MCP_CONFIG_JSON;
+  const activeKeyEnvs = new Set(transports.map((transport) => transport.api_key_env));
+  for (const transport of review.transports) {
+    if (!activeKeyEnvs.has(transport.api_key_env)) delete environment[transport.api_key_env];
+  }
   return environment;
 }
 
@@ -209,11 +217,13 @@ function writeConfig(policy) {
 
 function policySummary(policy, policyPath) {
   const review = policy.review_yeti;
-  const openrouter = review.transports.find((transport) => transport.compat === 'openrouter');
+  const transports = getEnabledTransports(policy);
+  const openrouter = transports.find((transport) => transport.compat === 'openrouter');
   return {
     schema: policy.schema,
     policy_source: policyPath || process.env.REVIEW_YETI_POLICY_PATH || 'policy/review-yeti.json',
-    transports: review.transports.map((transport) => ({
+    dispatch_mode: review.dispatch_mode,
+    transports: transports.map((transport) => ({
       name: transport.name,
       compat: transport.compat,
       model: transport.model,

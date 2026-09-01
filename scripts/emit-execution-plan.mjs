@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { validatePolicy } from './review-yeti-smoke.mjs';
+import { TRANSPORT_RATE_LIMIT_KEYS, validateTransportEnvelope } from './transport-envelope.mjs';
 
 const DEFAULT_POLICY_PATH = fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url));
 const DEFAULT_FIXTURE_PATH = fileURLToPath(new URL('../policy/review-yeti-execution-plan.fixture.json', import.meta.url));
@@ -14,6 +15,7 @@ const ALLOWED_REVIEW_KEYS = [
   'action_channel',
   'action_channel_pattern',
   'personas',
+  'dispatch_mode',
   'transports',
   'openrouter_stream',
   'openrouter_timeout_ms',
@@ -34,6 +36,7 @@ const ALLOWED_BUDGET_KEYS = [
 ];
 const ALLOWED_TRANSPORT_KEYS = [
   'name',
+  'enabled',
   'base_url',
   'api_key_env',
   'model',
@@ -50,6 +53,12 @@ const ALLOWED_TRANSPORT_KEYS = [
   'ignore_providers',
   'provider_routing',
   'plugins',
+  'dispatch_weight',
+  'max_in_flight',
+  'concurrency_scope',
+  'capacity_wait_timeout_ms',
+  'quota_probe',
+  'rate_limit',
 ];
 const ALLOWED_ROUTING_KEYS = [
   'allow_fallbacks',
@@ -95,6 +104,9 @@ export function validateExecutionPlanPolicy(policy) {
   rejectUnknownKeys(policy, ALLOWED_POLICY_KEYS, 'policy');
   rejectUnknownKeys(policy.review_yeti, ALLOWED_REVIEW_KEYS, 'policy.review_yeti');
   rejectUnknownKeys(policy.review_yeti.budget, ALLOWED_BUDGET_KEYS, 'policy.review_yeti.budget');
+  if (!['ordered', 'striped'].includes(policy.review_yeti.dispatch_mode)) {
+    throw new Error('policy.review_yeti.dispatch_mode must be ordered or striped');
+  }
 
   if (!Array.isArray(policy.review_yeti.transports)) {
     throw new Error('policy.review_yeti.transports must be an array');
@@ -102,11 +114,24 @@ export function validateExecutionPlanPolicy(policy) {
   for (const [index, transport] of policy.review_yeti.transports.entries()) {
     const transportPath = `policy.review_yeti.transports[${index}]`;
     rejectUnknownKeys(transport, ALLOWED_TRANSPORT_KEYS, transportPath);
+    if (typeof transport.enabled !== 'boolean') {
+      throw new Error(`${transportPath}.enabled must be a boolean`);
+    }
     if (transport.models !== undefined
       && (!Array.isArray(transport.models)
         || transport.models.some((model) => typeof model !== 'string' || model.length === 0))) {
       throw new Error(`${transportPath}.models must be an array of non-empty strings`);
     }
+    if (transport.quota_probe !== undefined && transport.quota_probe !== 'synthetic-v2') {
+      throw new Error(`${transportPath}.quota_probe must be synthetic-v2 when declared`);
+    }
+    if (!transport.rate_limit
+      || typeof transport.rate_limit !== 'object'
+      || Array.isArray(transport.rate_limit)) {
+      throw new Error(`${transportPath}.rate_limit must be an object`);
+    }
+    rejectUnknownKeys(transport.rate_limit, TRANSPORT_RATE_LIMIT_KEYS, `${transportPath}.rate_limit`);
+    validateTransportEnvelope(transport, transportPath);
     if (transport.provider_routing !== undefined) {
       rejectUnknownKeys(transport.provider_routing, ALLOWED_ROUTING_KEYS, `${transportPath}.provider_routing`);
       if (transport.provider_routing.preferred_min_throughput !== undefined) {
@@ -183,6 +208,7 @@ export function sha256(value) {
 export function buildExecutionPlan(policy) {
   validateExecutionPlanPolicy(policy);
   const review = policy.review_yeti;
+  const transports = review.transports.filter((transport) => transport.enabled === true);
   const maxAttempts = Number(review.openrouter_max_attempts);
   const stallTimeoutMs = Number(review.stall_ms);
   const ttftTimeoutMs = Number(review.openrouter_ttft_ms);
@@ -191,13 +217,17 @@ export function buildExecutionPlan(policy) {
     schema: 'exampleorg.review-execution-plan.v1',
     policy_schema: policy.schema,
     release_channel: review.action_channel,
-    transport_order: review.transports.map((transport) => transport.name),
+    transport_order: transports.map((transport) => transport.name),
+    dispatch: {
+      mode: review.dispatch_mode,
+      weights: Object.fromEntries(transports.map((transport) => [transport.name, transport.dispatch_weight])),
+    },
     lane: {
       deadline_ms: Number(review.budget.lane_deadline_ms),
       overhead_ms: Number(review.budget.lane_overhead_ms),
       max_investigation_turns: Number(review.budget.max_investigation_turns),
     },
-    transports: review.transports.map((transport) => {
+    transports: transports.map((transport) => {
       const gatewayRouting = transport.provider_routing ?? null;
       const isGateway = transport.compat === 'openrouter';
       return {
@@ -231,9 +261,18 @@ export function buildExecutionPlan(policy) {
         privacy: {
           data_collection: gatewayRouting?.data_collection ?? 'not-declared',
         },
+        capacity: {
+          max_in_flight: transport.max_in_flight,
+          concurrency_scope: transport.concurrency_scope,
+          wait_timeout_ms: transport.capacity_wait_timeout_ms,
+        },
+        quota: {
+          probe: transport.quota_probe ?? 'none',
+        },
         retry: {
           max_attempts: maxAttempts,
-          classification: 'runtime-owned-uncharacterized',
+          classification: 'http-status-and-retry-after',
+          rate_limit: transport.rate_limit,
         },
         quarantine: {
           on_timeout: configuredOrUnknown(transport.quarantine_on_timeout),

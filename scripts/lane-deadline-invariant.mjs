@@ -3,9 +3,9 @@
 // invariant drifted between the two copies twice in the same PR round (once missing stall_ms
 // validation, once missing lane_overhead_ms entirely) -- see exampleorg/example-meta ADR 0337.
 //
-// Post review-yeti-bot#163, an actively-streaming call is never aborted by a duration cap: the
-// engine's stall/idle timer re-arms on every SSE chunk, so `timeout_ms` no longer bounds a lane's
-// worst-case wall time. What genuinely bounds it is the dead-transport path -- a transport that
+// The released runtime re-arms its stall/idle timer on every SSE chunk and also enforces each
+// transport's timeout_ms as a hard total generation ceiling. This invariant protects the faster
+// dead-transport path -- a transport that
 // never produces a first byte (`connect_timeout_ms`) or that goes silent after connecting for a
 // full `stall_ms` interval -- summed across every transport, retry attempt, and investigation
 // turn, plus the declared non-generation overhead reserve.

@@ -16,13 +16,13 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const policy = loadLocalPolicy();
-const openrouterTransport = policy.review_yeti.transports.find((t) => t.name === 'openrouter-fallback');
+const openrouterTransport = policy.review_yeti.transports.find((t) => t.name === 'openrouter-primary');
 
 test('materializes the committed provider order and routing into the local CLI contract', () => {
   const config = buildLocalConfig(policy);
   const transports = config.github_action.transports;
 
-  assert.deepEqual(transports.map((transport) => transport.name), ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']);
+  assert.deepEqual(transports.map((transport) => transport.name), ['openrouter-primary', 'synthetic']);
   assert.equal(config.github_action.openrouter.stream, true);
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, openrouterTransport.timeout_ms);
@@ -34,7 +34,7 @@ test('materializes the committed provider order and routing into the local CLI c
   // Must track policy/review-yeti.json rather than restating a provider preference.
   assert.equal(
     config.github_action.openrouter.provider_routing.sort,
-    policy.review_yeti.transports.find((t) => t.name === 'openrouter-fallback').provider_routing.sort,
+    policy.review_yeti.transports.find((t) => t.name === 'openrouter-primary').provider_routing.sort,
   );
   assert.equal(config.github_action.openrouter.provider_routing.quantizations, undefined);
   assert.equal(config.limits.max_diff_bytes, 2_000_000);
@@ -43,7 +43,7 @@ test('materializes the committed provider order and routing into the local CLI c
 
 test('passes bounded limits and routing without exposing credential values', () => {
   const env = buildLocalEnvironment(policy, '/tmp/review-yeti-config-test', {
-    FIREWORKS_PR_REVIEW_API_KEY: 'must-remain-inherited',
+    FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
     GITHUB_ACTIONS: 'true',
     GITHUB_OUTPUT: '/tmp/should-not-be-used',
     MCP_CONFIG_JSON: '{"servers":[{"id":"ambient-unvalidated"}]}',
@@ -53,7 +53,7 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.GITHUB_OUTPUT, '');
   assert.equal(env.MCP_CONFIG_JSON, undefined);
   assert.equal(env.REVIEW_YETI_CONFIG_DIR, '/tmp/review-yeti-config-test');
-  assert.equal(env.FIREWORKS_PR_REVIEW_API_KEY, 'must-remain-inherited');
+  assert.equal(env.FIREWORKS_PR_REVIEW_API_KEY, undefined);
   assert.equal(env.MAX_PERSONAS, String(policy.review_yeti.personas.split(',').length));
   assert.equal(env.MAX_DIFF_CHARS, '2000000');
   assert.equal(env.MAX_FILE_DIFF_CHARS, '60000');
@@ -65,7 +65,7 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.OPENROUTER_TIMEOUT_MS, String(openrouterTransport.timeout_ms));
   assert.equal(env.OPENROUTER_TTFT_MS, '30000');
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
-  const openrouter = JSON.parse(env.REVIEW_YETI_TRANSPORTS).find((transport) => transport.name === 'openrouter-fallback');
+  const openrouter = JSON.parse(env.REVIEW_YETI_TRANSPORTS).find((transport) => transport.name === 'openrouter-primary');
   assert.equal(openrouter.model, '~deepseek/deepseek-v4-flash-latest');
   assert.deepEqual(openrouter.models, ['z-ai/glm-5.3-flash']);
   assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
@@ -143,7 +143,7 @@ process.stdout.write(JSON.stringify({ delegated: true }) + '\\n');
     assert.equal(JSON.parse(output).delegated, true);
     assert.deepEqual(delegated.args, ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--json']);
     assert.equal(delegated.configMode, 0o600);
-    assert.deepEqual(delegated.transportNames, ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']);
+    assert.deepEqual(delegated.transportNames, ['openrouter-primary', 'synthetic']);
     assert.deepEqual(delegated.mcpServerIds, ['context7-local']);
     assert.equal(delegated.mcpSecretPresent, true);
     assert.equal(delegated.publicationFlag, 'false');

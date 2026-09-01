@@ -33,13 +33,23 @@ import re
 import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
-transports = review.get('transports', [])
-if [item.get('name') for item in transports] != ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']:
-    raise SystemExit('policy must preserve Gemini -> Ollama -> Synthetic -> Fireworks -> OpenRouter order')
+configured_transports = review.get('transports', [])
+if any(type(item.get('enabled')) is not bool for item in configured_transports):
+    raise SystemExit('every configured transport must declare enabled as a boolean')
+transports = [item for item in configured_transports if item.get('enabled') is True]
+if [item.get('name') for item in transports] != ['openrouter-primary', 'synthetic']:
+    raise SystemExit('policy must preserve OpenRouter -> Synthetic order')
+if review.get('dispatch_mode') != 'striped':
+    raise SystemExit('policy must use striped persona dispatch')
+if {item.get('name'): item.get('dispatch_weight') for item in transports} != {
+    'openrouter-primary': 3,
+    'synthetic': 1,
+}:
+    raise SystemExit('active provider weights must keep OpenRouter primary at 3:1')
 # Measured ablation 2026-08-20 (live, N=8 reps x 9 fixtures x 3 arms, errored runs counted as
 # failures): reasoning_effort=max scored recall 0.425 [0.29-0.58] with 25/72 errors, versus the
 # provider default (unset) at 0.750 [0.60-0.86] with 7/72 -- non-overlapping CIs and 3.5x the
-# failure rate. Fireworks and OpenRouter must therefore NOT pin it. Ollama stays 'high': that
+# failure rate. OpenRouter must therefore NOT pin it. Ollama stays 'high': that
 # specific value was never measured, so it is left alone rather than changed on inference.
 # Operator directive 2026-08-20: reasoning_effort 'high' on every transport.
 # The guard forbids only 'max', which is the measured-bad arm (ablation: recall 0.425
@@ -47,12 +57,19 @@ if [item.get('name') for item in transports] != ['gemini', 'ollama', 'synthetic'
 # NOTE: 'high' itself was never measured -- the ablation covered none / unset / max only.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
-fireworks = next((item for item in transports if item.get('name') == 'fireworks'), None)
-ollama = next((item for item in transports if item.get('name') == 'ollama'), None)
-gemini = next((item for item in transports if item.get('name') == 'gemini'), None)
+ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
+gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
 synthetic = next((item for item in transports if item.get('name') == 'synthetic'), None)
-if not fireworks or not ollama or not gemini or not synthetic:
-    raise SystemExit('policy must define named Gemini, Ollama, Synthetic, and Fireworks transports')
+openrouter = next((item for item in transports if item.get('name') == 'openrouter-primary'), None)
+if not openrouter or not ollama or not gemini or not synthetic:
+    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, and Synthetic transports')
+if gemini.get('enabled') is not False or ollama.get('enabled') is not False:
+    raise SystemExit('Gemini and Ollama transports must be disabled')
+if any(item.get('name') == 'fireworks' for item in transports):
+    raise SystemExit('Fireworks transport must be disabled')
+fireworks = next((item for item in configured_transports if item.get('name') == 'fireworks'), None)
+if not fireworks or fireworks.get('enabled') is not False:
+    raise SystemExit('Fireworks must remain declared with enabled: false')
 if (gemini.get('base_url'), gemini.get('api_key_env'), gemini.get('model'), gemini.get('compat')) != (
     'https://generativelanguage.googleapis.com/v1beta/openai', 'GEMINI_API_KEY', 'gemini-3.7-flash', 'openai'
 ):
@@ -61,10 +78,10 @@ if (synthetic.get('base_url'), synthetic.get('api_key_env'), synthetic.get('mode
     'https://api.synthetic.new/openai/v1', 'SYNTHETIC_API_KEY', 'hf:zai-org/GLM-5.3-Flash', 'openai'
 ):
     raise SystemExit('Synthetic must remain pinned to its OpenAI-compatible contract')
-if fireworks.get('structured_output') != 'strict':
-    raise SystemExit('Fireworks must use the strict investigation response schema')
-if fireworks.get('perf_metrics_in_response') is not True:
-    raise SystemExit('Fireworks must return performance metrics')
+if (synthetic.get('max_in_flight'), synthetic.get('concurrency_scope'), synthetic.get('quota_probe')) != (
+    5, 'model', 'synthetic-v2'
+):
+    raise SystemExit('Synthetic must retain the five-pack per-model ceiling plus quota-bounded admission')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
 budget = review.get('budget')
@@ -73,38 +90,37 @@ if not isinstance(budget, dict):
 for key in ('lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_investigation_turns'):
     if key not in budget:
         raise SystemExit(f'policy budget is missing {key}')
-fallback = next((item for item in review.get('transports', []) if item.get('name') == 'openrouter-fallback'), None)
-if not fallback:
-    raise SystemExit('policy must define the openrouter-fallback transport')
-if fallback.get('stream') is not True:
-    raise SystemExit('openrouter-fallback must use streaming for provider attribution')
-if fallback.get('model') != '~deepseek/deepseek-v4-flash-latest':
-    raise SystemExit('openrouter-fallback must use DeepSeek V4 Flash Latest')
-if fallback.get('models') != ['z-ai/glm-5.3-flash']:
-    raise SystemExit('openrouter-fallback must use GLM-5.3 Flash as its only model fallback')
-if 'plugins' in fallback:
-    raise SystemExit('openrouter-fallback must not use the Auto Router plugin')
-if fallback.get('structured_output') != 'strict':
-    raise SystemExit('openrouter-fallback must use strict investigation output')
-if fallback.get('allow_banned_providers') is not None:
-    raise SystemExit('openrouter-fallback must not use the deprecated provider-ban override')
-if fallback.get('quarantine_on_timeout') is not False:
+if not openrouter:
+    raise SystemExit('policy must define the openrouter-primary transport')
+if openrouter.get('stream') is not True:
+    raise SystemExit('openrouter-primary must use streaming for provider attribution')
+if openrouter.get('model') != '~deepseek/deepseek-v4-flash-latest':
+    raise SystemExit('openrouter-primary must use DeepSeek V4 Flash Latest')
+if openrouter.get('models') != ['z-ai/glm-5.3-flash']:
+    raise SystemExit('openrouter-primary must use GLM-5.3 Flash as its only model fallback')
+if 'plugins' in openrouter:
+    raise SystemExit('openrouter-primary must not use the Auto Router plugin')
+if openrouter.get('structured_output') != 'strict':
+    raise SystemExit('openrouter-primary must use strict investigation output')
+if openrouter.get('allow_banned_providers') is not None:
+    raise SystemExit('openrouter-primary must not use the deprecated provider-ban override')
+if openrouter.get('quarantine_on_timeout') is not False:
     raise SystemExit('OpenRouter must own timeout rerouting without dynamic provider bans')
-routing = fallback.get('provider_routing') or {}
+routing = openrouter.get('provider_routing') or {}
 if routing.get('ignore') != ['morph', 'fireworks']:
-    raise SystemExit('openrouter-fallback must exclude the verified Morph and Fireworks outages')
+    raise SystemExit('openrouter-primary must exclude the verified Morph and Fireworks outages')
 if routing.get('allow_fallbacks') is not True:
-    raise SystemExit('openrouter-fallback must allow cheap hosts to fall')
+    raise SystemExit('openrouter-primary must allow cheap hosts to fall')
 if routing.get('sort') != 'throughput':
-    raise SystemExit('openrouter-fallback must sort by throughput')
+    raise SystemExit('openrouter-primary must sort by throughput')
 if 'quantizations' in routing:
-    raise SystemExit('openrouter-fallback must delegate quantization to live routing')
+    raise SystemExit('openrouter-primary must delegate quantization to live routing')
 if routing.get('preferred_min_throughput') != {'p90': 40}:
-    raise SystemExit('openrouter-fallback must enforce the p90 throughput floor')
+    raise SystemExit('openrouter-primary must enforce the p90 throughput floor')
 if routing.get('preferred_max_latency') != {'p99': 3}:
-    raise SystemExit('openrouter-fallback must enforce the p99 latency preference')
+    raise SystemExit('openrouter-primary must enforce the p99 latency preference')
 if routing.get('only') or routing.get('order'):
-    raise SystemExit('openrouter-fallback must not pin provider.only or provider.order')
+    raise SystemExit('openrouter-primary must not pin provider.only or provider.order')
 if review.get('openrouter_stream') != 'true':
     raise SystemExit('global openrouter_stream must be true so configured transports use SSE TTFT')
 for transport in review.get('transports', []):
@@ -119,12 +135,12 @@ for transport in review.get('transports', []):
 # aborted by a duration cap -- the stall/idle timer re-arms on every SSE chunk, so timeout_ms no
 # longer bounds a lane's worst-case wall time and must not be summed across every transport x
 # attempt x turn (that pre-#163 model rejected healthy configs, which is exactly why
-# fireworks.timeout_ms had to be cut from a requested 120000 to 75000). What genuinely bounds a
+# a direct provider timeout had to be cut from a requested 120000 to 75000). What genuinely bounds a
 # lane's worst case is the failure path where a transport never produces a first byte:
 # connect_timeout_ms plus one stall_ms interval, summed across every transport, attempt, and
 # investigation turn. This is the same invariant emit-policy.mjs enforces at policy-load time;
 # re-checking it here against the real committed policy keeps the two in lockstep. Sums over
-# however many transports the policy declares -- not hardcoded to today's count -- so it stays
+# however many enabled transports the policy admits -- not hardcoded to today's count -- so it stays
 # meaningful if that count changes.
 lane_deadline_ms = int(budget['lane_deadline_ms'])
 lane_overhead_ms = int(budget['lane_overhead_ms'])
@@ -172,6 +188,7 @@ PY
 mkdir -p "$tmp_dir/scripts" "$tmp_dir/policy"
 cp "$repo_root/scripts/emit-policy.mjs" "$tmp_dir/scripts/emit-policy.mjs"
 cp "$repo_root/scripts/lane-deadline-invariant.mjs" "$tmp_dir/scripts/lane-deadline-invariant.mjs"
+cp "$repo_root/scripts/transport-envelope.mjs" "$tmp_dir/scripts/transport-envelope.mjs"
 
 write_policy() {
   local key="$1" value="$2"
@@ -242,7 +259,7 @@ import sys
 
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
-transport = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'fireworks')
+transport = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'gemini')
 transport['timeout_ms'] = 1_000
 transport['connect_timeout_ms'] = 1_001
 with open(destination, 'w') as handle:
@@ -271,7 +288,7 @@ run_transport_relation_case() {
 # quantity that DOES still bound the worst case -- connect_timeout_ms plus one stall_ms interval
 # per transport. Every transport individually stays inside the 1ms-180000ms per-field cap (so that
 # check does not fire first), but connect_timeout_ms is set high enough that the summed
-# connect+stall envelope across all configured transports exceeds the committed lane deadline --
+# connect+stall envelope across all enabled transports exceeds the committed lane deadline --
 # derived from the deadline and transport count rather than hardcoded, so this stays meaningful if
 # a transport is added or removed again.
 write_transport_budget_overflow_policy() {
@@ -282,7 +299,7 @@ import sys
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-transports = review['transports']
+transports = [item for item in review['transports'] if item.get('enabled') is True]
 lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
 overflow_connect_ms = min(180_000, (lane_deadline_ms // len(transports)) + 10_000)
 for transport in transports:
@@ -297,7 +314,7 @@ if overflow_sum <= lane_deadline_ms:
 # Keep the retry-envelope guard from firing first; this fixture is specifically proving that
 # the connect+stall sum across transports is checked independently of the OpenRouter retry count.
 review['openrouter_max_attempts'] = '1'
-openrouter = next(item for item in transports if item['name'] == 'openrouter-fallback')
+openrouter = next(item for item in transports if item['name'] == 'openrouter-primary')
 review['openrouter_timeout_ms'] = str(openrouter['timeout_ms'])
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
@@ -330,7 +347,7 @@ import sys
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-transports = review['transports']
+transports = [item for item in review['transports'] if item.get('enabled') is True]
 lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
 max_investigation_turns = int(review['budget']['max_investigation_turns'])
@@ -341,7 +358,7 @@ retry_connect_ms = min(
 for transport in transports:
     transport['connect_timeout_ms'] = retry_connect_ms
     transport['timeout_ms'] = max(transport.get('timeout_ms', 30_000), retry_connect_ms)
-openrouter = next(item for item in transports if item['name'] == 'openrouter-fallback')
+openrouter = next(item for item in transports if item['name'] == 'openrouter-primary')
 review['openrouter_timeout_ms'] = str(openrouter['timeout_ms'])
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
@@ -379,7 +396,7 @@ policy = json.load(open(source))
 review = policy['review_yeti']
 budget = review['budget']
 budget['lane_overhead_ms'] = '120000'
-transports = review['transports']
+transports = [item for item in review['transports'] if item.get('enabled') is True]
 stall_ms = int(review['stall_ms'])
 raw_dead_call_budget = (
     (sum(item['connect_timeout_ms'] for item in transports) + len(transports) * stall_ms)
@@ -463,8 +480,8 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['gemini', 'ollama', 'synthetic', 'fireworks', 'openrouter-fallback']:
-    raise SystemExit('base64 transport plan must preserve Gemini -> Ollama -> Synthetic -> Fireworks -> OpenRouter order')
+if [item.get('name') for item in plan] != ['openrouter-primary', 'synthetic']:
+    raise SystemExit('base64 transport plan must preserve OpenRouter -> Synthetic order')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
@@ -508,7 +525,7 @@ for field in timeout_ms connect_timeout_ms; do
   for value in 0 -1 180001 true 1.5 ''; do
     name="invalid-transport-${field}-${value:-empty}"
     run_case "$name" "transport.3.${field}" "$value" 1
-    grep -q "transport fireworks.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
+    grep -q "transport synthetic.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
   done
 done
 
@@ -525,7 +542,7 @@ import sys
 
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
-openrouter = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'openrouter-fallback')
+openrouter = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'openrouter-primary')
 openrouter['timeout_ms'] += 1
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
@@ -540,7 +557,7 @@ run_openrouter_timeout_mismatch_case() {
   local rc=$?
   set -e
   [[ "$rc" -eq 1 ]]
-  grep -q 'openrouter-fallback.timeout_ms must equal review_yeti.openrouter_timeout_ms' "$tmp_dir/invalid-openrouter-timeout.log"
+  grep -q 'openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms' "$tmp_dir/invalid-openrouter-timeout.log"
   echo "[invalid-openrouter-timeout] passed"
 }
 

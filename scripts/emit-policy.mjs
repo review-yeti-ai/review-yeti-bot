@@ -1,5 +1,6 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
+import { validateTransportEnvelope } from './transport-envelope.mjs';
 
 const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
 const review = policy.review_yeti;
@@ -41,10 +42,19 @@ if (openrouterTtftMs > openrouterTimeoutMs) {
   throw new Error('review_yeti.openrouter_ttft_ms must not exceed openrouter_timeout_ms');
 }
 if (!Array.isArray(review.transports) || review.transports.length === 0) throw new Error('policy must define transports');
-if (!openrouterTransport) throw new Error('policy must define an OpenRouter fallback transport');
-const transportNames = review.transports.map((transport) => transport.name);
+if (!['ordered', 'striped'].includes(review.dispatch_mode)) {
+  throw new Error('review_yeti.dispatch_mode must be ordered or striped');
+}
+if (!openrouterTransport || openrouterTransport.enabled !== true) {
+  throw new Error('policy must define an enabled OpenRouter primary transport');
+}
+const enabledTransports = review.transports.filter((transport) => transport.enabled === true);
+const transportNames = enabledTransports.map((transport) => transport.name);
 if (new Set(transportNames).size !== transportNames.length) throw new Error('transport names must be unique');
 for (const transport of review.transports) {
+  if (typeof transport.enabled !== 'boolean') {
+    throw new Error(`transport ${transport.name || '<unnamed>'} enabled must be a boolean`);
+  }
   if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !transport.compat) {
     throw new Error(`transport ${transport.name || '<unnamed>'} is incomplete`);
   }
@@ -56,29 +66,31 @@ for (const transport of review.transports) {
   if (transport.connect_timeout_ms > transport.timeout_ms) {
     throw new Error(`transport ${transport.name}.connect_timeout_ms must not exceed timeout_ms`);
   }
+  validateTransportEnvelope(transport);
+}
+if (JSON.stringify(transportNames) !== JSON.stringify(['openrouter-primary', 'synthetic'])) {
+  throw new Error('OpenRouter must be the primary transport and enabled transport order must be OpenRouter -> Synthetic');
+}
+const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
+if (!fireworksTransport || fireworksTransport.enabled !== false) {
+  throw new Error('Fireworks must remain declared with enabled: false');
 }
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
-  throw new Error('openrouter-fallback.timeout_ms must equal review_yeti.openrouter_timeout_ms');
+  throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');
 }
 if (Number(budget.lane_deadline_ms) < openrouterTimeoutMs * openrouterMaxAttempts) {
   throw new Error('review_yeti.budget.lane_deadline_ms must cover the OpenRouter request retry envelope');
 }
 
-// A lane advances through the declared transports in order, retrying each transport up to
-// openrouter_max_attempts before moving on. Since review-yeti-bot PR #163, an actively-streaming
-// call is never aborted by a duration cap -- the stall/idle timer (review_yeti.stall_ms) re-arms
-// on every SSE chunk, so a transport that is genuinely producing tokens can run past its
-// timeout_ms without being killed. timeout_ms therefore no longer bounds a lane's worst-case wall
-// time; summing it across every transport x attempt x turn (the pre-#163 model) rejects healthy
-// configurations that could never actually exceed the deadline, which is exactly the failure mode
-// that forced fireworks.timeout_ms to be cut from a requested 120000 to 75000.
-//
-// What genuinely bounds a lane's worst case now is the failure path where a transport NEVER
+// A lane advances through the enabled transports in order, retrying each transport up to
+// openrouter_max_attempts before moving on. The released runtime re-arms its stall/idle timer on
+// every SSE chunk and also enforces timeout_ms as a hard total generation ceiling. This invariant
+// specifically protects the earlier failure path where a transport NEVER
 // produces a first byte: connect_timeout_ms (time to establish the connection) plus one stall_ms
 // interval (the engine's liveness window -- if no chunk arrives inside it, the call is declared
 // dead and the lane fails over). That sum, not timeout_ms, is what has to fit inside the lane
 // deadline across every transport, attempt, and investigation turn. This sums over however many
-// transports the policy declares, not a hardcoded count, so it stays correct as that count
+// enabled transports the policy admits, not a hardcoded count, so it stays correct as that count
 // changes.
 const laneDeadlineMs = Number(budget.lane_deadline_ms);
 const laneOverheadMs = Number(budget.lane_overhead_ms);
@@ -93,7 +105,7 @@ if (!Number.isSafeInteger(laneOverheadMs) || laneOverheadMs < 1) {
   throw new Error('review_yeti.budget.lane_overhead_ms must be a positive integer string');
 }
 checkDeadTransportEnvelope({
-  transports: review.transports,
+  transports: enabledTransports,
   stallMs,
   maxAttempts,
   maxInvestigationTurns,
@@ -110,11 +122,11 @@ checkDeadTransportEnvelope({
 // policy's job is to make sure that IF a transport is ever declared non-streaming, a tight TTFT can
 // never silently become a generation ceiling -- that must be a loud policy-load failure instead of
 // a config footgun that reappears the next time someone edits `stream`.
-const declaredNonStreamingTransports = review.transports.filter((transport) => transport.stream !== true);
+const declaredNonStreamingTransports = enabledTransports.filter((transport) => transport.stream !== true);
 const streamingDeclaredGlobally = review.openrouter_stream === 'true';
 if (declaredNonStreamingTransports.length > 0 || !streamingDeclaredGlobally) {
   const maxTimeoutMs = Math.max(
-    ...review.transports.map((transport) => transport.timeout_ms),
+    ...enabledTransports.map((transport) => transport.timeout_ms),
     Number(review.openrouter_timeout_ms),
   );
   if (Number(openrouterTtftMs) < maxTimeoutMs) {
@@ -135,12 +147,13 @@ const outputs = {
   repository: review.repository,
   action_ref: review.action_channel,
   personas: review.personas,
-  transports: JSON.stringify(review.transports),
+  dispatch_mode: review.dispatch_mode,
+  transports: JSON.stringify(enabledTransports),
   // Explicit name plus a base64 twin. GitHub Actions can drop a JSON output that
   // contains credential environment names when it is forwarded into an input of
   // the same name; the action decodes transport_plan_b64 before the JSON/YAML plan.
-  transport_plan: JSON.stringify(review.transports),
-  transport_plan_b64: Buffer.from(JSON.stringify(review.transports), 'utf8').toString('base64'),
+  transport_plan: JSON.stringify(enabledTransports),
+  transport_plan_b64: Buffer.from(JSON.stringify(enabledTransports), 'utf8').toString('base64'),
   openrouter_data_collection: openrouterTransport.data_collection ?? openrouterTransport.provider_routing?.data_collection ?? '',
   openrouter_ignore_providers: [
     ...(openrouterTransport.ignore_providers ?? []),
@@ -168,4 +181,4 @@ for (const [name, value] of Object.entries(outputs)) {
   appendFileSync(outputPath, `${name}<<${delimiter}\n${value}\n${delimiter}\n`);
 }
 
-console.log(`Loaded standard policy ${policy.schema} with ${review.transports.length} transports and ${review.personas.split(',').length} personas.`);
+console.log(`Loaded standard policy ${policy.schema} with ${enabledTransports.length} enabled transports and ${review.personas.split(',').length} personas.`);

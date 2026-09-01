@@ -1,17 +1,21 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "aa0b798eff2d051a8d0cddd65e664a5c9ad0c293ed4d254bc2eedfae291724f8",
+  "normalized_plan_sha256": "a2b58016750ddda9c2e7ee73c8fc3a41b671286b4df0467903b30e95d96323b6",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
     "release_channel": "v1",
     "transport_order": [
-      "gemini",
-      "ollama",
-      "synthetic",
-      "fireworks",
-      "openrouter-fallback"
+      "openrouter-primary",
+      "synthetic"
     ],
+    "dispatch": {
+      "mode": "striped",
+      "weights": {
+        "openrouter-primary": 3,
+        "synthetic": 1
+      }
+    },
     "lane": {
       "deadline_ms": 860000,
       "overhead_ms": 120000,
@@ -19,155 +23,7 @@
     },
     "transports": [
       {
-        "name": "gemini",
-        "base_url_class": "direct-gemini-openai-compatible",
-        "model": "gemini-3.7-flash",
-        "compatibility_mode": "openai",
-        "timeouts": {
-          "connect_ms": 15000,
-          "request_ms": 90000,
-          "stall_ms": 20000,
-          "ttft_ms": 30000
-        },
-        "max_output_tokens": 24576,
-        "streaming": true,
-        "structured_output": "strict",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning_effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": false
-        },
-        "routing": {
-          "mode": "direct",
-          "ignore_providers": [],
-          "provider": null
-        },
-        "privacy": {
-          "data_collection": "not-declared"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "runtime-owned-uncharacterized"
-        },
-        "quarantine": {
-          "on_timeout": "runtime-default-uncharacterized"
-        }
-      },
-      {
-        "name": "ollama",
-        "base_url_class": "direct-ollama-cloud-openai-compatible",
-        "model": "deepseek-v4-flash:cloud",
-        "compatibility_mode": "openai",
-        "timeouts": {
-          "connect_ms": 20000,
-          "request_ms": 90000,
-          "stall_ms": 20000,
-          "ttft_ms": 30000
-        },
-        "max_output_tokens": 24576,
-        "streaming": true,
-        "structured_output": "runtime-default-uncharacterized",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning_effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": false
-        },
-        "routing": {
-          "mode": "direct",
-          "ignore_providers": [],
-          "provider": null
-        },
-        "privacy": {
-          "data_collection": "not-declared"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "runtime-owned-uncharacterized"
-        },
-        "quarantine": {
-          "on_timeout": "runtime-default-uncharacterized"
-        }
-      },
-      {
-        "name": "synthetic",
-        "base_url_class": "direct-synthetic-openai-compatible",
-        "model": "hf:zai-org/GLM-5.3-Flash",
-        "compatibility_mode": "openai",
-        "timeouts": {
-          "connect_ms": 15000,
-          "request_ms": 90000,
-          "stall_ms": 20000,
-          "ttft_ms": 30000
-        },
-        "max_output_tokens": 24576,
-        "streaming": true,
-        "structured_output": "strict",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning_effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": false
-        },
-        "routing": {
-          "mode": "direct",
-          "ignore_providers": [],
-          "provider": null
-        },
-        "privacy": {
-          "data_collection": "not-declared"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "runtime-owned-uncharacterized"
-        },
-        "quarantine": {
-          "on_timeout": "runtime-default-uncharacterized"
-        }
-      },
-      {
-        "name": "fireworks",
-        "base_url_class": "direct-fireworks-openai-compatible",
-        "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
-        "compatibility_mode": "openai",
-        "timeouts": {
-          "connect_ms": 15000,
-          "request_ms": 120000,
-          "stall_ms": 20000,
-          "ttft_ms": 30000
-        },
-        "max_output_tokens": 24576,
-        "streaming": true,
-        "structured_output": "strict",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning_effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": true
-        },
-        "routing": {
-          "mode": "direct",
-          "ignore_providers": [],
-          "provider": null
-        },
-        "privacy": {
-          "data_collection": "not-declared"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "runtime-owned-uncharacterized"
-        },
-        "quarantine": {
-          "on_timeout": "runtime-default-uncharacterized"
-        }
-      },
-      {
-        "name": "openrouter-fallback",
+        "name": "openrouter-primary",
         "base_url_class": "openrouter-gateway",
         "model": "~deepseek/deepseek-v4-flash-latest",
         "models": [
@@ -216,12 +72,75 @@
         "privacy": {
           "data_collection": "deny"
         },
+        "capacity": {
+          "max_in_flight": 3,
+          "concurrency_scope": "provider",
+          "wait_timeout_ms": 30000
+        },
+        "quota": {
+          "probe": "none"
+        },
         "retry": {
           "max_attempts": 2,
-          "classification": "runtime-owned-uncharacterized"
+          "classification": "http-status-and-retry-after",
+          "rate_limit": {
+            "scope": "provider",
+            "max_retries": 1,
+            "max_retry_after_ms": 5000
+          }
         },
         "quarantine": {
           "on_timeout": false
+        }
+      },
+      {
+        "name": "synthetic",
+        "base_url_class": "direct-synthetic-openai-compatible",
+        "model": "hf:zai-org/GLM-5.3-Flash",
+        "compatibility_mode": "openai",
+        "timeouts": {
+          "connect_ms": 15000,
+          "request_ms": 120000,
+          "stall_ms": 20000,
+          "ttft_ms": 30000
+        },
+        "max_output_tokens": 24576,
+        "streaming": true,
+        "structured_output": "strict",
+        "reasoning": {
+          "effort": "high",
+          "wire_shape": "reasoning_effort"
+        },
+        "request_extensions": {
+          "perf_metrics_in_response": false
+        },
+        "routing": {
+          "mode": "direct",
+          "ignore_providers": [],
+          "provider": null
+        },
+        "privacy": {
+          "data_collection": "not-declared"
+        },
+        "capacity": {
+          "max_in_flight": 5,
+          "concurrency_scope": "model",
+          "wait_timeout_ms": 120000
+        },
+        "quota": {
+          "probe": "synthetic-v2"
+        },
+        "retry": {
+          "max_attempts": 2,
+          "classification": "http-status-and-retry-after",
+          "rate_limit": {
+            "scope": "provider",
+            "max_retries": 1,
+            "max_retry_after_ms": 5000
+          }
+        },
+        "quarantine": {
+          "on_timeout": "runtime-default-uncharacterized"
         }
       }
     ]

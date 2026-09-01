@@ -359,10 +359,10 @@ test('qualification writes sanitized, non-authoritative evidence and uses one ch
           errored: false,
           latencyMs: index + 10,
           provider: 'openrouter',
-          transport: 'openrouter-fallback',
+          transport: 'openrouter-primary',
           responseStatus: 200,
           attemptCount: 1,
-          responseAttempts: [{ attempt: 1, outcome: 'parsed', provider: 'openrouter', transport: 'openrouter-fallback' }],
+          responseAttempts: [{ attempt: 1, outcome: 'parsed', provider: 'openrouter', transport: 'openrouter-primary' }],
         }));
         writeFileSync(outputPath, JSON.stringify({ rows }, null, 2));
         const child = new EventEmitter();
@@ -443,7 +443,7 @@ test('row-level attribution is required and cannot pass vacuously', () => {
     errored: false,
     latencyMs: 10,
     provider: index === 0 ? undefined : 'openrouter',
-    transport: index === 0 ? undefined : 'openrouter-fallback',
+    transport: index === 0 ? undefined : 'openrouter-primary',
   }));
   assert.equal(summarizeRows(rows, 0).provider_attribution_valid, false);
 });

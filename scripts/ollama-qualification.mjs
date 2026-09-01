@@ -130,7 +130,11 @@ export function validateQualificationInput(input = {}) {
 }
 
 export function buildTransportHandoff(policy, profile) {
-  const transports = validatePolicy(policy);
+  // This is an explicitly dispatched diagnostic arm. It may inspect a provider
+  // retained in policy with enabled: false, while production admission remains
+  // limited to validatePolicy()'s enabled transport result.
+  validatePolicy(policy);
+  const transports = policy.review_yeti.transports;
   const transportName = profile === BASELINE_PROFILE
     ? 'fireworks'
     : profile === CANDIDATE_PROFILE

@@ -3,18 +3,26 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
+import { validateTransportEnvelope } from './transport-envelope.mjs';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
+  'openrouter-primary',
+  'synthetic',
+]);
+export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
+  'openrouter-primary',
   'gemini',
   'ollama',
   'synthetic',
   'fireworks',
-  'openrouter-fallback',
 ]);
 export const EXPECTED_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 export const EXPECTED_GEMINI_MODEL = 'gemini-3.7-flash';
 export const EXPECTED_SYNTHETIC_BASE_URL = 'https://api.synthetic.new/openai/v1';
 export const EXPECTED_SYNTHETIC_MODEL = 'hf:zai-org/GLM-5.3-Flash';
+export const SYNTHETIC_REQUESTS_PER_PACK = 500;
+const SYNTHETIC_QUOTA_PATH = '/v2/quotas';
+const DEFAULT_QUOTA_TIMEOUT_MS = 5_000;
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -39,6 +47,11 @@ export const EXPECTED_OPENROUTER_MODEL = EXPECTED_OPENROUTER_MODELS[0];
 // only/order outright is deliberately stricter than validating a duplicated allowlist here.
 const FORBIDDEN_ROUTING_SELECTORS = Object.freeze(['only', 'order']);
 
+export function getEnabledTransports(policy) {
+  const transports = policy?.review_yeti?.transports;
+  return Array.isArray(transports) ? transports.filter((transport) => transport.enabled === true) : [];
+}
+
 export function validatePolicy(policy) {
   if (policy?.schema !== 'exampleorg.review-policy.v1') {
     throw new Error('unsupported Review Yeti policy schema');
@@ -51,6 +64,9 @@ export function validatePolicy(policy) {
 
   const budget = policy.review_yeti?.budget;
   const positiveSafeInteger = (value) => Number.isSafeInteger(value) && value > 0;
+  if (!['ordered', 'striped'].includes(policy.review_yeti?.dispatch_mode)) {
+    throw new Error('Review Yeti dispatch_mode must be ordered or striped');
+  }
   for (const [label, value] of [
     ['lane_deadline_ms', Number(budget?.lane_deadline_ms)],
     ['max_investigation_turns', Number(budget?.max_investigation_turns)],
@@ -60,7 +76,18 @@ export function validatePolicy(policy) {
   }
 
   const names = transports.map((transport) => transport.name);
-  if (JSON.stringify(names) !== JSON.stringify(EXPECTED_TRANSPORT_ORDER)) {
+  if (new Set(names).size !== names.length) throw new Error('transport names must be unique');
+  for (const transport of transports) {
+    if (typeof transport.enabled !== 'boolean') {
+      throw new Error(`transport ${transport.name || '<unnamed>'} enabled must be a boolean`);
+    }
+  }
+  const enabledTransports = getEnabledTransports(policy);
+  const enabledNames = enabledTransports.map((transport) => transport.name);
+  if (transports.some((transport) => transport.name === 'fireworks' && transport.enabled === true)) {
+    throw new Error('Fireworks transport is disabled');
+  }
+  if (JSON.stringify(enabledNames) !== JSON.stringify(EXPECTED_TRANSPORT_ORDER)) {
     throw new Error(`Review Yeti transport order must be ${EXPECTED_TRANSPORT_ORDER.join(' -> ')}`);
   }
 
@@ -77,15 +104,17 @@ export function validatePolicy(policy) {
     if (transport.connect_timeout_ms > transport.timeout_ms) {
       throw new Error(`transport ${transport.name} connect timeout must not exceed timeout`);
     }
+    validateTransportEnvelope(transport);
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
 
   const gemini = transports.find((transport) => transport.name === 'gemini');
   const synthetic = transports.find((transport) => transport.name === 'synthetic');
-  const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const ollama = transports.find((transport) => transport.name === 'ollama');
-  if (!gemini || !ollama || !synthetic || !fireworks) {
-    throw new Error('policy must define Gemini, Ollama, Synthetic, and Fireworks transports');
+  const fireworks = transports.find((transport) => transport.name === 'fireworks');
+  const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
+  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter || openrouter.enabled !== true) {
+    throw new Error('policy must define OpenRouter, Gemini, Ollama, and Synthetic transports');
   }
 
   if (gemini.base_url !== EXPECTED_GEMINI_BASE_URL
@@ -100,28 +129,23 @@ export function validatePolicy(policy) {
       || synthetic.api_key_env !== 'SYNTHETIC_API_KEY'
       || synthetic.model !== EXPECTED_SYNTHETIC_MODEL
       || synthetic.compat !== 'openai'
+      || synthetic.max_in_flight !== 5
+      || synthetic.concurrency_scope !== 'model'
+      || synthetic.quota_probe !== 'synthetic-v2'
       || synthetic.structured_output !== 'strict'
       || synthetic.reasoning_effort !== 'high') {
-    throw new Error('Synthetic must use the pinned OpenAI-compatible endpoint/model with strict high-reasoning output');
+    throw new Error('Synthetic must use the pinned endpoint/model, a five-pack per-model ceiling, quota-bounded admission, and strict high-reasoning output');
+  }
+  if (fireworks.base_url !== 'https://api.fireworks.ai/inference/v1'
+      || fireworks.api_key_env !== 'FIREWORKS_PR_REVIEW_API_KEY'
+      || fireworks.model !== 'accounts/fireworks/models/deepseek-v4-flash-0731'
+      || fireworks.compat !== 'openai'
+      || fireworks.structured_output !== 'strict'
+      || fireworks.perf_metrics_in_response !== true
+      || fireworks.reasoning_effort !== 'high') {
+    throw new Error('Fireworks must remain declared with its existing disabled transport contract');
   }
 
-  // Fireworks must NOT pin reasoning_effort. Measured ablation 2026-08-20, live,
-  // deepseek-v4-flash-0731, N=8 reps x 9 fixtures x 3 arms, errored runs counted as failures:
-  //   arm       recall               errors      median latency
-  //   none      0.275 [0.16-0.43]     3/72 (4%)     6.6s
-  //   unset     0.750 [0.60-0.86]     7/72 (10%)   43.1s   <- best, and what this asserts
-  //   max       0.425 [0.29-0.58]    25/72 (35%)   83.3s
-  // `max` lost on detection with non-overlapping CIs against unset AND carried 3.5x the failure
-  // rate. Its median reasoning output was *lower* than unset's (837 vs 2,902 chars) -- consistent
-  // with blowing past the per-attempt budget mid-thought rather than reasoning further. The
-  // previous rule required exactly the worst-performing arm.
-  if (fireworks.reasoning_effort === 'max') {
-    throw new Error("Fireworks must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
-  }
-  if (fireworks.perf_metrics_in_response !== true) {
-    throw new Error('Fireworks must report performance metrics');
-  }
-  if (fireworks.structured_output !== 'strict') throw new Error('Fireworks must use strict investigation output');
   if (ollama.reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
@@ -140,9 +164,8 @@ export function validatePolicy(policy) {
     }
   }
 
-  const openrouter = transports.find((transport) => transport.name === 'openrouter-fallback');
   if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must delegate provider selection, exclude only Morph and Fireworks, and keep throughput floors/fallbacks');
+    throw new Error('OpenRouter routing must delegate provider selection, preserve the blocked-provider exclusions, and keep throughput floors/fallbacks');
   }
   if (openrouter?.allow_banned_providers !== undefined) {
     throw new Error('OpenRouter must not re-enable a hard-banned provider');
@@ -154,10 +177,8 @@ export function validatePolicy(policy) {
       || JSON.stringify(openrouter?.models) !== JSON.stringify(EXPECTED_OPENROUTER_MODELS.slice(1))) {
     throw new Error('OpenRouter must use only the approved DeepSeek V4 Flash Latest primary and GLM-5.3 Flash fallback models');
   }
-  // Same measured ablation as the fireworks rule above (2026-08-20, live, N=8x9x3, errored runs
-  // counted as failures): `max` scored recall 0.425 [0.29-0.58] with 25/72 errors, versus unset at
-  // 0.750 [0.60-0.86] with 7/72. Non-overlapping CIs, 3.5x the failure rate. Pinning `max` here
-  // required exactly the worst-measured arm.
+  // The approved route leaves reasoning selection to the model/provider contract; pinning `max`
+  // would force a previously measured worst-performing arm.
   if (openrouter?.reasoning_effort === 'max') {
     throw new Error("OpenRouter must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
   }
@@ -174,7 +195,7 @@ export function validatePolicy(policy) {
   // cannot drift again (this copy has already drifted from the primary once: first missing
   // stall_ms validation, then missing lane_overhead_ms in the arithmetic entirely).
   checkDeadTransportEnvelope({
-    transports,
+    transports: enabledTransports,
     stallMs: Number(policy.review_yeti?.stall_ms),
     maxAttempts,
     maxInvestigationTurns,
@@ -182,7 +203,7 @@ export function validatePolicy(policy) {
     laneDeadlineMs: Number(budget.lane_deadline_ms),
   });
 
-  return transports;
+  return enabledTransports;
 }
 
 export function loadPolicy(policyPath = process.env.REVIEW_YETI_POLICY_PATH || DEFAULT_POLICY_PATH) {
@@ -445,7 +466,7 @@ export async function runSmoke({
       '',
       `- Healthy transports: ${healthy.join(', ')}`,
       ...(unhealthy.length > 0 ? [`- Unhealthy optional transports: ${unhealthy.join(', ')}`] : []),
-      `- Configured order: ${EXPECTED_TRANSPORT_ORDER.join(' -> ')}`,
+      `- Enabled order: ${EXPECTED_TRANSPORT_ORDER.join(' -> ')}`,
       '- Secret values are intentionally omitted.',
       '',
     ].join('\n'));
@@ -458,9 +479,10 @@ export async function runSmoke({
 // inputs. The complete healthy subset is emitted separately for per-lane failover.
 export function resolveTransport(transports, healthy, order = EXPECTED_TRANSPORT_ORDER) {
   const healthySet = new Set(healthy);
+  const enabledTransports = transports.filter((transport) => transport.enabled === true);
   for (const name of order) {
     if (healthySet.has(name)) {
-      const transport = transports.find((candidate) => candidate.name === name);
+      const transport = enabledTransports.find((candidate) => candidate.name === name);
       if (transport) return transport;
     }
   }
@@ -472,7 +494,86 @@ export function resolveTransport(transports, healthy, order = EXPECTED_TRANSPORT
 // and can consume the entire lane deadline before a healthy fallback is reached.
 export function selectHealthyTransports(transports, healthy) {
   const healthySet = new Set(healthy);
-  return transports.filter((transport) => healthySet.has(transport.name));
+  return transports.filter((transport) => transport.enabled === true && healthySet.has(transport.name));
+}
+
+function syntheticFiveHourLimit(payload) {
+  for (const value of [payload?.rollingFiveHourLimit?.max, payload?.subscription?.limit]) {
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  }
+  return null;
+}
+
+// Synthetic publishes one concurrent request per model per subscription pack and 500 requests in
+// the rolling five-hour bucket per pack. Treat the policy value as an upper bound, derive the live
+// pack count only from an exact documented multiple, and fail safe to one slot when the advisory
+// endpoint is unavailable or its under-development response shape is ambiguous.
+export function syntheticCapacityFromQuota(payload, configuredMaxInFlight) {
+  const configured = Number(configuredMaxInFlight);
+  if (!Number.isSafeInteger(configured) || configured < 1) return 1;
+  const fiveHourLimit = syntheticFiveHourLimit(payload);
+  if (!Number.isSafeInteger(fiveHourLimit)
+      || fiveHourLimit < SYNTHETIC_REQUESTS_PER_PACK
+      || fiveHourLimit % SYNTHETIC_REQUESTS_PER_PACK !== 0) {
+    return 1;
+  }
+  const packCount = fiveHourLimit / SYNTHETIC_REQUESTS_PER_PACK;
+  return Math.max(1, Math.min(configured, packCount));
+}
+
+export function syntheticQuotaUrl(transport) {
+  if (transport?.quota_probe !== 'synthetic-v2'
+      || transport?.base_url !== EXPECTED_SYNTHETIC_BASE_URL) {
+    return null;
+  }
+  try {
+    const providerBaseUrl = new URL(transport.base_url);
+    const pinnedBaseUrl = new URL(EXPECTED_SYNTHETIC_BASE_URL);
+    if (providerBaseUrl.protocol !== 'https:' || providerBaseUrl.origin !== pinnedBaseUrl.origin) {
+      return null;
+    }
+    return new URL(SYNTHETIC_QUOTA_PATH, providerBaseUrl.origin).toString();
+  } catch {
+    return null;
+  }
+}
+
+export async function boundSyntheticCapacity(
+  transports,
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  log = console.log,
+  timeoutMs = DEFAULT_QUOTA_TIMEOUT_MS,
+) {
+  const synthetic = transports.find((transport) => transport.quota_probe === 'synthetic-v2');
+  if (!synthetic) return transports;
+
+  let payload = null;
+  let source = 'fail-safe';
+  const apiKey = env[synthetic.api_key_env];
+  const quotaUrl = syntheticQuotaUrl(synthetic);
+  if (apiKey && quotaUrl) {
+    try {
+      const response = await fetchImpl(quotaUrl, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (response.ok) {
+        payload = await response.json();
+        source = syntheticFiveHourLimit(payload) === null ? 'fail-safe' : 'live-quota';
+      }
+    } catch {
+      // Quota telemetry must never prevent a healthy provider from being used. The one-slot
+      // fail-safe matches the minimum subscription contract and prevents over-admission.
+    }
+  }
+
+  const maxInFlight = syntheticCapacityFromQuota(payload, synthetic.max_in_flight);
+  log(`[Review Yeti smoke] synthetic capacity max_in_flight=${maxInFlight} source=${source}.`);
+  return transports.map((transport) => transport === synthetic
+    ? { ...transport, max_in_flight: maxInFlight }
+    : transport);
 }
 
 export function encodeTransportPlan(transports) {
@@ -486,9 +587,12 @@ async function main() {
   // runSmoke() already throws when `healthy` is empty, so reaching here guarantees at least one
   // resolvable transport -- this never silently degrades to "no transport, run anyway".
   const policy = loadPolicy();
-  const resolved = resolveTransport(policy.review_yeti.transports, healthy);
+  const transports = validatePolicy(policy);
+  const resolved = resolveTransport(transports, healthy);
   if (!resolved) throw new Error('no healthy transport could be resolved from a validated policy');
-  const healthyTransports = selectHealthyTransports(policy.review_yeti.transports, healthy);
+  const healthyTransports = await boundSyntheticCapacity(
+    selectHealthyTransports(transports, healthy),
+  );
 
   const degraded = resolved.name !== EXPECTED_TRANSPORT_ORDER[0];
   console.log(
