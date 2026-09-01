@@ -146,7 +146,23 @@ describe('resolveModelConfig', () => {
     expect(cfg.enabled).toBe(true);
     expect(cfg.apiKey).toBe('sk-test');
     expect(cfg.baseUrl).toContain('openrouter.ai');
-    expect(cfg.model).toBe('openrouter/auto');
+    expect(cfg.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(cfg.transports).toMatchObject([
+      {
+        name: 'openrouter-deepseek-v4-flash-0731',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        models: [],
+        stream: true,
+        reasoningEffort: 'high',
+      },
+      {
+        name: 'openrouter-glm-5.3-flash-fallback',
+        model: 'z-ai/glm-5.3-flash',
+        models: [],
+        stream: true,
+        reasoningEffort: 'high',
+      },
+    ]);
   });
 
   it('allows an explicitly configured OpenRouter-compatible endpoint', () => {
@@ -159,22 +175,20 @@ describe('resolveModelConfig', () => {
     expect(cfg.model).toBe('some/model');
   });
 
-  it('auto-synthesizes multi-transport chain when multiple provider API keys are supplied', () => {
+  it('keeps the direct OpenRouter pair authoritative when multiple provider keys are present', () => {
     const cfg = resolveModelConfig({
       FIREWORKS_API_KEY: 'fw-key-123',
       ANTHROPIC_API_KEY: 'sk-ant-456',
       OPENROUTER_API_KEY: 'sk-or-789',
     });
     expect(cfg.enabled).toBe(true);
-    expect(cfg.transports).toHaveLength(3);
-    expect(cfg.transports[0].name).toBe('fireworks');
-    expect(cfg.transports[0].apiKey).toBe('fw-key-123');
-    expect(cfg.transports[0].model).toBe('accounts/fireworks/models/deepseek-v4-flash-0731');
-    expect(cfg.transports[1].name).toBe('anthropic');
-    expect(cfg.transports[1].apiKey).toBe('sk-ant-456');
-    expect(cfg.transports[1].model).toBe('claude-5-haiku:high');
-    expect(cfg.transports[2].name).toBe('openrouter');
-    expect(cfg.transports[2].apiKey).toBe('sk-or-789');
+    expect(cfg.transports).toHaveLength(2);
+    expect(cfg.transports[0].name).toBe('openrouter-deepseek-v4-flash-0731');
+    expect(cfg.transports[0].apiKey).toBe('sk-or-789');
+    expect(cfg.transports[0].model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(cfg.transports[1].name).toBe('openrouter-glm-5.3-flash-fallback');
+    expect(cfg.transports[1].apiKey).toBe('sk-or-789');
+    expect(cfg.transports[1].model).toBe('z-ai/glm-5.3-flash');
   });
 
   it('supports direct Gemini, OpenAI, and Ollama provider keys with modern defaults', () => {
@@ -214,6 +228,25 @@ describe('resolveModelConfig', () => {
       reasoningEffort: 'high',
       perfMetricsInResponse: true,
       structuredOutputMode: 'json_schema',
+    });
+  });
+
+  it('normalizes an explicit OpenRouter auto alias to the direct primary model', () => {
+    const cfg = resolveModelConfig({
+      OPENROUTER_PR_REVIEW_API_KEY: 'or-key',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([{
+        name: 'openrouter-primary',
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
+        model: 'openrouter/auto',
+        stream: true,
+      }]),
+    });
+
+    expect(cfg.transports[0]).toMatchObject({
+      model: 'deepseek/deepseek-v4-flash-0731',
+      models: [],
+      stream: true,
     });
   });
 });
@@ -331,10 +364,10 @@ describe('reviewWithModel', () => {
 
     expect(fetched).toBe(false);
     expect(res.decision).toBe('ERROR');
-    expect(res.error).toContain('canonical five-model fleet');
+    expect(res.error).toContain('canonical approved model set');
   });
 
-  it('sends the resolved OpenRouter auto-router policy as exact request JSON', async () => {
+  it('sends the resolved direct OpenRouter policy without an auto-router plugin', async () => {
     const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
     const manifest = require(path.join(rootRepoDir, 'src/config/openrouter-review-policy.json'));
 
@@ -347,20 +380,13 @@ describe('reviewWithModel', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(calls[0].body).toMatchObject({
-      model: 'openrouter/auto',
+      model: 'deepseek/deepseek-v4-flash-0731',
       temperature: 0.1,
       response_format: { type: 'json_object' },
       provider: { data_collection: 'deny' },
-      plugins: [
-        {
-          id: 'auto-router',
-          allowed_models: manifest.allowed_models,
-          cost_quality_tradeoff: manifest.cost_quality_tradeoff,
-        },
-      ],
     });
     expect(calls[0].body.provider).not.toHaveProperty('allow_fallbacks');
-    expect(calls[0].body.plugins[0].allowed_models).toHaveLength(5);
+    expect(calls[0].body).not.toHaveProperty('plugins');
   });
 
   it('falls back once from an unsupported JSON Schema contract to json_object', async () => {
@@ -486,7 +512,7 @@ describe('reviewWithModel', () => {
     }
   });
 
-  it('keeps the auto-router plugin payload when policy uses a canonical model override', async () => {
+  it('keeps direct model overrides free of the auto-router plugin', async () => {
     const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
 
     await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r', prNumber: '1' }, null, {
@@ -505,14 +531,8 @@ describe('reviewWithModel', () => {
     expect(calls[0].body).toMatchObject({
       model: 'z-ai/glm-5.2',
       provider: { data_collection: 'deny' },
-      plugins: [
-        {
-          id: 'auto-router',
-          allowed_models: ['moonshotai/kimi-k2.6', 'z-ai/glm-5.2'],
-          cost_quality_tradeoff: 5,
-        },
-      ],
     });
+    expect(calls[0].body).not.toHaveProperty('plugins');
   });
 
   it('sends an explicit OpenRouter model fallback list without re-injecting the legacy auto-router plugin', async () => {
@@ -1307,7 +1327,7 @@ describe('reviewWithModel', () => {
           json: async () => ({
             error: {
               code: 'rate_limit_exceeded',
-              message: 'openai/gpt-5.6-luna is temporarily rate-limited upstream',
+              message: `${manifest.allowed_models[0]} is temporarily rate-limited upstream`,
             },
           }),
         };
@@ -1317,7 +1337,7 @@ describe('reviewWithModel', () => {
         status: 200,
         headers: new Headers({ 'x-generation-id': 'gen-recovered' }),
         json: async () => ({
-          model: 'z-ai/glm-5.2',
+          model: manifest.allowed_models[1],
           openrouter_metadata: { attempt: 2 },
           choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
         }),
@@ -1326,8 +1346,16 @@ describe('reviewWithModel', () => {
 
     const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
       apiKey: 'k',
-      model: 'openrouter/auto',
+      model: manifest.allowed_models[0],
       openRouterPolicy: manifest,
+      transports: [{
+        name: 'openrouter-direct',
+        compat: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'k',
+        model: manifest.allowed_models[0],
+        models: [manifest.allowed_models[1]],
+      }],
       fetchImplementation,
       sleepImplementation: async () => {},
     });
@@ -1363,8 +1391,8 @@ describe('reviewWithModel', () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].headers['X-OpenRouter-Metadata']).toBe('enabled');
     expect(calls[1].body).toMatchObject({
-      model: 'openai/gpt-5.6-luna',
-      models: ['moonshotai/kimi-k2.6', 'tencent/hy3', 'z-ai/glm-5.2'],
+      model: manifest.allowed_models[0],
+      models: [manifest.allowed_models[1]],
       provider: { data_collection: 'deny', require_parameters: true },
       response_format: { type: 'json_object' },
     });
@@ -1427,11 +1455,19 @@ describe('reviewWithModel', () => {
       model,
       openRouterPolicy: {
         base_url: 'https://openrouter.ai/api/v1',
-        model,
-        allowed_models: allowedModels,
+        model: 'deepseek/deepseek-v4-flash-0731',
+        allowed_models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
         data_collection: 'deny',
         cost_quality_tradeoff: 7,
       },
+      transports: [{
+        name: 'openrouter-direct',
+        compat: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'k',
+        model: failedModel,
+        models: allowedModels.filter((candidate) => candidate !== failedModel),
+      }],
       fetchImplementation,
       sleepImplementation: async () => {},
     });

@@ -5,7 +5,7 @@
       "id": "openrouter-primary",
       "transport": "openrouter",
       "base_url_class": "openrouter-gateway",
-      "model": "openrouter/auto",
+      "model": "deepseek/deepseek-v4-flash-0731",
       "compatibility_mode": "openrouter",
       "timeouts": { "connect_ms": 30000, "request_ms": 90000, "stall_ms": 20000, "ttft_ms": 30000 },
       "streaming": true,

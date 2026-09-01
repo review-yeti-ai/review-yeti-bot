@@ -182,9 +182,11 @@ function buildExecutionProfileRequest(profile, currentRequest = {}) {
   }
 
   // The profile owns the privacy decision but not provider-specific routing knobs
-  // in this parity slice. Preserve the existing OpenRouter policy object when it
-  // is already present, and add only the validated data-collection denial when it
-  // is absent. Direct profiles never carry gateway-only routing fields.
+  // in this parity slice. Direct OpenRouter profiles must not carry the legacy
+  // auto-router plugin; direct profiles never carry gateway-only routing fields.
+  if (profile.transport === 'openrouter' && profile.model !== 'openrouter/auto') {
+    delete projected.plugins;
+  }
   if (profile.transport === 'openrouter' && profile.routing.provider !== null && !projected.provider) {
     projected.provider = { ...profile.routing.provider };
   }
