@@ -443,6 +443,7 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
           })();
         },
         cancel(reason) {
+          cancelCapturedRawBody(reason);
           return upstream.cancel?.(reason);
         },
       });
@@ -3882,6 +3883,13 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           if (releaseProviderCapacity) releaseProviderCapacity();
           if (responseHeaderTimer) clearTimeout(responseHeaderTimer);
           if (heartbeatTimer) clearInterval(heartbeatTimer);
+          // The official SDK clones the response stream so it can preserve a bounded raw-body
+          // compatibility fallback. Cancelling only the parsed reader leaves that clone and its
+          // HTTP socket alive after a TTFT/total timeout. Abort every settled attempt so both tee
+          // branches are closed before a retry starts or the persona lane returns.
+          if (streamAbortController && !streamAbortController.signal.aborted) {
+            streamAbortController.abort(new DOMException('transport attempt settled', 'AbortError'));
+          }
         }
       }
     }
