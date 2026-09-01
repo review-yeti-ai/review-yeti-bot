@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.2...v1.20.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* **release:** use workflow-capable v1 promotion token ([#386](https://github.com/review-yeti-ai/review-yeti-bot/issues/386)) ([42e8776](https://github.com/review-yeti-ai/review-yeti-bot/commit/42e87769aee977603c3042ea835404f220dee181))
+
 ## [1.20.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.1...v1.20.2) (2026-09-01)
 
 
