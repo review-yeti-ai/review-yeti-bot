@@ -678,6 +678,19 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         continue;
       }
 
+      // A provider may return a useful-looking answer without the nonce fence (or with
+      // malformed JSON inside it). Give it one explicit, bounded format correction before
+      // failing closed. This is separate from tool exploration and never infers a verdict.
+      if (structuredCorrectionAttempts < 1 && iter + 1 < maxTurns) {
+        structuredCorrectionAttempts += 1;
+        messages.push({ role: 'assistant', content: response.content });
+        messages.push({
+          role: 'user',
+          content: structuredOutputCorrection(role, requestNonce, fenceErr instanceof Error ? fenceErr.message : String(fenceErr)),
+        });
+        continue;
+      }
+
       throw fenceErr;
     }
   }
