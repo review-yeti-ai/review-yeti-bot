@@ -25,6 +25,13 @@ const {
   resolveOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,
 } = require('./openrouter-policy');
+const {
+  buildReviewScopePlanDigest,
+  createFullReviewScope,
+  mergeIncrementalPersonaResults,
+  resolveIncrementalReviewScope,
+  assessReviewAssignmentBudget,
+} = require('./incremental-review-scope');
 
 let mcpFleetManager = null;
 try {
@@ -4991,7 +4998,11 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     : `- **Commit SHA**: \`${prContext.headSha ? prContext.headSha.slice(0, 7) : 'HEAD'}\``;
 
   let coverageBadge = '';
-  if (coverage?.partitionPlan || (coverage?.partitionsCount && coverage.partitionsCount > 0)) {
+  if (coverage?.scope?.mode === 'delta') {
+    const liveCount = coverage.scope.reviewedPersonaIds?.length || 0;
+    const reusedCount = coverage.scope.reusedPersonaIds?.length || 0;
+    coverageBadge = `\n- **Review Scope**: 🟢 **Trusted repair delta** (${coverage.scope.reviewedDiffChars}/${coverage.scope.fullDiffChars} diff chars; ${liveCount} live persona lane(s) + ${reusedCount} exact-parent lane(s))`;
+  } else if (coverage?.partitionPlan || (coverage?.partitionsCount && coverage.partitionsCount > 0)) {
     const totalFiles = coverage.totalFiles || (coverage.reviewed ? coverage.reviewed.length : 0);
     const partitionsCount = coverage.partitionsCount || (coverage.partitionPlan ? coverage.partitionPlan.partitions.length : 1);
     coverageBadge = `\n- **Coverage**: 🟢 **100%** (${totalFiles}/${totalFiles} files reviewed across ${partitionsCount} partitions, 0 omitted)`;
@@ -5190,7 +5201,7 @@ function postOrOutputComment(commentBody, prContext, options = {}) {
  * @param {object} arbitration - Computed arbitration result.
  * @param {string} [outputPath] - Path to GITHUB_OUTPUT. No-op when absent (local runs).
  */
-function buildReviewRunReport(arbitration, personaResults, prContext) {
+function buildReviewRunReport(arbitration, personaResults, prContext, scope = null) {
   const lanes = (Array.isArray(personaResults) ? personaResults : []).map((result) => {
     const findings = Array.isArray(result.findings) ? result.findings : [];
     const severity = findings.reduce((counts, finding) => {
@@ -5205,6 +5216,7 @@ function buildReviewRunReport(arbitration, personaResults, prContext) {
       decision: result.decision || 'ERROR',
       findings,
       severity,
+      ...(result.reuseSource ? { evidenceSource: result.reuseSource } : {}),
     };
   });
 
@@ -5216,13 +5228,14 @@ function buildReviewRunReport(arbitration, personaResults, prContext) {
     headSha: prContext.headSha,
     verdict: arbitration.verdict,
     lanes,
+    ...(scope ? { scope } : {}),
   };
 }
 
-function writeRunReport(arbitration, personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP) {
+function writeRunReport(arbitration, personaResults, prContext, outputDirectory = process.env.RUNNER_TEMP, scope = null) {
   if (!outputDirectory) return null;
 
-  const report = buildReviewRunReport(arbitration, personaResults, prContext);
+  const report = buildReviewRunReport(arbitration, personaResults, prContext, scope);
   const reportPath = path.join(
     outputDirectory,
     `review-yeti-run-report-${String(prContext.prNumber || 'unknown')}-${String(prContext.headSha || 'unknown').slice(0, 12)}.json`,
@@ -5417,6 +5430,80 @@ async function main() {
     console.log(`[Config] ${note}`);
   }
 
+  // Determine the trusted roster before selecting a diff scope. The roster and immutable Action
+  // SHA are part of the scope plan digest, so an old report cannot authorize evidence reuse after
+  // reviewer policy or runtime changes.
+  const payload = prContext.eventData?.client_payload || {};
+  const fileRoster = loadPersonaFiles(configRoot);
+  if (fileRoster.personas.length > 0) {
+    console.log(`[Personas] Loaded ${fileRoster.personas.length} persona file(s) from ${PERSONA_DIR}/.`);
+  }
+  const roster = resolvePersonaRoster(payload, localConfig, process.env, fileRoster.personas);
+  roster.errors.unshift(...fileRoster.errors);
+  if (roster.errors.length > 0) {
+    console.error('[Personas] Reviewer configuration is invalid:');
+    for (const e of roster.errors) console.error(`  - ${e}`);
+    console.error('[Personas] Refusing to post a verdict from a misconfigured roster.');
+    process.exitCode = 1;
+    return;
+  }
+  const enabledPersonas = roster.personas;
+  const customCount = enabledPersonas.filter(p => !PERSONA_CHARTERS.some(b => b.id === p.id)).length;
+  console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) with model ${DEFAULT_MODEL}${customCount ? ` (${customCount} repository-defined)` : ''}...`);
+
+  const modelConfig = actionRuntime.modelConfig;
+  const safeDiffCapacityChars = modelConfig.maxDiffChars || calculateSafeDiffCapacity(modelConfig.model || DEFAULT_MODEL) || DEFAULT_MAX_DIFF_CHARS;
+  const syntheticVitestRun = process.env.GITHUB_ACTIONS !== 'true'
+    && process.env.VITEST === 'true'
+    && process.env.PR_DIFF
+    && !process.env.GITHUB_EVENT_PATH;
+  if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
+
+  const fullDiffText = prContext.diffText;
+  const maxIncrementalDiffChars = Math.max(1, Number.parseInt(process.env.MAX_INCREMENTAL_DIFF_CHARS || '60000', 10) || 60000);
+  const trustedWorkflow = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW || '').trim();
+  const planDigest = buildReviewScopePlanDigest({
+    actionSha: process.env.REVIEW_YETI_ACTION_SHA,
+    baseSha: prContext.baseSha,
+    personaIds: enabledPersonas.map((persona) => persona.id),
+    maxDiffChars: safeDiffCapacityChars,
+    maxIncrementalDiffChars,
+    trustedWorkflow,
+  });
+  let scopeResolution;
+  try {
+    scopeResolution = await resolveIncrementalReviewScope({
+      enabled: /^(1|true|yes)$/iu.test(String(process.env.REVIEW_YETI_INCREMENTAL_REVIEW || '')),
+      token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN,
+      repo: prContext.repo,
+      prNumber: prContext.prNumber,
+      baseSha: prContext.baseSha,
+      headSha: prContext.headSha,
+      actionSha: process.env.REVIEW_YETI_ACTION_SHA,
+      personaIds: enabledPersonas.map((persona) => persona.id),
+      maxDiffChars: safeDiffCapacityChars,
+      maxIncrementalDiffChars,
+      trustedWorkflow,
+      fullDiffText,
+      planDigest,
+      parseDiff,
+    });
+  } catch (error) {
+    console.warn(`[Scope] Trusted incremental scope unavailable (${error.message}); falling back to the full pull-request diff.`);
+    scopeResolution = {
+      reviewedDiffText: fullDiffText,
+      parentReport: null,
+      scope: createFullReviewScope({ fullDiffText, planDigest, fallbackReason: 'resolver_unavailable' }),
+    };
+  }
+  prContext.diffText = scopeResolution.reviewedDiffText;
+  const reviewScope = scopeResolution.scope;
+  if (reviewScope.mode === 'delta') {
+    console.log(`[Scope] Reviewing trusted repair delta ${reviewScope.parentHeadSha.slice(0, 7)}...${prContext.headSha.slice(0, 7)} (${reviewScope.reviewedDiffChars.toLocaleString()} of ${reviewScope.fullDiffChars.toLocaleString()} chars); live personas=${reviewScope.reviewedPersonaIds.join(',')}; reused=${reviewScope.reusedPersonaIds.join(',') || 'none'}.`);
+  } else {
+    console.log(`[Scope] Reviewing the full pull-request diff (${reviewScope.fullDiffChars.toLocaleString()} chars; reason=${reviewScope.fallbackReason || 'full'}).`);
+  }
+
   const mcpFleetInfo = await initMcpFleet(prContext.eventData?.client_payload);
   console.log(`[MCP] ${mcpFleetInfo.mcpStatusSummary}`);
 
@@ -5449,8 +5536,6 @@ async function main() {
     return;
   }
 
-  const modelConfig = actionRuntime.modelConfig;
-  const safeDiffCapacityChars = modelConfig.maxDiffChars || calculateSafeDiffCapacity(modelConfig.model || DEFAULT_MODEL) || DEFAULT_MAX_DIFF_CHARS;
   const totalDiffChars = reviewDiffFiles.reduce((sum, file) => sum + String(file.patch || '').length, 0);
 
   let partitionPlan = null;
@@ -5481,6 +5566,7 @@ async function main() {
   } else {
     coverage = planDiffBudget(reviewDiffFiles, modelConfig.maxDiffChars);
   }
+  coverage.scope = reviewScope;
 
   if (coverage.omitted && coverage.omitted.length > 0) {
     console.warn(`[Budget] Diff exceeds ${modelConfig.maxDiffChars} chars: ${coverage.reviewed.length} reviewed, ${coverage.truncated.length} truncated, ${coverage.omitted.length} omitted.`);
@@ -5488,13 +5574,6 @@ async function main() {
   console.log(modelConfig.enabled
     ? `[Model] OpenRouter-backed review enabled: ${modelConfig.model} (diff budget ${modelConfig.maxDiffChars} chars/persona).`
     : '[Model] OPENROUTER_API_KEY is not configured; refusing to produce a verdict.');
-
-  // Never allow a workflow-supplied variable to disable exact-head verification on a real runner.
-  const syntheticVitestRun = process.env.GITHUB_ACTIONS !== 'true'
-    && process.env.VITEST === 'true'
-    && process.env.PR_DIFF
-    && !process.env.GITHUB_EVENT_PATH;
-  if (!syntheticVitestRun) assertCurrentPullRequest(prContext);
 
   if (modelConfig.enabled) {
     const quotaProbes = await probeConfiguredTransportQuotas(modelConfig.transports);
@@ -5508,32 +5587,12 @@ async function main() {
     }
   }
 
-  // Determine active/enabled personas from dispatch payload, local YAML config, or environment
-  const payload = prContext.eventData?.client_payload || {};
-  const fileRoster = loadPersonaFiles(configRoot);
-  if (fileRoster.personas.length > 0) {
-    console.log(`[Personas] Loaded ${fileRoster.personas.length} persona file(s) from ${PERSONA_DIR}/.`);
-  }
-
-  const roster = resolvePersonaRoster(payload, localConfig, process.env, fileRoster.personas);
-  roster.errors.unshift(...fileRoster.errors);
-
-  // A misconfigured roster must never fall through to a green verdict: an unknown id used to
-  // yield zero personas and a cheerful SHIP, which reads exactly like a passing review.
-  if (roster.errors.length > 0) {
-    console.error('[Personas] Reviewer configuration is invalid:');
-    for (const e of roster.errors) console.error(`  - ${e}`);
-    console.error('[Personas] Refusing to post a verdict from a misconfigured roster.');
-    process.exitCode = 1;
-    return;
-  }
-
-  const enabledPersonas = roster.personas;
-  const customCount = enabledPersonas.filter(p => !PERSONA_CHARTERS.some(b => b.id === p.id)).length;
-  console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) with model ${DEFAULT_MODEL}${customCount ? ` (${customCount} repository-defined)` : ''}...`);
-
   let personaResults = [];
   let arbitration = null;
+  const reviewedPersonaIds = reviewScope.mode === 'delta'
+    ? new Set(reviewScope.reviewedPersonaIds)
+    : new Set(enabledPersonas.map((persona) => persona.id));
+  const reviewPersonas = enabledPersonas.filter((persona) => reviewedPersonaIds.has(persona.id));
 
   if (enabledPersonas.length === 0) {
     console.log('[Personas] All reviewer personas are disabled in repository/org settings. Skipping LLM persona evaluations.');
@@ -5551,10 +5610,17 @@ async function main() {
       const personaConcurrency = resolvePersonaConcurrency();
       const dispatchMode = resolveDispatchMode(modelConfig.dispatchMode);
       const dispatchSeed = [prContext.repo, prContext.prNumber, prContext.headSha].filter(Boolean).join(':');
+      const maxReviewAssignments = Math.max(1, Number.parseInt(process.env.MAX_REVIEW_ASSIGNMENTS || '24', 10) || 24);
+      const assignmentBudget = assessReviewAssignmentBudget(partitionPlan?.partitions?.length || 1, reviewPersonas.length, maxReviewAssignments);
+      if (!assignmentBudget.admitted) {
+        console.error(`[Bounded Evaluation] Refusing to dispatch ${assignmentBudget.planned} model assignments; the hard run cap is ${assignmentBudget.maximum}. Narrow or semantically group the change before retrying.`);
+        process.exitCode = 1;
+        return;
+      }
       if (partitionPlan && partitionPlan.partitions.length > 1) {
-        console.log(`[Bounded Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) across ${partitionPlan.partitions.length} partitions to ${modelConfig.model} with concurrency ${personaConcurrency}...`);
+        console.log(`[Bounded Evaluation] Dispatching ${reviewPersonas.length} live persona lane(s) across ${partitionPlan.partitions.length} partitions (${assignmentBudget.planned}/${assignmentBudget.maximum} assignment cap) to ${modelConfig.model} with concurrency ${personaConcurrency}...`);
         const reviewJobs = partitionPlan.partitions.flatMap((partition) =>
-          enabledPersonas.map((persona) => ({ partition, persona }))
+          reviewPersonas.map((persona) => ({ partition, persona }))
         );
         const transportPlans = buildTransportDispatchPlans(
           reviewJobs.length,
@@ -5578,13 +5644,13 @@ async function main() {
           }
         );
         const partitionRuns = partitionPlan.partitions.map((_, partitionIndex) =>
-          enabledPersonas.map((_, personaIndex) =>
-            reviewResults[(partitionIndex * enabledPersonas.length) + personaIndex]
+          reviewPersonas.map((_, personaIndex) =>
+            reviewResults[(partitionIndex * reviewPersonas.length) + personaIndex]
           )
         );
 
         // Aggregate results per persona across partitions
-        personaResults = enabledPersonas.map((persona, pIdx) => {
+        personaResults = reviewPersonas.map((persona, pIdx) => {
           const laneRuns = partitionRuns.map((pRun) => pRun[pIdx]);
           const allFindings = laneRuns.flatMap((r) => r.findings || []);
           const totalInputTokens = laneRuns.reduce((sum, r) => sum + (r.inputTokens || 0), 0);
@@ -5635,16 +5701,16 @@ async function main() {
           };
         });
       } else {
-        console.log(`[Bounded Evaluation] Dispatching ${enabledPersonas.length} persona lane(s) to ${modelConfig.model} via ${modelConfig.baseUrl} with concurrency ${personaConcurrency}...`);
+        console.log(`[Bounded Evaluation] Dispatching ${reviewPersonas.length} live persona lane(s) (${assignmentBudget.planned}/${assignmentBudget.maximum} assignment cap) to ${modelConfig.model} via ${modelConfig.baseUrl} with concurrency ${personaConcurrency}...`);
         const transportPlans = buildTransportDispatchPlans(
-          enabledPersonas.length,
+          reviewPersonas.length,
           modelConfig.transports,
           dispatchMode,
           dispatchSeed,
         );
         console.log(`[Dispatch] mode=${dispatchMode} primary lanes: ${summarizeTransportDispatchPlans(transportPlans)}`);
         personaResults = await mapWithConcurrency(
-          enabledPersonas,
+          reviewPersonas,
           personaConcurrency,
           (persona, personaIndex) => reviewWithModel(
             persona,
@@ -5660,9 +5726,9 @@ async function main() {
       for (const lane of failed) {
         console.warn(`[Persona ${lane.personaId}] Lane failed: ${lane.error}`);
       }
-      if (failed.length === personaResults.length) {
+      if (failed.length === reviewPersonas.length) {
         console.error('[Review] Every persona lane failed. Refusing to post a verdict derived from zero completed reviews.');
-        const failedArbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
+        const failedArbitration = computeArbitrationQuorum(personaResults, reviewPersonas.length, {
           changedFiles: reviewDiffFiles,
         });
         const failedTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
@@ -5709,6 +5775,18 @@ async function main() {
       }
     }
 
+    if (reviewScope.mode === 'delta') {
+      personaResults = mergeIncrementalPersonaResults(
+        enabledPersonas,
+        personaResults,
+        scopeResolution.parentReport,
+        reviewScope.reviewedPersonaIds,
+      );
+      console.log(`[Scope] Reconstructed complete ${enabledPersonas.length}-persona evidence from ${reviewScope.reviewedPersonaIds.length} live lane(s) and ${reviewScope.reusedPersonaIds.length} trusted parent lane(s).`);
+    } else {
+      personaResults = personaResults.map((lane) => ({ ...lane, reuseSource: 'live' }));
+    }
+
     console.log('[Arbitration] Computing binding arbitration quorum...');
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
       changedFiles: reviewDiffFiles,
@@ -5731,7 +5809,7 @@ async function main() {
     return;
   }
 
-  const runReport = writeRunReport(arbitration, personaResults, prContext);
+  const runReport = writeRunReport(arbitration, personaResults, prContext, process.env.RUNNER_TEMP, reviewScope);
   const providerTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
   writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry);
   emitWorkflowAnnotations(personaResults);

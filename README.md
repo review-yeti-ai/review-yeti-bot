@@ -158,7 +158,8 @@ centrally managed caller must change its central policy instead of copying this 
   provider you chose, not to an intermediary.
 - **It is a GitHub Action.** No app installation, no webhook endpoint, no server, no database.
 - **Cost controls are explicit.** Persona count, diff, completion, concurrency, and transport
-  budgets are bounded. Provider attempts can exceed one per reviewer because partitioning,
+  budgets are bounded. A hard assignment cap rejects partition-by-persona fanout before the first
+  model request. Provider attempts can still exceed one per assignment because
   investigation turns, transport failover, and format recovery are real model calls; use the run
   receipt and provider billing for actual usage.
 
@@ -172,7 +173,8 @@ semantic index, no chat. If you need those, a hosted service will serve you bett
 Cost depends on enabled reviewers, diff partitions, investigation turns, retries, recovery, model,
 and provider pricing. The default roster is five reviewers and the Action input defaults to a
 24,000-character diff budget, but zero-loss partitioning can create additional bounded model calls
-for a large pull request. Lower the budget or narrow the roster to reduce exposure, then use the
+for a large pull request. `max-review-assignments` defaults to 24 and fails the run before dispatch
+when partitions multiplied by live personas exceed that ceiling. Lower the budget or narrow the roster to reduce exposure, then use the
 sanitized run receipt and provider billing rather than assuming one request per reviewer:
 
 ```yaml
@@ -182,6 +184,34 @@ sanitized run receipt and provider billing rather than assuming one request per 
 ```
 
 ## Configuration
+
+### Trusted repair-delta reviews
+
+Set `incremental-review: true`, name the trusted reusable workflow, and grant `actions: read` to avoid re-sending the entire pull request
+after a small repair commit. Review Yeti finds a complete prior run-report artifact for the same PR,
+base SHA, immutable Action SHA, persona order, and diff budget; proves that report's head is an
+ancestor of the current head; and obtains the bounded compare diff from GitHub. It reruns every
+prior P0/P1 owner, any owner whose finding touches a changed file, relevant specialists, and one
+broad reviewer that covers every delta hunk. Untouched persona lanes are copied from the trusted
+parent report into the new exact-head report.
+
+Missing permissions, expired or malformed artifacts, rebases, force-pushes, base-policy drift,
+large deltas, binary patches, and incomplete prior lanes all fall back to a full review. Incremental
+scope never converts missing evidence into a partial successful verdict.
+
+```yaml
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+steps:
+  - uses: review-yeti-ai/review-yeti-bot@v1
+    with:
+      incremental-review: 'true'
+      incremental-trusted-workflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@main,calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1'
+      max-review-assignments: '24'
+```
 
 ### Provider dispatch and capacity
 
