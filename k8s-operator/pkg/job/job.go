@@ -14,7 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package job builds the receipt-only v1alpha2 worker contract.  It is pure:
+// Package job builds the receipt-only and explicitly opted-in qualification
+// v1alpha2 worker contracts. It is pure:
 // callers must acquire the workspace Lease and create the returned Job
 // themselves, which keeps ordering and API errors observable to the controller.
 package job
@@ -24,6 +25,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -37,12 +39,15 @@ import (
 )
 
 const (
-	Namespace                  = "ct-review-system"
-	ReceiptOnlyEnv             = "REVIEW_RECEIPT_ONLY"
-	PublicationModeEnv         = "REVIEW_PUBLICATION_MODE"
-	ReceiptPathEnv             = "REVIEW_RECEIPT_PATH"
-	ReceiptPath                = "/workspace/.review-yeti/receipt.json"
-	ReceiptOnlyWorkerComponent = "receipt-only-worker"
+	Namespace                     = "ct-review-system"
+	ReceiptOnlyEnv                = "REVIEW_RECEIPT_ONLY"
+	FullPanelQualificationEnv     = "REVIEW_FULL_PANEL_QUALIFICATION_ONLY"
+	QualificationModelEnv         = "REVIEW_QUALIFICATION_MODEL"
+	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
+	ReceiptPathEnv                = "REVIEW_RECEIPT_PATH"
+	ReceiptPath                   = "/workspace/.review-yeti/receipt.json"
+	FullPanelQualificationProfile = "full-panel"
+	ReceiptOnlyWorkerComponent    = "receipt-only-worker"
 	// Jobs are disposable execution records. The reusable PR workspace has a
 	// separate, exact 1,800-second idle reclamation policy.
 	JobTTLSeconds = int32(300)
@@ -75,8 +80,10 @@ type Input struct {
 	Now              time.Time
 }
 
-// BuildWorkerJob builds one non-retrying, receipt-only worker Job. It refuses
-// to build unless the review is still inside its original 15-minute terminal
+// BuildWorkerJob builds one non-retrying worker Job. The default projection is
+// receipt-only; full-panel qualification is admitted only when the immutable
+// profile/model pair is explicit and publication is disabled. It refuses to
+// build unless the review is still inside its original 15-minute terminal
 // window and the caller proves a currently-held PR workspace Lease.
 func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	if err := validateInput(input); err != nil {
@@ -108,6 +115,34 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	runAsGroup := int64(1000)
 	fsGroup := int64(1000)
 	fsGroupChangePolicy := corev1.FSGroupChangeOnRootMismatch
+	env := []corev1.EnvVar{
+		{Name: "REVIEW_RUN_ID", Value: spec.RunID},
+		{Name: "REVIEW_DELIVERY_ID", Value: spec.DeliveryID},
+		{Name: "REVIEW_REPOSITORY_ID", Value: strconv.FormatInt(spec.RepositoryID, 10)},
+		{Name: "REVIEW_REPO", Value: spec.Repo},
+		{Name: "REVIEW_PR_NUMBER", Value: strconv.Itoa(int(spec.PRNumber))},
+		{Name: "REVIEW_HEAD_SHA", Value: spec.HeadSHA},
+		{Name: "REVIEW_BASE_SHA", Value: spec.BaseSHA},
+		{Name: "REVIEW_POLICY_DIGEST", Value: spec.PolicyDigest},
+		{Name: "REVIEW_CONFIG_DIGEST", Value: spec.ConfigDigest},
+		{Name: PublicationModeEnv, Value: spec.PublicationMode},
+		{Name: ReceiptPathEnv, Value: ReceiptPath},
+	}
+	if spec.QualificationProfile == FullPanelQualificationProfile {
+		env = append(env,
+			corev1.EnvVar{Name: FullPanelQualificationEnv, Value: "true"},
+			corev1.EnvVar{Name: QualificationModelEnv, Value: spec.QualificationModel},
+			corev1.EnvVar{
+				Name: "OPENROUTER_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
+					Key:                  "OPENROUTER_API_KEY",
+				}},
+			},
+		)
+	} else {
+		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
+	}
 	container := corev1.Container{
 		Name:            "reviewer-worker",
 		Image:           spec.WorkerImage,
@@ -130,20 +165,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			RunAsUser:                &runAsUser,
 			RunAsGroup:               &runAsGroup,
 		},
-		Env: []corev1.EnvVar{
-			{Name: "REVIEW_RUN_ID", Value: spec.RunID},
-			{Name: "REVIEW_DELIVERY_ID", Value: spec.DeliveryID},
-			{Name: "REVIEW_REPOSITORY_ID", Value: strconv.FormatInt(spec.RepositoryID, 10)},
-			{Name: "REVIEW_REPO", Value: spec.Repo},
-			{Name: "REVIEW_PR_NUMBER", Value: strconv.Itoa(int(spec.PRNumber))},
-			{Name: "REVIEW_HEAD_SHA", Value: spec.HeadSHA},
-			{Name: "REVIEW_BASE_SHA", Value: spec.BaseSHA},
-			{Name: "REVIEW_POLICY_DIGEST", Value: spec.PolicyDigest},
-			{Name: "REVIEW_CONFIG_DIGEST", Value: spec.ConfigDigest},
-			{Name: PublicationModeEnv, Value: spec.PublicationMode},
-			{Name: ReceiptOnlyEnv, Value: "true"},
-			{Name: ReceiptPathEnv, Value: ReceiptPath},
-		},
+		Env: env,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "workspace", MountPath: "/workspace"},
 			{Name: "tmp", MountPath: "/tmp"},
@@ -202,6 +224,9 @@ func validateInput(input Input) error {
 		!workerImagePattern.MatchString(spec.WorkerImage) || !secretNamePattern.MatchString(spec.RunSecretName) {
 		return ErrJobConfiguration
 	}
+	if err := validateQualification(spec.QualificationProfile, spec.QualificationModel); err != nil {
+		return err
+	}
 	if spec.TerminalDeadline.Sub(spec.ReceivedAt.Time) != 15*time.Minute || input.Now.Before(spec.ReceivedAt.Time) {
 		return ErrJobDeadline
 	}
@@ -213,6 +238,20 @@ func validateInput(input Input) error {
 		return workspace.ErrLeaseHeld
 	}
 	return workspace.ValidateLeaseForUse(lease.Lease, review.Namespace, spec.RepositoryID, spec.PRNumber, spec.RunID, input.Now)
+}
+
+func validateQualification(profile, model string) error {
+	if profile == "" {
+		if model != "" {
+			return ErrJobConfiguration
+		}
+		return nil
+	}
+	if profile != FullPanelQualificationProfile || model == "" || len(model) > 256 || model != strings.TrimSpace(model) ||
+		strings.EqualFold(model, "auto") || strings.EqualFold(model, "openrouter/auto") || strings.ContainsAny(model, "\r\n\t") {
+		return ErrJobConfiguration
+	}
+	return nil
 }
 
 func remainingDeadlineSeconds(deadline, now time.Time) (int64, error) {

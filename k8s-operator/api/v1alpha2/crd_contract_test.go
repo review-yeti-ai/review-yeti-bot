@@ -43,7 +43,10 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		"receivedAt", "terminalDeadline", "policyDigest", "configDigest", "publicationMode",
 		"workerImage", "runSecretName",
 	}
+	wantProperties := append([]string(nil), wantRequired...)
+	wantProperties = append(wantProperties, "qualificationModel", "qualificationProfile")
 	sort.Strings(wantRequired)
+	sort.Strings(wantProperties)
 	gotRequired := append([]string(nil), spec.Required...)
 	sort.Strings(gotRequired)
 	if !reflect.DeepEqual(gotRequired, wantRequired) {
@@ -54,8 +57,8 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		gotProperties = append(gotProperties, field)
 	}
 	sort.Strings(gotProperties)
-	if !reflect.DeepEqual(gotProperties, wantRequired) {
-		t.Fatalf("schema exposes fields outside the immutable projection\n got: %v\nwant: %v", gotProperties, wantRequired)
+	if !reflect.DeepEqual(gotProperties, wantProperties) {
+		t.Fatalf("schema exposes fields outside the immutable projection\n got: %v\nwant: %v", gotProperties, wantProperties)
 	}
 	if spec.XPreserveUnknownFields != nil && *spec.XPreserveUnknownFields {
 		t.Fatal("spec must not preserve unknown fields")
@@ -70,6 +73,9 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 	}
 	if !rules["timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')"] {
 		t.Fatal("exact 15-minute deadline rule is missing")
+	}
+	if !rules["(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile == 'full-panel' && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"] {
+		t.Fatal("qualification profile/model rule is missing")
 	}
 }
 
@@ -103,6 +109,14 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 	}
 	if spec.Properties["prNumber"].Minimum == nil || *spec.Properties["prNumber"].Minimum != 1 {
 		t.Fatal("prNumber minimum must be one")
+	}
+	profile := spec.Properties["qualificationProfile"]
+	if len(profile.Enum) != 1 || string(profile.Enum[0].Raw) != `"full-panel"` {
+		t.Fatalf("qualificationProfile enum = %#v, want full-panel", profile.Enum)
+	}
+	model := spec.Properties["qualificationModel"]
+	if model.MinLength == nil || *model.MinLength != 1 || model.MaxLength == nil || *model.MaxLength != 256 {
+		t.Fatalf("qualificationModel bounds = min %v/max %v, want 1/256", model.MinLength, model.MaxLength)
 	}
 }
 
