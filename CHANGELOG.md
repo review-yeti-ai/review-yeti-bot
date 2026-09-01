@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.5...v1.21.0) (2026-09-01)
+
+
+### Features
+
+* **review:** optimize OpenRouter prompt caching ([#393](https://github.com/review-yeti-ai/review-yeti-bot/issues/393)) ([4ce45b5](https://github.com/review-yeti-ai/review-yeti-bot/commit/4ce45b589f9b9ce7fa3a36965999aa5b18e37fa2))
+
 ## [1.20.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.20.4...v1.20.5) (2026-09-01)
 
 
