@@ -37,8 +37,11 @@ jobs:
       - uses: review-yeti-ai/review-yeti-bot@v1
         with:
           llm-base-url: https://openrouter.ai/api/v1
-          model: openrouter/auto
+          model: deepseek/deepseek-v4-flash-0731
           llm-api-key: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
+          # Optional direct fallbacks, used only when their keys are provisioned.
+          ollama-api-key: ${{ secrets.OLLAMA_API_KEY }}
+          synthetic-api-key: ${{ secrets.SYNTHETIC_API_KEY }}
 ```
 
 That is the whole setup — note there is no `actions/checkout` step, and none is needed. The
@@ -92,7 +95,7 @@ A single comment on the pull request, in this shape:
 > ### 📊 AI Review Panel Summary
 > - **Repository**: `acme/checkout`
 > - **Commit SHA**: `a1b2c3d`
-> - **Review Mode**: Model-backed (`openrouter/auto`)
+> - **Review Mode**: Model-backed (`deepseek/deepseek-v4-flash-0731`)
 > - **Parallel Personas Evaluated**: `5/5`
 > - **Quorum Status**: `SATISFIED`
 > - **Total Findings**: P0: `0` | P1: `1` | P2: `2`
@@ -101,11 +104,11 @@ A single comment on the pull request, in this shape:
 > ### 📋 Persona Evaluation Roster
 > | Reviewer Persona | Model | Decision | Findings |
 > |---|---|---|---|
-> | 🛡️ Security & Tenancy Guardian | `openrouter/auto` | ⚠️ FINDINGS | 1 |
-> | ⚡ Performance & Scalability Specialist | `openrouter/auto` | ✅ APPROVE | 0 |
-> | 🏛️ System Architecture & Design | `openrouter/auto` | ⚠️ FINDINGS | 2 |
-> | 🧪 Testing & Quality Assurance | `openrouter/auto` | ✅ APPROVE | 0 |
-> | 📦 Dependency Safety & Supply Chain | `openrouter/auto` | ✅ APPROVE | 0 |
+> | 🛡️ Security & Tenancy Guardian | `deepseek/deepseek-v4-flash-0731` | ⚠️ FINDINGS | 1 |
+> | ⚡ Performance & Scalability Specialist | `deepseek/deepseek-v4-flash-0731` | ✅ APPROVE | 0 |
+> | 🏛️ System Architecture & Design | `deepseek/deepseek-v4-flash-0731` | ⚠️ FINDINGS | 2 |
+> | 🧪 Testing & Quality Assurance | `deepseek/deepseek-v4-flash-0731` | ✅ APPROVE | 0 |
+> | 📦 Dependency Safety & Supply Chain | `deepseek/deepseek-v4-flash-0731` | ✅ APPROVE | 0 |
 >
 > **🛡️ Security & Tenancy Guardian (1 finding)**
 >
@@ -137,11 +140,12 @@ on the pull request that proposes them.
 
 ### What is sent to your model provider
 
-The pull request diff is sent to whichever endpoint you configure. In a direct standalone install,
-the default `openrouter/auto` lets OpenRouter select a provider, which means you cannot state in
-advance which vendor received your code or what their retention policy is. If that matters —
-proprietary code, regulated data, a customer commitment — pin an explicit model and provider. A
-centrally managed caller must change its central policy instead of copying this example:
+The pull request diff is sent to the endpoint and model selected by the trusted Action inputs. The
+direct standalone default is OpenRouter's explicit `deepseek/deepseek-v4-flash-0731` route, followed
+by `z-ai/glm-5.3-flash` and any explicitly provisioned Ollama or Synthetic fallback keys. Auto Router
+is not used. If that matters — proprietary code, regulated data, a customer commitment — pin the
+endpoint and credentials in the workflow. A centrally managed caller must change its central policy
+instead of copying this example:
 
 ```yaml
         with:

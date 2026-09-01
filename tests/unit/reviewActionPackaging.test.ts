@@ -46,6 +46,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('execution-backend');
     expect(inputs).toContain('doks-dispatch-url');
     expect(inputs).toContain('doks-publish-mode');
+    expect(inputs).toContain('ollama-api-key');
+    expect(inputs).toContain('synthetic-api-key');
   });
 
   it('keeps local execution as the default and makes DOKS an explicit OIDC dispatch', () => {

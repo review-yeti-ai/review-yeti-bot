@@ -303,8 +303,10 @@ dials:
 - **`memory_engine`** (`boolean`): Enables/disables `.ct-memory/` SQLite learning graph and duplicate nit suppression.
 - **`mascot`** (`boolean`): Controls whether ASCII art mascot headers are rendered in comments.
 - **`persona_model`** (`string`): OpenRouter model identifier used by the
-  persona in the optional service. A direct standalone Action uses `openrouter/auto` or a
-  policy-allowed model. Managed fleet provider selection belongs to its central control plane.
+  persona in the optional service. A direct standalone Action uses the explicit
+  `deepseek/deepseek-v4-flash-0731` route (with the configured GLM, Ollama, and Synthetic
+  fallbacks) or another policy-allowed model. Managed fleet provider selection belongs to its
+  central control plane.
 - **`confidence_threshold`** (`number`): Integer threshold from `0` to `100`.
 - **`ticket_enforcement`** (`boolean`): Enforces ticket links across Linear (`PROJ-123`), Jira (`KEY-456`), or GitHub (`#789`).
 - **`reviewer_effort`** (`enum`): Controls latency and reasoning depth (`low`, `medium`, `high`, `xhigh`, `max`).
