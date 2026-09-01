@@ -174,6 +174,58 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     ).rejects.toThrow('required persona failure');
   });
 
+  it('allows one bounded nonce-fence correction before failing closed', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts' }];
+    let arbiterAttempts = 0;
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = opts.messages[1].content as string;
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const requestNonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      if (prompt.includes('Role: ARBITER')) {
+        arbiterAttempts += 1;
+        if (arbiterAttempts === 1) {
+          return { model: opts.model, content: '{"verdict":"SHIP","rationale":"Needs the required fence."}', usage: null, costUSD: null };
+        }
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${requestNonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Corrected response.' })}\nCT_REVIEW_END:${requestNonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+      if (prompt.includes('Role: MODERATOR')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${requestNonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${requestNonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${requestNonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${requestNonce}`,
+        usage: null,
+        costUSD: null,
+      };
+    });
+
+    const panelResult = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-fence-recovery',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect(panelResult.arbiter.verdict).toBe('SHIP');
+    expect(arbiterAttempts).toBe(2);
+    expect(mockClient.complete.mock.calls.some(([request]: any[]) =>
+      request.messages.some((message: any) => message.content.includes('STRUCTURED_OUTPUT_CORRECTION')),
+    )).toBe(true);
+  });
+
   it('throws PanelConfigurationError when JSON inside nonce fence is invalid syntax', async () => {
     const config = buildDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts' }];
