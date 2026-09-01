@@ -170,3 +170,24 @@ without weakening the clean-control result or the 15-minute job bound.
 Full nine-row receipt SHA-256:
 
 `3c00510d3ad2c8c47e6d5f51053b72855b4df79b86c742cb9d9da117acbe9bbd`
+
+## GLM reasoning-capability recovery result
+
+The same nine-row gate was also run against `z-ai/glm-5.3-flash`. Before the capability-aware
+change, every timeout recovery attempted `reasoning: { effort: "none" }`; this model rejected
+that request with HTTP 400 because reasoning is mandatory. The new recovery policy keeps required
+reasoning at low effort for GLM Flash (or any transport explicitly marked
+`reasoning_required=true`).
+
+| Model | Terminal | Seeded defects detected | Clean false positives | Recovery attempts | Notes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `z-ai/glm-5.3-flash` | 8/9 | 6/6 | 2/3 | 3/9 | no reasoning-disabled 400s; one retry returned HTTP 500 |
+
+The compatibility defect is fixed: the recovery request now respects the endpoint's reasoning
+contract. This is not a model promotion result, however. The clean-control false-positive rate
+and the remaining transient 500 mean GLM stays qualification-only while the production route is
+unchanged.
+
+GLM capability-recovery receipt SHA-256:
+
+`ff2b099a55d75995f0bb858ca4b81006f1d9e0bba9f8d6691486283134f93cfd`
