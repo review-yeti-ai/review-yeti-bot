@@ -1075,6 +1075,120 @@ describe('reviewWithModel', () => {
     expect(calls[1].messages[0].content).toContain('only top-level key is `findings`');
   });
 
+  it('allows one short OpenRouter provider retry after timeout recovery returns a 5xx', async () => {
+    const calls: any[] = [];
+    const stalledResponse = () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({ start() {} }),
+    });
+    const recoveredResponse = () => {
+      const wire = [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":[]}' } }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(wire));
+            controller.close();
+          },
+        }),
+      };
+    };
+    const fetchImplementation = async (_url: string, init: any) => {
+      calls.push(JSON.parse(init.body));
+      if (calls.length === 1) return stalledResponse();
+      if (calls.length === 2) {
+        return {
+          ok: false,
+          status: 500,
+          headers: new Headers(),
+          text: async () => '',
+        };
+      }
+      return recoveredResponse();
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      timeoutMs: 25,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-glm',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'z-ai/glm-5.3-flash',
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+      }],
+    });
+
+    expect(res).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      attemptCount: 3,
+      recoveryAction: 'bounded_retry',
+      retryReasons: ['timeout', 'http_5xx'],
+    });
+    expect(calls).toHaveLength(3);
+    expect(calls[1]).toHaveProperty('reasoning', { effort: 'low' });
+    expect(calls[2]).toHaveProperty('reasoning', { effort: 'low' });
+    expect(res.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ attempt: 1, outcome: 'transport_error', failureClass: 'timeout' }),
+      expect.objectContaining({ attempt: 2, outcome: 'http_error', responseStatus: 500, failureClass: 'http_5xx' }),
+      expect.objectContaining({ attempt: 3, outcome: 'parsed', failureClass: null }),
+    ]));
+  });
+
+  it('allows one short retry after two consecutive OpenRouter 5xx responses', async () => {
+    const calls: any[] = [];
+    const response500 = () => ({
+      ok: false,
+      status: 500,
+      headers: new Headers(),
+      text: async () => '',
+    });
+    const success = () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }),
+    });
+    const fetchImplementation = async () => {
+      calls.push(true);
+      return calls.length < 3 ? response500() : success();
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      timeoutMs: 25,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-fallback',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: false,
+      }],
+    });
+
+    expect(res).toMatchObject({ decision: 'APPROVE', findings: [], attemptCount: 3, recoveryAction: 'bounded_retry' });
+    expect(calls).toHaveLength(3);
+    expect(res.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ attempt: 1, outcome: 'http_error', responseStatus: 500, failureClass: 'http_5xx' }),
+      expect.objectContaining({ attempt: 2, outcome: 'http_error', responseStatus: 500, failureClass: 'http_5xx' }),
+      expect.objectContaining({ attempt: 3, outcome: 'parsed', failureClass: null }),
+    ]));
+  });
+
   it('fails closed when a streaming response becomes idle', async () => {
     const stalledFetch = async () => ({
       ok: true,
