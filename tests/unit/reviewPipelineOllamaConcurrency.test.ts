@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 
@@ -61,6 +61,41 @@ describe('Ollama request concurrency', () => {
     releaseAfterTimeout();
   });
 
+  it('admits local waiters in FIFO order', async () => {
+    const semaphore = new pipeline.AsyncSemaphore(1);
+    const releaseFirst = await semaphore.acquire(100);
+    const order: string[] = [];
+    const second = semaphore.acquire(100).then((release: () => void) => {
+      order.push('second');
+      return release;
+    });
+    const third = semaphore.acquire(100).then((release: () => void) => {
+      order.push('third');
+      return release;
+    });
+
+    releaseFirst();
+    const releaseSecond = await second;
+    expect(order).toEqual(['second']);
+    releaseSecond();
+    const releaseThird = await third;
+    expect(order).toEqual(['second', 'third']);
+    releaseThird();
+  });
+
+  it('removes a cancelled local waiter without consuming the next slot', async () => {
+    const semaphore = new pipeline.AsyncSemaphore(1);
+    const releaseFirst = await semaphore.acquire(100);
+    const controller = new AbortController();
+    const cancelled = semaphore.acquire(100, 'capacity_wait_timeout', controller.signal);
+    controller.abort();
+    await expect(cancelled).rejects.toThrow('provider_capacity_wait_cancelled');
+
+    releaseFirst();
+    const releaseAfterCancellation = await semaphore.acquire(100);
+    releaseAfterCancellation();
+  });
+
   it('does not spend the provider request timeout while waiting for capacity', async () => {
     const capacityManager = new pipeline.ProviderCapacityManager();
     const transport = {
@@ -81,7 +116,70 @@ describe('Ollama request concurrency', () => {
     second.release();
   });
 
-  it('caps direct Ollama requests below the measured cloud burst boundary', async () => {
+  it('records a terminal local queue timeout without dispatching a provider request', async () => {
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    const transport = {
+      name: 'ollama',
+      baseUrl: 'https://ollama.com/v1',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash:cloud',
+      maxInFlight: 1,
+      capacityWaitTimeoutMs: 10,
+      stream: false,
+    };
+    const held = await capacityManager.acquire(transport, transport.baseUrl, 100);
+    let calls = 0;
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'queue-timeout' }, null, {
+      transports: [transport],
+      fetchImpl: async () => { calls += 1; return response(); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager,
+    });
+    held.release();
+
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({
+      decision: 'ERROR',
+      failureClass: 'provider_capacity',
+      error: 'provider_capacity_wait_timeout',
+    });
+    expect(result.capacityWaitMs).toBeGreaterThanOrEqual(1);
+    expect(result.responseAttempts[0].capacityWaitMs).toBeGreaterThanOrEqual(1);
+  });
+
+  it('records a cancelled local queue wait without consuming the held slot', async () => {
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    const controller = new AbortController();
+    const transport = {
+      name: 'ollama',
+      baseUrl: 'https://ollama.com/v1',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash:cloud',
+      maxInFlight: 1,
+      capacityWaitTimeoutMs: 100,
+      stream: false,
+    };
+    const held = await capacityManager.acquire(transport, transport.baseUrl, 100);
+    let calls = 0;
+    const queued = pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'queue-cancelled' }, null, {
+      transports: [transport],
+      signal: controller.signal,
+      fetchImpl: async () => { calls += 1; return response(); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort();
+    const result = await queued;
+    held.release();
+
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({ decision: 'ERROR', failureClass: 'cancelled', error: 'review_cancelled' });
+    expect(result.capacityWaitMs).toBeGreaterThanOrEqual(1);
+    expect(result.responseAttempts[0].capacityWaitMs).toBeGreaterThanOrEqual(1);
+  });
+
+  it('uses a conservative process-local Ollama cap below the shared Team account ceiling', async () => {
     const fetch = delayedFetch(15);
     const results = await runReviews(20, {
       name: 'ollama',
@@ -93,7 +191,29 @@ describe('Ollama request concurrency', () => {
 
     expect(results.every((result: any) => result.decision === 'APPROVE')).toBe(true);
     expect(fetch.peak()).toBe(pipeline.OLLAMA_MAX_IN_FLIGHT_REQUESTS);
-    expect(fetch.peak()).toBe(16);
+    expect(fetch.peak()).toBe(3);
+  });
+
+  it('caps an explicit Ollama limit at the shared account ceiling', async () => {
+    const policy = pipeline.resolveTransportCapacityPolicy({
+      name: 'ollama',
+      baseUrl: 'https://ollama.com/v1',
+      maxInFlight: 20,
+      capacityWaitTimeoutMs: 180_000,
+    }, 'https://ollama.com/v1');
+    expect(policy.maxInFlight).toBe(10);
+    expect(policy.waitTimeoutMs).toBe(30_000);
+
+    const fetch = delayedFetch(15);
+    await runReviews(20, {
+      name: 'ollama',
+      baseUrl: 'https://ollama.com/v1',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash:cloud',
+      maxInFlight: 20,
+      stream: false,
+    }, fetch.impl);
+    expect(fetch.peak()).toBe(10);
   });
 
   it('defaults Synthetic to one in-flight request per model', async () => {
@@ -183,12 +303,66 @@ describe('Ollama request concurrency', () => {
       model: 'deepseek-v4-flash:cloud',
       stream: false,
     };
+    const capacityManager = new pipeline.ProviderCapacityManager();
     const failed = await runReviews(20, transport, async () => {
       throw new Error('terminal provider failure');
-    });
+    }, capacityManager);
     expect(failed.every((result: any) => result.decision === 'ERROR')).toBe(true);
 
-    const recovered = await runReviews(1, transport, async () => response());
+    const recovered = await runReviews(1, transport, async () => response(), capacityManager);
     expect(recovered[0].decision).toBe('APPROVE');
+  });
+
+  it('releases an active Ollama lease when the review is cancelled', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    const controller = new AbortController();
+    let startedResolve: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    const transport = {
+      name: 'ollama',
+      baseUrl: 'https://ollama.com/v1',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash:cloud',
+      maxInFlight: 1,
+      stream: false,
+    };
+
+    const cancelledReview = pipeline.reviewWithModel(
+      persona,
+      diffFiles,
+      { repo: 'fixture/repository', prNumber: 'cancelled' },
+      null,
+      {
+        transports: [transport],
+        signal: controller.signal,
+        fetchImpl: async (_url: string, init: { signal: AbortSignal }) => {
+          startedResolve?.();
+          return new Promise((_resolve, reject) => {
+            const rejectCancelled = () => reject(init.signal.reason || new Error('review_cancelled'));
+            if (init.signal.aborted) rejectCancelled();
+            else init.signal.addEventListener('abort', rejectCancelled, { once: true });
+          });
+        },
+        circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+        capacityManager,
+      },
+    );
+
+    await started;
+    controller.abort();
+    const cancelled = await cancelledReview;
+    expect(cancelled).toMatchObject({ decision: 'ERROR', failureClass: 'cancelled', error: 'review_cancelled' });
+    expect(cancelled.responseAttempts[0]).toMatchObject({
+      capacityLeaseAcquired: true,
+      failureClass: 'cancelled',
+    });
+    const cancellationLogs = JSON.stringify(log.mock.calls);
+    expect(cancellationLogs).toContain('phase=provider_cancelled');
+    expect(cancellationLogs).not.toContain('phase=queue_cancelled');
+
+    const recovered = await runReviews(1, transport, async () => response(), capacityManager);
+    expect(recovered[0].decision).toBe('APPROVE');
+    log.mockRestore();
   });
 });
