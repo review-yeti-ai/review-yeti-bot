@@ -1,5 +1,14 @@
+// Repositories pinned to the central Ollama-only review lane (ADR 0490,
+// scope widened 2026-09-02 per operator directive: example-release and example-meta
+// join example-api after OpenRouter instability produced four BLOCK verdicts
+// in one day, including a required check on example-meta).
 export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
 export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
+export const OLLAMA_REPOSITORIES = Object.freeze(new Set([
+  EXAMPLE_API_REPOSITORY,
+  'exampleorg/example-release',
+  'exampleorg/example-meta',
+]));
 
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const OVERRIDE_KEYS = new Set(['dispatch_mode', 'enabled_transports']);

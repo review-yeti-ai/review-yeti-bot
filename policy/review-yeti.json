@@ -32,11 +32,17 @@
         },
         "structured_output": "strict",
         "quarantine_on_timeout": false,
-        "ignore_providers": ["morph", "fireworks"],
+        "ignore_providers": [
+          "morph",
+          "fireworks"
+        ],
         "provider_routing": {
           "allow_fallbacks": true,
           "require_parameters": true,
-          "ignore": ["morph", "fireworks"],
+          "ignore": [
+            "morph",
+            "fireworks"
+          ],
           "sort": "throughput",
           "preferred_min_throughput": {
             "p90": 40
@@ -173,7 +179,21 @@
   "repository_overrides": {
     "exampleorg/example-api": {
       "dispatch_mode": "ordered",
-      "enabled_transports": ["ollama"]
+      "enabled_transports": [
+        "ollama"
+      ]
+    },
+    "exampleorg/example-release": {
+      "dispatch_mode": "ordered",
+      "enabled_transports": [
+        "ollama"
+      ]
+    },
+    "exampleorg/example-meta": {
+      "dispatch_mode": "ordered",
+      "enabled_transports": [
+        "ollama"
+      ]
     }
   },
   "forbidden_target_paths": [

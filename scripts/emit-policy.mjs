@@ -1,7 +1,7 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
 import {
-  EXAMPLE_API_REPOSITORY,
+  OLLAMA_REPOSITORIES,
   resolvePolicyForRepository,
 } from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
@@ -53,7 +53,7 @@ if (!Array.isArray(review.transports) || review.transports.length === 0) throw n
 if (!['ordered', 'striped'].includes(review.dispatch_mode)) {
   throw new Error('review_yeti.dispatch_mode must be ordered or striped');
 }
-if (!openrouterTransport || (targetRepository !== EXAMPLE_API_REPOSITORY && openrouterTransport.enabled !== true)) {
+if (!openrouterTransport || (!OLLAMA_REPOSITORIES.has(targetRepository) && openrouterTransport.enabled !== true)) {
   throw new Error('policy must define an enabled OpenRouter primary transport');
 }
 const enabledTransports = review.transports.filter((transport) => transport.enabled === true);
@@ -78,14 +78,14 @@ for (const transport of review.transports) {
   }
   validateTransportEnvelope(transport);
 }
-const expectedTransportNames = targetRepository === EXAMPLE_API_REPOSITORY
+const expectedTransportNames = OLLAMA_REPOSITORIES.has(targetRepository)
   ? ['ollama']
   : ['openrouter-primary', 'synthetic'];
 if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
   throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
 }
-if (targetRepository === EXAMPLE_API_REPOSITORY && review.dispatch_mode !== 'ordered') {
-  throw new Error('Example API must use ordered Ollama-only dispatch');
+if (OLLAMA_REPOSITORIES.has(targetRepository) && review.dispatch_mode !== 'ordered') {
+  throw new Error(`${targetRepository} must use ordered Ollama-only dispatch`);
 }
 const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
 if (!fireworksTransport || fireworksTransport.enabled !== false) {

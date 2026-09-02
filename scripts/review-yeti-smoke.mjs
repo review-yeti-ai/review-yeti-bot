@@ -6,6 +6,7 @@ import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
 import {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
+  OLLAMA_REPOSITORIES,
   resolvePolicyForRepository,
 } from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
@@ -13,6 +14,7 @@ import { validateTransportEnvelope } from './transport-envelope.mjs';
 export {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
+  OLLAMA_REPOSITORIES,
   resolvePolicyForRepository,
 } from './repository-policy.mjs';
 
@@ -103,13 +105,13 @@ export function validatePolicy(policy, repository = '') {
   if (transports.some((transport) => transport.name === 'fireworks' && transport.enabled === true)) {
     throw new Error('Fireworks transport is disabled');
   }
-  const expectedOrder = repository === EXAMPLE_API_REPOSITORY
+  const expectedOrder = OLLAMA_REPOSITORIES.has(repository)
     ? EXAMPLE_API_TRANSPORT_ORDER
     : EXPECTED_TRANSPORT_ORDER;
   if (JSON.stringify(enabledNames) !== JSON.stringify(expectedOrder)) {
     throw new Error(`Review Yeti transport order must be ${expectedOrder.join(' -> ')}`);
   }
-  const expectedDispatchMode = repository === EXAMPLE_API_REPOSITORY ? 'ordered' : 'striped';
+  const expectedDispatchMode = OLLAMA_REPOSITORIES.has(repository) ? 'ordered' : 'striped';
   if (policy.review_yeti.dispatch_mode !== expectedDispatchMode) {
     throw new Error(`Review Yeti dispatch_mode must be ${expectedDispatchMode} for ${repository || 'the default policy'}`);
   }
@@ -141,7 +143,7 @@ export function validatePolicy(policy, repository = '') {
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
   if (!gemini || !ollama || !synthetic || !fireworks || !openrouter
-      || (repository !== EXAMPLE_API_REPOSITORY && openrouter.enabled !== true)) {
+      || (!OLLAMA_REPOSITORIES.has(repository) && openrouter.enabled !== true)) {
     throw new Error('policy must define OpenRouter, Gemini, Ollama, and Synthetic transports');
   }
 

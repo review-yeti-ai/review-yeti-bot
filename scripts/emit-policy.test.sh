@@ -707,4 +707,24 @@ if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('ca
 PY
 echo "[cisco-ollama-only] passed"
 
+# Ollama-only set covers example-release and example-meta too (ADR 0490 scope widened 2026-09-02).
+for repo in exampleorg/example-release exampleorg/example-meta; do
+  repo_output="$tmp_dir/${repo##*/}-policy.output"
+  (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY="$repo" GITHUB_OUTPUT="$repo_output" node emit-policy.mjs)
+  python3 - "$repo_output" "$repo" <<'PY'
+import json
+import sys
+
+lines = open(sys.argv[1]).read().splitlines()
+start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
+end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
+transports = json.loads('\n'.join(lines[start + 1:end]))
+if [transport['name'] for transport in transports] != ['ollama']:
+    raise SystemExit(f'{sys.argv[2]} must emit only the Ollama transport')
+if transports[0].get('max_in_flight') != 6:
+    raise SystemExit(f'{sys.argv[2]} Ollama admission must cover the six-persona panel')
+PY
+  echo "[$repo ollama-only] passed"
+done
+
 echo "emit-policy action channel and lane_call_budget contract passed"

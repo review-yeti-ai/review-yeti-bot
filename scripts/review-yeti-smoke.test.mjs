@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
+  OLLAMA_REPOSITORIES,
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_OPENROUTER_MODEL,
   EXPECTED_OPENROUTER_MODELS,
@@ -153,6 +154,21 @@ test('Example API resolves and probes exactly one panel-width Ollama transport',
 
   assert.deepEqual(calls, ['https://ollama.com/v1/chat/completions']);
   assert.deepEqual(result.healthy, ['ollama']);
+});
+
+test('example-release and example-meta join the Ollama-only set (ADR 0490 scope widened 2026-09-02)', () => {
+  const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+  assert.deepEqual(
+    [...OLLAMA_REPOSITORIES].sort(),
+    ['exampleorg/example-api', 'exampleorg/example-meta', 'exampleorg/example-release'],
+  );
+  for (const repository of OLLAMA_REPOSITORIES) {
+    const resolved = resolvePolicyForRepository(policy, repository);
+    const transports = validatePolicy(resolved, repository);
+    assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER, repository);
+    assert.equal(resolved.review_yeti.dispatch_mode, 'ordered', repository);
+    assert.equal(transports[0].max_in_flight, 6, repository);
+  }
 });
 
 test('repository policy overrides are exact-match and reject widening or unknown transports', () => {
