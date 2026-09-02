@@ -11,15 +11,16 @@
 **Spec:** `docs/superpowers/specs/2026-08-30-doks-review-dispatch-design.md`
 
 **Status (2026-09-02):** The optional, read-only same-head capability is
-implemented and released through `v1.23.0`. The same immutable worker, exact PR
-head, policy/config digests, direct OpenRouter DeepSeek model, and eight-lane
-topology now run on both hosted Actions and DOKS. One comparable pair completed
-without retries or GitHub writes: hosted finished the panel in 52.698 seconds
-and DOKS in 23.025 seconds. The fail-closed comparator accepted the execution
-identity but observed `FIX_FIRST` with seven P2 findings on hosted versus `SHIP`
-with three P2 findings on DOKS. Production activation remains blocked on that
-quality/verdict disagreement and on confirming the production GitHub App's
-repository installation coverage. See
+implemented and released through `v1.24.0`. Finding fingerprints now permit a
+privacy-preserving multiset comparison. A known-defect pair using the same
+immutable worker, exact PR head, policy/config digests, direct OpenRouter model,
+and eight-lane topology completed without retries or GitHub writes. Both DOKS
+and hosted returned `BLOCK` with P0 0, P1 4, and P2 5; both included the planted
+line-8 P1 anchor, and five of nine anchors overlapped in the first hosted pair.
+DOKS reached the review process in 16 seconds and completed in 186 seconds;
+the comparable hosted run reached the engine in 20 seconds and completed in
+148 seconds. Production activation remains disabled pending the separately
+reviewed App-installation and required-check rollout decision. See
 `docs/superpowers/evidence/2026-09-02-doks-same-engine-parity.md`.
 
 ## Global Constraints
@@ -346,24 +347,21 @@ Record exact source/image/run identities and results. State explicitly that a pa
 
 ## Next quality-parity decision
 
-The v1.23.0 observability and same-engine execution tasks are complete. The next
-highest-ranked improvement is explaining the remaining quality variance, not a
-production flip:
+The v1.24.0 fingerprinted known-defect comparison passed. The next highest-ranked
+work is a narrowly reviewed rollout boundary, not an automatic fleet flip:
 
-1. Add bounded, non-content finding fingerprints to the sanitized receipt so a
-   comparable pair can distinguish matching findings, duplicates, and genuinely
-   different anchors without persisting finding text, prompts, diffs, or model
-   responses.
-2. Qualify the production GitHub App installation against each intended
+1. Qualify the production GitHub App installation against every intended
    repository with repository-scoped `contents: read` and `pull_requests: read`.
-   Do not depend on a manual Multica credential substitution for production.
-3. Run one manual, non-publishing exact-head comparison on a reviewed fixture
-   with an explicit expected finding set. Require 2/2 terminal completion,
-   identical execution identity, zero writes, matching required findings, and
-   equivalent canonical severity direction.
-4. Only then propose the separate required-check/unresolved-thread activation
-   change. Keep the hosted Action authoritative and the App gate disabled until
-   that proposal is reviewed and explicitly approved.
+   The current proof covers `calltelemetry/ct-pr-operator-sandbox` only.
+2. Run manual, non-publishing replays for at least one clean fixture and one
+   larger multi-file defect fixture. Require terminal completion, zero writes,
+   expected finding direction, and comparable identity. Do not add a timer or
+   recurring canary.
+3. With separate explicit approval, propose one sandbox repository as the first
+   DOKS publisher/required-check authority. Preserve the hosted Action as the
+   one-change rollback and do not activate the fleet in the same change.
+4. Verify publication, unresolved-thread blocking, exact-head behavior, and
+   rollback before proposing any additional repository.
 
 No schedule, recurring canary, automatic traffic split, or production
 activation is authorized by this follow-up.
