@@ -393,8 +393,10 @@ runs:
         echo "PR_HEAD_SHA=${PR_HEAD_SHA}" >> "$GITHUB_ENV"
         echo "PR_BASE_SHA=${PR_BASE_SHA}" >> "$GITHUB_ENV"
 
-    # Installed under the action path, not the consumer's workspace, so reviewing a repository
-    # never leaves a stray node_modules in its checkout.
+    # Installed under legacy-runtime/, not the Action checkout root and not the
+    # consumer workspace. The lockfile is the two-package graph baked by
+    # Dockerfile.legacy-runtime in CI. Installing into GITHUB_ACTION_PATH reifies
+    # the application package.json and is the ~800 Mi review-job spike.
     - name: Install pipeline dependencies
       if: ${{ inputs.execution-backend != 'doks' }}
       shell: bash
@@ -414,11 +416,18 @@ runs:
             node "$GITHUB_ACTION_PATH/scripts/install-action-runtime.mjs"
             ;;
           legacy)
-            # The legacy pipeline uses the official OpenRouter SDK for gateway requests. Install
-            # only the two runtime packages it needs under the Action path; never write into the
-            # consumer checkout or resolve a floating SDK version.
-            npm install --prefix "$GITHUB_ACTION_PATH" js-yaml@4 @openrouter/sdk@1.2.80 \
-              --no-save --no-package-lock --ignore-scripts --no-audit --no-fund --silent
+            # Lock-backed two-package graph. Never `npm install` into GITHUB_ACTION_PATH —
+            # that reifies the application package.json (Next.js) and is the ~800 Mi spike.
+            RUNTIME="$GITHUB_ACTION_PATH/legacy-runtime"
+            if [ ! -f "$RUNTIME/package-lock.json" ]; then
+              echo "::error::legacy-runtime/package-lock.json is missing from the Action checkout"
+              exit 1
+            fi
+            # npm 11 treats an absolute --prefix as a package name. Run inside the
+            # lock directory and pass `--prefix .` (same pattern as install-action-runtime.mjs).
+            ( cd "$RUNTIME" && npm ci --prefix . --omit=dev --ignore-scripts --no-audit --no-fund )
+            node "$GITHUB_ACTION_PATH/scripts/verify-legacy-runtime-graph.mjs" "$RUNTIME"
+            echo "NODE_PATH=$RUNTIME/node_modules" >> "$GITHUB_ENV"
             ;;
           *)
             echo "::error::review-engine must be legacy or pi-workflow"
@@ -516,6 +525,7 @@ runs:
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
         CT_REVIEW_CONFIG_DIR: ${{ runner.temp }}/ct-review-config
+        NODE_PATH: ${{ github.action_path }}/legacy-runtime/node_modules
       run: |
         # Keep the diff on disk. Exporting an entire PR as PR_DIFF can exceed the runner's
         # execve argument limit before Node starts.

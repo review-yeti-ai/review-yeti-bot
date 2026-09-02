@@ -115,10 +115,14 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).toContain('--prefix');
   });
 
-  it('pins the official OpenRouter SDK in the legacy runtime install', () => {
+  it('installs the lock-backed legacy-runtime graph instead of the Action root', () => {
     const raw = fs.readFileSync(actionPath, 'utf-8');
-    expect(raw).toContain('@openrouter/sdk@1.2.80');
-    expect(raw).toContain('--no-package-lock');
+    expect(raw).toContain('legacy-runtime');
+    expect(raw).toContain('npm ci --prefix .');
+    expect(raw).toContain('cd "$RUNTIME"');
+    expect(raw).toContain('NODE_PATH=$RUNTIME/node_modules');
+    expect(raw).not.toContain('--no-package-lock');
+    expect(raw).not.toMatch(/npm install --prefix "\$GITHUB_ACTION_PATH" js-yaml/u);
   });
 });
 
