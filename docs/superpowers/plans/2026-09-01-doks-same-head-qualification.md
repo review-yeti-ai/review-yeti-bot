@@ -11,14 +11,16 @@
 **Spec:** `docs/superpowers/specs/2026-08-30-doks-review-dispatch-design.md`
 
 **Status (2026-09-02):** The optional, read-only same-head capability is
-implemented and released through `v1.22.2`. One exact-head OpenRouter-only DOKS
-run completed 6/6 personas plus moderator and arbiter in three minutes with zero
-GitHub writes, no extra panel/correction call, and a canonical fail-closed
-`BLOCK` verdict.
-Production activation remains blocked because the hosted baseline used a
-different engine and a four-OpenRouter/two-Synthetic provider split, so its
-`FIX_FIRST` result is not an apples-to-apples quality comparison. See
-`docs/superpowers/evidence/2026-09-01-doks-same-head-qualification.md`.
+implemented and released through `v1.23.0`. The same immutable worker, exact PR
+head, policy/config digests, direct OpenRouter DeepSeek model, and eight-lane
+topology now run on both hosted Actions and DOKS. One comparable pair completed
+without retries or GitHub writes: hosted finished the panel in 52.698 seconds
+and DOKS in 23.025 seconds. The fail-closed comparator accepted the execution
+identity but observed `FIX_FIRST` with seven P2 findings on hosted versus `SHIP`
+with three P2 findings on DOKS. Production activation remains blocked on that
+quality/verdict disagreement and on confirming the production GitHub App's
+repository installation coverage. See
+`docs/superpowers/evidence/2026-09-02-doks-same-engine-parity.md`.
 
 ## Global Constraints
 
@@ -344,24 +346,24 @@ Record exact source/image/run identities and results. State explicitly that a pa
 
 ## Next quality-parity decision
 
-The next highest-ranked improvement is a narrow observability contract, not a
+The v1.23.0 observability and same-engine execution tasks are complete. The next
+highest-ranked improvement is explaining the remaining quality variance, not a
 production flip:
 
-1. Add a non-secret engine revision, provider-topology digest, per-lane
-   provider/model attribution, and lower-level retry counts to the sanitized
-   receipt. This makes an invalid cross-engine comparison fail closed before a
-   verdict is interpreted.
-2. Define a production-parity profile that executes the same versioned review
-   engine, persona assignment, prompts, and canonical policy on both hosted and
-   DOKS substrates. Reuse one implementation artifact; do not maintain a third
-   copy of review logic in the operator.
-3. Project the same explicit provider topology into DOKS (currently four
-   OpenRouter DeepSeek lanes and two Synthetic GLM lanes for the hosted policy),
-   using run-scoped Secret refs and no auto-router.
-4. Run one more manual, non-publishing exact-head comparison. Require terminal
-   completion, identical engine/policy/provider digests, zero GitHub writes,
-   equivalent canonical severity direction, and explainable count deltas before
-   considering a required-check or unresolved-thread gate.
+1. Add bounded, non-content finding fingerprints to the sanitized receipt so a
+   comparable pair can distinguish matching findings, duplicates, and genuinely
+   different anchors without persisting finding text, prompts, diffs, or model
+   responses.
+2. Qualify the production GitHub App installation against each intended
+   repository with repository-scoped `contents: read` and `pull_requests: read`.
+   Do not depend on a manual Multica credential substitution for production.
+3. Run one manual, non-publishing exact-head comparison on a reviewed fixture
+   with an explicit expected finding set. Require 2/2 terminal completion,
+   identical execution identity, zero writes, matching required findings, and
+   equivalent canonical severity direction.
+4. Only then propose the separate required-check/unresolved-thread activation
+   change. Keep the hosted Action authoritative and the App gate disabled until
+   that proposal is reviewed and explicitly approved.
 
 No schedule, recurring canary, automatic traffic split, or production
 activation is authorized by this follow-up.
