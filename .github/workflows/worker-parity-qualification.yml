@@ -1,0 +1,179 @@
+name: One-time same-engine worker parity qualification
+
+# Manual, non-publishing evidence only. This workflow runs the exact same
+# digest-pinned worker artifact that a DOKS PRReviewJob can run. It is not a
+# canary, has no recurring trigger, and cannot publish or gate a pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type PARITY to authorize one nonpublishing worker run'
+        required: true
+        type: string
+      pr_number:
+        description: 'Pull request in exampleorg/example-review-actions'
+        required: true
+        type: string
+      base_sha:
+        description: 'Exact 40-hex base commit SHA'
+        required: true
+        type: string
+      head_sha:
+        description: 'Exact 40-hex head commit SHA'
+        required: true
+        type: string
+      worker_image:
+        description: 'Exact trusted review-yeti-worker image including sha256 digest'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: one-time-worker-parity-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Hosted same-engine receipt (no publication)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate exact PR and worker identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIRM: ${{ inputs.confirm }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          WORKER_IMAGE: ${{ inputs.worker_image }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == exampleorg/example-review-actions ]]
+          [[ "$CONFIRM" == PARITY ]] || { echo '::error::confirm must be PARITY'; exit 1; }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo '::error::pr_number must be positive'; exit 1; }
+          for value in "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA"; do
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::base/head SHAs must be exact lowercase 40-hex commits'; exit 1; }
+          done
+          [[ "$WORKER_IMAGE" =~ ^registry\.digitalocean\.com/exampleorg/review-yeti-worker@sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::worker_image must be an exact digest in the trusted worker repository'
+            exit 1
+          }
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.base.sha,.head.sha] | @tsv')"
+          [[ "$actual" == "$EXPECTED_BASE_SHA"$'\t'"$EXPECTED_HEAD_SHA" ]] || {
+            echo '::error::the pull request head or base moved; refuse stale qualification'
+            exit 1
+          }
+
+      - name: Run exact worker artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          REGISTRY_USERNAME: ${{ secrets.DOKS_REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.DOKS_REGISTRY_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          WORKER_IMAGE: ${{ inputs.worker_image }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          test -n "$OPENROUTER_API_KEY"
+          test -n "$REGISTRY_USERNAME"
+          test -n "$REGISTRY_TOKEN"
+
+          receipt_dir="$RUNNER_TEMP/review-yeti-worker-parity"
+          mkdir -p "$receipt_dir"
+          sudo chown 1000:1000 "$receipt_dir"
+          printf '%s' "$REGISTRY_TOKEN" | docker login registry.digitalocean.com \
+            --username "$REGISTRY_USERNAME" --password-stdin >/dev/null
+          trap 'docker logout registry.digitalocean.com >/dev/null 2>&1 || true' EXIT
+          docker pull --platform linux/amd64 "$WORKER_IMAGE" >/dev/null
+
+          engine_revision="${WORKER_IMAGE##*@sha256:}"
+          run_suffix="$(printf '%s' "hosted:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$HEAD_SHA" | sha256sum | cut -c1-32)"
+          policy_digest="$(printf '%s\n' \
+            'ReviewYetiSameEnginePolicy.v1' \
+            'profile=same-head' \
+            'personas=security,performance,architecture,testing,dependencies,licensing' \
+            'moderator=required' \
+            'arbiter=required' \
+            'reasoning_effort=high' \
+            'all_personas_on_every_file=true' \
+            'verdict_source=canonical-production-policy' \
+            'publication=disabled' | sha256sum | cut -d' ' -f1)"
+          config_digest="$(printf '%s\n' \
+            'ReviewYetiSameEngineConfig.v1' \
+            "worker_image=$WORKER_IMAGE" \
+            'provider=openrouter' \
+            'primary_model=deepseek/deepseek-v4-flash-0731' \
+            'fallback_model=z-ai/glm-5.3-flash' \
+            'timeout_ms=780000' \
+            'stream=true' | sha256sum | cut -d' ' -f1)"
+
+          docker run --platform linux/amd64 --rm --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --mount "type=bind,src=$receipt_dir,dst=/workspace" \
+            --env GH_TOKEN \
+            --env OPENROUTER_API_KEY \
+            --env OPENROUTER_BASE_URL=https://openrouter.ai/api/v1 \
+            --env REVIEW_SAME_HEAD_QUALIFICATION_ONLY=true \
+            --env REVIEW_FULL_PANEL_QUALIFICATION_ONLY=false \
+            --env REVIEW_PANEL_QUALIFICATION_ONLY=false \
+            --env REVIEW_PROVIDER_QUALIFICATION_ONLY=false \
+            --env REVIEW_RECEIPT_ONLY=false \
+            --env REVIEW_PUBLICATION_MODE=disabled \
+            --env REVIEW_RECEIPT_PATH=/workspace/receipt.json \
+            --env "REVIEW_RUN_ID=run_$run_suffix" \
+            --env "REVIEW_DELIVERY_ID=manual:hosted-same-engine:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" \
+            --env "REVIEW_REPOSITORY_ID=$GITHUB_REPOSITORY_ID" \
+            --env "REVIEW_REPO=$GITHUB_REPOSITORY" \
+            --env "REVIEW_PR_NUMBER=$PR_NUMBER" \
+            --env "REVIEW_HEAD_SHA=$HEAD_SHA" \
+            --env "REVIEW_BASE_SHA=$BASE_SHA" \
+            --env "REVIEW_POLICY_DIGEST=$policy_digest" \
+            --env "REVIEW_CONFIG_DIGEST=$config_digest" \
+            --env "REVIEW_ENGINE_REVISION=$engine_revision" \
+            --env REVIEW_QUALIFICATION_PROVIDER_ID=openrouter \
+            --env REVIEW_QUALIFICATION_MODEL=deepseek/deepseek-v4-flash-0731 \
+            --env REVIEW_QUALIFICATION_TIMEOUT_MS=780000 \
+            "$WORKER_IMAGE"
+
+      - name: Verify sanitized receipt
+        env:
+          WORKER_IMAGE: ${{ inputs.worker_image }}
+          EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/review-yeti-worker-parity/receipt.json"
+          engine_revision="${WORKER_IMAGE##*@sha256:}"
+          jq -e --arg engine "$engine_revision" --arg base "$EXPECTED_BASE_SHA" --arg head "$EXPECTED_HEAD_SHA" '
+            .version == "ReviewYetiPanelQualification.v1" and
+            .profile == "same-head" and
+            .status == "succeeded" and
+            .source == "github-pull-request" and
+            .publicationMode == "disabled" and
+            .engineRevision == $engine and
+            .baseSha == $base and .headSha == $head and
+            .providerId == "openrouter" and
+            .requestedModel == "deepseek/deepseek-v4-flash-0731" and
+            .githubReads == 3 and .githubWrites == 0 and
+            .personaCount == 6 and .expectedPersonaCount == 6 and
+            .optionalFailureCount == 0 and .quorumSatisfied == true and
+            (.laneAttribution | length) == 8
+          ' "$receipt" >/dev/null
+          jq '{status,profile,engineRevision,providerTopologyDigest,retryCount,providerCalls,githubReads,githubWrites,personaCount,verdict,severityCounts,durationMs,costUSD}' \
+            "$receipt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized parity receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: hosted-worker-parity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/review-yeti-worker-parity/receipt.json
+          if-no-files-found: error
+          retention-days: 7
+

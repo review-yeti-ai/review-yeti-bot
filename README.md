@@ -362,6 +362,21 @@ rate-limit/timeout evidence. It does not measure queue depth or review-quality (
 false-negative rate); those remain open ADR-0467 revisit-bar columns for a future, differently-
 scoped instrument and are intentionally not fabricated here.
 
+## One-time same-engine DOKS comparison
+
+The `One-time same-engine worker parity qualification` workflow is the manual hosted half of a
+DOKS comparison. It pulls one exact `review-yeti-worker@sha256:...` artifact, reviews an exact pull
+request head through the worker's `same-head` profile, and uploads only the sanitized receipt.
+The matching DOKS run must use that same worker digest, model, timeout, policy digest, and config
+digest. Receipt comparison fails closed if the engine, provider topology, or resolved lane models
+differ.
+
+This workflow has no schedule or pull-request trigger, cannot publish a review, has read-only
+GitHub permissions, and is capped at 15 minutes. Registry credentials should be short-lived,
+read-only credentials installed only for the explicit run and removed afterward. A successful
+comparison is qualification evidence; it does not enable the DOKS App gate or make DOKS a required
+check.
+
 ## CLI-first local reviews
 
 The central policy can be exercised locally through the same bounded, read-only review engine used
