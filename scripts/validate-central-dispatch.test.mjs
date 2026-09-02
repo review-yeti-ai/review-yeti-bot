@@ -23,6 +23,51 @@ const payload = Object.freeze({
   base_sha: baseSha,
   head_sha: headSha,
 });
+
+// ADR 0490 scope widened 2026-09-02 (example-review-actions #200): every admitted
+// repository must pass the full dispatch contract end-to-end, not just the
+// example-api namespace — the repo-name group shifted the REQUEST_ID_PATTERN
+// capture indices, and an off-by-one would silently bind the wrong PR/SHA.
+const WIDED_REPOSITORIES = [
+  { repository: TARGET_REPOSITORY, name: 'example-api', pr: 4527 },
+  { repository: 'exampleorg/example-release', name: 'example-release', pr: 771 },
+  { repository: 'exampleorg/example-meta', name: 'example-meta', pr: 2704 },
+];
+
+function buildFixture({ repository, name, pr }) {
+  const request = {
+    request_id: `${name}:${pr}:${headSha}:${callerRunId}:${callerRunAttempt}`,
+    repository,
+    pr_number: pr,
+    base_sha: baseSha,
+    head_sha: headSha,
+  };
+  const fetchImpl = async (url) => {
+    if (url.endsWith(`/pulls/${pr}`)) {
+      return response({
+        state: 'open',
+        base: { sha: baseSha, ref: 'main', repo: { full_name: repository, default_branch: 'main' } },
+        head: { sha: headSha, ref: `fix/${name}-shim` },
+      });
+    }
+    if (url.endsWith(`/actions/runs/${callerRunId}`)) {
+      return response({
+        repository: { full_name: repository },
+        event: 'pull_request_target',
+        path: '.github/workflows/ct-review-bot.yml',
+        head_sha: headSha,
+        head_branch: `fix/${name}-shim`,
+        run_attempt: callerRunAttempt,
+        pull_requests: [{ number: pr }],
+      });
+    }
+    if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
+      return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  return { request, fetchImpl };
+}
 const callerWorkflow = `
 name: Review Yeti dispatch
 on: pull_request_target
@@ -82,6 +127,34 @@ test('accepts only the sanitized Cisco dispatch identity contract', () => {
     { ...payload, ollama_api_key: 'secret' },
   ]) {
     assert.throws(() => validateDispatchPayload(invalid));
+  }
+});
+
+test('request_id namespace must match the payload repository', () => {
+  const mismatched = {
+    request_id: `example-release:771:${headSha}:${callerRunId}:${callerRunAttempt}`,
+    repository: 'exampleorg/example-meta',
+    pr_number: 771,
+    base_sha: baseSha,
+    head_sha: headSha,
+  };
+  assert.throws(() => validateDispatchPayload(mismatched));
+});
+
+test('every admitted repository passes the full dispatch contract with its own request_id namespace', async () => {
+  for (const fixture of WIDED_REPOSITORIES.map(buildFixture)) {
+    const calls = [];
+    const result = await validateCentralDispatch({
+      payload: fixture.request,
+      token: 'central-token',
+      fetchImpl: fixture.fetchImpl,
+    });
+    assert.equal(result.repository, fixture.request.repository);
+    assert.equal(result.pr_number, fixture.request.pr_number);
+    assert.equal(result.head_sha, headSha);
+    assert.equal(result.caller_run_id, callerRunId);
+    assert.equal(result.caller_run_attempt, callerRunAttempt);
+    assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
   }
 });
 

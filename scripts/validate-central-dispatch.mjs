@@ -4,13 +4,21 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 export const CENTRAL_REPOSITORY = 'exampleorg/example-review-actions';
+// Repositories admitted to the central dispatch boundary. ADR 0490 scope
+// widened 2026-09-02 (example-review-actions #200): example-release and example-meta joined
+// example-api on the Ollama-only policy.
 export const TARGET_REPOSITORY = 'exampleorg/example-api';
+export const ALLOWED_TARGET_REPOSITORIES = Object.freeze(new Set([
+  TARGET_REPOSITORY,
+  'exampleorg/example-release',
+  'exampleorg/example-meta',
+]));
 export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
 export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
 
 const PAYLOAD_KEYS = Object.freeze(['base_sha', 'head_sha', 'pr_number', 'repository', 'request_id']);
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
-const REQUEST_ID_PATTERN = /^example-api:([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
+const REQUEST_ID_PATTERN = /^(example-api|example-release|example-meta):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
 const PROVIDER_SECRET_PATTERN = /(?:OLLAMA_PR_REVIEW_API_KEY|OPENROUTER(?:_PR_REVIEW_API_KEY|_REVIEW_FLEET_KEY|_API_KEY)|FIREWORKS_PR_REVIEW_API_KEY|SYNTHETIC_API_KEY|GEMINI_API_KEY)/u;
 
 function assertPlainObject(value, label) {
@@ -25,8 +33,8 @@ export function validateDispatchPayload(payload) {
   if (JSON.stringify(keys) !== JSON.stringify(PAYLOAD_KEYS)) {
     throw new Error(`client_payload must contain exactly: ${PAYLOAD_KEYS.join(', ')}`);
   }
-  if (payload.repository !== TARGET_REPOSITORY) {
-    throw new Error(`repository must be ${TARGET_REPOSITORY}`);
+  if (!ALLOWED_TARGET_REPOSITORIES.has(payload.repository)) {
+    throw new Error(`repository must be one of ${[...ALLOWED_TARGET_REPOSITORIES].join(', ')}`);
   }
   if (!Number.isSafeInteger(payload.pr_number) || payload.pr_number < 1) {
     throw new Error('pr_number must be a positive safe integer');
@@ -36,9 +44,13 @@ export function validateDispatchPayload(payload) {
   }
   const requestIdentity = REQUEST_ID_PATTERN.exec(payload.request_id);
   if (!requestIdentity) {
-    throw new Error('request_id must be example-api:<pr_number>:<head_sha>:<github.run_id>:<github.run_attempt>');
+    throw new Error('request_id must be <repo-name>:<pr_number>:<head_sha>:<github.run_id>:<github.run_attempt>');
   }
-  if (Number(requestIdentity[1]) !== payload.pr_number || requestIdentity[2] !== payload.head_sha) {
+  const requestRepoName = requestIdentity[1];
+  if (payload.repository !== `exampleorg/${requestRepoName}`) {
+    throw new Error('request_id repo-name must match the payload repository');
+  }
+  if (Number(requestIdentity[2]) !== payload.pr_number || requestIdentity[3] !== payload.head_sha) {
     throw new Error('request_id must bind the payload PR number and head SHA');
   }
   return { ...payload };
@@ -95,7 +107,7 @@ async function githubJson(url, token, fetchImpl) {
 
 export async function validateCentralDispatch({ payload, token, fetchImpl = globalThis.fetch }) {
   const request = validateDispatchPayload(payload);
-  const [, , , callerRunIdText, callerRunAttemptText] = REQUEST_ID_PATTERN.exec(request.request_id);
+  const [, , , , callerRunIdText, callerRunAttemptText] = REQUEST_ID_PATTERN.exec(request.request_id);
   const callerRunId = Number(callerRunIdText);
   const callerRunAttempt = Number(callerRunAttemptText);
   if (!Number.isSafeInteger(callerRunId) || !Number.isSafeInteger(callerRunAttempt)) {
