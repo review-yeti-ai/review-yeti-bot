@@ -3717,14 +3717,29 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const prepareOpenRouterFormatRecovery = (findingsError) => {
         if (!isOpenRouterTransport || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
-        recoveryAction = 'bounded_retry';
         noteRetryReason('malformed_output');
-        // Keep the already-admitted OpenRouter model: account guardrails can reject a
-        // different model even when the central fleet allows it. Remove the
-        // auto-router-only plugin while retaining the provider privacy policy, and
-        // honor model-specific reasoning requirements.
+        // A non-canonical response is enough evidence to stop asking the same model to
+        // repair its own wire format. When central policy supplied an explicit fallback,
+        // advance to that already-admitted model for the one bounded recovery attempt.
+        // Without an explicit fallback, preserve the legacy same-model retry.
+        const formatFallbackModels = Array.isArray(requestBody.models)
+          ? requestBody.models
+            .map((model) => String(model || '').trim())
+            .filter((model) => model && model !== requestBody.model)
+          : [];
+        const formatFallbackModel = formatFallbackModels.shift() || null;
+        if (formatFallbackModel) {
+          requestBody.model = formatFallbackModel;
+          if (formatFallbackModels.length > 0) requestBody.models = formatFallbackModels;
+          else delete requestBody.models;
+          recoveryAction = 'model_fallback';
+        } else {
+          recoveryAction = 'bounded_retry';
+        }
+        // Remove the auto-router-only plugin while retaining the provider privacy policy,
+        // and honor model-specific reasoning requirements for the selected recovery model.
         delete requestBody.plugins;
-        const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestModel);
+        const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestBody.model);
         requestBody.reasoning = recoveryReasoning;
         requestBody.max_tokens = Math.max(
           requestBody.max_tokens,
@@ -3740,7 +3755,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           recoveryReasoningInstruction,
           '- Return only {"findings":[]} or the required findings object.',
         ]);
-        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with ${recoveryReasoning.effort === 'none' ? 'reasoning disabled' : 'low required reasoning'} and a larger answer budget before failover...`);
+        const recoveryRoute = formatFallbackModel
+          ? `explicit fallback model ${requestBody.model}`
+          : `the same model ${requestBody.model}`;
+        console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' returned a non-canonical findings response; retrying once via ${recoveryRoute} with ${recoveryReasoning.effort === 'none' ? 'reasoning disabled' : 'low required reasoning'} and a larger answer budget before failover...`);
         return true;
       };
 
