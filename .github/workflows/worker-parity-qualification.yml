@@ -56,6 +56,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate request scope before minting credentials
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TARGET_OWNER: ${{ inputs.repo_owner }}
+          TARGET_REPOSITORY: ${{ inputs.repo_name }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          WORKER_IMAGE: ${{ inputs.worker_image }}
+        run: scripts/validate-worker-parity-scope.sh
+
       - name: Mint target-repository read token
         id: parity-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3

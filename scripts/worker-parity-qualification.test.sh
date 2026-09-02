@@ -3,10 +3,12 @@ set -euo pipefail
 
 workflow=.github/workflows/worker-parity-qualification.yml
 target_validator=scripts/validate-worker-parity-target.sh
+scope_validator=scripts/validate-worker-parity-scope.sh
 receipt_validator=scripts/verify-worker-parity-receipt.sh
 
 test -f "$workflow"
 test -x "$target_validator"
+test -x "$scope_validator"
 test -x "$receipt_validator"
 grep -Fq 'workflow_dispatch:' "$workflow"
 grep -Eq '^    timeout-minutes: 15$' "$workflow"
@@ -20,8 +22,9 @@ grep -Fq 'permission-pull-requests: read' "$workflow"
 grep -Fq 'GH_TOKEN: ${{ steps.parity-token.outputs.token }}' "$workflow"
 grep -Fq 'REVIEW_REPO: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}' "$workflow"
 grep -Fq 'scripts/validate-worker-parity-target.sh' "$workflow"
+grep -Fq 'scripts/validate-worker-parity-scope.sh' "$workflow"
 grep -Fq 'scripts/verify-worker-parity-receipt.sh' "$workflow"
-grep -Fq 'registry\.digitalocean\.com/exampleorg/review-yeti-worker@sha256:' "$target_validator"
+grep -Fq 'registry\.digitalocean\.com/exampleorg/review-yeti-worker@sha256:' "$scope_validator"
 grep -Fq 'REVIEW_SAME_HEAD_QUALIFICATION_ONLY=true' "$workflow"
 grep -Fq 'REVIEW_RECEIPT_PATH=/workspace/.review-yeti/receipt.json' "$workflow"
 grep -Fq 'REVIEW_PUBLICATION_MODE=disabled' "$workflow"
@@ -65,6 +68,13 @@ def validate_workflow(workflow)
   visit.call(workflow)
   unless !publication_values.empty? && publication_values.all? { |value| value == 'disabled' }
     raise 'every REVIEW_PUBLICATION_MODE assignment must be disabled'
+  end
+
+  steps = workflow.fetch('jobs').fetch('qualify').fetch('steps')
+  scope_index = steps.index { |step| step['run'].to_s.include?('validate-worker-parity-scope.sh') }
+  token_index = steps.index { |step| step['uses'].to_s.include?('actions/create-github-app-token@') }
+  unless scope_index && token_index && scope_index < token_index
+    raise 'request scope must be validated before minting credentials'
   end
 end
 
@@ -133,6 +143,25 @@ target_env=(
   "FAKE_PULL_IDENTITY=$base_sha"$'\t'"$head_sha"
   'FAKE_REPOSITORY_ID=12345'
 )
+scope_env=(
+  'CONFIRM=PARITY'
+  'TARGET_OWNER=exampleorg'
+  'TARGET_REPOSITORY=fixture-repo'
+  'PR_NUMBER=5'
+  "EXPECTED_BASE_SHA=$base_sha"
+  "EXPECTED_HEAD_SHA=$head_sha"
+  "WORKER_IMAGE=$worker_image"
+)
+env "${scope_env[@]}" "$scope_validator"
+if env "${scope_env[@]}" TARGET_OWNER=outside "$scope_validator" >/dev/null 2>&1; then
+  echo 'pre-token scope validator accepted an outside owner' >&2
+  exit 1
+fi
+if env "${scope_env[@]}" TARGET_REPOSITORY='../escape' "$scope_validator" >/dev/null 2>&1; then
+  echo 'pre-token scope validator accepted an invalid repository name' >&2
+  exit 1
+fi
+
 env "${target_env[@]}" "$target_validator"
 grep -Fxq 'repository_id=12345' "$tmp_dir/output"
 if env "${target_env[@]}" TARGET_OWNER=outside "$target_validator" >/dev/null 2>&1; then
