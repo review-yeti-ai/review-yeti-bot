@@ -496,6 +496,7 @@ describe('full-panel qualification worker contract', () => {
       expect(options.config.personas.every((persona: any) => persona.maxTurns === 3)).toBe(true);
       expect(options.config.reviewers.providers).toHaveLength(1);
       expect(options.config.reviewers.providers[0].model).toBe(fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL);
+      expect(options.config.reviewers.providers[0].effort).toBe('low');
       expect(options.requestPolicy).toEqual({
         stream: true,
         ttftTimeoutMs: 30_000,
@@ -798,6 +799,7 @@ describe('same-head qualification worker contract', () => {
       expect(options.config.personas).toHaveLength(6);
       expect(options.config.personas.every((persona: any) => persona.required)).toBe(true);
       expect(options.config.personas.every((persona: any) => persona.paths.length === 1 && persona.paths[0] === '**')).toBe(true);
+      expect(options.config.reviewers.providers[0].effort).toBe('high');
       expect(options.changedFiles).toEqual([{ path: 'src/auth.ts', patch: rawDiff.trimEnd() }]);
       expect(options.requestPolicy.metadata.qualificationMode).toBe('same-head');
       expect(options.requestPolicy.models).toEqual(['z-ai/glm-5.3-flash']);
@@ -838,6 +840,8 @@ describe('same-head qualification worker contract', () => {
       expectedPersonaCount: 6,
       optionalFailureCount: 0,
       verdict: 'SHIP',
+      verdictSource: 'canonical-production-policy',
+      severityCounts: { P0: 0, P1: 0, P2: 0 },
     });
     const serialized = JSON.stringify(receipt);
     for (const forbidden of [
@@ -849,6 +853,67 @@ describe('same-head qualification worker contract', () => {
       `${JSON.stringify(receipt)}\n`,
       { encoding: 'utf8' },
     );
+  });
+
+  it('persists the production canonical verdict when a persona finds a blocking defect', async () => {
+    const sourceLoader = vi.fn(async () => ({
+      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      diff: rawDiff,
+      diffDigest,
+      githubReads: 3 as const,
+    }));
+    const client = {
+      complete: vi.fn(async () => ({
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        content: 'private model response',
+        usage: { prompt: 100, completion: 20, total: 120 },
+        costUSD: 0.001,
+        raw: {},
+      })),
+    };
+    const panelRunner = vi.fn(async (options: any) => {
+      await Promise.all(Array.from({ length: 8 }, () => options.client.complete({
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        messages: [{ role: 'user', content: 'private prompt' }],
+        stream: true,
+      })));
+      const result = completePanelResult();
+      result.personas[0].decision = 'FINDINGS';
+      result.personas[0].findings = [{
+        severity: 'P1',
+        path: 'src/auth.ts',
+        line: 1,
+        title: 'private blocking finding',
+        body: 'private blocking detail',
+      }];
+      result.arbiter.verdict = 'SHIP';
+      result.arbiter.rationale = 'private unsafe approval rationale';
+      return result;
+    });
+
+    const receipt = await runSameHeadQualificationWorker(
+      sameHeadEnvironment,
+      panelRunner,
+      client,
+      sourceLoader,
+    );
+
+    expect(receipt).toMatchObject({
+      profile: 'same-head',
+      status: 'succeeded',
+      verdict: 'FIX_FIRST',
+      verdictSource: 'canonical-production-policy',
+      findingsCount: 1,
+      severityCounts: { P0: 0, P1: 1, P2: 0 },
+      providerCalls: 8,
+      githubReads: 3,
+      githubWrites: 0,
+    });
+    const serialized = JSON.stringify(receipt);
+    for (const forbidden of [
+      'private blocking finding', 'private blocking detail', 'private unsafe approval rationale',
+    ]) expect(serialized).not.toContain(forbidden);
   });
 
   it('persists a classified source failure without leaking GitHub response text', async () => {
