@@ -184,8 +184,12 @@ if max_passes * lane_deadline_ms > job_cap_ms:
 # On a non-streaming fallback, the "TTFT" abort wraps the entire request rather than just the wait
 # for a first byte. The committed policy declares streaming on every transport, so a tight TTFT is
 # legitimate here; the invariant for any future non-streaming change is exercised below.
-if review.get('openrouter_ttft_ms') != '60000':
-    raise SystemExit('openrouter_ttft_ms must preserve the qualified 60000ms large-diff first-token budget')
+# Raised 60000->75000 (REL-499): example-api PR #4764 showed two of six persona lanes time out on
+# openrouter-primary and fail over, with one lane exhausting every transport into a BLOCK verdict.
+# example-meta ADR 0481 records the incident and the decision to widen the OpenRouter TTFT/stall
+# window (deepseek/deepseek-v4-flash-0731 on openrouter.ai) rather than reopen Fireworks admission.
+if review.get('openrouter_ttft_ms') != '75000':
+    raise SystemExit('openrouter_ttft_ms must preserve the qualified 75000ms large-diff first-token budget')
 print('policy budget source passed')
 PY
 

@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "111209b12d76ab885db9cdede889a40f2b234e28e14512e18ca0ff6a4f327c4d",
+  "normalized_plan_sha256": "7a7bd27a9bf8c31271756febd2080f73579bd0b5902019f7747434e8402a2159",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -39,8 +39,8 @@
         "timeouts": {
           "connect_ms": 20000,
           "request_ms": 90000,
-          "stall_ms": 20000,
-          "ttft_ms": 60000
+          "stall_ms": 30000,
+          "ttft_ms": 75000
         },
         "max_output_tokens": 24576,
         "streaming": true,
