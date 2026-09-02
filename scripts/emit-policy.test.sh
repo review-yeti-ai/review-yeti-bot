@@ -707,8 +707,9 @@ if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('ca
 PY
 echo "[cisco-ollama-only] passed"
 
-# Ollama-only set covers example-release and example-meta too (ADR 0490 scope widened 2026-09-02).
-for repo in exampleorg/example-release exampleorg/example-meta; do
+# Ollama-only set covers example-release, example-meta, and example-infra too
+# (ADR 0490 scope widened 2026-09-02).
+for repo in exampleorg/example-release exampleorg/example-meta exampleorg/example-infra; do
   repo_output="$tmp_dir/${repo##*/}-policy.output"
   (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY="$repo" GITHUB_OUTPUT="$repo_output" node emit-policy.mjs)
   python3 - "$repo_output" "$repo" <<'PY'

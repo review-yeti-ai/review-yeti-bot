@@ -156,11 +156,16 @@ test('Example API resolves and probes exactly one panel-width Ollama transport',
   assert.deepEqual(result.healthy, ['ollama']);
 });
 
-test('example-release and example-meta join the Ollama-only set (ADR 0490 scope widened 2026-09-02)', () => {
+test('example-release, example-meta, and example-infra join the Ollama-only set (ADR 0490 scope widened 2026-09-02)', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   assert.deepEqual(
     [...OLLAMA_REPOSITORIES].sort(),
-    ['exampleorg/example-api', 'exampleorg/example-meta', 'exampleorg/example-release'],
+    [
+      'exampleorg/example-api',
+      'exampleorg/example-infra',
+      'exampleorg/example-meta',
+      'exampleorg/example-release',
+    ],
   );
   for (const repository of OLLAMA_REPOSITORIES) {
     const resolved = resolvePolicyForRepository(policy, repository);
