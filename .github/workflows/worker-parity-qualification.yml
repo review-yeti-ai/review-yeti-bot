@@ -10,8 +10,18 @@ on:
         description: 'Type PARITY to authorize one nonpublishing worker run'
         required: true
         type: string
+      repo_owner:
+        description: 'Target repository owner (restricted to exampleorg)'
+        required: false
+        default: 'exampleorg'
+        type: string
+      repo_name:
+        description: 'Target repository name'
+        required: false
+        default: 'example-review-actions'
+        type: string
       pr_number:
-        description: 'Pull request in exampleorg/example-review-actions'
+        description: 'Pull request in the exact target repository'
         required: true
         type: string
       base_sha:
@@ -32,7 +42,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: one-time-worker-parity-${{ inputs.pr_number }}
+  group: one-time-worker-parity-${{ inputs.repo_owner }}-${{ inputs.repo_name }}-${{ inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:
@@ -41,38 +51,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Checkout qualification harness
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mint target-repository read token
+        id: parity-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.PARITY_GITHUB_APP_ID }}
+          private-key: ${{ secrets.PARITY_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ inputs.repo_owner }}
+          repositories: ${{ inputs.repo_name }}
+          permission-contents: read
+          permission-pull-requests: read
+
       - name: Validate exact PR and worker identity
+        id: target-identity
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.parity-token.outputs.token }}
           CONFIRM: ${{ inputs.confirm }}
+          TARGET_OWNER: ${{ inputs.repo_owner }}
+          TARGET_REPOSITORY: ${{ inputs.repo_name }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
           EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
           WORKER_IMAGE: ${{ inputs.worker_image }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REPOSITORY" == exampleorg/example-review-actions ]]
-          [[ "$CONFIRM" == PARITY ]] || { echo '::error::confirm must be PARITY'; exit 1; }
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo '::error::pr_number must be positive'; exit 1; }
-          for value in "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA"; do
-            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::base/head SHAs must be exact lowercase 40-hex commits'; exit 1; }
-          done
-          [[ "$WORKER_IMAGE" =~ ^registry\.digitalocean\.com/exampleorg/review-yeti-worker@sha256:[0-9a-f]{64}$ ]] || {
-            echo '::error::worker_image must be an exact digest in the trusted worker repository'
+          if ! scripts/validate-worker-parity-target.sh; then
+            echo '::error::target identity validation failed'
             exit 1
-          }
-          actual="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.base.sha,.head.sha] | @tsv')"
-          [[ "$actual" == "$EXPECTED_BASE_SHA"$'\t'"$EXPECTED_HEAD_SHA" ]] || {
-            echo '::error::the pull request head or base moved; refuse stale qualification'
-            exit 1
-          }
+          fi
 
       - name: Run exact worker artifact
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.parity-token.outputs.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           REGISTRY_USERNAME: ${{ secrets.DOKS_REGISTRY_USERNAME }}
           REGISTRY_TOKEN: ${{ secrets.DOKS_REGISTRY_TOKEN }}
+          REVIEW_REPOSITORY_ID: ${{ steps.target-identity.outputs.repository_id }}
+          REVIEW_REPO: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}
           PR_NUMBER: ${{ inputs.pr_number }}
           BASE_SHA: ${{ inputs.base_sha }}
           HEAD_SHA: ${{ inputs.head_sha }}
@@ -128,8 +148,8 @@ jobs:
             --env REVIEW_RECEIPT_PATH=/workspace/.review-yeti/receipt.json \
             --env "REVIEW_RUN_ID=run_$run_suffix" \
             --env "REVIEW_DELIVERY_ID=manual:hosted-same-engine:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" \
-            --env "REVIEW_REPOSITORY_ID=$GITHUB_REPOSITORY_ID" \
-            --env "REVIEW_REPO=$GITHUB_REPOSITORY" \
+            --env REVIEW_REPOSITORY_ID \
+            --env REVIEW_REPO \
             --env "REVIEW_PR_NUMBER=$PR_NUMBER" \
             --env "REVIEW_HEAD_SHA=$HEAD_SHA" \
             --env "REVIEW_BASE_SHA=$BASE_SHA" \
@@ -144,27 +164,14 @@ jobs:
       - name: Verify sanitized receipt
         env:
           WORKER_IMAGE: ${{ inputs.worker_image }}
+          EXPECTED_REPO: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}
+          EXPECTED_REPOSITORY_ID: ${{ steps.target-identity.outputs.repository_id }}
           EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
           EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
         run: |
           set -euo pipefail
           receipt="$RUNNER_TEMP/review-yeti-worker-parity/.review-yeti/receipt.json"
-          engine_revision="${WORKER_IMAGE##*@sha256:}"
-          jq -e --arg engine "$engine_revision" --arg base "$EXPECTED_BASE_SHA" --arg head "$EXPECTED_HEAD_SHA" '
-            .version == "ReviewYetiPanelQualification.v1" and
-            .profile == "same-head" and
-            .status == "succeeded" and
-            .source == "github-pull-request" and
-            .publicationMode == "disabled" and
-            .engineRevision == $engine and
-            .baseSha == $base and .headSha == $head and
-            .providerId == "openrouter" and
-            .requestedModel == "deepseek/deepseek-v4-flash-0731" and
-            .githubReads == 3 and .githubWrites == 0 and
-            .personaCount == 6 and .expectedPersonaCount == 6 and
-            .optionalFailureCount == 0 and .quorumSatisfied == true and
-            (.laneAttribution | length) == 8
-          ' "$receipt" >/dev/null
+          RECEIPT_PATH="$receipt" scripts/verify-worker-parity-receipt.sh
           jq '{status,profile,engineRevision,providerTopologyDigest,retryCount,providerCalls,githubReads,githubWrites,personaCount,verdict,severityCounts,durationMs,costUSD}' \
             "$receipt" >> "$GITHUB_STEP_SUMMARY"
 
