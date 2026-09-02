@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.24.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.24.0...v1.24.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **action:** fall back after malformed OpenRouter output ([5b6a23e](https://github.com/review-yeti-ai/review-yeti-bot/commit/5b6a23effbaa0ff9a0aa17aba8c59769af2e564f))
+* **action:** fall back after malformed OpenRouter output ([85171f8](https://github.com/review-yeti-ai/review-yeti-bot/commit/85171f817582aa0f48b3e2c6cc7f2345a1d22c04))
+
 ## [1.24.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.23.1...v1.24.0) (2026-09-02)
 
 
