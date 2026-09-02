@@ -93,10 +93,10 @@ if (!fireworksTransport || fireworksTransport.enabled !== false) {
 }
 const ollamaTransport = review.transports.find((transport) => transport.name === 'ollama');
 if (!ollamaTransport
-    || ollamaTransport.max_in_flight !== 1
+    || ollamaTransport.max_in_flight !== 6
     || ollamaTransport.concurrency_scope !== 'provider'
     || ollamaTransport.capacity_wait_timeout_ms !== 30000) {
-  throw new Error('Ollama must use one provider-scoped slot and a bounded 30-second admission wait');
+  throw new Error('Ollama must use a six-lane provider-scoped ceiling and a bounded 30-second capacity wait');
 }
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
   throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');

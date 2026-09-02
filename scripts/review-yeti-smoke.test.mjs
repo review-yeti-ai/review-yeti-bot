@@ -67,7 +67,13 @@ function policyFixture() {
     transport.ttft_ms = Math.min(60_000, transport.timeout_ms);
     transport.stall_ms = 20_000;
     transport.dispatch_weight = transport.name === 'openrouter-primary' ? 2 : 1;
-    transport.max_in_flight = transport.name === 'openrouter-primary' ? 2 : transport.name === 'synthetic' ? 5 : 1;
+    transport.max_in_flight = transport.name === 'openrouter-primary'
+      ? 2
+      : transport.name === 'synthetic'
+        ? 5
+        : transport.name === 'ollama'
+          ? 6
+          : 1;
     transport.concurrency_scope = transport.name === 'synthetic' ? 'model' : 'provider';
     transport.capacity_wait_timeout_ms = transport.name === 'openrouter-primary'
       ? 180000
@@ -112,14 +118,14 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
 });
 
-test('Example API resolves and probes exactly one conservative Ollama transport', async () => {
+test('Example API resolves and probes exactly one panel-width Ollama transport', async () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const resolved = resolvePolicyForRepository(policy, EXAMPLE_API_REPOSITORY);
   const transports = validatePolicy(resolved, EXAMPLE_API_REPOSITORY);
 
   assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER);
   assert.equal(resolved.review_yeti.dispatch_mode, 'ordered');
-  assert.equal(transports[0].max_in_flight, 1);
+  assert.equal(transports[0].max_in_flight, 6);
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
 

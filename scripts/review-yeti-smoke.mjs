@@ -175,11 +175,11 @@ export function validatePolicy(policy, repository = '') {
   }
 
   if (ollama.reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
-  if (ollama.max_in_flight !== 1
+  if (ollama.max_in_flight !== 6
       || ollama.concurrency_scope !== 'provider'
       || ollama.capacity_wait_timeout_ms !== 30000
       || ollama.dispatch_weight !== 1) {
-    throw new Error('Ollama must use one provider-scoped slot and a bounded 30-second admission wait');
+    throw new Error('Ollama must use a six-lane provider-scoped ceiling and a bounded 30-second capacity wait');
   }
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned

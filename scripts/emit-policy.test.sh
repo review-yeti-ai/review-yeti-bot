@@ -687,7 +687,7 @@ done
 echo "[channel-edge-cases] passed"
 
 # Exact repository overrides are resolved centrally. Example API gets only Ollama with a
-# conservative one-slot/30-second admission envelope; unrelated consumers retain the default.
+# six-lane/30-second admission envelope; unrelated consumers retain the default.
 cp "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json"
 cisco_output="$tmp_dir/cisco-policy.output"
 (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$cisco_output" node emit-policy.mjs)
@@ -702,8 +702,8 @@ transports = json.loads('\n'.join(lines[start + 1:end]))
 if [transport['name'] for transport in transports] != ['ollama']:
     raise SystemExit('Example API must emit only the Ollama transport')
 ollama = transports[0]
-if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('capacity_wait_timeout_ms')) != (1, 'provider', 30000):
-    raise SystemExit('Example API Ollama admission must be one provider slot with a 30-second wait')
+if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('capacity_wait_timeout_ms')) != (6, 'provider', 30000):
+    raise SystemExit('Example API Ollama admission must cover the six-persona panel with a 30-second capacity wait')
 PY
 echo "[cisco-ollama-only] passed"
 

@@ -114,7 +114,7 @@ test('Example API emits an Ollama-only ordered execution plan without changing t
   assert.deepEqual(ciscoPlan.transport_order, ['ollama']);
   assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { ollama: 1 } });
   assert.deepEqual(ciscoPlan.transports[0].capacity, {
-    max_in_flight: 1,
+    max_in_flight: 6,
     concurrency_scope: 'provider',
     wait_timeout_ms: 30000,
   });

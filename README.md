@@ -156,6 +156,12 @@ Weekly-credit state remains telemetry rather than a concurrency signal.
 `GEMINI_API_KEY` and `SYNTHETIC_API_KEY` must likewise be populated from production-scoped
 credentials before the `v1` release channel is promoted. A development-only credential may be
 used for one-time qualification, but it is not sufficient evidence for production activation.
+
+The `exampleorg/example-api` repository override enables only Ollama. Its six-call
+`max_in_flight` value matches the current six-persona panel width; it is a local ceiling, not a
+reservation of the Ollama Team plan's shared account capacity. Provider capacity responses still
+enter the runtime's cumulative 30-second wait/retry budget, so concurrent non-review workloads can
+consume account slots without causing an immediate provider fallback.
 The workflow references only the GitHub secret; neither policy nor workflow files contain the
 credential value.
 
