@@ -69,12 +69,13 @@ type PRReviewJobSpec struct {
 	RunSecretName string `json:"runSecretName"`
 	// QualificationProfile is optional. An omitted profile preserves the
 	// production-safe receipt-only worker contract. The only admitted
-	// non-default profile is the manual, non-publishing full-panel lane.
-	// +kubebuilder:validation:Enum=full-panel
+	// non-default profiles are the manual, non-publishing full-panel and
+	// read-only same-head lanes.
+	// +kubebuilder:validation:Enum=full-panel;same-head
 	// +optional
 	QualificationProfile string `json:"qualificationProfile,omitempty"`
-	// QualificationModel is required by the full-panel qualification profile
-	// and is never accepted for the default receipt-only worker.
+	// QualificationModel is required by explicit qualification profiles and is
+	// never accepted for the default receipt-only worker.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=256
 	// +optional
