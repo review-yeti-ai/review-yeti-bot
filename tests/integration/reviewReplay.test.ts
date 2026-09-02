@@ -176,13 +176,19 @@ describe('review pipeline cassette replay', () => {
     const first = await runOnce();
     const second = await runOnce();
 
-    // Review-level and per-attempt latency are observations, not deterministic replay data.
+    // Review-level and per-attempt timing are observations, not deterministic replay data.
     // Keep the equality assertion focused on provider response and verdict data so a 0/1 ms
     // scheduling difference cannot make the replay suite flaky.
     const withoutObservedLatency = ({ latencyMs, responseAttempts, ...result }: any) => ({
       ...result,
       responseAttempts: Array.isArray(responseAttempts)
-        ? responseAttempts.map(({ latencyMs: attemptLatencyMs, ...attempt }: any) => attempt)
+        ? responseAttempts.map(({
+            latencyMs: attemptLatencyMs,
+            providerExecutionMs,
+            capacityLeaseMs,
+            capacityWaitMs,
+            ...attempt
+          }: any) => attempt)
         : responseAttempts,
     });
     expect(withoutObservedLatency(first.result)).toEqual(withoutObservedLatency(second.result));
