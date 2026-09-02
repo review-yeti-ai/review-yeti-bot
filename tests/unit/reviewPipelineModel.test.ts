@@ -1139,6 +1139,113 @@ describe('reviewWithModel', () => {
     expect(openRouterBodies[1].messages.at(-1).content).toContain('canonical findings contract');
   });
 
+  it('advances to the explicit GLM fallback after malformed primary OpenRouter output', async () => {
+    const calls: any[] = [];
+    const sseResponse = (content: string, model: string) => {
+      const frames = [
+        JSON.stringify({
+          id: 'chatcmpl-format-model-fallback',
+          object: 'chat.completion.chunk',
+          created: 1_700_000_000,
+          model,
+          choices: [{ index: 0, finish_reason: null, delta: { content } }],
+        }),
+        '[DONE]',
+      ].map((frame) => `data: ${frame}\n\n`).join('');
+      return new Response(frames, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+    const fetchImplementation = async (_input: string | URL | Request, init: RequestInit = {}) => {
+      const body = JSON.parse(String(init.body));
+      calls.push(body);
+      return sseResponse(
+        calls.length === 1 ? 'analysis without findings JSON' : '{"findings":[]}',
+        body.model,
+      );
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-primary',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        models: ['z-ai/glm-5.3-flash'],
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+      }],
+    });
+
+    expect(result).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      model: 'z-ai/glm-5.3-flash',
+      attemptCount: 2,
+      retryReasons: ['malformed_output'],
+      recoveryAction: 'model_fallback',
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      model: 'deepseek/deepseek-v4-flash-0731',
+      models: ['z-ai/glm-5.3-flash'],
+      reasoning: { effort: 'high' },
+    });
+    expect(calls[1]).toMatchObject({
+      model: 'z-ai/glm-5.3-flash',
+      reasoning: { effort: 'low' },
+    });
+    expect(calls[1]).not.toHaveProperty('models');
+    expect(calls[1]).not.toHaveProperty('plugins');
+    expect(calls[1].messages.at(-1).content).toContain('FORMAT RECOVERY:');
+  });
+
+  it('fails closed when the explicit OpenRouter format fallback is also malformed', async () => {
+    const calls: any[] = [];
+    const fetchImplementation = async (_input: string | URL | Request, init: RequestInit = {}) => {
+      calls.push(JSON.parse(String(init.body)));
+      return new Response(`data: ${JSON.stringify({
+        choices: [{ index: 0, finish_reason: 'stop', delta: { content: 'not findings JSON' } }],
+      })}\n\ndata: [DONE]\n\n`, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'openrouter-primary',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'or-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        models: ['z-ai/glm-5.3-flash'],
+        provider: 'openrouter',
+        reasoning_effort: 'high',
+        stream: true,
+      }],
+    });
+
+    expect(result).toMatchObject({
+      decision: 'ERROR',
+      findings: [],
+      attemptCount: 2,
+      retryReasons: ['malformed_output'],
+      failureClass: 'malformed_output',
+      recoveryAction: 'model_fallback',
+      error: 'Model response contained no parseable findings JSON.',
+    });
+    expect(calls.map((body) => body.model)).toEqual([
+      'deepseek/deepseek-v4-flash-0731',
+      'z-ai/glm-5.3-flash',
+    ]);
+  });
+
   it('treats the streaming timeout as inactivity instead of total generation time', async () => {
     const frames = [
       `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":' } }] })}\n\n`,
