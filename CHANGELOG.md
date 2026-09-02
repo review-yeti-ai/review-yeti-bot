@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.24.1...v1.24.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **action:** fall back to a local diff when the GitHub diff API 406s ([#419](https://github.com/review-yeti-ai/review-yeti-bot/issues/419)) ([e97bcfa](https://github.com/review-yeti-ai/review-yeti-bot/commit/e97bcfaa469558f5ad5de2acc22ee99d629a8672))
+
 ## [1.24.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.24.0...v1.24.1) (2026-09-02)
 
 
