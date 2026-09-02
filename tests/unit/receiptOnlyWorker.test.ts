@@ -30,6 +30,7 @@ import {
   isSameHeadQualificationWorker,
   runSameHeadQualificationWorker,
 } from '../../src/cli/runLiveReview';
+import { compareQualificationReceipts } from '../../src/qualification/receiptComparison';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
 
@@ -868,6 +869,8 @@ describe('same-head qualification worker contract', () => {
       verdict: 'SHIP',
       verdictSource: 'canonical-production-policy',
       severityCounts: { P0: 0, P1: 0, P2: 0 },
+      findingFingerprintVersion: 'ReviewYetiFindingFingerprint.v1',
+      findingFingerprints: [],
     });
     expect(receipt.laneAttribution).toEqual([
       {
@@ -963,14 +966,100 @@ describe('same-head qualification worker contract', () => {
       verdictSource: 'canonical-production-policy',
       findingsCount: 1,
       severityCounts: { P0: 0, P1: 1, P2: 0 },
+      findingFingerprintVersion: 'ReviewYetiFindingFingerprint.v1',
+      findingFingerprints: [{
+        severity: 'P1',
+        anchorDigest: createHash('sha256').update(JSON.stringify({
+          version: 'ReviewYetiFindingAnchor.v1',
+          diffDigest,
+          path: 'src/auth.ts',
+          line: 1,
+        })).digest('hex'),
+        contentDigest: createHash('sha256').update(JSON.stringify({
+          version: 'ReviewYetiFindingContent.v1',
+          diffDigest,
+          severity: 'P1',
+          path: 'src/auth.ts',
+          line: 1,
+          title: 'private blocking finding',
+          body: 'private blocking detail',
+          suggestion: '',
+        })).digest('hex'),
+      }],
       providerCalls: 8,
       githubReads: 3,
       githubWrites: 0,
     });
     const serialized = JSON.stringify(receipt);
     for (const forbidden of [
-      'private blocking finding', 'private blocking detail', 'private unsafe approval rationale',
+      'src/auth.ts', 'private blocking finding', 'private blocking detail', 'private unsafe approval rationale',
     ]) expect(serialized).not.toContain(forbidden);
+    expect(compareQualificationReceipts(receipt, receipt)).toMatchObject({
+      comparable: true,
+      findingOverlap: {
+        anchor: { matched: 1, leftOnly: 0, rightOnly: 0 },
+        exact: { matched: 1, leftOnly: 0, rightOnly: 0 },
+      },
+    });
+  });
+
+  it('persists a classified failure when sanitized finding telemetry exceeds its bound', async () => {
+    const sourceLoader = vi.fn(async () => ({
+      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      diff: rawDiff,
+      diffDigest,
+      githubReads: 3 as const,
+    }));
+    const client = {
+      complete: vi.fn(async () => ({
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        content: 'private model response',
+        usage: { prompt: 100, completion: 20, total: 120 },
+        costUSD: 0.001,
+        raw: {},
+      })),
+    };
+    const panelRunner = vi.fn(async (options: any) => {
+      await Promise.all([
+        'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
+        'moderator', 'arbiter',
+      ].map((persona) => options.client.complete({
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        messages: [{ role: 'user', content: 'private prompt' }],
+        stream: true,
+        persona,
+        providerId: 'openrouter',
+      })));
+      const result = completePanelResult();
+      result.personas[0].decision = 'FINDINGS';
+      result.personas[0].findings = Array.from({ length: 257 }, (_, index) => ({
+        severity: 'P2' as const,
+        path: 'src/auth.ts',
+        line: 1,
+        title: `private finding ${index}`,
+        body: `private detail ${index}`,
+      }));
+      return result;
+    });
+
+    await expect(runSameHeadQualificationWorker(
+      sameHeadEnvironment,
+      panelRunner,
+      client,
+      sourceLoader,
+    )).rejects.toThrow('same-head qualification failed: qualification_contract');
+    const persisted = JSON.parse(String(fsMocks.writeFile.mock.calls[0][1]));
+    expect(persisted).toMatchObject({
+      profile: 'same-head',
+      status: 'failed',
+      failureClass: 'qualification_contract',
+      githubReads: 3,
+      githubWrites: 0,
+      providerCalls: 8,
+    });
+    expect(JSON.stringify(persisted)).not.toContain('private finding');
+    expect(JSON.stringify(persisted)).not.toContain('private detail');
   });
 
   it('persists a classified source failure without leaking GitHub response text', async () => {

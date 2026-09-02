@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FINDING_FINGERPRINT_VERSION } from '../../src/qualification/findingFingerprint';
 import { compareQualificationReceipts } from '../../src/qualification/receiptComparison';
 
 const lanes = [
@@ -20,6 +21,12 @@ const lanes = [
   retryCount: 0,
 }));
 
+const fingerprint = (anchor: string, content: string, severity = 'P1') => ({
+  severity,
+  anchorDigest: anchor.repeat(64),
+  contentDigest: content.repeat(64),
+});
+
 function receipt(overrides: Record<string, unknown> = {}) {
   return {
     version: 'ReviewYetiPanelQualification.v1',
@@ -38,6 +45,8 @@ function receipt(overrides: Record<string, unknown> = {}) {
     verdict: 'FIX_FIRST',
     findingsCount: 1,
     severityCounts: { P0: 0, P1: 1, P2: 0 },
+    findingFingerprintVersion: FINDING_FINGERPRINT_VERSION,
+    findingFingerprints: [fingerprint('2', '3')],
     ...overrides,
   };
 }
@@ -74,7 +83,12 @@ describe('qualification receipt comparison', () => {
   it('returns bounded quality deltas only for identical execution identities', () => {
     const result = compareQualificationReceipts(
       receipt(),
-      receipt({ verdict: 'BLOCK', findingsCount: 3, severityCounts: { P0: 0, P1: 2, P2: 1 } }),
+      receipt({
+        verdict: 'BLOCK',
+        findingsCount: 3,
+        severityCounts: { P0: 0, P1: 2, P2: 1 },
+        findingFingerprints: [fingerprint('2', '3'), fingerprint('4', '5'), fingerprint('6', '7', 'P2')],
+      }),
     );
 
     expect(result).toEqual({
@@ -83,6 +97,69 @@ describe('qualification receipt comparison', () => {
       rightVerdict: 'BLOCK',
       findingsDelta: 2,
       severityDelta: { P0: 0, P1: 1, P2: 1 },
+      findingOverlap: {
+        anchor: { matched: 1, leftOnly: 0, rightOnly: 2 },
+        exact: { matched: 1, leftOnly: 0, rightOnly: 2 },
+      },
+    });
+  });
+
+  it('uses multiset overlap to expose duplicates without revealing finding content', () => {
+    const result = compareQualificationReceipts(
+      receipt({
+        findingsCount: 3,
+        severityCounts: { P0: 0, P1: 3, P2: 0 },
+        findingFingerprints: [fingerprint('2', '3'), fingerprint('2', '3'), fingerprint('4', '5')],
+      }),
+      receipt({
+        findingsCount: 3,
+        severityCounts: { P0: 0, P1: 3, P2: 0 },
+        findingFingerprints: [fingerprint('2', '3'), fingerprint('2', '6'), fingerprint('7', '8')],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      comparable: true,
+      findingOverlap: {
+        anchor: { matched: 2, leftOnly: 1, rightOnly: 1 },
+        exact: { matched: 1, leftOnly: 2, rightOnly: 2 },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('title');
+    expect(JSON.stringify(result)).not.toContain('body');
+    expect(JSON.stringify(result)).not.toContain('path');
+  });
+
+  it('matches the same anchor while exposing severity or content drift', () => {
+    const result = compareQualificationReceipts(
+      receipt(),
+      receipt({
+        verdict: 'SHIP',
+        severityCounts: { P0: 0, P1: 0, P2: 1 },
+        findingFingerprints: [fingerprint('2', '4', 'P2')],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      comparable: true,
+      findingOverlap: {
+        anchor: { matched: 1, leftOnly: 0, rightOnly: 0 },
+        exact: { matched: 0, leftOnly: 1, rightOnly: 1 },
+      },
+    });
+  });
+
+  it.each([
+    { findingFingerprintVersion: 'ReviewYetiFindingFingerprint.v2' },
+    { findingFingerprints: undefined },
+    { findingFingerprints: [fingerprint('x', '3')] },
+    { findingFingerprints: [fingerprint('2', '3')], findingsCount: 2 },
+    { findingFingerprints: [{ ...fingerprint('2', '3'), severity: 'P3' }] },
+  ])('fails closed on malformed finding fingerprint telemetry: %o', (overrides) => {
+    expect(compareQualificationReceipts(receipt(), receipt(overrides))).toEqual({
+      comparable: false,
+      failureClass: 'qualification_receipt_invalid',
+      invalidReceipts: ['right'],
     });
   });
 
