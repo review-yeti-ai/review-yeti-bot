@@ -60,12 +60,7 @@ path_state() {
   printf '%s\n' absent
 }
 
-# .coderabbit.* is deliberately NOT in this list. Per README 'No
-# consumer-owned Review Yeti configuration': that file belongs to the
-# independent CodeRabbit service, Review Yeti does not read it, and it
-# cannot change the central roster, provider route, budget, or gate
-# semantics. Forbidding it contradicted the documented policy and made
-# this check fail on every PR in any repo that configures CodeRabbit.
+# Third-party reviewer config files are not Review Yeti configuration and are not checked here.
 for path in \
   .review-yeti.yaml \
   .review-yeti.yml \

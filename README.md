@@ -63,9 +63,7 @@ channel without per-repository SHA edits or mutable, unverified code execution.
 
 The policy is `policy/review-yeti.json` in this repository. Consumer repositories must not
 contain `.review-yeti*`, `.ct-review*`, or persona override files. The reusable workflow rejects
-those paths before any model request. A `.coderabbit.*` file, when present, belongs to the
-independent CodeRabbit service; Review Yeti does not read it and it cannot change the central
-review roster, provider route, budget, or gate semantics.
+those paths before any model request.
 
 ## Bootstrap and recovery
 
