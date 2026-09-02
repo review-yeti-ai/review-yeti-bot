@@ -50,6 +50,10 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('synthetic-api-key');
   });
 
+  it('does not impose a fixed per-reviewer diff cap by default', () => {
+    expect(action.inputs['max-diff-chars'].default).toBe('');
+  });
+
   it('keeps local execution as the default and makes DOKS an explicit OIDC dispatch', () => {
     expect(action.inputs['execution-backend'].default).toBe('local');
     expect(action.inputs['doks-publish-mode'].default).toBe('disabled');
