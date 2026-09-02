@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.21.1...v1.21.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **doks:** preserve full-panel deadline budget ([#397](https://github.com/review-yeti-ai/review-yeti-bot/issues/397)) ([ea05dac](https://github.com/review-yeti-ai/review-yeti-bot/commit/ea05dac5b1d50a2aaffefe739a00d0b424123499))
+
 ## [1.21.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.21.0...v1.21.1) (2026-09-01)
 
 
