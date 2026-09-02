@@ -196,6 +196,7 @@ PY
 mkdir -p "$tmp_dir/scripts" "$tmp_dir/policy"
 cp "$repo_root/scripts/emit-policy.mjs" "$tmp_dir/scripts/emit-policy.mjs"
 cp "$repo_root/scripts/lane-deadline-invariant.mjs" "$tmp_dir/scripts/lane-deadline-invariant.mjs"
+cp "$repo_root/scripts/review-yeti-smoke.mjs" "$tmp_dir/scripts/review-yeti-smoke.mjs"
 cp "$repo_root/scripts/transport-envelope.mjs" "$tmp_dir/scripts/transport-envelope.mjs"
 
 write_policy() {
@@ -683,5 +684,26 @@ for value in v v1.2.3.4; do
   grep -q 'review_yeti.action_channel is not a permitted release channel' "$tmp_dir/invalid-channel-${value}.log"
 done
 echo "[channel-edge-cases] passed"
+
+# Exact repository overrides are resolved centrally. Example API gets only Ollama with a
+# conservative one-slot/30-second admission envelope; unrelated consumers retain the default.
+cp "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json"
+cisco_output="$tmp_dir/cisco-policy.output"
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$cisco_output" node emit-policy.mjs)
+python3 - "$cisco_output" <<'PY'
+import json
+import sys
+
+lines = open(sys.argv[1]).read().splitlines()
+start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
+end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
+transports = json.loads('\n'.join(lines[start + 1:end]))
+if [transport['name'] for transport in transports] != ['ollama']:
+    raise SystemExit('Example API must emit only the Ollama transport')
+ollama = transports[0]
+if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('capacity_wait_timeout_ms')) != (1, 'provider', 30000):
+    raise SystemExit('Example API Ollama admission must be one provider slot with a 30-second wait')
+PY
+echo "[cisco-ollama-only] passed"
 
 echo "emit-policy action channel and lane_call_budget contract passed"

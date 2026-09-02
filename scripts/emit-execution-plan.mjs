@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { validatePolicy } from './review-yeti-smoke.mjs';
+import { resolvePolicyForRepository, validatePolicy } from './review-yeti-smoke.mjs';
 import { TRANSPORT_RATE_LIMIT_KEYS, validateTransportEnvelope } from './transport-envelope.mjs';
 
 const DEFAULT_POLICY_PATH = fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url));
@@ -104,7 +104,8 @@ function rejectUnknownKeys(value, allowedKeys, path) {
   }
 }
 
-export function validateExecutionPlanPolicy(policy) {
+export function validateExecutionPlanPolicy(policy, repository = '') {
+  policy = resolvePolicyForRepository(policy, repository);
   rejectUnknownKeys(policy, ALLOWED_POLICY_KEYS, 'policy');
   rejectUnknownKeys(policy.review_yeti, ALLOWED_REVIEW_KEYS, 'policy.review_yeti');
   rejectUnknownKeys(policy.review_yeti.budget, ALLOWED_BUDGET_KEYS, 'policy.review_yeti.budget');
@@ -180,7 +181,7 @@ export function validateExecutionPlanPolicy(policy) {
     }
   }
 
-  validatePolicy(policy);
+  validatePolicy(policy, repository);
   return policy;
 }
 
@@ -209,8 +210,8 @@ export function sha256(value) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-export function buildExecutionPlan(policy) {
-  validateExecutionPlanPolicy(policy);
+export function buildExecutionPlan(policy, repository = '') {
+  policy = validateExecutionPlanPolicy(policy, repository);
   const review = policy.review_yeti;
   const transports = review.transports.filter((transport) => transport.enabled === true);
   const maxAttempts = Number(review.openrouter_max_attempts);
@@ -290,8 +291,8 @@ export function buildExecutionPlan(policy) {
   };
 }
 
-export function buildExecutionPlanFixture(policy) {
-  const plan = buildExecutionPlan(policy);
+export function buildExecutionPlanFixture(policy, repository = '') {
+  const plan = buildExecutionPlan(policy, repository);
   return {
     schema: 'exampleorg.review-execution-plan-fixture.v1',
     normalized_plan_sha256: sha256(canonicalJson(plan)),
@@ -304,12 +305,14 @@ function parseArgs(argv) {
     check: false,
     policyPath: DEFAULT_POLICY_PATH,
     fixturePath: DEFAULT_FIXTURE_PATH,
+    repository: process.env.REVIEW_REPOSITORY || '',
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--check') options.check = true;
     else if (argument === '--policy') options.policyPath = resolve(argv[++index] ?? '');
     else if (argument === '--fixture') options.fixturePath = resolve(argv[++index] ?? '');
+    else if (argument === '--repository') options.repository = argv[++index] ?? '';
     else throw new Error(`unknown argument: ${argument}`);
   }
   return options;
@@ -318,7 +321,7 @@ function parseArgs(argv) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const policy = JSON.parse(readFileSync(options.policyPath, 'utf8'));
-  const rendered = `${JSON.stringify(buildExecutionPlanFixture(policy), null, 2)}\n`;
+  const rendered = `${JSON.stringify(buildExecutionPlanFixture(policy, options.repository), null, 2)}\n`;
   if (options.check) {
     const committed = readFileSync(options.fixturePath, 'utf8');
     if (committed !== rendered) {

@@ -1,7 +1,33 @@
 name: exampleorg Review Yeti
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      central_execution:
+        description: Run from the validated example-review-actions repository_dispatch boundary.
+        required: false
+        default: false
+        type: boolean
+      repository:
+        required: false
+        default: ''
+        type: string
+      pr_number:
+        required: false
+        default: 0
+        type: number
+      base_sha:
+        required: false
+        default: ''
+        type: string
+      head_sha:
+        required: false
+        default: ''
+        type: string
+      request_id:
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: read
@@ -10,7 +36,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: exampleorg-review-yeti-${{ github.repository }}-${{ github.event.pull_request.number }}
+  group: exampleorg-review-yeti-${{ inputs.central_execution && inputs.repository || github.repository }}-${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -21,33 +47,44 @@ jobs:
     # must all finish inside the same 15-minute operational contract.
     timeout-minutes: 15
     env:
-      REVIEW_REPOSITORY: ${{ github.repository }}
-      REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
-      EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REVIEW_REPOSITORY: ${{ inputs.central_execution && inputs.repository || github.repository }}
+      REVIEW_PR_NUMBER: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
+      EXPECTED_BASE_SHA: ${{ inputs.central_execution && inputs.base_sha || github.event.pull_request.base.sha }}
+      EXPECTED_HEAD_SHA: ${{ inputs.central_execution && inputs.head_sha || github.event.pull_request.head.sha }}
+      REVIEW_REQUEST_ID: ${{ inputs.central_execution && inputs.request_id || format('{0}-{1}', github.run_id, github.run_attempt) }}
       # Same-repository central PRs run the immutable PR-head policy so a policy change is
       # actually exercised. Fork PRs stay on trusted main to avoid executing fork code with
       # inherited provider secrets. Consumer repositories always run the promoted v1 line.
-      CENTRAL_REF: ${{ github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
+      CENTRAL_REF: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
     steps:
       - name: Checkout central workflow tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: exampleorg/example-review-actions
-          ref: ${{ github.repository == 'exampleorg/example-review-actions' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
+          ref: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
           path: .exampleorg-review-actions
-          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          token: ${{ inputs.central_execution && secrets.CROSS_REPO_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false
           fetch-depth: 1
 
       - name: Validate immutable caller pin
+        if: ${{ !inputs.central_execution }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: .exampleorg-review-actions/scripts/validate-caller-workflow.sh
 
+      - name: Validate central dispatch boundary
+        if: ${{ inputs.central_execution }}
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          CENTRAL_DISPATCH_PAYLOAD: >-
+            {"request_id":"${{ inputs.request_id }}","repository":"${{ inputs.repository }}","pr_number":${{ inputs.pr_number }},"base_sha":"${{ inputs.base_sha }}","head_sha":"${{ inputs.head_sha }}"}
+        run: node .exampleorg-review-actions/scripts/validate-central-dispatch.mjs
+
       - name: Validate immutable review request
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ inputs.central_execution && secrets.CROSS_REPO_TOKEN || github.token }}
         run: .exampleorg-review-actions/scripts/validate-review-request.sh
 
       - name: Load central Review Yeti policy
@@ -66,10 +103,10 @@ jobs:
         id: smoke
         working-directory: .exampleorg-review-actions
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
+          SYNTHETIC_API_KEY: ${{ !inputs.central_execution && secrets.SYNTHETIC_API_KEY || '' }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000
         run: |
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
@@ -85,7 +122,7 @@ jobs:
       - name: Resolve Review Yeti release channel
         id: resolved
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ inputs.central_execution && secrets.CROSS_REPO_TOKEN || github.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
           REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
         run: .exampleorg-review-actions/scripts/resolve-release-channel.sh
@@ -96,12 +133,13 @@ jobs:
           repository: ${{ steps.policy.outputs.repository }}
           ref: ${{ steps.resolved.outputs.sha }}
           path: .review-yeti-bot
+          token: ${{ inputs.central_execution && secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false
           fetch-depth: 1
 
       - name: Validate Review Yeti release provenance
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ inputs.central_execution && secrets.CROSS_REPO_TOKEN || github.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
           REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
           RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
@@ -128,19 +166,19 @@ jobs:
         id: review
         uses: ./.review-yeti-bot
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
+          SYNTHETIC_API_KEY: ${{ !inputs.central_execution && secrets.SYNTHETIC_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
         with:
-          github-token: ${{ github.token }}
-          repo: ${{ github.repository }}
-          pr-number: ${{ github.event.pull_request.number }}
-          llm-api-key: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          llm-base-url: https://openrouter.ai/api/v1
+          github-token: ${{ inputs.central_execution && secrets.CROSS_REPO_TOKEN || github.token }}
+          repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
+          pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
+          llm-api-key: ${{ inputs.central_execution && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
-          model: 'deepseek/deepseek-v4-flash-0731'
+          model: ${{ steps.smoke.outputs.resolved_model }}
           transports: ${{ steps.smoke.outputs.healthy_transports }}
           transport-plan-b64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
           dispatch-mode: ${{ steps.policy.outputs.dispatch_mode }}
@@ -198,7 +236,7 @@ jobs:
       - name: Enforce exact-head Review Yeti verdict
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ inputs.central_execution && secrets.CROSS_REPO_TOKEN || github.token }}
           REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
           GATE_DECISION: ${{ steps.review.outputs.gate-decision }}
           MERGE_ELIGIBLE: ${{ steps.review.outputs.merge-eligible }}

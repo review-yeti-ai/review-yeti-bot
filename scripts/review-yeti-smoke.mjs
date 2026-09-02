@@ -9,6 +9,8 @@ export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'openrouter-primary',
   'synthetic',
 ]);
+export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
+export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
 export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'openrouter-primary',
   'gemini',
@@ -47,12 +49,59 @@ export const EXPECTED_OPENROUTER_MODEL = EXPECTED_OPENROUTER_MODELS[0];
 // only/order outright is deliberately stricter than validating a duplicated allowlist here.
 const FORBIDDEN_ROUTING_SELECTORS = Object.freeze(['only', 'order']);
 
+const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const OVERRIDE_KEYS = new Set(['dispatch_mode', 'enabled_transports']);
+
+export function resolvePolicyForRepository(policy, repository = '') {
+  const resolved = structuredClone(policy);
+  const overrides = resolved?.repository_overrides ?? {};
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new Error('repository_overrides must be an object');
+  }
+  for (const [target, override] of Object.entries(overrides)) {
+    if (!REPOSITORY_PATTERN.test(target)) throw new Error(`invalid repository override target: ${target}`);
+    if (!override || typeof override !== 'object' || Array.isArray(override)) {
+      throw new Error(`repository override ${target} must be an object`);
+    }
+    const unknown = Object.keys(override).filter((key) => !OVERRIDE_KEYS.has(key)).sort();
+    if (unknown.length > 0) {
+      throw new Error(`repository override ${target} contains unknown keys: ${unknown.join(', ')}`);
+    }
+    if (!['ordered', 'striped'].includes(override.dispatch_mode)) {
+      throw new Error(`repository override ${target} dispatch_mode must be ordered or striped`);
+    }
+    if (!Array.isArray(override.enabled_transports)
+        || override.enabled_transports.length === 0
+        || override.enabled_transports.some((name) => typeof name !== 'string' || name.length === 0)
+        || new Set(override.enabled_transports).size !== override.enabled_transports.length) {
+      throw new Error(`repository override ${target} enabled_transports must be a non-empty unique string array`);
+    }
+  }
+
+  const override = repository ? overrides[repository] : undefined;
+  delete resolved.repository_overrides;
+  if (!override) return resolved;
+
+  const declared = new Set((resolved.review_yeti?.transports ?? []).map((transport) => transport.name));
+  for (const name of override.enabled_transports) {
+    if (!declared.has(name)) throw new Error(`repository override ${repository} names unknown transport: ${name}`);
+  }
+  resolved.review_yeti.dispatch_mode = override.dispatch_mode;
+  const enabled = new Set(override.enabled_transports);
+  resolved.review_yeti.transports = resolved.review_yeti.transports.map((transport) => ({
+    ...transport,
+    enabled: enabled.has(transport.name),
+  }));
+  return resolved;
+}
+
 export function getEnabledTransports(policy) {
   const transports = policy?.review_yeti?.transports;
   return Array.isArray(transports) ? transports.filter((transport) => transport.enabled === true) : [];
 }
 
-export function validatePolicy(policy) {
+export function validatePolicy(policy, repository = '') {
+  policy = resolvePolicyForRepository(policy, repository);
   if (policy?.schema !== 'exampleorg.review-policy.v1') {
     throw new Error('unsupported Review Yeti policy schema');
   }
@@ -91,8 +140,15 @@ export function validatePolicy(policy) {
   if (transports.some((transport) => transport.name === 'fireworks' && transport.enabled === true)) {
     throw new Error('Fireworks transport is disabled');
   }
-  if (JSON.stringify(enabledNames) !== JSON.stringify(EXPECTED_TRANSPORT_ORDER)) {
-    throw new Error(`Review Yeti transport order must be ${EXPECTED_TRANSPORT_ORDER.join(' -> ')}`);
+  const expectedOrder = repository === EXAMPLE_API_REPOSITORY
+    ? EXAMPLE_API_TRANSPORT_ORDER
+    : EXPECTED_TRANSPORT_ORDER;
+  if (JSON.stringify(enabledNames) !== JSON.stringify(expectedOrder)) {
+    throw new Error(`Review Yeti transport order must be ${expectedOrder.join(' -> ')}`);
+  }
+  const expectedDispatchMode = repository === EXAMPLE_API_REPOSITORY ? 'ordered' : 'striped';
+  if (policy.review_yeti.dispatch_mode !== expectedDispatchMode) {
+    throw new Error(`Review Yeti dispatch_mode must be ${expectedDispatchMode} for ${repository || 'the default policy'}`);
   }
 
   for (const transport of transports) {
@@ -121,7 +177,8 @@ export function validatePolicy(policy) {
   const ollama = transports.find((transport) => transport.name === 'ollama');
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
-  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter || openrouter.enabled !== true) {
+  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter
+      || (repository !== EXAMPLE_API_REPOSITORY && openrouter.enabled !== true)) {
     throw new Error('policy must define OpenRouter, Gemini, Ollama, and Synthetic transports');
   }
 
@@ -155,6 +212,12 @@ export function validatePolicy(policy) {
   }
 
   if (ollama.reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
+  if (ollama.max_in_flight !== 1
+      || ollama.concurrency_scope !== 'provider'
+      || ollama.capacity_wait_timeout_ms !== 30000
+      || ollama.dispatch_weight !== 1) {
+    throw new Error('Ollama must use one provider-scoped slot and a bounded 30-second admission wait');
+  }
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
@@ -229,10 +292,14 @@ export function validatePolicy(policy) {
   return enabledTransports;
 }
 
-export function loadPolicy(policyPath = process.env.REVIEW_YETI_POLICY_PATH || DEFAULT_POLICY_PATH) {
+export function loadPolicy(
+  policyPath = process.env.REVIEW_YETI_POLICY_PATH || DEFAULT_POLICY_PATH,
+  repository = process.env.REVIEW_REPOSITORY || '',
+) {
   const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
-  validatePolicy(policy);
-  return policy;
+  const resolved = resolvePolicyForRepository(policy, repository);
+  validatePolicy(resolved, repository);
+  return resolved;
 }
 
 export function buildRequest(transport) {
@@ -441,8 +508,11 @@ export async function runSmoke({
   ttftMs,
   log = console.log,
 } = {}) {
-  const loadedPolicy = policy || loadPolicy(policyPath);
-  const transports = validatePolicy(loadedPolicy);
+  const repository = env.REVIEW_REPOSITORY || '';
+  const loadedPolicy = policy
+    ? resolvePolicyForRepository(policy, repository)
+    : loadPolicy(policyPath, repository);
+  const transports = validatePolicy(loadedPolicy, repository);
   const results = [];
   const review = loadedPolicy.review_yeti || {};
   const effectiveTtftMs = Number(ttftMs ?? review.openrouter_ttft_ms ?? timeoutMs);
@@ -489,7 +559,7 @@ export async function runSmoke({
       '',
       `- Healthy transports: ${healthy.join(', ')}`,
       ...(unhealthy.length > 0 ? [`- Unhealthy optional transports: ${unhealthy.join(', ')}`] : []),
-      `- Enabled order: ${EXPECTED_TRANSPORT_ORDER.join(' -> ')}`,
+      `- Enabled order: ${transports.map((transport) => transport.name).join(' -> ')}`,
       '- Secret values are intentionally omitted.',
       '',
     ].join('\n'));
@@ -500,7 +570,11 @@ export async function runSmoke({
 
 // Pick the highest-priority healthy transport to seed the action's legacy single-transport
 // inputs. The complete healthy subset is emitted separately for per-lane failover.
-export function resolveTransport(transports, healthy, order = EXPECTED_TRANSPORT_ORDER) {
+export function resolveTransport(
+  transports,
+  healthy,
+  order = transports.filter((transport) => transport.enabled === true).map((transport) => transport.name),
+) {
   const healthySet = new Set(healthy);
   const enabledTransports = transports.filter((transport) => transport.enabled === true);
   for (const name of order) {
@@ -610,14 +684,15 @@ async function main() {
   // runSmoke() already throws when `healthy` is empty, so reaching here guarantees at least one
   // resolvable transport -- this never silently degrades to "no transport, run anyway".
   const policy = loadPolicy();
-  const transports = validatePolicy(policy);
+  const transports = validatePolicy(policy, process.env.REVIEW_REPOSITORY || '');
   const resolved = resolveTransport(transports, healthy);
   if (!resolved) throw new Error('no healthy transport could be resolved from a validated policy');
   const healthyTransports = await boundSyntheticCapacity(
     selectHealthyTransports(transports, healthy),
   );
 
-  const degraded = resolved.name !== EXPECTED_TRANSPORT_ORDER[0];
+  const expectedOrder = transports.map((transport) => transport.name);
+  const degraded = resolved.name !== expectedOrder[0];
   console.log(
     `[Review Yeti smoke] resolved_transport=${resolved.name}${degraded ? ' (DEGRADED: primary transport unhealthy, seeding the panel with the next healthy transport)' : ''}`,
   );
@@ -641,7 +716,7 @@ async function main() {
   if (process.env.GITHUB_STEP_SUMMARY && degraded) {
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
       '',
-      `> ⚠️ **Degraded**: primary transport (${EXPECTED_TRANSPORT_ORDER[0]}) unhealthy this run; the full review panel ran on **${resolved.name}** instead.`,
+      `> ⚠️ **Degraded**: primary transport (${expectedOrder[0]}) unhealthy this run; the full review panel ran on **${resolved.name}** instead.`,
       '',
     ].join('\n'));
   }

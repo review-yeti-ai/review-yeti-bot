@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
+  EXAMPLE_API_REPOSITORY,
+  EXAMPLE_API_TRANSPORT_ORDER,
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_OPENROUTER_MODEL,
   EXPECTED_OPENROUTER_MODELS,
@@ -18,6 +20,7 @@ import {
   encodeTransportPlan,
   probeTransport,
   resolveTransport,
+  resolvePolicyForRepository,
   runSmoke,
   selectHealthyTransports,
   syntheticCapacityFromQuota,
@@ -70,9 +73,12 @@ function policyFixture() {
       ? 180000
       : transport.name === 'synthetic'
         ? 120000
-        : 30000;
+        : transport.name === 'ollama'
+          ? 30000
+          : 30000;
     transport.rate_limit = { scope: 'provider', max_retries: 1, max_retry_after_ms: 5000 };
     if (transport.name === 'synthetic') transport.quota_probe = 'synthetic-v2';
+    if (transport.name === 'ollama') transport.quarantine_on_timeout = false;
   }
   return policy;
 }
@@ -104,6 +110,59 @@ test('the smoke contract pins the approved transport order', () => {
   // Measured ablation 2026-08-20: pinning `max` scored recall 0.425 with 25/72 errors vs unset
   // at 0.750 with 7/72. The provider default wins; no reasoning override is emitted.
   assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
+});
+
+test('Example API resolves and probes exactly one conservative Ollama transport', async () => {
+  const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+  const resolved = resolvePolicyForRepository(policy, EXAMPLE_API_REPOSITORY);
+  const transports = validatePolicy(resolved, EXAMPLE_API_REPOSITORY);
+
+  assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER);
+  assert.equal(resolved.review_yeti.dispatch_mode, 'ordered');
+  assert.equal(transports[0].max_in_flight, 1);
+  assert.equal(transports[0].concurrency_scope, 'provider');
+  assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
+
+  const calls = [];
+  const result = await runSmoke({
+    policy,
+    env: {
+      REVIEW_REPOSITORY: EXAMPLE_API_REPOSITORY,
+      OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
+      OPENROUTER_PR_REVIEW_API_KEY: 'must-not-be-used',
+      SYNTHETIC_API_KEY: 'must-not-be-used',
+      FIREWORKS_PR_REVIEW_API_KEY: 'must-not-be-used',
+    },
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }),
+      };
+    },
+    log: () => {},
+  });
+
+  assert.deepEqual(calls, ['https://ollama.com/v1/chat/completions']);
+  assert.deepEqual(result.healthy, ['ollama']);
+});
+
+test('repository policy overrides are exact-match and reject widening or unknown transports', () => {
+  const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+  const other = resolvePolicyForRepository(policy, 'exampleorg/another-repo');
+  assert.deepEqual(
+    validatePolicy(other).map((transport) => transport.name),
+    EXPECTED_TRANSPORT_ORDER,
+  );
+
+  const unknownKey = structuredClone(policy);
+  unknownKey.repository_overrides[EXAMPLE_API_REPOSITORY].provider = 'openrouter';
+  assert.throws(() => resolvePolicyForRepository(unknownKey, EXAMPLE_API_REPOSITORY), /unknown keys: provider/);
+
+  const unknownTransport = structuredClone(policy);
+  unknownTransport.repository_overrides[EXAMPLE_API_REPOSITORY].enabled_transports = ['ollama', 'unknown'];
+  assert.throws(() => resolvePolicyForRepository(unknownTransport, EXAMPLE_API_REPOSITORY), /unknown transport: unknown/);
 });
 
 test('the committed OpenRouter primary delegates quantization and keeps throughput floors', () => {

@@ -8,6 +8,7 @@ import {
   canonicalJson,
   sha256,
 } from './emit-execution-plan.mjs';
+import { EXAMPLE_API_REPOSITORY } from './review-yeti-smoke.mjs';
 
 const committedPolicy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
 const committedFixture = JSON.parse(
@@ -102,6 +103,25 @@ test('derives execution deadlines from each transport handoff contract', () => {
       ttft_ms: configured.ttft_ms,
     });
   }
+});
+
+test('Example API emits an Ollama-only ordered execution plan without changing the default plan', () => {
+  const defaultPlan = buildExecutionPlan(committedPolicy);
+  const ciscoPlan = buildExecutionPlan(committedPolicy, EXAMPLE_API_REPOSITORY);
+
+  assert.deepEqual(defaultPlan.transport_order, ['openrouter-primary', 'synthetic']);
+  assert.equal(defaultPlan.dispatch.mode, 'striped');
+  assert.deepEqual(ciscoPlan.transport_order, ['ollama']);
+  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { ollama: 1 } });
+  assert.deepEqual(ciscoPlan.transports[0].capacity, {
+    max_in_flight: 1,
+    concurrency_scope: 'provider',
+    wait_timeout_ms: 30000,
+  });
+  assert.equal(ciscoPlan.transports[0].base_url_class, 'direct-ollama-cloud-openai-compatible');
+  assert.equal(JSON.stringify(ciscoPlan).includes('openrouter'), false);
+  assert.equal(JSON.stringify(ciscoPlan).includes('synthetic'), false);
+  assert.equal(JSON.stringify(ciscoPlan).includes('fireworks'), false);
 });
 
 test('rejects unknown keys at every execution-policy object boundary', () => {

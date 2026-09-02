@@ -32,6 +32,8 @@ jobs:
           node --check scripts/emit-policy.mjs
           node --check scripts/emit-execution-plan.mjs
           node --check scripts/emit-execution-plan.test.mjs
+          node --check scripts/validate-central-dispatch.mjs
+          node --check scripts/validate-central-dispatch.test.mjs
           node --check scripts/validate-transport-handoff.mjs
           node --check scripts/review-yeti-local.mjs
           node --check scripts/review-yeti-mcp.mjs
@@ -77,6 +79,7 @@ jobs:
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
           node --test scripts/review-yeti-smoke.test.mjs
           node --test scripts/emit-execution-plan.test.mjs
+          node --test scripts/validate-central-dispatch.test.mjs
           node --test scripts/validate-transport-handoff.test.mjs
           node --test scripts/review-yeti-local.test.mjs
           node --test scripts/review-yeti-mcp.test.mjs
@@ -112,13 +115,20 @@ jobs:
           grep -Fq 'secrets.GEMINI_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'SYNTHETIC_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.SYNTHETIC_API_KEY' .github/workflows/review-yeti.yml
-          grep -Fq 'llm-base-url: https://openrouter.ai/api/v1' .github/workflows/review-yeti.yml
-          grep -Fq "model: 'deepseek/deepseek-v4-flash-0731'" .github/workflows/review-yeti.yml
+          resolved_base_url_marker='llm-base-url: $''{{ steps.smoke.outputs.resolved_base_url }}'
+          resolved_model_marker='model: $''{{ steps.smoke.outputs.resolved_model }}'
+          grep -Fq "$resolved_base_url_marker" .github/workflows/review-yeti.yml
+          grep -Fq "$resolved_model_marker" .github/workflows/review-yeti.yml
           grep -Fq 'action-sha:' .github/workflows/review-yeti.yml
           grep -Fq 'openrouter-data-collection:' .github/workflows/review-yeti.yml
           grep -Fq 'max-diff-chars:' .github/workflows/review-yeti.yml
           grep -Fq 'personas:' .github/workflows/review-yeti.yml
           grep -Fq 'context7-api-key:' .github/workflows/review-yeti.yml
+          test -f .github/workflows/repository-dispatch.yml
+          grep -Fq 'types: [review-yeti-request]' .github/workflows/repository-dispatch.yml
+          grep -Fq 'uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1' .github/workflows/repository-dispatch.yml
+          cross_repo_token_marker='GH_TOKEN: $''{{ secrets.CROSS_REPO_TOKEN }}'
+          grep -Fq "$cross_repo_token_marker" .github/workflows/repository-dispatch.yml
           test -f .github/workflows/ollama-qualification.yml
           test -f .github/workflows/openrouter-qualification.yml
           grep -Fq 'workflow_dispatch:' .github/workflows/ollama-qualification.yml

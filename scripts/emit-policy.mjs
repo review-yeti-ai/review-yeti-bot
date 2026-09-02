@@ -1,8 +1,16 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
+import {
+  EXAMPLE_API_REPOSITORY,
+  resolvePolicyForRepository,
+} from './review-yeti-smoke.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
 
-const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+const targetRepository = process.env.REVIEW_REPOSITORY || '';
+const policy = resolvePolicyForRepository(
+  JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8')),
+  targetRepository,
+);
 const review = policy.review_yeti;
 const budget = review.budget;
 const openrouterTransport = review.transports?.find((transport) => transport.compat === 'openrouter');
@@ -45,7 +53,7 @@ if (!Array.isArray(review.transports) || review.transports.length === 0) throw n
 if (!['ordered', 'striped'].includes(review.dispatch_mode)) {
   throw new Error('review_yeti.dispatch_mode must be ordered or striped');
 }
-if (!openrouterTransport || openrouterTransport.enabled !== true) {
+if (!openrouterTransport || (targetRepository !== EXAMPLE_API_REPOSITORY && openrouterTransport.enabled !== true)) {
   throw new Error('policy must define an enabled OpenRouter primary transport');
 }
 const enabledTransports = review.transports.filter((transport) => transport.enabled === true);
@@ -70,12 +78,25 @@ for (const transport of review.transports) {
   }
   validateTransportEnvelope(transport);
 }
-if (JSON.stringify(transportNames) !== JSON.stringify(['openrouter-primary', 'synthetic'])) {
-  throw new Error('OpenRouter must be the primary transport and enabled transport order must be OpenRouter -> Synthetic');
+const expectedTransportNames = targetRepository === EXAMPLE_API_REPOSITORY
+  ? ['ollama']
+  : ['openrouter-primary', 'synthetic'];
+if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
+  throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
+}
+if (targetRepository === EXAMPLE_API_REPOSITORY && review.dispatch_mode !== 'ordered') {
+  throw new Error('Example API must use ordered Ollama-only dispatch');
 }
 const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
 if (!fireworksTransport || fireworksTransport.enabled !== false) {
   throw new Error('Fireworks must remain declared with enabled: false');
+}
+const ollamaTransport = review.transports.find((transport) => transport.name === 'ollama');
+if (!ollamaTransport
+    || ollamaTransport.max_in_flight !== 1
+    || ollamaTransport.concurrency_scope !== 'provider'
+    || ollamaTransport.capacity_wait_timeout_ms !== 30000) {
+  throw new Error('Ollama must use one provider-scoped slot and a bounded 30-second admission wait');
 }
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
   throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');

@@ -1,0 +1,58 @@
+name: Central Review Yeti Dispatch
+run-name: Review Yeti central / ${{ github.event.client_payload.request_id }}
+
+on:
+  repository_dispatch:
+    types: [review-yeti-request]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: central-review-yeti-${{ github.event.client_payload.repository }}-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate central request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      request_id: ${{ steps.request.outputs.request_id }}
+      repository: ${{ steps.request.outputs.repository }}
+      pr_number: ${{ steps.request.outputs.pr_number }}
+      base_sha: ${{ steps.request.outputs.base_sha }}
+      head_sha: ${{ steps.request.outputs.head_sha }}
+      caller_workflow_sha256: ${{ steps.request.outputs.caller_workflow_sha256 }}
+    steps:
+      - name: Checkout promoted central validator
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: exampleorg/example-review-actions
+          ref: v1
+          path: .exampleorg-review-actions
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate payload, current PR, and immutable caller
+        id: request
+        working-directory: .exampleorg-review-actions
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        run: node scripts/validate-central-dispatch.mjs
+
+  review:
+    name: Review Yeti at promoted v1
+    needs: validate
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
+    with:
+      central_execution: true
+      request_id: ${{ needs.validate.outputs.request_id }}
+      repository: ${{ needs.validate.outputs.repository }}
+      pr_number: ${{ fromJSON(needs.validate.outputs.pr_number) }}
+      base_sha: ${{ needs.validate.outputs.base_sha }}
+      head_sha: ${{ needs.validate.outputs.head_sha }}
+    secrets: inherit
