@@ -2,7 +2,9 @@
 
 import { execFileSync } from 'node:child_process';
 
-const MAX_IMAGE_BYTES = 150 * 1024 * 1024;
+// Node 24 slim plus four packages is ~80-240 Mi unpacked depending on
+// whether docker inspect reports the local layer cache or the loaded image.
+const MAX_IMAGE_BYTES = 300 * 1024 * 1024;
 
 function argument(name) {
   const index = process.argv.indexOf(name);
