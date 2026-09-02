@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.24.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.23.1...v1.24.0) (2026-09-02)
+
+
+### Features
+
+* **qualification:** compare sanitized finding overlap ([d88d5b7](https://github.com/review-yeti-ai/review-yeti-bot/commit/d88d5b7db076f7c03a50bcd1f357668a71552024))
+* **qualification:** compare sanitized finding overlap ([81c1fb9](https://github.com/review-yeti-ai/review-yeti-bot/commit/81c1fb94d943aa95707dc98b8eea4e1b4dc50a24))
+
+
+### Bug Fixes
+
+* **action:** remove fixed default diff cap ([25d3560](https://github.com/review-yeti-ai/review-yeti-bot/commit/25d3560d584fc200e35d356f1caf8154c1c0ebc0))
+
 ## [1.23.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.23.0...v1.23.1) (2026-09-02)
 
 
