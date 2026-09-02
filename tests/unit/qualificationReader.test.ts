@@ -78,6 +78,7 @@ describe('same-head qualification reader', () => {
     ));
     const error = await loadSameHeadReviewSource(input(), request as any).catch((caught) => caught as Error);
     expect(error.message).toBe('GitHub qualification read failed HTTP 429');
+    expect((error as Error & { githubReads: number }).githubReads).toBe(1);
     expect(error.message).not.toContain('ghs_secret_token');
   });
 });
