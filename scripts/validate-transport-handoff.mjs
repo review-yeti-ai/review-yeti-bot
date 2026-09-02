@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { resolvePolicyForRepository } from './repository-policy.mjs';
 
 const policyPath = process.env.REVIEW_YETI_POLICY_PATH
   || new URL('../policy/review-yeti.json', import.meta.url);
@@ -9,7 +10,10 @@ if (!encodedPlan) throw new Error('TRANSPORT_PLAN_B64 is required');
 let policy;
 let plan;
 try {
-  policy = JSON.parse(readFileSync(policyPath, 'utf8'));
+  policy = resolvePolicyForRepository(
+    JSON.parse(readFileSync(policyPath, 'utf8')),
+    process.env.REVIEW_REPOSITORY || '',
+  );
 } catch (error) {
   throw new Error(`could not read Review Yeti policy: ${error.message}`);
 }

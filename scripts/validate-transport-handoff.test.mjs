@@ -25,10 +25,20 @@ function transport(name, overrides = {}) {
   };
 }
 
-function runValidator(policyTransports, handoffTransports = policyTransports, encodedPlan, allowPolicySubset = false) {
+function runValidator(
+  policyTransports,
+  handoffTransports = policyTransports,
+  encodedPlan,
+  allowPolicySubset = false,
+  repository = '',
+  repositoryOverrides = {},
+) {
   const tempDir = mkdtempSync(join(tmpdir(), 'ct-transport-handoff-'));
   const policyPath = join(tempDir, 'policy.json');
-  writeFileSync(policyPath, JSON.stringify({ review_yeti: { transports: policyTransports } }));
+  writeFileSync(policyPath, JSON.stringify({
+    review_yeti: { transports: policyTransports },
+    repository_overrides: repositoryOverrides,
+  }));
 
   const result = spawnSync(process.execPath, [validatorPath], {
     cwd: repoRoot,
@@ -36,6 +46,7 @@ function runValidator(policyTransports, handoffTransports = policyTransports, en
     env: {
       ...process.env,
       REVIEW_YETI_POLICY_PATH: policyPath,
+      REVIEW_REPOSITORY: repository,
       TRANSPORT_PLAN_B64: encodedPlan
         ?? Buffer.from(JSON.stringify(handoffTransports), 'utf8').toString('base64'),
       ALLOW_POLICY_SUBSET: String(allowPolicySubset),
@@ -144,4 +155,40 @@ test('excludes disabled transports from the production handoff contract', () => 
   const disabled = transport('diagnostic-only', { enabled: false });
   const result = runValidator([enabled, disabled], [enabled]);
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+});
+
+test('validates a repository-resolved transport handoff against the same override used by policy emission', () => {
+  const openrouter = transport('openrouter-primary');
+  const ollama = transport('ollama', { enabled: false });
+  const repository = 'exampleorg/example-api';
+  const overrides = {
+    [repository]: {
+      dispatch_mode: 'ordered',
+      enabled_transports: ['ollama'],
+    },
+  };
+  const resolvedOllama = { ...ollama, enabled: true };
+
+  const result = runValidator(
+    [openrouter, ollama],
+    [resolvedOllama],
+    undefined,
+    false,
+    repository,
+    overrides,
+  );
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /transport_plan_entries=1 stream=true/);
+
+  const unresolved = runValidator(
+    [openrouter, ollama],
+    [resolvedOllama],
+    undefined,
+    false,
+    '',
+    overrides,
+  );
+  assert.notEqual(unresolved.status, 0);
+  assert.match(unresolved.stderr, /transport handoff does not exactly match policy/);
 });

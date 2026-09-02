@@ -3,14 +3,23 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
+import {
+  EXAMPLE_API_REPOSITORY,
+  EXAMPLE_API_TRANSPORT_ORDER,
+  resolvePolicyForRepository,
+} from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
+
+export {
+  EXAMPLE_API_REPOSITORY,
+  EXAMPLE_API_TRANSPORT_ORDER,
+  resolvePolicyForRepository,
+} from './repository-policy.mjs';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'openrouter-primary',
   'synthetic',
 ]);
-export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
-export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
 export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'openrouter-primary',
   'gemini',
@@ -48,52 +57,6 @@ export const EXPECTED_OPENROUTER_MODEL = EXPECTED_OPENROUTER_MODELS[0];
 // outage, while all other endpoint eligibility remains OpenRouter's live decision. Rejecting
 // only/order outright is deliberately stricter than validating a duplicated allowlist here.
 const FORBIDDEN_ROUTING_SELECTORS = Object.freeze(['only', 'order']);
-
-const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
-const OVERRIDE_KEYS = new Set(['dispatch_mode', 'enabled_transports']);
-
-export function resolvePolicyForRepository(policy, repository = '') {
-  const resolved = structuredClone(policy);
-  const overrides = resolved?.repository_overrides ?? {};
-  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
-    throw new Error('repository_overrides must be an object');
-  }
-  for (const [target, override] of Object.entries(overrides)) {
-    if (!REPOSITORY_PATTERN.test(target)) throw new Error(`invalid repository override target: ${target}`);
-    if (!override || typeof override !== 'object' || Array.isArray(override)) {
-      throw new Error(`repository override ${target} must be an object`);
-    }
-    const unknown = Object.keys(override).filter((key) => !OVERRIDE_KEYS.has(key)).sort();
-    if (unknown.length > 0) {
-      throw new Error(`repository override ${target} contains unknown keys: ${unknown.join(', ')}`);
-    }
-    if (!['ordered', 'striped'].includes(override.dispatch_mode)) {
-      throw new Error(`repository override ${target} dispatch_mode must be ordered or striped`);
-    }
-    if (!Array.isArray(override.enabled_transports)
-        || override.enabled_transports.length === 0
-        || override.enabled_transports.some((name) => typeof name !== 'string' || name.length === 0)
-        || new Set(override.enabled_transports).size !== override.enabled_transports.length) {
-      throw new Error(`repository override ${target} enabled_transports must be a non-empty unique string array`);
-    }
-  }
-
-  const override = repository ? overrides[repository] : undefined;
-  delete resolved.repository_overrides;
-  if (!override) return resolved;
-
-  const declared = new Set((resolved.review_yeti?.transports ?? []).map((transport) => transport.name));
-  for (const name of override.enabled_transports) {
-    if (!declared.has(name)) throw new Error(`repository override ${repository} names unknown transport: ${name}`);
-  }
-  resolved.review_yeti.dispatch_mode = override.dispatch_mode;
-  const enabled = new Set(override.enabled_transports);
-  resolved.review_yeti.transports = resolved.review_yeti.transports.map((transport) => ({
-    ...transport,
-    enabled: enabled.has(transport.name),
-  }));
-  return resolved;
-}
 
 export function getEnabledTransports(policy) {
   const transports = policy?.review_yeti?.transports;

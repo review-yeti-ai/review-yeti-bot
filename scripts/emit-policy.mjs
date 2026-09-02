@@ -3,7 +3,7 @@ import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
 import {
   EXAMPLE_API_REPOSITORY,
   resolvePolicyForRepository,
-} from './review-yeti-smoke.mjs';
+} from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
 
 const targetRepository = process.env.REVIEW_REPOSITORY || '';

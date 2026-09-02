@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { resolvePolicyForRepository, validatePolicy } from './review-yeti-smoke.mjs';
+import { resolvePolicyForRepository } from './repository-policy.mjs';
+import { validatePolicy } from './review-yeti-smoke.mjs';
 import { TRANSPORT_RATE_LIMIT_KEYS, validateTransportEnvelope } from './transport-envelope.mjs';
 
 const DEFAULT_POLICY_PATH = fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url));
