@@ -10,5 +10,7 @@ describe('direct Review Bot workflow budget', () => {
     );
     expect(workflow).toMatch(/\n    timeout-minutes: 15\n/u);
     expect(workflow).not.toMatch(/\n    timeout-minutes: (?:1[6-9]|[2-9]\d|\d{3,})\n/u);
+    expect(workflow).not.toContain('max-diff-chars:');
+    expect(workflow).not.toContain("vars.MAX_DIFF_CHARS");
   });
 });
