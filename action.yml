@@ -109,9 +109,9 @@ inputs:
     required: false
     default: ''
   max-diff-chars:
-    description: 'Per-persona diff budget. Each persona is one request per push, so this bounds cost on large PRs.'
+    description: 'Optional per-persona diff override. Empty uses model-aware capacity and full-coverage partitioning.'
     required: false
-    default: '24000'
+    default: ''
   max-personas:
     description: 'Maximum reviewers a resolved roster may contain. Each is one model request per push, so this bounds what a configuration change can spend.'
     required: false
