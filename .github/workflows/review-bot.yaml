@@ -60,7 +60,6 @@ jobs:
           pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           personas: ${{ vars.ACTIVE_PERSONAS }}
           model: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
-          max-diff-chars: ${{ vars.MAX_DIFF_CHARS || '24000' }}
           # Use only the role-scoped review key; generic provider secrets are not admitted here.
           llm-api-key: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
