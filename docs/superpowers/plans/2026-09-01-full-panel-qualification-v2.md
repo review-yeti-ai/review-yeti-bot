@@ -1,9 +1,9 @@
 # Full-panel DOKS qualification v2
 
-**Status:** worker implemented; the first manual DOKS execution failed closed
-in the licensing lane. The provider-native JSON and diagnostic-receipt
-remediation is implemented and awaits a new digest-pinned manual run. See
-`docs/superpowers/evidence/2026-09-01-doks-full-panel-v2.md`.
+**Status:** passed in one manual, non-publishing operator-controlled DOKS run
+after the provider-native JSON remediation and the operator deadline-contract
+repair. See
+`docs/superpowers/evidence/2026-09-01-doks-full-panel-v3.md`.
 
 ## Purpose
 
@@ -85,7 +85,8 @@ GitHub Action path unchanged.
 
 ## Next decision
 
-Build and push one digest-pinned worker image containing the native JSON request
-contract and sanitized failure receipts, then run exactly one disposable
-full-panel Job. Production routing and the operator admission contract stay
-unchanged until a complete sanitized success receipt is observed.
+The deterministic full-panel terminal-reliability gate is satisfied. Keep
+production routing and publication unchanged until one manual, non-publishing
+same-head comparison proves the DOKS worker against the hosted Action on real PR
+input. That comparison must preserve the 15-minute terminal ceiling and must
+not introduce a scheduled canary or automatic traffic split.
