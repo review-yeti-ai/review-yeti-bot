@@ -17,6 +17,7 @@ grep -Fq 'pull-requests: read' "$workflow"
 grep -Fq 'repo_owner:' "$workflow"
 grep -Fq 'repo_name:' "$workflow"
 grep -Fq 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1' "$workflow"
+grep -Fq 'client-id: ${{ vars.PARITY_GITHUB_APP_CLIENT_ID }}' "$workflow"
 grep -Fq 'permission-contents: read' "$workflow"
 grep -Fq 'permission-pull-requests: read' "$workflow"
 grep -Fq 'GH_TOKEN: ${{ steps.parity-token.outputs.token }}' "$workflow"
@@ -104,7 +105,7 @@ expect_rejection(<<~YAML, 'every REVIEW_PUBLICATION_MODE assignment must be disa
 YAML
 RUBY
 
-if grep -Eq 'issues: write|pull-requests: write|contents: write|continue-on-error: true|--env [A-Z_]*PRIVATE_KEY' "$workflow"; then
+if grep -Eq 'issues: write|pull-requests: write|contents: write|continue-on-error: true|--env [A-Z_]*PRIVATE_KEY|app-id:' "$workflow"; then
   echo 'worker parity qualification must remain read-only and fail closed' >&2
   exit 1
 fi
