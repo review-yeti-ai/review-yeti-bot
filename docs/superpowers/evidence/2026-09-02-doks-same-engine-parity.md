@@ -51,6 +51,12 @@ The manual DOKS run was
 - verdict/counts: `BLOCK`, P0 0, P1 4, P2 5; and
 - the expected line-8 P1 anchor appeared three times.
 
+The exact run Secret and receipt-inspector Pod were deleted immediately after
+readback. The PR-scoped PVC recorded last use at `16:57:27Z`; the operator
+deleted both the PVC and Lease at `17:29:28Z`, 32 minutes and 1 second later.
+This observes the configured 30-minute idle retention plus reconciliation lag,
+rather than relying only on manifest configuration.
+
 The first comparable hosted run was
 <https://github.com/calltelemetry/ct-review-actions/actions/runs/33658537502>:
 
