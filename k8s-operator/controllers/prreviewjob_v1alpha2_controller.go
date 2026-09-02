@@ -99,7 +99,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	if existingErr == nil {
 		if !managedWorkerJobMatches(&review, &existing) {
-			return ctrl.Result{}, r.fail(ctx, &review, "WorkerContractMismatch", "existing worker Job does not match the immutable receipt-only contract")
+			return ctrl.Result{}, r.failWorkerContractMismatch(ctx, &review, &existing, "existing worker Job does not match the immutable receipt-only contract")
 		}
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
 	}
@@ -191,7 +191,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, getErr
 		}
 		if !managedWorkerJobMatches(&review, &existing) {
-			return ctrl.Result{}, r.fail(ctx, &review, "WorkerContractMismatch", "racing worker Job does not match the immutable receipt-only contract")
+			return ctrl.Result{}, r.failWorkerContractMismatch(ctx, &review, &existing, "racing worker Job does not match the immutable receipt-only contract")
 		}
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
 	}
@@ -432,6 +432,24 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 ) (ctrl.Result, error) {
+	activePod, err := r.hasActiveReviewWorkerPod(ctx, review)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if activePod {
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	if err := workspace.NewLeaseManager(r.Client).Release(
+		ctx,
+		review.Namespace,
+		review.Spec.RepositoryID,
+		review.Spec.PRNumber,
+		review.Spec.RunID,
+		r.clock(),
+	); err != nil && !errors.Is(err, workspace.ErrLeaseHeld) {
+		return ctrl.Result{}, err
+	}
+
 	pvcName := workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
 	if pvcName == "" {
 		return ctrl.Result{}, nil
@@ -457,10 +475,40 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	if result.RequeueAfter > 0 {
 		return ctrl.Result{RequeueAfter: result.RequeueAfter}, nil
 	}
-	if result.Reason == workspace.RetainedActiveLease || result.Reason == workspace.RetainedActivePod {
+	if result.Reason == workspace.RetainedActivePod {
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	if result.Reason == workspace.RetainedActiveLease {
+		if err := workspace.NewLeaseManager(r.Client).Release(
+			ctx,
+			review.Namespace,
+			review.Spec.RepositoryID,
+			review.Spec.PRNumber,
+			review.Spec.RunID,
+			r.clock(),
+		); err != nil && !errors.Is(err, workspace.ErrLeaseHeld) {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (bool, error) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(review.Namespace), client.MatchingLabels{
+		"review-yeti.ai/run-id":    review.Spec.RunID,
+		"review-yeti.ai/component": job.ReceiptOnlyWorkerComponent,
+	}); err != nil {
+		return false, err
+	}
+	for index := range pods.Items {
+		phase := pods.Items[index].Status.Phase
+		if phase != corev1.PodSucceeded && phase != corev1.PodFailed {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) setPhase(ctx context.Context, review *reviewv1alpha2.PRReviewJob, phase reviewv1alpha2.PRReviewJobPhase, reason, message string) error {
@@ -480,6 +528,21 @@ func (r *PRReviewJobV1Alpha2Reconciler) setPhase(ctx context.Context, review *re
 
 func (r *PRReviewJobV1Alpha2Reconciler) fail(ctx context.Context, review *reviewv1alpha2.PRReviewJob, reason, message string) error {
 	return r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, reason, message)
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) failWorkerContractMismatch(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	worker *batchv1.Job,
+	message string,
+) error {
+	if worker != nil && worker.Labels["review-yeti.ai/run-id"] == review.Spec.RunID && metav1.IsControlledBy(worker, review) {
+		if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		message += "; stopped the owned worker Job"
+	}
+	return r.fail(ctx, review, "WorkerContractMismatch", message)
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) clock() time.Time {
@@ -537,9 +600,10 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.EnvVar) bool {
 	receiptOnly := envValue(env, job.ReceiptOnlyEnv)
 	fullPanel := envValue(env, job.FullPanelQualificationEnv)
+	sameHead := envValue(env, job.SameHeadQualificationEnv)
 	model := envValue(env, job.QualificationModelEnv)
 	if review.Spec.QualificationProfile == job.FullPanelQualificationProfile {
-		if receiptOnly != "" || fullPanel != "true" || model != review.Spec.QualificationModel {
+		if receiptOnly != "" || fullPanel != "true" || sameHead != "" || model != review.Spec.QualificationModel {
 			return false
 		}
 		secretRefs := 0
@@ -555,11 +619,37 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 		}
 		return secretRefs == 1
 	}
-	if receiptOnly != "true" || fullPanel != "" || model != "" {
+	if review.Spec.QualificationProfile == job.SameHeadQualificationProfile {
+		if receiptOnly != "" || fullPanel != "" || sameHead != "true" || model != review.Spec.QualificationModel {
+			return false
+		}
+		openRouterRefs := 0
+		githubRefs := 0
+		for _, variable := range env {
+			switch variable.Name {
+			case "OPENROUTER_API_KEY":
+				openRouterRefs++
+				if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
+					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "OPENROUTER_API_KEY" {
+					return false
+				}
+			case "GH_TOKEN":
+				githubRefs++
+				if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
+					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "GITHUB_READ_TOKEN" {
+					return false
+				}
+			case "GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_INSTALLATION_ID":
+				return false
+			}
+		}
+		return openRouterRefs == 1 && githubRefs == 1
+	}
+	if receiptOnly != "true" || fullPanel != "" || sameHead != "" || model != "" {
 		return false
 	}
 	for _, variable := range env {
-		if variable.Name == "OPENROUTER_API_KEY" {
+		if variable.Name == "OPENROUTER_API_KEY" || variable.Name == "GH_TOKEN" {
 			return false
 		}
 	}
