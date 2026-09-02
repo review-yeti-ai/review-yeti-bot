@@ -6,6 +6,15 @@ review policy, provider routing, exact-head validation, verdict gate, and recove
 live here. Central development runs on `main`; consumer repositories use the promoted `v1`
 release channel.
 
+## Infrastructure ownership
+
+This repository owns Review Yeti policy and runtime behavior, not shared cloud
+infrastructure. The Bifrost gateway manifests, deployment script, secret
+materialization contract, and operational runbook are maintained in the
+private `exampleorg/example-infra` repository under
+`deploy/bifrost-pilot/`. Review Yeti retains only its independently revocable
+virtual key and the provider-routing policy that consumes the gateway.
+
 ## Consumer contract
 
 ```yaml
