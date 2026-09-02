@@ -212,6 +212,7 @@ func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 		t.Fatalf("full-panel worker must not be receipt-only: %#v", container.Env)
 	}
 	if envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "true" ||
+		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:") ||
 		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
 		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" ||
 		envValue(container, "REVIEW_RECEIPT_PATH") != job.ReceiptPath {
@@ -281,6 +282,7 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 	if envValue(container, "REVIEW_SAME_HEAD_QUALIFICATION_ONLY") != "true" ||
 		envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "" ||
 		envValue(container, "REVIEW_RECEIPT_ONLY") != "" ||
+		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:") ||
 		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
 		envValue(container, "REVIEW_QUALIFICATION_TIMEOUT_MS") != "780000" ||
 		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
