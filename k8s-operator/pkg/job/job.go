@@ -43,6 +43,7 @@ const (
 	ReceiptOnlyEnv                = "REVIEW_RECEIPT_ONLY"
 	FullPanelQualificationEnv     = "REVIEW_FULL_PANEL_QUALIFICATION_ONLY"
 	SameHeadQualificationEnv      = "REVIEW_SAME_HEAD_QUALIFICATION_ONLY"
+	EngineRevisionEnv             = "REVIEW_ENGINE_REVISION"
 	QualificationModelEnv         = "REVIEW_QUALIFICATION_MODEL"
 	QualificationTimeoutEnv       = "REVIEW_QUALIFICATION_TIMEOUT_MS"
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
@@ -137,7 +138,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	if spec.QualificationProfile == FullPanelQualificationProfile || spec.QualificationProfile == SameHeadQualificationProfile {
 		qualificationTimeoutMillis := max(int64(1_000),
 			(activeDeadlineSeconds-WorkerReceiptReserveSeconds)*1_000)
+		engineRevision := strings.TrimPrefix(spec.WorkerImage,
+			"registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:")
 		env = append(env,
+			corev1.EnvVar{Name: EngineRevisionEnv, Value: engineRevision},
 			corev1.EnvVar{Name: QualificationModelEnv, Value: spec.QualificationModel},
 			corev1.EnvVar{Name: QualificationTimeoutEnv, Value: strconv.FormatInt(qualificationTimeoutMillis, 10)},
 			corev1.EnvVar{
