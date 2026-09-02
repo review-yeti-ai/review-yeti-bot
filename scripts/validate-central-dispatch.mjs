@@ -126,9 +126,13 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
     throw new Error('caller run is not bound to the requested PR');
   }
 
-  // The base-owned caller workflow: read it from the PR base branch (what pull_request_target executes).
-  if (typeof pull?.base?.ref !== 'string' || pull.base.ref.length === 0) throw new Error('PR base ref is missing');
-  const workflowUrl = `${apiBase}/contents/${CALLER_WORKFLOW_PATH}?ref=${encodeURIComponent(pull.base.ref)}`;
+  // The base-owned caller workflow. Live evidence (example-api #4804, base 0.8.8-stable, run
+  // 33675866048): GitHub executed the caller from the repository DEFAULT branch — whose
+  // pull_request_target filter lists every stable line — not the PR base branch's copy. Read
+  // the caller from the default branch so the contract checks the bytes that actually ran.
+  const defaultBranch = pull?.base?.repo?.default_branch;
+  if (typeof defaultBranch !== 'string' || defaultBranch.length === 0) throw new Error('repository default branch is missing');
+  const workflowUrl = `${apiBase}/contents/${CALLER_WORKFLOW_PATH}?ref=${encodeURIComponent(defaultBranch)}`;
   const workflow = await githubJson(workflowUrl, token, fetchImpl);
   if (workflow?.encoding !== 'base64' || typeof workflow.content !== 'string') {
     throw new Error('base-owned caller workflow response is invalid');

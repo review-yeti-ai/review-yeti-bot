@@ -47,7 +47,7 @@ function successFetch(calls) {
     if (url.endsWith('/pulls/4527')) {
       return response({
         state: 'open',
-        base: { sha: baseSha, ref: '0.8.7-stable', repo: { full_name: TARGET_REPOSITORY } },
+        base: { sha: baseSha, ref: '0.8.8-stable', repo: { full_name: TARGET_REPOSITORY, default_branch: '0.8.7-stable' } },
         head: { sha: headSha, ref: 'feat/API-0000-pr-source-branch' },
       });
     }
@@ -107,7 +107,10 @@ test('validates exact live PR identity and the immutable base-owned caller with 
   assert.equal(calls.length, 3);
   assert.equal(calls[0].init.headers.authorization, 'Bearer central-token');
   assert.equal(calls[1].url.endsWith(`/actions/runs/${callerRunId}`), true);
+  // The fixture PR targets 0.8.8-stable while the default branch is 0.8.7-stable: the caller
+  // bytes must be read from the default branch (what GitHub executes), never from base.ref.
   assert.equal(calls[2].url.endsWith('?ref=0.8.7-stable'), true);
+  assert.equal(calls[2].url.includes('0.8.8-stable'), false);
   assert.equal(calls.some((call) => call.url.includes('central-token')), false);
 });
 
@@ -122,7 +125,7 @@ test('fails closed on missing central credentials, stale identity, or a GitHub l
       token: 'central-token',
       fetchImpl: async () => response({
         state: 'open',
-        base: { sha: baseSha, ref: '0.8.7-stable', repo: { full_name: TARGET_REPOSITORY } },
+        base: { sha: baseSha, ref: '0.8.7-stable', repo: { full_name: TARGET_REPOSITORY, default_branch: '0.8.7-stable' } },
         head: { sha: 'c'.repeat(40) },
       }),
     }),
@@ -189,3 +192,30 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
 });
 
+
+test('reads the caller from the default branch even when the PR base branch still carries the legacy shim', async () => {
+  const legacyShim = `
+name: Review Yeti
+on:
+  pull_request_target:
+    branches: [0.8.8-stable]
+jobs:
+  review:
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
+    secrets: inherit
+`;
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=0.8.8-stable')) {
+      calls.push({ url, init });
+      return response({ encoding: 'base64', content: Buffer.from(legacyShim).toString('base64') });
+    }
+    return successFetch(calls)(url, init);
+  };
+  const result = await validateCentralDispatch({ payload, token: 'central-token', fetchImpl });
+  assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
+  assert.equal(calls.some((call) => call.url.includes('?ref=0.8.8-stable')), false);
+  assert.equal(calls.some((call) => call.url.includes('?ref=0.8.7-stable')), true);
+  // Sanity: had the validator read base.ref, the legacy shim would have been rejected.
+  assert.throws(() => validateCallerWorkflow(legacyShim), /missing central marker/u);
+});
