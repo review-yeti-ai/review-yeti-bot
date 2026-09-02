@@ -14,8 +14,13 @@ import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } fro
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import type { CtReviewConfigV3 } from '../config/schema';
-import type { PanelResult } from '../panel/panelEngine';
-import type { PanelRequestPolicy } from '../panel/panelEngine';
+import type { PanelFinding, PanelResult, PanelRequestPolicy } from '../panel/panelEngine';
+import {
+  compareFindingFingerprints,
+  FINDING_FINGERPRINT_VERSION,
+  MAX_FINDING_FINGERPRINTS,
+  type QualificationFindingFingerprint,
+} from '../qualification/findingFingerprint';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -145,6 +150,8 @@ export interface SameHeadQualificationReceipt extends Omit<FullPanelQualificatio
   githubReads: 3;
   verdictSource: 'canonical-production-policy';
   severityCounts: { P0: number; P1: number; P2: number };
+  findingFingerprintVersion: 'ReviewYetiFindingFingerprint.v1';
+  findingFingerprints: QualificationFindingFingerprint[];
 }
 
 export interface FullPanelQualificationAttemptReceipt {
@@ -629,6 +636,7 @@ function qualificationFailureClass(error: unknown): string {
   if (/projected pull request identity mismatch/iu.test(message)) return 'github_identity_mismatch';
   if (/pull request moved during qualification read/iu.test(message)) return 'github_head_moved';
   if (/diff size is outside qualification bounds/iu.test(message)) return 'github_diff_bounds';
+  if (/same-head qualification worker contract is invalid/iu.test(message)) return 'qualification_contract';
   if (/qualification exceeded \d+ms/iu.test(message)) return 'overall_timeout';
   if (/(?:invalid json|structured output|nonce fence|response contract)/iu.test(message)) return 'structured_output';
   return 'panel_failure';
@@ -791,7 +799,14 @@ function aggregatePanelCost(result: PanelResult): number | null {
 
 function panelQualificationResultDigest(
   result: PanelResult,
-  canonical?: { verdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK'; p0Count: number; p1Count: number; p2Count: number; totalFindings: number },
+  canonical?: {
+    verdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK';
+    p0Count: number;
+    p1Count: number;
+    p2Count: number;
+    totalFindings: number;
+    findingFingerprints: QualificationFindingFingerprint[];
+  },
 ): string {
   return createHash('sha256').update(JSON.stringify({
     headSha: result.headSha,
@@ -820,9 +835,41 @@ function panelQualificationResultDigest(
         p1Count: canonical.p1Count,
         p2Count: canonical.p2Count,
         totalFindings: canonical.totalFindings,
+        findingFingerprintVersion: FINDING_FINGERPRINT_VERSION,
+        findingFingerprints: canonical.findingFingerprints,
       },
     } : {}),
   })).digest('hex');
+}
+
+function qualificationFindingFingerprints(
+  diffDigest: string,
+  findings: PanelFinding[],
+): QualificationFindingFingerprint[] {
+  if (findings.length > MAX_FINDING_FINGERPRINTS) {
+    throw invalidSameHeadQualificationContract();
+  }
+  // Bind digests to this exact diff so receipts can compare anchors and exact
+  // normalized findings without persisting paths, lines, or review content.
+  return findings.map((finding) => ({
+    severity: finding.severity,
+    anchorDigest: createHash('sha256').update(JSON.stringify({
+      version: 'ReviewYetiFindingAnchor.v1',
+      diffDigest,
+      path: finding.path,
+      line: finding.line,
+    })).digest('hex'),
+    contentDigest: createHash('sha256').update(JSON.stringify({
+      version: 'ReviewYetiFindingContent.v1',
+      diffDigest,
+      severity: finding.severity,
+      path: finding.path,
+      line: finding.line,
+      title: finding.title,
+      body: finding.body,
+      suggestion: finding.suggestion || '',
+    })).digest('hex'),
+  })).sort(compareFindingFingerprints);
 }
 
 async function runWithQualificationDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -1187,6 +1234,9 @@ export async function runSameHeadQualificationWorker(
   let changedFiles: Array<{ path: string; patch: string }> = [];
   let result: PanelResult;
   let laneAttribution: QualificationLaneAttribution[] = [];
+  let completedSource!: SameHeadReviewSource;
+  let canonical!: ReturnType<typeof computeAppVerdict>;
+  let findingFingerprints: QualificationFindingFingerprint[] = [];
   try {
     result = await runWithQualificationDeadline((async () => {
       source = await sourceLoader({
@@ -1217,6 +1267,22 @@ export async function runSameHeadQualificationWorker(
       );
       return panelResult;
     })(), timeoutMs);
+    if (!source) throw invalidSameHeadQualificationContract();
+    completedSource = source;
+    canonical = computeAppVerdict({
+      lanes: result.personas.map((lane) => ({
+        id: lane.id,
+        required: lane.required,
+        decision: lane.decision,
+        findings: lane.findings,
+      })),
+      expectedLanes: result.personas.length,
+      changedFiles,
+      coverageComplete: result.optionalFailures.length === 0,
+      candidateVerdict: result.arbiter.verdict,
+      rationale: result.arbiter.rationale,
+    });
+    findingFingerprints = qualificationFindingFingerprints(completedSource.diffDigest, canonical.findings);
   } catch (error) {
     const completedAt = new Date().toISOString();
     const failureClass = qualificationFailureClass(error);
@@ -1250,20 +1316,6 @@ export async function runSameHeadQualificationWorker(
     await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(failedReceipt)}\n`, { encoding: 'utf8' });
     throw new Error(`same-head qualification failed: ${failureClass}`);
   }
-  if (!source) throw invalidSameHeadQualificationContract();
-  const canonical = computeAppVerdict({
-    lanes: result.personas.map((lane) => ({
-      id: lane.id,
-      required: lane.required,
-      decision: lane.decision,
-      findings: lane.findings,
-    })),
-    expectedLanes: result.personas.length,
-    changedFiles,
-    coverageComplete: result.optionalFailures.length === 0,
-    candidateVerdict: result.arbiter.verdict,
-    rationale: result.arbiter.rationale,
-  });
   const completedAt = new Date().toISOString();
   const receipt: SameHeadQualificationReceipt = {
     version: 'ReviewYetiPanelQualification.v1',
@@ -1273,7 +1325,7 @@ export async function runSameHeadQualificationWorker(
     optionalFailureCount: 0,
     status: 'succeeded',
     ...identity,
-    diffDigest: source.diffDigest,
+    diffDigest: completedSource.diffDigest,
     engineRevision,
     providerTopologyDigest,
     laneAttribution,
@@ -1284,10 +1336,11 @@ export async function runSameHeadQualificationWorker(
     resultDigest: panelQualificationResultDigest(result, {
       verdict: canonical.verdict,
       ...canonical.metrics,
+      findingFingerprints,
     }),
     publicationMode: 'disabled',
     providerCalls: telemetry.providerCalls,
-    githubReads: source.githubReads,
+    githubReads: completedSource.githubReads,
     githubWrites: 0,
     personaCount: result.personas.length,
     findingsCount: canonical.metrics.totalFindings,
@@ -1299,6 +1352,8 @@ export async function runSameHeadQualificationWorker(
       P1: canonical.metrics.p1Count,
       P2: canonical.metrics.p2Count,
     },
+    findingFingerprintVersion: FINDING_FINGERPRINT_VERSION,
+    findingFingerprints,
     usage: aggregatePanelUsage(result),
     costUSD: aggregatePanelCost(result),
     durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
