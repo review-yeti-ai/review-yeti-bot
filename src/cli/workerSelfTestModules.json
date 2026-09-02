@@ -1,6 +1,7 @@
 [
   { "id": "../gateway/openRouterClient", "entry": "dist/gateway/openRouterClient.js" },
   { "id": "../panel/panelEngine", "entry": "dist/panel/panelEngine.js" },
+  { "id": "../github/qualificationReader", "entry": "dist/github/qualificationReader.js" },
   { "id": "../github/publicationReceipt", "entry": "dist/github/publicationReceipt.js" },
   { "id": "../k8s/reviewJobProjection", "entry": "dist/k8s/reviewJobProjection.js" },
   { "id": "../k8s/reviewJobDispatchEngine", "entry": "dist/k8s/reviewJobDispatchEngine.js" },
