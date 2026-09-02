@@ -1,13 +1,116 @@
 # DOKS same-engine hosted parity — 2026-09-02
 
-Status: DOKS transport and immutable-engine execution passed; production
-activation remains blocked on verdict variance and GitHub App installation
-coverage.
+Status: the latest v1.24.0 known-defect comparison passed execution and verdict
+parity; production activation remains disabled pending a separately approved
+App-installation and required-check rollout.
 
 This was a bounded set of manual, non-publishing qualification runs. It created
 no schedule, recurring canary, traffic split, review comment, required check, or
 production routing change. Every run retained the original 15-minute terminal
 ceiling and `ACTION_DISPATCH_ALLOW_APP_GATE=false`.
+
+## v1.24.0 fingerprinted known-defect follow-up
+
+The v1.24.0 follow-up used `calltelemetry/ct-pr-operator-sandbox#5`, base
+`01bb92b2294f5f9f77ae3e38a9a9672a5e9a8a2e`, head
+`4faa73aaf995279db95ff537b149a2a35c7b901b`, and diff digest
+`073cc4a9b4a34df110de96fc6c227f2ae23abaf3b6330dc647544b234cbfae58`.
+The fixture contains a deliberate starts-with scope bypass at
+`src/review-request.mjs:8`. The expected privacy-preserving anchor digest is
+`6e3318591a38b875fba17892b6bd692e4aa6131f7271915458280904d6df0765`.
+
+Both paths ran the exact v1.24.0 worker image:
+
+`registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:af6297cd5ecd9241b8b3fa16af2f8d0913d159dfd22ed3b2b1d15585efb8f0e2`
+
+The shared execution identity was:
+
+- policy digest
+  `7d517a7bffba5264c12699f2bf67b1a183522c69874ac7857f64499502494a81`;
+- config digest
+  `29f48968ca8617c1c8b5ff9b99bc75cf377f354d423e203cd495b0427ab8d371`;
+- provider-topology digest
+  `583bc1bd38ba0e1d83f0193648c6cad68359d563e77b312d828fe98b20f84f1a`;
+  and
+- eight direct `deepseek/deepseek-v4-flash-0731` lanes, each with one call and
+  zero retries. No auto-router was used.
+
+The manual DOKS run was
+`ct-review-de2e54a52359606863c9dc06339670f5` /
+`run_de2e54a52359606863c9dc06339670f5`:
+
+- authenticated receipt to Job creation: 3 seconds;
+- Pod scheduled: 5 seconds after receipt;
+- image/process observed: 16 seconds after receipt;
+- review-engine duration: 166.009 seconds;
+- terminal completion: 186 seconds after receipt;
+- calls/retries/optional failures: 8 / 0 / 0;
+- GitHub reads/writes: 3 / 0;
+- usage: 14,093 prompt / 9,383 completion / 23,476 total tokens;
+- cost: `$0.00220593`;
+- verdict/counts: `BLOCK`, P0 0, P1 4, P2 5; and
+- the expected line-8 P1 anchor appeared three times.
+
+The first comparable hosted run was
+<https://github.com/calltelemetry/ct-review-actions/actions/runs/33658537502>:
+
+- dispatch to review-engine start: 20 seconds;
+- review-engine duration: 124.151 seconds;
+- workflow completion: 148 seconds after dispatch;
+- calls/retries/optional failures: 8 / 0 / 0;
+- GitHub reads/writes: 3 / 0;
+- usage: 14,497 prompt / 7,339 completion / 21,836 total tokens;
+- cost: `$0.00268483`;
+- verdict/counts: `BLOCK`, P0 0, P1 4, P2 5; and
+- the expected line-8 P1 anchor appeared twice.
+
+The v1.24.0 comparator accepted the two receipts as identical execution
+identity and returned:
+
+```json
+{
+  "comparable": true,
+  "leftVerdict": "BLOCK",
+  "rightVerdict": "BLOCK",
+  "findingsDelta": 0,
+  "severityDelta": {"P0": 0, "P1": 0, "P2": 0},
+  "findingOverlap": {
+    "anchor": {"matched": 5, "leftOnly": 4, "rightOnly": 4},
+    "exact": {"matched": 0, "leftOnly": 9, "rightOnly": 9}
+  }
+}
+```
+
+The lack of exact content-digest matches records nondeterministic wording; it
+does not erase the matching anchors, equal canonical severity distribution, or
+shared blocking verdict. DOKS reached the engine four seconds faster in this
+pair. Provider-generation variance dominated the total: the DOKS model panel
+took 41.858 seconds longer.
+
+The hosted harness landed through
+<https://github.com/calltelemetry/ct-review-actions/pull/188>. A first dispatch,
+<https://github.com/calltelemetry/ct-review-actions/actions/runs/33658368293>,
+failed before Docker/provider execution because the temporary registry secrets
+were absent. This was a harness credential-plumbing failure and produced no
+receipt. After a short-lived read-only registry credential was installed, the
+comparable run passed.
+
+GitHub's token action then reported that numeric `app-id` was deprecated. The
+official `client-id` migration landed through
+<https://github.com/calltelemetry/ct-review-actions/pull/191>. Post-migration run
+<https://github.com/calltelemetry/ct-review-actions/actions/runs/33659280689>
+passed in 40 seconds dispatch-to-finish and 13.593 seconds inside the engine,
+with 8 calls, zero retries, zero writes, `BLOCK`, and the same P0 0/P1 4/P2 5
+distribution. It emitted no App-ID deprecation warning. The obsolete App-ID
+repository secret and every short-lived registry credential were deleted; the
+App client ID and source App configuration remain recoverable from Doppler.
+
+This known-defect comparison clears the earlier verdict-variance blocker for
+this fixture. It does not authorize fleet production activation. The App gate
+remained false, the hosted Action remained authoritative, and the next rollout
+requires separate approval plus clean- and larger-fixture evidence.
+
+## Prior v1.23.0 baseline
 
 ## Exact execution identity
 
