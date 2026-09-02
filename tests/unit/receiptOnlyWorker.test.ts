@@ -451,6 +451,7 @@ describe('full-panel qualification worker contract', () => {
     REVIEW_BASE_SHA: 'b'.repeat(40),
     REVIEW_POLICY_DIGEST: 'c'.repeat(64),
     REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
+    REVIEW_ENGINE_REVISION: 'e'.repeat(64),
     REVIEW_QUALIFICATION_MODEL: 'deepseek/deepseek-v4-flash-0731',
     REVIEW_QUALIFICATION_TIMEOUT_MS: '600000',
     OPENROUTER_API_KEY: 'test-openrouter-key',
@@ -495,8 +496,10 @@ describe('full-panel qualification worker contract', () => {
       expect(options.config.personas.every((persona: any) => persona.required)).toBe(true);
       expect(options.config.personas.every((persona: any) => persona.maxTurns === 3)).toBe(true);
       expect(options.config.reviewers.providers).toHaveLength(1);
+      expect(options.config.reviewers.providers[0].id).toBe('openrouter');
       expect(options.config.reviewers.providers[0].model).toBe(fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL);
       expect(options.config.reviewers.providers[0].effort).toBe('low');
+      expect(options.config.reviewers.arbiter.order).toEqual(['openrouter']);
       expect(options.requestPolicy).toEqual({
         stream: true,
         ttftTimeoutMs: 30_000,
@@ -522,10 +525,15 @@ describe('full-panel qualification worker contract', () => {
         'src/auth/session.ts', 'src/dispatcher/worker.ts', 'Dockerfile', 'k8s/review-job.yaml',
         'package.json', 'LICENSE',
       ]));
-      await Promise.all(Array.from({ length: 8 }, () => options.client.complete({
+      await Promise.all([
+        'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
+        'moderator', 'arbiter',
+      ].map((persona) => options.client.complete({
         model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
         messages: [],
         stream: true,
+        persona,
+        providerId: 'openrouter',
       })));
       const personaResult = (id: string) => ({
         id, required: true, providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
@@ -559,6 +567,8 @@ describe('full-panel qualification worker contract', () => {
       version: 'ReviewYetiPanelQualification.v1',
       profile: 'full-panel',
       status: 'succeeded',
+      engineRevision: 'e'.repeat(64),
+      providerTopologyDigest: '583bc1bd38ba0e1d83f0193648c6cad68359d563e77b312d828fe98b20f84f1a',
       providerId: 'openrouter',
       requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
       publicationMode: 'disabled',
@@ -704,6 +714,7 @@ describe('same-head qualification worker contract', () => {
     REVIEW_BASE_SHA: 'b'.repeat(40),
     REVIEW_POLICY_DIGEST: 'c'.repeat(64),
     REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
+    REVIEW_ENGINE_REVISION: 'e'.repeat(64),
     REVIEW_QUALIFICATION_MODEL: 'deepseek/deepseek-v4-flash-0731',
     REVIEW_QUALIFICATION_TIMEOUT_MS: '600000',
     OPENROUTER_API_KEY: 'test-openrouter-key',
@@ -759,6 +770,7 @@ describe('same-head qualification worker contract', () => {
       { REVIEW_PROVIDER_QUALIFICATION_ONLY: 'true' },
       { REVIEW_RECEIPT_ONLY: 'true' },
       { REVIEW_PUBLICATION_MODE: 'enabled' },
+      { REVIEW_QUALIFICATION_PROVIDER_ID: 'synthetic' },
       { GH_TOKEN: undefined },
       { GH_TOKEN: 'github_pat_writeCapable' },
       { GITHUB_TOKEN: 'ambient-token-must-not-enter-worker' },
@@ -799,15 +811,26 @@ describe('same-head qualification worker contract', () => {
       expect(options.config.personas).toHaveLength(6);
       expect(options.config.personas.every((persona: any) => persona.required)).toBe(true);
       expect(options.config.personas.every((persona: any) => persona.paths.length === 1 && persona.paths[0] === '**')).toBe(true);
+      expect(options.config.reviewers.providers[0].id).toBe('openrouter');
       expect(options.config.reviewers.providers[0].effort).toBe('high');
       expect(options.changedFiles).toEqual([{ path: 'src/auth.ts', patch: rawDiff.trimEnd() }]);
       expect(options.requestPolicy.metadata.qualificationMode).toBe('same-head');
       expect(options.requestPolicy.models).toEqual(['z-ai/glm-5.3-flash']);
-      await Promise.all(Array.from({ length: 8 }, () => options.client.complete({
+      const lanes = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing', 'moderator', 'arbiter'];
+      await Promise.all(lanes.map((persona) => options.client.complete({
         model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
         messages: [{ role: 'user', content: 'private prompt' }],
         stream: true,
+        persona,
+        providerId: 'openrouter',
       })));
+      await options.client.complete({
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        messages: [{ role: 'user', content: 'private retry prompt' }],
+        stream: true,
+        persona: 'security',
+        providerId: 'openrouter',
+      });
       return completePanelResult();
     });
 
@@ -830,12 +853,15 @@ describe('same-head qualification worker contract', () => {
       profile: 'same-head',
       source: 'github-pull-request',
       status: 'succeeded',
+      engineRevision: 'e'.repeat(64),
+      providerTopologyDigest: '583bc1bd38ba0e1d83f0193648c6cad68359d563e77b312d828fe98b20f84f1a',
       baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
       headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
       diffDigest,
       githubReads: 3,
       githubWrites: 0,
-      providerCalls: 8,
+      providerCalls: 9,
+      retryCount: 1,
       personaCount: 6,
       expectedPersonaCount: 6,
       optionalFailureCount: 0,
@@ -843,6 +869,32 @@ describe('same-head qualification worker contract', () => {
       verdictSource: 'canonical-production-policy',
       severityCounts: { P0: 0, P1: 0, P2: 0 },
     });
+    expect(receipt.laneAttribution).toEqual([
+      {
+        role: 'persona', lane: 'security', providerId: 'openrouter',
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        callCount: 2, retryCount: 1,
+      },
+      ...['performance', 'architecture', 'testing', 'dependencies', 'licensing'].map((lane) => ({
+        role: 'persona', lane, providerId: 'openrouter',
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        callCount: 1, retryCount: 0,
+      })),
+      {
+        role: 'moderator', lane: 'moderator', providerId: 'openrouter',
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        callCount: 1, retryCount: 0,
+      },
+      {
+        role: 'arbiter', lane: 'arbiter', providerId: 'openrouter',
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        callCount: 1, retryCount: 0,
+      },
+    ]);
     const serialized = JSON.stringify(receipt);
     for (const forbidden of [
       'raw-diff-secret-marker', sameHeadEnvironment.GH_TOKEN!, 'private prompt',
@@ -873,10 +925,15 @@ describe('same-head qualification worker contract', () => {
       })),
     };
     const panelRunner = vi.fn(async (options: any) => {
-      await Promise.all(Array.from({ length: 8 }, () => options.client.complete({
+      await Promise.all([
+        'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
+        'moderator', 'arbiter',
+      ].map((persona) => options.client.complete({
         model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
         messages: [{ role: 'user', content: 'private prompt' }],
         stream: true,
+        persona,
+        providerId: 'openrouter',
       })));
       const result = completePanelResult();
       result.personas[0].decision = 'FINDINGS';
