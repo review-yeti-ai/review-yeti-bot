@@ -39,6 +39,8 @@ jobs:
           node --check scripts/openrouter-qualification.mjs
           node --check scripts/pi-openrouter-qualification.mjs
           node --check scripts/run-pi-qualification-row.mjs
+          node --check scripts/transport-telemetry.mjs
+          node --check scripts/transport-telemetry-report.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           node scripts/emit-execution-plan.mjs --check
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
@@ -79,6 +81,8 @@ jobs:
           node --test scripts/ollama-qualification.test.mjs
           node --test scripts/openrouter-qualification.test.mjs
           node --test scripts/pi-openrouter-qualification.test.mjs
+          node --test scripts/transport-telemetry.test.mjs
+          node --test scripts/transport-telemetry-report.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "gemini"' policy/review-yeti.json
@@ -135,6 +139,27 @@ jobs:
             echo "::error::OpenRouter qualification must remain manual and non-recurring"
             exit 1
           fi
+          test -f .github/workflows/transport-telemetry.yml
+          grep -Fq 'schedule:' .github/workflows/transport-telemetry.yml
+          grep -Fq 'workflow_dispatch:' .github/workflows/transport-telemetry.yml
+          grep -Eq '^    timeout-minutes: 15$' .github/workflows/transport-telemetry.yml
+          if grep -Eq '^    timeout-minutes: (1[6-9]|[2-9][0-9]|[1-9][0-9]{2,})$' .github/workflows/transport-telemetry.yml; then
+            echo "::error::transport telemetry workflow may not exceed the 15-minute hard ceiling"
+            exit 1
+          fi
+          grep -Eq '^permissions:$' .github/workflows/transport-telemetry.yml
+          grep -Fq 'contents: read' .github/workflows/transport-telemetry.yml
+          if grep -Eq '^  (pull_request|pull_request_target):' .github/workflows/transport-telemetry.yml; then
+            echo "::error::transport telemetry must never trigger on a pull request event"
+            exit 1
+          fi
+          if grep -Fq 'refs/heads/main' .github/workflows/transport-telemetry.yml; then
+            echo "::error::transport telemetry must never push to main"
+            exit 1
+          fi
+          grep -Fq 'refs/heads/telemetry' .github/workflows/transport-telemetry.yml
+          grep -Fq "publication: 'none'" scripts/transport-telemetry.mjs
+          grep -Fq "production_authority: 'unchanged'" scripts/transport-telemetry.mjs
           grep -Fq 'publication=none' scripts/ollama-qualification.mjs
           grep -Fq 'authoritative_arm: '\''none'\''' scripts/ollama-qualification.mjs
           grep -Fq 'production_authority: '\''unchanged'\''' scripts/ollama-qualification.mjs

@@ -323,6 +323,45 @@ striped weights to that healthy subset and retains deterministic lane-local fail
 known-unhealthy provider therefore remains configured and visible in telemetry but cannot consume
 every lane's runtime budget before healthy failover begins.
 
+## Transport telemetry
+
+The `Transport telemetry` workflow (`.github/workflows/transport-telemetry.yml`) is a scheduled
+(daily, off-peak) plus manually-dispatched, read-only, non-publishing smoke run. It exists to give
+`example-meta` ADR 0481 ("keep Fireworks disabled, tune OpenRouter; revisit on multi-run per-provider
+evidence") and ADR 0467 ("revisit provider weights and capacities only with account-tier evidence
+plus per-provider latency, queue, rate-limit, and review-quality receipts") the multi-run evidence
+stream their revisit bars require, without adding a second review path.
+
+It probes every transport declared in `policy/review-yeti.json` -- enabled or not, so Gemini,
+Ollama, and Fireworks accrue evidence alongside the active OpenRouter/Synthetic pair -- using the
+same bounded `probeTransport()` machinery `review-yeti-smoke.mjs` uses for production admission
+(`scripts/transport-telemetry.mjs`). It never touches a pull request, runs the review panel, or
+publishes a comment, check, review verdict, merge decision, or provider mutation; a missing
+credential is recorded as `skipped: no_credential`, never a failure.
+
+Each run appends one JSON line per transport (schema
+`exampleorg.review-yeti.transport-telemetry.v1`: transport, model, enabled, outcome, HTTP
+status, failure class, TTFT/total latency, timeout/rate-limit flags, run id, timestamp) to an
+orphan `telemetry` branch's `transport-ledger.jsonl`, and uploads the same run's ledger as a
+90-day workflow artifact. The durable ledger lives on its own branch, never on `main`, so the
+review-contract history stays uncluttered by daily telemetry commits.
+
+Read the ledger with `scripts/transport-telemetry-report.mjs`, which prints per-transport p50/p90
+TTFT, p50/p90 total latency, timeout rate, rate-limit rate, and sample count over a lookback
+window:
+
+```bash
+git fetch origin telemetry
+node scripts/transport-telemetry-report.mjs --days 7
+# or against a local export / CI artifact:
+node scripts/transport-telemetry-report.mjs --ledger /path/to/transport-ledger.jsonl --days 30
+```
+
+This ledger covers exactly what a bounded chat-completion smoke can observe: latency and
+rate-limit/timeout evidence. It does not measure queue depth or review-quality (false-positive/
+false-negative rate); those remain open ADR-0467 revisit-bar columns for a future, differently-
+scoped instrument and are intentionally not fabricated here.
+
 ## CLI-first local reviews
 
 The central policy can be exercised locally through the same bounded, read-only review engine used

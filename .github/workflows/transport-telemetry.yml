@@ -1,0 +1,119 @@
+name: Transport telemetry
+
+# Scheduled, read-only, non-publishing per-transport smoke ledger for ADR 0481 / ADR 0467's
+# revisit bar: "Revisit provider weights and capacities only with account-tier evidence plus
+# per-provider latency, queue, rate-limit, and review-quality receipts" (ADR 0467), and ADR
+# 0481's own "When to revisit": "OpenRouter-primary lane timeouts/BLOCKs recur after this tuning
+# lands ... the mitigation is not working at the policy layer." This workflow supplies that
+# multi-run, per-transport evidence stream. It never runs the review panel, never touches a pull
+# request, and never comments, checks, verdicts, merges, or mutates provider policy -- it only
+# probes every transport declared in policy/review-yeti.json (enabled or not) with the same
+# bounded smoke review-yeti.yml uses for admission, then appends one JSON line per transport per
+# run to a durable ledger. A missing credential is recorded as `skipped: no_credential`, never a
+# failure.
+on:
+  schedule:
+    # 09:17 UTC daily: outside US/EU business-hours review-panel load, staggered off the hour to
+    # avoid GitHub Actions' documented top-of-hour scheduled-workflow congestion.
+    - cron: '17 9 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serializes same-repository runs (scheduled + any manual dispatch) so two runs never race to
+  # append the same ledger branch; a queued run still records its own evidence, it just waits.
+  group: transport-telemetry-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  telemetry:
+    name: Probe transports and append the ledger
+    runs-on: ubuntu-latest
+    # Five bounded transport probes, well inside the 15-minute operational ceiling this repo uses
+    # for every non-review workflow (see ollama-qualification.yml / openrouter-qualification.yml).
+    timeout-minutes: 15
+    permissions:
+      # Only this job needs write access, and only to append to the dedicated `telemetry` branch;
+      # it never touches `main` or any other ref.
+      contents: write
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
+      OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+      SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+      FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Probe every declared transport (read-only)
+        id: telemetry
+        run: node scripts/transport-telemetry.mjs
+
+      - name: Upload this run's ledger as a 90-day artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: transport-telemetry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/transport-telemetry/*.jsonl
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Append this run to the durable telemetry ledger branch
+        if: steps.telemetry.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_LEDGER="$(find "$RUNNER_TEMP/transport-telemetry" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null || true)"
+          if [ -z "$RUN_LEDGER" ]; then
+            echo "::warning::no run ledger file produced; skipping durable-branch append"
+            exit 0
+          fi
+
+          git config user.name "example-review-actions-bot"
+          git config user.email "example-review-actions-bot@users.noreply.github.com"
+
+          max_attempts=3
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            git fetch --no-tags origin telemetry:refs/remotes/origin/telemetry 2>/dev/null || true
+            if git rev-parse --verify refs/remotes/origin/telemetry >/dev/null 2>&1; then
+              git checkout -B telemetry refs/remotes/origin/telemetry
+            else
+              # First-ever run: create the orphan ledger branch. It carries only the JSONL ledger,
+              # never the workflow source tree.
+              git checkout --orphan telemetry
+              git rm -rf . >/dev/null 2>&1 || true
+            fi
+
+            cat "$RUN_LEDGER" >> transport-ledger.jsonl
+            git add transport-ledger.jsonl
+            git commit -m "chore(telemetry): append transport smoke run ${{ github.run_id }}"
+
+            if git push origin HEAD:refs/heads/telemetry; then
+              echo "pushed telemetry ledger on attempt ${attempt}"
+              exit 0
+            fi
+
+            echo "::warning::telemetry branch push rejected on attempt ${attempt}; re-fetching and reapplying"
+            attempt=$((attempt + 1))
+          done
+
+          echo "::error::could not push the telemetry branch after ${max_attempts} attempts"
+          exit 1
+
+      - name: State the non-publishing boundary
+        if: always()
+        run: |
+          echo 'Transport telemetry is read-only evidence for the ADR 0481 / ADR 0467 revisit bar.'
+          echo 'No comment, check, review verdict, merge decision, or provider mutation occurred.'
