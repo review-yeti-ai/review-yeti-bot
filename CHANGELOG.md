@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.22.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.22.1...v1.22.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* align same-head qualification verdicts ([11de7bb](https://github.com/review-yeti-ai/review-yeti-bot/commit/11de7bb79902a1ec0efd75579468e71451133e9e))
+* align same-head qualification with production verdict policy ([12e0f40](https://github.com/review-yeti-ai/review-yeti-bot/commit/12e0f40031d95efae09a5909a5d8c805a4ec2820))
+
 ## [1.22.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.22.0...v1.22.1) (2026-09-02)
 
 
