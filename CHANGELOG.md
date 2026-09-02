@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.22.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.22.0...v1.22.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **doks:** recognize same-head worker contracts ([d407a6d](https://github.com/review-yeti-ai/review-yeti-bot/commit/d407a6d3cce7021b5a2d65bb610a4376c634ba59))
+* **doks:** recognize same-head worker contracts ([a52fdc7](https://github.com/review-yeti-ai/review-yeti-bot/commit/a52fdc72fd3fe0b10720be6abf6fce7a2f6a0c73))
+
 ## [1.22.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.21.2...v1.22.0) (2026-09-02)
 
 
