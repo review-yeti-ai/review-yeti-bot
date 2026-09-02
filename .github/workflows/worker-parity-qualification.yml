@@ -71,7 +71,7 @@ jobs:
         id: parity-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ secrets.PARITY_GITHUB_APP_ID }}
+          client-id: ${{ vars.PARITY_GITHUB_APP_CLIENT_ID }}
           private-key: ${{ secrets.PARITY_GITHUB_APP_PRIVATE_KEY }}
           owner: ${{ inputs.repo_owner }}
           repositories: ${{ inputs.repo_name }}
