@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.22.2...v1.23.0) (2026-09-02)
+
+
+### Features
+
+* **doks:** bind qualification receipts to execution identity ([92223b2](https://github.com/review-yeti-ai/review-yeti-bot/commit/92223b2fb91852328958141a849fab46ce42e194))
+* **doks:** bind qualification receipts to execution identity ([2863fd3](https://github.com/review-yeti-ai/review-yeti-bot/commit/2863fd33b3018bfe3c0f2370a6ee4ac862e7c374))
+
 ## [1.22.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.22.1...v1.22.2) (2026-09-02)
 
 
