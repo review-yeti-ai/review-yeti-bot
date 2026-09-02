@@ -119,17 +119,19 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
 });
 
-test('Example API resolves and probes exactly one panel-width Ollama transport', async () => {
+test('Example API resolves Ollama-primary with OpenRouter fallback and a 90s connect deadline', async () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const resolved = resolvePolicyForRepository(policy, EXAMPLE_API_REPOSITORY);
   const transports = validatePolicy(resolved, EXAMPLE_API_REPOSITORY);
 
   assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER);
   assert.equal(resolved.review_yeti.dispatch_mode, 'ordered');
+  assert.equal(transports[0].name, 'ollama');
   assert.equal(transports[0].max_in_flight, 6);
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
-  assert.equal(transports[0].connect_timeout_ms, 60000);
+  assert.equal(transports[0].connect_timeout_ms, 90000);
+  assert.equal(transports[1].name, 'openrouter-primary');
 
   const calls = [];
   const result = await runSmoke({
@@ -137,7 +139,7 @@ test('Example API resolves and probes exactly one panel-width Ollama transport',
     env: {
       REVIEW_REPOSITORY: EXAMPLE_API_REPOSITORY,
       OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
-      OPENROUTER_PR_REVIEW_API_KEY: 'must-not-be-used',
+      OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
       SYNTHETIC_API_KEY: 'must-not-be-used',
       FIREWORKS_PR_REVIEW_API_KEY: 'must-not-be-used',
     },
@@ -152,11 +154,14 @@ test('Example API resolves and probes exactly one panel-width Ollama transport',
     log: () => {},
   });
 
-  assert.deepEqual(calls, ['https://ollama.com/v1/chat/completions']);
-  assert.deepEqual(result.healthy, ['ollama']);
+  assert.deepEqual(calls, [
+    'https://ollama.com/v1/chat/completions',
+    'https://openrouter.ai/api/v1/chat/completions',
+  ]);
+  assert.deepEqual(result.healthy, ['ollama', 'openrouter-primary']);
 });
 
-test('example-release, example-meta, and example-infra join the Ollama-only set (ADR 0490 scope widened 2026-09-02)', () => {
+test('example-release, example-meta, and example-infra keep Ollama-primary ordered dispatch (API-3157)', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   assert.deepEqual(
     [...OLLAMA_REPOSITORIES].sort(),
@@ -173,7 +178,14 @@ test('example-release, example-meta, and example-infra join the Ollama-only set 
     assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER, repository);
     assert.equal(resolved.review_yeti.dispatch_mode, 'ordered', repository);
     assert.equal(transports[0].max_in_flight, 6, repository);
+    assert.equal(transports[0].connect_timeout_ms, 90000, repository);
   }
+});
+
+test('smoke timeout matches the Ollama connect deadline so preflight cannot fail a still-connecting primary (API-3157)', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /REVIEW_YETI_SMOKE_TIMEOUT_MS: 90000/);
+  assert.doesNotMatch(workflow, /REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000/);
 });
 
 test('repository policy overrides are exact-match and reject widening or unknown transports', () => {

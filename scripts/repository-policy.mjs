@@ -1,9 +1,9 @@
-// Repositories pinned to the central Ollama-only review lane (ADR 0490,
-// scope widened 2026-09-02 per operator directive: example-release, example-meta, and
-// example-infra join example-api after OpenRouter instability produced four
-// BLOCK verdicts in one day, including a required check on example-meta).
+// Repositories pinned to Ollama-primary ordered dispatch (ADR 0490, API-3157).
+// Ollama stays first. OpenRouter is the required pre-flight fallback (ADR 0330):
+// Ollama-only made a 60s header timeout on one persona a required-check BLOCK
+// (example-meta #2701, 2026-09-02). Do not revert to OpenRouter-primary.
 export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
-export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
+export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama', 'openrouter-primary']);
 export const OLLAMA_REPOSITORIES = Object.freeze(new Set([
   EXAMPLE_API_REPOSITORY,
   'exampleorg/example-infra',
@@ -49,10 +49,21 @@ export function resolvePolicyForRepository(policy, repository = '') {
     if (!declared.has(name)) throw new Error(`repository override ${repository} names unknown transport: ${name}`);
   }
   resolved.review_yeti.dispatch_mode = override.dispatch_mode;
-  const enabled = new Set(override.enabled_transports);
-  resolved.review_yeti.transports = resolved.review_yeti.transports.map((transport) => ({
-    ...transport,
-    enabled: enabled.has(transport.name),
+  const byName = new Map(
+    (resolved.review_yeti.transports ?? []).map((transport) => [transport.name, transport]),
+  );
+  const enabledOrder = override.enabled_transports;
+  const enabledSet = new Set(enabledOrder);
+  const enabledTransports = enabledOrder.map((name) => ({
+    ...byName.get(name),
+    enabled: true,
   }));
+  const disabledTransports = (resolved.review_yeti.transports ?? [])
+    .filter((transport) => !enabledSet.has(transport.name))
+    .map((transport) => ({
+      ...transport,
+      enabled: false,
+    }));
+  resolved.review_yeti.transports = [...enabledTransports, ...disabledTransports];
   return resolved;
 }

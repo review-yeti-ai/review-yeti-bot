@@ -79,13 +79,13 @@ for (const transport of review.transports) {
   validateTransportEnvelope(transport);
 }
 const expectedTransportNames = OLLAMA_REPOSITORIES.has(targetRepository)
-  ? ['ollama']
+  ? ['ollama', 'openrouter-primary']
   : ['openrouter-primary', 'synthetic'];
 if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
   throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
 }
 if (OLLAMA_REPOSITORIES.has(targetRepository) && review.dispatch_mode !== 'ordered') {
-  throw new Error(`${targetRepository} must use ordered Ollama-only dispatch`);
+  throw new Error(`${targetRepository} must use ordered Ollama-primary dispatch`);
 }
 const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
 if (!fireworksTransport || fireworksTransport.enabled !== false) {
@@ -96,8 +96,8 @@ if (!ollamaTransport
     || ollamaTransport.max_in_flight !== 6
     || ollamaTransport.concurrency_scope !== 'provider'
     || ollamaTransport.capacity_wait_timeout_ms !== 30000
-    || ollamaTransport.connect_timeout_ms !== 60000) {
-  throw new Error('Ollama must use a six-lane ceiling and a 60s connect deadline so concurrent persona streams can establish');
+    || ollamaTransport.connect_timeout_ms !== 90000) {
+  throw new Error('Ollama must use a six-lane ceiling and a 90s connect deadline so concurrent persona streams can establish');
 }
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
   throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');

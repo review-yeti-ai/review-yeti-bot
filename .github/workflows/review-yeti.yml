@@ -107,7 +107,7 @@ jobs:
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
           SYNTHETIC_API_KEY: ${{ !inputs.central_execution && secrets.SYNTHETIC_API_KEY || '' }}
-          REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000
+          REVIEW_YETI_SMOKE_TIMEOUT_MS: 90000
         run: |
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
           node scripts/review-yeti-smoke.mjs

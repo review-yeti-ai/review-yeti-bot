@@ -87,7 +87,7 @@
         "model": "deepseek-v4-flash:cloud",
         "compat": "openai",
         "timeout_ms": 90000,
-        "connect_timeout_ms": 60000,
+        "connect_timeout_ms": 90000,
         "ttft_ms": 60000,
         "stall_ms": 20000,
         "max_tokens": 24576,
@@ -180,25 +180,29 @@
     "exampleorg/example-api": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama"
+        "ollama",
+        "openrouter-primary"
       ]
     },
     "exampleorg/example-infra": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama"
+        "ollama",
+        "openrouter-primary"
       ]
     },
     "exampleorg/example-release": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama"
+        "ollama",
+        "openrouter-primary"
       ]
     },
     "exampleorg/example-meta": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama"
+        "ollama",
+        "openrouter-primary"
       ]
     }
   },

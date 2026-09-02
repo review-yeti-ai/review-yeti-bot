@@ -38,7 +38,7 @@ const SYNTHETIC_QUOTA_PATH = '/v2/quotas';
 const DEFAULT_QUOTA_TIMEOUT_MS = 5_000;
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
   require_parameters: true,
