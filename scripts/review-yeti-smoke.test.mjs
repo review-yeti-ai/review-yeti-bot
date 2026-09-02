@@ -128,6 +128,7 @@ test('Example API resolves and probes exactly one panel-width Ollama transport',
   assert.equal(transports[0].max_in_flight, 6);
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
+  assert.equal(transports[0].connect_timeout_ms, 60000);
 
   const calls = [];
   const result = await runSmoke({

@@ -95,8 +95,9 @@ const ollamaTransport = review.transports.find((transport) => transport.name ===
 if (!ollamaTransport
     || ollamaTransport.max_in_flight !== 6
     || ollamaTransport.concurrency_scope !== 'provider'
-    || ollamaTransport.capacity_wait_timeout_ms !== 30000) {
-  throw new Error('Ollama must use a six-lane provider-scoped ceiling and a bounded 30-second capacity wait');
+    || ollamaTransport.capacity_wait_timeout_ms !== 30000
+    || ollamaTransport.connect_timeout_ms !== 60000) {
+  throw new Error('Ollama must use a six-lane ceiling and a 60s connect deadline so concurrent persona streams can establish');
 }
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
   throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');

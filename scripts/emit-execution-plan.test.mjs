@@ -118,6 +118,7 @@ test('Example API emits an Ollama-only ordered execution plan without changing t
     concurrency_scope: 'provider',
     wait_timeout_ms: 30000,
   });
+  assert.equal(ciscoPlan.transports[0].timeouts.connect_ms, 60000);
   assert.equal(ciscoPlan.transports[0].base_url_class, 'direct-ollama-cloud-openai-compatible');
   assert.equal(JSON.stringify(ciscoPlan).includes('openrouter'), false);
   assert.equal(JSON.stringify(ciscoPlan).includes('synthetic'), false);

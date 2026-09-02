@@ -702,8 +702,8 @@ transports = json.loads('\n'.join(lines[start + 1:end]))
 if [transport['name'] for transport in transports] != ['ollama']:
     raise SystemExit('Example API must emit only the Ollama transport')
 ollama = transports[0]
-if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('capacity_wait_timeout_ms')) != (6, 'provider', 30000):
-    raise SystemExit('Example API Ollama admission must cover the six-persona panel with a 30-second capacity wait')
+if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('capacity_wait_timeout_ms'), ollama.get('connect_timeout_ms')) != (6, 'provider', 30000, 60000):
+    raise SystemExit('Example API Ollama admission must cover the six-persona panel and a 60s connect deadline')
 PY
 echo "[cisco-ollama-only] passed"
 
