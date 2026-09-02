@@ -112,14 +112,32 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
   if (callerRun?.repository?.full_name !== request.repository) throw new Error('caller run repository identity changed');
   if (callerRun?.event !== 'pull_request_target') throw new Error('caller run must use pull_request_target');
   if (callerRun?.path !== CALLER_WORKFLOW_PATH) throw new Error('caller run workflow path changed');
-  if (callerRun?.head_sha !== request.base_sha) throw new Error('caller run is not bound to the requested base SHA');
+  // pull_request_target runs execute the base branch's workflow at the base tip of the moment
+  // the run started, while pull.base.sha is the PR's recorded base and lags on a busy branch.
+  // Bind the caller to the base BRANCH: it must have run the base-owned workflow from a commit
+  // that is on that branch (identical to, or an ancestor of, the current tip).
+  if (typeof callerRun?.head_sha !== 'string' || !/^[0-9a-f]{40}$/u.test(callerRun.head_sha)) {
+    throw new Error('caller run head SHA is invalid');
+  }
+  if (callerRun?.head_branch !== pull?.base?.ref) throw new Error('caller run is not bound to the PR base branch');
+  if (callerRun.head_sha !== request.base_sha) {
+    const compare = await githubJson(
+      `${apiBase}/compare/${encodeURIComponent(pull.base.ref)}...${callerRun.head_sha}`,
+      token,
+      fetchImpl,
+    );
+    if (compare?.status !== 'identical' && compare?.status !== 'behind') {
+      throw new Error('caller run commit is not on the PR base branch');
+    }
+  }
   if (callerRun?.run_attempt !== callerRunAttempt) throw new Error('caller run attempt changed');
   if (!Array.isArray(callerRun?.pull_requests)
       || !callerRun.pull_requests.some((candidate) => candidate?.number === request.pr_number)) {
     throw new Error('caller run is not bound to the requested PR');
   }
 
-  const workflowUrl = `${apiBase}/contents/${CALLER_WORKFLOW_PATH}?ref=${request.base_sha}`;
+  // Read the caller workflow at the commit that actually executed it.
+  const workflowUrl = `${apiBase}/contents/${CALLER_WORKFLOW_PATH}?ref=${callerRun.head_sha}`;
   const workflow = await githubJson(workflowUrl, token, fetchImpl);
   if (workflow?.encoding !== 'base64' || typeof workflow.content !== 'string') {
     throw new Error('base-owned caller workflow response is invalid');

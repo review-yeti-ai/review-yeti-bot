@@ -14,6 +14,7 @@ import {
 
 const baseSha = 'a'.repeat(40);
 const headSha = 'b'.repeat(40);
+const advancedBaseSha = 'd'.repeat(40);
 const callerRunId = 33572874647;
 const callerRunAttempt = 2;
 const payload = Object.freeze({
@@ -47,7 +48,7 @@ function successFetch(calls) {
     if (url.endsWith('/pulls/4527')) {
       return response({
         state: 'open',
-        base: { sha: baseSha, repo: { full_name: TARGET_REPOSITORY } },
+        base: { sha: baseSha, ref: '0.8.7-stable', repo: { full_name: TARGET_REPOSITORY } },
         head: { sha: headSha },
       });
     }
@@ -57,9 +58,13 @@ function successFetch(calls) {
         event: 'pull_request_target',
         path: '.github/workflows/ct-review-bot.yml',
         head_sha: baseSha,
+        head_branch: '0.8.7-stable',
         run_attempt: callerRunAttempt,
         pull_requests: [{ number: 4527 }],
       });
+    }
+    if (url.includes('/compare/')) {
+      return response({ status: url.endsWith(`...${advancedBaseSha}`) ? 'behind' : 'diverged' });
     }
     if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
@@ -121,7 +126,7 @@ test('fails closed on missing central credentials, stale identity, or a GitHub l
       token: 'central-token',
       fetchImpl: async () => response({
         state: 'open',
-        base: { sha: baseSha, repo: { full_name: TARGET_REPOSITORY } },
+        base: { sha: baseSha, ref: '0.8.7-stable', repo: { full_name: TARGET_REPOSITORY } },
         head: { sha: 'c'.repeat(40) },
       }),
     }),
@@ -138,6 +143,7 @@ test('rejects a forged or stale originating caller run', async () => {
     (run) => { run.event = 'workflow_dispatch'; },
     (run) => { run.path = '.github/workflows/other.yml'; },
     (run) => { run.head_sha = 'c'.repeat(40); },
+    (run) => { run.head_branch = 'feature/not-the-base'; },
     (run) => { run.run_attempt = 3; },
     (run) => { run.pull_requests = [{ number: 9999 }]; },
   ]) {
@@ -149,6 +155,7 @@ test('rejects a forged or stale originating caller run', async () => {
         event: 'pull_request_target',
         path: '.github/workflows/ct-review-bot.yml',
         head_sha: baseSha,
+        head_branch: '0.8.7-stable',
         run_attempt: callerRunAttempt,
         pull_requests: [{ number: 4527 }],
       };
@@ -183,4 +190,26 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(reusable, /OLLAMA_PR_REVIEW_API_KEY:\s*\$\{\{ secrets\.OLLAMA_PR_REVIEW_API_KEY \}\}/u);
   assert.match(reusable, /GH_TOKEN:\s*\$\{\{ inputs\.central_execution && secrets\.CROSS_REPO_TOKEN \|\| github\.token \}\}/u);
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
+});
+
+test('accepts a caller run from a newer base tip that still contains the PR base and reads the workflow there', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    if (!url.endsWith(`/actions/runs/${callerRunId}`)) return successFetch(calls)(url, init);
+    calls.push({ url, init });
+    return response({
+      repository: { full_name: TARGET_REPOSITORY },
+      event: 'pull_request_target',
+      path: '.github/workflows/ct-review-bot.yml',
+      head_sha: advancedBaseSha,
+      head_branch: '0.8.7-stable',
+      run_attempt: callerRunAttempt,
+      pull_requests: [{ number: 4527 }],
+    });
+  };
+  const result = await validateCentralDispatch({ payload, token: 'central-token', fetchImpl });
+  assert.equal(result.base_sha, baseSha);
+  assert.equal(calls.length, 4);
+  assert.equal(calls[2].url.includes(`/compare/0.8.7-stable...${advancedBaseSha}`), true);
+  assert.equal(calls[3].url.endsWith(`?ref=${advancedBaseSha}`), true);
 });
