@@ -8,6 +8,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,6 +18,7 @@ import (
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
+	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
 	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
 )
@@ -141,6 +143,89 @@ func TestPRReviewJobV1Alpha2ReconcilerCreatesPVCThenHardenedWorkerJob(t *testing
 	}
 }
 
+func TestPRReviewJobV1Alpha2ReconcilerReobservesSameHeadWorker(t *testing.T) {
+	now := time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.QualificationProfile = job.SameHeadQualificationProfile
+	review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("create same-head worker: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reobserve same-head worker: %v", err)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseRunning {
+		t.Fatalf("phase = %s, want Running after idempotent same-head reconcile", updated.Status.Phase)
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerStopsOwnedWorkerAndReleasesLeaseOnContractMismatch(t *testing.T) {
+	now := time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.UID = types.UID("same-head-review")
+	review.Spec.QualificationProfile = job.SameHeadQualificationProfile
+	review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var worker batchv1.Job
+	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+	if err := kube.Get(context.Background(), workerKey, &worker); err != nil {
+		t.Fatal(err)
+	}
+	for index := range worker.Spec.Template.Spec.Containers[0].Env {
+		variable := &worker.Spec.Template.Spec.Containers[0].Env[index]
+		if variable.Name == job.SameHeadQualificationEnv {
+			variable.Value = "false"
+		}
+	}
+	if err := kube.Update(context.Background(), &worker); err != nil {
+		t.Fatalf("tamper worker fixture: %v", err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("fail mismatched worker: %v", err)
+	}
+	if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("mismatched owned worker still exists: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("release terminal workspace: %v", err)
+	}
+	if _, err := workspace.NewLeaseManager(kube).Acquire(
+		context.Background(),
+		review.Namespace,
+		review.Spec.RepositoryID,
+		review.Spec.PRNumber,
+		"run_22222222222222222222222222222222",
+		now.Add(16*time.Minute),
+		now.Add(time.Minute),
+	); err != nil {
+		t.Fatalf("contract mismatch stranded workspace lease: %v", err)
+	}
+}
+
 func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	observationNow := now.Add(6 * time.Second)
@@ -230,8 +315,8 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsTerminatedPodProcessTiming(t *test
 			Name:      worker.Name + "-terminated-pod",
 			Namespace: review.Namespace,
 			Labels: map[string]string{
-				"review-yeti.ai/run-id":    review.Spec.RunID,
-				"review-yeti.ai/component": "receipt-only-worker",
+				"review-yeti.ai/run-id":        review.Spec.RunID,
+				"review-yeti.ai/component":     "receipt-only-worker",
 				"batch.kubernetes.io/job-name": worker.Name,
 			},
 		},
