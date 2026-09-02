@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.22.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.21.2...v1.22.0) (2026-09-02)
+
+
+### Features
+
+* **doks:** add read-only same-head qualification ([96bedaf](https://github.com/review-yeti-ai/review-yeti-bot/commit/96bedafeb9cd7882abcb020e2a9c4d6bbe17ccec))
+* **doks:** admit read-only same-head qualification ([5a18ff7](https://github.com/review-yeti-ai/review-yeti-bot/commit/5a18ff74e81fe0365b6f1ec6fc9afb0d2e7a8943))
+* **github:** mint repository-scoped review tokens ([bf92e4d](https://github.com/review-yeti-ai/review-yeti-bot/commit/bf92e4d5c909913c1603a081e1f0459899c1e13f))
+* **worker:** add same-head DOKS qualification ([fd6da60](https://github.com/review-yeti-ai/review-yeti-bot/commit/fd6da6014277c9ed168527a63455d17ad74e0499))
+* **worker:** bind qualification input to exact PR head ([73154e0](https://github.com/review-yeti-ai/review-yeti-bot/commit/73154e07ca9363488f47486fdc0c4ff0ff98c4d8))
+
 ## [1.21.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.21.1...v1.21.2) (2026-09-02)
 
 
