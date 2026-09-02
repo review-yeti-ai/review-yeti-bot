@@ -220,6 +220,34 @@ func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 	}
 }
 
+func TestBuildFullPanelQualificationKeepsWorkerDeadlineInsideJobDeadline(t *testing.T) {
+	received := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name          string
+		now           time.Time
+		wantTimeoutMs string
+	}{
+		{name: "fresh admission", now: received, wantTimeoutMs: "780000"},
+		{name: "mid-run admission", now: received.Add(8 * time.Minute), wantTimeoutMs: "300000"},
+		{name: "fractional admission", now: received.Add(12*time.Minute + 30*time.Second + 500*time.Millisecond), wantTimeoutMs: "29000"},
+		{name: "last permitted window", now: received.Add(13 * time.Minute), wantTimeoutMs: "1000"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			review := reviewFixture(received)
+			review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+			review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+			result, err := job.BuildWorkerJob(buildInput(review, test.now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			container := result.Spec.Template.Spec.Containers[0]
+			if got := envValue(container, "REVIEW_QUALIFICATION_TIMEOUT_MS"); got != test.wantTimeoutMs {
+				t.Fatalf("worker qualification timeout = %q, want %q", got, test.wantTimeoutMs)
+			}
+		})
+	}
+}
+
 func TestBuildWorkerJobNeverExtendsTerminalDeadline(t *testing.T) {
 	received := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
