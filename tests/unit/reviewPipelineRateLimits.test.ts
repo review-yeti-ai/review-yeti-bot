@@ -325,7 +325,7 @@ describe('direct-provider rate limits', () => {
     expect(result.transport).toBe('ollama');
   });
 
-  it('does not fall back until one total Ollama capacity-wait budget expires', async () => {
+  it('falls back immediately on Ollama capacity when another provider is configured', async () => {
     const calls: string[] = [];
     const sleeps: number[] = [];
     const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-budget' }, null, {
@@ -355,10 +355,9 @@ describe('direct-provider rate limits', () => {
 
     expect(calls).toEqual([
       'https://ollama.com/v1/chat/completions',
-      'https://ollama.com/v1/chat/completions',
       'https://backup.example/v1/chat/completions',
     ]);
-    expect(sleeps).toEqual([250, 50]);
+    expect(sleeps).toEqual([]);
     expect(result).toMatchObject({ decision: 'APPROVE', transport: 'backup' });
     expect(result.retryReasons).toEqual(expect.arrayContaining(['provider_capacity']));
   });
