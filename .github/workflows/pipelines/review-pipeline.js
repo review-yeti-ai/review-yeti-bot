@@ -3840,6 +3840,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           console.log(`[Capacity] provider=${normalizeTelemetryProvider(configuredProvider || transportName) || 'custom'} phase=lease_released lease_ms=${leaseMs}`);
         };
         const waitForOllamaCapacity = async (response = null) => {
+          // A configured fallback is explicit authority to leave Ollama immediately.
+          // Reserve bounded same-provider waiting for Ollama-only execution, where no
+          // alternate provider can make progress while the shared account is busy.
+          if (i < candidateTransports.length - 1) {
+            return { retry: false, timedOut: false, waitMs: 0, shouldFallback: true };
+          }
           const remainingBudgetMs = Math.max(0, capacityWaitBudgetMs - capacityWaitSpentMs);
           if (remainingBudgetMs <= 0) return { retry: false, timedOut: true, waitMs: 0 };
           const requestedWaitMs = ollamaCapacityRetryDelayMs(ollamaCapacityRetries, response);
@@ -3855,14 +3861,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           recoveryAction = 'capacity_wait_retry';
           return { retry: true, timedOut: false, waitMs };
         };
-        const terminalOllamaCapacityResult = () => {
-          const safeError = 'provider_capacity_wait_timeout';
+        const terminalOllamaCapacityResult = (shouldFallback = false) => {
+          const safeError = shouldFallback ? 'provider_capacity' : 'provider_capacity_wait_timeout';
           failureClass = 'provider_capacity';
           lastError = safeError;
           noteRetryReason('provider_capacity');
           circuitBreaker.trip(transport, safeError, 'provider_capacity');
           if (i < candidateTransports.length - 1) {
-            console.warn(`[Capacity] provider=ollama phase=queue_timeout action=fallback budget_ms=${capacityWaitBudgetMs}`);
+            console.warn(`[Capacity] provider=ollama phase=fallback wait_ms=${capacityWaitSpentMs}`);
             fallbackAttempt++;
             return null;
           }
@@ -3952,7 +3958,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             if (isOllama && isOllamaCapacityRejection(response.status, detail)) {
               const capacityWait = await waitForOllamaCapacity(response);
               if (capacityWait.retry) continue;
-              const terminal = terminalOllamaCapacityResult();
+              const terminal = terminalOllamaCapacityResult(capacityWait.shouldFallback);
               if (terminal) return terminal;
               break;
             }
@@ -4094,7 +4100,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             if (ollamaCapacityPayload) {
               const capacityWait = await waitForOllamaCapacity(response);
               if (capacityWait.retry) continue;
-              const terminal = terminalOllamaCapacityResult();
+              const terminal = terminalOllamaCapacityResult(capacityWait.shouldFallback);
               if (terminal) return terminal;
               break;
             }
@@ -4151,7 +4157,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               if (ollamaCapacityPayload) {
                 const capacityWait = await waitForOllamaCapacity(response);
                 if (capacityWait.retry) continue;
-                const terminal = terminalOllamaCapacityResult();
+                const terminal = terminalOllamaCapacityResult(capacityWait.shouldFallback);
                 if (terminal) return terminal;
                 break;
               }
