@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { executePersonaPanel } from '../panel/panelEngine';
 import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
+import { computeAppVerdict } from '../review/reviewAdapters';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
@@ -138,6 +139,8 @@ export interface SameHeadQualificationReceipt extends Omit<FullPanelQualificatio
   source: 'github-pull-request';
   diffDigest: string;
   githubReads: 3;
+  verdictSource: 'canonical-production-policy';
+  severityCounts: { P0: number; P1: number; P2: number };
 }
 
 export interface FullPanelQualificationAttemptReceipt {
@@ -669,6 +672,7 @@ function fullPanelQualificationConfig(
   model: string,
   timeoutMs: number,
   allPersonasOnEveryFile = false,
+  effort: 'low' | 'high' = 'low',
 ): CtReviewConfigV3 {
   const perCallSeconds = Math.max(1, Math.floor(timeoutMs / 4_000));
   const base = createDefaultV3Config();
@@ -695,7 +699,7 @@ function fullPanelQualificationConfig(
         id: 'qualification',
         enabled: true,
         model,
-        effort: 'low',
+        effort,
         review_timeout_s: perCallSeconds,
         arbiter_timeout_s: perCallSeconds,
       }],
@@ -729,7 +733,10 @@ function aggregatePanelCost(result: PanelResult): number | null {
   return knownCosts.reduce((total, cost) => total + cost, 0);
 }
 
-function panelQualificationResultDigest(result: PanelResult): string {
+function panelQualificationResultDigest(
+  result: PanelResult,
+  canonical?: { verdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK'; p0Count: number; p1Count: number; p2Count: number; totalFindings: number },
+): string {
   return createHash('sha256').update(JSON.stringify({
     headSha: result.headSha,
     personas: result.personas.map((lane) => ({
@@ -749,8 +756,16 @@ function panelQualificationResultDigest(result: PanelResult): string {
     arbiter: {
       providerId: result.arbiter.providerId,
       model: result.arbiter.model,
-      verdict: result.arbiter.verdict,
+      verdict: canonical?.verdict ?? result.arbiter.verdict,
     },
+    ...(canonical ? {
+      canonicalProductionPolicy: {
+        p0Count: canonical.p0Count,
+        p1Count: canonical.p1Count,
+        p2Count: canonical.p2Count,
+        totalFindings: canonical.totalFindings,
+      },
+    } : {}),
   })).digest('hex');
 }
 
@@ -831,7 +846,12 @@ async function executeQualifiedFullPanel(options: QualifiedFullPanelOptions): Pr
     },
   };
   const result = await options.panelRunner({
-    config: fullPanelQualificationConfig(options.model, options.timeoutMs, options.allPersonasOnEveryFile),
+    config: fullPanelQualificationConfig(
+      options.model,
+      options.timeoutMs,
+      options.allPersonasOnEveryFile,
+      options.qualificationMode === 'same-head' ? 'high' : 'low',
+    ),
     changedFiles: options.changedFiles,
     repository: options.identity.repo,
     headSha: options.identity.headSha,
@@ -1042,6 +1062,7 @@ export async function runSameHeadQualificationWorker(
   const startedAt = new Date().toISOString();
   const telemetry: FullPanelExecutionTelemetry = { providerCalls: 0, attempts: [] };
   let source: SameHeadReviewSource | undefined;
+  let changedFiles: Array<{ path: string; patch: string }> = [];
   let result: PanelResult;
   try {
     result = await runWithQualificationDeadline((async () => {
@@ -1052,6 +1073,7 @@ export async function runSameHeadQualificationWorker(
         expectedBaseSha: identity.baseSha,
         expectedHeadSha: identity.headSha,
       });
+      changedFiles = parseQualificationDiff(source.diff);
       return executeQualifiedFullPanel({
         env,
         identity,
@@ -1059,7 +1081,7 @@ export async function runSameHeadQualificationWorker(
         timeoutMs,
         providerId,
         qualificationMode: 'same-head',
-        changedFiles: parseQualificationDiff(source.diff),
+        changedFiles,
         allPersonasOnEveryFile: true,
         panelRunner,
         client,
@@ -1097,6 +1119,19 @@ export async function runSameHeadQualificationWorker(
     throw new Error(`same-head qualification failed: ${failureClass}`);
   }
   if (!source) throw invalidSameHeadQualificationContract();
+  const canonical = computeAppVerdict({
+    lanes: result.personas.map((lane) => ({
+      id: lane.id,
+      required: lane.required,
+      decision: lane.decision,
+      findings: lane.findings,
+    })),
+    expectedLanes: result.personas.length,
+    changedFiles,
+    coverageComplete: result.optionalFailures.length === 0,
+    candidateVerdict: result.arbiter.verdict,
+    rationale: result.arbiter.rationale,
+  });
   const completedAt = new Date().toISOString();
   const receipt: SameHeadQualificationReceipt = {
     version: 'ReviewYetiPanelQualification.v1',
@@ -1110,16 +1145,24 @@ export async function runSameHeadQualificationWorker(
     providerId,
     requestedModel: model,
     resolvedModel: result.arbiter.model,
-    resultDigest: panelQualificationResultDigest(result),
+    resultDigest: panelQualificationResultDigest(result, {
+      verdict: canonical.verdict,
+      ...canonical.metrics,
+    }),
     publicationMode: 'disabled',
     providerCalls: telemetry.providerCalls,
     githubReads: source.githubReads,
     githubWrites: 0,
     personaCount: result.personas.length,
-    findingsCount: result.personas.reduce((total, lane) => total + lane.findings.length, 0)
-      + result.moderator.findings.length,
+    findingsCount: canonical.metrics.totalFindings,
     quorumSatisfied: result.quorum.satisfied,
-    verdict: result.arbiter.verdict,
+    verdict: canonical.verdict,
+    verdictSource: 'canonical-production-policy',
+    severityCounts: {
+      P0: canonical.metrics.p0Count,
+      P1: canonical.metrics.p1Count,
+      P2: canonical.metrics.p2Count,
+    },
     usage: aggregatePanelUsage(result),
     costUSD: aggregatePanelCost(result),
     durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
