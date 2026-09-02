@@ -58,7 +58,7 @@ function successFetch(calls) {
         event: 'pull_request_target',
         path: '.github/workflows/ct-review-bot.yml',
         head_sha: baseSha,
-        head_branch: '0.8.7-stable',
+        head_branch: 'feat/API-0000-pr-source-branch',
         run_attempt: callerRunAttempt,
         pull_requests: [{ number: 4527 }],
       });
@@ -143,7 +143,6 @@ test('rejects a forged or stale originating caller run', async () => {
     (run) => { run.event = 'workflow_dispatch'; },
     (run) => { run.path = '.github/workflows/other.yml'; },
     (run) => { run.head_sha = 'c'.repeat(40); },
-    (run) => { run.head_branch = 'feature/not-the-base'; },
     (run) => { run.run_attempt = 3; },
     (run) => { run.pull_requests = [{ number: 9999 }]; },
   ]) {
@@ -155,7 +154,7 @@ test('rejects a forged or stale originating caller run', async () => {
         event: 'pull_request_target',
         path: '.github/workflows/ct-review-bot.yml',
         head_sha: baseSha,
-        head_branch: '0.8.7-stable',
+        head_branch: 'feat/API-0000-pr-source-branch',
         run_attempt: callerRunAttempt,
         pull_requests: [{ number: 4527 }],
       };

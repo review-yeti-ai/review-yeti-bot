@@ -119,7 +119,9 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
   if (typeof callerRun?.head_sha !== 'string' || !/^[0-9a-f]{40}$/u.test(callerRun.head_sha)) {
     throw new Error('caller run head SHA is invalid');
   }
-  if (callerRun?.head_branch !== pull?.base?.ref) throw new Error('caller run is not bound to the PR base branch');
+  // NOTE: for pull_request_target runs GitHub reports head_branch as the PR's *source* branch
+  // while head_sha is the base tip, so the branch name cannot be used for binding; ancestry
+  // against the base ref is the binding.
   if (callerRun.head_sha !== request.base_sha) {
     const compare = await githubJson(
       `${apiBase}/compare/${encodeURIComponent(pull.base.ref)}...${callerRun.head_sha}`,
