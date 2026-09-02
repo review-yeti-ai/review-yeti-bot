@@ -4,6 +4,7 @@ import {
   generateGitHubAppJwt,
   getGitHubAppInstallationIdForRepository,
   getGitHubAppInstallationToken,
+  getGitHubAppRepositoryReadToken,
 } from '../../src/github/appAuth';
 
 describe('GitHub App Authentication & Installation Token Exchange', () => {
@@ -74,5 +75,44 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
       owner: 'calltelemetry',
       repo: 'missing',
     }, mockFetch as any)).rejects.toThrow(/HTTP 404/u);
+  });
+
+  it('mints a token restricted to one repository with read-only permissions', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: 42 }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          token: 'ghs_repositoryReadToken123456789',
+          expires_at: '2099-09-02T02:00:00Z',
+          permissions: { contents: 'read', pull_requests: 'read' },
+        }),
+      });
+
+    await expect(getGitHubAppRepositoryReadToken({
+      appId: '123456',
+      privateKey,
+      owner: 'calltelemetry',
+      repo: 'ct-pr-operator-sandbox',
+    }, mockFetch as any)).resolves.toEqual({
+      token: 'ghs_repositoryReadToken123456789',
+      expiresAt: '2099-09-02T02:00:00Z',
+      permissions: { contents: 'read', pull_requests: 'read' },
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/calltelemetry/ct-pr-operator-sandbox/installation',
+    );
+    expect(mockFetch.mock.calls[1][0]).toBe(
+      'https://api.github.com/app/installations/42/access_tokens',
+    );
+    expect(mockFetch.mock.calls[1][1].method).toBe('POST');
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({
+      repositories: ['ct-pr-operator-sandbox'],
+      permissions: { contents: 'read', pull_requests: 'read' },
+    });
+    expect(mockFetch.mock.calls.map(([url]) => url).join('\n')).not.toContain('ghs_');
   });
 });
