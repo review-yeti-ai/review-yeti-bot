@@ -74,7 +74,7 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 	if !rules["timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')"] {
 		t.Fatal("exact 15-minute deadline rule is missing")
 	}
-	if !rules["(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile == 'full-panel' && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"] {
+	if !rules["(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"] {
 		t.Fatal("qualification profile/model rule is missing")
 	}
 }
@@ -111,8 +111,8 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		t.Fatal("prNumber minimum must be one")
 	}
 	profile := spec.Properties["qualificationProfile"]
-	if len(profile.Enum) != 1 || string(profile.Enum[0].Raw) != `"full-panel"` {
-		t.Fatalf("qualificationProfile enum = %#v, want full-panel", profile.Enum)
+	if len(profile.Enum) != 2 || string(profile.Enum[0].Raw) != `"full-panel"` || string(profile.Enum[1].Raw) != `"same-head"` {
+		t.Fatalf("qualificationProfile enum = %#v, want full-panel and same-head", profile.Enum)
 	}
 	model := spec.Properties["qualificationModel"]
 	if model.MinLength == nil || *model.MinLength != 1 || model.MaxLength == nil || *model.MaxLength != 256 {

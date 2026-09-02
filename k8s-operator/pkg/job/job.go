@@ -42,12 +42,14 @@ const (
 	Namespace                     = "ct-review-system"
 	ReceiptOnlyEnv                = "REVIEW_RECEIPT_ONLY"
 	FullPanelQualificationEnv     = "REVIEW_FULL_PANEL_QUALIFICATION_ONLY"
+	SameHeadQualificationEnv      = "REVIEW_SAME_HEAD_QUALIFICATION_ONLY"
 	QualificationModelEnv         = "REVIEW_QUALIFICATION_MODEL"
 	QualificationTimeoutEnv       = "REVIEW_QUALIFICATION_TIMEOUT_MS"
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
 	ReceiptPathEnv                = "REVIEW_RECEIPT_PATH"
 	ReceiptPath                   = "/workspace/.review-yeti/receipt.json"
 	FullPanelQualificationProfile = "full-panel"
+	SameHeadQualificationProfile  = "same-head"
 	ReceiptOnlyWorkerComponent    = "receipt-only-worker"
 	// Jobs are disposable execution records. The reusable PR workspace has a
 	// separate, exact 1,800-second idle reclamation policy.
@@ -85,8 +87,8 @@ type Input struct {
 }
 
 // BuildWorkerJob builds one non-retrying worker Job. The default projection is
-// receipt-only; full-panel qualification is admitted only when the immutable
-// profile/model pair is explicit and publication is disabled. It refuses to
+// receipt-only; qualification is admitted only when the immutable profile/model
+// pair is explicit and publication is disabled. It refuses to
 // build unless the review is still inside its original 15-minute terminal
 // window and the caller proves a currently-held PR workspace Lease.
 func BuildWorkerJob(input Input) (*batchv1.Job, error) {
@@ -132,11 +134,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: PublicationModeEnv, Value: spec.PublicationMode},
 		{Name: ReceiptPathEnv, Value: ReceiptPath},
 	}
-	if spec.QualificationProfile == FullPanelQualificationProfile {
+	if spec.QualificationProfile == FullPanelQualificationProfile || spec.QualificationProfile == SameHeadQualificationProfile {
 		qualificationTimeoutMillis := max(int64(1_000),
 			(activeDeadlineSeconds-WorkerReceiptReserveSeconds)*1_000)
 		env = append(env,
-			corev1.EnvVar{Name: FullPanelQualificationEnv, Value: "true"},
 			corev1.EnvVar{Name: QualificationModelEnv, Value: spec.QualificationModel},
 			corev1.EnvVar{Name: QualificationTimeoutEnv, Value: strconv.FormatInt(qualificationTimeoutMillis, 10)},
 			corev1.EnvVar{
@@ -147,6 +148,20 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				}},
 			},
 		)
+		if spec.QualificationProfile == FullPanelQualificationProfile {
+			env = append(env, corev1.EnvVar{Name: FullPanelQualificationEnv, Value: "true"})
+		} else {
+			env = append(env,
+				corev1.EnvVar{Name: SameHeadQualificationEnv, Value: "true"},
+				corev1.EnvVar{
+					Name: "GH_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
+						Key:                  "GITHUB_READ_TOKEN",
+					}},
+				},
+			)
+		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
 	}
@@ -254,7 +269,7 @@ func validateQualification(profile, model string) error {
 		}
 		return nil
 	}
-	if profile != FullPanelQualificationProfile || model == "" || len(model) > 256 || model != strings.TrimSpace(model) ||
+	if (profile != FullPanelQualificationProfile && profile != SameHeadQualificationProfile) || model == "" || len(model) > 256 || model != strings.TrimSpace(model) ||
 		strings.EqualFold(model, "auto") || strings.EqualFold(model, "openrouter/auto") || strings.ContainsAny(model, "\r\n\t") {
 		return ErrJobConfiguration
 	}
