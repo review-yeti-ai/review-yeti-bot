@@ -27,6 +27,8 @@ import {
   runPanelQualificationWorker,
   isFullPanelQualificationWorker,
   runFullPanelQualificationWorker,
+  isSameHeadQualificationWorker,
+  runSameHeadQualificationWorker,
 } from '../../src/cli/runLiveReview';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
@@ -138,10 +140,11 @@ describe('receipt-only worker contract', () => {
     );
 
     expect(fsMocks.readFile).toHaveBeenCalledWith('/tmp/runtime-manifest.json');
-    expect(moduleLoader).toHaveBeenCalledTimes(6);
+    expect(moduleLoader).toHaveBeenCalledTimes(7);
     expect(new Set(moduleLoader.mock.calls.flat())).toEqual(new Set([
       '../gateway/openRouterClient',
       '../panel/panelEngine',
+      '../github/qualificationReader',
       '../github/publicationReceipt',
       '../k8s/reviewJobProjection',
       '../k8s/reviewJobDispatchEngine',
@@ -676,6 +679,219 @@ describe('full-panel qualification worker contract', () => {
     await runWorker(fullPanelEnvironment, liveRunner, providerRunner, panelRunner, fullPanelRunner);
 
     expect(fullPanelRunner).toHaveBeenCalledWith(fullPanelEnvironment);
+    expect(panelRunner).not.toHaveBeenCalled();
+    expect(providerRunner).not.toHaveBeenCalled();
+    expect(liveRunner).not.toHaveBeenCalled();
+  });
+});
+
+describe('same-head qualification worker contract', () => {
+  const sameHeadEnvironment = {
+    REVIEW_SAME_HEAD_QUALIFICATION_ONLY: 'true',
+    REVIEW_FULL_PANEL_QUALIFICATION_ONLY: 'false',
+    REVIEW_PANEL_QUALIFICATION_ONLY: 'false',
+    REVIEW_PROVIDER_QUALIFICATION_ONLY: 'false',
+    REVIEW_RECEIPT_ONLY: 'false',
+    REVIEW_PUBLICATION_MODE: 'disabled',
+    REVIEW_RECEIPT_PATH: receiptPathLiteral,
+    REVIEW_RUN_ID: 'run_99999999999999999999999999999999',
+    REVIEW_DELIVERY_ID: 'qualification:same-head:1',
+    REVIEW_REPOSITORY_ID: '123',
+    REVIEW_REPO: 'calltelemetry/ct-pr-operator-sandbox',
+    REVIEW_PR_NUMBER: '42',
+    REVIEW_HEAD_SHA: 'a'.repeat(40),
+    REVIEW_BASE_SHA: 'b'.repeat(40),
+    REVIEW_POLICY_DIGEST: 'c'.repeat(64),
+    REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
+    REVIEW_QUALIFICATION_MODEL: 'deepseek/deepseek-v4-flash-0731',
+    REVIEW_QUALIFICATION_TIMEOUT_MS: '600000',
+    OPENROUTER_API_KEY: 'test-openrouter-key',
+    GH_TOKEN: 'ghs_readOnlyQualificationToken',
+  } as NodeJS.ProcessEnv;
+  const rawDiff = [
+    'diff --git a/src/auth.ts b/src/auth.ts',
+    '--- a/src/auth.ts',
+    '+++ b/src/auth.ts',
+    '@@ -1 +1 @@',
+    '-export const value = 0;',
+    '+export const value = "raw-diff-secret-marker";',
+    '',
+  ].join('\n');
+  const diffDigest = createHash('sha256').update(rawDiff).digest('hex');
+
+  function completePanelResult() {
+    const persona = (id: string) => ({
+      id,
+      required: true,
+      providerId: 'qualification',
+      model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+      decision: 'APPROVE' as const,
+      findings: [],
+      usage: { prompt: 100, completion: 20, total: 120 },
+      costUSD: 0.001,
+      durationMs: 50,
+    });
+    return {
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      personas: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'].map(persona),
+      optionalFailures: [],
+      quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
+      moderator: {
+        providerId: 'qualification', model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        decision: 'RECONCILED' as const, findings: [],
+        usage: { prompt: 100, completion: 20, total: 120 }, costUSD: 0.001, durationMs: 30,
+      },
+      arbiter: {
+        providerId: 'qualification', model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        verdict: 'SHIP' as const, rationale: 'private provider response',
+        usage: { prompt: 100, completion: 20, total: 120 }, costUSD: 0.001, durationMs: 30,
+      },
+    };
+  }
+
+  it('is explicit, mutually exclusive, read-token-only, and non-publishing', async () => {
+    expect(isSameHeadQualificationWorker(sameHeadEnvironment)).toBe(true);
+    const invalidEnvironments = [
+      { REVIEW_SAME_HEAD_QUALIFICATION_ONLY: 'false' },
+      { REVIEW_FULL_PANEL_QUALIFICATION_ONLY: 'true' },
+      { REVIEW_PANEL_QUALIFICATION_ONLY: 'true' },
+      { REVIEW_PROVIDER_QUALIFICATION_ONLY: 'true' },
+      { REVIEW_RECEIPT_ONLY: 'true' },
+      { REVIEW_PUBLICATION_MODE: 'enabled' },
+      { GH_TOKEN: undefined },
+      { GH_TOKEN: 'github_pat_writeCapable' },
+      { GITHUB_TOKEN: 'ambient-token-must-not-enter-worker' },
+      { GITHUB_APP_PRIVATE_KEY: 'private-key-must-not-enter-worker' },
+    ];
+    for (const changes of invalidEnvironments) {
+      const candidate = { ...sameHeadEnvironment, ...changes };
+      expect(isSameHeadQualificationWorker(candidate)).toBe(false);
+      const sourceLoader = vi.fn();
+      await expect(runSameHeadQualificationWorker(
+        candidate,
+        vi.fn(),
+        { complete: vi.fn() } as any,
+        sourceLoader,
+      )).rejects.toThrow(/same-head qualification worker contract/i);
+      expect(sourceLoader).not.toHaveBeenCalled();
+    }
+  });
+
+  it('reviews the verified diff and persists only sanitized same-head telemetry', async () => {
+    const sourceLoader = vi.fn(async () => ({
+      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      diff: rawDiff,
+      diffDigest,
+      githubReads: 3 as const,
+    }));
+    const client = {
+      complete: vi.fn(async () => ({
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        content: 'private model response',
+        usage: { prompt: 100, completion: 20, total: 120 },
+        costUSD: 0.001,
+        raw: { token: 'private-response-token' },
+      })),
+    };
+    const panelRunner = vi.fn(async (options: any) => {
+      expect(options.config.personas).toHaveLength(6);
+      expect(options.config.personas.every((persona: any) => persona.required)).toBe(true);
+      expect(options.config.personas.every((persona: any) => persona.paths.length === 1 && persona.paths[0] === '**')).toBe(true);
+      expect(options.changedFiles).toEqual([{ path: 'src/auth.ts', patch: rawDiff.trimEnd() }]);
+      expect(options.requestPolicy.metadata.qualificationMode).toBe('same-head');
+      expect(options.requestPolicy.models).toEqual(['z-ai/glm-5.3-flash']);
+      await Promise.all(Array.from({ length: 8 }, () => options.client.complete({
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        messages: [{ role: 'user', content: 'private prompt' }],
+        stream: true,
+      })));
+      return completePanelResult();
+    });
+
+    const receipt = await runSameHeadQualificationWorker(
+      sameHeadEnvironment,
+      panelRunner,
+      client,
+      sourceLoader,
+    );
+
+    expect(sourceLoader).toHaveBeenCalledWith({
+      token: sameHeadEnvironment.GH_TOKEN,
+      repo: sameHeadEnvironment.REVIEW_REPO,
+      prNumber: 42,
+      expectedBaseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
+      expectedHeadSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+    });
+    expect(receipt).toMatchObject({
+      version: 'ReviewYetiPanelQualification.v1',
+      profile: 'same-head',
+      source: 'github-pull-request',
+      status: 'succeeded',
+      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      diffDigest,
+      githubReads: 3,
+      githubWrites: 0,
+      providerCalls: 8,
+      personaCount: 6,
+      expectedPersonaCount: 6,
+      optionalFailureCount: 0,
+      verdict: 'SHIP',
+    });
+    const serialized = JSON.stringify(receipt);
+    for (const forbidden of [
+      'raw-diff-secret-marker', sameHeadEnvironment.GH_TOKEN!, 'private prompt',
+      'private model response', 'private-response-token', 'private provider response',
+    ]) expect(serialized).not.toContain(forbidden);
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      receiptPathLiteral,
+      `${JSON.stringify(receipt)}\n`,
+      { encoding: 'utf8' },
+    );
+  });
+
+  it('persists a classified source failure without leaking GitHub response text', async () => {
+    const sourceLoader = vi.fn(async () => {
+      throw new Error('GitHub qualification read failed HTTP 429 raw-secret-response');
+    });
+    await expect(runSameHeadQualificationWorker(
+      sameHeadEnvironment,
+      vi.fn(),
+      { complete: vi.fn() } as any,
+      sourceLoader,
+    )).rejects.toThrow('same-head qualification failed: github_rate_limit');
+    const persisted = JSON.parse(String(fsMocks.writeFile.mock.calls[0][1]));
+    expect(persisted).toMatchObject({
+      profile: 'same-head',
+      status: 'failed',
+      source: 'github-pull-request',
+      failureClass: 'github_rate_limit',
+      githubReads: 0,
+      githubWrites: 0,
+      providerCalls: 0,
+    });
+    expect(JSON.stringify(persisted)).not.toContain('raw-secret-response');
+  });
+
+  it('routes same-head qualification before every existing worker mode', async () => {
+    const sameHeadRunner = vi.fn(async () => undefined);
+    const fullPanelRunner = vi.fn(async () => undefined);
+    const panelRunner = vi.fn(async () => undefined);
+    const providerRunner = vi.fn(async () => undefined);
+    const liveRunner = vi.fn(async () => undefined);
+
+    await runWorker(
+      sameHeadEnvironment,
+      liveRunner,
+      providerRunner,
+      panelRunner,
+      fullPanelRunner,
+      sameHeadRunner,
+    );
+
+    expect(sameHeadRunner).toHaveBeenCalledWith(sameHeadEnvironment);
+    expect(fullPanelRunner).not.toHaveBeenCalled();
     expect(panelRunner).not.toHaveBeenCalled();
     expect(providerRunner).not.toHaveBeenCalled();
     expect(liveRunner).not.toHaveBeenCalled();

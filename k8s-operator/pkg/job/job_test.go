@@ -91,6 +91,15 @@ func envValue(container corev1.Container, name string) string {
 	return ""
 }
 
+func hasEnv(container corev1.Container, name string) bool {
+	for _, env := range container.Env {
+		if env.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)
@@ -133,7 +142,8 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "true" || envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
 		t.Fatalf("receipt-only env missing: %#v", container.Env)
 	}
-	if envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "" || envValue(container, "OPENROUTER_API_KEY") != "" {
+	if hasEnv(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") || hasEnv(container, "REVIEW_SAME_HEAD_QUALIFICATION_ONLY") ||
+		hasEnv(container, "OPENROUTER_API_KEY") || hasEnv(container, "GH_TOKEN") {
 		t.Fatalf("receipt-only worker unexpectedly exposes qualification env: %#v", container.Env)
 	}
 	if envValue(container, "REVIEW_RUN_ID") != review.Spec.RunID || envValue(container, "REVIEW_RECEIPT_PATH") != "/workspace/.review-yeti/receipt.json" {
@@ -218,6 +228,9 @@ func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 		apiKey.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || apiKey.ValueFrom.SecretKeyRef.Key != "OPENROUTER_API_KEY" {
 		t.Fatalf("full-panel qualification secret reference = %#v", apiKey)
 	}
+	if hasEnv(container, "GH_TOKEN") {
+		t.Fatal("full-panel qualification must not receive the GitHub read token")
+	}
 }
 
 func TestBuildFullPanelQualificationKeepsWorkerDeadlineInsideJobDeadline(t *testing.T) {
@@ -245,6 +258,55 @@ func TestBuildFullPanelQualificationKeepsWorkerDeadlineInsideJobDeadline(t *test
 				t.Fatalf("worker qualification timeout = %q, want %q", got, test.wantTimeoutMs)
 			}
 		})
+	}
+}
+
+func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.QualificationProfile = "same-head"
+	review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+	result, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("build same-head qualification job: %v", err)
+	}
+	if result.Spec.ActiveDeadlineSeconds == nil || *result.Spec.ActiveDeadlineSeconds != 840 ||
+		result.Spec.BackoffLimit == nil || *result.Spec.BackoffLimit != 0 {
+		t.Fatalf("same-head deadline/backoff = %v/%v, want 840/0", result.Spec.ActiveDeadlineSeconds, result.Spec.BackoffLimit)
+	}
+	if result.Spec.Template.Spec.AutomountServiceAccountToken == nil || *result.Spec.Template.Spec.AutomountServiceAccountToken {
+		t.Fatalf("same-head worker must not mount a service account token: %v", result.Spec.Template.Spec.AutomountServiceAccountToken)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if envValue(container, "REVIEW_SAME_HEAD_QUALIFICATION_ONLY") != "true" ||
+		envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "" ||
+		envValue(container, "REVIEW_RECEIPT_ONLY") != "" ||
+		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
+		envValue(container, "REVIEW_QUALIFICATION_TIMEOUT_MS") != "780000" ||
+		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
+		t.Fatalf("same-head qualification env mismatch: %#v", container.Env)
+	}
+	wantSecretKeys := map[string]string{
+		"OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
+		"GH_TOKEN":           "GITHUB_READ_TOKEN",
+	}
+	for envName, secretKey := range wantSecretKeys {
+		var found *corev1.EnvVar
+		for index := range container.Env {
+			if container.Env[index].Name == envName {
+				found = &container.Env[index]
+				break
+			}
+		}
+		if found == nil || found.ValueFrom == nil || found.ValueFrom.SecretKeyRef == nil ||
+			found.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || found.ValueFrom.SecretKeyRef.Key != secretKey {
+			t.Fatalf("same-head %s secret reference = %#v", envName, found)
+		}
+	}
+	for _, forbidden := range []string{"GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_INSTALLATION_ID"} {
+		if hasEnv(container, forbidden) {
+			t.Fatalf("same-head worker exposes forbidden credential %s", forbidden)
+		}
 	}
 }
 

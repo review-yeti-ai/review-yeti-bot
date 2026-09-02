@@ -7,6 +7,8 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
+import { loadSameHeadReviewSource } from '../github/qualificationReader';
+import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
@@ -131,6 +133,13 @@ export interface FullPanelQualificationReceipt extends PanelQualificationReceipt
   optionalFailureCount: 0;
 }
 
+export interface SameHeadQualificationReceipt extends Omit<FullPanelQualificationReceipt, 'profile'> {
+  profile: 'same-head';
+  source: 'github-pull-request';
+  diffDigest: string;
+  githubReads: 3;
+}
+
 export interface FullPanelQualificationAttemptReceipt {
   attempt: number;
   persona: string;
@@ -172,6 +181,13 @@ export interface FailedFullPanelQualificationReceipt {
   completedAt: string;
 }
 
+export interface FailedSameHeadQualificationReceipt extends Omit<FailedFullPanelQualificationReceipt, 'profile'> {
+  profile: 'same-head';
+  source: 'github-pull-request';
+  diffDigest?: string;
+  githubReads: number;
+}
+
 const RECEIPT_RUN_ID = /^run_[a-f0-9]{32}$/u;
 const RECEIPT_REPO = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const RECEIPT_SHA = /^[a-f0-9]{40}$/u;
@@ -201,9 +217,15 @@ function fullPanelQualificationRequested(env: NodeJS.ProcessEnv): boolean {
   return receiptValue(env, 'REVIEW_FULL_PANEL_QUALIFICATION_ONLY') === 'true';
 }
 
+function sameHeadQualificationRequested(env: NodeJS.ProcessEnv): boolean {
+  return receiptValue(env, 'REVIEW_SAME_HEAD_QUALIFICATION_ONLY') === 'true';
+}
+
 /** Provider qualification is opt-in and cannot share the receipt-only/live modes. */
 export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return providerQualificationRequested(env)
+    && !sameHeadQualificationRequested(env)
+    && !fullPanelQualificationRequested(env)
     && !panelQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
@@ -212,6 +234,7 @@ export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.e
 /** Panel qualification is opt-in and mutually exclusive with all other worker modes. */
 export function isPanelQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return panelQualificationRequested(env)
+    && !sameHeadQualificationRequested(env)
     && !fullPanelQualificationRequested(env)
     && !providerQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
@@ -225,10 +248,30 @@ function invalidFullPanelQualificationContract(): Error {
 /** Full-panel qualification is explicit, non-publishing, and mutually exclusive. */
 export function isFullPanelQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return fullPanelQualificationRequested(env)
+    && !sameHeadQualificationRequested(env)
     && !panelQualificationRequested(env)
     && !providerQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
+}
+
+function invalidSameHeadQualificationContract(): Error {
+  return new Error('same-head qualification worker contract is invalid');
+}
+
+/** Same-head qualification accepts one read-only installation token and no App credential. */
+export function isSameHeadQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
+  return sameHeadQualificationRequested(env)
+    && !fullPanelQualificationRequested(env)
+    && !panelQualificationRequested(env)
+    && !providerQualificationRequested(env)
+    && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled'
+    && receiptValue(env, 'GH_TOKEN').startsWith('ghs_')
+    && !receiptValue(env, 'GITHUB_TOKEN')
+    && !receiptValue(env, 'GITHUB_APP_PRIVATE_KEY')
+    && !receiptValue(env, 'GITHUB_APP_ID')
+    && !receiptValue(env, 'GITHUB_INSTALLATION_ID');
 }
 
 function invalidProviderQualificationContract(): Error {
@@ -292,6 +335,10 @@ function panelQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIdenti
 
 function fullPanelQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIdentity {
   return qualificationIdentity(env, isFullPanelQualificationWorker, invalidFullPanelQualificationContract);
+}
+
+function sameHeadQualificationIdentity(env: NodeJS.ProcessEnv): QualificationIdentity {
+  return qualificationIdentity(env, isSameHeadQualificationWorker, invalidSameHeadQualificationContract);
 }
 
 function qualificationModel(
@@ -485,6 +532,7 @@ function fullPanelRequestPolicy(
   model: string,
   identity: QualificationIdentity,
   providerId: string,
+  qualificationMode: 'full-panel' | 'same-head' = 'full-panel',
 ): PanelRequestPolicy {
   return {
     stream: true,
@@ -502,7 +550,7 @@ function fullPanelRequestPolicy(
       data_collection: 'deny',
     },
     metadata: {
-      qualificationMode: 'full-panel',
+      qualificationMode,
       runId: identity.runId,
       providerId,
     },
@@ -516,6 +564,14 @@ function qualificationFailureClass(error: unknown): string {
     if (error.status !== undefined && error.status >= 500) return 'provider_5xx';
   }
   const message = error instanceof Error ? error.message : String(error || '');
+  if (/GitHub qualification read failed HTTP 429/iu.test(message)) return 'github_rate_limit';
+  if (/GitHub qualification read failed HTTP (?:5\d\d)/iu.test(message)) return 'github_5xx';
+  if (/GitHub qualification read failed HTTP (?:401|403)/iu.test(message)) return 'github_auth';
+  if (/GitHub qualification read failed HTTP 404/iu.test(message)) return 'github_not_found';
+  if (/projected pull request identity mismatch/iu.test(message)) return 'github_identity_mismatch';
+  if (/pull request moved during qualification read/iu.test(message)) return 'github_head_moved';
+  if (/diff size is outside qualification bounds/iu.test(message)) return 'github_diff_bounds';
+  if (/qualification exceeded \d+ms/iu.test(message)) return 'overall_timeout';
   if (/(?:invalid json|structured output|nonce fence|response contract)/iu.test(message)) return 'structured_output';
   return 'panel_failure';
 }
@@ -609,7 +665,11 @@ function panelQualificationConfig(model: string, timeoutMs: number): CtReviewCon
   } as CtReviewConfigV3;
 }
 
-function fullPanelQualificationConfig(model: string, timeoutMs: number): CtReviewConfigV3 {
+function fullPanelQualificationConfig(
+  model: string,
+  timeoutMs: number,
+  allPersonasOnEveryFile = false,
+): CtReviewConfigV3 {
   const perCallSeconds = Math.max(1, Math.floor(timeoutMs / 4_000));
   const base = createDefaultV3Config();
   return {
@@ -620,7 +680,7 @@ function fullPanelQualificationConfig(model: string, timeoutMs: number): CtRevie
       enabled: true,
       required: true,
       charter: persona.charter,
-      paths: [...persona.paths],
+      paths: allPersonasOnEveryFile ? ['**'] : [...persona.paths],
       providers: ['qualification'],
       // One initial answer plus two bounded format/tool corrections. The
       // qualification profile must exercise the same recovery behavior that
@@ -708,6 +768,108 @@ async function runWithQualificationDeadline<T>(promise: Promise<T>, timeoutMs: n
   }
 }
 
+interface FullPanelExecutionTelemetry {
+  providerCalls: number;
+  attempts: FullPanelQualificationAttemptReceipt[];
+}
+
+interface QualifiedFullPanelOptions {
+  env: NodeJS.ProcessEnv;
+  identity: QualificationIdentity;
+  model: string;
+  timeoutMs: number;
+  providerId: string;
+  qualificationMode: 'full-panel' | 'same-head';
+  changedFiles: Array<{ path: string; patch?: string; content?: string }>;
+  allPersonasOnEveryFile?: boolean;
+  panelRunner: PanelQualificationRunner;
+  client?: ReviewModelClient;
+  telemetry: FullPanelExecutionTelemetry;
+}
+
+async function executeQualifiedFullPanel(options: QualifiedFullPanelOptions): Promise<PanelResult> {
+  const effectiveClient = options.client || qualificationClient(options.env);
+  const countingClient: ReviewModelClient = {
+    complete: async (request) => {
+      options.telemetry.providerCalls += 1;
+      const attempt = options.telemetry.providerCalls;
+      const attemptStarted = Date.now();
+      try {
+        const response = await effectiveClient.complete(request);
+        if (options.telemetry.attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
+          options.telemetry.attempts.push({
+            attempt,
+            persona: request.persona || 'unknown',
+            providerId: request.providerId || options.providerId,
+            requestedModel: request.model,
+            resolvedModel: response.model,
+            outcome: 'completed',
+            durationMs: Math.max(0, Date.now() - attemptStarted),
+            usage: response.usage,
+            costUSD: response.costUSD,
+          });
+        }
+        return response;
+      } catch (error: any) {
+        if (options.telemetry.attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
+          options.telemetry.attempts.push({
+            attempt,
+            persona: request.persona || 'unknown',
+            providerId: request.providerId || options.providerId,
+            requestedModel: request.model,
+            outcome: 'failed',
+            durationMs: Math.max(0, Date.now() - attemptStarted),
+            failureClass: qualificationFailureClass(error),
+            ...(error instanceof OpenRouterTimeoutError ? { timeoutKind: error.kind } : {}),
+            ...(error instanceof OpenRouterResponseError && error.status !== undefined
+              ? { responseStatus: error.status }
+              : {}),
+          });
+        }
+        throw error;
+      }
+    },
+  };
+  const result = await options.panelRunner({
+    config: fullPanelQualificationConfig(options.model, options.timeoutMs, options.allPersonasOnEveryFile),
+    changedFiles: options.changedFiles,
+    repository: options.identity.repo,
+    headSha: options.identity.headSha,
+    client: new BoundedQualificationClient(countingClient, 3),
+    jobId: options.identity.runId,
+    requestPolicy: fullPanelRequestPolicy(
+      options.model,
+      options.identity,
+      options.providerId,
+      options.qualificationMode,
+    ),
+  });
+  if (!result.quorum.satisfied || !result.arbiter?.verdict
+      || result.personas.length !== FULL_PANEL_QUALIFICATION_PERSONAS.length
+      || result.optionalFailures.length > 0
+      || options.telemetry.providerCalls < FULL_PANEL_MIN_PROVIDER_CALLS) {
+    throw options.qualificationMode === 'same-head'
+      ? invalidSameHeadQualificationContract()
+      : invalidFullPanelQualificationContract();
+  }
+  return result;
+}
+
+function parseQualificationDiff(diff: string): Array<{ path: string; patch: string }> {
+  const headers = Array.from(diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gmu));
+  const files = headers.map((header, index) => {
+    const start = header.index ?? 0;
+    const end = index + 1 < headers.length ? headers[index + 1].index : diff.length;
+    const path = (header[2] || '').trim();
+    if (!path || path.startsWith('/') || path.includes('\0') || path.split('/').includes('..')) {
+      throw invalidSameHeadQualificationContract();
+    }
+    return { path, patch: diff.slice(start, end).trimEnd() };
+  });
+  if (files.length === 0) throw invalidSameHeadQualificationContract();
+  return files;
+}
+
 /**
  * Exercise one real panel, moderator, and arbiter path against a deterministic
  * fixture. The result is an aggregate receipt only; no finding or provider
@@ -790,68 +952,21 @@ export async function runFullPanelQualificationWorker(
   const timeoutMs = qualificationTimeoutMs(env, invalidFullPanelQualificationContract);
   const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
   const startedAt = new Date().toISOString();
-  let providerCalls = 0;
-  const attempts: FullPanelQualificationAttemptReceipt[] = [];
-  const effectiveClient = client || qualificationClient(env);
-  const countingClient: ReviewModelClient = {
-    complete: async (request) => {
-      providerCalls += 1;
-      const attempt = providerCalls;
-      const attemptStarted = Date.now();
-      try {
-        const response = await effectiveClient.complete(request);
-        if (attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
-          attempts.push({
-            attempt,
-            persona: request.persona || 'unknown',
-            providerId: request.providerId || providerId,
-            requestedModel: request.model,
-            resolvedModel: response.model,
-            outcome: 'completed',
-            durationMs: Math.max(0, Date.now() - attemptStarted),
-            usage: response.usage,
-            costUSD: response.costUSD,
-          });
-        }
-        return response;
-      } catch (error: any) {
-        if (attempts.length < FULL_PANEL_MAX_ATTEMPT_RECEIPTS) {
-          attempts.push({
-            attempt,
-            persona: request.persona || 'unknown',
-            providerId: request.providerId || providerId,
-            requestedModel: request.model,
-            outcome: 'failed',
-            durationMs: Math.max(0, Date.now() - attemptStarted),
-            failureClass: qualificationFailureClass(error),
-            ...(error instanceof OpenRouterTimeoutError ? { timeoutKind: error.kind } : {}),
-            ...(error instanceof OpenRouterResponseError && error.status !== undefined
-              ? { responseStatus: error.status }
-              : {}),
-          });
-        }
-        throw error;
-      }
-    },
-  };
-  const boundedClient = new BoundedQualificationClient(countingClient, 3);
+  const telemetry: FullPanelExecutionTelemetry = { providerCalls: 0, attempts: [] };
   let result: PanelResult;
   try {
-    result = await runWithQualificationDeadline(panelRunner({
-      config: fullPanelQualificationConfig(model, timeoutMs),
+    result = await runWithQualificationDeadline(executeQualifiedFullPanel({
+      env,
+      identity,
+      model,
+      timeoutMs,
+      providerId,
+      qualificationMode: 'full-panel',
       changedFiles: FULL_PANEL_QUALIFICATION_FIXTURE,
-      repository: identity.repo,
-      headSha: identity.headSha,
-      client: boundedClient,
-      jobId: identity.runId,
-      requestPolicy: fullPanelRequestPolicy(model, identity, providerId),
+      panelRunner,
+      client,
+      telemetry,
     }), timeoutMs);
-    if (!result.quorum.satisfied || !result.arbiter?.verdict
-        || result.personas.length !== FULL_PANEL_QUALIFICATION_PERSONAS.length
-        || result.optionalFailures.length > 0
-        || providerCalls < FULL_PANEL_MIN_PROVIDER_CALLS) {
-      throw invalidFullPanelQualificationContract();
-    }
   } catch (error) {
     const completedAt = new Date().toISOString();
     const failedReceipt: FailedFullPanelQualificationReceipt = {
@@ -862,11 +977,11 @@ export async function runFullPanelQualificationWorker(
       providerId,
       requestedModel: model,
       publicationMode: 'disabled',
-      providerCalls,
+      providerCalls: telemetry.providerCalls,
       githubWrites: 0,
       expectedPersonaCount: 6,
       failureClass: qualificationFailureClass(error),
-      attempts,
+      attempts: telemetry.attempts,
       durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
       startedAt,
       completedAt,
@@ -888,7 +1003,117 @@ export async function runFullPanelQualificationWorker(
     resolvedModel: result.arbiter.model,
     resultDigest: panelQualificationResultDigest(result),
     publicationMode: 'disabled',
-    providerCalls,
+    providerCalls: telemetry.providerCalls,
+    githubWrites: 0,
+    personaCount: result.personas.length,
+    findingsCount: result.personas.reduce((total, lane) => total + lane.findings.length, 0)
+      + result.moderator.findings.length,
+    quorumSatisfied: result.quorum.satisfied,
+    verdict: result.arbiter.verdict,
+    usage: aggregatePanelUsage(result),
+    costUSD: aggregatePanelCost(result),
+    durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+    startedAt,
+    completedAt,
+  };
+  await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+  await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8' });
+  return receipt;
+}
+
+/**
+ * Execute the same bounded six-persona profile against one exact GitHub PR
+ * diff. GitHub is read only, identity is checked by the source loader, and the
+ * persisted receipt contains no review content or credential.
+ */
+export async function runSameHeadQualificationWorker(
+  env: NodeJS.ProcessEnv = process.env,
+  panelRunner: PanelQualificationRunner = executePersonaPanel,
+  client?: ReviewModelClient,
+  sourceLoader: typeof loadSameHeadReviewSource = loadSameHeadReviewSource,
+): Promise<SameHeadQualificationReceipt> {
+  if (!isSameHeadQualificationWorker(env) || receiptValue(env, 'REVIEW_RECEIPT_PATH') !== RECEIPT_ONLY_PATH) {
+    throw invalidSameHeadQualificationContract();
+  }
+  const identity = sameHeadQualificationIdentity(env);
+  const model = qualificationModel(env, invalidSameHeadQualificationContract);
+  const timeoutMs = qualificationTimeoutMs(env, invalidSameHeadQualificationContract);
+  const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
+  const startedAt = new Date().toISOString();
+  const telemetry: FullPanelExecutionTelemetry = { providerCalls: 0, attempts: [] };
+  let source: SameHeadReviewSource | undefined;
+  let result: PanelResult;
+  try {
+    result = await runWithQualificationDeadline((async () => {
+      source = await sourceLoader({
+        token: receiptValue(env, 'GH_TOKEN'),
+        repo: identity.repo,
+        prNumber: identity.prNumber,
+        expectedBaseSha: identity.baseSha,
+        expectedHeadSha: identity.headSha,
+      });
+      return executeQualifiedFullPanel({
+        env,
+        identity,
+        model,
+        timeoutMs,
+        providerId,
+        qualificationMode: 'same-head',
+        changedFiles: parseQualificationDiff(source.diff),
+        allPersonasOnEveryFile: true,
+        panelRunner,
+        client,
+        telemetry,
+      });
+    })(), timeoutMs);
+  } catch (error) {
+    const completedAt = new Date().toISOString();
+    const failureClass = qualificationFailureClass(error);
+    const errorReads = Number((error as { githubReads?: unknown })?.githubReads);
+    const githubReads = source?.githubReads
+      ?? (Number.isSafeInteger(errorReads) && errorReads >= 0 && errorReads <= 3 ? errorReads : 0);
+    const failedReceipt: FailedSameHeadQualificationReceipt = {
+      version: 'ReviewYetiPanelQualification.v1',
+      profile: 'same-head',
+      source: 'github-pull-request',
+      status: 'failed',
+      ...identity,
+      ...(source ? { diffDigest: source.diffDigest } : {}),
+      providerId,
+      requestedModel: model,
+      publicationMode: 'disabled',
+      providerCalls: telemetry.providerCalls,
+      githubReads,
+      githubWrites: 0,
+      expectedPersonaCount: 6,
+      failureClass,
+      attempts: telemetry.attempts,
+      durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+      startedAt,
+      completedAt,
+    };
+    await mkdir(dirname(RECEIPT_ONLY_PATH), { recursive: true });
+    await writeFile(RECEIPT_ONLY_PATH, `${JSON.stringify(failedReceipt)}\n`, { encoding: 'utf8' });
+    throw new Error(`same-head qualification failed: ${failureClass}`);
+  }
+  if (!source) throw invalidSameHeadQualificationContract();
+  const completedAt = new Date().toISOString();
+  const receipt: SameHeadQualificationReceipt = {
+    version: 'ReviewYetiPanelQualification.v1',
+    profile: 'same-head',
+    source: 'github-pull-request',
+    expectedPersonaCount: 6,
+    optionalFailureCount: 0,
+    status: 'succeeded',
+    ...identity,
+    diffDigest: source.diffDigest,
+    providerId,
+    requestedModel: model,
+    resolvedModel: result.arbiter.model,
+    resultDigest: panelQualificationResultDigest(result),
+    publicationMode: 'disabled',
+    providerCalls: telemetry.providerCalls,
+    githubReads: source.githubReads,
     githubWrites: 0,
     personaCount: result.personas.length,
     findingsCount: result.personas.reduce((total, lane) => total + lane.findings.length, 0)
@@ -1204,7 +1429,26 @@ export async function runWorker(
       costUSD: receipt.costUSD,
     });
   },
+  sameHeadRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
+    const receipt = await runSameHeadQualificationWorker(workerEnv);
+    logger.info('Same-head qualification worker completed without GitHub writes', {
+      runId: receipt.runId,
+      providerId: receipt.providerId,
+      requestedModel: receipt.requestedModel,
+      providerCalls: receipt.providerCalls,
+      githubReads: receipt.githubReads,
+      personaCount: receipt.personaCount,
+      verdict: receipt.verdict,
+      durationMs: receipt.durationMs,
+      costUSD: receipt.costUSD,
+    });
+  },
 ): Promise<void> {
+  if (sameHeadQualificationRequested(env)) {
+    if (!isSameHeadQualificationWorker(env)) throw invalidSameHeadQualificationContract();
+    await sameHeadRunner(env);
+    return;
+  }
   if (fullPanelQualificationRequested(env)) {
     if (!isFullPanelQualificationWorker(env)) throw invalidFullPanelQualificationContract();
     await fullPanelRunner(env);
