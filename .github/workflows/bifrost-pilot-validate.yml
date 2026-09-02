@@ -1,0 +1,38 @@
+name: Validate Bifrost pilot
+
+on:
+  pull_request:
+    paths:
+      - deploy/bifrost-pilot/**
+      - scripts/bifrost-pilot-contract.test.sh
+      - .github/workflows/bifrost-pilot-validate.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/bifrost-pilot/**
+      - scripts/bifrost-pilot-contract.test.sh
+      - .github/workflows/bifrost-pilot-validate.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.19.0
+
+      - name: Add pinned Bifrost chart repository
+        run: |
+          helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+          helm repo update bifrost
+
+      - name: Validate lean pilot contract
+        run: scripts/bifrost-pilot-contract.test.sh
