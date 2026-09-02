@@ -132,6 +132,10 @@ export interface FullPanelQualificationReceipt extends PanelQualificationReceipt
   profile: 'full-panel';
   expectedPersonaCount: 6;
   optionalFailureCount: 0;
+  engineRevision: string;
+  providerTopologyDigest: string;
+  laneAttribution: QualificationLaneAttribution[];
+  retryCount: number;
 }
 
 export interface SameHeadQualificationReceipt extends Omit<FullPanelQualificationReceipt, 'profile'> {
@@ -158,6 +162,16 @@ export interface FullPanelQualificationAttemptReceipt {
   responseStatus?: number;
 }
 
+export interface QualificationLaneAttribution {
+  role: 'persona' | 'moderator' | 'arbiter';
+  lane: string;
+  providerId: string;
+  requestedModel: string;
+  resolvedModel: string;
+  callCount: number;
+  retryCount: number;
+}
+
 export interface FailedFullPanelQualificationReceipt {
   version: 'ReviewYetiPanelQualification.v1';
   profile: 'full-panel';
@@ -171,10 +185,13 @@ export interface FailedFullPanelQualificationReceipt {
   baseSha: string;
   policyDigest: string;
   configDigest: string;
+  engineRevision: string;
+  providerTopologyDigest: string;
   providerId: string;
   requestedModel: string;
   publicationMode: 'disabled';
   providerCalls: number;
+  retryCount: number;
   githubWrites: 0;
   expectedPersonaCount: 6;
   failureClass: string;
@@ -224,6 +241,11 @@ function sameHeadQualificationRequested(env: NodeJS.ProcessEnv): boolean {
   return receiptValue(env, 'REVIEW_SAME_HEAD_QUALIFICATION_ONLY') === 'true';
 }
 
+function usesOpenRouterQualificationClient(env: NodeJS.ProcessEnv): boolean {
+  const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID');
+  return providerId === '' || providerId === 'openrouter';
+}
+
 /** Provider qualification is opt-in and cannot share the receipt-only/live modes. */
 export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   return providerQualificationRequested(env)
@@ -231,6 +253,7 @@ export function isProviderQualificationWorker(env: NodeJS.ProcessEnv = process.e
     && !fullPanelQualificationRequested(env)
     && !panelQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && usesOpenRouterQualificationClient(env)
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
 }
 
@@ -241,6 +264,7 @@ export function isPanelQualificationWorker(env: NodeJS.ProcessEnv = process.env)
     && !fullPanelQualificationRequested(env)
     && !providerQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && usesOpenRouterQualificationClient(env)
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
 }
 
@@ -255,6 +279,7 @@ export function isFullPanelQualificationWorker(env: NodeJS.ProcessEnv = process.
     && !panelQualificationRequested(env)
     && !providerQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && usesOpenRouterQualificationClient(env)
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled';
 }
 
@@ -269,6 +294,7 @@ export function isSameHeadQualificationWorker(env: NodeJS.ProcessEnv = process.e
     && !panelQualificationRequested(env)
     && !providerQualificationRequested(env)
     && receiptValue(env, 'REVIEW_RECEIPT_ONLY') !== 'true'
+    && usesOpenRouterQualificationClient(env)
     && receiptValue(env, 'REVIEW_PUBLICATION_MODE') === 'disabled'
     && receiptValue(env, 'GH_TOKEN').startsWith('ghs_')
     && !receiptValue(env, 'GITHUB_TOKEN')
@@ -531,6 +557,35 @@ const FULL_PANEL_MAX_TURNS = 3;
 const FULL_PANEL_MAX_ATTEMPT_RECEIPTS = 32;
 const FULL_PANEL_FALLBACK_MODEL = 'z-ai/glm-5.3-flash';
 
+function qualificationEngineRevision(env: NodeJS.ProcessEnv, errorFactory: () => Error): string {
+  const revision = receiptValue(env, 'REVIEW_ENGINE_REVISION');
+  if (!RECEIPT_DIGEST.test(revision)) throw errorFactory();
+  return revision;
+}
+
+function qualificationFallbackModels(model: string): string[] {
+  return model === FULL_PANEL_FALLBACK_MODEL ? [] : [FULL_PANEL_FALLBACK_MODEL];
+}
+
+function qualificationProviderTopologyDigest(providerId: string, model: string): string {
+  const personaLanes = FULL_PANEL_QUALIFICATION_PERSONAS.map(({ id }) => ({
+    role: 'persona',
+    lane: id,
+    providerId,
+    requestedModel: model,
+  }));
+  const topology = {
+    version: 'ReviewYetiProviderTopology.v1',
+    lanes: [
+      ...personaLanes,
+      { role: 'moderator', lane: 'moderator', providerId, requestedModel: model },
+      { role: 'arbiter', lane: 'arbiter', providerId, requestedModel: model },
+    ],
+    fallbackModels: qualificationFallbackModels(model),
+  };
+  return createHash('sha256').update(JSON.stringify(topology)).digest('hex');
+}
+
 function fullPanelRequestPolicy(
   model: string,
   identity: QualificationIdentity,
@@ -671,6 +726,7 @@ function panelQualificationConfig(model: string, timeoutMs: number): CtReviewCon
 function fullPanelQualificationConfig(
   model: string,
   timeoutMs: number,
+  providerId: string,
   allPersonasOnEveryFile = false,
   effort: 'low' | 'high' = 'low',
 ): CtReviewConfigV3 {
@@ -685,7 +741,7 @@ function fullPanelQualificationConfig(
       required: true,
       charter: persona.charter,
       paths: allPersonasOnEveryFile ? ['**'] : [...persona.paths],
-      providers: ['qualification'],
+      providers: [providerId],
       // One initial answer plus two bounded format/tool corrections. The
       // qualification profile must exercise the same recovery behavior that
       // production lanes rely on without permitting open-ended exploration.
@@ -696,14 +752,14 @@ function fullPanelQualificationConfig(
       fallback: 'none',
       overall_timeout_s: Math.max(1, Math.floor(timeoutMs / 1_000)),
       providers: [{
-        id: 'qualification',
+        id: providerId,
         enabled: true,
         model,
         effort,
         review_timeout_s: perCallSeconds,
         arbiter_timeout_s: perCallSeconds,
       }],
-      arbiter: { order: ['qualification'] },
+      arbiter: { order: [providerId] },
     },
   } as CtReviewConfigV3;
 }
@@ -788,6 +844,54 @@ interface FullPanelExecutionTelemetry {
   attempts: FullPanelQualificationAttemptReceipt[];
 }
 
+function qualificationRetryCount(attempts: FullPanelQualificationAttemptReceipt[]): number {
+  const callsByLane = new Map<string, number>();
+  for (const attempt of attempts) {
+    callsByLane.set(attempt.persona, (callsByLane.get(attempt.persona) || 0) + 1);
+  }
+  return [...callsByLane.values()].reduce((total, calls) => total + Math.max(0, calls - 1), 0);
+}
+
+function qualificationLaneAttribution(
+  result: PanelResult,
+  attempts: FullPanelQualificationAttemptReceipt[],
+  errorFactory: () => Error,
+): QualificationLaneAttribution[] {
+  const resultLanes = new Map(result.personas.map((lane) => [lane.id, {
+    providerId: lane.providerId,
+    model: lane.model,
+  }]));
+  resultLanes.set('moderator', {
+    providerId: result.moderator.providerId,
+    model: result.moderator.model,
+  });
+  resultLanes.set('arbiter', {
+    providerId: result.arbiter.providerId,
+    model: result.arbiter.model,
+  });
+
+  const expected = [
+    ...FULL_PANEL_QUALIFICATION_PERSONAS.map(({ id }) => ({ role: 'persona' as const, lane: id })),
+    { role: 'moderator' as const, lane: 'moderator' },
+    { role: 'arbiter' as const, lane: 'arbiter' },
+  ];
+  return expected.map(({ role, lane }) => {
+    const laneResult = resultLanes.get(lane);
+    const laneAttempts = attempts.filter((attempt) => attempt.persona === lane);
+    const completed = [...laneAttempts].reverse().find((attempt) => attempt.outcome === 'completed');
+    if (!laneResult || !completed?.resolvedModel || laneAttempts.length < 1) throw errorFactory();
+    return {
+      role,
+      lane,
+      providerId: completed.providerId || laneResult.providerId,
+      requestedModel: laneAttempts[0].requestedModel,
+      resolvedModel: completed.resolvedModel || laneResult.model,
+      callCount: laneAttempts.length,
+      retryCount: Math.max(0, laneAttempts.length - 1),
+    };
+  });
+}
+
 interface QualifiedFullPanelOptions {
   env: NodeJS.ProcessEnv;
   identity: QualificationIdentity;
@@ -849,6 +953,7 @@ async function executeQualifiedFullPanel(options: QualifiedFullPanelOptions): Pr
     config: fullPanelQualificationConfig(
       options.model,
       options.timeoutMs,
+      options.providerId,
       options.allPersonasOnEveryFile,
       options.qualificationMode === 'same-head' ? 'high' : 'low',
     ),
@@ -971,9 +1076,12 @@ export async function runFullPanelQualificationWorker(
   const model = qualificationModel(env, invalidFullPanelQualificationContract);
   const timeoutMs = qualificationTimeoutMs(env, invalidFullPanelQualificationContract);
   const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
+  const engineRevision = qualificationEngineRevision(env, invalidFullPanelQualificationContract);
+  const providerTopologyDigest = qualificationProviderTopologyDigest(providerId, model);
   const startedAt = new Date().toISOString();
   const telemetry: FullPanelExecutionTelemetry = { providerCalls: 0, attempts: [] };
   let result: PanelResult;
+  let laneAttribution: QualificationLaneAttribution[] = [];
   try {
     result = await runWithQualificationDeadline(executeQualifiedFullPanel({
       env,
@@ -987,6 +1095,11 @@ export async function runFullPanelQualificationWorker(
       client,
       telemetry,
     }), timeoutMs);
+    laneAttribution = qualificationLaneAttribution(
+      result,
+      telemetry.attempts,
+      invalidFullPanelQualificationContract,
+    );
   } catch (error) {
     const completedAt = new Date().toISOString();
     const failedReceipt: FailedFullPanelQualificationReceipt = {
@@ -994,10 +1107,13 @@ export async function runFullPanelQualificationWorker(
       profile: 'full-panel',
       status: 'failed',
       ...identity,
+      engineRevision,
+      providerTopologyDigest,
       providerId,
       requestedModel: model,
       publicationMode: 'disabled',
       providerCalls: telemetry.providerCalls,
+      retryCount: qualificationRetryCount(telemetry.attempts),
       githubWrites: 0,
       expectedPersonaCount: 6,
       failureClass: qualificationFailureClass(error),
@@ -1018,6 +1134,10 @@ export async function runFullPanelQualificationWorker(
     optionalFailureCount: 0,
     status: 'succeeded',
     ...identity,
+    engineRevision,
+    providerTopologyDigest,
+    laneAttribution,
+    retryCount: laneAttribution.reduce((total, lane) => total + lane.retryCount, 0),
     providerId,
     requestedModel: model,
     resolvedModel: result.arbiter.model,
@@ -1059,11 +1179,14 @@ export async function runSameHeadQualificationWorker(
   const model = qualificationModel(env, invalidSameHeadQualificationContract);
   const timeoutMs = qualificationTimeoutMs(env, invalidSameHeadQualificationContract);
   const providerId = receiptValue(env, 'REVIEW_QUALIFICATION_PROVIDER_ID') || 'openrouter';
+  const engineRevision = qualificationEngineRevision(env, invalidSameHeadQualificationContract);
+  const providerTopologyDigest = qualificationProviderTopologyDigest(providerId, model);
   const startedAt = new Date().toISOString();
   const telemetry: FullPanelExecutionTelemetry = { providerCalls: 0, attempts: [] };
   let source: SameHeadReviewSource | undefined;
   let changedFiles: Array<{ path: string; patch: string }> = [];
   let result: PanelResult;
+  let laneAttribution: QualificationLaneAttribution[] = [];
   try {
     result = await runWithQualificationDeadline((async () => {
       source = await sourceLoader({
@@ -1074,7 +1197,7 @@ export async function runSameHeadQualificationWorker(
         expectedHeadSha: identity.headSha,
       });
       changedFiles = parseQualificationDiff(source.diff);
-      return executeQualifiedFullPanel({
+      const panelResult = await executeQualifiedFullPanel({
         env,
         identity,
         model,
@@ -1087,6 +1210,12 @@ export async function runSameHeadQualificationWorker(
         client,
         telemetry,
       });
+      laneAttribution = qualificationLaneAttribution(
+        panelResult,
+        telemetry.attempts,
+        invalidSameHeadQualificationContract,
+      );
+      return panelResult;
     })(), timeoutMs);
   } catch (error) {
     const completedAt = new Date().toISOString();
@@ -1101,10 +1230,13 @@ export async function runSameHeadQualificationWorker(
       status: 'failed',
       ...identity,
       ...(source ? { diffDigest: source.diffDigest } : {}),
+      engineRevision,
+      providerTopologyDigest,
       providerId,
       requestedModel: model,
       publicationMode: 'disabled',
       providerCalls: telemetry.providerCalls,
+      retryCount: qualificationRetryCount(telemetry.attempts),
       githubReads,
       githubWrites: 0,
       expectedPersonaCount: 6,
@@ -1142,6 +1274,10 @@ export async function runSameHeadQualificationWorker(
     status: 'succeeded',
     ...identity,
     diffDigest: source.diffDigest,
+    engineRevision,
+    providerTopologyDigest,
+    laneAttribution,
+    retryCount: laneAttribution.reduce((total, lane) => total + lane.retryCount, 0),
     providerId,
     requestedModel: model,
     resolvedModel: result.arbiter.model,
