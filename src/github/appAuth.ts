@@ -126,3 +126,56 @@ export async function getGitHubAppInstallationIdForRepository(
   }
   return installationId;
 }
+
+/**
+ * Mints a short-lived installation token constrained to one repository and
+ * the two read permissions needed by a non-publishing review worker.
+ */
+export async function getGitHubAppRepositoryReadToken(
+  config: GitHubRepositoryInstallationConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<InstallationTokenResult> {
+  const installationId = await getGitHubAppInstallationIdForRepository(config, fetchFn);
+  const { appId, privateKey, repo, baseUrl = 'https://api.github.com' } = config;
+  const jwt = generateGitHubAppJwt(appId, privateKey);
+  const url = `${baseUrl.replace(/\/+$/, '')}/app/installations/${installationId}/access_tokens`;
+  const response = await fetchFn(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${jwt}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'ct-review-bot[bot]',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({
+      repositories: [repo],
+      permissions: { contents: 'read', pull_requests: 'read' },
+    }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub App repository read token exchange failed HTTP ${response.status}`);
+  }
+  const body = await response.json() as {
+    token?: unknown;
+    expires_at?: unknown;
+    permissions?: unknown;
+  };
+  const token = typeof body.token === 'string' ? body.token : '';
+  const expiresAt = typeof body.expires_at === 'string' ? body.expires_at : '';
+  const permissions = body.permissions && typeof body.permissions === 'object' && !Array.isArray(body.permissions)
+    ? body.permissions as Record<string, unknown>
+    : {};
+  const permissionValues = Object.values(permissions);
+  if (!token.startsWith('ghs_') || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now() ||
+      permissions.contents !== 'read' || permissions.pull_requests !== 'read' ||
+      permissionValues.some((value) => value !== 'read')) {
+    throw new Error('GitHub App repository read token exchange returned an unsafe contract');
+  }
+  return {
+    token,
+    expiresAt,
+    permissions: permissions as Record<string, string>,
+  };
+}
