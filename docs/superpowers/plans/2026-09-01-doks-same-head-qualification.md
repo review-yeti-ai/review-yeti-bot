@@ -10,6 +10,16 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-30-doks-review-dispatch-design.md`
 
+**Status (2026-09-02):** The optional, read-only same-head capability is
+implemented and released through `v1.22.2`. One exact-head OpenRouter-only DOKS
+run completed 6/6 personas plus moderator and arbiter in three minutes with zero
+GitHub writes, no extra panel/correction call, and a canonical fail-closed
+`BLOCK` verdict.
+Production activation remains blocked because the hosted baseline used a
+different engine and a four-OpenRouter/two-Synthetic provider split, so its
+`FIX_FIRST` result is not an apples-to-apples quality comparison. See
+`docs/superpowers/evidence/2026-09-01-doks-same-head-qualification.md`.
+
 ## Global Constraints
 
 - No scheduled canary, recurring workflow, traffic split, or automatic production activation.
@@ -35,7 +45,7 @@
 - Consumes: existing App JWT and repository-installation lookup.
 - Produces: `getGitHubAppRepositoryReadToken(config, fetchFn): Promise<InstallationTokenResult>` and a pipe-only CLI.
 
-- [ ] **Step 1: Write the failing restricted-token test**
+- [x] **Step 1: Write the failing restricted-token test**
 
 Call `getGitHubAppRepositoryReadToken` with a fake fetch implementation. Assert the first request resolves `/repos/calltelemetry/ct-pr-operator-sandbox/installation` and the second posts to `/app/installations/42/access_tokens` with exactly:
 
@@ -48,7 +58,7 @@ Call `getGitHubAppRepositoryReadToken` with a fake fetch implementation. Assert 
 
 Assert the result begins `ghs_`, every returned permission is `read`, and no request URL contains a credential.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run tests/unit/appAuth.test.ts
@@ -56,7 +66,7 @@ npx vitest run tests/unit/appAuth.test.ts
 
 Expected: FAIL because the restricted-token function does not exist.
 
-- [ ] **Step 3: Implement the restricted exchange**
+- [x] **Step 3: Implement the restricted exchange**
 
 Add:
 
@@ -69,7 +79,7 @@ export async function getGitHubAppRepositoryReadToken(
 
 Resolve the installation ID, generate a fresh JWT, post the exact repository/permission body with a five-second timeout, and reject a missing/non-`ghs_` token, invalid expiration, write permission, or non-2xx response. Error text contains only status and classification.
 
-- [ ] **Step 4: Add and test the pipe-only CLI**
+- [x] **Step 4: Add and test the pipe-only CLI**
 
 `scripts/mint-github-read-token.mjs` requires `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and one `owner/repo` argument. It writes only the token plus newline to stdout and non-secret diagnostics to stderr. Spawn it against a local fake endpoint; assert stdout is exactly the token and all errors omit the key and token.
 
@@ -80,7 +90,7 @@ npm run lint
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/github/appAuth.ts tests/unit/appAuth.test.ts scripts/mint-github-read-token.mjs tests/unit/githubReadTokenScript.test.ts
@@ -100,11 +110,11 @@ git commit -m "feat(github): mint repository-scoped review tokens"
 - Consumes: `ghs_` token, `owner/repo`, PR number, expected base SHA, and expected head SHA.
 - Produces: `loadSameHeadReviewSource(input, requestFn?): Promise<SameHeadReviewSource>` with `diff`, `diffDigest`, `baseSha`, `headSha`, and `githubReads: 3`.
 
-- [ ] **Step 1: Write failing exact-head tests**
+- [x] **Step 1: Write failing exact-head tests**
 
 Cover: matching metadata/diff/repeated metadata; initial head mismatch; base mismatch; final head movement; empty or greater-than-2,000,000-byte diff; classified 401/403/404/429/5xx; and exactly three GETs with no write verb. Use a hand-calculated literal digest.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run tests/unit/qualificationReader.test.ts
@@ -112,7 +122,7 @@ npx vitest run tests/unit/qualificationReader.test.ts
 
 Expected: FAIL because the module does not exist.
 
-- [ ] **Step 3: Implement the read-only boundary**
+- [x] **Step 3: Implement the read-only boundary**
 
 ```ts
 export interface SameHeadReviewSource {
@@ -137,7 +147,7 @@ export async function loadSameHeadReviewSource(
 
 Use PR metadata before and after the PR diff request with `Accept: application/vnd.github.v3.diff`. Reject oversized input rather than truncating it. Do not expose a generic write-capable Octokit client.
 
-- [ ] **Step 4: Add the module to the worker self-test and verify**
+- [x] **Step 4: Add the module to the worker self-test and verify**
 
 ```bash
 npx vitest run tests/unit/qualificationReader.test.ts tests/unit/workerContainerContract.test.ts
@@ -146,7 +156,7 @@ npm run build:backend
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/github/qualificationReader.ts tests/unit/qualificationReader.test.ts src/cli/workerSelfTestModules.json
@@ -165,15 +175,15 @@ git commit -m "feat(worker): bind qualification input to exact PR head"
 - Consumes: the same-head source loader, existing full-panel config/request policy, `GH_TOKEN`, and immutable projection.
 - Produces: `runSameHeadQualificationWorker(env, panelRunner?, client?, sourceLoader?): Promise<SameHeadQualificationReceipt>`.
 
-- [ ] **Step 1: Write failing mode-isolation tests**
+- [x] **Step 1: Write failing mode-isolation tests**
 
 Prove the mode is valid only when all other worker modes are absent, publication is disabled, receipt path/model are exact, and `GH_TOKEN` begins `ghs_`. Mixed modes, App private key, missing token, or publication enablement must fail before any source/provider call.
 
-- [ ] **Step 2: Write the failing receipt test**
+- [x] **Step 2: Write the failing receipt test**
 
 Use literal source and complete `PanelResult` fixtures. Require `profile: 'same-head'`, `source: 'github-pull-request'`, projected base/head, diff digest, 6/6 personas, zero optional failures, quorum/verdict, `githubReads: 3`, `githubWrites: 0`, and usage/cost/timing. Serialized output must omit diff, token, prompts, responses, and App credentials.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 npx vitest run tests/unit/receiptOnlyWorker.test.ts
@@ -181,11 +191,11 @@ npx vitest run tests/unit/receiptOnlyWorker.test.ts
 
 Expected: FAIL because the same-head runner does not exist.
 
-- [ ] **Step 4: Extract one shared full-panel executor and implement**
+- [x] **Step 4: Extract one shared full-panel executor and implement**
 
 Move fixture-independent execution, accounting, deadline handling, failure classification, and sanitized receipt writing into one internal helper. The deterministic wrapper supplies its fixture; the same-head wrapper supplies parsed GitHub diff files. Preserve DeepSeek-to-GLM policy, three-call concurrency, strict schemas, six required personas, moderator, arbiter, and digest logic.
 
-- [ ] **Step 5: Verify success and failure receipts**
+- [x] **Step 5: Verify success and failure receipts**
 
 Cover SHA mismatch, moved head, GitHub rate limit, structured-output failure, provider timeout, and overall deadline. Every failure receipt remains bounded with `githubWrites: 0`.
 
@@ -196,7 +206,7 @@ npm run build:backend
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/cli/runLiveReview.ts tests/unit/receiptOnlyWorker.test.ts
@@ -218,15 +228,15 @@ git commit -m "feat(worker): add same-head DOKS qualification"
 - Consumes: `qualificationProfile: same-head`, explicit model, and a run Secret with `OPENROUTER_API_KEY` plus `GITHUB_READ_TOKEN`.
 - Produces: a Job with `REVIEW_SAME_HEAD_QUALIFICATION_ONLY=true`, `GH_TOKEN` from the run Secret, derived deadline, and no App/private/publication credential.
 
-- [ ] **Step 1: Write failing CRD tests**
+- [x] **Step 1: Write failing CRD tests**
 
 Require exactly `full-panel` and `same-head` in the profile enum. The CEL rule keeps omitted profile/model receipt-only and requires a non-auto model for either explicit profile.
 
-- [ ] **Step 2: Write failing Job tests**
+- [x] **Step 2: Write failing Job tests**
 
 Assert the same-head Job has its exclusive mode flag, Secret-backed `GH_TOKEN`/OpenRouter key, `780000`ms internal and `840`s Job deadline when fresh, no App credential, no publication credential, no service-account token, and zero backoff.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 cd k8s-operator
@@ -235,11 +245,11 @@ go test ./api/v1alpha2 ./pkg/job -count=1
 
 Expected: FAIL because only `full-panel` is admitted.
 
-- [ ] **Step 4: Implement the minimal extension**
+- [x] **Step 4: Implement the minimal extension**
 
 Add `same-head` to kubebuilder enum, checked-in CRD, validation helper, and Job environment branch. Do not change dispatcher defaults, receipt-only behavior, replicas, App gate, or publication.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 ```bash
 cd k8s-operator
@@ -249,7 +259,7 @@ go vet ./...
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add k8s-operator/api/v1alpha2/prreviewjob_types.go k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml k8s-operator/api/v1alpha2/crd_contract_test.go k8s-operator/pkg/job/job.go k8s-operator/pkg/job/job_test.go
@@ -267,7 +277,7 @@ git commit -m "feat(doks): admit read-only same-head qualification"
 - Consumes: focused green suites and protected workflow.
 - Produces: merged reviewed source and immutable release; no activation.
 
-- [ ] **Step 1: Run pre-PR verification**
+- [x] **Step 1: Run pre-PR verification**
 
 ```bash
 npm test
@@ -278,15 +288,15 @@ git diff --check
 
 Expected: affected suites pass. Report unrelated baseline separately; never merge over a new affected failure.
 
-- [ ] **Step 2: Open and pass the protected PR**
+- [x] **Step 2: Open and pass the protected PR**
 
 State that the profile is explicit, read-only, nonpublishing, and not wired into Action/default dispatcher. Require exact-head `SHIP`, terminal hosted validation, and clean merge state.
 
-- [ ] **Step 3: Release without bypass**
+- [x] **Step 3: Release without bypass**
 
 Merge normally, merge the reviewed release PR, wait for the benchmark, and verify `main`, immutable semantic tag, and rolling `v1` resolve to the tested release commit.
 
-- [ ] **Step 4: Build immutable qualification images**
+- [x] **Step 4: Build immutable qualification images**
 
 Build `linux/amd64` operator/worker OCI indexes from exact merged source with provenance/SBOM. Run the read-only worker self-test. Do not use broad `deploy=true`, which mutates unrelated services.
 
@@ -302,30 +312,56 @@ Build `linux/amd64` operator/worker OCI indexes from exact merged source with pr
 - Consumes: one PR head already reviewed by hosted Action, immutable images, run-scoped OpenRouter key, and repository-scoped GitHub token.
 - Produces: sanitized DOKS receipt and comparison of terminal status, verdict, findings, provider/model, usage, cost, timings, and publication suppression.
 
-- [ ] **Step 1: Verify the qualification PR identity**
+- [x] **Step 1: Verify the qualification PR identity**
 
 Read repository, PR, base/head, hosted Action run, and merge state. Stop if the head moved or hosted result is not exact-head.
 
-- [ ] **Step 2: Install only reviewed additive CRD/operator revisions**
+- [x] **Step 2: Install only reviewed additive CRD/operator revisions**
 
 Run `kubectl diff` first. Preserve App gate false, dispatcher/action images, publication, replicas, and rollback digest. Roll back operator immediately on readiness/leader failure.
 
-- [ ] **Step 3: Pipe credentials into one run Secret**
+- [x] **Step 3: Pipe credentials into one run Secret**
 
 Load App ID/private key from the existing cluster Secret only into local process environment, pipe the restricted token directly into the run Secret, and include OpenRouter without printing either. The Secret contains exactly `GITHUB_READ_TOKEN` and `OPENROUTER_API_KEY`.
 
-- [ ] **Step 4: Create exactly one same-head CR**
+- [x] **Step 4: Create exactly one same-head CR**
 
 Set explicit profile/model, immutable base/head, disabled publication, exact worker digest, and timestamps exactly 900 seconds apart. Assert generated deadline and credential boundaries before provider execution.
 
-- [ ] **Step 5: Enforce acceptance**
+- [x] **Step 5: Enforce acceptance**
 
 Require completion within 15 minutes, stable exact SHA reads, 6/6 personas, zero optional failure, quorum/verdict, zero GitHub writes, and no raw diff/credential. Compare verdict agreement, severity/count deltas, latency, tokens, and cost without requiring identical wording.
 
-- [ ] **Step 6: Clean and verify 30-minute expiry**
+- [x] **Step 6: Clean and verify 30-minute expiry**
 
 Delete run Secret and inspector immediately. Preserve the same-PR PVC for 1,800 seconds, then verify operator deletes PVC and Lease. Confirm no Job/Pod/Secret remains and production route/App gate is unchanged.
 
-- [ ] **Step 7: Land evidence**
+- [x] **Step 7: Land evidence**
 
 Record exact source/image/run identities and results. State explicitly that a pass still does not authorize required-check publication or production cutover.
+
+---
+
+## Next quality-parity decision
+
+The next highest-ranked improvement is a narrow observability contract, not a
+production flip:
+
+1. Add a non-secret engine revision, provider-topology digest, per-lane
+   provider/model attribution, and lower-level retry counts to the sanitized
+   receipt. This makes an invalid cross-engine comparison fail closed before a
+   verdict is interpreted.
+2. Define a production-parity profile that executes the same versioned review
+   engine, persona assignment, prompts, and canonical policy on both hosted and
+   DOKS substrates. Reuse one implementation artifact; do not maintain a third
+   copy of review logic in the operator.
+3. Project the same explicit provider topology into DOKS (currently four
+   OpenRouter DeepSeek lanes and two Synthetic GLM lanes for the hosted policy),
+   using run-scoped Secret refs and no auto-router.
+4. Run one more manual, non-publishing exact-head comparison. Require terminal
+   completion, identical engine/policy/provider digests, zero GitHub writes,
+   equivalent canonical severity direction, and explainable count deltas before
+   considering a required-check or unresolved-thread gate.
+
+No schedule, recurring canary, automatic traffic split, or production
+activation is authorized by this follow-up.
