@@ -125,7 +125,7 @@ jobs:
             --env REVIEW_PROVIDER_QUALIFICATION_ONLY=false \
             --env REVIEW_RECEIPT_ONLY=false \
             --env REVIEW_PUBLICATION_MODE=disabled \
-            --env REVIEW_RECEIPT_PATH=/workspace/receipt.json \
+            --env REVIEW_RECEIPT_PATH=/workspace/.review-yeti/receipt.json \
             --env "REVIEW_RUN_ID=run_$run_suffix" \
             --env "REVIEW_DELIVERY_ID=manual:hosted-same-engine:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" \
             --env "REVIEW_REPOSITORY_ID=$GITHUB_REPOSITORY_ID" \
@@ -148,7 +148,7 @@ jobs:
           EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
         run: |
           set -euo pipefail
-          receipt="$RUNNER_TEMP/review-yeti-worker-parity/receipt.json"
+          receipt="$RUNNER_TEMP/review-yeti-worker-parity/.review-yeti/receipt.json"
           engine_revision="${WORKER_IMAGE##*@sha256:}"
           jq -e --arg engine "$engine_revision" --arg base "$EXPECTED_BASE_SHA" --arg head "$EXPECTED_HEAD_SHA" '
             .version == "ReviewYetiPanelQualification.v1" and
@@ -173,7 +173,6 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: hosted-worker-parity-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/review-yeti-worker-parity/receipt.json
+          path: ${{ runner.temp }}/review-yeti-worker-parity/.review-yeti/receipt.json
           if-no-files-found: error
           retention-days: 7
-

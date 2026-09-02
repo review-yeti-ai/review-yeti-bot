@@ -10,6 +10,7 @@ grep -Fq 'contents: read' "$workflow"
 grep -Fq 'pull-requests: read' "$workflow"
 grep -Fq 'registry\.digitalocean\.com/exampleorg/review-yeti-worker@sha256:' "$workflow"
 grep -Fq 'REVIEW_SAME_HEAD_QUALIFICATION_ONLY=true' "$workflow"
+grep -Fq 'REVIEW_RECEIPT_PATH=/workspace/.review-yeti/receipt.json' "$workflow"
 grep -Fq 'REVIEW_PUBLICATION_MODE=disabled' "$workflow"
 grep -Fq 'REVIEW_QUALIFICATION_PROVIDER_ID=openrouter' "$workflow"
 grep -Fq 'deepseek/deepseek-v4-flash-0731' "$workflow"
@@ -18,6 +19,8 @@ grep -Fq -- '--read-only' "$workflow"
 grep -Fq 'REVIEW_ENGINE_REVISION' "$workflow"
 grep -Fq 'githubWrites == 0' "$workflow"
 grep -Fq 'actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f' "$workflow"
+dollar='$'
+grep -Fq "path: ${dollar}{{ runner.temp }}/review-yeti-worker-parity/.review-yeti/receipt.json" "$workflow"
 
 WORKFLOW_PATH="$workflow" ruby <<'RUBY'
 require 'yaml'
