@@ -6,8 +6,13 @@ on:
     types: [review-yeti-request]
 
 permissions:
+  # A called reusable workflow may not request more than its caller grants; GitHub
+  # rejects the run at startup ("workflow file issue") otherwise. review-yeti.yml
+  # declares issues:write + pull-requests:write, so the caller must grant them too.
   actions: read
   contents: read
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: central-review-yeti-${{ github.event.client_payload.repository }}-${{ github.event.client_payload.pr_number }}
