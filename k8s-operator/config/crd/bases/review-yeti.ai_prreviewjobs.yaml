@@ -80,17 +80,19 @@ spec:
                 - disabled
                 type: string
               qualificationModel:
-                description: QualificationModel is required by the full-panel qualification
-                  profile and is never accepted for the default receipt-only worker.
+                description: QualificationModel is required by explicit qualification profiles
+                  and is never accepted for the default receipt-only worker.
                 maxLength: 256
                 minLength: 1
                 type: string
               qualificationProfile:
                 description: QualificationProfile is optional. An omitted profile preserves
-                  the production-safe receipt-only worker contract. The only admitted
-                  non-default profile is the manual, non-publishing full-panel lane.
+                  the production-safe receipt-only worker contract. Admitted non-default
+                  profiles are the manual, non-publishing full-panel and read-only same-head
+                  lanes.
                 enum:
                 - full-panel
+                - same-head
                 type: string
               receivedAt:
                 format: date-time
@@ -136,8 +138,8 @@ spec:
             - message: terminalDeadline must be exactly 15 minutes after receivedAt
               rule: timestamp(self.terminalDeadline) - timestamp(self.receivedAt)
                 == duration('900s')
-            - message: qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use the explicit full-panel profile with a non-auto model
-              rule: (!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile == 'full-panel' && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')
+            - message: qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model
+              rule: (!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')
           status:
             description: PRReviewJobStatus contains execution references only; PostgreSQL
               remains lifecycle authority.
