@@ -1,0 +1,80 @@
+name: v1 promotion drift alarm
+
+# ADR-free standing patrol: every consumer repo's required Review Yeti check
+# checks out the mutable `v1` branch at job start. If `v1` drifts from `main`
+# (failed promotion, manual push, reverted merge), every merge in the org
+# silently pins to stale validator/policy bytes. This workflow compares the
+# two refs on a schedule and opens/updates one issue on drift. It never
+# moves `v1` itself — promotion stays the exclusive writer.
+
+on:
+  schedule:
+    - cron: "23 * * * *" # hourly at :23
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v1-drift-alarm
+  cancel-in-progress: false
+
+jobs:
+  drift-check:
+    name: Compare v1 against main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compare promoted v1 to main tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          v1="$(gh api repos/exampleorg/example-review-actions/commits/v1 --jq .sha)"
+          main="$(gh api repos/exampleorg/example-review-actions/commits/main --jq .sha)"
+          behind="$(gh api "repos/exampleorg/example-review-actions/compare/v1...main" --jq .behind_by)"
+
+          echo "v1=$v1"
+          echo "main=$main"
+          echo "main ahead of v1 by $behind commit(s)"
+
+          if [ "$v1" = "$main" ]; then
+            echo "IN SYNC"
+            exit 0
+          fi
+
+          marker_url="https://github.com/exampleorg/example-review-actions/compare/v1...main"
+          title="v1 promotion drift: v1 is $behind commit(s) behind main"
+          body="The mutable \`v1\` branch that every consumer's required Review Yeti check resolves at job start is **$behind commit(s) behind \`main\`**. Consumers are validating against stale validator/policy bytes.\n\nv1 = $v1\nmain = $main\n\nPromotion is manual: \`gh workflow run promote-v1.yml -R exampleorg/example-review-actions --field sha=$main\` (or re-run the latest promotion attempt). Never force \`v1\` by hand."
+
+          existing="$(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=v1-drift" --jq 'length')"
+          if [ "$existing" -gt 0 ]; then
+            echo "Drift issue already open — not duplicating."
+            exit 0
+          fi
+
+          gh api repos/exampleorg/example-review-actions/issues \
+            --method POST \
+            -f title="$title" \
+            -f body="$body" \
+            -f labels[]="v1-drift" \
+            --jq '.number'
+
+          echo "::error::v1 is $behind commit(s) behind main — promotion required"
+
+      - name: Close stale drift issue on convergence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v1="$(gh api repos/exampleorg/example-review-actions/commits/v1 --jq .sha)"
+          main="$(gh api repos/exampleorg/example-review-actions/commits/main --jq .sha)"
+          [ "$v1" = "$main" ] || exit 0
+
+          for num in $(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=v1-drift" --jq '.[].number'); do
+            gh api "repos/exampleorg/example-review-actions/issues/$num/comments" \
+              --method POST -f body="v1 == main again at $v1 — drift resolved, closing." --silent
+            gh api "repos/exampleorg/example-review-actions/issues/$num" \
+              --method PATCH -f state=closed --silent
+          done
