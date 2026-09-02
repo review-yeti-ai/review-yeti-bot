@@ -112,25 +112,13 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
   if (callerRun?.repository?.full_name !== request.repository) throw new Error('caller run repository identity changed');
   if (callerRun?.event !== 'pull_request_target') throw new Error('caller run must use pull_request_target');
   if (callerRun?.path !== CALLER_WORKFLOW_PATH) throw new Error('caller run workflow path changed');
-  // pull_request_target runs execute the base branch's workflow at the base tip of the moment
-  // the run started, while pull.base.sha is the PR's recorded base and lags on a busy branch.
-  // Bind the caller to the base BRANCH: it must have run the base-owned workflow from a commit
-  // that is on that branch (identical to, or an ancestor of, the current tip).
-  if (typeof callerRun?.head_sha !== 'string' || !/^[0-9a-f]{40}$/u.test(callerRun.head_sha)) {
-    throw new Error('caller run head SHA is invalid');
-  }
-  // NOTE: for pull_request_target runs GitHub reports head_branch as the PR's *source* branch
-  // while head_sha is the base tip, so the branch name cannot be used for binding; ancestry
-  // against the base ref is the binding.
-  if (callerRun.head_sha !== request.base_sha) {
-    const compare = await githubJson(
-      `${apiBase}/compare/${encodeURIComponent(pull.base.ref)}...${callerRun.head_sha}`,
-      token,
-      fetchImpl,
-    );
-    if (compare?.status !== 'identical' && compare?.status !== 'behind') {
-      throw new Error('caller run commit is not on the PR base branch');
-    }
+  // A pull_request_target run reports the PR *head* as head_sha and the PR source branch as
+  // head_branch (the base-owned workflow code is what executes, but the run identity is the PR).
+  // Bind the caller run to the exact requested PR head; the base-owned workflow bytes are read
+  // from the base branch below.
+  if (callerRun?.head_sha !== request.head_sha) throw new Error('caller run is not bound to the requested PR head');
+  if (typeof pull?.head?.ref === 'string' && callerRun?.head_branch !== pull.head.ref) {
+    throw new Error('caller run is not bound to the PR source branch');
   }
   if (callerRun?.run_attempt !== callerRunAttempt) throw new Error('caller run attempt changed');
   if (!Array.isArray(callerRun?.pull_requests)
@@ -138,8 +126,9 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
     throw new Error('caller run is not bound to the requested PR');
   }
 
-  // Read the caller workflow at the commit that actually executed it.
-  const workflowUrl = `${apiBase}/contents/${CALLER_WORKFLOW_PATH}?ref=${callerRun.head_sha}`;
+  // The base-owned caller workflow: read it from the PR base branch (what pull_request_target executes).
+  if (typeof pull?.base?.ref !== 'string' || pull.base.ref.length === 0) throw new Error('PR base ref is missing');
+  const workflowUrl = `${apiBase}/contents/${CALLER_WORKFLOW_PATH}?ref=${encodeURIComponent(pull.base.ref)}`;
   const workflow = await githubJson(workflowUrl, token, fetchImpl);
   if (workflow?.encoding !== 'base64' || typeof workflow.content !== 'string') {
     throw new Error('base-owned caller workflow response is invalid');
