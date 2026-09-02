@@ -43,6 +43,7 @@ const (
 	ReceiptOnlyEnv                = "REVIEW_RECEIPT_ONLY"
 	FullPanelQualificationEnv     = "REVIEW_FULL_PANEL_QUALIFICATION_ONLY"
 	QualificationModelEnv         = "REVIEW_QUALIFICATION_MODEL"
+	QualificationTimeoutEnv       = "REVIEW_QUALIFICATION_TIMEOUT_MS"
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
 	ReceiptPathEnv                = "REVIEW_RECEIPT_PATH"
 	ReceiptPath                   = "/workspace/.review-yeti/receipt.json"
@@ -56,7 +57,10 @@ const (
 	// full admission window.
 	MaxActiveDeadlineSeconds = int64(840)
 	DeadlineReserveSeconds   = int64(60)
-	MinRemainingSeconds      = int64(120)
+	// The panel deadline stays inside the Kubernetes Job deadline so a failed
+	// qualification still has time to persist its bounded diagnostic receipt.
+	WorkerReceiptReserveSeconds = int64(60)
+	MinRemainingSeconds         = int64(120)
 )
 
 var (
@@ -129,9 +133,12 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: ReceiptPathEnv, Value: ReceiptPath},
 	}
 	if spec.QualificationProfile == FullPanelQualificationProfile {
+		qualificationTimeoutMillis := max(int64(1_000),
+			(activeDeadlineSeconds-WorkerReceiptReserveSeconds)*1_000)
 		env = append(env,
 			corev1.EnvVar{Name: FullPanelQualificationEnv, Value: "true"},
 			corev1.EnvVar{Name: QualificationModelEnv, Value: spec.QualificationModel},
+			corev1.EnvVar{Name: QualificationTimeoutEnv, Value: strconv.FormatInt(qualificationTimeoutMillis, 10)},
 			corev1.EnvVar{
 				Name: "OPENROUTER_API_KEY",
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
