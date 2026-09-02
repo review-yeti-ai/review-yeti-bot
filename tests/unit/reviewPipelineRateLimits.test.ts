@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 
@@ -21,6 +21,19 @@ function successResponse() {
     status: 200,
     headers: new Headers(),
     json: async () => ({ choices: [{ message: { content: '{"findings":[]}' } }] }),
+  };
+}
+
+function ollamaTransport(overrides: Record<string, unknown> = {}) {
+  return {
+    name: 'ollama',
+    baseUrl: 'https://ollama.com/v1',
+    apiKey: 'test-key',
+    model: 'deepseek-v4-flash:cloud',
+    maxInFlight: 1,
+    capacityWaitTimeoutMs: 1000,
+    stream: false,
+    ...overrides,
   };
 }
 
@@ -190,6 +203,338 @@ describe('direct-provider rate limits', () => {
       'https://backup.example/v1/chat/completions',
     ]);
     expect(result.transport).toBe('backup');
+  });
+
+  it('retries the same Ollama transport after HTTP 429 and honors bounded Retry-After', async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-429' }, null, {
+      transports: [ollamaTransport()],
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            ok: false,
+            status: 429,
+            headers: new Headers({ 'retry-after': '0.01' }),
+            text: async () => 'shared account is at capacity',
+          };
+        }
+        return successResponse();
+      },
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager: new pipeline.ProviderCapacityManager(),
+    });
+
+    expect(result.decision).toBe('APPROVE');
+    expect(result.transport).toBe('ollama');
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([10]);
+    expect(result.recoveryAction).toBe('capacity_wait_retry');
+    expect(result.capacityWaitMs).toBe(10);
+  });
+
+  it('retries the same Ollama transport after HTTP 503 without Retry-After', async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-503' }, null, {
+      transports: [ollamaTransport()],
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            ok: false,
+            status: 503,
+            headers: new Headers(),
+            text: async () => 'server is overloaded',
+          };
+        }
+        return successResponse();
+      },
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager: new pipeline.ProviderCapacityManager(),
+    });
+
+    expect(result.decision).toBe('APPROVE');
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([250]);
+    expect(result.responseAttempts[0]).toMatchObject({
+      responseStatus: 503,
+      capacityLeaseAcquired: true,
+    });
+    expect(result.responseAttempts[0].providerExecutionMs).toBeTypeOf('number');
+    expect(result.responseAttempts[0].capacityLeaseMs).toBeTypeOf('number');
+  });
+
+  it('does not misclassify a generic Ollama HTTP 503 as shared-capacity contention', async () => {
+    const credential = 'sk-generic-503-secret';
+    const sleeps: number[] = [];
+    let calls = 0;
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-generic-503' }, null, {
+      transports: [ollamaTransport({ apiKey: credential })],
+      fetchImpl: async () => {
+        calls += 1;
+        return {
+          ok: false,
+          status: 503,
+          headers: new Headers(),
+          text: async () => `maintenance failure echoed Authorization: Bearer ${credential}`,
+        };
+      },
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager: new pipeline.ProviderCapacityManager(),
+    });
+
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
+    expect(result).toMatchObject({ decision: 'ERROR', error: 'HTTP 503: ollama_provider_error' });
+    expect(JSON.stringify(result)).not.toContain(credential);
+    expect(result.recoveryAction).not.toBe('capacity_wait_retry');
+  });
+
+  it('recognizes the documented in-band 503 request-queue-full overload shape', async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-sse-503' }, null, {
+      transports: [ollamaTransport()],
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            json: async () => ({
+              error: { message: 'Streaming response failed: [503] The request queue is full.' },
+            }),
+          };
+        }
+        return successResponse();
+      },
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager: new pipeline.ProviderCapacityManager(),
+    });
+
+    expect(result.decision).toBe('APPROVE');
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([250]);
+    expect(result.transport).toBe('ollama');
+  });
+
+  it('falls back immediately on Ollama capacity when another provider is configured', async () => {
+    const calls: string[] = [];
+    const sleeps: number[] = [];
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-budget' }, null, {
+      transports: [ollamaTransport({ capacityWaitTimeoutMs: 300 }), {
+        name: 'backup',
+        baseUrl: 'https://backup.example/v1',
+        apiKey: 'backup-key',
+        model: 'backup-model',
+        stream: false,
+      }],
+      fetchImpl: async (url: string) => {
+        calls.push(url);
+        if (url.includes('ollama.com')) {
+          return {
+            ok: false,
+            status: 503,
+            headers: new Headers(),
+            text: async () => 'The request queue is full.',
+          };
+        }
+        return successResponse();
+      },
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager: new pipeline.ProviderCapacityManager(),
+    });
+
+    expect(calls).toEqual([
+      'https://ollama.com/v1/chat/completions',
+      'https://backup.example/v1/chat/completions',
+    ]);
+    expect(sleeps).toEqual([]);
+    expect(result).toMatchObject({ decision: 'APPROVE', transport: 'backup' });
+    expect(result.retryReasons).toEqual(expect.arrayContaining(['provider_capacity']));
+  });
+
+  it('fails explicitly after the total capacity budget when Ollama is the only transport', async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-only-budget' }, null, {
+      transports: [ollamaTransport({ capacityWaitTimeoutMs: 300 })],
+      fetchImpl: async () => {
+        calls += 1;
+        return {
+          ok: false,
+          status: 503,
+          headers: new Headers(),
+          text: async () => 'The request queue is full.',
+        };
+      },
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager: new pipeline.ProviderCapacityManager(),
+    });
+
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([250, 50]);
+    expect(result).toMatchObject({
+      decision: 'ERROR',
+      failureClass: 'provider_capacity',
+      error: 'provider_capacity_wait_timeout',
+      capacityWaitMs: 300,
+    });
+  });
+
+  it('releases the local Ollama lease before remote-capacity backoff', async () => {
+    const capacityManager = new pipeline.ProviderCapacityManager();
+    let calls = 0;
+    let sleepStartedResolve: (() => void) | null = null;
+    let resumeSleep: (() => void) | null = null;
+    let secondFetchResolve: (() => void) | null = null;
+    const sleepStarted = new Promise<void>((resolve) => { sleepStartedResolve = resolve; });
+    const sleepGate = new Promise<void>((resolve) => { resumeSleep = resolve; });
+    const secondFetchStarted = new Promise<void>((resolve) => { secondFetchResolve = resolve; });
+    const transport = ollamaTransport({ maxInFlight: 1 });
+    const fetchImpl = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 503,
+          headers: new Headers(),
+          text: async () => 'server is overloaded',
+        };
+      }
+      secondFetchResolve?.();
+      return successResponse();
+    };
+    const first = pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'lease-1' }, null, {
+      transports: [transport],
+      fetchImpl,
+      sleepImplementation: async () => {
+        sleepStartedResolve?.();
+        await sleepGate;
+      },
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager,
+    });
+
+    await sleepStarted;
+    const second = pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'lease-2' }, null, {
+      transports: [transport],
+      fetchImpl,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      capacityManager,
+    });
+    await secondFetchStarted;
+    expect(calls).toBe(2);
+    resumeSleep?.();
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.decision).toBe('APPROVE');
+    expect(secondResult.decision).toBe('APPROVE');
+  });
+
+  it('never logs an Ollama credential or provider error detail while capacity-waiting', async () => {
+    const credential = 'sk-sensitive-capacity-secret';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-redaction' }, null, {
+        transports: [ollamaTransport({ apiKey: credential, capacityWaitTimeoutMs: 1 })],
+        fetchImpl: async () => ({
+          ok: false,
+          status: 503,
+          headers: new Headers(),
+          text: async () => `server is overloaded; Authorization: Bearer ${credential}`,
+        }),
+        sleepImplementation: async () => {},
+        circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+        capacityManager: new pipeline.ProviderCapacityManager(),
+      });
+
+      expect(result.error).toBe('provider_capacity_wait_timeout');
+      const serializedLogs = JSON.stringify([...warn.mock.calls, ...log.mock.calls]);
+      expect(serializedLogs).not.toContain(credential);
+      expect(serializedLogs).not.toContain('Authorization');
+      expect(serializedLogs).not.toContain('Bearer');
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it.each([401, 500])('redacts non-capacity Ollama HTTP %i error details', async (status) => {
+    const credential = `sk-sensitive-http-${status}`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: `ollama-redaction-${status}` }, null, {
+        transports: [ollamaTransport({ apiKey: credential })],
+        fetchImpl: async () => ({
+          ok: false,
+          status,
+          headers: new Headers(),
+          text: async () => JSON.stringify({
+            error: {
+              code: credential,
+              message: `provider echoed Authorization: Bearer ${credential}`,
+            },
+          }),
+        }),
+        circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+        capacityManager: new pipeline.ProviderCapacityManager(),
+      });
+
+      const serialized = JSON.stringify({ result, logs: [...warn.mock.calls, ...log.mock.calls] });
+      expect(serialized).not.toContain(credential);
+      expect(serialized).not.toContain('Authorization');
+      expect(serialized).not.toContain('Bearer');
+      expect(result.error).toBe(`HTTP ${status}: ollama_provider_error`);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it('redacts non-capacity in-band Ollama error details', async () => {
+    const credential = 'sk-sensitive-in-band-secret';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: 'ollama-redaction-in-band' }, null, {
+        transports: [ollamaTransport({ apiKey: credential })],
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            error: {
+              code: credential,
+              message: `provider echoed Authorization: Bearer ${credential}`,
+            },
+          }),
+        }),
+        circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+        capacityManager: new pipeline.ProviderCapacityManager(),
+      });
+
+      const serialized = JSON.stringify({ result, logs: [...warn.mock.calls, ...log.mock.calls] });
+      expect(serialized).not.toContain(credential);
+      expect(serialized).not.toContain('Authorization');
+      expect(serialized).not.toContain('Bearer');
+      expect(result.error).toBe('Provider returned an error payload: ollama_provider_error');
+      expect(result.errorCode).toBe('ollama_provider_error');
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
   });
 });
 
