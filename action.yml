@@ -292,6 +292,12 @@ outputs:
   files-omitted:
     description: 'Changed files the diff budget excluded. Non-zero means the verdict covers only part of the change.'
     value: ${{ steps.review.outputs.files-omitted }}
+  diff-fallback-used:
+    description: 'true when the GitHub diff API 406d or predictably would have (over 300 files / 20,000 lines) and fetch-pr-diff.sh used a local clone or the files API instead.'
+    value: ${{ steps.diff.outputs.used-fallback }}
+  diff-fallback-mode:
+    description: 'none, git-clone, forward-merge-conflict-delta, or gh-files-api -- which diff-acquisition tier actually produced the reviewed diff.'
+    value: ${{ steps.diff.outputs.fallback-mode }}
 
 runs:
   using: composite
@@ -333,6 +339,11 @@ runs:
         echo "repository-id=$(gh api "repos/$REPO" --jq .id)" >> "$GITHUB_OUTPUT"
         gh pr view "$PR" --repo "$REPO" --json headRefOid,baseRefOid \
           --jq '"head-sha=\(.headRefOid)\nbase-sha=\(.baseRefOid)"' >> "$GITHUB_OUTPUT"
+        # Used only to detect a forward-merge PR (scripts/fetch-pr-diff.sh),
+        # so the conflict-resolution delta can be reviewed instead of the
+        # full three-dot diff against base.
+        gh pr view "$PR" --repo "$REPO" --json title \
+          --jq '"title<<CT_REVIEW_PR_TITLE\n\(.title)\nCT_REVIEW_PR_TITLE"' >> "$GITHUB_OUTPUT"
         echo "Reviewing $REPO#$PR via ${{ inputs.execution-backend }}"
 
     - name: Dispatch review to DOKS
@@ -355,20 +366,32 @@ runs:
         set -euo pipefail
         node "$GITHUB_ACTION_PATH/scripts/dispatch-doks-action.mjs"
 
+    # GitHub's diff media type (what `gh pr diff` requests) 406s once a pull
+    # request exceeds 300 changed files or 20,000 changed lines. That used to
+    # fail this whole step -- and the run, with no verdict -- on any large
+    # forward-merge or backport. fetch-pr-diff.sh preemptively detects an
+    # over-limit PR, falls back to a local diff (or the files API) when it
+    # 406s anyway, and reorders the result so generated/lock/vendor/snapshot
+    # and test files are the first ones the existing char-budget truncation
+    # in review-pipeline.js omits if the diff is still too large to review in
+    # full. See review-yeti-bot#REL-513.
     - name: Fetch pull request diff
+      id: diff
       if: ${{ inputs.execution-backend != 'doks' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ steps.target.outputs.repo }}
+        PR_NUMBER: ${{ steps.target.outputs.pr }}
+        PR_HEAD_SHA: ${{ steps.target.outputs.head-sha }}
+        PR_BASE_SHA: ${{ steps.target.outputs.base-sha }}
+        PR_TITLE: ${{ steps.target.outputs.title }}
+        DIFF_OUTPUT_PATH: ${{ runner.temp }}/ct-review.diff
       run: |
         set -euo pipefail
-        gh pr diff "${{ steps.target.outputs.pr }}" \
-          --repo "${{ steps.target.outputs.repo }}" > "${RUNNER_TEMP}/ct-review.diff"
-        PR_HEAD_SHA="${{ steps.target.outputs.head-sha }}"
-        PR_BASE_SHA="${{ steps.target.outputs.base-sha }}"
-        echo "PR_HEAD_SHA=$PR_HEAD_SHA" >> "$GITHUB_ENV"
-        echo "PR_BASE_SHA=$PR_BASE_SHA" >> "$GITHUB_ENV"
-        echo "Fetched $(wc -l < "${RUNNER_TEMP}/ct-review.diff") diff lines."
+        "$GITHUB_ACTION_PATH/scripts/fetch-pr-diff.sh"
+        echo "PR_HEAD_SHA=${PR_HEAD_SHA}" >> "$GITHUB_ENV"
+        echo "PR_BASE_SHA=${PR_BASE_SHA}" >> "$GITHUB_ENV"
 
     # Installed under the action path, not the consumer's workspace, so reviewing a repository
     # never leaves a stray node_modules in its checkout.
