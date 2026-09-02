@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.23.0...v1.23.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **ollama:** coordinate shared capacity before review requests ([#410](https://github.com/review-yeti-ai/review-yeti-bot/issues/410)) ([52728ed](https://github.com/review-yeti-ai/review-yeti-bot/commit/52728ed515627f3f01e4ded8122b1c5b13ac04df))
+
 ## [1.23.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.22.2...v1.23.0) (2026-09-02)
 
 
