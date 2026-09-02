@@ -89,8 +89,14 @@ const DEFAULT_MODEL = process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MOD
   ? process.env.OPENROUTER_MODEL
   : OPENROUTER_DIRECT_PRIMARY_MODEL;
 const DEFAULT_PERSONA_CONCURRENCY = 3;
-const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 16;
+// Team's advertised 10-call concurrency is an account-wide ceiling, not a reservation for
+// Review Yeti. Keep the process-local default below that ceiling, cap explicit policy at the
+// account ceiling, and recover from remote saturation within the queue budget below.
+const OLLAMA_ACCOUNT_CONCURRENCY_CEILING = 10;
+const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 3;
 const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
+const OLLAMA_CAPACITY_RETRY_BASE_DELAY_MS = 250;
+const OLLAMA_CAPACITY_RETRY_MAX_DELAY_MS = 2_000;
 const SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL = 1;
 const DEFAULT_PROVIDER_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 5_000;
@@ -632,17 +638,45 @@ class AsyncSemaphore {
     this.waiters = [];
   }
 
-  async acquire(timeoutMs, timeoutError = 'capacity_wait_timeout') {
+  async acquire(timeoutMs, timeoutError = 'capacity_wait_timeout', signal = null) {
+    if (signal?.aborted) {
+      const error = new Error('provider_capacity_wait_cancelled');
+      error.code = 'provider_capacity_wait_cancelled';
+      throw error;
+    }
     if (this.active >= this.limit) {
       await new Promise((resolve, reject) => {
-        const waiter = { resolve, timer: null };
-        waiter.timer = setTimeout(() => {
+        const waitStartedMs = Date.now();
+        const waiter = { grant: null, timer: null, abort: null };
+        const removeWaiter = () => {
           const index = this.waiters.indexOf(waiter);
           if (index >= 0) this.waiters.splice(index, 1);
+        };
+        const cleanup = () => {
+          if (waiter.timer) clearTimeout(waiter.timer);
+          if (signal && waiter.abort) signal.removeEventListener('abort', waiter.abort);
+        };
+        waiter.grant = () => {
+          cleanup();
+          resolve();
+        };
+        waiter.abort = () => {
+          removeWaiter();
+          cleanup();
+          const error = new Error('provider_capacity_wait_cancelled');
+          error.code = 'provider_capacity_wait_cancelled';
+          error.capacityWaitMs = Math.max(0, Date.now() - waitStartedMs);
+          reject(error);
+        };
+        waiter.timer = setTimeout(() => {
+          removeWaiter();
+          cleanup();
           const error = new Error(timeoutError);
           error.code = 'provider_capacity_wait_timeout';
+          error.capacityWaitMs = Math.max(0, Date.now() - waitStartedMs);
           reject(error);
-        }, timeoutMs);
+        }, Math.max(0, Number(timeoutMs) || 0));
+        if (signal) signal.addEventListener('abort', waiter.abort, { once: true });
         this.waiters.push(waiter);
       });
     } else {
@@ -654,8 +688,7 @@ class AsyncSemaphore {
       released = true;
       const next = this.waiters.shift();
       if (next) {
-        clearTimeout(next.timer);
-        next.resolve();
+        next.grant();
       } else {
         this.active -= 1;
       }
@@ -676,12 +709,16 @@ function isSyntheticTransport(transport = {}, baseUrl = '') {
 
 function resolveTransportCapacityPolicy(transport = {}, baseUrl = '') {
   const explicitLimit = normalizePositiveInteger(transport.maxInFlight ?? transport.max_in_flight);
-  const maxInFlight = explicitLimit
+  const ollama = isOllamaTransport(transport, baseUrl);
+  const requestedMaxInFlight = explicitLimit
     ?? (isSyntheticTransport(transport, baseUrl)
       ? SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL
-      : isOllamaTransport(transport, baseUrl)
+      : ollama
         ? OLLAMA_MAX_IN_FLIGHT_REQUESTS
         : null);
+  const maxInFlight = ollama && requestedMaxInFlight
+    ? Math.min(requestedMaxInFlight, OLLAMA_ACCOUNT_CONCURRENCY_CEILING)
+    : requestedMaxInFlight;
   if (!maxInFlight) return null;
   const requestedScope = String(
     transport.concurrencyScope || transport.concurrency_scope || transport.capacityScope || transport.capacity_scope || '',
@@ -691,8 +728,8 @@ function resolveTransportCapacityPolicy(transport = {}, baseUrl = '') {
     : isSyntheticTransport(transport, baseUrl) ? 'model' : 'provider';
   const waitTimeoutMs = normalizePositiveInteger(
     transport.capacityWaitTimeoutMs ?? transport.capacity_wait_timeout_ms,
-    DEFAULT_PROVIDER_CAPACITY_WAIT_TIMEOUT_MS,
-    180_000,
+    ollama ? OLLAMA_CAPACITY_WAIT_TIMEOUT_MS : DEFAULT_PROVIDER_CAPACITY_WAIT_TIMEOUT_MS,
+    ollama ? OLLAMA_CAPACITY_WAIT_TIMEOUT_MS : 180_000,
   );
   return { maxInFlight, scope, waitTimeoutMs };
 }
@@ -730,7 +767,7 @@ class ProviderCapacityManager {
     }
   }
 
-  async acquire(transport, baseUrl, _requestTimeoutMs) {
+  async acquire(transport, baseUrl, _requestTimeoutMs, remainingWaitTimeoutMs = null, signal = null) {
     const policy = resolveTransportCapacityPolicy(transport, baseUrl);
     if (!policy) return { release: () => {}, waitMs: 0, policy: null };
     const key = this.capacityKey(transport, baseUrl, policy.scope);
@@ -754,7 +791,17 @@ class ProviderCapacityManager {
     // it is intentionally larger than timeout_ms, and leaves the admitted request no generation
     // budget. The caller starts all connection/TTFT/total request timers only after this lease is
     // acquired, so the policy's queue budget is the sole bound here.
-    const release = await pool.semaphore.acquire(policy.waitTimeoutMs, 'provider_capacity_wait_timeout');
+    const hasRemainingWaitOverride = remainingWaitTimeoutMs !== null
+      && remainingWaitTimeoutMs !== undefined
+      && Number.isFinite(Number(remainingWaitTimeoutMs));
+    const boundedRemainingWaitMs = hasRemainingWaitOverride
+      ? Math.max(0, Math.min(policy.waitTimeoutMs, Number(remainingWaitTimeoutMs)))
+      : policy.waitTimeoutMs;
+    const release = await pool.semaphore.acquire(
+      boundedRemainingWaitMs,
+      'provider_capacity_wait_timeout',
+      signal,
+    );
     return {
       release,
       waitMs: Math.max(0, Date.now() - waitStartedMs),
@@ -2147,6 +2194,11 @@ function normalizeModelResponseAttempt(entry = {}) {
   };
   const capacityWaitMs = normalizeTelemetryDuration(entry.capacityWaitMs);
   if (capacityWaitMs > 0) normalized.capacityWaitMs = capacityWaitMs;
+  const capacityLeaseMs = normalizeTelemetryDuration(entry.capacityLeaseMs);
+  if (capacityLeaseMs !== null) normalized.capacityLeaseMs = capacityLeaseMs;
+  const providerExecutionMs = normalizeTelemetryDuration(entry.providerExecutionMs);
+  if (providerExecutionMs !== null) normalized.providerExecutionMs = providerExecutionMs;
+  if (entry.capacityLeaseAcquired === true) normalized.capacityLeaseAcquired = true;
   if (requestFingerprint) normalized.requestFingerprint = requestFingerprint;
   if (generationIdDigest) normalized.generationIdDigest = generationIdDigest;
   return normalized;
@@ -2203,6 +2255,7 @@ const TELEMETRY_OUTCOME_CLASSES = new Set([
   'transient_socket',
   'provider_rate_limit',
   'provider_capacity',
+  'cancelled',
   'provider_error',
   'malformed_output',
   'unknown',
@@ -2211,6 +2264,7 @@ const TELEMETRY_OUTCOME_CLASSES = new Set([
 const TELEMETRY_RECOVERY_ACTIONS = new Set([
   'bounded_retry',
   'rate_limit_retry',
+  'capacity_wait_retry',
   'model_fallback',
   'structured_output_fallback',
 ]);
@@ -2426,6 +2480,7 @@ function classifyTelemetryHttpFailure(status) {
 function classifyTelemetryTransportError(error) {
   const message = String(error?.message || error || '');
   if (/provider_capacity_wait_timeout|capacity_wait_timeout/i.test(message)) return 'provider_capacity';
+  if (/provider_capacity_wait_cancelled|review_cancelled/i.test(message)) return 'cancelled';
   if (/AbortError|aborted|timeout|deadline|stalled|inactive|inactivity/i.test(message)) return 'timeout';
   if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
@@ -2463,6 +2518,53 @@ function parseRawRetryAfterMs(response) {
 
 function parseRetryAfterMs(response) {
   return Math.min(OPENROUTER_MAX_RETRY_AFTER_MS, parseRawRetryAfterMs(response));
+}
+
+function isOllamaCapacityRejection(status, detail = '') {
+  const code = Number(status);
+  if (code === 429) return true;
+  const message = String(detail || '').toLowerCase();
+  const capacityMarker = /(?:\b429\b|\b503\b).*(?:queue|overload|capacity)|(?:request\s+queue\s+is\s+full|queue[_\s-]*full|server\s+is\s+overloaded|resource[_\s-]*exhausted|at[_\s-]*capacity)/iu.test(message);
+  return capacityMarker;
+}
+
+function safeProviderErrorMessage(isOllama, status = null) {
+  if (!isOllama) return null;
+  return status === null || status === undefined
+    ? 'ollama_provider_error'
+    : `HTTP ${status}: ollama_provider_error`;
+}
+
+function ollamaCapacityRetryDelayMs(retryIndex, response = null) {
+  const retryAfterMs = parseRawRetryAfterMs(response);
+  if (retryAfterMs > 0) return retryAfterMs;
+  return Math.min(
+    OLLAMA_CAPACITY_RETRY_MAX_DELAY_MS,
+    OLLAMA_CAPACITY_RETRY_BASE_DELAY_MS * (2 ** Math.min(Math.max(0, retryIndex), 3)),
+  );
+}
+
+function cancellationError() {
+  const error = new Error('review_cancelled');
+  error.code = 'provider_capacity_wait_cancelled';
+  return error;
+}
+
+async function sleepWithCancellation(milliseconds, sleep, signal = null) {
+  if (signal?.aborted) throw cancellationError();
+  if (!signal) return sleep(milliseconds);
+  let abort = null;
+  try {
+    await Promise.race([
+      sleep(milliseconds),
+      new Promise((_, reject) => {
+        abort = () => reject(cancellationError());
+        signal.addEventListener('abort', abort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (abort) signal.removeEventListener('abort', abort);
+  }
 }
 
 function resolveTransportRateLimitPolicy(transport = {}) {
@@ -3229,6 +3331,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const cfg = { ...resolveModelConfig(), ...options };
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const sleep = options.sleepImplementation || options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const cancellationSignal = options.signal || null;
   const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
   const laneStartMs = Date.now();
   let attemptCount = 0;
@@ -3408,6 +3511,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         String(transport.provider || '').toLowerCase() === 'openrouter' ||
         String(transport.compat || '').toLowerCase() === 'openrouter' ||
         transportBaseUrl.toLowerCase().includes('openrouter.ai');
+      const isOllama = isOllamaTransport(transport, transportBaseUrl);
       const isDirectReasoning = isDirectReasoningTransport(transport, transportBaseUrl);
       const configuredMaxOutputTokens =
         transport.maxTokens ?? transport.max_tokens ?? options.maxOutputTokens ?? options.max_output_tokens ?? cfg.maxOutputTokens;
@@ -3539,6 +3643,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       let directRateLimitRetries = 0;
       let structuredOutputFallbackAttempted = false;
       const rateLimitPolicy = resolveTransportRateLimitPolicy(transport);
+      const capacityPolicy = resolveTransportCapacityPolicy(transport, transportBaseUrl);
+      const capacityWaitBudgetMs = capacityPolicy?.waitTimeoutMs || 0;
+      let capacityWaitSpentMs = 0;
+      let ollamaCapacityRetries = 0;
       const prepareDirectFormatRecovery = () => {
         if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
@@ -3659,6 +3767,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         let attemptResponseStatus = null;
         let attemptCachedInputTokens = null;
         let attemptCacheWriteTokens = null;
+        let attemptCapacityLeaseStartedMs = null;
+        let attemptProviderExecutionStartedMs = null;
         let responseAttemptRecorded = false;
         requestFingerprint = requestFingerprintForAttempt(
           requestBody,
@@ -3703,6 +3813,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             requestFingerprint,
             generationIdDigest,
             ...(attemptCapacityWaitMs > 0 ? { capacityWaitMs: attemptCapacityWaitMs } : {}),
+            ...(attemptCapacityLeaseStartedMs !== null
+              ? {
+                  capacityLeaseAcquired: true,
+                  capacityLeaseMs: Date.now() - attemptCapacityLeaseStartedMs,
+                }
+              : {}),
+            ...(attemptProviderExecutionStartedMs !== null
+              ? { providerExecutionMs: Date.now() - attemptProviderExecutionStartedMs }
+              : {}),
             ...overrides,
           });
           if (entry) responseAttempts.push(entry);
@@ -3710,11 +3829,64 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         const streamAbortController = streamEnabled ? new AbortController() : null;
         let responseHeaderTimer = null;
         let releaseProviderCapacity = null;
+        const releaseCapacityLease = () => {
+          if (!releaseProviderCapacity) return;
+          const release = releaseProviderCapacity;
+          releaseProviderCapacity = null;
+          release();
+          const leaseMs = attemptCapacityLeaseStartedMs === null
+            ? 0
+            : Math.max(0, Date.now() - attemptCapacityLeaseStartedMs);
+          console.log(`[Capacity] provider=${normalizeTelemetryProvider(configuredProvider || transportName) || 'custom'} phase=lease_released lease_ms=${leaseMs}`);
+        };
+        const waitForOllamaCapacity = async (response = null) => {
+          const remainingBudgetMs = Math.max(0, capacityWaitBudgetMs - capacityWaitSpentMs);
+          if (remainingBudgetMs <= 0) return { retry: false, timedOut: true, waitMs: 0 };
+          const requestedWaitMs = ollamaCapacityRetryDelayMs(ollamaCapacityRetries, response);
+          const waitMs = Math.min(requestedWaitMs, remainingBudgetMs);
+          releaseCapacityLease();
+          console.warn(`[Capacity] provider=ollama phase=queue_wait retry=${ollamaCapacityRetries + 1} wait_ms=${waitMs} remaining_ms=${remainingBudgetMs}`);
+          await sleepWithCancellation(waitMs, sleep, cancellationSignal);
+          capacityWaitSpentMs += waitMs;
+          totalCapacityWaitMs += waitMs;
+          if (waitMs >= remainingBudgetMs) return { retry: false, timedOut: true, waitMs };
+          ollamaCapacityRetries += 1;
+          maxFetchAttempts = Math.max(maxFetchAttempts, fetchAttempts + 1);
+          recoveryAction = 'capacity_wait_retry';
+          return { retry: true, timedOut: false, waitMs };
+        };
+        const terminalOllamaCapacityResult = () => {
+          const safeError = 'provider_capacity_wait_timeout';
+          failureClass = 'provider_capacity';
+          lastError = safeError;
+          noteRetryReason('provider_capacity');
+          circuitBreaker.trip(transport, safeError, 'provider_capacity');
+          if (i < candidateTransports.length - 1) {
+            console.warn(`[Capacity] provider=ollama phase=queue_timeout action=fallback budget_ms=${capacityWaitBudgetMs}`);
+            fallbackAttempt++;
+            return null;
+          }
+          return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: safeError });
+        };
         try {
-          const capacityLease = await capacityManager.acquire(transport, transportBaseUrl, attemptTimeoutMs);
+          const remainingCapacityWaitMs = capacityPolicy
+            ? Math.max(0, capacityWaitBudgetMs - capacityWaitSpentMs)
+            : null;
+          const capacityLease = await capacityManager.acquire(
+            transport,
+            transportBaseUrl,
+            attemptTimeoutMs,
+            remainingCapacityWaitMs,
+            cancellationSignal,
+          );
           releaseProviderCapacity = capacityLease.release;
           attemptCapacityWaitMs = capacityLease.waitMs;
+          capacityWaitSpentMs += attemptCapacityWaitMs;
           totalCapacityWaitMs += attemptCapacityWaitMs;
+          if (capacityLease.policy) {
+            attemptCapacityLeaseStartedMs = Date.now();
+            console.log(`[Capacity] provider=${normalizeTelemetryProvider(configuredProvider || transportName) || 'custom'} phase=lease_acquired limit=${capacityLease.policy.maxInFlight} queue_wait_ms=${attemptCapacityWaitMs}`);
+          }
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
               () => streamAbortController.abort(streamInactivityError(
@@ -3726,13 +3898,18 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
           let response;
           let sdkError = null;
+          attemptProviderExecutionStartedMs = Date.now();
+          const attemptDeadlineSignal = streamAbortController?.signal || AbortSignal.timeout(attemptTimeoutMs);
+          const requestSignal = cancellationSignal
+            ? AbortSignal.any([attemptDeadlineSignal, cancellationSignal])
+            : attemptDeadlineSignal;
           if (isOpenRouterTransport) {
             const sdkResult = await callOpenRouterSdk({
               baseUrl: transportBaseUrl,
               apiKey: transportApiKey,
               requestBody,
               fetchImpl,
-              signal: streamAbortController?.signal || AbortSignal.timeout(attemptTimeoutMs),
+              signal: requestSignal,
             });
             response = sdkResult.response;
             sdkError = sdkResult.sdkError;
@@ -3745,7 +3922,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 Authorization: `Bearer ${transportApiKey}`,
               },
               body: JSON.stringify(requestBody),
-              signal: streamAbortController?.signal || AbortSignal.timeout(attemptTimeoutMs),
+              signal: requestSignal,
             });
           }
           if (responseHeaderTimer) {
@@ -3766,11 +3943,19 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
-            const errMsg = `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
+            const errMsg = safeProviderErrorMessage(isOllama, response.status)
+              || `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
             const outcomeClass = classifyTelemetryHttpFailure(response.status);
             noteRetryReason(outcomeClass);
             failureClass = outcomeClass;
             recordResponseAttempt('http_error', { failureClass: outcomeClass });
+            if (isOllama && isOllamaCapacityRejection(response.status, detail)) {
+              const capacityWait = await waitForOllamaCapacity(response);
+              if (capacityWait.retry) continue;
+              const terminal = terminalOllamaCapacityResult();
+              if (terminal) return terminal;
+              break;
+            }
             if (!structuredOutputFallbackAttempted
               && fetchAttempts < maxFetchAttempts
               && isStructuredOutputCompatibilityError(response.status, detail)
@@ -3783,7 +3968,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             }
             try {
               const parsedDetail = JSON.parse(detail);
-              errorCode = resolveOpenRouterErrorCode(parsedDetail);
+              errorCode = isOllama ? 'ollama_provider_error' : resolveOpenRouterErrorCode(parsedDetail);
               if (isOpenRouterTransport && !providerRecoveryAttempted &&
                 (outcomeClass === 'http_429' || outcomeClass === 'http_5xx' || outcomeClass === 'timeout') &&
                 prepareOpenRouterModelFallback(requestBody, requestOptions, parsedDetail, detail, transport)) {
@@ -3791,10 +3976,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 recoveryAction = 'model_fallback';
                 const retryAfterMs = parseRetryAfterMs(response);
                 if (retryAfterMs > 0) {
-                  if (releaseProviderCapacity) {
-                    releaseProviderCapacity();
-                    releaseProviderCapacity = null;
-                  }
+                  releaseCapacityLease();
                   await sleep(retryAfterMs);
                 }
                 continue;
@@ -3808,10 +3990,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               recoveryAction = 'bounded_retry';
               const retryAfterMs = parseRetryAfterMs(response);
               if (retryAfterMs > 0) {
-                if (releaseProviderCapacity) {
-                  releaseProviderCapacity();
-                  releaseProviderCapacity = null;
-                }
+                releaseCapacityLease();
                 await sleep(retryAfterMs);
               }
               continue;
@@ -3831,10 +4010,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               nextAttemptTimeoutMs = Math.min(transportTimeoutMs, OPENROUTER_PROVIDER_RETRY_TIMEOUT_MS);
               const retryAfterMs = parseRetryAfterMs(response);
               if (retryAfterMs > 0) {
-                if (releaseProviderCapacity) {
-                  releaseProviderCapacity();
-                  releaseProviderCapacity = null;
-                }
+                releaseCapacityLease();
                 await sleep(Math.min(retryAfterMs, nextAttemptTimeoutMs));
               }
               console.warn(`[Persona: ${persona.id}] OpenRouter '${transportName}' returned HTTP 5xx after recovery; allowing one short provider retry before failing closed...`);
@@ -3847,10 +4023,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 directRateLimitRetries += 1;
                 recoveryAction = 'rate_limit_retry';
                 console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned HTTP 429; honoring bounded Retry-After before retry ${directRateLimitRetries}/${rateLimitPolicy.maxRetries}...`);
-                if (releaseProviderCapacity) {
-                  releaseProviderCapacity();
-                  releaseProviderCapacity = null;
-                }
+                releaseCapacityLease();
                 await sleep(retryAfterMs);
                 continue;
               }
@@ -3884,7 +4057,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               ttftMs = normalizeTelemetryDuration(value);
             },
           );
-          const payloadErrorCode = resolveOpenRouterErrorCode(payload);
+          const payloadErrorCode = isOllama && payload?.error
+            ? 'ollama_provider_error'
+            : resolveOpenRouterErrorCode(payload);
           if (payloadErrorCode) errorCode = payloadErrorCode;
           if (payload?.openrouter_metadata?.attempt !== undefined) routerAttempt = payload.openrouter_metadata.attempt;
           routerMetadata = normalizeOpenRouterMetadata(payload?.openrouter_metadata);
@@ -3902,9 +4077,13 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
           if (payload?.error) {
             const message = payload.error.message || payload.error.code || JSON.stringify(payload.error);
-            const providerFailureClass = /rate.?limit|quota|capacity|overload/i.test(`${payload.error.code || ''} ${message}`)
-              ? 'provider_rate_limit'
-              : 'provider_error';
+            const safeMessage = safeProviderErrorMessage(isOllama) || message;
+            const ollamaCapacityPayload = isOllama && isOllamaCapacityRejection(response.status, message);
+            const providerFailureClass = ollamaCapacityPayload
+              ? 'provider_capacity'
+              : /rate.?limit|quota|capacity|overload/i.test(`${payload.error.code || ''} ${message}`)
+                ? 'provider_rate_limit'
+                : 'provider_error';
             noteRetryReason(providerFailureClass);
             failureClass = providerFailureClass;
             recordResponseAttempt('provider_error', {
@@ -3912,20 +4091,27 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               outputTokens: responseBase.outputTokens,
               failureClass: providerFailureClass,
             });
+            if (ollamaCapacityPayload) {
+              const capacityWait = await waitForOllamaCapacity(response);
+              if (capacityWait.retry) continue;
+              const terminal = terminalOllamaCapacityResult();
+              if (terminal) return terminal;
+              break;
+            }
             if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
               prepareOpenRouterModelFallback(requestBody, requestOptions, payload, message, transport)) {
               providerRecoveryAttempted = true;
               recoveryAction = 'model_fallback';
               continue;
             }
-            circuitBreaker.trip(transport, message, providerFailureClass);
+            circuitBreaker.trip(transport, safeMessage, providerFailureClass);
             if (i < candidateTransports.length - 1) {
-              console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
-              lastError = message;
+              console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${safeMessage}); trying next transport...`);
+              lastError = safeMessage;
               fallbackAttempt++;
               break;
             }
-            return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` });
+            return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(safeMessage).slice(0, 200)}` });
           }
 
           const message = payload?.choices?.[0]?.message || {};
@@ -3941,37 +4127,49 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           contentSizeBucket = responseSizeBucket(content);
           reasoningSizeBucket = responseSizeBucket(reasoning);
           if (content) {
+            let providerLane = null;
             try {
-              const providerLane = JSON.parse(content);
-              if (providerLane?.error) {
-                const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
-                const providerFailureClass = /rate.?limit|quota|capacity|overload/i.test(`${providerLane.error.code || ''} ${message}`)
+              providerLane = JSON.parse(content);
+            } catch (_) {}
+            if (providerLane?.error) {
+              const message = providerLane.error.message || providerLane.error.code || JSON.stringify(providerLane.error);
+              const safeMessage = safeProviderErrorMessage(isOllama) || message;
+              const ollamaCapacityPayload = isOllama && isOllamaCapacityRejection(response.status, message);
+              const providerFailureClass = ollamaCapacityPayload
+                ? 'provider_capacity'
+                : /rate.?limit|quota|capacity|overload/i.test(`${providerLane.error.code || ''} ${message}`)
                   ? 'provider_rate_limit'
                   : 'provider_error';
-                errorCode = resolveOpenRouterErrorCode(providerLane);
-                noteRetryReason(providerFailureClass);
-                failureClass = providerFailureClass;
-                recordResponseAttempt('provider_error', {
-                  provider: responseBase.provider,
-                  outputTokens: responseBase.outputTokens,
-                  failureClass: providerFailureClass,
-                });
-                if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
-                  prepareOpenRouterModelFallback(requestBody, requestOptions, providerLane, message, transport)) {
-                  providerRecoveryAttempted = true;
-                  recoveryAction = 'model_fallback';
-                  continue;
-                }
-                if (i < candidateTransports.length - 1) {
-                  circuitBreaker.trip(transport, message, providerFailureClass);
-                  console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${message}); trying next transport...`);
-                  lastError = message;
-                  fallbackAttempt++;
-                  break;
-                }
-                return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(message).slice(0, 200)}` });
+              errorCode = isOllama ? 'ollama_provider_error' : resolveOpenRouterErrorCode(providerLane);
+              noteRetryReason(providerFailureClass);
+              failureClass = providerFailureClass;
+              recordResponseAttempt('provider_error', {
+                provider: responseBase.provider,
+                outputTokens: responseBase.outputTokens,
+                failureClass: providerFailureClass,
+              });
+              if (ollamaCapacityPayload) {
+                const capacityWait = await waitForOllamaCapacity(response);
+                if (capacityWait.retry) continue;
+                const terminal = terminalOllamaCapacityResult();
+                if (terminal) return terminal;
+                break;
               }
-            } catch (_) {}
+              if (isOpenRouterTransport && !providerRecoveryAttempted && providerFailureClass === 'provider_rate_limit' &&
+                prepareOpenRouterModelFallback(requestBody, requestOptions, providerLane, message, transport)) {
+                providerRecoveryAttempted = true;
+                recoveryAction = 'model_fallback';
+                continue;
+              }
+              if (i < candidateTransports.length - 1) {
+                circuitBreaker.trip(transport, safeMessage, providerFailureClass);
+                console.warn(`[Persona: ${persona.id}] Fast failover: transport '${transportName}' error payload (${safeMessage}); trying next transport...`);
+                lastError = safeMessage;
+                fallbackAttempt++;
+                break;
+              }
+              return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: `Provider returned an error payload: ${String(safeMessage).slice(0, 200)}` });
+            }
           }
 
           // Some reasoning providers emit the final structured object in a reasoning
@@ -4056,8 +4254,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         } catch (err) {
           const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
           const isUnusableDirectOutput = /empty_sse|Streaming response exceeded total deadline/i.test(err.message || '');
-          const attemptFailureClass = classifyTelemetryTransportError(err);
+          const attemptCancelled = cancellationSignal?.aborted || err?.code === 'provider_capacity_wait_cancelled';
+          const attemptFailureClass = attemptCancelled ? 'cancelled' : classifyTelemetryTransportError(err);
           const timeoutKind = classifyTelemetryTimeoutKind(err);
+          const rejectedCapacityWaitMs = normalizeTelemetryDuration(err?.capacityWaitMs);
+          if (rejectedCapacityWaitMs !== null && rejectedCapacityWaitMs > 0 && attemptCapacityWaitMs === 0) {
+            attemptCapacityWaitMs = rejectedCapacityWaitMs;
+            capacityWaitSpentMs += rejectedCapacityWaitMs;
+            totalCapacityWaitMs += rejectedCapacityWaitMs;
+          }
           recordResponseAttempt('transport_error', {
             failureClass: attemptFailureClass,
             ...(timeoutKind ? { timeoutKind } : {}),
@@ -4066,7 +4271,18 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           });
           if (typeof err.contentPresent === 'boolean') contentPresent = err.contentPresent;
           if (typeof err.reasoningPresent === 'boolean') reasoningPresent = err.reasoningPresent;
+          if (attemptCancelled) {
+            const cancellationPhase = attemptCapacityLeaseStartedMs === null
+              ? 'queue_cancelled'
+              : 'provider_cancelled';
+            console.log(`[Capacity] provider=${normalizeTelemetryProvider(configuredProvider || transportName) || 'custom'} phase=${cancellationPhase} queue_wait_ms=${attemptCapacityWaitMs}`);
+            lastError = 'review_cancelled';
+            failureClass = 'cancelled';
+            noteRetryReason('cancelled');
+            return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: lastError });
+          }
           if (err?.code === 'provider_capacity_wait_timeout') {
+            console.warn(`[Capacity] provider=${normalizeTelemetryProvider(configuredProvider || transportName) || 'custom'} phase=queue_timeout queue_wait_ms=${attemptCapacityWaitMs}`);
             lastError = 'provider_capacity_wait_timeout';
             failureClass = 'provider_capacity';
             noteRetryReason('provider_capacity');
@@ -4097,7 +4313,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           }
           return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: err.message });
         } finally {
-          if (releaseProviderCapacity) releaseProviderCapacity();
+          releaseCapacityLease();
           if (responseHeaderTimer) clearTimeout(responseHeaderTimer);
           if (heartbeatTimer) clearInterval(heartbeatTimer);
           // The official SDK clones the response stream so it can preserve a bounded raw-body
