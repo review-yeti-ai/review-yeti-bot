@@ -66,6 +66,49 @@ jobs:
       - name: Verify TypeScript Build
         run: npm run build
 
+  legacy-runtime:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: legacy-runtime/package-lock.json
+
+      - name: Install lock-backed legacy graph
+        run: npm ci --prefix legacy-runtime --omit=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Verify the Action graph is not the application tree
+        run: node scripts/verify-legacy-runtime-graph.mjs legacy-runtime
+
+      - id: base
+        name: Resolve reviewed Node base image
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^NODE_BASE_IMAGE=//p' .github/worker-image.env | head -n 1)"
+          [[ "$image" =~ ^node:24-bookworm-slim@sha256:[a-f0-9]{64}$ ]]
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.legacy-runtime
+          load: true
+          push: false
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.base.outputs.image }}
+          tags: review-yeti-legacy-runtime:ci
+
+      - name: Prove the baked image has the two packages and not Next.js
+        run: node scripts/verify-legacy-runtime-image.mjs --image review-yeti-legacy-runtime:ci
+
   build-and-deploy:
     needs: test
     # Deploy is opt-in, never automatic. This job has never run: it was gated on
@@ -86,7 +129,7 @@ jobs:
       - run: doctl registry login
 
       - id: bot
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856 # v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile
@@ -106,8 +149,26 @@ jobs:
           [[ "$image" =~ ^node:24-bookworm-slim@sha256:[a-f0-9]{64}$ ]]
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
+      - id: legacy-runtime
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.legacy-runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
+          tags: ${{ env.REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}
+          cache-from: type=gha,mode=max,scope=legacy-runtime
+          cache-to: type=gha,mode=max,scope=legacy-runtime
+
+      - name: Prove the published legacy-runtime image
+        run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
+
       - id: worker
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856 # v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.worker
@@ -141,7 +202,7 @@ jobs:
           node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
 
       - id: omniroute
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856 # v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.omniroute
