@@ -269,6 +269,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # REL-525: the engine already retries a malformed-output lane once with reasoning
+      # disabled, then advances to the next enabled transport for that lane before failing it
+      # (review-yeti-ai/review-yeti-bot's prepareDirectFormatRecovery/prepareOpenRouterFormatRecovery
+      # plus its per-lane candidateTransports walk). That decision was previously visible only
+      # inside raw provider-telemetry JSON. Surface it as loud, per-event log lines and a job
+      # summary table so a malformed-output recovery -- or an exhausted lane with no alternative
+      # transport -- is honest, reviewable evidence instead of a silent detail buried in an
+      # artifact. This step only reads already-recorded telemetry; it makes no retry or failover
+      # decision of its own and never touches the timeout/stall path ADR 0337 governs.
+      - name: Annotate malformed-output transport failover
+        if: always() && steps.review.outputs.provider-telemetry-path != ''
+        working-directory: .exampleorg-review-actions
+        run: node scripts/annotate-transport-failover.mjs "${{ steps.review.outputs.provider-telemetry-path }}"
+
       - name: Enforce exact-head Review Yeti verdict
         if: always()
         env:

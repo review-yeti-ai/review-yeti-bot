@@ -377,6 +377,40 @@ rate-limit/timeout evidence. It does not measure queue depth or review-quality (
 false-negative rate); those remain open ADR-0467 revisit-bar columns for a future, differently-
 scoped instrument and are intentionally not fabricated here.
 
+## Malformed-output transport failover evidence (REL-525)
+
+The Review Yeti engine already retries a persona lane once with reasoning disabled when a
+transport returns unparseable findings JSON, then -- when that repository's resolved transport
+plan admits more than one enabled transport -- advances to the next enabled transport for that
+lane before marking the lane failed. That retry-and-failover decision is made inside
+`review-yeti-ai/review-yeti-bot` (`reviewWithModel`'s per-lane transport walk), not in this
+repository: this repository owns only the transport plan the engine consumes
+(`policy/review-yeti.json`, `scripts/repository-policy.mjs`) and the reusable caller workflow that
+invokes the engine and uploads its evidence.
+
+Before this fix, that decision was visible only inside the raw `review-yeti-provider-telemetry-*`
+artifact (schema `review-provider-telemetry-v4`). `scripts/annotate-transport-failover.mjs` reads
+that already-recorded per-attempt telemetry after the review step and turns it into loud, reviewable
+evidence:
+
+- A malformed-output attempt immediately followed by an attempt on a *different* transport is
+  logged as one `::warning::` failover line (`failover_from`, `failover_to`,
+  `reason=malformed_output`) and one job-summary table row.
+- A malformed-output attempt that is the *last* recorded attempt for a lane (every enabled
+  transport for that lane was exhausted -- including the single-transport case, such as a
+  repository pinned to one allowed provider) is logged as a distinct "no alternative transport"
+  line, never mislabeled as a failover.
+- A transport change driven by a timeout or stall (ADR 0337) is never reported here as
+  `reason=malformed_output`; that recovery path keeps its existing stall-based timeout handling
+  unchanged.
+
+This script only reads telemetry the engine already produces; it makes no retry or failover
+decision of its own. Run it locally against a downloaded artifact with:
+
+```bash
+node scripts/annotate-transport-failover.mjs /path/to/review-yeti-provider-telemetry-*.json
+```
+
 ## One-time same-engine DOKS comparison
 
 The `One-time same-engine worker parity qualification` workflow is the manual hosted half of a

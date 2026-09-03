@@ -43,6 +43,8 @@ jobs:
           node --check scripts/run-pi-qualification-row.mjs
           node --check scripts/transport-telemetry.mjs
           node --check scripts/transport-telemetry-report.mjs
+          node --check scripts/annotate-transport-failover.mjs
+          node --check scripts/annotate-transport-failover.test.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           node scripts/emit-execution-plan.mjs --check
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
@@ -88,6 +90,7 @@ jobs:
           node --test scripts/pi-openrouter-qualification.test.mjs
           node --test scripts/transport-telemetry.test.mjs
           node --test scripts/transport-telemetry-report.test.mjs
+          node --test scripts/annotate-transport-failover.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "gemini"' policy/review-yeti.json
