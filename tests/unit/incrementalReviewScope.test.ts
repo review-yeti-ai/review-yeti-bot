@@ -1180,33 +1180,58 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
     }
   }
 
+  let comparisonCalls = 0;
+
+  /**
+   * URL-routed fetch mock (REL-553): `resolveIncrementalReviewScope` reorders its GitHub calls
+   * between same-repo and central modes -- notably the artifact archive is now downloaded BEFORE
+   * the run lookup so a candidate belonging to another repository is discarded without spending a
+   * run-lookup call. Routing on the request URL instead of a fixed response queue keeps these
+   * tests pinned to the observable contract (which endpoints are consulted) rather than to the
+   * incidental order they happen to be consulted in.
+   */
   function buildFetchQueue(parentReport: unknown, deltaDiffText: string) {
     const archiveBytes = zipReport(parentReport);
-    const responses = [
-      new Response(JSON.stringify({
-        artifacts: [{
-          name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
-          archive_download_url: 'https://api.github.com/archive.zip', workflow_run: { id: 1, head_sha: PARENT_SHA },
-        }],
-      }), { status: 200 }),
-      new Response(JSON.stringify({
-        status: 'completed', event: 'pull_request_target', head_sha: PARENT_SHA, run_attempt: 1,
-        referenced_workflows: [{
-          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
-          ref: 'refs/tags/v1',
-          sha: TRUSTED_WORKFLOW_SHA,
-        }],
-      }), { status: 200 }),
-      new Response(new Uint8Array(archiveBytes), { status: 200 }),
-      new Response(JSON.stringify({
-        status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT_SHA },
-        files: deltaDiffText === LIB_AUTH_DIFF
-          ? [{ filename: 'lib/auth.ex', patch: '@@ -10,2 +10,3 @@\n-def old_check(x) do\n+def check(x) do\n+  IO.inspect(x)\n end' }]
-          : [{ filename: 'README.md', patch: '@@ -1,1 +1,1 @@\n-Old title\n+New title' }],
-      }), { status: 200 }),
-      new Response(deltaDiffText, { status: 200 }),
-    ];
-    return async () => responses.shift()!;
+    return async (input: unknown) => {
+      const url = String(typeof input === 'string' ? input : (input as { url?: string })?.url ?? input);
+      if (url.includes('/actions/artifacts')) {
+        return new Response(JSON.stringify({
+          artifacts: [{
+            name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
+            archive_download_url: 'https://api.github.com/archive.zip', workflow_run: { id: 1, head_sha: PARENT_SHA },
+          }],
+        }), { status: 200 });
+      }
+      if (url.includes('archive.zip')) {
+        return new Response(new Uint8Array(archiveBytes), { status: 200 });
+      }
+      if (url.includes('/actions/runs/')) {
+        return new Response(JSON.stringify({
+          status: 'completed', event: 'pull_request_target', head_sha: PARENT_SHA, run_attempt: 1,
+          referenced_workflows: [{
+            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            ref: 'refs/tags/v1',
+            sha: TRUSTED_WORKFLOW_SHA,
+          }],
+        }), { status: 200 });
+      }
+      if (url.includes('/compare/')) {
+        // The resolver hits /compare twice: once for JSON metadata, once for the diff media type.
+        // The diff request is the one that asks for application/vnd.github.diff, but the mock does
+        // not see headers here, so serve JSON first and the raw diff on the second visit.
+        comparisonCalls += 1;
+        if (comparisonCalls === 1) {
+          return new Response(JSON.stringify({
+            status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT_SHA },
+            files: deltaDiffText === LIB_AUTH_DIFF
+              ? [{ filename: 'lib/auth.ex', patch: '@@ -10,2 +10,3 @@\n-def old_check(x) do\n+def check(x) do\n+  IO.inspect(x)\n end' }]
+              : [{ filename: 'README.md', patch: '@@ -1,1 +1,1 @@\n-Old title\n+New title' }],
+          }), { status: 200 });
+        }
+        return new Response(deltaDiffText, { status: 200 });
+      }
+      throw new Error(`unexpected fetch in incremental scope test: ${url}`);
+    };
   }
 
   function runMainSynthetically(parentReport: unknown, deltaDiffText: string) {
@@ -1263,6 +1288,7 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
         // safe to run main() for real here.
         for (const key of providerKeyVars) delete process.env[key];
 
+        comparisonCalls = 0;
         globalThis.fetch = buildFetchQueue(parentReport, deltaDiffText) as unknown as typeof fetch;
         console.log = logSpy;
         console.error = logSpy;
@@ -1289,6 +1315,11 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
       maxDiffChars: Number(MAX_DIFF_CHARS), maxIncrementalDiffChars: Number(MAX_INCREMENTAL_DIFF_CHARS),
       trustedWorkflow: TRUSTED_WORKFLOW, trustedWorkflowSha: TRUSTED_WORKFLOW_SHA,
       indexDigest, maxIncrementalChain: Number(MAX_INCREMENTAL_CHAIN),
+      // REL-553 folded the trusted artifact repository and trusted parent-run events into the
+      // plan digest. main() defaults both when the new env overrides are unset, so mirror those
+      // defaults here or the parent report's planDigest will no longer match and every candidate
+      // is rejected (silently falling back to a full review).
+      artifactRepo: PR_REPO, trustedEvents: ['pull_request', 'pull_request_target'],
     });
     const parentReport = {
       schemaVersion: 'review-run-report-v1', repository: PR_REPO, prNumber: Number(PR_NUMBER),
@@ -1322,6 +1353,11 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
       maxDiffChars: Number(MAX_DIFF_CHARS), maxIncrementalDiffChars: Number(MAX_INCREMENTAL_DIFF_CHARS),
       trustedWorkflow: TRUSTED_WORKFLOW, trustedWorkflowSha: TRUSTED_WORKFLOW_SHA,
       indexDigest, maxIncrementalChain: Number(MAX_INCREMENTAL_CHAIN),
+      // REL-553 folded the trusted artifact repository and trusted parent-run events into the
+      // plan digest. main() defaults both when the new env overrides are unset, so mirror those
+      // defaults here or the parent report's planDigest will no longer match and every candidate
+      // is rejected (silently falling back to a full review).
+      artifactRepo: PR_REPO, trustedEvents: ['pull_request', 'pull_request_target'],
     });
     const parentReport = {
       schemaVersion: 'review-run-report-v1', repository: PR_REPO, prNumber: Number(PR_NUMBER),
