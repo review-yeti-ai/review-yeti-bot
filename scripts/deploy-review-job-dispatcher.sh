@@ -11,15 +11,15 @@ need() {
 need kubectl
 need envsubst
 
-: "${CT_REVIEW_JOB_DISPATCHER_IMAGE:?set CT_REVIEW_JOB_DISPATCHER_IMAGE to registry.digitalocean.com/calltelemetry/ct-review-bot@sha256:digest}"
-: "${CT_REVIEW_WORKER_IMAGE:?set CT_REVIEW_WORKER_IMAGE to registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:digest}"
+: "${CT_REVIEW_JOB_DISPATCHER_IMAGE:?set CT_REVIEW_JOB_DISPATCHER_IMAGE to a trusted bot image@sha256:digest}"
+: "${CT_REVIEW_WORKER_IMAGE:?set CT_REVIEW_WORKER_IMAGE to a trusted worker image@sha256:digest}"
 
-if [[ ! "$CT_REVIEW_JOB_DISPATCHER_IMAGE" =~ ^registry\.digitalocean\.com/calltelemetry/ct-review-bot@sha256:[0-9a-f]{64}$ ]]; then
-  echo "deploy-review-job-dispatcher: CT_REVIEW_JOB_DISPATCHER_IMAGE must use the trusted repository and an immutable lowercase sha256 digest" >&2
+if [[ ! "$CT_REVIEW_JOB_DISPATCHER_IMAGE" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot|registry\.digitalocean\.com/calltelemetry/ct-review-bot)@sha256:[0-9a-f]{64}$ ]]; then
+  echo "deploy-review-job-dispatcher: CT_REVIEW_JOB_DISPATCHER_IMAGE must use a trusted repository and an immutable lowercase sha256 digest" >&2
   exit 2
 fi
-if [[ ! "$CT_REVIEW_WORKER_IMAGE" =~ ^registry\.digitalocean\.com/calltelemetry/review-yeti-worker@sha256:[0-9a-f]{64}$ ]]; then
-  echo "deploy-review-job-dispatcher: CT_REVIEW_WORKER_IMAGE must use the trusted repository and an immutable lowercase sha256 digest" >&2
+if [[ ! "$CT_REVIEW_WORKER_IMAGE" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
+  echo "deploy-review-job-dispatcher: CT_REVIEW_WORKER_IMAGE must use a trusted repository and an immutable lowercase sha256 digest" >&2
   exit 2
 fi
 

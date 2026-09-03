@@ -103,6 +103,19 @@ describe('guarded DOKS review runtime installer', () => {
     expect(result.renderedOperator).not.toContain('${');
   });
 
+  it('installs the CRD and both workloads with public ghcr.io images', () => {
+    const ghcrOperator = `ghcr.io/review-yeti-ai/review-yeti-operator@sha256:${'d'.repeat(64)}`;
+    const ghcrDispatcher = `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'e'.repeat(64)}`;
+    const ghcrWorker = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'f'.repeat(64)}`;
+    const result = runInstaller({
+      CT_REVIEW_OPERATOR_IMAGE: ghcrOperator,
+      CT_REVIEW_JOB_DISPATCHER_IMAGE: ghcrDispatcher,
+      CT_REVIEW_WORKER_IMAGE: ghcrWorker,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.renderedOperator).toContain(`image: ${ghcrOperator}`);
+  });
+
   it('rejects an active operator before any Kubernetes apply', () => {
     const result = runInstaller({ FAKE_ACTIVE_OPERATOR: '1' });
     expect(result.status).toBe(1);
