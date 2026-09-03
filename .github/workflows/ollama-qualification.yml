@@ -54,11 +54,40 @@ jobs:
       QUALIFY_BOT_SHA: ${{ inputs.bot_sha }}
       QUALIFY_CENTRAL_SHA: ${{ github.sha }}
       QUALIFY_BOT_ROOT: ${{ github.workspace }}/review-yeti-bot
-      QUALIFICATION_GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
       OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
       OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
     steps:
+      # REL-539 / ADR 0511: verifyPullRequest() (scripts/ollama-qualification.mjs)
+      # only ever performs a single READ — `GET /repos/{repository}/pulls/{prNumber}`
+      # for exact-head verification — before dispatching the two read-only
+      # qualification arms. `inputs.repository` is operator-supplied
+      # "owner/name"; the ct-readonly-reader App is installed on the
+      # exampleorg org only, so fail loud (not silently mis-scope) on any
+      # other owner before minting.
+      - name: Resolve read-only App token scope
+        id: ro_scope
+        env:
+          TARGET_REPOSITORY: ${{ inputs.repository }}
+        run: |
+          set -euo pipefail
+          owner="${TARGET_REPOSITORY%%/*}"
+          name="${TARGET_REPOSITORY#*/}"
+          if [ "$owner" != "exampleorg" ]; then
+            echo "::error::ollama-qualification only qualifies PRs on exampleorg-owned repositories (got owner '${owner}')." >&2
+            exit 1
+          fi
+          echo "repo_name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint read-only cross-repo token
+        id: ro_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.CT_READONLY_APP_ID }}
+          private-key: ${{ secrets.CT_READONLY_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: ${{ steps.ro_scope.outputs.repo_name }}
+
       - name: Checkout central qualification tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -70,6 +99,11 @@ jobs:
         with:
           node-version: 24
 
+      # REL-539 / ADR 0511: left on CROSS_REPO_TOKEN. review-yeti-ai/review-yeti-bot
+      # is a different GitHub org from exampleorg; the ct-readonly-reader App
+      # (owner: exampleorg) is not installed there, so it cannot mint a token
+      # scoped to this checkout. Needs its own cross-org reader App installation
+      # (or an org-owner App) before this site can migrate off the PAT.
       - name: Checkout exact Review Yeti action commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -93,6 +127,8 @@ jobs:
       - name: Run bounded paired qualification
         id: qualification
         working-directory: example-review-actions
+        env:
+          QUALIFICATION_GH_TOKEN: ${{ steps.ro_token.outputs.token }}
         run: node scripts/ollama-qualification.mjs
 
       - name: Upload sanitized qualification receipt
