@@ -433,8 +433,8 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     expect(maxActive).toBe(3);
   });
 
-  it('defaults persona concurrency to three and rejects unsafe overrides', () => {
-    expect(pipeline.resolvePersonaConcurrency()).toBe(3);
+  it('defaults persona concurrency to six and rejects unsafe overrides', () => {
+    expect(pipeline.resolvePersonaConcurrency()).toBe(6);
     expect(pipeline.resolvePersonaConcurrency('2')).toBe(2);
     expect(() => pipeline.resolvePersonaConcurrency('0')).toThrow('between 1 and 25');
     expect(() => pipeline.resolvePersonaConcurrency('many')).toThrow('between 1 and 25');
