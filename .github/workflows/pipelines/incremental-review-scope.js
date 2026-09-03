@@ -5,14 +5,22 @@ const { createHash } = require('crypto');
 const { spawnSync } = require('child_process');
 
 const SCOPE_SCHEMA_VERSION = 'review-scope-v1';
-const MAX_CANDIDATE_ARTIFACTS = 25;
+// REL-553: central (repository_dispatch) execution holds run-report artifacts for every consumer
+// repository in one executing repo's artifact feed, so a busy day produces many more candidates
+// per repo/PR than a same-repo pull_request run ever would. 25 was sized for the same-repo case;
+// 60 gives central mode enough depth to still find same-PR candidates on a busy shared executor
+// without an unbounded scan.
+const MAX_CANDIDATE_ARTIFACTS = 60;
 const MAX_DELTA_FILES = 25;
 
 function sha256(value) {
   return createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
 }
 
-function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffChars, maxIncrementalDiffChars, trustedWorkflow, trustedWorkflowSha, indexDigest, maxIncrementalChain }) {
+function buildReviewScopePlanDigest({
+  actionSha, baseSha, personaIds, maxDiffChars, maxIncrementalDiffChars, trustedWorkflow, trustedWorkflowSha,
+  indexDigest, maxIncrementalChain, artifactRepo, trustedEvents,
+}) {
   return sha256(JSON.stringify({
     schemaVersion: SCOPE_SCHEMA_VERSION,
     actionSha: String(actionSha || 'unbound').toLowerCase(),
@@ -27,6 +35,12 @@ function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffCha
     // longer matches, so it cannot silently keep authorizing reuse under a stale policy.
     indexDigest: String(indexDigest || ''),
     maxIncrementalChain: Number.isFinite(Number(maxIncrementalChain)) ? Number(maxIncrementalChain) : 0,
+    // REL-553: which repository's artifact feed is trusted for parent reports, and which parent
+    // run trigger events are trusted, are both part of the reuse policy. Widening either (for
+    // example pointing at a central executing repo, or admitting repository_dispatch) must
+    // invalidate any report planned/reused under the narrower same-repo policy.
+    artifactRepo: String(artifactRepo || '').toLowerCase(),
+    trustedEvents: [...(trustedEvents || [])].map((event) => String(event || '').toLowerCase()),
   }));
 }
 
@@ -288,7 +302,38 @@ async function githubRequest(fetchImplementation, token, url, accept = 'applicat
   return response;
 }
 
+/**
+ * Trust argument for cross-repository parent-report binding (REL-553).
+ *
+ * Same-repo mode (the original design): the artifact lives in the *reviewed* repository's own
+ * Actions run, which a PR author can influence (workflow_dispatch, re-runs, forks with write
+ * access, etc). `run.head_sha === report.headSha` is the anchor that proves the specific run
+ * whose trusted-workflow reference we just verified is the same run that actually checked out and
+ * reviewed the commit the report claims to be about -- without it, an attacker-influenced run
+ * could smuggle in a report for an arbitrary headSha.
+ *
+ * Cross-repo (central `repository_dispatch`) mode: the artifact instead lives in the *executing*
+ * repository (for example the private `calltelemetry/ct-review-actions`), which holds run reports
+ * for every consumer repository it reviews on their behalf. A PR author on the reviewed repo has
+ * no write access to that executing repo, so they cannot forge, replace, or redirect its artifacts
+ * or its runs. `run.head_sha` there is the *executing* repo's own commit (the dispatch workflow's
+ * checkout), which has no relationship to the reviewed PR's headSha at all -- requiring the two to
+ * match would be both meaningless and always false. The security anchor in this mode is instead:
+ * the run belongs to the executing repo we were explicitly told to trust (`artifactRepo`), it ran
+ * the trusted reusable workflow at its pinned commit SHA (`isTrustedWorkflowReference`, unchanged),
+ * it completed, its trigger event is one we were explicitly told to trust (`trustedEvents`), and
+ * the extracted report's own identity fields (repository, prNumber, baseSha, headSha, planDigest,
+ * lanes) match the exact request (`isCompleteTrustedReport`, unchanged). That combination proves
+ * the report was produced by a legitimate, trusted execution of the review workflow for this exact
+ * PR and commit -- the executing run's own head commit is simply not part of that chain of custody.
+ */
 async function resolveIncrementalReviewScope(options) {
+  const artifactRepo = String(options.artifactRepo || options.repo || '');
+  const trustedEvents = (Array.isArray(options.trustedEvents) && options.trustedEvents.length > 0
+    ? options.trustedEvents
+    : ['pull_request', 'pull_request_target']).map((event) => String(event || '').trim().toLowerCase()).filter(Boolean);
+  const isCrossRepoArtifactSource = artifactRepo.toLowerCase() !== String(options.repo || '').toLowerCase();
+
   const fullScope = createFullReviewScope({
     fullDiffText: options.fullDiffText,
     planDigest: options.planDigest,
@@ -297,7 +342,7 @@ async function resolveIncrementalReviewScope(options) {
   if (!options.enabled) return { reviewedDiffText: options.fullDiffText, scope: fullScope, parentReport: null };
   const trustedWorkflows = String(options.trustedWorkflow || '').split(',').map((item) => item.trim()).filter(Boolean);
   const trustedWorkflowSha = String(options.trustedWorkflowSha || '').toLowerCase();
-  if (!options.token || !options.repo || !options.prNumber || !options.baseSha || !options.headSha
+  if (!options.token || !options.repo || !options.prNumber || !options.baseSha || !options.headSha || !artifactRepo
     || trustedWorkflows.length < 1 || !/^[0-9a-f]{40}$/u.test(trustedWorkflowSha)) {
     return { reviewedDiffText: options.fullDiffText, scope: { ...fullScope, fallbackReason: 'missing_identity' }, parentReport: null };
   }
@@ -305,8 +350,18 @@ async function resolveIncrementalReviewScope(options) {
   const fetchImplementation = options.fetchImplementation || globalThis.fetch;
   const apiBase = String(options.apiBase || 'https://api.github.com').replace(/\/+$/u, '');
   const maxIncrementalChain = Math.max(1, Number.parseInt(String(options.maxIncrementalChain ?? 5), 10) || 5);
-  const artifactsResponse = await githubRequest(fetchImplementation, options.token, `${apiBase}/repos/${options.repo}/actions/artifacts?per_page=100`);
-  const artifactsPayload = await artifactsResponse.json();
+
+  let artifactsPayload;
+  try {
+    const artifactsResponse = await githubRequest(fetchImplementation, options.token, `${apiBase}/repos/${artifactRepo}/actions/artifacts?per_page=100`);
+    artifactsPayload = await artifactsResponse.json();
+  } catch (_) {
+    // Distinct from the loop-exhausted `no_trusted_parent` fallback below: this means the
+    // configured artifact repository could not be read at all (403/404/network failure), which on
+    // a central execution path usually means the workflow token lacks `actions: read` on the
+    // executing repo, not that no trusted parent exists.
+    return { reviewedDiffText: options.fullDiffText, scope: { ...fullScope, fallbackReason: 'artifact_repo_unreadable' }, parentReport: null };
+  }
   const artifacts = (Array.isArray(artifactsPayload.artifacts) ? artifactsPayload.artifacts : [])
     .filter((artifact) => !artifact.expired && String(artifact.name || '').startsWith('review-yeti-run-report-'))
     .filter((artifact) => artifact.workflow_run?.head_sha !== options.headSha)
@@ -324,19 +379,28 @@ async function resolveIncrementalReviewScope(options) {
     try {
       const runId = Number(artifact.workflow_run?.id);
       if (!Number.isSafeInteger(runId) || runId < 1) continue;
-      const runResponse = await githubRequest(fetchImplementation, options.token,
-        `${apiBase}/repos/${options.repo}/actions/runs/${runId}`);
-      const run = await runResponse.json();
-      const trustedReference = (Array.isArray(run.referenced_workflows) ? run.referenced_workflows : [])
-        .find((reference) => isTrustedWorkflowReference(reference, trustedWorkflows, trustedWorkflowSha));
-      if (run.status !== 'completed' || !['pull_request', 'pull_request_target'].includes(run.event)) continue;
-      if (!trustedReference) continue;
-      if (run.head_sha !== artifact.workflow_run?.head_sha || Number(run.run_attempt) < 1) continue;
-      if (!String(artifact.name).endsWith(`-${run.run_attempt}`)) continue;
 
+      // REL-553: in central mode this artifact feed holds reports for every consumer repository
+      // this executor reviews, so most candidates belong to a different repo/PR entirely. Extract
+      // and check the report's own identity fields FIRST -- before spending a run-lookup API call
+      // on a candidate that can never match.
       const archiveResponse = await githubRequest(fetchImplementation, options.token, artifact.archive_download_url, 'application/vnd.github+json');
       const archiveBytes = Buffer.from(await archiveResponse.arrayBuffer());
       const extracted = (options.extractReport || extractReportFromArtifact)(archiveBytes);
+      if (extracted.report?.repository !== options.repo || Number(extracted.report?.prNumber) !== Number(options.prNumber)) continue;
+
+      const runResponse = await githubRequest(fetchImplementation, options.token,
+        `${apiBase}/repos/${artifactRepo}/actions/runs/${runId}`);
+      const run = await runResponse.json();
+      const trustedReference = (Array.isArray(run.referenced_workflows) ? run.referenced_workflows : [])
+        .find((reference) => isTrustedWorkflowReference(reference, trustedWorkflows, trustedWorkflowSha));
+      if (run.status !== 'completed' || !trustedEvents.includes(String(run.event || '').toLowerCase())) continue;
+      if (!trustedReference) continue;
+      // Structural artifact/run consistency: the artifact's own recorded run metadata must match
+      // the run we just fetched, regardless of same- or cross-repo mode.
+      if (run.head_sha !== artifact.workflow_run?.head_sha || Number(run.run_attempt) < 1) continue;
+      if (!String(artifact.name).endsWith(`-${run.run_attempt}`)) continue;
+
       const expected = {
         repo: options.repo,
         prNumber: options.prNumber,
@@ -346,7 +410,10 @@ async function resolveIncrementalReviewScope(options) {
         personaIds: options.personaIds,
       };
       if (!isCompleteTrustedReport(extracted.report, expected)) continue;
-      if (run.head_sha !== extracted.report.headSha) continue;
+      // Same-repo mode only: bind the parent report to the exact run that produced it (see the
+      // trust-argument comment above this function for why cross-repo mode cannot and does not
+      // need this check).
+      if (!isCrossRepoArtifactSource && run.head_sha !== extracted.report.headSha) continue;
 
       const parentChainDepth = Number(extracted.report.scope?.chainDepth) || 0;
       if (parentChainDepth + 1 >= maxIncrementalChain) {
