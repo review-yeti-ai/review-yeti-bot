@@ -19,7 +19,7 @@ export const actionDispatchRequestSchema = z.object({
   caller: z.object({
     runId: z.string().regex(/^\d+$/u),
     runAttempt: positiveInteger,
-    eventName: z.enum(['workflow_dispatch', 'pull_request_target', 'pull_request']),
+    eventName: z.enum(['workflow_dispatch', 'pull_request_target', 'pull_request', 'repository_dispatch']),
     workflowRef: z.string().min(1).max(512).optional(),
     workflowSha: sha.optional(),
   }).strict(),
@@ -39,8 +39,11 @@ export function actionDispatchDigestInput(request: ActionDispatchRequest): Omit<
 
 export function assertActionDispatchMatchesClaims(request: ActionDispatchRequest, claims: GitHubActionsOidcClaims): void {
   const repository = `${request.owner}/${request.repo}`;
-  const matches = repository === claims.repository
-    && String(request.repositoryId) === claims.repository_id
+  const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
+  const isCentral = request.caller.eventName === 'repository_dispatch'
+    && claims.repository === 'calltelemetry/ct-review-actions'
+    && request.owner === 'calltelemetry';
+  const matches = (isDirect || isCentral)
     && request.caller.runId === claims.run_id
     && String(request.caller.runAttempt) === claims.run_attempt
     && request.caller.eventName === claims.event_name
