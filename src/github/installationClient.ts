@@ -195,7 +195,7 @@ export class GitHubInstallationClient {
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
-        name: 'PR Review Evidence Gate',
+        name: 'Review Yeti / Gate',
         head_sha: headSha,
         status: 'in_progress',
         output: {

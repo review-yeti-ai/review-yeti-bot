@@ -246,7 +246,7 @@ func validateInput(input Input) error {
 	}
 	if !runIDPattern.MatchString(spec.RunID) || len(spec.DeliveryID) == 0 || len(spec.DeliveryID) > 512 || spec.RepositoryID <= 0 ||
 		!repoPattern.MatchString(spec.Repo) || spec.PRNumber <= 0 || !shaPattern.MatchString(spec.HeadSHA) || !shaPattern.MatchString(spec.BaseSHA) ||
-		!digestPattern.MatchString(spec.PolicyDigest) || !digestPattern.MatchString(spec.ConfigDigest) || spec.PublicationMode != "disabled" ||
+		!digestPattern.MatchString(spec.PolicyDigest) || !digestPattern.MatchString(spec.ConfigDigest) || (spec.PublicationMode != "disabled" && spec.PublicationMode != "app-gate") ||
 		!workerImagePattern.MatchString(spec.WorkerImage) || !secretNamePattern.MatchString(spec.RunSecretName) {
 		return ErrJobConfiguration
 	}

@@ -35,7 +35,6 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   logger.info('Review Yeti review job dispatcher started', {
     workerId: config.workerId,
     namespace: config.namespace,
-    publicationMode: 'disabled',
   });
   try {
     await runReviewJobDispatcherLoop(engine, {
