@@ -124,6 +124,50 @@ function resolveStreamTotalTimeoutMs(transport, attemptTimeoutMs, streamEnabled)
   return Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, attemptTimeoutMs);
 }
 
+// Node's built-in fetch is undici. Its default headersTimeout/bodyTimeout is 300s
+// and is independent of AbortSignal watchdogs. Ollama withholds HTTP headers until
+// the first reasoning token, so a 15-minute generation clock is useless if undici
+// kills the socket at 300s. 0 disables those client timers; the pipeline's
+// headerDeadlineMs / stall / max_wall_clock AbortControllers remain the owners.
+const STREAMING_FETCH_DISPATCHER_OPTIONS = Object.freeze({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+});
+
+let streamingFetchDispatcher = null;
+
+function loadUndiciAgentClass() {
+  try {
+    return require('undici').Agent;
+  } catch (error) {
+    if (error?.code !== 'MODULE_NOT_FOUND') throw error;
+  }
+  const nested = path.join(
+    path.dirname(process.execPath),
+    '..',
+    'lib',
+    'node_modules',
+    'npm',
+    'node_modules',
+    'undici',
+  );
+  try {
+    return require(nested).Agent;
+  } catch (error) {
+    throw new Error(
+      `undici Agent is required to disable the 300s headersTimeout on streaming fetches: ${error?.message || error}`,
+    );
+  }
+}
+
+function getStreamingFetchDispatcher() {
+  if (!streamingFetchDispatcher) {
+    const Agent = loadUndiciAgentClass();
+    streamingFetchDispatcher = new Agent(STREAMING_FETCH_DISPATCHER_OPTIONS);
+  }
+  return streamingFetchDispatcher;
+}
+
 // OpenRouter's official SDK is used only for the OpenRouter gateway branch. Direct providers
 // remain on their existing OpenAI-compatible transport because their response contracts and
 // recovery policies are intentionally different. The Action installs this pinned dependency in
@@ -4066,6 +4110,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               },
               body: JSON.stringify(requestBody),
               signal: requestSignal,
+              ...(streamEnabled ? { dispatcher: getStreamingFetchDispatcher() } : {}),
             });
           }
           if (responseHeaderTimer) {
@@ -6486,6 +6531,8 @@ module.exports = {
   DEFAULT_MODEL,
   DEFAULT_PERSONA_CONCURRENCY,
   DEFAULT_STREAM_MAX_WALL_CLOCK_MS,
+  STREAMING_FETCH_DISPATCHER_OPTIONS,
+  getStreamingFetchDispatcher,
   resolveStreamTotalTimeoutMs,
   OLLAMA_MAX_IN_FLIGHT_REQUESTS,
   OLLAMA_CAPACITY_WAIT_TIMEOUT_MS,
