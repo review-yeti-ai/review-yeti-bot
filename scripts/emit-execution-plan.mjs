@@ -25,11 +25,13 @@ const ALLOWED_REVIEW_KEYS = [
   'stall_ms',
   'budget',
   'max_diff_chars',
+  'incremental',
   'max_file_diff_chars',
   'max_incremental_diff_chars',
   'max_passes',
   'exclude',
 ];
+const ALLOWED_INCREMENTAL_KEYS = ['repositories', 'max_incremental_chain'];
 const ALLOWED_BUDGET_KEYS = [
   'lane_deadline_ms',
   'lane_overhead_ms',
@@ -113,6 +115,26 @@ export function validateExecutionPlanPolicy(policy, repository = '') {
   rejectUnknownKeys(policy.review_yeti.budget, ALLOWED_BUDGET_KEYS, 'policy.review_yeti.budget');
   if (!['ordered', 'striped'].includes(policy.review_yeti.dispatch_mode)) {
     throw new Error('policy.review_yeti.dispatch_mode must be ordered or striped');
+  }
+
+  // REL-550: review_yeti.incremental is optional (a policy that omits it keeps "trusted repair
+  // delta" mode disabled everywhere), but a PRESENT block must be well-formed. This mirrors the
+  // shape emit-policy.mjs enforces at policy-load time; the execution plan does not surface
+  // these fields today (they gate a workflow input, not a transport/lane contract), so this is
+  // validation-only and does not change buildExecutionPlan's output or the pinned fixture digest.
+  if (policy.review_yeti.incremental !== undefined) {
+    rejectUnknownKeys(policy.review_yeti.incremental, ALLOWED_INCREMENTAL_KEYS, 'policy.review_yeti.incremental');
+    const { repositories, max_incremental_chain: maxIncrementalChain } = policy.review_yeti.incremental;
+    if (
+      !Array.isArray(repositories)
+      || repositories.length === 0
+      || repositories.some((repository_) => typeof repository_ !== 'string' || repository_.length === 0)
+    ) {
+      throw new Error('policy.review_yeti.incremental.repositories must be an array of non-empty strings');
+    }
+    if (!/^[1-9][0-9]*$/.test(String(maxIncrementalChain ?? ''))) {
+      throw new Error('policy.review_yeti.incremental.max_incremental_chain must be a positive integer string');
+    }
   }
 
   if (!Array.isArray(policy.review_yeti.transports)) {

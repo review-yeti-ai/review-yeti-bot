@@ -568,7 +568,8 @@ grep -Fq 'name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.r
 grep -Fq 'path: ${{ steps.review.outputs.provider-telemetry-path }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'actions: read' "$repo_root/.github/workflows/self-review.yml"
 grep -Fq 'actions: read' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq "incremental-review: 'true'" "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'incremental-review: ${{ steps.policy.outputs.incremental_enabled }}' "$repo_root/.github/workflows/review-yeti.yml"
 if [[ -e "$repo_root/.github/workflows/self-review-recovery.yml" ]]; then
   echo "temporary self-review recovery workflow must be removed before activation" >&2
   exit 1
@@ -585,6 +586,8 @@ grep -Fq 'run: .exampleorg-review-actions/scripts/emit-workflow-identity.sh' <<<
 grep -Fq 'incremental-trusted-workflow: ${{ steps.workflow_identity.outputs.workflow_ref }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'incremental-trusted-workflow-sha: ${{ steps.workflow_identity.outputs.workflow_sha }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}' "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
 

@@ -244,10 +244,11 @@ jobs:
           dispatch-mode: ${{ steps.policy.outputs.dispatch_mode }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
-          incremental-review: 'true'
+          incremental-review: ${{ steps.policy.outputs.incremental_enabled }}
           incremental-trusted-workflow: ${{ steps.workflow_identity.outputs.workflow_ref }}
           incremental-trusted-workflow-sha: ${{ steps.workflow_identity.outputs.workflow_sha }}
           max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}
+          max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain }}
           max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}
           personas: ${{ steps.policy.outputs.personas }}
           # Library-documentation evidence tool (review-yeti-bot#101). The
@@ -293,7 +294,7 @@ jobs:
           name: review-yeti-run-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.passthrough.outputs.run-report-path || steps.review.outputs.run-report-path }}
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 90
 
       - name: Upload Review Yeti provider telemetry
         if: always() && steps.review.outputs.provider-telemetry-path != ''

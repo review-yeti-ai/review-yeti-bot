@@ -7,7 +7,10 @@ import {
 } from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
 
-const targetRepository = process.env.REVIEW_REPOSITORY || '';
+// REVIEW_REPOSITORY is set at job level for both consumer-repo and central-dispatch runs (see
+// review-yeti.yml); GITHUB_REPOSITORY is the runner-provided fallback for any invocation that
+// omits it (e.g. an ad-hoc local run against this repository's own policy).
+const targetRepository = process.env.REVIEW_REPOSITORY || process.env.GITHUB_REPOSITORY || '';
 const policy = resolvePolicyForRepository(
   JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8')),
   targetRepository,
@@ -183,6 +186,32 @@ if (declaredNonStreamingTransports.length > 0 || !streamingDeclaredGlobally) {
   }
 }
 
+// REL-550: review_yeti.incremental gates the "trusted repair delta" mode's repository
+// allowlist and chain-depth cap. The block is optional -- a policy that omits it entirely
+// gets the safe default (incremental disabled, chain depth 5) rather than a hard failure, but
+// a PRESENT block must be well-formed or the run fails closed rather than silently degrading.
+const incrementalConfig = review.incremental;
+let incrementalEnabled = false;
+let maxIncrementalChain = '5';
+if (incrementalConfig !== undefined) {
+  if (typeof incrementalConfig !== 'object' || incrementalConfig === null || Array.isArray(incrementalConfig)) {
+    throw new Error('review_yeti.incremental must be an object');
+  }
+  const { repositories } = incrementalConfig;
+  if (
+    !Array.isArray(repositories)
+    || repositories.length === 0
+    || repositories.some((repository) => typeof repository !== 'string' || repository.length === 0)
+  ) {
+    throw new Error('review_yeti.incremental.repositories must be an array of non-empty strings');
+  }
+  if (!/^[1-9][0-9]*$/.test(String(incrementalConfig.max_incremental_chain ?? ''))) {
+    throw new Error('review_yeti.incremental.max_incremental_chain must be a positive integer string');
+  }
+  incrementalEnabled = repositories.includes('*') || repositories.includes(targetRepository);
+  maxIncrementalChain = incrementalConfig.max_incremental_chain;
+}
+
 const outputs = {
   repository: review.repository,
   action_ref: review.action_channel,
@@ -210,6 +239,8 @@ const outputs = {
   max_review_assignments: budget.max_review_assignments,
   max_investigation_turns: budget.max_investigation_turns,
   max_diff_chars: review.max_diff_chars,
+  incremental_enabled: incrementalEnabled,
+  max_incremental_chain: maxIncrementalChain,
   max_incremental_diff_chars: review.max_incremental_diff_chars,
   max_file_diff_chars: review.max_file_diff_chars,
   max_passes: review.max_passes,

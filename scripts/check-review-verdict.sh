@@ -88,6 +88,19 @@ report_summary="$({
       def valid_finding:
         type == "object"
         and (.severity == "P0" or .severity == "P1" or .severity == "P2");
+      # scope.chainDepth is optional (older reports and any report from a transport that never
+      # ran an incremental "trusted repair delta" lane omit it entirely); when present it must be
+      # a nonnegative integer, never a malformed or negative value silently accepted.
+      def valid_chain_depth:
+        . == null or (type == "number" and floor == . and . >= 0);
+      # A lane whose evidence was reused from a prior run (evidenceSource == "parent", i.e. the
+      # incremental "trusted repair delta" mode did not re-review that lane on this exact head)
+      # must never carry unresolved P0/P1 findings forward under a SHIP verdict -- SHIP means
+      # this exact head is clear, and a reused lane cannot attest to that for a diff it never
+      # examined. P2-only reused lanes remain advisory, same as a live lane P2 finding.
+      def has_blocking_reused_lane:
+        any(.lanes[]?; .evidenceSource == "parent"
+          and (((.severity.P0 // 0) > 0) or ((.severity.P1 // 0) > 0)));
 
       if .schemaVersion != "review-run-report-v1" then
         error("unsupported run-report schema")
@@ -105,6 +118,10 @@ report_summary="$({
         error("run-report contains an invalid lane")
       elif any(.lanes[]?.findings[]?; valid_finding | not) then
         error("run-report contains an invalid finding")
+      elif (.scope.chainDepth | valid_chain_depth | not) then
+        error("run-report scope.chainDepth must be a nonnegative integer")
+      elif .verdict == "SHIP" and has_blocking_reused_lane then
+        error("run-report carries a reused lane with blocking findings under a SHIP verdict")
       else
         ([.lanes[]?.findings[]? | select(.severity == "P2")] | length) as $finding_p2
         | ([.lanes[]?.severity.P2] | add // 0) as $summary_p2

@@ -734,4 +734,101 @@ PY
   echo "[$repo ollama-primary] passed"
 done
 
+# REL-550: review_yeti.incremental gates the "trusted repair delta" mode's repository
+# allowlist and chain-depth cap. incremental_enabled is true iff the reviewed repository
+# (REVIEW_REPOSITORY) is listed or the block uses the "*" wildcard; a missing block defaults to
+# disabled with chain depth 5; a present-but-malformed block fails closed.
+write_incremental_policy() {
+  local mode="$1"
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" "$mode" <<'PY'
+import json
+import sys
+
+source, destination, mode = sys.argv[1:]
+policy = json.load(open(source))
+review = policy['review_yeti']
+if mode == 'missing':
+    review.pop('incremental', None)
+elif mode == 'allowlist-match':
+    review['incremental'] = {'repositories': ['exampleorg/example-api'], 'max_incremental_chain': '3'}
+elif mode == 'wildcard':
+    review['incremental'] = {'repositories': ['*'], 'max_incremental_chain': '7'}
+elif mode == 'non-match':
+    review['incremental'] = {'repositories': ['exampleorg/example-api'], 'max_incremental_chain': '4'}
+elif mode == 'malformed-not-object':
+    review['incremental'] = 'nope'
+elif mode == 'malformed-repositories-not-array':
+    review['incremental'] = {'repositories': 'exampleorg/example-api', 'max_incremental_chain': '5'}
+elif mode == 'malformed-repositories-empty':
+    review['incremental'] = {'repositories': [], 'max_incremental_chain': '5'}
+elif mode == 'malformed-repositories-blank-entry':
+    review['incremental'] = {'repositories': [''], 'max_incremental_chain': '5'}
+elif mode == 'malformed-chain-not-integer':
+    review['incremental'] = {'repositories': ['*'], 'max_incremental_chain': 'abc'}
+elif mode == 'malformed-chain-zero':
+    review['incremental'] = {'repositories': ['*'], 'max_incremental_chain': '0'}
+else:
+    raise SystemExit(f'unknown incremental fixture mode {mode}')
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+write_incremental_policy allowlist-match
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$tmp_dir/incremental-match.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^incremental_enabled<<' "$tmp_dir/incremental-match.output" | grep -qx 'true'
+grep -A1 '^max_incremental_chain<<' "$tmp_dir/incremental-match.output" | grep -qx '3'
+echo "[incremental-allowlist-match] passed"
+
+write_incremental_policy wildcard
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/anything GITHUB_OUTPUT="$tmp_dir/incremental-wildcard.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^incremental_enabled<<' "$tmp_dir/incremental-wildcard.output" | grep -qx 'true'
+grep -A1 '^max_incremental_chain<<' "$tmp_dir/incremental-wildcard.output" | grep -qx '7'
+echo "[incremental-wildcard] passed"
+
+write_incremental_policy non-match
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-ui GITHUB_OUTPUT="$tmp_dir/incremental-non-match.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^incremental_enabled<<' "$tmp_dir/incremental-non-match.output" | grep -qx 'false'
+grep -A1 '^max_incremental_chain<<' "$tmp_dir/incremental-non-match.output" | grep -qx '4'
+echo "[incremental-non-match] passed"
+
+write_incremental_policy missing
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$tmp_dir/incremental-missing.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^incremental_enabled<<' "$tmp_dir/incremental-missing.output" | grep -qx 'false'
+grep -A1 '^max_incremental_chain<<' "$tmp_dir/incremental-missing.output" | grep -qx '5'
+echo "[incremental-missing-block] passed"
+
+for mode in malformed-repositories-not-array malformed-repositories-empty malformed-repositories-blank-entry; do
+  write_incremental_policy "$mode"
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/incremental-${mode}.output" node emit-policy.mjs) >"$tmp_dir/incremental-${mode}.log" 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]]
+  grep -q 'review_yeti.incremental.repositories must be an array of non-empty strings' "$tmp_dir/incremental-${mode}.log"
+  echo "[incremental-${mode}] passed"
+done
+
+write_incremental_policy malformed-not-object
+set +e
+(cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/incremental-malformed-not-object.output" node emit-policy.mjs) >"$tmp_dir/incremental-malformed-not-object.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+grep -q 'review_yeti.incremental must be an object' "$tmp_dir/incremental-malformed-not-object.log"
+echo "[incremental-malformed-not-object] passed"
+
+for mode in malformed-chain-not-integer malformed-chain-zero; do
+  write_incremental_policy "$mode"
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/incremental-${mode}.output" node emit-policy.mjs) >"$tmp_dir/incremental-${mode}.log" 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]]
+  grep -q 'review_yeti.incremental.max_incremental_chain must be a positive integer string' "$tmp_dir/incremental-${mode}.log"
+  echo "[incremental-${mode}] passed"
+done
+
+echo "emit-policy incremental repository allowlist contract passed"
+
 echo "emit-policy action channel and lane_call_budget contract passed"

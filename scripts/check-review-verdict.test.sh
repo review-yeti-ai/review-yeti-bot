@@ -103,6 +103,75 @@ EOF
 
 jq '.lanes[0].severity.P2 = 0' "$nonzero_p2_report" >"$inconsistent_p2_report"
 
+# REL-550: a lane whose evidence was reused from a prior run (incremental "trusted repair
+# delta" mode, evidenceSource == "parent") must never carry unresolved P0/P1 findings forward
+# under a SHIP verdict -- SHIP means this exact head is clear, and a reused lane cannot attest
+# to a diff it never examined.
+reused_p1_ship_report="$tmp_dir/reused-p1-ship.json"
+cat >"$reused_p1_ship_report" <<EOF
+{
+  "schemaVersion": "review-run-report-v1",
+  "repository": "exampleorg/example",
+  "prNumber": 7,
+  "baseSha": "$base_sha",
+  "headSha": "$head_sha",
+  "verdict": "SHIP",
+  "lanes": [{
+    "decision": "FINDINGS",
+    "severity": {"P0": 0, "P1": 1, "P2": 0},
+    "findings": [{"severity": "P1", "file": "lib/example.ex", "title": "Reused blocking"}],
+    "evidenceSource": "parent"
+  }]
+}
+EOF
+
+# The same reused-lane shape, but P2-only: still advisory, must not block a SHIP verdict.
+reused_p2_only_ship_report="$tmp_dir/reused-p2-only-ship.json"
+cat >"$reused_p2_only_ship_report" <<EOF
+{
+  "schemaVersion": "review-run-report-v1",
+  "repository": "exampleorg/example",
+  "prNumber": 7,
+  "baseSha": "$base_sha",
+  "headSha": "$head_sha",
+  "verdict": "SHIP",
+  "lanes": [{
+    "decision": "FINDINGS",
+    "severity": {"P0": 0, "P1": 0, "P2": 1},
+    "findings": [{"severity": "P2", "file": "lib/example.ex", "title": "Reused advisory"}],
+    "evidenceSource": "parent"
+  }]
+}
+EOF
+
+# A live (non-reused) lane with a P1 finding under a FIX_FIRST verdict: unaffected by the new
+# reused-lane rule, which only ever fires under a SHIP verdict.
+live_p1_fix_first_report="$tmp_dir/live-p1-fix-first.json"
+cat >"$live_p1_fix_first_report" <<EOF
+{
+  "schemaVersion": "review-run-report-v1",
+  "repository": "exampleorg/example",
+  "prNumber": 7,
+  "baseSha": "$base_sha",
+  "headSha": "$head_sha",
+  "verdict": "FIX_FIRST",
+  "lanes": [{
+    "decision": "FINDINGS",
+    "severity": {"P0": 0, "P1": 1, "P2": 0},
+    "findings": [{"severity": "P1", "file": "lib/example.ex", "title": "Live blocking"}]
+  }]
+}
+EOF
+
+# scope.chainDepth is an optional nonnegative-integer field surfaced by the incremental
+# "trusted repair delta" mode; a valid depth must never fail a report that is otherwise clean.
+chain_depth_valid_report="$tmp_dir/chain-depth-valid.json"
+jq '.scope.chainDepth = 2' "$zero_p2_report" >"$chain_depth_valid_report"
+
+# A malformed (non-numeric) chainDepth must fail closed rather than being silently ignored.
+chain_depth_invalid_report="$tmp_dir/chain-depth-invalid.json"
+jq '.scope.chainDepth = "x"' "$zero_p2_report" >"$chain_depth_invalid_report"
+
 # example-api #4386 shape: "no reviewable files remained after 1 expected policy
 # exclusion(s)" -- SHIP verdict, zero lanes, no digest, no reflection status.
 zero_lane_report="$tmp_dir/zero-lane.json"
@@ -484,5 +553,74 @@ grep -Fq "run-report P2 count is inconsistent" <<<"$output" || {
   exit 1
 }
 echo "[report-p2-count] passed (summary mismatch rejected)"
+
+# 8. REL-550: a reused lane (evidenceSource == "parent") carrying an unresolved P1 finding must
+#    fail closed under a SHIP verdict -- a SHIP verdict must never be attested to by a lane that
+#    was never actually re-reviewed on this exact head.
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$reused_p1_ship_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[reused-lane-p1-ship] expected a reused blocking lane to fail closed under SHIP" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "run-report carries a reused lane with blocking findings under a SHIP verdict" <<<"$output" || {
+  echo "[reused-lane-p1-ship] expected the reused-lane blocking-findings error message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[reused-lane-p1-ship] passed (reused blocking lane rejected under SHIP)"
+
+# 9. The same reused-lane shape, but P2-only, remains advisory and must not block SHIP.
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$reused_p2_only_ship_report"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[reused-lane-p2-only-ship] expected a reused P2-only lane to pass under SHIP" >&2
+  echo "$output" >&2
+  exit 1
+fi
+echo "[reused-lane-p2-only-ship] passed (reused P2-only lane accepted under SHIP)"
+
+# 10. A live (non-reused) lane with a P1 finding under FIX_FIRST behaves exactly as it did
+#     before this change: the plain not-SHIP failure path, never the new reused-lane message.
+REVIEW_STATUS=FIX_FIRST run_script "$(pr_json "$base_sha" "$head_sha")" '' "$live_p1_fix_first_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[live-lane-p1-fix-first] expected FIX_FIRST to still fail closed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "Review Yeti verdict is FIX_FIRST, not SHIP" <<<"$output" || {
+  echo "[live-lane-p1-fix-first] expected the unchanged plain verdict failure message" >&2
+  echo "$output" >&2
+  exit 1
+}
+if grep -Fq "reused lane" <<<"$output"; then
+  echo "[live-lane-p1-fix-first] the reused-lane rule must never fire on a non-SHIP verdict" >&2
+  echo "$output" >&2
+  exit 1
+fi
+echo "[live-lane-p1-fix-first] passed (unchanged FIX_FIRST behavior, reused-lane rule did not fire)"
+
+# 11. scope.chainDepth is optional; a valid nonnegative integer must not fail an otherwise
+#     clean report.
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$chain_depth_valid_report"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[chain-depth-valid] expected a numeric scope.chainDepth to pass" >&2
+  echo "$output" >&2
+  exit 1
+fi
+echo "[chain-depth-valid] passed (numeric scope.chainDepth accepted)"
+
+# 12. A malformed (non-numeric) scope.chainDepth must fail closed.
+run_script "$(pr_json "$base_sha" "$head_sha")" '' "$chain_depth_invalid_report"
+if [[ "$rc" -eq 0 ]]; then
+  echo "[chain-depth-invalid] expected a non-numeric scope.chainDepth to fail closed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "run-report scope.chainDepth must be a nonnegative integer" <<<"$output" || {
+  echo "[chain-depth-invalid] expected the scope.chainDepth failure message" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[chain-depth-invalid] passed (non-numeric scope.chainDepth rejected)"
 
 echo "check-review-verdict self-cancel contract passed"
