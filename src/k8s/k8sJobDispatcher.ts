@@ -94,7 +94,7 @@ export class K8sJobDispatcher {
       options.image ||
       process.env.WORKER_IMAGE ||
       process.env.CONTAINER_IMAGE ||
-      'registry.digitalocean.com/calltelemetry/ct-review-bot:v46-wall-time-responsive-fix';
+      'ghcr.io/review-yeti-ai/review-yeti-worker:latest';
     const runtimeSecretName = process.env.OPENROUTER_SECRET_NAME || 'ct-review-bot-runtime';
 
     return {

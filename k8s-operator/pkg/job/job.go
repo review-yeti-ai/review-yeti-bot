@@ -74,7 +74,7 @@ var (
 	repoPattern        = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
 	shaPattern         = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	digestPattern      = regexp.MustCompile(`^[a-f0-9]{64}$`)
-	workerImagePattern = regexp.MustCompile(`^registry\.digitalocean\.com/calltelemetry/review-yeti-worker@sha256:[a-f0-9]{64}$`)
+	workerImagePattern = regexp.MustCompile(`^(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}$`)
 	secretNamePattern  = regexp.MustCompile(`^ct-review-run-[a-f0-9]{32}$`)
 )
 
@@ -138,8 +138,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	if spec.QualificationProfile == FullPanelQualificationProfile || spec.QualificationProfile == SameHeadQualificationProfile {
 		qualificationTimeoutMillis := max(int64(1_000),
 			(activeDeadlineSeconds-WorkerReceiptReserveSeconds)*1_000)
-		engineRevision := strings.TrimPrefix(spec.WorkerImage,
-			"registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:")
+		engineRevision := spec.WorkerImage[strings.LastIndex(spec.WorkerImage, "@sha256:")+len("@sha256:"):]
 		env = append(env,
 			corev1.EnvVar{Name: EngineRevisionEnv, Value: engineRevision},
 			corev1.EnvVar{Name: QualificationModelEnv, Value: spec.QualificationModel},

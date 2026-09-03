@@ -2,10 +2,13 @@ import type {
   ReviewJobDispatchEngine,
   ReviewJobDispatchOutcome,
 } from './reviewJobDispatchEngine';
-import { TRUSTED_WORKER_IMAGE_REPOSITORY } from './reviewJobProjection';
+import {
+  TRUSTED_WORKER_IMAGE_REPOSITORIES,
+  TRUSTED_WORKER_IMAGE_REPOSITORY,
+} from './reviewJobProjection';
 
 const workerImagePattern = new RegExp(
-  `^${TRUSTED_WORKER_IMAGE_REPOSITORY.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}@sha256:[a-f0-9]{64}$`,
+  `^(?:${TRUSTED_WORKER_IMAGE_REPOSITORIES.map((repo) => repo.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')})@sha256:[a-f0-9]{64}$`,
   'u',
 );
 const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
@@ -30,7 +33,9 @@ export function reviewJobDispatcherConfigFromEnv(
   }
   const workerImage = environment.REVIEW_JOB_WORKER_IMAGE?.trim() || '';
   if (!workerImagePattern.test(workerImage)) {
-    throw new Error(`REVIEW_JOB_WORKER_IMAGE must be a digest-pinned ${TRUSTED_WORKER_IMAGE_REPOSITORY} image`);
+    throw new Error(
+      `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned trusted worker image (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
+    );
   }
   const hostname = environment.HOSTNAME?.trim() || '';
   if (!hostnamePattern.test(hostname)) {

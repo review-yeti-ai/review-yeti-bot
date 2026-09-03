@@ -164,6 +164,18 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(result.rendered).not.toContain('${');
   });
 
+  it('executes the guarded zero-replica render for trusted ghcr.io immutable images', () => {
+    const ghcrDispatcherImage = `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'c'.repeat(64)}`;
+    const ghcrWorkerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'d'.repeat(64)}`;
+    const result = runDeployScript({
+      CT_REVIEW_JOB_DISPATCHER_IMAGE: ghcrDispatcherImage,
+      CT_REVIEW_WORKER_IMAGE: ghcrWorkerImage,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.rendered).toContain(`image: ${ghcrDispatcherImage}`);
+    expect(result.rendered).toContain(`REVIEW_JOB_WORKER_IMAGE: "${ghcrWorkerImage}"`);
+  });
+
   it.each([
     ['mutable dispatcher tag', { CT_REVIEW_JOB_DISPATCHER_IMAGE: 'registry.digitalocean.com/calltelemetry/ct-review-bot:latest' }],
     ['untrusted dispatcher repository', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `attacker.example/ct-review-bot@sha256:${'a'.repeat(64)}` }],
