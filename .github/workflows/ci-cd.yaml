@@ -44,9 +44,9 @@ jobs:
           path: |
             node_modules
             node_modules/.vitest
-          key: ${{ runner.os }}-vitest-cache-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-vitest-cache-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-vitest-cache-
+            ${{ runner.os }}-${{ runner.arch }}-vitest-cache-
 
       - run: npm ci
       
@@ -112,10 +112,26 @@ jobs:
   # OSS image publish. GHCR only: no Docker Hub, no DigitalOcean registry,
   # and no kubectl/doctl. CallTelemetry's cluster stays disconnected until a
   # later, explicit pull from these digests.
-  publish-ghcr:
+  #
+  # cisco-cdr docker-backend-release pattern: native linux/amd64 and
+  # native linux/arm64 on matching runners, then imagetools merge.
+  # Never qemu. Never platforms: linux/amd64,linux/arm64 on one job.
+  # review-yeti-ai has no live Blacksmith pool (2204-arm queued with no
+  # runner), so GHCR uses GitHub-hosted ubuntu-latest (amd64) plus
+  # ubuntu-24.04-arm. Do not retarget to Blacksmith until this org
+  # actually assigns those labels.
+  publish-ghcr-arch:
     needs: [test, legacy-runtime]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -124,11 +140,6 @@ jobs:
     env:
       GHCR_REGISTRY: ghcr.io/review-yeti-ai
       OCI_SOURCE: https://github.com/review-yeti-ai/review-yeti-bot
-    outputs:
-      bot: ${{ steps.bot.outputs.digest }}
-      worker: ${{ steps.worker.outputs.digest }}
-      operator: ${{ steps.operator.outputs.digest }}
-      legacy-runtime: ${{ steps.legacy-runtime.outputs.digest }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -163,7 +174,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.worker
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: true
           sbom: true
@@ -173,34 +184,32 @@ jobs:
             org.opencontainers.image.source=${{ env.OCI_SOURCE }}
             org.opencontainers.image.description=Review Yeti public worker
           tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
-            ${{ env.GHCR_REGISTRY }}/review-yeti-worker:latest
-          cache-from: type=gha,mode=max,scope=ghcr-worker
-          cache-to: type=gha,mode=max,scope=ghcr-worker
+            ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,mode=max,scope=ghcr-worker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ghcr-worker-${{ matrix.arch }}
 
       - id: bot
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: true
           sbom: true
           labels: |
             org.opencontainers.image.source=${{ env.OCI_SOURCE }}
           tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
-            ${{ env.GHCR_REGISTRY }}/review-yeti-bot:latest
-          cache-from: type=gha,mode=max,scope=ghcr-bot
-          cache-to: type=gha,mode=max,scope=ghcr-bot
+            ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,mode=max,scope=ghcr-bot-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ghcr-bot-${{ matrix.arch }}
 
       - id: legacy-runtime
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.legacy-runtime
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: true
           sbom: true
@@ -209,10 +218,9 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ env.OCI_SOURCE }}
           tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}
-            ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:latest
-          cache-from: type=gha,mode=max,scope=ghcr-legacy-runtime
-          cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime
+            ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,mode=max,scope=ghcr-legacy-runtime-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime-${{ matrix.arch }}
 
       - name: Prove the published legacy-runtime image
         run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
@@ -224,34 +232,99 @@ jobs:
           set -euo pipefail
           [[ "$WORKER_IMAGE" =~ ^${GHCR_REGISTRY}/review-yeti-worker@sha256:[a-f0-9]{64}$ ]]
           docker pull "$WORKER_IMAGE"
-          docker run --platform linux/amd64 --rm --read-only \
+          docker run --rm --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             "$WORKER_IMAGE" --self-test
-
-      - name: Enforce worker image size gates
-        env:
-          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
-          SERVICE_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-bot@${{ steps.bot.outputs.digest }}
-        run: |
-          set -euo pipefail
-          node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
 
       - id: operator
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.operator
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: true
           sbom: true
           labels: |
             org.opencontainers.image.source=${{ env.OCI_SOURCE }}
           tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}
-            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:latest
-          cache-from: type=gha,mode=max,scope=ghcr-operator
-          cache-to: type=gha,mode=max,scope=ghcr-operator
+            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
+
+  publish-ghcr:
+    needs: [publish-ghcr-arch]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_REGISTRY: ghcr.io/review-yeti-ai
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge native platform images into public multi-arch indexes
+        id: merge
+        env:
+          BOT: ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
+          WORKER: ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
+          OPERATOR: ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}
+          LEGACY: ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          platform_digest() {
+            local image="$1"
+            local arch="$2"
+            docker buildx imagetools inspect --raw "$image" | python3 -c "
+          import json, sys
+          document = json.load(sys.stdin)
+          arch = sys.argv[1]
+          manifests = document.get('manifests') or []
+          digest = next(
+              item['digest']
+              for item in manifests
+              if item.get('platform', {}).get('os') == 'linux'
+              and item.get('platform', {}).get('architecture') == arch
+              and item.get('annotations', {}).get('vnd.docker.reference.type') != 'attestation-manifest'
+          )
+          print(digest)
+          " "$arch"
+          }
+
+          {
+            echo '## Public GHCR images'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for pkg in review-yeti-worker review-yeti-bot review-yeti-operator review-yeti-legacy-runtime; do
+            amd64_digest="$(platform_digest "${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}-amd64" amd64)"
+            arm64_digest="$(platform_digest "${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}-arm64" arm64)"
+            docker buildx imagetools create \
+              -t "${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}" \
+              -t "${GHCR_REGISTRY}/${pkg}:latest" \
+              "${GHCR_REGISTRY}/${pkg}@${amd64_digest}" \
+              "${GHCR_REGISTRY}/${pkg}@${arm64_digest}"
+            echo "- \`${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "- \`docker pull ghcr.io/review-yeti-ai/review-yeti-worker:latest\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce worker image size gates
+        env:
+          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
+          SERVICE_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
 
       - name: Make GHCR packages public
         env:
@@ -268,24 +341,6 @@ jobs:
               echo "::warning::Could not set ${pkg} public via API. Set it at https://github.com/orgs/review-yeti-ai/packages/container/${pkg}/settings"
             fi
           done
-
-      - name: Record GHCR digests
-        env:
-          BOT: ${{ env.GHCR_REGISTRY }}/review-yeti-bot@${{ steps.bot.outputs.digest }}
-          WORKER: ${{ env.GHCR_REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
-          OPERATOR: ${{ env.GHCR_REGISTRY }}/review-yeti-operator@${{ steps.operator.outputs.digest }}
-          LEGACY: ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
-        run: |
-          set -euo pipefail
-          {
-            echo '## Public GHCR images'
-            echo
-            echo "- worker (public runner): \`$WORKER\`"
-            echo "- \`docker pull ghcr.io/review-yeti-ai/review-yeti-worker:latest\`"
-            echo "- \`$BOT\`"
-            echo "- \`$OPERATOR\`"
-            echo "- \`$LEGACY\`"
-          } >> "$GITHUB_STEP_SUMMARY"
 
   build-and-deploy:
     needs: test
