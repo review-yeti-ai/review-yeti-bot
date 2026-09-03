@@ -190,7 +190,7 @@ test('validates exact live PR identity and the immutable base-owned caller with 
 test('fails closed on missing central credentials, stale identity, or a GitHub lookup failure', async () => {
   await assert.rejects(
     validateCentralDispatch({ payload, token: '', fetchImpl: successFetch([]) }),
-    /CROSS_REPO_TOKEN is required/,
+    /App token \(GH_TOKEN\) is required/,
   );
   await assert.rejects(
     validateCentralDispatch({
@@ -259,6 +259,10 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(receiver, /run-name:\s*Review Yeti central \/ \$\{\{ github\.event\.client_payload\.request_id \}\}/u);
   assert.match(receiver, /uses: exampleorg\/example-review-actions\/\.github\/workflows\/review-yeti\.yml@v1/u);
   assert.match(receiver, /secrets: inherit/u);
+  // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
+  assert.match(receiver, /create-github-app-token@[0-9a-f]{40}/u);
+  assert.match(receiver, /app-id: \$\{\{ secrets\.CT_REVIEW_BOT_APP_ID \}\}/u);
+  assert.doesNotMatch(receiver, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(receiver, /OLLAMA_PR_REVIEW_API_KEY/u);
   assert.match(reusable, /OLLAMA_PR_REVIEW_API_KEY:\s*\$\{\{ secrets\.OLLAMA_PR_REVIEW_API_KEY \}\}/u);
   // REL-519: GitHub-surface auth moved to the ct-review-bot App installation

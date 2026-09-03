@@ -91,7 +91,7 @@ export function validateCallerWorkflow(content) {
 
 async function githubJson(url, token, fetchImpl) {
   if (typeof token !== 'string' || token.length === 0) {
-    throw new Error('CROSS_REPO_TOKEN is required for central target access');
+    throw new Error('a Review Yeti App token (GH_TOKEN) is required for central target access');
   }
   const response = await fetchImpl(url, {
     method: 'GET',

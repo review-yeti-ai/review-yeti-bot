@@ -132,8 +132,13 @@ jobs:
           test -f .github/workflows/repository-dispatch.yml
           grep -Fq 'types: [review-yeti-request]' .github/workflows/repository-dispatch.yml
           grep -Fq 'uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1' .github/workflows/repository-dispatch.yml
-          cross_repo_token_marker='GH_TOKEN: $''{{ secrets.CROSS_REPO_TOKEN }}'
-          grep -Fq "$cross_repo_token_marker" .github/workflows/repository-dispatch.yml
+          # ADR 0511 / REL-540: the receiver validates the target as the
+          # ct-review-bot App; a PAT must never reappear here.
+          grep -Fq 'app-id: $''{{ secrets.CT_REVIEW_BOT_APP_ID }}' .github/workflows/repository-dispatch.yml
+          if grep -Fq 'secrets.CROSS_REPO_TOKEN' .github/workflows/repository-dispatch.yml; then
+            echo "::error::the central receiver must not use the operator PAT (ADR 0511)"
+            exit 1
+          fi
           test -f .github/workflows/ollama-qualification.yml
           test -f .github/workflows/openrouter-qualification.yml
           grep -Fq 'workflow_dispatch:' .github/workflows/ollama-qualification.yml
