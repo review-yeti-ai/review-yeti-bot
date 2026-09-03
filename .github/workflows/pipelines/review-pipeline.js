@@ -6317,6 +6317,19 @@ async function main() {
   const maxIncrementalChain = Math.max(1, Number.parseInt(process.env.MAX_INCREMENTAL_CHAIN || '5', 10) || 5);
   const trustedWorkflow = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW || '').trim();
   const trustedWorkflowSha = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW_SHA || '').trim().toLowerCase();
+  // REL-553: central (repository_dispatch) execution runs the reusable workflow inside the
+  // private executing repository (e.g. calltelemetry/ct-review-actions), not inside the reviewed
+  // repository. Prior run reports therefore live in that executing repo's artifact store, and the
+  // parent run's trigger event is repository_dispatch rather than pull_request(_target). Both are
+  // explicit opt-in overrides so a same-repo consumer's behavior is unchanged by default.
+  const incrementalArtifactRepo = String(process.env.REVIEW_YETI_INCREMENTAL_ARTIFACT_REPO || '').trim() || prContext.repo;
+  const configuredTrustedEvents = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_EVENTS || '')
+    .split(',')
+    .map((event) => event.trim().toLowerCase())
+    .filter(Boolean);
+  const incrementalTrustedEvents = configuredTrustedEvents.length > 0
+    ? configuredTrustedEvents
+    : ['pull_request', 'pull_request_target'];
   // REL-552: the compiled Master Domain Index drives per-lane carry planning (see
   // planIncrementalLanes in incremental-review-scope.js). Its digest is folded into the plan
   // digest below so a domain-index change invalidates any report reused under the old mapping.
@@ -6340,6 +6353,8 @@ async function main() {
     trustedWorkflowSha,
     indexDigest: domainIndexDigest,
     maxIncrementalChain,
+    artifactRepo: incrementalArtifactRepo,
+    trustedEvents: incrementalTrustedEvents,
   });
   let scopeResolution;
   try {
@@ -6363,6 +6378,8 @@ async function main() {
       index: domainIndexInstance,
       resolveFileDomains: domainIndex ? domainIndex.resolveFileDomains : null,
       indexDigest: domainIndexDigest,
+      artifactRepo: incrementalArtifactRepo,
+      trustedEvents: incrementalTrustedEvents,
     });
   } catch (error) {
     console.warn(`[Scope] Trusted incremental scope unavailable (${error.message}); falling back to the full pull-request diff.`);
