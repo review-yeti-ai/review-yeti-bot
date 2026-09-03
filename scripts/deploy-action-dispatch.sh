@@ -29,8 +29,8 @@ if [[ ! "$ACTION_DISPATCH_OWNER_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
   echo "deploy-action-dispatch: owner ids must be an explicit comma-separated numeric allowlist" >&2
   exit 2
 fi
-if [[ ! "$ACTION_DISPATCH_WORKFLOW_SHAS" =~ ^[0-9a-fA-F]{40}(,[0-9a-fA-F]{40})*$ ]]; then
-  echo "deploy-action-dispatch: workflow shas must be an explicit comma-separated 40-hex allowlist" >&2
+if [[ "$ACTION_DISPATCH_WORKFLOW_SHAS" != "*" && ! "$ACTION_DISPATCH_WORKFLOW_SHAS" =~ ^[0-9a-fA-F]{40}(,[0-9a-fA-F]{40})*$ ]]; then
+  echo "deploy-action-dispatch: workflow shas must be * or an explicit comma-separated 40-hex allowlist" >&2
   exit 2
 fi
 
@@ -40,7 +40,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-envsubst '${CT_REVIEW_DISPATCH_IMAGE} ${ACTION_DISPATCH_REPOSITORY_IDS} ${ACTION_DISPATCH_OWNER_IDS} ${ACTION_DISPATCH_WORKFLOW_REFS} ${ACTION_DISPATCH_WORKFLOW_SHAS}' \
+: "${ACTION_DISPATCH_ALLOW_APP_GATE:=true}"
+
+envsubst '${CT_REVIEW_DISPATCH_IMAGE} ${ACTION_DISPATCH_REPOSITORY_IDS} ${ACTION_DISPATCH_OWNER_IDS} ${ACTION_DISPATCH_WORKFLOW_REFS} ${ACTION_DISPATCH_WORKFLOW_SHAS} ${ACTION_DISPATCH_ALLOW_APP_GATE}' \
   < k8s/action-dispatch.yaml.tpl > "$render_dir/action-dispatch.yaml"
 
 kubectl apply --server-side -f k8s/namespace.yaml
