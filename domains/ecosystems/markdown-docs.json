@@ -1,0 +1,7 @@
+{
+  "ecosystem": "markdown-docs",
+  "description": "Markdown documentation",
+  "classes": {
+    "docs": ["**/*.{md,mdx,rst,adoc}"]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "ecosystem": "java",
+  "description": "Java",
+  "classes": {
+    "source": ["**/*.java"],
+    "test": ["**/src/test/**", "**/*Test.java", "**/*Tests.java"],
+    "deps-manifest": ["pom.xml", "build.gradle"],
+    "lockfile": ["gradle.lockfile"],
+    "config": ["checkstyle.xml", "**/src/main/resources/application*.{yml,yaml,properties}"]
+  }
+}

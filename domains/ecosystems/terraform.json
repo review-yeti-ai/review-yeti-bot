@@ -1,0 +1,9 @@
+{
+  "ecosystem": "terraform",
+  "description": "Terraform / OpenTofu",
+  "classes": {
+    "infra": ["**/*.{tf,tfvars}", "**/*.tf.json"],
+    "lockfile": [".terraform.lock.hcl"],
+    "config": ["**/backend.tf"]
+  }
+}

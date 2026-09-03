@@ -1,0 +1,8 @@
+{
+  "ecosystem": "react",
+  "description": "React",
+  "classes": {
+    "source": ["**/*.{jsx,tsx}"],
+    "test": ["**/*.test.{jsx,tsx}", "**/__tests__/**"]
+  }
+}

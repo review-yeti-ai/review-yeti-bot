@@ -1,0 +1,8 @@
+{
+  "ecosystem": "sql",
+  "description": "SQL / database scripts",
+  "classes": {
+    "source": ["**/*.sql"],
+    "database": ["**/migrations/**", "**/migrate/**", "db/**"]
+  }
+}

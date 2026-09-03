@@ -1,0 +1,11 @@
+{
+  "ecosystem": "c-cpp",
+  "description": "C / C++",
+  "classes": {
+    "source": ["**/*.{c,cc,cpp,cxx,h,hh,hpp,hxx}"],
+    "test": ["tests/**", "test/**"],
+    "deps-manifest": ["CMakeLists.txt", "conanfile.{txt,py}", "vcpkg.json"],
+    "lockfile": ["conan.lock", "vcpkg-lock.json"],
+    "config": [".clang-format", ".clang-tidy"]
+  }
+}

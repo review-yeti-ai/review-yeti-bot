@@ -1,0 +1,7 @@
+{
+  "ecosystem": "web-html-css",
+  "description": "HTML / CSS",
+  "classes": {
+    "ui-styles": ["**/*.{html,htm,css,scss,sass,less}"]
+  }
+}
