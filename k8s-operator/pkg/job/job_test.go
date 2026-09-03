@@ -198,6 +198,28 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	}
 }
 
+func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	result, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("build app-gate job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if envValue(container, "REVIEW_PUBLICATION_MODE") != "app-gate" {
+		t.Fatalf("app-gate publication env = %q", envValue(container, "REVIEW_PUBLICATION_MODE"))
+	}
+	if result.Labels["review-yeti.ai/publication-mode"] != "app-gate" {
+		t.Fatalf("app-gate job label = %q", result.Labels["review-yeti.ai/publication-mode"])
+	}
+	for _, forbidden := range []string{"GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_INSTALLATION_ID"} {
+		if hasEnv(container, forbidden) {
+			t.Fatalf("app-gate worker exposes forbidden credential %s", forbidden)
+		}
+	}
+}
+
 func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)
