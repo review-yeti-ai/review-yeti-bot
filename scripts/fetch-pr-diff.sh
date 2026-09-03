@@ -20,10 +20,14 @@
 #      reach the remote -- GitHub's own 406 message names this as the
 #      documented alternative.
 #
-# A forward-merge pull request (title `chore: forward-merge ...` with a
-# 2-parent head) reviews the conflict-resolution delta (second parent vs.
-# head) instead of the full three-dot diff against base, so the review stays
-# scoped to what a human actually resolved by hand.
+# A forward-merge pull request (title `chore: forward-merge ...`, or any
+# 2-parent merge commit found anywhere in base..head) reviews the
+# conflict-resolution delta instead of the full diff against base: files the
+# most recent such merge commit M resolved (M vs. M's second parent) plus
+# files any commit after M touched (M..head, e.g. a hand-fixup or revert
+# stacked on the merge -- REL-556). This keeps the review scoped to what a
+# human actually resolved or changed by hand, never the merged-in history,
+# even when the PR's HEAD is not the merge commit itself.
 #
 # Whichever tier produced the diff, the result is passed through
 # reorder-diff-sections.mjs so generated/lock/vendor/snapshot and test files
@@ -151,19 +155,64 @@ if [[ "$use_fallback" == "true" && -z "$raw_diff_file" ]]; then
     diff_base="$PR_BASE_SHA"
     used_mode="git-clone"
 
-    if [[ "$forward_merge" == "true" ]]; then
-      parent_count="$(git show -s --format=%P "$PR_HEAD_SHA" | wc -w | tr -d ' ')"
-      if [[ "$parent_count" == "2" ]]; then
-        second_parent="$(git show -s --format=%P "$PR_HEAD_SHA" | awk '{print $2}')"
-        if git -c protocol.version=2 fetch -q --filter=blob:none --no-tags origin "$second_parent"; then
-          diff_base="$second_parent"
-          used_mode="forward-merge-conflict-delta"
+    # A forward-merge PR's HEAD is not always the merge commit itself -- a
+    # follow-up commit (a hand-fixup, or a revert like REL-556's PR #4861)
+    # can sit on top of it. Walk the whole base..head range for the most
+    # recent merge commit instead of only checking HEAD directly; a merge
+    # commit found this way is itself sufficient evidence of a forward-merge
+    # shape even when the PR title does not match the naming convention.
+    merge_commit_in_range="$(git rev-list --merges --max-count=1 "${PR_BASE_SHA}..${PR_HEAD_SHA}" 2>/dev/null || true)"
+    forward_merge_effective="$forward_merge"
+    if [[ -n "$merge_commit_in_range" ]]; then
+      forward_merge_effective="true"
+    fi
+
+    if [[ "$forward_merge_effective" == "true" ]]; then
+      merge_commit="$merge_commit_in_range"
+      if [[ -z "$merge_commit" ]]; then
+        # Title-triggered but rev-list found nothing (e.g. a shallow-history
+        # edge case) -- fall back to the original direct-HEAD check.
+        head_parent_count="$(git show -s --format=%P "$PR_HEAD_SHA" | wc -w | tr -d ' ')"
+        if [[ "$head_parent_count" == "2" ]]; then
+          merge_commit="$PR_HEAD_SHA"
+        fi
+      fi
+
+      if [[ -n "$merge_commit" ]]; then
+        merge_parent_count="$(git show -s --format=%P "$merge_commit" | wc -w | tr -d ' ')"
+        if [[ "$merge_parent_count" == "2" ]]; then
+          second_parent="$(git show -s --format=%P "$merge_commit" | awk '{print $2}')"
+          if git -c protocol.version=2 fetch -q --filter=blob:none --no-tags origin "$second_parent" "$merge_commit"; then
+            # Scope to files the merge itself resolved (M vs. its second
+            # parent) UNION files any commit after M touched (M..HEAD) --
+            # never a bare M^2..HEAD diff, which would silently reintroduce
+            # every file that merely differs because of the target line's
+            # own pre-fork history (the "merged-in history" this mode exists
+            # to skip; REL-556).
+            touched_files_file="${work_dir}/touched-files.txt"
+            {
+              git diff --name-only -z "$second_parent" "$merge_commit"
+              if [[ "$merge_commit" != "$PR_HEAD_SHA" ]]; then
+                git diff --name-only -z "$merge_commit" "$PR_HEAD_SHA"
+              fi
+            } | tr '\0' '\n' | sed '/^$/d' | sort -u > "$touched_files_file"
+
+            if [[ -s "$touched_files_file" ]]; then
+              diff_base="$second_parent"
+              used_mode="forward-merge-conflict-delta"
+            fi
+          fi
         fi
       fi
     fi
 
     merge_base_sha="$(git merge-base "$diff_base" "$PR_HEAD_SHA")"
-    git diff --find-renames "$merge_base_sha" "$PR_HEAD_SHA" > "$clone_diff_file"
+    if [[ "$used_mode" == "forward-merge-conflict-delta" ]]; then
+      mapfile -t scope_paths < "${work_dir}/touched-files.txt"
+      git diff --find-renames "$merge_base_sha" "$PR_HEAD_SHA" -- "${scope_paths[@]}" > "$clone_diff_file"
+    else
+      git diff --find-renames "$merge_base_sha" "$PR_HEAD_SHA" > "$clone_diff_file"
+    fi
     echo "$used_mode" > "${work_dir}/mode"
   ) 2> "$clone_err_file"
   clone_rc=$?
