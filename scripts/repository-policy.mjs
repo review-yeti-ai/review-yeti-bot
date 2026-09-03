@@ -15,16 +15,9 @@ export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
 export const OLLAMA_REPOSITORIES = Object.freeze(new Set([]));
 
 // EMERGENCY MAINTENANCE PASSTHROUGH (Operator directive 2026-09-03):
-// When active, completely bypasses LLM inference (smoke tests and review panel)
-// and delivers an immediate SHIP verdict and maintenance comment to PRs.
-// Configurable via:
-// 1. REVIEW_YETI_PASSTHROUGH="true" or "1" (global toggle)
-// 2. REVIEW_YETI_PASSTHROUGH="exampleorg/example-api,..." (per-repo toggle)
-// 3. PASSTHROUGH_REPOSITORIES set (default set of repositories under maintenance)
-export const PASSTHROUGH_REPOSITORIES = Object.freeze(new Set([
-  EXAMPLE_API_REPOSITORY,
-]));
-
+// When active centrally at the dispatch level (REVIEW_YETI_PASSTHROUGH="true"),
+// completely bypasses LLM inference for ALL repositories dispatched to example-review-actions,
+// delivering an immediate SHIP verdict and maintenance comment to PRs.
 export function isPassthroughRepository(repository = '') {
   const envToggle = (process.env.REVIEW_YETI_PASSTHROUGH || '').trim().toLowerCase();
   if (envToggle === 'true' || envToggle === '1') return true;
@@ -35,7 +28,7 @@ export function isPassthroughRepository(repository = '') {
     const shortTarget = target.includes('/') ? target.split('/')[1] : target;
     if (list.includes(target) || list.includes(shortTarget)) return true;
   }
-  return PASSTHROUGH_REPOSITORIES.has(repository);
+  return false;
 }
 
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;

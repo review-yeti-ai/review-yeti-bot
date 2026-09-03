@@ -86,4 +86,5 @@ jobs:
       pr_number: ${{ fromJSON(needs.validate.outputs.pr_number) }}
       base_sha: ${{ needs.validate.outputs.base_sha }}
       head_sha: ${{ needs.validate.outputs.head_sha }}
+      passthrough: ${{ vars.REVIEW_YETI_PASSTHROUGH == 'true' }}
     secrets: inherit

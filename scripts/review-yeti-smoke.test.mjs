@@ -12,7 +12,6 @@ import {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
   OLLAMA_REPOSITORIES,
-  PASSTHROUGH_REPOSITORIES,
   isPassthroughRepository,
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_OPENROUTER_MODEL,
@@ -190,20 +189,21 @@ test('isPassthroughRepository respects environment toggles, repository lists, an
   });
 
   delete process.env.REVIEW_YETI_PASSTHROUGH;
-  assert.equal(isPassthroughRepository(EXAMPLE_API_REPOSITORY), true);
+  assert.equal(isPassthroughRepository('exampleorg/example-api'), false);
   assert.equal(isPassthroughRepository('exampleorg/other-repo'), false);
 
   process.env.REVIEW_YETI_PASSTHROUGH = 'true';
+  assert.equal(isPassthroughRepository('exampleorg/example-api'), true);
   assert.equal(isPassthroughRepository('exampleorg/other-repo'), true);
 
   process.env.REVIEW_YETI_PASSTHROUGH = '1';
   assert.equal(isPassthroughRepository('exampleorg/other-repo'), true);
 
   process.env.REVIEW_YETI_PASSTHROUGH = 'false';
-  assert.equal(isPassthroughRepository(EXAMPLE_API_REPOSITORY), false);
+  assert.equal(isPassthroughRepository('exampleorg/example-api'), false);
 
   process.env.REVIEW_YETI_PASSTHROUGH = '0';
-  assert.equal(isPassthroughRepository(EXAMPLE_API_REPOSITORY), false);
+  assert.equal(isPassthroughRepository('exampleorg/example-api'), false);
 
   process.env.REVIEW_YETI_PASSTHROUGH = 'exampleorg/example-meta, example-api';
   assert.equal(isPassthroughRepository('exampleorg/example-meta'), true);

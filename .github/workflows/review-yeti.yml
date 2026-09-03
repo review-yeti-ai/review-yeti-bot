@@ -28,6 +28,11 @@ on:
         required: false
         default: ''
         type: string
+      passthrough:
+        description: Deliver immediate SHIP in passthrough mode without LLM evaluation.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -138,7 +143,7 @@ jobs:
         id: policy
         working-directory: .exampleorg-review-actions
         env:
-          REVIEW_YETI_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH || '' }}
+          REVIEW_YETI_PASSTHROUGH: ${{ inputs.passthrough && 'true' || vars.REVIEW_YETI_PASSTHROUGH || '' }}
         run: node scripts/emit-policy.mjs
 
       - name: Validate encoded transport handoff
