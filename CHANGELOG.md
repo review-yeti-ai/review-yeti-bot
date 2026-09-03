@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.25.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.25.0...v1.25.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **review:** keep requested reasoning effort on direct recovery [no-linear] ([#429](https://github.com/review-yeti-ai/review-yeti-bot/issues/429)) ([7d84689](https://github.com/review-yeti-ai/review-yeti-bot/commit/7d8468998a8d7d82e649267233a0bea1356f04db))
+* **review:** let live thinking streams run until the 15-minute max [no-linear] ([#431](https://github.com/review-yeti-ai/review-yeti-bot/issues/431)) ([99522c3](https://github.com/review-yeti-ai/review-yeti-bot/commit/99522c369edbda1a53f87d40eeada1e5405f654d))
+
 ## [1.25.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.24.2...v1.25.0) (2026-09-03)
 
 
