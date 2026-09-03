@@ -54,7 +54,7 @@ export function githubActionsOidcPolicyFromEnv(environment: NodeJS.ProcessEnv = 
     ownerIds: csvSet(environment.ACTION_DISPATCH_OWNER_IDS, 'ACTION_DISPATCH_OWNER_IDS'),
     workflowRefs: csvSet(environment.ACTION_DISPATCH_WORKFLOW_REFS, 'ACTION_DISPATCH_WORKFLOW_REFS'),
     workflowShas: csvSet(environment.ACTION_DISPATCH_WORKFLOW_SHAS, 'ACTION_DISPATCH_WORKFLOW_SHAS'),
-    allowedEvents: new Set(['workflow_dispatch', 'pull_request_target', 'pull_request']),
+    allowedEvents: new Set(['workflow_dispatch', 'pull_request_target', 'pull_request', 'repository_dispatch']),
     allowAppGate: environment.ACTION_DISPATCH_ALLOW_APP_GATE === 'true',
   };
 }
