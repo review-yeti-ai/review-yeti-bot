@@ -56,7 +56,8 @@ process.stdin.on('end', () => process.stdout.write(input
   .replaceAll('\${KUBERNETES_API_ENDPOINT_CIDR}', process.env.KUBERNETES_API_ENDPOINT_CIDR || '')
   .replaceAll('\${KUBERNETES_API_CIDR}', process.env.KUBERNETES_API_CIDR || '')
   .replaceAll('\${CT_REVIEW_JOB_DISPATCHER_IMAGE}', process.env.CT_REVIEW_JOB_DISPATCHER_IMAGE || '')
-  .replaceAll('\${CT_REVIEW_WORKER_IMAGE}', process.env.CT_REVIEW_WORKER_IMAGE || '')));
+  .replaceAll('\${CT_REVIEW_WORKER_IMAGE}', process.env.CT_REVIEW_WORKER_IMAGE || '')
+  .replaceAll('\${CT_REVIEW_RUNNER_MODE}', process.env.CT_REVIEW_RUNNER_MODE || 'prebaked')));
 `);
   fs.chmodSync(path.join(binaryDirectory, 'kubectl'), 0o755);
   fs.chmodSync(path.join(binaryDirectory, 'envsubst'), 0o755);
@@ -114,6 +115,15 @@ describe('guarded DOKS review runtime installer', () => {
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.renderedOperator).toContain(`image: ${ghcrOperator}`);
+  });
+
+  it('installs with generic runner mode and accepts node:24-bookworm-slim', () => {
+    const result = runInstaller({
+      CT_REVIEW_RUNNER_MODE: 'generic',
+      CT_REVIEW_WORKER_IMAGE: 'node:24-bookworm-slim',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls).toContain('apply --server-side -f');
   });
 
   it('rejects an active operator before any Kubernetes apply', () => {

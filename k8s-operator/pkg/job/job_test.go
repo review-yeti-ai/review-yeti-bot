@@ -443,6 +443,31 @@ func TestBuildWorkerJobAcceptsGHCRWorkerImage(t *testing.T) {
 	if container.Image != review.Spec.WorkerImage {
 		t.Fatalf("container image mismatch: got %s, want %s", container.Image, review.Spec.WorkerImage)
 	}
+	if len(container.Command) != 0 {
+		t.Fatalf("expected prebaked container command to be empty, got: %v", container.Command)
+	}
+}
+
+func TestBuildWorkerJobGenericRunnerMode(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.RunnerMode = "generic"
+	review.Spec.WorkerImage = "node:24-bookworm-slim"
+
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("unexpected error with generic runner image: %v", err)
+	}
+	container := built.Spec.Template.Spec.Containers[0]
+	if container.Image != "node:24-bookworm-slim" {
+		t.Fatalf("container image mismatch: got %s, want node:24-bookworm-slim", container.Image)
+	}
+	if len(container.Command) == 0 || container.Command[0] != "/bin/sh" {
+		t.Fatalf("expected generic container command to be /bin/sh, got: %v", container.Command)
+	}
+	if len(container.Args) == 0 || !strings.Contains(container.Args[0], "npm ci") {
+		t.Fatalf("expected generic container args to contain npm ci install steps, got: %v", container.Args)
+	}
 }
 
 var _ = batchv1.Job{}
