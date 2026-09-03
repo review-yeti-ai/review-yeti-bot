@@ -16,13 +16,13 @@ const HEAD = 'c'.repeat(40);
 const PERSONAS = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'];
 const domainIndex = loadCompiledIndex();
 
-function parentReport(planDigest: string) {
+function reportFor(planDigest: string, repository: string, prNumber: number, headSha = PARENT) {
   return {
     schemaVersion: 'review-run-report-v1',
-    repository: 'calltelemetry/example',
-    prNumber: 17,
+    repository,
+    prNumber,
     baseSha: BASE,
-    headSha: PARENT,
+    headSha,
     verdict: 'FIX_FIRST',
     scope: { schemaVersion: 'review-scope-v1', planDigest },
     lanes: PERSONAS.map((personaId) => ({
@@ -34,6 +34,10 @@ function parentReport(planDigest: string) {
       severity: personaId === 'dependencies' ? { P0: 0, P1: 1, P2: 0 } : { P0: 0, P1: 0, P2: 0 },
     })),
   };
+}
+
+function parentReport(planDigest: string) {
+  return reportFor(planDigest, 'calltelemetry/example', 17);
 }
 
 /** Minimal fetch stub for reviewWithModel's direct (non-OpenRouter) transport path. */
@@ -57,6 +61,7 @@ describe('trusted incremental review scope', () => {
       actionSha: 'd'.repeat(40), baseSha: BASE, personaIds: PERSONAS, maxDiffChars: 24000, maxIncrementalDiffChars: 60000,
       trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1', trustedWorkflowSha: 'e'.repeat(40),
       indexDigest: 'sha256:aaaa', maxIncrementalChain: 5,
+      artifactRepo: 'calltelemetry/example', trustedEvents: ['pull_request', 'pull_request_target'],
     };
     const digest = scope.buildReviewScopePlanDigest(common);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
@@ -72,6 +77,11 @@ describe('trusted incremental review scope', () => {
     // the old mapping/policy rather than silently keep authorizing it.
     expect(scope.buildReviewScopePlanDigest({ ...common, indexDigest: 'sha256:bbbb' })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, maxIncrementalChain: 6 })).not.toBe(digest);
+    // REL-553: pointing incremental reuse at a different artifact repository (central execution)
+    // or widening the trusted parent-run event set must also invalidate reuse planned under the
+    // old, narrower policy.
+    expect(scope.buildReviewScopePlanDigest({ ...common, artifactRepo: 'calltelemetry/ct-review-actions' })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, trustedEvents: ['pull_request', 'pull_request_target', 'repository_dispatch'] })).not.toBe(digest);
   });
 
   it('requires the trusted workflow path and its resolved immutable SHA', () => {
@@ -533,6 +543,9 @@ describe('trusted incremental review scope', () => {
         name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
         archive_download_url: 'https://api.github.test/artifact.zip', workflow_run: { id: 1, head_sha: PARENT },
       }] }), { status: 200 }),
+      // REL-553: the report's own repo/prNumber identity is checked (via extractReport) before
+      // the run-lookup call, so the archive download now comes first in the fetch sequence.
+      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
       new Response(JSON.stringify({
         status: 'completed', event: 'pull_request_target', head_sha: PARENT, run_attempt: 1,
         referenced_workflows: [{
@@ -541,7 +554,6 @@ describe('trusted incremental review scope', () => {
           sha: 'd'.repeat(40),
         }],
       }), { status: 200 }),
-      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
       new Response(JSON.stringify({
         status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT },
         files: [{
@@ -622,6 +634,7 @@ describe('trusted incremental review scope', () => {
         name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
         archive_download_url: 'https://api.github.test/artifact.zip', workflow_run: { id: 1, head_sha: PARENT },
       }] }), { status: 200 }),
+      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
       new Response(JSON.stringify({
         status: 'completed', event: 'pull_request_target', head_sha: PARENT, run_attempt: 1,
         referenced_workflows: [{
@@ -630,7 +643,6 @@ describe('trusted incremental review scope', () => {
           sha: 'd'.repeat(40),
         }],
       }), { status: 200 }),
-      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
     ];
 
     const result = await scope.resolveIncrementalReviewScope({
@@ -751,6 +763,271 @@ describe('trusted incremental review scope', () => {
         actionPolicy: null,
       });
       expect(result).toBe(reviewedDiffFiles);
+    });
+  });
+
+  describe('REL-553: central repository_dispatch execution (cross-repo artifact source)', () => {
+    const CENTRAL_RUN_HEAD_SHA = 'd'.repeat(40);
+
+    it('resolves a delta scope reading reports from the trusted artifact repo, admitting repository_dispatch, without requiring the parent run head to equal the report head', async () => {
+      const planDigest = 'f'.repeat(64);
+      const report = reportFor(planDigest, 'calltelemetry/cisco-cdr', 42);
+      const fullDiffText = `diff --git a/lib/api.ex b/lib/api.ex\n${' context\n'.repeat(1000)}`;
+      const responses = [
+        new Response(JSON.stringify({ artifacts: [{
+          name: 'review-yeti-run-report-9-1', expired: false, created_at: '2026-08-31T00:00:00Z',
+          archive_download_url: 'https://api.github.test/artifact.zip', workflow_run: { id: 9, head_sha: CENTRAL_RUN_HEAD_SHA },
+        }] }), { status: 200 }),
+        new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+        new Response(JSON.stringify({
+          status: 'completed', event: 'repository_dispatch', head_sha: CENTRAL_RUN_HEAD_SHA, run_attempt: 1,
+          referenced_workflows: [{
+            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            ref: 'refs/tags/v1',
+            sha: 'e'.repeat(40),
+          }],
+        }), { status: 200 }),
+        new Response(JSON.stringify({
+          status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT },
+          files: [{ filename: 'lib/api.ex', patch: '@@ -1,1 +1,1 @@\n-a\n+b' }],
+        }), { status: 200 }),
+        new Response([
+          'diff --git a/lib/api.ex b/lib/api.ex',
+          '--- a/lib/api.ex',
+          '+++ b/lib/api.ex',
+          '@@ -1,1 +1,1 @@',
+          '-a',
+          '+b',
+        ].join('\n'), { status: 200 }),
+      ];
+
+      const result = await scope.resolveIncrementalReviewScope({
+        enabled: true,
+        token: 'token',
+        repo: 'calltelemetry/cisco-cdr',
+        artifactRepo: 'calltelemetry/ct-review-actions',
+        trustedEvents: ['pull_request', 'pull_request_target', 'repository_dispatch'],
+        prNumber: 42,
+        baseSha: BASE,
+        headSha: HEAD,
+        personaIds: PERSONAS,
+        maxDiffChars: 24000,
+        maxIncrementalDiffChars: 60000,
+        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflowSha: 'e'.repeat(40),
+        fullDiffText,
+        planDigest,
+        parseDiff: pipeline.parseDiff,
+        apiBase: 'https://api.github.test',
+        fetchImplementation: async () => responses.shift()!,
+        extractReport: () => ({ report, raw: `${JSON.stringify(report)}\n` }),
+        index: domainIndex,
+        resolveFileDomains,
+      });
+
+      // The central run's own head_sha (CENTRAL_RUN_HEAD_SHA, the ct-review-actions dispatch
+      // commit) never equals the report's headSha (PARENT, a commit in calltelemetry/cisco-cdr)
+      // -- proving reuse activated without requiring that impossible equality.
+      expect(result.scope.mode).toBe('delta');
+      expect(result.scope.parentHeadSha).toBe(PARENT);
+      expect(result.scope.parentHeadSha).not.toBe(CENTRAL_RUN_HEAD_SHA);
+    });
+
+    it('falls back to a full review when the parent run event is not in the configured trusted-events allowlist', async () => {
+      const planDigest = 'f'.repeat(64);
+      const report = reportFor(planDigest, 'calltelemetry/cisco-cdr', 42);
+      const fullDiffText = `diff --git a/lib/api.ex b/lib/api.ex\n${' context\n'.repeat(1000)}`;
+      const responses = [
+        new Response(JSON.stringify({ artifacts: [{
+          name: 'review-yeti-run-report-9-1', expired: false, created_at: '2026-08-31T00:00:00Z',
+          archive_download_url: 'https://api.github.test/artifact.zip', workflow_run: { id: 9, head_sha: CENTRAL_RUN_HEAD_SHA },
+        }] }), { status: 200 }),
+        new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+        new Response(JSON.stringify({
+          status: 'completed', event: 'repository_dispatch', head_sha: CENTRAL_RUN_HEAD_SHA, run_attempt: 1,
+          referenced_workflows: [{
+            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            ref: 'refs/tags/v1',
+            sha: 'e'.repeat(40),
+          }],
+        }), { status: 200 }),
+      ];
+
+      const result = await scope.resolveIncrementalReviewScope({
+        enabled: true,
+        token: 'token',
+        repo: 'calltelemetry/cisco-cdr',
+        artifactRepo: 'calltelemetry/ct-review-actions',
+        trustedEvents: ['pull_request', 'pull_request_target'], // repository_dispatch NOT trusted
+        prNumber: 42,
+        baseSha: BASE,
+        headSha: HEAD,
+        personaIds: PERSONAS,
+        maxDiffChars: 24000,
+        maxIncrementalDiffChars: 60000,
+        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflowSha: 'e'.repeat(40),
+        fullDiffText,
+        planDigest,
+        parseDiff: pipeline.parseDiff,
+        apiBase: 'https://api.github.test',
+        fetchImplementation: async () => responses.shift()!,
+        extractReport: () => ({ report, raw: `${JSON.stringify(report)}\n` }),
+        index: domainIndex,
+        resolveFileDomains,
+      });
+
+      expect(result.scope).toMatchObject({ mode: 'full', fallbackReason: 'no_trusted_parent' });
+      expect(result.reviewedDiffText).toBe(fullDiffText);
+    });
+
+    it('skips a candidate report belonging to a different consumer repository and finds the next candidate', async () => {
+      const planDigest = 'f'.repeat(64);
+      const wrongReport = reportFor(planDigest, 'calltelemetry/other-consumer', 42);
+      const rightReport = reportFor(planDigest, 'calltelemetry/cisco-cdr', 42);
+      const fullDiffText = `diff --git a/lib/api.ex b/lib/api.ex\n${' context\n'.repeat(1000)}`;
+      const responses = [
+        new Response(JSON.stringify({ artifacts: [
+          {
+            name: 'review-yeti-run-report-9-1', expired: false, created_at: '2026-08-31T00:00:01Z',
+            archive_download_url: 'https://api.github.test/artifact-wrong.zip', workflow_run: { id: 9, head_sha: CENTRAL_RUN_HEAD_SHA },
+          },
+          {
+            name: 'review-yeti-run-report-10-1', expired: false, created_at: '2026-08-31T00:00:00Z',
+            archive_download_url: 'https://api.github.test/artifact-right.zip', workflow_run: { id: 10, head_sha: CENTRAL_RUN_HEAD_SHA },
+          },
+        ] }), { status: 200 }),
+        // Candidate #1 (wrong repo): archive downloaded and extracted, then skipped BEFORE any
+        // run-lookup call is spent on it.
+        new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+        // Candidate #2 (right repo): archive, then the run lookup + compare + diff calls proceed.
+        new Response(new Uint8Array([4, 5, 6]), { status: 200 }),
+        new Response(JSON.stringify({
+          status: 'completed', event: 'repository_dispatch', head_sha: CENTRAL_RUN_HEAD_SHA, run_attempt: 1,
+          referenced_workflows: [{
+            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            ref: 'refs/tags/v1',
+            sha: 'e'.repeat(40),
+          }],
+        }), { status: 200 }),
+        new Response(JSON.stringify({
+          status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT },
+          files: [{ filename: 'lib/api.ex', patch: '@@ -1,1 +1,1 @@\n-a\n+b' }],
+        }), { status: 200 }),
+        new Response([
+          'diff --git a/lib/api.ex b/lib/api.ex',
+          '--- a/lib/api.ex',
+          '+++ b/lib/api.ex',
+          '@@ -1,1 +1,1 @@',
+          '-a',
+          '+b',
+        ].join('\n'), { status: 200 }),
+      ];
+
+      let extractCallCount = 0;
+      const result = await scope.resolveIncrementalReviewScope({
+        enabled: true,
+        token: 'token',
+        repo: 'calltelemetry/cisco-cdr',
+        artifactRepo: 'calltelemetry/ct-review-actions',
+        trustedEvents: ['repository_dispatch'],
+        prNumber: 42,
+        baseSha: BASE,
+        headSha: HEAD,
+        personaIds: PERSONAS,
+        maxDiffChars: 24000,
+        maxIncrementalDiffChars: 60000,
+        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflowSha: 'e'.repeat(40),
+        fullDiffText,
+        planDigest,
+        parseDiff: pipeline.parseDiff,
+        apiBase: 'https://api.github.test',
+        fetchImplementation: async () => responses.shift()!,
+        extractReport: () => {
+          extractCallCount += 1;
+          return extractCallCount === 1
+            ? { report: wrongReport, raw: `${JSON.stringify(wrongReport)}\n` }
+            : { report: rightReport, raw: `${JSON.stringify(rightReport)}\n` };
+        },
+        index: domainIndex,
+        resolveFileDomains,
+      });
+
+      expect(extractCallCount).toBe(2);
+      expect(result.scope.mode).toBe('delta');
+    });
+
+    it('treats an unreadable artifact-repo listing (403) as a distinct fallback reason rather than throwing', async () => {
+      const fullDiffText = 'full diff text';
+      const result = await scope.resolveIncrementalReviewScope({
+        enabled: true,
+        token: 'token',
+        repo: 'calltelemetry/cisco-cdr',
+        artifactRepo: 'calltelemetry/ct-review-actions',
+        trustedEvents: ['repository_dispatch'],
+        prNumber: 42,
+        baseSha: BASE,
+        headSha: HEAD,
+        personaIds: PERSONAS,
+        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflowSha: 'e'.repeat(40),
+        fullDiffText,
+        planDigest: 'f'.repeat(64),
+        parseDiff: pipeline.parseDiff,
+        apiBase: 'https://api.github.test',
+        fetchImplementation: async () => new Response('forbidden', { status: 403 }),
+      });
+
+      expect(result.scope).toMatchObject({ mode: 'full', fallbackReason: 'artifact_repo_unreadable' });
+      expect(result.reviewedDiffText).toBe(fullDiffText);
+    });
+
+    it('REGRESSION: same-repo mode (no artifactRepo override) still requires the parent run head to equal the report head', async () => {
+      const planDigest = 'f'.repeat(64);
+      const report = parentReport(planDigest); // headSha = PARENT
+      const fullDiffText = `diff --git a/scripts/quota.mjs b/scripts/quota.mjs\n${' context\n'.repeat(1000)}`;
+      const mismatchedRunHeadSha = 'd'.repeat(40); // != PARENT
+      const responses = [
+        new Response(JSON.stringify({ artifacts: [{
+          name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
+          archive_download_url: 'https://api.github.test/artifact.zip', workflow_run: { id: 1, head_sha: mismatchedRunHeadSha },
+        }] }), { status: 200 }),
+        new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+        new Response(JSON.stringify({
+          status: 'completed', event: 'pull_request_target', head_sha: mismatchedRunHeadSha, run_attempt: 1,
+          referenced_workflows: [{
+            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            ref: 'refs/tags/v1',
+            sha: 'd'.repeat(40),
+          }],
+        }), { status: 200 }),
+      ];
+
+      const result = await scope.resolveIncrementalReviewScope({
+        enabled: true,
+        token: 'token',
+        repo: 'calltelemetry/example', // no artifactRepo override -> same-repo mode
+        prNumber: 17,
+        baseSha: BASE,
+        headSha: HEAD,
+        personaIds: PERSONAS,
+        maxDiffChars: 24000,
+        maxIncrementalDiffChars: 60000,
+        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflowSha: 'd'.repeat(40),
+        fullDiffText,
+        planDigest,
+        parseDiff: pipeline.parseDiff,
+        apiBase: 'https://api.github.test',
+        fetchImplementation: async () => responses.shift()!,
+        extractReport: () => ({ report, raw: `${JSON.stringify(report)}\n` }),
+        index: domainIndex,
+        resolveFileDomains,
+      });
+
+      expect(result.scope).toMatchObject({ mode: 'full', fallbackReason: 'no_trusted_parent' });
+      expect(result.reviewedDiffText).toBe(fullDiffText);
     });
   });
 });
@@ -903,33 +1180,58 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
     }
   }
 
+  let comparisonCalls = 0;
+
+  /**
+   * URL-routed fetch mock (REL-553): `resolveIncrementalReviewScope` reorders its GitHub calls
+   * between same-repo and central modes -- notably the artifact archive is now downloaded BEFORE
+   * the run lookup so a candidate belonging to another repository is discarded without spending a
+   * run-lookup call. Routing on the request URL instead of a fixed response queue keeps these
+   * tests pinned to the observable contract (which endpoints are consulted) rather than to the
+   * incidental order they happen to be consulted in.
+   */
   function buildFetchQueue(parentReport: unknown, deltaDiffText: string) {
     const archiveBytes = zipReport(parentReport);
-    const responses = [
-      new Response(JSON.stringify({
-        artifacts: [{
-          name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
-          archive_download_url: 'https://api.github.com/archive.zip', workflow_run: { id: 1, head_sha: PARENT_SHA },
-        }],
-      }), { status: 200 }),
-      new Response(JSON.stringify({
-        status: 'completed', event: 'pull_request_target', head_sha: PARENT_SHA, run_attempt: 1,
-        referenced_workflows: [{
-          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
-          ref: 'refs/tags/v1',
-          sha: TRUSTED_WORKFLOW_SHA,
-        }],
-      }), { status: 200 }),
-      new Response(new Uint8Array(archiveBytes), { status: 200 }),
-      new Response(JSON.stringify({
-        status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT_SHA },
-        files: deltaDiffText === LIB_AUTH_DIFF
-          ? [{ filename: 'lib/auth.ex', patch: '@@ -10,2 +10,3 @@\n-def old_check(x) do\n+def check(x) do\n+  IO.inspect(x)\n end' }]
-          : [{ filename: 'README.md', patch: '@@ -1,1 +1,1 @@\n-Old title\n+New title' }],
-      }), { status: 200 }),
-      new Response(deltaDiffText, { status: 200 }),
-    ];
-    return async () => responses.shift()!;
+    return async (input: unknown) => {
+      const url = String(typeof input === 'string' ? input : (input as { url?: string })?.url ?? input);
+      if (url.includes('/actions/artifacts')) {
+        return new Response(JSON.stringify({
+          artifacts: [{
+            name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
+            archive_download_url: 'https://api.github.com/archive.zip', workflow_run: { id: 1, head_sha: PARENT_SHA },
+          }],
+        }), { status: 200 });
+      }
+      if (url.includes('archive.zip')) {
+        return new Response(new Uint8Array(archiveBytes), { status: 200 });
+      }
+      if (url.includes('/actions/runs/')) {
+        return new Response(JSON.stringify({
+          status: 'completed', event: 'pull_request_target', head_sha: PARENT_SHA, run_attempt: 1,
+          referenced_workflows: [{
+            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            ref: 'refs/tags/v1',
+            sha: TRUSTED_WORKFLOW_SHA,
+          }],
+        }), { status: 200 });
+      }
+      if (url.includes('/compare/')) {
+        // The resolver hits /compare twice: once for JSON metadata, once for the diff media type.
+        // The diff request is the one that asks for application/vnd.github.diff, but the mock does
+        // not see headers here, so serve JSON first and the raw diff on the second visit.
+        comparisonCalls += 1;
+        if (comparisonCalls === 1) {
+          return new Response(JSON.stringify({
+            status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT_SHA },
+            files: deltaDiffText === LIB_AUTH_DIFF
+              ? [{ filename: 'lib/auth.ex', patch: '@@ -10,2 +10,3 @@\n-def old_check(x) do\n+def check(x) do\n+  IO.inspect(x)\n end' }]
+              : [{ filename: 'README.md', patch: '@@ -1,1 +1,1 @@\n-Old title\n+New title' }],
+          }), { status: 200 });
+        }
+        return new Response(deltaDiffText, { status: 200 });
+      }
+      throw new Error(`unexpected fetch in incremental scope test: ${url}`);
+    };
   }
 
   function runMainSynthetically(parentReport: unknown, deltaDiffText: string) {
@@ -986,6 +1288,7 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
         // safe to run main() for real here.
         for (const key of providerKeyVars) delete process.env[key];
 
+        comparisonCalls = 0;
         globalThis.fetch = buildFetchQueue(parentReport, deltaDiffText) as unknown as typeof fetch;
         console.log = logSpy;
         console.error = logSpy;
@@ -1012,6 +1315,11 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
       maxDiffChars: Number(MAX_DIFF_CHARS), maxIncrementalDiffChars: Number(MAX_INCREMENTAL_DIFF_CHARS),
       trustedWorkflow: TRUSTED_WORKFLOW, trustedWorkflowSha: TRUSTED_WORKFLOW_SHA,
       indexDigest, maxIncrementalChain: Number(MAX_INCREMENTAL_CHAIN),
+      // REL-553 folded the trusted artifact repository and trusted parent-run events into the
+      // plan digest. main() defaults both when the new env overrides are unset, so mirror those
+      // defaults here or the parent report's planDigest will no longer match and every candidate
+      // is rejected (silently falling back to a full review).
+      artifactRepo: PR_REPO, trustedEvents: ['pull_request', 'pull_request_target'],
     });
     const parentReport = {
       schemaVersion: 'review-run-report-v1', repository: PR_REPO, prNumber: Number(PR_NUMBER),
@@ -1045,6 +1353,11 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
       maxDiffChars: Number(MAX_DIFF_CHARS), maxIncrementalDiffChars: Number(MAX_INCREMENTAL_DIFF_CHARS),
       trustedWorkflow: TRUSTED_WORKFLOW, trustedWorkflowSha: TRUSTED_WORKFLOW_SHA,
       indexDigest, maxIncrementalChain: Number(MAX_INCREMENTAL_CHAIN),
+      // REL-553 folded the trusted artifact repository and trusted parent-run events into the
+      // plan digest. main() defaults both when the new env overrides are unset, so mirror those
+      // defaults here or the parent report's planDigest will no longer match and every candidate
+      // is rejected (silently falling back to a full review).
+      artifactRepo: PR_REPO, trustedEvents: ['pull_request', 'pull_request_target'],
     });
     const parentReport = {
       schemaVersion: 'review-run-report-v1', repository: PR_REPO, prNumber: Number(PR_NUMBER),

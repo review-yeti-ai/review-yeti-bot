@@ -54,6 +54,22 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['max-diff-chars'].default).toBe('');
   });
 
+  // REL-553: central (repository_dispatch) execution reads prior run reports from the executing
+  // repository's own artifact store, not the reviewed repository's, and its parent runs trigger
+  // on repository_dispatch rather than pull_request(_target). Both overrides default to the
+  // narrower same-repo behavior so an existing consumer's behavior is unchanged.
+  it('accepts central-execution overrides for the incremental-scope artifact repo and trusted parent events', () => {
+    const inputs = Object.keys(action.inputs || {});
+    expect(inputs).toContain('incremental-artifact-repo');
+    expect(inputs).toContain('incremental-trusted-events');
+    expect(action.inputs['incremental-artifact-repo'].default).toBe('');
+    expect(action.inputs['incremental-trusted-events'].default).toBe('pull_request,pull_request_target');
+
+    const raw = fs.readFileSync(actionPath, 'utf8');
+    expect(raw).toContain('REVIEW_YETI_INCREMENTAL_ARTIFACT_REPO: ${{ inputs.incremental-artifact-repo }}');
+    expect(raw).toContain('REVIEW_YETI_INCREMENTAL_TRUSTED_EVENTS: ${{ inputs.incremental-trusted-events }}');
+  });
+
   it('keeps local execution as the default and makes DOKS an explicit OIDC dispatch', () => {
     expect(action.inputs['execution-backend'].default).toBe('local');
     expect(action.inputs['doks-publish-mode'].default).toBe('disabled');
