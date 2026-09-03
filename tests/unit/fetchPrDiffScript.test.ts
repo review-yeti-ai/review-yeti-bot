@@ -131,6 +131,76 @@ function buildForwardMergeFixture() {
   return { workDir, remoteDir, targetTip, sourceTip, headSha };
 }
 
+/**
+ * Same shape as buildForwardMergeFixture, but with one additional commit
+ * stacked on top of the merge commit (e.g. a hand-fixup or a revert, like
+ * REL-556's PR #4861) so PR_HEAD_SHA itself is NOT the 2-parent merge
+ * commit -- the merge commit only shows up when walking the whole
+ * base..head range.
+ */
+function buildForwardMergeWithFollowupFixture() {
+  const workDir = tempDir('fetch-pr-diff-fmerge-followup-');
+  const remoteDir = path.join(workDir, 'remote.git');
+  git(['init', '-q', '--bare', remoteDir], workDir);
+  git(['config', 'uploadpack.allowanysha1inwant', 'true'], remoteDir);
+  git(['config', 'uploadpack.allowfilter', 'true'], remoteDir);
+
+  const repoDir = path.join(workDir, 'work');
+  fs.mkdirSync(repoDir);
+  git(['init', '-q'], repoDir);
+  git(['config', 'user.email', 't@example.com'], repoDir);
+  git(['config', 'user.name', 'Test'], repoDir);
+
+  // target tip (parent1 / PR base): shared.ts = A
+  fs.writeFileSync(path.join(repoDir, 'shared.ts'), 'A\n');
+  git(['add', '-A'], repoDir);
+  git(['commit', '-q', '-m', 'target tip'], repoDir);
+  const targetTip = git(['rev-parse', 'HEAD'], repoDir).trim();
+
+  // source tip (parent2): shared.ts = B, sourceonly.ts = X (unrelated root commit)
+  git(['checkout', '-q', '--orphan', 'sourceline'], repoDir);
+  git(['rm', '-rf', '-q', '.'], repoDir);
+  fs.writeFileSync(path.join(repoDir, 'shared.ts'), 'B\n');
+  fs.writeFileSync(path.join(repoDir, 'sourceonly.ts'), 'X\n');
+  git(['add', '-A'], repoDir);
+  git(['commit', '-q', '-m', 'source tip'], repoDir);
+  const sourceTip = git(['rev-parse', 'HEAD'], repoDir).trim();
+
+  // merge result (M): shared.ts resolved to C, sourceonly.ts carried through unchanged
+  git(['checkout', '-q', targetTip], repoDir);
+  fs.writeFileSync(path.join(repoDir, 'shared.ts'), 'C\n');
+  fs.writeFileSync(path.join(repoDir, 'sourceonly.ts'), 'X\n');
+  git(['add', '-A'], repoDir);
+  const mergeTreeSha = git(['write-tree'], repoDir).trim();
+  const mergeSha = git(
+    ['commit-tree', mergeTreeSha, '-p', targetTip, '-p', sourceTip, '-m', 'chore: forward-merge source into target'],
+    repoDir,
+  ).trim();
+
+  // follow-up commit (PR HEAD): a single-parent fixup on top of the merge --
+  // touches shared.ts again AND introduces a brand-new file the merge never
+  // saw, so both "still-changing" and "new-since-merge" files are covered.
+  git(['checkout', '-q', mergeSha], repoDir);
+  fs.writeFileSync(path.join(repoDir, 'shared.ts'), 'C-fixed\n');
+  fs.writeFileSync(path.join(repoDir, 'followup.ts'), 'F\n');
+  git(['add', '-A'], repoDir);
+  git(['commit', '-q', '-m', 'fixup after forward-merge'], repoDir);
+  const headSha = git(['rev-parse', 'HEAD'], repoDir).trim();
+
+  git(
+    [
+      'push', '-q', remoteDir,
+      `${targetTip}:refs/heads/target`,
+      `${sourceTip}:refs/heads/source`,
+      `${mergeSha}:refs/heads/merged`,
+      `${headSha}:refs/heads/head`,
+    ],
+    repoDir,
+  );
+
+  return { workDir, remoteDir, targetTip, sourceTip, mergeSha, headSha };
+}
+
 function runScript(env: Record<string, string>) {
   const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-pr-diff-out-')), 'out.diff');
   const githubOutputPath = path.join(path.dirname(outputPath), 'github_output.txt');
@@ -284,6 +354,46 @@ describe('fetch-pr-diff.sh', () => {
     // sourceonly.ts was carried through unchanged from the source tip and must NOT
     // show up as a new file -- that would mean the script diffed against the
     // target tip (base) instead of the source tip (second parent).
+    expect(diffText).not.toContain('sourceonly.ts');
+  });
+
+  it('reviews the merge conflict-resolution delta plus follow-up commits when the PR head is not the merge commit itself (REL-556)', () => {
+    const fixture = buildForwardMergeWithFollowupFixture();
+    const ghDir = tempDir('fake-gh-bin-');
+    const ghPath = makeFakeGh(ghDir);
+
+    const { diffText, outputs } = runScript({
+      GH_BIN: ghPath,
+      REPO: 'calltelemetry/fake-repo',
+      PR_NUMBER: '7',
+      PR_HEAD_SHA: fixture.headSha,
+      PR_BASE_SHA: fixture.targetTip,
+      // Deliberately does NOT match the forward-merge title pattern -- this
+      // proves detection via "a merge commit exists in base..head" alone is
+      // sufficient, not just the title regex.
+      PR_TITLE: 'chore: land follow-up fixup',
+      PR_DIFF_REMOTE_URL: `file://${fixture.remoteDir}`,
+      FAKE_GH_PR_JSON: JSON.stringify({ changed_files: 3000, additions: 100000, deletions: 90000 }),
+    });
+
+    expect(outputs['used-fallback']).toBe('true');
+    expect(outputs['fallback-mode']).toBe('forward-merge-conflict-delta');
+
+    // shared.ts: resolved by the merge (B -> C) and touched again by the
+    // follow-up (C -> C-fixed) -- the final diff must show the end-to-end
+    // change from the source tip straight to HEAD.
+    expect(diffText).toContain('shared.ts');
+    expect(diffText).toContain('-B');
+    expect(diffText).toContain('+C-fixed');
+
+    // followup.ts: introduced only by the commit after the merge -- must
+    // appear even though the merge commit itself never touched it.
+    expect(diffText).toContain('followup.ts');
+    expect(diffText).toContain('+F');
+
+    // sourceonly.ts: carried through the merge unchanged and never touched
+    // by the follow-up -- must NOT appear, or this is reviewing the
+    // merged-in history again instead of the human-authored delta.
     expect(diffText).not.toContain('sourceonly.ts');
   });
 
