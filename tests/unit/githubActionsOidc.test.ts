@@ -72,4 +72,19 @@ describe('GitHub Actions OIDC verification', () => {
     await expect(verifier().verify(expired)).rejects.toThrow();
     await expect(verifier().verify(await token({ job_workflow_ref: undefined, job_workflow_sha: undefined }))).rejects.toThrow(/workflow provenance/i);
   });
+
+  it('accepts wildcard workflow refs and shas when configured in policy', async () => {
+    const wildcardVerifier = new GitHubActionsOidcVerifier({
+      keySet,
+      policy: {
+        repositoryIds: new Set(['123']),
+        ownerIds: new Set(['99']),
+        workflowRefs: new Set(['*']),
+        workflowShas: new Set(['*']),
+        allowedEvents: new Set(['workflow_dispatch', 'pull_request_target']),
+        allowAppGate: false,
+      },
+    });
+    await expect(wildcardVerifier.verify(await token())).resolves.toEqual(expect.objectContaining(claims));
+  });
 });
