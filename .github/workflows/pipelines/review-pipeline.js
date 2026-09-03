@@ -6218,6 +6218,38 @@ function loadLocalRepoConfig(configRoot = resolveConfigRoot()) {
 /**
  * Main entry point for pipeline execution.
  */
+/**
+ * REL-552 Review Yeti PR #444 (testing, P2 follow-up): applies the "full-with-carry" diffText
+ * swap and updates `reviewScope`'s reviewed-diff bookkeeping in place. Extracted out of `main()`
+ * into its own pure, directly-testable function so the wiring itself -- not just
+ * `planIncrementalLanes`'s `reviewFullDiff` signal in isolation -- has unit coverage:
+ *
+ *   - `reviewFullDiff === true`  -> `prContext.diffText` becomes the full PR diff, and
+ *     `reviewScope.reviewedDiffKind/reviewedDiffChars/reviewedDiffDigest` are updated to match.
+ *   - `reviewFullDiff === false` (or `mode !== 'delta'`) -> `prContext.diffText` is left as
+ *     whatever `resolveIncrementalReviewScope` already returned (the bounded delta, or the full
+ *     diff in `mode: 'full'`), and `reviewedDiffKind` is set to `'delta'` for delta mode.
+ *
+ * Mutates `prContext` and `reviewScope` in place (matching the call sites' existing style) and
+ * returns `reviewScope` for convenience.
+ */
+function applyFullWithCarryDiffSwap({ prContext, reviewScope, fullDiffText }) {
+  if (reviewScope.mode === 'delta' && reviewScope.reviewFullDiff) {
+    // A live lane owns an untouched-by-domain P0/P1 elsewhere in the PR (the `reviewFullDiff`
+    // signal from planIncrementalLanes): reviewing only the bounded delta would starve every live
+    // persona of the context needed to confirm or refute that finding, and any finding it raised
+    // outside the delta would be silently dropped by sanitizeFinding at arbitration. Every live
+    // persona reviews the full PR diff instead; carried lanes are unaffected.
+    prContext.diffText = fullDiffText;
+    reviewScope.reviewedDiffKind = 'full-with-carry';
+    reviewScope.reviewedDiffDigest = reviewScope.fullDiffDigest;
+    reviewScope.reviewedDiffChars = reviewScope.fullDiffChars;
+  } else if (reviewScope.mode === 'delta') {
+    reviewScope.reviewedDiffKind = 'delta';
+  }
+  return reviewScope;
+}
+
 async function main() {
   console.log('=====================================================');
   console.log(`🚀 ${BOT_LABEL}`);
@@ -6341,20 +6373,7 @@ async function main() {
     };
   }
   prContext.diffText = scopeResolution.reviewedDiffText;
-  const reviewScope = scopeResolution.scope;
-  if (reviewScope.mode === 'delta' && reviewScope.reviewFullDiff) {
-    // A live lane owns an untouched-by-domain P0/P1 elsewhere in the PR (the `reviewFullDiff`
-    // signal from planIncrementalLanes): reviewing only the bounded delta would starve every live
-    // persona of the context needed to confirm or refute that finding, and any finding it raised
-    // outside the delta would be silently dropped by sanitizeFinding at arbitration. Every live
-    // persona reviews the full PR diff instead; carried lanes are unaffected.
-    prContext.diffText = fullDiffText;
-    reviewScope.reviewedDiffKind = 'full-with-carry';
-    reviewScope.reviewedDiffDigest = reviewScope.fullDiffDigest;
-    reviewScope.reviewedDiffChars = reviewScope.fullDiffChars;
-  } else if (reviewScope.mode === 'delta') {
-    reviewScope.reviewedDiffKind = 'delta';
-  }
+  const reviewScope = applyFullWithCarryDiffSwap({ prContext, reviewScope: scopeResolution.scope, fullDiffText });
   if (reviewScope.mode === 'delta') {
     console.log(`[Scope] Reviewing trusted repair delta ${reviewScope.parentHeadSha.slice(0, 7)}...${prContext.headSha.slice(0, 7)} (${reviewScope.reviewedDiffChars.toLocaleString()} of ${reviewScope.fullDiffChars.toLocaleString()} chars); kind=${reviewScope.reviewedDiffKind}; live personas=${reviewScope.reviewedPersonaIds.join(',')}; reused=${reviewScope.reusedPersonaIds.join(',') || 'none'}.`);
   } else {
@@ -6793,6 +6812,7 @@ module.exports = {
   resolveActionSubmoduleMetadata,
   resolveReviewableDiffFiles,
   resolveArbitrationDiffFiles,
+  applyFullWithCarryDiffSwap,
   planDiffBudget,
   reviewWithModel,
   callOpenRouterSdk,
