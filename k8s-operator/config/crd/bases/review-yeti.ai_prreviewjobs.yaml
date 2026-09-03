@@ -78,6 +78,7 @@ spec:
               publicationMode:
                 enum:
                 - disabled
+                - app-gate
                 type: string
               qualificationModel:
                 description: QualificationModel is required by explicit qualification profiles

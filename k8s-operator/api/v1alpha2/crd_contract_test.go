@@ -101,8 +101,8 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		}
 	}
 	publication := spec.Properties["publicationMode"]
-	if len(publication.Enum) != 1 || string(publication.Enum[0].Raw) != `"disabled"` {
-		t.Fatalf("publicationMode enum = %#v, want disabled only", publication.Enum)
+	if len(publication.Enum) != 2 || string(publication.Enum[0].Raw) != `"disabled"` || string(publication.Enum[1].Raw) != `"app-gate"` {
+		t.Fatalf("publicationMode enum = %#v, want disabled and app-gate", publication.Enum)
 	}
 	if spec.Properties["repositoryId"].Minimum == nil || *spec.Properties["repositoryId"].Minimum != 1 {
 		t.Fatal("repositoryId minimum must be one")

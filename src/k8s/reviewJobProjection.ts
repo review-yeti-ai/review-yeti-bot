@@ -46,7 +46,7 @@ export interface PRReviewJobProjection {
     terminalDeadline: string;
     policyDigest: string;
     configDigest: string;
-    publicationMode: 'disabled';
+    publicationMode: PublicationMode;
     workerImage: string;
     runSecretName: string;
   };
@@ -74,8 +74,8 @@ export function buildReviewJobProjection(
   exactHex(input.baseSha, exactSha, 'base SHA');
   exactHex(input.policyDigest, exactDigest, 'policy digest');
   exactHex(input.configDigest, exactDigest, 'config digest');
-  if (input.publicationMode !== 'disabled') {
-    throw new Error('publication mode must remain disabled during DOKS qualification');
+  if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
+    throw new Error('publication mode must be disabled or app-gate');
   }
   if (!namespacePattern.test(input.namespace)) throw new Error('namespace must be a Kubernetes DNS label');
   if (!digestOnlyImagePattern.test(input.workerImage)) {
@@ -104,7 +104,7 @@ export function buildReviewJobProjection(
       namespace: input.namespace,
       labels: {
         'app.kubernetes.io/name': 'review-yeti-worker',
-        'review-yeti.ai/publication-mode': 'disabled',
+        'review-yeti.ai/publication-mode': input.publicationMode,
         'review-yeti.ai/run-id': input.runId,
       },
     },
@@ -120,7 +120,7 @@ export function buildReviewJobProjection(
       terminalDeadline: new Date(input.terminalDeadline).toISOString(),
       policyDigest: input.policyDigest,
       configDigest: input.configDigest,
-      publicationMode: 'disabled',
+      publicationMode: input.publicationMode,
       workerImage: input.workerImage,
       runSecretName: `ct-review-run-${identitySuffix}`,
     },

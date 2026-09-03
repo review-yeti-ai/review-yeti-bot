@@ -68,27 +68,38 @@ describe('ReviewJobDispatchEngine', () => {
     );
   });
 
-  it('terminates a publishing or too-late claim without calling the projector', async () => {
-    for (const rejected of [
-      { ...claim, publicationMode: 'app-gate' as const },
-      { ...claim, terminalDeadline: now + 119_999 },
-    ]) {
-      const { engine, repository, projector } = fixture({
-        repository: { claimNext: vi.fn(async () => rejected) },
-      });
-      await expect(engine.runOnce()).resolves.toEqual({
-        status: 'terminal',
-        runId: claim.runId,
-        reason: 'projection-rejected',
-      });
-      expect(projector.ensure).not.toHaveBeenCalled();
-      expect(repository.markTerminal).toHaveBeenCalledWith(
-        claim.runId,
-        'dispatcher-a',
-        now,
-        'review job projection rejected',
-      );
-    }
+  it('projects an app-gate claim instead of terminating it', async () => {
+    const { engine, projector, repository } = fixture({
+      repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },
+    });
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected',
+      runId: claim.runId,
+      projectionName: `ct-review-${'1'.repeat(32)}`,
+    });
+    expect(projector.ensure).toHaveBeenCalledWith(expect.objectContaining({
+      spec: expect.objectContaining({ publicationMode: 'app-gate' }),
+    }));
+    expect(repository.markTerminal).not.toHaveBeenCalled();
+  });
+
+  it('terminates a too-late claim without calling the projector', async () => {
+    const rejected = { ...claim, terminalDeadline: now + 119_999 };
+    const { engine, repository, projector } = fixture({
+      repository: { claimNext: vi.fn(async () => rejected) },
+    });
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'terminal',
+      runId: claim.runId,
+      reason: 'projection-rejected',
+    });
+    expect(projector.ensure).not.toHaveBeenCalled();
+    expect(repository.markTerminal).toHaveBeenCalledWith(
+      claim.runId,
+      'dispatcher-a',
+      now,
+      'review job projection rejected',
+    );
   });
 
   it('releases transient projector failures for a bounded durable retry without returning error text', async () => {
@@ -109,7 +120,7 @@ describe('ReviewJobDispatchEngine', () => {
   it('reports lease loss when terminal or retry acknowledgement loses ownership', async () => {
     const terminal = fixture({
       repository: {
-        claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })),
+        claimNext: vi.fn(async () => ({ ...claim, terminalDeadline: now + 119_999 })),
         markTerminal: vi.fn(async () => false),
       },
     });
