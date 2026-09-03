@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.27.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.26.0...v1.27.0) (2026-09-03)
+
+
+### Features
+
+* **doks:** support repository_dispatch central callers and optional OPENROUTER_BASE_URL ([#446](https://github.com/review-yeti-ai/review-yeti-bot/issues/446)) ([bce9193](https://github.com/review-yeti-ai/review-yeti-bot/commit/bce9193b45ae7ef1eae7677227c1563b5b007097))
+* **domains:** add the community Master Domain Index (REL-551) ([#439](https://github.com/review-yeti-ai/review-yeti-bot/issues/439)) ([0009210](https://github.com/review-yeti-ai/review-yeti-bot/commit/000921031a9adcecbfcf25195eae24a7d39a1f73))
+* **k8s:** support dual runner mode (generic vs prebaked) [no-linear] ([#443](https://github.com/review-yeti-ai/review-yeti-bot/issues/443)) ([d62d553](https://github.com/review-yeti-ai/review-yeti-bot/commit/d62d5536e01dd423fdaac32870110581a5a2463b))
+
+
+### Bug Fixes
+
+* **crd:** allow public GHCR worker image in v1alpha2 CRD schema [no-linear] ([#441](https://github.com/review-yeti-ai/review-yeti-bot/issues/441)) ([40ea4b9](https://github.com/review-yeti-ai/review-yeti-bot/commit/40ea4b9bc103dc15adae7af50a3b0bd7b71c975d))
+* **review:** scope forward-merge diffs past follow-up commits on top of the merge ([#445](https://github.com/review-yeti-ai/review-yeti-bot/issues/445)) ([c9d406b](https://github.com/review-yeti-ai/review-yeti-bot/commit/c9d406ba4b88be8918fc2998b3189ac8a885f867))
+
 ## [1.26.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.25.1...v1.26.0) (2026-09-03)
 
 
