@@ -1089,6 +1089,50 @@ describe('reviewWithModel', () => {
     ]));
   });
 
+  it('passes an undici dispatcher whose header timeout covers max_wall_clock_ms', async () => {
+    const encoder = new TextEncoder();
+    let capturedInit: RequestInit | undefined;
+    const fetchImplementation = async (_url: string, init: RequestInit) => {
+      capturedInit = init;
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":[]}' } }] })}\n\n`,
+          ));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const wallClockMs = 400;
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'ollama-key',
+        model: 'deepseek-v4-flash:cloud',
+        stream: true,
+        timeout_ms: 80,
+        connect_timeout_ms: 40,
+        ttft_ms: 40,
+        stall_ms: 40,
+        max_wall_clock_ms: wallClockMs,
+      }],
+    });
+
+    expect(capturedInit?.dispatcher).toBe(pipeline.getStreamingFetchDispatcher());
+    expect(pipeline.STREAMING_FETCH_DISPATCHER_OPTIONS.headersTimeout).toBe(0);
+    expect(pipeline.STREAMING_FETCH_DISPATCHER_OPTIONS.bodyTimeout).toBe(0);
+    const headerTimeout = pipeline.STREAMING_FETCH_DISPATCHER_OPTIONS.headersTimeout;
+    expect(headerTimeout === 0 || headerTimeout >= wallClockMs).toBe(true);
+  });
+
   it('uses the central stall deadline after meaningful streamed output', async () => {
     const config = resolveModelConfig({
       SYNTHETIC_API_KEY: 'synthetic-key',
