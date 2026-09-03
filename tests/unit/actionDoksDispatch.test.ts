@@ -52,6 +52,14 @@ describe('DOKS Action dispatch client', () => {
     expect(JSON.stringify(request)).not.toContain('must-not-leak');
   });
 
+  it('accepts repository_dispatch event for central dispatch callers', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    const request = buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch',
+    }));
+    expect(request.caller.eventName).toBe('repository_dispatch');
+  });
+
   it('accepts only the fixed HTTPS dispatch origin and exact path', async () => {
     const { validateDispatchEndpoint } = await import(modulePath);
     expect(validateDispatchEndpoint('https://review-bot.calltelemetry.com/api/dispatch/action').href)
