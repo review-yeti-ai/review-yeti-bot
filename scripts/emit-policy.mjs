@@ -1,5 +1,5 @@
 import { appendFileSync, readFileSync } from 'node:fs';
-import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
+import { checkDeadTransportEnvelope, checkGenerationWallClock } from './lane-deadline-invariant.mjs';
 import {
   OLLAMA_REPOSITORIES,
   resolvePolicyForRepository,
@@ -143,6 +143,11 @@ checkDeadTransportEnvelope({
   transports: enabledTransports,
   maxAttempts,
   maxInvestigationTurns,
+  laneOverheadMs,
+  laneDeadlineMs,
+});
+checkGenerationWallClock({
+  transports: enabledTransports,
   laneOverheadMs,
   laneDeadlineMs,
 });

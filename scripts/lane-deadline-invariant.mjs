@@ -60,3 +60,41 @@ export function checkDeadTransportEnvelope({
     requiredLaneBudgetMs,
   };
 }
+
+/**
+ * A healthy thinking stream is capped by max_wall_clock_ms, not by the dead-TCP
+ * envelope. The lane deadline must still fit that generation clock plus the
+ * declared overhead reserve, or a live 15-minute Ollama stream is killed by
+ * the lane watchdog after undici has already been told to wait.
+ *
+ * @param {object} params
+ * @param {Array<{name?: string, max_wall_clock_ms?: number}>} params.transports
+ * @param {number} params.laneOverheadMs
+ * @param {number} params.laneDeadlineMs
+ * @returns {{ maxWallClockMs: number, requiredLaneBudgetMs: number }}
+ */
+export function checkGenerationWallClock({
+  transports,
+  laneOverheadMs,
+  laneDeadlineMs,
+}) {
+  if (!Number.isSafeInteger(laneOverheadMs) || laneOverheadMs < 1) {
+    throw new Error('review_yeti.budget.lane_overhead_ms must be a positive integer string');
+  }
+  const wallClocks = (transports || [])
+    .map((transport) => Number(transport.max_wall_clock_ms))
+    .filter((value) => Number.isSafeInteger(value) && value > 0);
+  if (wallClocks.length === 0) {
+    return { maxWallClockMs: 0, requiredLaneBudgetMs: laneOverheadMs };
+  }
+  const maxWallClockMs = Math.max(...wallClocks);
+  const requiredLaneBudgetMs = maxWallClockMs + laneOverheadMs;
+  if (requiredLaneBudgetMs > laneDeadlineMs) {
+    throw new Error(
+      `generation wall clock (${maxWallClockMs}ms) plus lane overhead reserve `
+      + `(${laneOverheadMs}ms) exceeds review_yeti.budget.lane_deadline_ms (${laneDeadlineMs}ms); `
+      + 'a healthy thinking stream can never finish the lane',
+    );
+  }
+  return { maxWallClockMs, requiredLaneBudgetMs };
+}

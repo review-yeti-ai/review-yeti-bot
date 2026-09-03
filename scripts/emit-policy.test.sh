@@ -167,6 +167,20 @@ if required_lane_budget_ms > lane_deadline_ms:
         'a full sequential failover of never-connecting or never-streaming transports could never '
         'finish the last transport'
     )
+wall_clocks = [
+    int(t['max_wall_clock_ms'])
+    for t in transports
+    if isinstance(t.get('max_wall_clock_ms'), int) and t['max_wall_clock_ms'] > 0
+]
+if wall_clocks:
+    max_wall_clock_ms = max(wall_clocks)
+    required_wall_budget_ms = max_wall_clock_ms + lane_overhead_ms
+    if required_wall_budget_ms > lane_deadline_ms:
+        raise SystemExit(
+            f'generation wall clock ({max_wall_clock_ms}ms) plus lane overhead reserve '
+            f'({lane_overhead_ms}ms) exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); '
+            'a healthy thinking stream can never finish the lane'
+        )
 
 # Second half of the same invariant: a hosted run can retry up to max_passes lanes, so the worst
 # case for one job is max_passes full lane deadlines back to back. If that exceeds the job's own
@@ -201,6 +215,7 @@ cp "$repo_root/scripts/emit-policy.mjs" "$tmp_dir/scripts/emit-policy.mjs"
 cp "$repo_root/scripts/lane-deadline-invariant.mjs" "$tmp_dir/scripts/lane-deadline-invariant.mjs"
 cp "$repo_root/scripts/repository-policy.mjs" "$tmp_dir/scripts/repository-policy.mjs"
 cp "$repo_root/scripts/review-yeti-smoke.mjs" "$tmp_dir/scripts/review-yeti-smoke.mjs"
+cp "$repo_root/scripts/streaming-fetch-dispatcher.mjs" "$tmp_dir/scripts/streaming-fetch-dispatcher.mjs"
 cp "$repo_root/scripts/transport-envelope.mjs" "$tmp_dir/scripts/transport-envelope.mjs"
 
 write_policy() {
@@ -498,9 +513,9 @@ grep -q '^max_review_assignments<<' "$tmp_dir/valid.output"
 grep -q '^max_incremental_diff_chars<<' "$tmp_dir/valid.output"
 grep -qx '60000' "$tmp_dir/valid.output"
 
-run_case valid-lane-deadline lane_deadline_ms 860000 0
+run_case valid-lane-deadline lane_deadline_ms 1080000 0
 grep -q '^lane_deadline_ms<<' "$tmp_dir/valid-lane-deadline.output"
-grep -qx '860000' "$tmp_dir/valid-lane-deadline.output"
+grep -qx '1080000' "$tmp_dir/valid-lane-deadline.output"
 
 run_case valid-investigation-turns max_investigation_turns 2 0
 grep -q '^max_investigation_turns<<' "$tmp_dir/valid-investigation-turns.output"

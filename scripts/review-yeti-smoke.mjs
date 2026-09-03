@@ -2,7 +2,11 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
-import { checkDeadTransportEnvelope } from './lane-deadline-invariant.mjs';
+import { checkDeadTransportEnvelope, checkGenerationWallClock } from './lane-deadline-invariant.mjs';
+import {
+  STREAMING_FETCH_DISPATCHER_OPTIONS,
+  getStreamingFetchDispatcher,
+} from './streaming-fetch-dispatcher.mjs';
 import {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
@@ -37,6 +41,9 @@ const SYNTHETIC_QUOTA_PATH = '/v2/quotas';
 const DEFAULT_QUOTA_TIMEOUT_MS = 5_000;
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
+
+export { STREAMING_FETCH_DISPATCHER_OPTIONS, getStreamingFetchDispatcher };
+
 const DEFAULT_TIMEOUT_MS = 90_000;
 export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
   allow_fallbacks: true,
@@ -251,6 +258,11 @@ export function validatePolicy(policy, repository = '') {
     laneOverheadMs: Number(budget.lane_overhead_ms),
     laneDeadlineMs: Number(budget.lane_deadline_ms),
   });
+  checkGenerationWallClock({
+    transports: enabledTransports,
+    laneOverheadMs: Number(budget.lane_overhead_ms),
+    laneDeadlineMs: Number(budget.lane_deadline_ms),
+  });
 
   return enabledTransports;
 }
@@ -400,6 +412,7 @@ export async function probeTransport(
       },
       body: JSON.stringify(buildRequest(transport)),
       signal: controller.signal,
+      dispatcher: getStreamingFetchDispatcher(),
     });
     const measuredTtftMs = elapsed();
     clearTimeout(timeout);

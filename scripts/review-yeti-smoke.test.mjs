@@ -25,6 +25,8 @@ import {
   boundSyntheticCapacity,
   classifyHttpFailure,
   encodeTransportPlan,
+  getStreamingFetchDispatcher,
+  STREAMING_FETCH_DISPATCHER_OPTIONS,
   probeTransport,
   resolveTransport,
   resolvePolicyForRepository,
@@ -45,7 +47,7 @@ function policyFixture() {
       openrouter_stream: 'true',
       openrouter_ttft_ms: '60000',
       stall_ms: '20000',
-      budget: { lane_deadline_ms: '860000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
+      budget: { lane_deadline_ms: '960000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
         {
           name: 'openrouter-primary',
@@ -269,6 +271,16 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
         * Number(policy.review_yeti.openrouter_max_attempts)
         * Number(policy.review_yeti.budget.max_investigation_turns)
         + Number(policy.review_yeti.budget.lane_overhead_ms),
+  );
+  assert.ok(
+    Number(policy.review_yeti.budget.lane_deadline_ms)
+      >= Math.max(
+        0,
+        ...transports
+          .filter((transport) => transport.enabled)
+          .map((transport) => Number(transport.max_wall_clock_ms) || 0),
+      )
+      + Number(policy.review_yeti.budget.lane_overhead_ms),
   );
 });
 
@@ -713,6 +725,44 @@ test('ollama smoke first-byte budget uses max_wall_clock_ms instead of OpenRoute
   assert.deepEqual(healthy, ['ollama']);
   assert.equal(calls[0].max_tokens, undefined);
   assert.equal(calls[0].reasoning_effort, 'high');
+});
+
+test('ollama smoke fetch uses an undici dispatcher whose header timeout covers max_wall_clock_ms', async () => {
+  let capturedInit;
+  await probeTransport(
+    policyFixture().review_yeti.transports.find((entry) => entry.name === 'ollama'),
+    'ollama-secret',
+    async (_url, init) => {
+      capturedInit = init;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }),
+      };
+    },
+    900000,
+    900000,
+  );
+
+  assert.equal(capturedInit.dispatcher, getStreamingFetchDispatcher());
+  assert.equal(STREAMING_FETCH_DISPATCHER_OPTIONS.headersTimeout, 0);
+  assert.equal(STREAMING_FETCH_DISPATCHER_OPTIONS.bodyTimeout, 0);
+  const headerTimeout = STREAMING_FETCH_DISPATCHER_OPTIONS.headersTimeout;
+  assert.ok(headerTimeout === 0 || headerTimeout >= 900000);
+});
+
+test('the smoke suite rejects a lane deadline shorter than max_wall_clock_ms plus overhead', () => {
+  const policy = policyFixture();
+  policy.review_yeti.budget.lane_deadline_ms = String(
+    policy.review_yeti.transports.find((transport) => transport.name === 'ollama').max_wall_clock_ms
+    + Number(policy.review_yeti.budget.lane_overhead_ms)
+    - 1,
+  );
+  assert.throws(
+    () => validatePolicy(policy),
+    /generation wall clock .* exceeds review_yeti\.budget\.lane_deadline_ms/,
+  );
 });
 
 test('probe admission rejects a transport that misses the action TTFT budget', async () => {
