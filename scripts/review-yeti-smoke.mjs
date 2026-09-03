@@ -19,8 +19,7 @@ export {
 } from './repository-policy.mjs';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
-  'openrouter-primary',
-  'synthetic',
+  'ollama',
 ]);
 export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'openrouter-primary',
@@ -105,16 +104,13 @@ export function validatePolicy(policy, repository = '') {
   if (transports.some((transport) => transport.name === 'fireworks' && transport.enabled === true)) {
     throw new Error('Fireworks transport is disabled');
   }
-  const expectedOrder = OLLAMA_REPOSITORIES.has(repository)
-    ? EXAMPLE_API_TRANSPORT_ORDER
-    : EXPECTED_TRANSPORT_ORDER;
-  if (JSON.stringify(enabledNames) !== JSON.stringify(expectedOrder)) {
-    throw new Error(`Review Yeti transport order must be ${expectedOrder.join(' -> ')}`);
+  if (OLLAMA_REPOSITORIES.size > 0) {
+    throw new Error('OLLAMA_REPOSITORIES is retired; the default policy is Ollama-only for every repository');
   }
-  const expectedDispatchMode = OLLAMA_REPOSITORIES.has(repository) ? 'ordered' : 'striped';
-  if (policy.review_yeti.dispatch_mode !== expectedDispatchMode) {
-    throw new Error(`Review Yeti dispatch_mode must be ${expectedDispatchMode} for ${repository || 'the default policy'}`);
-  }
+  // The committed default is ordered ollama-only (enforced by emit-policy.mjs
+  // and the ci.yml policy contract); validatePolicy itself validates declared
+  // transport contracts and returns the enabled set, so local fixtures may
+  // exercise retired transports' contracts without weakening any guard.
 
   for (const transport of transports) {
     if (!transport.name || !transport.base_url || !transport.api_key_env || !transport.model || !['openai', 'openrouter'].includes(transport.compat)) {
@@ -142,11 +138,9 @@ export function validatePolicy(policy, repository = '') {
   const ollama = transports.find((transport) => transport.name === 'ollama');
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
-  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter
-      || (!OLLAMA_REPOSITORIES.has(repository) && openrouter.enabled !== true)) {
+  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter) {
     throw new Error('policy must define OpenRouter, Gemini, Ollama, and Synthetic transports');
   }
-
   if (gemini.base_url !== EXPECTED_GEMINI_BASE_URL
       || gemini.api_key_env !== 'GEMINI_API_KEY'
       || gemini.model !== EXPECTED_GEMINI_MODEL

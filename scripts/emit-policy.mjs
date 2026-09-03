@@ -53,8 +53,8 @@ if (!Array.isArray(review.transports) || review.transports.length === 0) throw n
 if (!['ordered', 'striped'].includes(review.dispatch_mode)) {
   throw new Error('review_yeti.dispatch_mode must be ordered or striped');
 }
-if (!openrouterTransport || (!OLLAMA_REPOSITORIES.has(targetRepository) && openrouterTransport.enabled !== true)) {
-  throw new Error('policy must define an enabled OpenRouter primary transport');
+if (OLLAMA_REPOSITORIES.size > 0) {
+  throw new Error('OLLAMA_REPOSITORIES is retired; the default policy is Ollama-only for every repository');
 }
 const enabledTransports = review.transports.filter((transport) => transport.enabled === true);
 const transportNames = enabledTransports.map((transport) => transport.name);
@@ -78,14 +78,12 @@ for (const transport of review.transports) {
   }
   validateTransportEnvelope(transport);
 }
-const expectedTransportNames = OLLAMA_REPOSITORIES.has(targetRepository)
-  ? ['ollama']
-  : ['openrouter-primary', 'synthetic'];
+const expectedTransportNames = ['ollama'];
 if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
   throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
 }
-if (OLLAMA_REPOSITORIES.has(targetRepository) && review.dispatch_mode !== 'ordered') {
-  throw new Error(`${targetRepository} must use ordered Ollama-only dispatch`);
+if (review.dispatch_mode !== 'ordered') {
+  throw new Error('policy must use ordered Ollama-only dispatch for every repository');
 }
 const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
 if (!fireworksTransport || fireworksTransport.enabled !== false) {

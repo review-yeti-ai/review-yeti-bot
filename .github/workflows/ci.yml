@@ -98,7 +98,7 @@ jobs:
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
           jq -e '.review_yeti.transports[] | select(.name == "fireworks") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "ollama"' policy/review-yeti.json
-          jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == false' policy/review-yeti.json >/dev/null
+          jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == true' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "synthetic"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-primary"' policy/review-yeti.json
           grep -Fq '"model": "deepseek/deepseek-v4-flash-0731"' policy/review-yeti.json
@@ -107,6 +107,8 @@ jobs:
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
+          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .enabled == false' policy/review-yeti.json >/dev/null
+          jq -e '.review_yeti.transports[] | select(.name == "synthetic") | .enabled == false' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml

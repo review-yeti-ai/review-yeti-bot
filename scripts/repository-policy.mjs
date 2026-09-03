@@ -1,18 +1,18 @@
-// Repositories pinned to Ollama-only ordered dispatch (ADR 0490, operator
-// directive 2026-09-02: OpenRouter removed from the live review path
-// entirely — it is not a fallback lane). Historical note kept on purpose:
-// ADR 0330 / example-meta #2701 documented an Ollama 60s header timeout causing a
-// required-check BLOCK under Ollama-only; that risk is accepted by the
-// operator under the central-dispatch master-key boundary instead of being
-// mitigated with an OpenRouter fallback.
+// OLLAMA-ONLY IS THE DEFAULT POLICY FOR EVERY REPOSITORY (ADR 0490 accepted;
+// operator directive 2026-09-03 retiring the per-repository Ollama-set
+// concept: OpenRouter is retired org-wide, so there are no special-cased
+// "Ollama repositories" — every consumer inherits the same ordered
+// ['ollama'] policy and `repository_overrides` are gone from central policy).
+// Historical note kept on purpose: ADR 0330 / example-meta #2701 documented an
+// Ollama 60s header timeout causing a required-check BLOCK under Ollama-only;
+// that risk is accepted by the operator under the central-dispatch master-key
+// boundary instead of being mitigated with an OpenRouter fallback.
 export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
 export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
-export const OLLAMA_REPOSITORIES = Object.freeze(new Set([
-  EXAMPLE_API_REPOSITORY,
-  'exampleorg/example-infra',
-  'exampleorg/example-release',
-  'exampleorg/example-meta',
-]));
+// Retired vocabulary: this set once selected repositories into the Ollama
+// policy. Kept as an empty set so historical imports keep resolving while
+// every guard now reads the default-order contract instead.
+export const OLLAMA_REPOSITORIES = Object.freeze(new Set([]));
 
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const OVERRIDE_KEYS = new Set(['dispatch_mode', 'enabled_transports']);

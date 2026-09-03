@@ -37,15 +37,12 @@ configured_transports = review.get('transports', [])
 if any(type(item.get('enabled')) is not bool for item in configured_transports):
     raise SystemExit('every configured transport must declare enabled as a boolean')
 transports = [item for item in configured_transports if item.get('enabled') is True]
-if [item.get('name') for item in transports] != ['openrouter-primary', 'synthetic']:
-    raise SystemExit('policy must preserve OpenRouter -> Synthetic order')
-if review.get('dispatch_mode') != 'striped':
-    raise SystemExit('policy must use striped persona dispatch')
-if {item.get('name'): item.get('dispatch_weight') for item in transports} != {
-    'openrouter-primary': 2,
-    'synthetic': 1,
-}:
-    raise SystemExit('active provider weights must keep bounded OpenRouter primary at 2:1')
+if [item.get('name') for item in transports] != ['ollama']:
+    raise SystemExit('policy must be Ollama-only (operator 2026-09-03: OpenRouter retired)')
+if review.get('dispatch_mode') != 'ordered':
+    raise SystemExit('policy must use ordered persona dispatch for the Ollama-only default')
+if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'ollama': 1}:
+    raise SystemExit('active provider weights must keep the single Ollama lane at weight 1')
 # Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
 # versus unset at 0.750 with 7/72. Operator 2026-09-03: keep live effort at 'high'
 # (none makes the panel too weak). Never 'max'. Never cap max_tokens; wall-clock
@@ -59,12 +56,16 @@ if any('max_tokens' in item for item in transports):
     raise SystemExit('live transports must not cap max_tokens; wall-clock guards bound generation')
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
-synthetic = next((item for item in transports if item.get('name') == 'synthetic'), None)
-openrouter = next((item for item in transports if item.get('name') == 'openrouter-primary'), None)
+synthetic = next((item for item in configured_transports if item.get('name') == 'synthetic'), None)
+openrouter = next((item for item in configured_transports if item.get('name') == 'openrouter-primary'), None)
 if not openrouter or not ollama or not gemini or not synthetic:
-    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, and Synthetic transports')
-if gemini.get('enabled') is not False or ollama.get('enabled') is not False:
-    raise SystemExit('Gemini and Ollama transports must be disabled')
+    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, and Synthetic transports (declared, disabled except Ollama)')
+if gemini.get('enabled') is not False or ollama.get('enabled') is not True:
+    raise SystemExit('Ollama must be the only enabled transport; Gemini must stay declared-but-disabled')
+if synthetic is None or synthetic.get('enabled') is not False:
+    raise SystemExit('Synthetic must be declared-but-disabled (retired)')
+if openrouter is None or openrouter.get('enabled') is not False:
+    raise SystemExit('OpenRouter must be declared-but-disabled (retired)')
 if any(item.get('name') == 'fireworks' for item in transports):
     raise SystemExit('Fireworks transport must be disabled')
 fireworks = next((item for item in configured_transports if item.get('name') == 'fireworks'), None)
@@ -92,8 +93,10 @@ if not isinstance(budget, dict):
 for key in ('lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_review_assignments', 'max_investigation_turns'):
     if key not in budget:
         raise SystemExit(f'policy budget is missing {key}')
-if not openrouter:
-    raise SystemExit('policy must define the openrouter-primary transport')
+if openrouter is None:
+    openrouter = next((item for item in configured_transports if item.get('name') == 'openrouter-primary'), None)
+if openrouter is None:
+    raise SystemExit('policy must define the openrouter-primary transport (declared, disabled)')
 if openrouter.get('stream') is not True:
     raise SystemExit('openrouter-primary must use streaming for provider attribution')
 if openrouter.get('model') != 'deepseek/deepseek-v4-flash-0731':
@@ -315,28 +318,20 @@ import sys
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-transports = [item for item in review['transports'] if item.get('enabled') is True]
+# Ollama-only: the enabled lane's six-lane/90s contract is hard-pinned by
+# emit-policy, so the overflow fixture drives the lane deadline over the
+# edge via the declared overhead reserve instead of mutating the transport.
 lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
-overflow_connect_ms = min(180_000, (lane_deadline_ms // len(transports)) + 10_000)
-for transport in transports:
-    transport['connect_timeout_ms'] = overflow_connect_ms
-    transport['timeout_ms'] = max(transport.get('timeout_ms', 30_000), overflow_connect_ms)
-# A generated cap can otherwise land exactly on the lane deadline. Nudge the fixture deadline just
-# below the resulting sum while keeping the retry-envelope check valid.
-overflow_sum = overflow_connect_ms * len(transports) + sum(item['stall_ms'] for item in transports)
-if overflow_sum <= lane_deadline_ms:
-    lane_deadline_ms = overflow_sum - 1
-    review['budget']['lane_deadline_ms'] = str(lane_deadline_ms)
-# Keep the retry-envelope guard from firing first; this fixture is specifically proving that
-# the connect+stall sum across transports is checked independently of the OpenRouter retry count.
-review['openrouter_max_attempts'] = '1'
-openrouter = next(item for item in transports if item['name'] == 'openrouter-primary')
-review['openrouter_timeout_ms'] = str(openrouter['timeout_ms'])
-with open(destination, 'w') as handle:
-    json.dump(policy, handle)
+attempts = int(review['openrouter_max_attempts'])
+turns = int(review['budget']['max_investigation_turns'])
+enabled = [item for item in review['transports'] if item.get('enabled') is True]
+base_sum = sum(item['connect_timeout_ms'] + item['stall_ms'] for item in enabled)
+# Smallest overhead that makes required exceed the lane deadline:
+required_without_overhead = base_sum * attempts * turns
+review['budget']['lane_overhead_ms'] = str(lane_deadline_ms - required_without_overhead + 1)
+json.dump(policy, open(destination, 'w'))
 PY
 }
-
 run_transport_budget_overflow_case() {
   local output_file="$tmp_dir/transport-budget-overflow.output"
   write_transport_budget_overflow_policy
@@ -363,24 +358,14 @@ import sys
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-transports = [item for item in review['transports'] if item.get('enabled') is True]
-lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
-max_attempts = int(review['openrouter_max_attempts'])
-max_investigation_turns = int(review['budget']['max_investigation_turns'])
-retry_connect_ms = min(
-    80_000,
-    (lane_deadline_ms // (len(transports) * max_attempts * max_investigation_turns)) + 10_000,
-)
-for transport in transports:
-    transport['connect_timeout_ms'] = retry_connect_ms
-    transport['timeout_ms'] = max(transport.get('timeout_ms', 30_000), retry_connect_ms)
-openrouter = next(item for item in transports if item['name'] == 'openrouter-primary')
-review['openrouter_timeout_ms'] = str(openrouter['timeout_ms'])
-with open(destination, 'w') as handle:
-    json.dump(policy, handle)
+# Ollama-only: ollama's six-lane/90s contract is hard-pinned, so this fixture
+# overflows the lane deadline by multiplying the investigation-turn budget
+# (the same worst-case dead-transport sum, more turns).
+turns = int(review['budget']['max_investigation_turns'])
+review['budget']['max_investigation_turns'] = str(turns * 3)
+json.dump(policy, open(destination, 'w'))
 PY
 }
-
 run_transport_retry_budget_overflow_case() {
   local output_file="$tmp_dir/transport-retry-budget-overflow.output"
   write_transport_retry_budget_overflow_policy
@@ -459,7 +444,7 @@ review = policy['review_yeti']
 review['openrouter_ttft_ms'] = '30000'
 next(item for item in review['transports'] if item['name'] == 'openrouter-primary')['ttft_ms'] = 30_000
 if stream_scope == 'transport':
-    review['transports'][0]['stream'] = False
+    next(item for item in review['transports'] if item['name'] == 'ollama')['stream'] = False
 elif stream_scope == 'global':
     review['openrouter_stream'] = 'false'
 else:
@@ -496,8 +481,8 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['openrouter-primary', 'synthetic']:
-    raise SystemExit('base64 transport plan must preserve OpenRouter -> Synthetic order')
+if [item.get('name') for item in plan] != ['ollama']:
+    raise SystemExit('base64 transport plan must be Ollama-only (operator 2026-09-03)')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY

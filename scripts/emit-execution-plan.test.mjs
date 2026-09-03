@@ -27,10 +27,10 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(fixture, committedFixture);
   assert.match(fixture.normalized_plan_sha256, /^[0-9a-f]{64}$/);
   assert.equal(fixture.normalized_plan_sha256, sha256(canonicalJson(fixture.plan)));
-  assert.deepEqual(fixture.plan.transport_order, ['openrouter-primary', 'synthetic']);
+  assert.deepEqual(fixture.plan.transport_order, ['ollama']);
   assert.deepEqual(fixture.plan.dispatch, {
-    mode: 'striped',
-    weights: { 'openrouter-primary': 2, synthetic: 1 },
+    mode: 'ordered',
+    weights: { ollama: 1 },
   });
   assert.deepEqual(fixture.plan.scope, {
     max_diff_chars: 2000000,
@@ -40,40 +40,18 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.equal(fixture.plan.lane.max_review_assignments, 24);
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
-    [
-      'openrouter-gateway',
-      'direct-synthetic-openai-compatible',
-    ],
+    ['direct-ollama-cloud-openai-compatible'],
   );
-  const openrouter = fixture.plan.transports.find((transport) => transport.name === 'openrouter-primary');
-  const synthetic = fixture.plan.transports.find((transport) => transport.name === 'synthetic');
-  assert.equal(synthetic.reasoning.wire_shape, 'reasoning_effort');
-  assert.deepEqual(synthetic.capacity, {
-    max_in_flight: 5,
-    concurrency_scope: 'model',
-    wait_timeout_ms: 120000,
-  });
-  assert.deepEqual(synthetic.quota, { probe: 'synthetic-v2' });
-  assert.deepEqual(synthetic.retry.rate_limit, {
-    scope: 'provider',
-    max_retries: 1,
-    max_retry_after_ms: 5000,
-  });
-  assert.equal(openrouter.reasoning.wire_shape, 'reasoning.effort');
-  assert.equal(openrouter.model, 'deepseek/deepseek-v4-flash-0731');
-  assert.deepEqual(openrouter.capacity, {
-    max_in_flight: 2,
+  const ollama = fixture.plan.transports.find((transport) => transport.name === 'ollama');
+  assert.equal(ollama.reasoning.wire_shape, 'reasoning_effort');
+  assert.equal(ollama.model, 'deepseek-v4-flash:cloud');
+  assert.deepEqual(ollama.capacity, {
+    max_in_flight: 6,
     concurrency_scope: 'provider',
-    wait_timeout_ms: 180000,
+    wait_timeout_ms: 30000,
   });
-  assert.deepEqual(openrouter.models, ['z-ai/glm-5.3-flash']);
-  assert.equal(openrouter.request_extensions.plugins, undefined);
-  assert.equal(openrouter.quarantine.on_timeout, false);
-  assert.equal(openrouter.privacy.data_collection, 'deny');
-  assert.deepEqual(
-    openrouter.routing.provider,
-    committedPolicy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary').provider_routing,
-  );
+  assert.equal(ollama.retry.rate_limit.max_retries, 1);
+  assert.equal(ollama.quarantine.on_timeout, false);
 
   for (const forbidden of [
     'api_key_env',
@@ -105,12 +83,12 @@ test('derives execution deadlines from each transport handoff contract', () => {
   }
 });
 
-test('Ollama repositories emit an Ollama-only ordered execution plan (no OpenRouter)', () => {
+test('Every repository emits the same Ollama-only ordered execution plan (no OpenRouter)', () => {
   const defaultPlan = buildExecutionPlan(committedPolicy);
   const ciscoPlan = buildExecutionPlan(committedPolicy, EXAMPLE_API_REPOSITORY);
 
-  assert.deepEqual(defaultPlan.transport_order, ['openrouter-primary', 'synthetic']);
-  assert.equal(defaultPlan.dispatch.mode, 'striped');
+  assert.deepEqual(defaultPlan.transport_order, ['ollama']);
+  assert.equal(defaultPlan.dispatch.mode, 'ordered');
   assert.deepEqual(ciscoPlan.transport_order, ['ollama']);
   assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { ollama: 1 } });
   assert.deepEqual(ciscoPlan.transports[0].capacity, {
@@ -166,7 +144,8 @@ test('rejects unknown keys at every execution-policy object boundary', () => {
 
 test('rejects an unclassified base URL instead of leaking it into the fixture', () => {
   const policy = clone(committedPolicy);
-  policy.review_yeti.transports[0].base_url = 'https://credentials.example.invalid/v1';
+  const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
+  ollama.base_url = 'https://credentials.example.invalid/v1';
   assert.throws(
     () => buildExecutionPlan(policy),
     /base_url has no approved credential-free class/,

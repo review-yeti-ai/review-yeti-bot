@@ -50,7 +50,17 @@ import {
   validateQualificationInput,
 } from './openrouter-qualification.mjs';
 
-const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+// OpenRouter is retired from the live policy; the qualification harness and
+// its tests exercise the DECLARED transport contract against a local fixture
+// with the lane enabled — never the committed ollama-only default.
+const committedPolicy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+const policy = (() => {
+  const fixture = structuredClone(committedPolicy);
+  for (const transport of fixture.review_yeti.transports) {
+    transport.enabled = transport.name === 'openrouter-primary';
+  }
+  return fixture;
+})();
 const input = {
   confirm: 'QUALIFY',
   repository: 'review-yeti-ai/review-yeti-bot',

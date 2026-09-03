@@ -1,19 +1,17 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "107fda4afe328411fb9703fd579ea70eb0b40a937b61a75f0dea50e1ea2794ef",
+  "normalized_plan_sha256": "820ab8c2fb06a5fe05e80487767a7bebae99b66a52c1ccce8c994b26d5d2a69f",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
     "release_channel": "v1",
     "transport_order": [
-      "openrouter-primary",
-      "synthetic"
+      "ollama"
     ],
     "dispatch": {
-      "mode": "striped",
+      "mode": "ordered",
       "weights": {
-        "openrouter-primary": 2,
-        "synthetic": 1
+        "ollama": 1
       }
     },
     "lane": {
@@ -29,90 +27,19 @@
     },
     "transports": [
       {
-        "name": "openrouter-primary",
-        "base_url_class": "openrouter-gateway",
-        "model": "deepseek/deepseek-v4-flash-0731",
-        "models": [
-          "z-ai/glm-5.3-flash"
-        ],
-        "compatibility_mode": "openrouter",
-        "timeouts": {
-          "connect_ms": 20000,
-          "request_ms": 90000,
-          "stall_ms": 30000,
-          "ttft_ms": 75000
-        },
-        "max_output_tokens": "runtime-default-uncharacterized",
-        "streaming": true,
-        "structured_output": "strict",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning.effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": false
-        },
-        "routing": {
-          "mode": "gateway-delegated",
-          "ignore_providers": [
-            "morph",
-            "fireworks"
-          ],
-          "provider": {
-            "allow_fallbacks": true,
-            "require_parameters": true,
-            "ignore": [
-              "morph",
-              "fireworks"
-            ],
-            "sort": "throughput",
-            "preferred_min_throughput": {
-              "p90": 40
-            },
-            "preferred_max_latency": {
-              "p99": 3
-            },
-            "data_collection": "deny"
-          }
-        },
-        "privacy": {
-          "data_collection": "deny"
-        },
-        "capacity": {
-          "max_in_flight": 2,
-          "concurrency_scope": "provider",
-          "wait_timeout_ms": 180000
-        },
-        "quota": {
-          "probe": "none"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "http-status-and-retry-after",
-          "rate_limit": {
-            "scope": "provider",
-            "max_retries": 1,
-            "max_retry_after_ms": 5000
-          }
-        },
-        "quarantine": {
-          "on_timeout": false
-        }
-      },
-      {
-        "name": "synthetic",
-        "base_url_class": "direct-synthetic-openai-compatible",
-        "model": "hf:zai-org/GLM-5.3-Flash",
+        "name": "ollama",
+        "base_url_class": "direct-ollama-cloud-openai-compatible",
+        "model": "deepseek-v4-flash:cloud",
         "compatibility_mode": "openai",
         "timeouts": {
-          "connect_ms": 15000,
-          "request_ms": 120000,
-          "stall_ms": 20000,
+          "connect_ms": 90000,
+          "request_ms": 90000,
+          "stall_ms": 90000,
           "ttft_ms": 60000
         },
         "max_output_tokens": "runtime-default-uncharacterized",
         "streaming": true,
-        "structured_output": "strict",
+        "structured_output": "runtime-default-uncharacterized",
         "reasoning": {
           "effort": "high",
           "wire_shape": "reasoning_effort"
@@ -129,12 +56,12 @@
           "data_collection": "not-declared"
         },
         "capacity": {
-          "max_in_flight": 5,
-          "concurrency_scope": "model",
-          "wait_timeout_ms": 120000
+          "max_in_flight": 6,
+          "concurrency_scope": "provider",
+          "wait_timeout_ms": 30000
         },
         "quota": {
-          "probe": "synthetic-v2"
+          "probe": "none"
         },
         "retry": {
           "max_attempts": 2,

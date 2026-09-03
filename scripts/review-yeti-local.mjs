@@ -34,8 +34,11 @@ export function buildLocalConfig(policy) {
   const review = policy.review_yeti;
   const budget = review.budget;
   const transports = getEnabledTransports(policy);
-  const openrouter = transports.find((transport) => transport.compat === 'openrouter');
-  const routing = openrouter.provider_routing || {};
+  // Ollama-only default (ADR 0490 accepted): the primary is the enabled
+  // transport; retired OpenRouter lanes keep their declared contracts but are
+  // not selectable here.
+  const primary = transports[0];
+  const routing = primary.provider_routing || {};
 
   return {
     version: 4,
@@ -52,14 +55,14 @@ export function buildLocalConfig(policy) {
       dispatch_mode: review.dispatch_mode,
       transports,
       openrouter: {
-      model: openrouter.model,
-      data_collection: routing.data_collection,
-      models: openrouter.models,
-      ignore_providers: routing.ignore,
+        model: primary.model,
+        data_collection: routing.data_collection,
+        models: primary.models,
+        ignore_providers: routing.ignore,
         provider_routing: routing,
         stream: review.openrouter_stream === 'true',
         timeout_ms: integer(review.openrouter_timeout_ms, 'openrouter_timeout_ms'),
-        connect_timeout_ms: openrouter.connect_timeout_ms,
+        connect_timeout_ms: primary.connect_timeout_ms,
         ttft_ms: integer(review.openrouter_ttft_ms, 'openrouter_ttft_ms'),
         max_attempts: integer(review.openrouter_max_attempts, 'openrouter_max_attempts'),
       },
