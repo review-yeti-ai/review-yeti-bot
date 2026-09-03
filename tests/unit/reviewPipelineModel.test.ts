@@ -705,13 +705,13 @@ describe('reviewWithModel', () => {
     expect(res.findings).toEqual([]);
     expect(calls[0].body).toMatchObject({
       stream: true,
-      max_tokens: 24576,
-      reasoning_effort: 'high',
+      reasoning_effort: 'none',
       perf_metrics_in_response: true,
     });
+    expect(calls[0].body.max_tokens).toBeUndefined();
   });
 
-  it('reserves a three-times direct-provider generation budget for high-reasoning JSON on a full-size diff', async () => {
+  it('omits max_tokens on the live panel so high-reasoning cannot starve findings JSON', async () => {
     const calls: any[] = [];
     const sse = [
       `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'reviewing the complete diff' } }] })}`,
@@ -752,10 +752,10 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.messages.find((m: any) => m.role === 'user').content.length).toBeLessThanOrEqual(412_000);
     expect(calls[0].body).toMatchObject({
       stream: true,
-      max_tokens: 24576,
-      reasoning_effort: 'high',
+      reasoning_effort: 'none',
       response_format: { type: 'json_object' },
     });
+    expect(calls[0].body.max_tokens).toBeUndefined();
   });
 
   it('preserves an explicit direct-provider max_tokens override', async () => {
@@ -771,6 +771,21 @@ describe('reviewWithModel', () => {
       }],
     });
     expect(calls[0].body.max_tokens).toBe(4096);
+  });
+
+  it('omits max_tokens when the transport does not declare a completion cap', async () => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: impl,
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'ollama-key',
+        model: 'deepseek-v4-flash:cloud',
+      }],
+    });
+    expect(calls[0].body.max_tokens).toBeUndefined();
+    expect(calls[0].body.reasoning_effort).toBeUndefined();
   });
 
   it('accepts structured content arrays but never treats reasoning-only output as findings', async () => {
@@ -2319,7 +2334,7 @@ describe('reviewWithModel', () => {
 
     const user = calls[0].body.messages.find((m: any) => m.role === 'user').content;
     expect(user.length).toBeLessThanOrEqual(412_000);
-    expect(calls[0].body.max_tokens).toBe(24576);
+    expect(calls[0].body.max_tokens).toBeUndefined();
   });
 
   it('includes prior-turn session context in the prompt when present', async () => {

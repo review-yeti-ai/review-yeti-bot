@@ -88,12 +88,13 @@ const OPENROUTER_PROMPT_CACHE_VERSION = 'review-yeti-v1';
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL !== OPENROUTER_AUTO_MODEL
   ? process.env.OPENROUTER_MODEL
   : OPENROUTER_DIRECT_PRIMARY_MODEL;
-const DEFAULT_PERSONA_CONCURRENCY = 3;
+const DEFAULT_PERSONA_CONCURRENCY = 6;
 // Team's advertised 10-call concurrency is an account-wide ceiling, not a reservation for
-// Review Yeti. Keep the process-local default below that ceiling, cap explicit policy at the
-// account ceiling, and recover from remote saturation within the queue budget below.
+// Review Yeti. Default to the six-persona panel so one wave covers the live roster. Cap
+// explicit policy at the account ceiling, and recover from remote saturation within the
+// queue budget below.
 const OLLAMA_ACCOUNT_CONCURRENCY_CEILING = 10;
-const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 3;
+const OLLAMA_MAX_IN_FLIGHT_REQUESTS = 6;
 const OLLAMA_CAPACITY_WAIT_TIMEOUT_MS = 30_000;
 const OLLAMA_CAPACITY_RETRY_BASE_DELAY_MS = 250;
 const OLLAMA_CAPACITY_RETRY_MAX_DELAY_MS = 2_000;
@@ -1121,14 +1122,13 @@ const DEFAULT_PERSONA_IDS = PERSONA_CHARTERS.filter((p) => p.defaultEnabled).map
 const SEVERITIES = ['P0', 'P1', 'P2'];
 const DEFAULT_MAX_DIFF_CHARS = 410_400;
 const ACTION_MAX_DIFF_CAP = 10_000_000;
-// Review responses are structured findings objects, but reasoning-capable OpenRouter models
-// need enough output budget for both their hidden reasoning tokens and the final JSON object.
-// Keep the generic fallback conservative while giving the explicitly admitted OpenRouter route
-// the same 24,576-token envelope used by the qualification harness. This is a provider-safe
-// ceiling, not an unbounded generation request; the per-request and workflow wall-clock guards
-// remain authoritative.
-const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
-const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 24_576;
+// Do not put a completion-token ceiling on the live panel. A 24,576 cap plus high-effort
+// reasoning caused Ollama to spend the entire 90s total deadline on thought tokens and
+// return no findings JSON (2026-09-03 job 100486626925). Wall-clock guards (timeout_ms,
+// stall_ms, stream total deadline) remain the only generation bound. Qualification
+// harnesses may still send an explicit max_tokens.
+const DEFAULT_MAX_OUTPUT_TOKENS = undefined;
+const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = undefined;
 const DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS = 30_000;
 // Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
 // still caps the complete generated sequence (reasoning plus the final JSON).
@@ -3002,8 +3002,22 @@ function downgradeReasoningEffort(effort, fallbackAttempt = 0) {
 }
 
 function normalizeMaxOutputTokens(value, fallback = DEFAULT_MAX_OUTPUT_TOKENS) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (String(value).trim().toLowerCase() === 'unlimited') return undefined;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function assignMaxOutputTokens(requestBody, value) {
+  if (value === undefined) delete requestBody.max_tokens;
+  else requestBody.max_tokens = value;
+}
+
+function raiseMaxOutputTokens(requestBody, minimum) {
+  if (requestBody.max_tokens === undefined) return;
+  const floor = Number(minimum);
+  if (!Number.isSafeInteger(floor) || floor < 1) return;
+  requestBody.max_tokens = Math.max(requestBody.max_tokens, floor);
 }
 
 function contentFragments(value) {
@@ -3113,6 +3127,8 @@ async function readChatCompletionResponse(
   let pending = '';
   let eventData = [];
   let receivedFirstData = false;
+  let receivedFirstContent = false;
+  let firstUsableAt = 0;
   const streamStartedAt = Date.now();
   const dispatchEvent = () => {
     if (eventData.length === 0) return;
@@ -3146,16 +3162,17 @@ async function readChatCompletionResponse(
       // not prove that the model has produced usable output. Keep the TTFT watchdog active until
       // content or reasoning arrives; otherwise an empty 200 stream can consume the full total
       // deadline before the bounded recovery path starts.
-      const hasUsableOutput = hasMeaningfulFragments([
-        ...delta,
-        ...message,
-        ...deltaReasoning,
-        ...messageReasoning,
-      ]);
-      if (!receivedFirstData && hasUsableOutput) {
+      const hasContent = hasMeaningfulFragments([...delta, ...message]);
+      const hasReasoning = hasMeaningfulFragments([...deltaReasoning, ...messageReasoning]);
+      // Reasoning tokens prove the socket is alive but are not findings JSON. Count them
+      // as first-byte evidence for TTFT, then enforce a separate content stall so a
+      // high-effort thought stream cannot ride the total deadline with empty content.
+      if (!receivedFirstData && (hasContent || hasReasoning)) {
         receivedFirstData = true;
+        firstUsableAt = Date.now();
         onFirstData?.(Date.now() - streamStartedAt);
       }
+      if (hasContent) receivedFirstContent = true;
     } catch (_) {
       // Providers may terminate a stream with a partial final SSE frame. The
       // completed content accumulated so far remains valid and is parsed below.
@@ -3198,6 +3215,19 @@ async function readChatCompletionResponse(
       throw annotateStreamTimeout(streamTotalDeadlineError(totalTimeoutMs), chunks, reasoningChunks);
     }
   };
+  const throwIfContentStall = () => {
+    if (!receivedFirstData || receivedFirstContent || !Number.isFinite(inactivityTimeoutMs) || inactivityTimeoutMs <= 0) {
+      return;
+    }
+    if (Date.now() - firstUsableAt + 10 >= inactivityTimeoutMs) {
+      cancelStream();
+      throw annotateStreamTimeout(
+        streamInactivityError(inactivityTimeoutMs, 'inactivity'),
+        chunks,
+        reasoningChunks,
+      );
+    }
+  };
 
   if (response?.body && typeof response.body.getReader === 'function') {
     const reader = response.body.getReader();
@@ -3208,8 +3238,13 @@ async function readChatCompletionResponse(
     try {
       while (true) {
         throwIfTotalDeadline();
+        throwIfContentStall();
         const readBudgetMs = Math.min(
-          receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs,
+          receivedFirstData && receivedFirstContent
+            ? inactivityTimeoutMs
+            : receivedFirstData
+              ? Math.max(1, inactivityTimeoutMs - (Date.now() - firstUsableAt))
+              : ttftTimeoutMs,
           remainingTotalMs(),
         );
         try {
@@ -3235,6 +3270,7 @@ async function readChatCompletionResponse(
           }
         } catch (err) {
           throwIfTotalDeadline();
+          throwIfContentStall();
           throw err;
         }
       }
@@ -3553,16 +3589,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               { role: 'user', content: userPrompt },
             ],
         temperature: resolveTransportTemperature(transport, transportBaseUrl),
-        max_tokens: normalizeMaxOutputTokens(
-          configuredMaxOutputTokens,
-          isOpenRouterTransport
-            ? DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS
-            : isDirectReasoning
-              ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS
-              : DEFAULT_MAX_OUTPUT_TOKENS,
-        ),
         response_format: buildFindingsResponseFormat(structuredOutputMode),
       };
+      assignMaxOutputTokens(
+        requestBody,
+        normalizeMaxOutputTokens(configuredMaxOutputTokens, undefined),
+      );
       if (isOpenRouterTransport) {
         requestBody.session_id = openRouterCacheIdentity;
         requestBody.prompt_cache_key = openRouterCacheIdentity;
@@ -3582,7 +3614,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       if (streamEnabled) requestBody.stream = true;
 
       const configuredReasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
-      const reasoningEffort = downgradeReasoningEffort(configuredReasoningEffort, fallbackAttempt);
+      // First pass is always `none`. High-effort first passes on Ollama spent ~95s
+      // emitting reasoning with no findings JSON; the none retry parsed in 5-9s
+      // (2026-09-03 job 100486626925). Recovery mutates this request body in place.
+      const reasoningEffort = configuredReasoningEffort ? 'none' : configuredReasoningEffort;
       if (reasoningEffort) {
         if (isOpenRouterTransport) requestBody.reasoning = { effort: reasoningEffort };
         else requestBody.reasoning_effort = reasoningEffort;
@@ -3651,10 +3686,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
         noteRetryReason('malformed_output');
-        requestBody.max_tokens = Math.max(
-          requestBody.max_tokens,
-          DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
-        );
+        raiseMaxOutputTokens(requestBody, DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
         requestBody.reasoning_effort = 'none';
         appendRecoveryInstructions([
           '',
@@ -3694,7 +3726,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         delete requestBody.plugins;
         const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestBody.model);
         requestBody.reasoning = recoveryReasoning;
-        requestBody.max_tokens = Math.max(requestBody.max_tokens, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
+        raiseMaxOutputTokens(requestBody, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
         const recoveryReasoningInstruction = recoveryReasoning.effort === 'none'
           ? '- Disable optional reasoning for this recovery attempt and reserve the output budget for the required findings object.'
           : '- Keep required reasoning at low effort for this recovery attempt so you can re-check the diff while reserving output budget for the required findings object.';
@@ -3741,10 +3773,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         delete requestBody.plugins;
         const recoveryReasoning = resolveOpenRouterRecoveryReasoning(transport, requestBody.model);
         requestBody.reasoning = recoveryReasoning;
-        requestBody.max_tokens = Math.max(
-          requestBody.max_tokens,
-          DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
-        );
+        raiseMaxOutputTokens(requestBody, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
         const recoveryReasoningInstruction = recoveryReasoning.effort === 'none'
           ? '- Keep reasoning brief and reserve output tokens for the final JSON object.'
           : '- Keep required reasoning at low effort and reserve output tokens for the final JSON object.';
@@ -4245,10 +4274,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             }
             if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
               formatRecoveryAttempted = true;
-              requestBody.max_tokens = Math.max(
-                requestBody.max_tokens,
-                DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
-              );
+              raiseMaxOutputTokens(requestBody, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
               if (isDirectReasoning) requestBody.reasoning_effort = 'none';
               else requestBody.reasoning_effort = 'low';
               appendRecoveryInstructions([
@@ -6364,6 +6390,7 @@ module.exports = {
   PERSONA_CHARTERS,
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
+  DEFAULT_PERSONA_CONCURRENCY,
   OLLAMA_MAX_IN_FLIGHT_REQUESTS,
   OLLAMA_CAPACITY_WAIT_TIMEOUT_MS,
   SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL,
@@ -6372,6 +6399,9 @@ module.exports = {
   globalProviderCapacityManager,
   DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
+  normalizeMaxOutputTokens,
+  assignMaxOutputTokens,
+  raiseMaxOutputTokens,
   DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS,
   DIRECT_GENERATION_BUDGET_MULTIPLIER,
   DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,

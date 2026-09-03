@@ -230,14 +230,13 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
 
   it('snapshots the final credential-free request shape for every configured transport', async () => {
     const { captured, contracts } = await capturePanelRequests();
-    const common = (model: string, maxTokens: number, temperature = 0.1) => ({
+    const common = (model: string, temperature = 0.1) => ({
       model,
       messages: [
         { role: 'system', content: '<panel-system-prompt>' },
         { role: 'user', content: '<panel-evidence-prompt>' },
       ],
       temperature,
-      max_tokens: maxTokens,
       response_format: { type: 'json_object' },
       stream: true,
     });
@@ -249,8 +248,8 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         headers: { authorization: '<redacted>', 'content-type': 'application/json' },
         timeout_ms: 120000,
         body: {
-          ...common('accounts/fireworks/models/deepseek-v4-flash-0731', 24576),
-          reasoning_effort: 'high',
+          ...common('accounts/fireworks/models/deepseek-v4-flash-0731'),
+          reasoning_effort: 'none',
           perf_metrics_in_response: true,
         },
       },
@@ -260,9 +259,9 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         headers: { authorization: '<redacted>', 'content-type': 'application/json' },
         timeout_ms: 90000,
         body: {
-          ...common('deepseek-v4-flash:cloud', 24576, 0),
+          ...common('deepseek-v4-flash:cloud', 0),
           seed: 144208749,
-          reasoning_effort: 'high',
+          reasoning_effort: 'none',
         },
       },
       'openrouter-fallback': {
@@ -271,13 +270,13 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         headers: { authorization: '<redacted>', 'content-type': 'application/json' },
         timeout_ms: 90000,
         body: {
-          ...common('deepseek/deepseek-v4-flash-0731', 24576),
+          ...common('deepseek/deepseek-v4-flash-0731'),
           messages: [
             { role: 'system', content: '<panel-system-prompt>' },
             { role: 'user', content: '<panel-evidence-prompt>' },
             { role: 'user', content: '<panel-assignment-prompt>' },
           ],
-          reasoning: { effort: 'high' },
+          reasoning: { effort: 'none' },
           session_id: 'review-yeti-v1-11a37010bca3ef6ace2fb892cd3d5969b2d4eff6fa878bce',
           prompt_cache_key: 'review-yeti-v1-11a37010bca3ef6ace2fb892cd3d5969b2d4eff6fa878bce',
           provider: {
