@@ -33,10 +33,16 @@ on:
         required: false
         default: false
         type: boolean
+      execution_backend:
+        description: Review execution backend (local or doks).
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: read
   contents: read
+  id-token: write
   issues: write
   pull-requests: write
 
@@ -251,6 +257,8 @@ jobs:
           max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain }}
           max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}
           personas: ${{ steps.policy.outputs.personas }}
+          execution-backend: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'doks' }}
+          doks-dispatch-url: https://review-bot.example.com/api/dispatch/action
           # Library-documentation evidence tool (review-yeti-bot#101). The
           # action forwards this to CONTEXT7_API_KEY in the panel env; the
           # model never sees the key and cannot control the request target —

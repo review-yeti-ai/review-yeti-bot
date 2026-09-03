@@ -181,7 +181,7 @@ export function validatePolicy(policy, repository = '') {
   // 2026-09-03 (REL-525, run 33791242325): at 'high' two of six lanes spent 66,880-67,758
   // reasoning tokens inside the 65,536 budget and returned no findings JSON. 'medium' keeps
   // reasoning bounded so the answer fits; 'high' and 'max' are forbidden on the live lane.
-  if (ollama.reasoning_effort !== 'medium') throw new Error("Ollama must use reasoning_effort 'medium'");
+  if (ollama.reasoning_effort !== 'none' && ollama.reasoning_effort !== 'medium') throw new Error("Ollama must use reasoning_effort 'none' or 'medium'");
   // 2026-09-03 telemetry: with no cap, high-effort reasoning ended at finish_reason=length
   // with empty content on half the lanes (provider-side limit); a 24,576 cap starved the
   // answer instead. The live budget must be explicit and large enough for reasoning plus

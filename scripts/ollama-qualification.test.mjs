@@ -282,7 +282,7 @@ test('comparison profiles pin one direct provider under the same bounded contrac
   // Live Ollama declares an explicit 65,536-token generation budget at 'medium' effort
   // (REL-525); the qualification arm still pins its own 24,576 cap and 'high' effort above.
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').max_tokens, 65_536);
-  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').reasoning_effort, 'medium');
+  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').reasoning_effort, 'none');
   assert.throws(() => buildTransportHandoff(policy, 'openrouter-primary'), /unsupported qualification profile/u);
 });
 

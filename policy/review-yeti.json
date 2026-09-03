@@ -100,7 +100,7 @@
           "max_retries": 1,
           "max_retry_after_ms": 5000
         },
-        "reasoning_effort": "medium",
+        "reasoning_effort": "none",
         "quarantine_on_timeout": false
       },
       {

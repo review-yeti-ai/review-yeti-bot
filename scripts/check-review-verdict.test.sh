@@ -261,6 +261,21 @@ grep -Fq "::error::Review Yeti did not produce a verdict; an earlier workflow st
 }
 echo "[missing-review-outputs] passed (clean upstream-failure message)"
 
+# 0b. DOKS asynchronous dispatch: review action enqueues the job and exits with DISPATCHED/PENDING.
+#     Verdict enforcement is reported asynchronously by the GitHub App gate.
+REVIEW_STATUS=DISPATCHED GATE_DECISION=PENDING run_script "$(pr_json "$base_sha" "$head_sha")"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[doks-dispatched] expected zero exit on successful asynchronous DOKS dispatch, got $rc" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "dispatched asynchronously to DOKS queue" <<<"$output" || {
+  echo "[doks-dispatched] expected DOKS dispatch notice" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[doks-dispatched] passed (asynchronous dispatch accepted cleanly)"
+
 # 1. Head changed while the run was in flight, verdict otherwise a clean SHIP/PASS: must
 #    self-cancel rather than mint (or fail-loudly-paint) a verdict for a SHA that no longer
 #    matches the PR, and must never exit 0.

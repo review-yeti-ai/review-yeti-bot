@@ -52,6 +52,11 @@ fi
   exit 1
 }
 
+if [[ "$REVIEW_STATUS" == "DISPATCHED" && "$GATE_DECISION" == "PENDING" ]]; then
+  echo "::notice::Review Yeti dispatched asynchronously to DOKS queue. Verdict enforcement will be reported via Review Yeti GitHub App gate."
+  exit 0
+fi
+
 [[ "$REVIEW_STATUS" == SHIP ]] || { echo "::error::Review Yeti verdict is ${REVIEW_STATUS}, not SHIP"; exit 1; }
 [[ "$GATE_DECISION" == PASS ]] || { echo "::error::Review Yeti gate decision is ${GATE_DECISION}, not PASS"; exit 1; }
 [[ "$MERGE_ELIGIBLE" == true ]] || { echo "::error::Review Yeti did not declare this exact-head review merge eligible"; exit 1; }

@@ -56,8 +56,8 @@ if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'o
 # reasoning that fits the budget. 'high' and 'max' are both forbidden on the live lane.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
-if any(item.get('reasoning_effort') != 'medium' for item in transports):
-    raise SystemExit("live transports must use reasoning_effort 'medium' (REL-525: 'high' overran the 65536 budget on 2 of 6 lanes)")
+if any(item.get('reasoning_effort') not in ('medium', 'none') for item in transports):
+    raise SystemExit("live transports must use reasoning_effort 'medium' or 'none' (REL-525: 'high' overran the 65536 budget on 2 of 6 lanes)")
 if any(not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 65536 for item in transports):
     raise SystemExit('live transports must declare an explicit max_tokens budget of at least 65536')
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)

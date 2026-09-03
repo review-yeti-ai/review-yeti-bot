@@ -11,6 +11,7 @@ permissions:
   # declares issues:write + pull-requests:write, so the caller must grant them too.
   actions: read
   contents: read
+  id-token: write
   issues: write
   pull-requests: write
 

@@ -283,7 +283,7 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   assert.equal(openrouter.reasoning_effort, 'high');
   const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
   assert.equal(ollama.max_tokens, 65536);
-  assert.equal(ollama.reasoning_effort, 'medium');
+  assert.equal(ollama.reasoning_effort, 'none');
   assert.equal(openrouter.dispatch_weight, 2);
   assert.equal(openrouter.max_in_flight, 2);
   assert.equal(openrouter.concurrency_scope, 'provider');
