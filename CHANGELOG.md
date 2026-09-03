@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.25.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.24.2...v1.25.0) (2026-09-03)
+
+
+### Features
+
+* **ci:** publish digest-pinned images to GHCR [no-linear] ([#425](https://github.com/review-yeti-ai/review-yeti-bot/issues/425)) ([b6465be](https://github.com/review-yeti-ai/review-yeti-bot/commit/b6465be25cf62a9eced0292610faa0cdf6bfc12f))
+* **doks:** admit app-gate publication on PRReviewJob [no-linear] ([#424](https://github.com/review-yeti-ai/review-yeti-bot/issues/424)) ([ade319d](https://github.com/review-yeti-ai/review-yeti-bot/commit/ade319d4c559e3e8339c00c7705cd75a53360615))
+
+
+### Bug Fixes
+
+* bake legacy panel runtime in CI (stop 800 Mi npm spike) ([#421](https://github.com/review-yeti-ai/review-yeti-bot/issues/421)) ([ba0cbef](https://github.com/review-yeti-ai/review-yeti-bot/commit/ba0cbefb962c7735fdabe522264edbdd5c56d3df))
+* **ci:** build bot dist and publish GHCR images as public [no-linear] ([#426](https://github.com/review-yeti-ai/review-yeti-bot/issues/426)) ([9e0b1f8](https://github.com/review-yeti-ai/review-yeti-bot/commit/9e0b1f86b58c303fd8ce1da83718173c8e8a9b9c))
+* **review:** recover Ollama content stalls with reasoning disabled [no-linear] ([#428](https://github.com/review-yeti-ai/review-yeti-bot/issues/428)) ([447ea47](https://github.com/review-yeti-ai/review-yeti-bot/commit/447ea470ec152bc26ac043e64ee341d1fa448a5d))
+* **review:** separate content-stall inactivity from a runaway-reasoning budget ([#427](https://github.com/review-yeti-ai/review-yeti-bot/issues/427)) ([998e92b](https://github.com/review-yeti-ai/review-yeti-bot/commit/998e92ba549144b0bfc33659fe2da6365dfa7302))
+* **review:** unlimited tokens, none first-pass, six-lane Ollama ([#423](https://github.com/review-yeti-ai/review-yeti-bot/issues/423)) ([b8dbf30](https://github.com/review-yeti-ai/review-yeti-bot/commit/b8dbf30fe184d728425e1d27f77bfa06e8f598a9))
+
 ## [1.24.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.24.1...v1.24.2) (2026-09-02)
 
 
