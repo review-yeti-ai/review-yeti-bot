@@ -191,7 +191,8 @@ describe('Ollama request concurrency', () => {
 
     expect(results.every((result: any) => result.decision === 'APPROVE')).toBe(true);
     expect(fetch.peak()).toBe(pipeline.OLLAMA_MAX_IN_FLIGHT_REQUESTS);
-    expect(fetch.peak()).toBe(3);
+    expect(fetch.peak()).toBe(6);
+    expect(pipeline.DEFAULT_PERSONA_CONCURRENCY).toBe(6);
   });
 
   it('caps an explicit Ollama limit at the shared account ceiling', async () => {

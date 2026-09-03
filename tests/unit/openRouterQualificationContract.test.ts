@@ -208,6 +208,30 @@ describe('OpenRouter qualification contract', () => {
     });
   });
 
+  it('aborts reasoning-only streams on the content stall budget instead of the total deadline', async () => {
+    const encoder = new TextEncoder();
+    const response = {
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: new ReadableStream({
+        async start(controller) {
+          for (let i = 0; i < 30; i += 1) {
+            controller.enqueue(encoder.encode(
+              `data: ${JSON.stringify({ choices: [{ delta: { reasoning: `think ${i}` } }] })}\n\n`,
+            ));
+            await new Promise((resolve) => setTimeout(resolve, 15));
+          }
+        },
+        cancel() {},
+      }),
+    };
+
+    await expect(readChatCompletionResponse(response, true, 80, 5_000, 5_000)).rejects.toMatchObject({
+      timeoutKind: 'inactivity',
+      contentPresent: false,
+      reasoningPresent: true,
+    });
+  });
+
   it('does not treat empty-string deltas as the first usable token', async () => {
     const wire = `data: ${JSON.stringify({ choices: [{ delta: { content: '', reasoning: '' } }] })}\n\n`;
     const response = {
