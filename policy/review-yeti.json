@@ -195,7 +195,7 @@
     },
     "max_diff_chars": "2000000",
     "incremental": {
-      "repositories": ["*"],
+      "repositories": ["exampleorg/example-api"],
       "max_incremental_chain": "5"
     },
     "max_incremental_diff_chars": "60000",

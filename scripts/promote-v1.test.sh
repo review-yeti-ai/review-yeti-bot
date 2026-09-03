@@ -585,6 +585,12 @@ grep -Fq 'WORKFLOW_SHA: ${{ job.workflow_sha }}' <<<"$workflow_identity_step"
 grep -Fq 'run: .exampleorg-review-actions/scripts/emit-workflow-identity.sh' <<<"$workflow_identity_step"
 grep -Fq 'incremental-trusted-workflow: ${{ steps.workflow_identity.outputs.workflow_ref }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'incremental-trusted-workflow-sha: ${{ steps.workflow_identity.outputs.workflow_sha }}' "$repo_root/.github/workflows/review-yeti.yml"
+# REL-554: central-execution runs (repository_dispatch inside this repository) must bind
+# incremental reuse to this repository's own artifacts and trust the repository_dispatch
+# parent event in addition to the consumer's original pull_request(_target) event.
+grep -Fq 'incremental-artifact-repo: ${{ github.repository }}' "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq "incremental-trusted-events: \${{ inputs.central_execution && 'pull_request,pull_request_target,repository_dispatch' || 'pull_request,pull_request_target' }}" "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'max-incremental-diff-chars: ${{ steps.policy.outputs.max_incremental_diff_chars }}' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain }}' "$repo_root/.github/workflows/review-yeti.yml"
