@@ -154,6 +154,7 @@ scope_env=(
   "WORKER_IMAGE=$worker_image"
 )
 env "${scope_env[@]}" "$scope_validator"
+env "${scope_env[@]}" WORKER_IMAGE="ghcr.io/review-yeti-ai/review-yeti-worker@sha256:$(printf 'd%.0s' {1..64})" "$scope_validator"
 if env "${scope_env[@]}" TARGET_OWNER=outside "$scope_validator" >/dev/null 2>&1; then
   echo 'pre-token scope validator accepted an outside owner' >&2
   exit 1

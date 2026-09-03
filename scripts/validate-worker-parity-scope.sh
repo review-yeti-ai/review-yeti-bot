@@ -19,7 +19,8 @@ set -euo pipefail
 for value in "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA"; do
   [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { echo 'base/head SHAs must be exact lowercase 40-hex commits' >&2; exit 1; }
 done
-[[ "$WORKER_IMAGE" =~ ^registry\.digitalocean\.com/exampleorg/review-yeti-worker@sha256:[0-9a-f]{64}$ ]] || {
+if [[ ! "$WORKER_IMAGE" =~ ^registry\.digitalocean\.com/exampleorg/review-yeti-worker@sha256:[0-9a-f]{64}$ ]] && \
+   [[ ! "$WORKER_IMAGE" =~ ^ghcr\.io/review-yeti-ai/review-yeti-worker@sha256:[0-9a-f]{64}$ ]]; then
   echo 'worker_image must be an exact digest in the trusted worker repository' >&2
   exit 1
-}
+fi

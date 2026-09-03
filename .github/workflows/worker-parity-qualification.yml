@@ -112,15 +112,13 @@ jobs:
           set -euo pipefail
           test -n "$GH_TOKEN"
           test -n "$OPENROUTER_API_KEY"
-          test -n "$REGISTRY_USERNAME"
-          test -n "$REGISTRY_TOKEN"
-
-          receipt_dir="$RUNNER_TEMP/review-yeti-worker-parity"
-          mkdir -p "$receipt_dir"
-          sudo chown 1000:1000 "$receipt_dir"
-          printf '%s' "$REGISTRY_TOKEN" | docker login registry.digitalocean.com \
-            --username "$REGISTRY_USERNAME" --password-stdin >/dev/null
-          trap 'docker logout registry.digitalocean.com >/dev/null 2>&1 || true' EXIT
+          if [[ "$WORKER_IMAGE" =~ ^registry\.digitalocean\.com ]]; then
+            test -n "$REGISTRY_USERNAME"
+            test -n "$REGISTRY_TOKEN"
+            printf '%s' "$REGISTRY_TOKEN" | docker login registry.digitalocean.com \
+              --username "$REGISTRY_USERNAME" --password-stdin >/dev/null
+            trap 'docker logout registry.digitalocean.com >/dev/null 2>&1 || true' EXIT
+          fi
           docker pull --platform linux/amd64 "$WORKER_IMAGE" >/dev/null
 
           engine_revision="${WORKER_IMAGE##*@sha256:}"
