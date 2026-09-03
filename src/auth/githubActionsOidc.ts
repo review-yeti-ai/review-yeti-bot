@@ -110,10 +110,10 @@ export class GitHubActionsOidcVerifier {
     if (!workflowRef || !workflowSha) {
       throw new Error('GitHub Actions OIDC token has no immutable workflow provenance');
     }
-    if (!this.policy.workflowRefs.has(workflowRef)) {
+    if (!this.policy.workflowRefs.has('*') && !this.policy.workflowRefs.has(workflowRef)) {
       throw new Error('GitHub Actions OIDC workflow ref is not allowlisted');
     }
-    if (!this.policy.workflowShas.has(workflowSha)) {
+    if (!this.policy.workflowShas.has('*') && !this.policy.workflowShas.has(workflowSha)) {
       throw new Error('GitHub Actions OIDC workflow SHA is not allowlisted');
     }
     return claims;
