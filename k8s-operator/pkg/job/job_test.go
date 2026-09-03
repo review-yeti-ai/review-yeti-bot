@@ -398,6 +398,9 @@ func TestBuildWorkerJobRejectsUnsafeProjection(t *testing.T) {
 		{name: "latest image", mutate: func(review *v1alpha2.PRReviewJob) {
 			review.Spec.WorkerImage = "registry.digitalocean.com/calltelemetry/review-yeti-worker:latest"
 		}},
+		{name: "untrusted image repository", mutate: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.WorkerImage = "attacker.example/review-yeti-worker@sha256:" + strings.Repeat("e", 64)
+		}},
 		{name: "deadline not fifteen minutes", mutate: func(review *v1alpha2.PRReviewJob) {
 			review.Spec.TerminalDeadline = metav1.NewTime(now.Add(10 * time.Minute))
 		}},
@@ -425,6 +428,20 @@ func TestBuildWorkerJobRejectsUnsafeProjection(t *testing.T) {
 				t.Fatal("unsafe projection unexpectedly built a Job")
 			}
 		})
+	}
+}
+
+func TestBuildWorkerJobAcceptsGHCRWorkerImage(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.WorkerImage = "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:" + strings.Repeat("f", 64)
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("unexpected error with GHCR worker image: %v", err)
+	}
+	container := built.Spec.Template.Spec.Containers[0]
+	if container.Image != review.Spec.WorkerImage {
+		t.Fatalf("container image mismatch: got %s, want %s", container.Image, review.Spec.WorkerImage)
 	}
 }
 

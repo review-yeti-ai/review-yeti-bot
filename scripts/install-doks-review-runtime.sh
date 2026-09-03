@@ -43,16 +43,16 @@ require_value KUBERNETES_SERVICE_IP "$service_ip"
 require_value KUBERNETES_API_ENDPOINT_CIDR "$api_endpoint_cidr"
 require_value KUBERNETES_API_CIDR "$api_cidr"
 
-if [[ ! "$operator_image" =~ ^registry\.digitalocean\.com/calltelemetry/review-yeti-operator@sha256:[0-9a-f]{64}$ ]]; then
-  echo "install-doks-review-runtime: CT_REVIEW_OPERATOR_IMAGE must be a lowercase digest in the trusted operator repository" >&2
+if [[ ! "$operator_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-operator|registry\.digitalocean\.com/calltelemetry/review-yeti-operator)@sha256:[0-9a-f]{64}$ ]]; then
+  echo "install-doks-review-runtime: CT_REVIEW_OPERATOR_IMAGE must be a lowercase digest in a trusted operator repository" >&2
   exit 2
 fi
-if [[ ! "$dispatcher_image" =~ ^registry\.digitalocean\.com/calltelemetry/ct-review-bot@sha256:[0-9a-f]{64}$ ]]; then
-  echo "install-doks-review-runtime: CT_REVIEW_JOB_DISPATCHER_IMAGE must be a lowercase digest in the trusted bot repository" >&2
+if [[ ! "$dispatcher_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot|registry\.digitalocean\.com/calltelemetry/ct-review-bot)@sha256:[0-9a-f]{64}$ ]]; then
+  echo "install-doks-review-runtime: CT_REVIEW_JOB_DISPATCHER_IMAGE must be a lowercase digest in a trusted bot repository" >&2
   exit 2
 fi
-if [[ ! "$worker_image" =~ ^registry\.digitalocean\.com/calltelemetry/review-yeti-worker@sha256:[0-9a-f]{64}$ ]]; then
-  echo "install-doks-review-runtime: CT_REVIEW_WORKER_IMAGE must be a lowercase digest in the trusted worker repository" >&2
+if [[ ! "$worker_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
+  echo "install-doks-review-runtime: CT_REVIEW_WORKER_IMAGE must be a lowercase digest in a trusted worker repository" >&2
   exit 2
 fi
 

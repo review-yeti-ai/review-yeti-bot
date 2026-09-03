@@ -52,6 +52,12 @@ describe('buildReviewJobProjection', () => {
     });
   });
 
+  it('accepts and projects public ghcr.io worker image reference', () => {
+    const ghcrWorkerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'f'.repeat(64)}`;
+    const projection = buildReviewJobProjection({ ...input, workerImage: ghcrWorkerImage }, receivedAt + 60_000);
+    expect(projection.spec.workerImage).toBe(ghcrWorkerImage);
+  });
+
   it('projects an app-gate publication mode onto the PRReviewJob contract', () => {
     const projection = buildReviewJobProjection({ ...input, publicationMode: 'app-gate' }, receivedAt + 60_000);
     expect(projection.metadata.labels['review-yeti.ai/publication-mode']).toBe('app-gate');

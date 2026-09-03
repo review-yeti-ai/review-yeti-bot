@@ -7,7 +7,16 @@ const repositoryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0
 const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const digestOnlyImagePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[a-f0-9]{64}$/u;
 
-export const TRUSTED_WORKER_IMAGE_REPOSITORY = 'registry.digitalocean.com/calltelemetry/review-yeti-worker';
+export const TRUSTED_WORKER_IMAGE_REPOSITORIES = [
+  'ghcr.io/review-yeti-ai/review-yeti-worker',
+  'registry.digitalocean.com/calltelemetry/review-yeti-worker',
+] as const;
+
+export const TRUSTED_WORKER_IMAGE_REPOSITORY = TRUSTED_WORKER_IMAGE_REPOSITORIES[0];
+
+export function isTrustedWorkerImage(image: string): boolean {
+  return TRUSTED_WORKER_IMAGE_REPOSITORIES.some((repo) => image.startsWith(`${repo}@sha256:`));
+}
 
 export interface ReviewJobProjectionInput {
   runId: string;
@@ -81,8 +90,10 @@ export function buildReviewJobProjection(
   if (!digestOnlyImagePattern.test(input.workerImage)) {
     throw new Error('a strict digest-pinned worker image is required');
   }
-  if (!input.workerImage.startsWith(`${TRUSTED_WORKER_IMAGE_REPOSITORY}@sha256:`)) {
-    throw new Error(`worker image must use the trusted worker image repository ${TRUSTED_WORKER_IMAGE_REPOSITORY}`);
+  if (!isTrustedWorkerImage(input.workerImage)) {
+    throw new Error(
+      `worker image must use a trusted worker image repository (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
+    );
   }
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
     throw new Error('review projection timestamps must be finite');

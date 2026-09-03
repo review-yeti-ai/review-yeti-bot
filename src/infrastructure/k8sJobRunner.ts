@@ -76,7 +76,7 @@ export class K8sJobRunner {
     forceSimulation?: boolean;
   }) {
     this.namespace = options?.namespace || process.env.K8S_NAMESPACE || 'ct-review-system';
-    this.defaultImage = options?.defaultImage || process.env.K8S_AGENT_IMAGE || 'registry.digitalocean.com/calltelemetry/ct-review-agent:latest';
+    this.defaultImage = options?.defaultImage || process.env.K8S_AGENT_IMAGE || 'ghcr.io/review-yeti-ai/review-yeti-worker:latest';
     this.defaultPvcName = options?.defaultPvcName || process.env.K8S_WORKSPACE_PVC || 'ct-review-bot-workspace-pvc';
 
     if (!options?.forceSimulation && process.env.NODE_ENV !== 'test') {
