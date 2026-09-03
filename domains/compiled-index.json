@@ -1,0 +1,605 @@
+{
+  "classVocabulary": [
+    "assets",
+    "ci",
+    "config",
+    "database",
+    "deps-manifest",
+    "docs",
+    "i18n",
+    "infra",
+    "license",
+    "lockfile",
+    "scripts",
+    "source",
+    "test",
+    "ui-styles"
+  ],
+  "classes": {
+    "assets": [],
+    "ci": [
+      "devops",
+      "security"
+    ],
+    "config": [
+      "architecture",
+      "devops",
+      "security"
+    ],
+    "database": [
+      "database",
+      "performance",
+      "security"
+    ],
+    "deps-manifest": [
+      "dependencies",
+      "licensing",
+      "security"
+    ],
+    "docs": [
+      "documentation",
+      "licensing"
+    ],
+    "i18n": [
+      "i18n"
+    ],
+    "infra": [
+      "architecture",
+      "devops",
+      "security"
+    ],
+    "license": [
+      "licensing"
+    ],
+    "lockfile": [
+      "dependencies",
+      "security"
+    ],
+    "scripts": [
+      "devops",
+      "security"
+    ],
+    "source": [
+      "architecture",
+      "performance",
+      "security",
+      "style",
+      "testing"
+    ],
+    "test": [
+      "architecture",
+      "testing"
+    ],
+    "ui-styles": [
+      "accessibility",
+      "style"
+    ]
+  },
+  "ecosystems": {
+    "c-cpp": {
+      "classes": {
+        "config": [
+          ".clang-format",
+          ".clang-tidy"
+        ],
+        "deps-manifest": [
+          "CMakeLists.txt",
+          "conanfile.{txt,py}",
+          "vcpkg.json"
+        ],
+        "lockfile": [
+          "conan.lock",
+          "vcpkg-lock.json"
+        ],
+        "source": [
+          "**/*.{c,cc,cpp,cxx,h,hh,hpp,hxx}"
+        ],
+        "test": [
+          "test/**",
+          "tests/**"
+        ]
+      },
+      "description": "C / C++"
+    },
+    "dart-flutter": {
+      "classes": {
+        "config": [
+          "analysis_options.yaml"
+        ],
+        "deps-manifest": [
+          "pubspec.yaml"
+        ],
+        "lockfile": [
+          "pubspec.lock"
+        ],
+        "source": [
+          "**/*.dart"
+        ],
+        "test": [
+          "**/*_test.dart",
+          "test/**"
+        ]
+      },
+      "description": "Dart / Flutter"
+    },
+    "docker": {
+      "classes": {
+        "infra": [
+          "**/.dockerignore",
+          "**/Dockerfile*",
+          "Dockerfile*",
+          "docker-compose*.{yml,yaml}"
+        ]
+      },
+      "description": "Docker"
+    },
+    "dotnet": {
+      "classes": {
+        "config": [
+          "**/*.editorconfig",
+          "nuget.config"
+        ],
+        "deps-manifest": [
+          "**/*.{csproj,fsproj,vbproj}",
+          "*.sln"
+        ],
+        "lockfile": [
+          "packages.lock.json"
+        ],
+        "source": [
+          "**/*.{cs,fs,vb}"
+        ],
+        "test": [
+          "**/*.Tests/**",
+          "**/*Tests.cs"
+        ]
+      },
+      "description": ".NET / C# / F#"
+    },
+    "elixir": {
+      "classes": {
+        "config": [
+          "config/**/*.exs"
+        ],
+        "database": [
+          "priv/*/migrations/**",
+          "priv/repo/migrations/**"
+        ],
+        "deps-manifest": [
+          "mix.exs"
+        ],
+        "lockfile": [
+          "mix.lock"
+        ],
+        "source": [
+          "**/*.{ex,heex,eex,leex}"
+        ],
+        "test": [
+          "**/*.exs",
+          "**/*_test.exs",
+          "test/**"
+        ]
+      },
+      "description": "Elixir / Phoenix / Mix"
+    },
+    "generic": {
+      "classes": {
+        "assets": [
+          "**/*.{png,jpg,jpeg,gif,svg,ico,webp,bmp,mp3,mp4,wav,ogg,woff,woff2,ttf,otf,eot,pdf,zip}"
+        ],
+        "ci": [
+          ".github/workflows/**"
+        ],
+        "config": [
+          "**/*.yaml",
+          "**/*.yml",
+          "*.yaml",
+          "*.yml"
+        ],
+        "docs": [
+          "**/*.md",
+          "*.md"
+        ],
+        "i18n": [
+          "**/*.po",
+          "i18n/**",
+          "locales/**"
+        ],
+        "infra": [
+          "Dockerfile*"
+        ],
+        "license": [
+          "COPYING*",
+          "LICENSE*",
+          "NOTICE*"
+        ],
+        "lockfile": [
+          "*.lock"
+        ]
+      },
+      "description": "Cross-ecosystem conventions not tied to a single language toolchain"
+    },
+    "github-actions": {
+      "classes": {
+        "ci": [
+          ".github/actions/**",
+          ".github/workflows/**"
+        ]
+      },
+      "description": "GitHub Actions workflows and composite actions"
+    },
+    "go": {
+      "classes": {
+        "config": [
+          ".golangci.{yml,yaml}"
+        ],
+        "deps-manifest": [
+          "go.mod"
+        ],
+        "lockfile": [
+          "go.sum"
+        ],
+        "source": [
+          "**/*.go"
+        ],
+        "test": [
+          "**/*_test.go"
+        ]
+      },
+      "description": "Go"
+    },
+    "java": {
+      "classes": {
+        "config": [
+          "**/src/main/resources/application*.{yml,yaml,properties}",
+          "checkstyle.xml"
+        ],
+        "deps-manifest": [
+          "build.gradle",
+          "pom.xml"
+        ],
+        "lockfile": [
+          "gradle.lockfile"
+        ],
+        "source": [
+          "**/*.java"
+        ],
+        "test": [
+          "**/*Test.java",
+          "**/*Tests.java",
+          "**/src/test/**"
+        ]
+      },
+      "description": "Java"
+    },
+    "javascript-typescript": {
+      "classes": {
+        "config": [
+          ".eslintrc*",
+          ".prettierrc*",
+          "babel.config.*",
+          "jest.config.*",
+          "tsconfig*.json",
+          "vite.config.*",
+          "vitest.config.*",
+          "webpack.config.*"
+        ],
+        "deps-manifest": [
+          "package.json"
+        ],
+        "lockfile": [
+          "npm-shrinkwrap.json",
+          "package-lock.json",
+          "pnpm-lock.yaml",
+          "yarn.lock"
+        ],
+        "source": [
+          "**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
+        ],
+        "test": [
+          "**/*.{test,spec}.{js,jsx,ts,tsx,mjs,cjs}",
+          "**/__tests__/**",
+          "test/**",
+          "tests/**"
+        ],
+        "ui-styles": [
+          "**/*.{css,scss,sass,less}"
+        ]
+      },
+      "description": "JavaScript / TypeScript / Node.js"
+    },
+    "kotlin": {
+      "classes": {
+        "config": [
+          "**/src/main/resources/application*.{yml,yaml,properties}"
+        ],
+        "deps-manifest": [
+          "build.gradle",
+          "build.gradle.kts"
+        ],
+        "lockfile": [
+          "gradle.lockfile"
+        ],
+        "source": [
+          "**/*.{kt,kts}"
+        ],
+        "test": [
+          "**/*Test.kt",
+          "**/src/test/**"
+        ]
+      },
+      "description": "Kotlin"
+    },
+    "kubernetes": {
+      "classes": {
+        "infra": [
+          "**/helm/**",
+          "**/k8s/**",
+          "**/templates/**/*.yaml",
+          "Chart.yaml"
+        ]
+      },
+      "description": "Kubernetes manifests / Helm"
+    },
+    "markdown-docs": {
+      "classes": {
+        "docs": [
+          "**/*.{md,mdx,rst,adoc}"
+        ]
+      },
+      "description": "Markdown documentation"
+    },
+    "php": {
+      "classes": {
+        "config": [
+          ".php-cs-fixer.php",
+          "phpunit.xml*"
+        ],
+        "deps-manifest": [
+          "composer.json"
+        ],
+        "lockfile": [
+          "composer.lock"
+        ],
+        "source": [
+          "**/*.php"
+        ],
+        "test": [
+          "**/*Test.php",
+          "tests/**"
+        ]
+      },
+      "description": "PHP"
+    },
+    "protobuf": {
+      "classes": {
+        "config": [
+          "buf.gen.yaml",
+          "buf.yaml"
+        ],
+        "source": [
+          "**/*.proto"
+        ]
+      },
+      "description": "Protocol Buffers / gRPC schemas"
+    },
+    "python": {
+      "classes": {
+        "config": [
+          ".flake8",
+          "mypy.ini",
+          "pyrightconfig.json",
+          "pytest.ini",
+          "tox.ini"
+        ],
+        "deps-manifest": [
+          "Pipfile",
+          "pyproject.toml",
+          "requirements*.txt",
+          "setup.cfg",
+          "setup.py"
+        ],
+        "lockfile": [
+          "Pipfile.lock",
+          "poetry.lock",
+          "uv.lock"
+        ],
+        "source": [
+          "**/*.py"
+        ],
+        "test": [
+          "**/*_test.py",
+          "**/test_*.py",
+          "test/**",
+          "tests/**"
+        ]
+      },
+      "description": "Python"
+    },
+    "react": {
+      "classes": {
+        "source": [
+          "**/*.{jsx,tsx}"
+        ],
+        "test": [
+          "**/*.test.{jsx,tsx}",
+          "**/__tests__/**"
+        ]
+      },
+      "description": "React"
+    },
+    "ruby": {
+      "classes": {
+        "config": [
+          ".rubocop.yml"
+        ],
+        "deps-manifest": [
+          "*.gemspec",
+          "Gemfile"
+        ],
+        "lockfile": [
+          "Gemfile.lock"
+        ],
+        "source": [
+          "**/*.erb",
+          "**/*.rb"
+        ],
+        "test": [
+          "**/*_spec.rb",
+          "spec/**",
+          "test/**"
+        ]
+      },
+      "description": "Ruby"
+    },
+    "rust": {
+      "classes": {
+        "config": [
+          ".cargo/**",
+          "clippy.toml",
+          "rustfmt.toml"
+        ],
+        "deps-manifest": [
+          "Cargo.toml"
+        ],
+        "lockfile": [
+          "Cargo.lock"
+        ],
+        "source": [
+          "**/*.rs"
+        ],
+        "test": [
+          "**/*_test.rs",
+          "tests/**"
+        ]
+      },
+      "description": "Rust"
+    },
+    "scala": {
+      "classes": {
+        "config": [
+          ".scalafmt.conf"
+        ],
+        "deps-manifest": [
+          "build.sbt",
+          "project/**"
+        ],
+        "source": [
+          "**/*.scala"
+        ],
+        "test": [
+          "**/*Spec.scala",
+          "**/*Test.scala",
+          "**/src/test/**"
+        ]
+      },
+      "description": "Scala"
+    },
+    "shell": {
+      "classes": {
+        "config": [
+          ".shellcheckrc"
+        ],
+        "scripts": [
+          "bin/**",
+          "scripts/**/*.sh"
+        ],
+        "source": [
+          "**/*.{sh,bash,zsh}"
+        ]
+      },
+      "description": "Shell scripting"
+    },
+    "sql": {
+      "classes": {
+        "database": [
+          "**/migrate/**",
+          "**/migrations/**",
+          "db/**"
+        ],
+        "source": [
+          "**/*.sql"
+        ]
+      },
+      "description": "SQL / database scripts"
+    },
+    "swift": {
+      "classes": {
+        "config": [
+          "*.xcconfig"
+        ],
+        "deps-manifest": [
+          "*.podspec",
+          "Package.swift",
+          "Podfile"
+        ],
+        "lockfile": [
+          "Package.resolved",
+          "Podfile.lock"
+        ],
+        "source": [
+          "**/*.swift"
+        ],
+        "test": [
+          "**/*Tests.swift",
+          "Tests/**"
+        ]
+      },
+      "description": "Swift"
+    },
+    "terraform": {
+      "classes": {
+        "config": [
+          "**/backend.tf"
+        ],
+        "infra": [
+          "**/*.tf.json",
+          "**/*.{tf,tfvars}"
+        ],
+        "lockfile": [
+          ".terraform.lock.hcl"
+        ]
+      },
+      "description": "Terraform / OpenTofu"
+    },
+    "vue": {
+      "classes": {
+        "config": [
+          "vue.config.js"
+        ],
+        "source": [
+          "**/*.vue"
+        ],
+        "test": [
+          "**/*.spec.{js,ts}",
+          "tests/**"
+        ]
+      },
+      "description": "Vue.js"
+    },
+    "web-html-css": {
+      "classes": {
+        "ui-styles": [
+          "**/*.{html,htm,css,scss,sass,less}"
+        ]
+      },
+      "description": "HTML / CSS"
+    }
+  },
+  "personaVocabulary": [
+    "accessibility",
+    "architecture",
+    "database",
+    "dependencies",
+    "devops",
+    "documentation",
+    "i18n",
+    "licensing",
+    "performance",
+    "security",
+    "style",
+    "testing"
+  ],
+  "schemaVersion": "domain-index-v1",
+  "indexDigest": "sha256:c0009fdab90db2041f71d10d0cdf832e1caa415e0f69945080f67e549ba6b705"
+}

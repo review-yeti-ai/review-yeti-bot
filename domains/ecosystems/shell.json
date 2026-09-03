@@ -1,0 +1,9 @@
+{
+  "ecosystem": "shell",
+  "description": "Shell scripting",
+  "classes": {
+    "source": ["**/*.{sh,bash,zsh}"],
+    "scripts": ["scripts/**/*.sh", "bin/**"],
+    "config": [".shellcheckrc"]
+  }
+}

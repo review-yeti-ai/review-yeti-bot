@@ -1,0 +1,11 @@
+{
+  "ecosystem": "rust",
+  "description": "Rust",
+  "classes": {
+    "source": ["**/*.rs"],
+    "test": ["tests/**", "**/*_test.rs"],
+    "deps-manifest": ["Cargo.toml"],
+    "lockfile": ["Cargo.lock"],
+    "config": [".cargo/**", "rustfmt.toml", "clippy.toml"]
+  }
+}

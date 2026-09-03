@@ -1,0 +1,11 @@
+{
+  "ecosystem": "ruby",
+  "description": "Ruby",
+  "classes": {
+    "source": ["**/*.rb", "**/*.erb"],
+    "test": ["spec/**", "test/**", "**/*_spec.rb"],
+    "deps-manifest": ["Gemfile", "*.gemspec"],
+    "lockfile": ["Gemfile.lock"],
+    "config": [".rubocop.yml"]
+  }
+}
