@@ -115,7 +115,7 @@ spec:
                 format: date-time
                 type: string
               workerImage:
-                pattern: ^registry\.digitalocean\.com/calltelemetry/review-yeti-worker@sha256:[a-f0-9]{64}$
+                pattern: ^(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}$
                 type: string
             required:
             - baseSha
