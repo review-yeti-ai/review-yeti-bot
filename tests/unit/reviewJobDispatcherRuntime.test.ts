@@ -23,6 +23,23 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
     });
   });
 
+  it('accepts public ghcr.io digest-pinned worker image', () => {
+    const ghcrWorker = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'f'.repeat(64)}`;
+    expect(reviewJobDispatcherConfigFromEnv({
+      REVIEW_JOB_DISPATCH_ENABLED: 'true',
+      REVIEW_JOB_NAMESPACE: 'ct-review-system',
+      REVIEW_JOB_WORKER_IMAGE: ghcrWorker,
+      HOSTNAME: 'dispatcher-ghcr123',
+    })).toEqual({
+      namespace: 'ct-review-system',
+      workerImage: ghcrWorker,
+      workerId: 'review-job-dispatcher:dispatcher-ghcr123',
+      idleDelayMs: 1_000,
+      activeDelayMs: 50,
+      errorDelayMs: 5_000,
+    });
+  });
+
   it.each([
     [{}, /must be true/i],
     [{ REVIEW_JOB_DISPATCH_ENABLED: 'true', REVIEW_JOB_NAMESPACE: 'ct-review-system', REVIEW_JOB_WORKER_IMAGE: 'worker:latest', HOSTNAME: 'pod' }, /digest-pinned/i],

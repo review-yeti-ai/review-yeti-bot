@@ -34,7 +34,7 @@ function fixture(overrides: Record<string, any> = {}) {
     repository,
     projector,
     workerId: 'dispatcher-a',
-    workerImage: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:${'e'.repeat(64)}`,
+    workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
     now: () => now,
     leaseMs: 30_000,
