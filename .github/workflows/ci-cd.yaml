@@ -24,7 +24,7 @@ env:
 jobs:
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
+    runs-on: ubuntu-latest
     # Keep required validation bounded alongside the review job; a stalled install or suite must
     # not turn CI into an unbounded review wait.
     timeout-minutes: 15
@@ -68,7 +68,7 @@ jobs:
 
   legacy-runtime:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
@@ -113,10 +113,13 @@ jobs:
   # and no kubectl/doctl. CallTelemetry's cluster stays disconnected until a
   # later, explicit pull from these digests.
   #
-  # cisco-cdr docker-backend-release pattern: native linux/amd64 on
-  # blacksmith-2vcpu-ubuntu-2204, native linux/arm64 on
-  # blacksmith-2vcpu-ubuntu-2204-arm, then imagetools merge on ARM 2vCPU.
+  # cisco-cdr docker-backend-release pattern: native linux/amd64 and
+  # native linux/arm64 on matching runners, then imagetools merge.
   # Never qemu. Never platforms: linux/amd64,linux/arm64 on one job.
+  # review-yeti-ai has no live Blacksmith pool (2204-arm queued with no
+  # runner), so GHCR uses GitHub-hosted ubuntu-latest (amd64) plus
+  # ubuntu-24.04-arm. Do not retarget to Blacksmith until this org
+  # actually assigns those labels.
   publish-ghcr-arch:
     needs: [test, legacy-runtime]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -125,9 +128,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: blacksmith-2vcpu-ubuntu-2204
+            runner: ubuntu-latest
           - arch: arm64
-            runner: blacksmith-2vcpu-ubuntu-2204-arm
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -252,7 +255,7 @@ jobs:
   publish-ghcr:
     needs: [publish-ghcr-arch]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     permissions:
       contents: read
