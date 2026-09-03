@@ -61,7 +61,7 @@ type PRReviewJobSpec struct {
 	PolicyDigest string `json:"policyDigest"`
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
 	ConfigDigest string `json:"configDigest"`
-	// +kubebuilder:validation:Enum=disabled
+	// +kubebuilder:validation:Enum=disabled;app-gate
 	PublicationMode string `json:"publicationMode"`
 	// +kubebuilder:validation:Pattern=`^registry\.digitalocean\.com/calltelemetry/review-yeti-worker@sha256:[a-f0-9]{64}$`
 	WorkerImage string `json:"workerImage"`

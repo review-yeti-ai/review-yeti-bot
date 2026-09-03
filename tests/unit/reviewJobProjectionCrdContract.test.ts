@@ -55,7 +55,7 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     for (const [field, schema] of Object.entries(properties) as Array<[keyof typeof projection.spec, any]>) {
       if (schema.pattern) expect(String(projection.spec[field])).toMatch(new RegExp(schema.pattern, 'u'));
     }
-    expect(properties.publicationMode.enum).toEqual(['disabled']);
+    expect(properties.publicationMode.enum).toEqual(['disabled', 'app-gate']);
     expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(900_000);
   });
 });
