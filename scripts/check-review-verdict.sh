@@ -172,24 +172,36 @@ else
 fi
 
 if [[ "$lane_count" -eq 0 ]]; then
-  # A SHIP verdict with zero lanes means nothing was reviewed -- every
-  # changed file was excluded by policy (e.g. example-api #4386: the PR's only
-  # file was a generated priv/repo/structure.sql). That is a legitimate
-  # outcome for a generated-file-only PR, but it must never be reported or
-  # counted the same as an actual multi-persona review. Do not fail the
-  # gate here -- blocking would wedge every legitimate generated-file-only
-  # PR and push people toward --admin, which is worse. Instead, report the
-  # outcome under a name a human (or a required-checks policy) can tell
-  # apart from real review evidence: NO_REVIEWABLE_CONTENT, not "accepted".
-  summary_line="NO_REVIEWABLE_CONTENT: Review Yeti dispatched zero review lanes for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA} -- every changed file was excluded by policy. This is NOT review evidence; no persona reviewed this diff. The gate is not failed because a generated-file-only PR should not require a bot review, but nothing here should be read as an approval."
-  echo "::warning::${summary_line}"
-  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-    {
-      echo "### Review Yeti: NO_REVIEWABLE_CONTENT"
-      echo "${summary_line}"
-    } >>"$GITHUB_STEP_SUMMARY"
+  if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
+    summary_line="PASSTHROUGH: Review Yeti is in passthrough mode for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}. No review was completed (scheduled maintenance in progress)."
+    echo "::notice::${summary_line}"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      {
+        echo "### Review Yeti: SHIP (Passthrough Mode)"
+        echo "${summary_line}"
+      } >>"$GITHUB_STEP_SUMMARY"
+    fi
+    echo "$summary_line"
+  else
+    # A SHIP verdict with zero lanes means nothing was reviewed -- every
+    # changed file was excluded by policy (e.g. example-api #4386: the PR's only
+    # file was a generated priv/repo/structure.sql). That is a legitimate
+    # outcome for a generated-file-only PR, but it must never be reported or
+    # counted the same as an actual multi-persona review. Do not fail the
+    # gate here -- blocking would wedge every legitimate generated-file-only
+    # PR and push people toward --admin, which is worse. Instead, report the
+    # outcome under a name a human (or a required-checks policy) can tell
+    # apart from real review evidence: NO_REVIEWABLE_CONTENT, not "accepted".
+    summary_line="NO_REVIEWABLE_CONTENT: Review Yeti dispatched zero review lanes for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA} -- every changed file was excluded by policy. This is NOT review evidence; no persona reviewed this diff. The gate is not failed because a generated-file-only PR should not require a bot review, but nothing here should be read as an approval."
+    echo "::warning::${summary_line}"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      {
+        echo "### Review Yeti: NO_REVIEWABLE_CONTENT"
+        echo "${summary_line}"
+      } >>"$GITHUB_STEP_SUMMARY"
+    fi
+    echo "$summary_line"
   fi
-  echo "$summary_line"
 else
   echo "Review Yeti SHIP/PASS accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
 fi

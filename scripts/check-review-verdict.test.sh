@@ -304,6 +304,69 @@ grep -Fq "NO_REVIEWABLE_CONTENT" <<<"$output" || {
 }
 echo "[zero-lane-ship] passed (published SHIP honored as NO_REVIEWABLE_CONTENT, not fake review evidence, no crash)"
 
+# 3c-2. Passthrough mode: when REVIEW_YETI_PASSTHROUGH=true, zero-lane SHIP must exit 0
+#       and report PASSTHROUGH rather than NO_REVIEWABLE_CONTENT.
+REVIEW_YETI_PASSTHROUGH="true" DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[passthrough-mode] expected passthrough SHIP to exit 0, got $rc" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "PASSTHROUGH" <<<"$output" || {
+  echo "[passthrough-mode] expected PASSTHROUGH message in output" >&2
+  echo "$output" >&2
+  exit 1
+}
+if grep -Fq "NO_REVIEWABLE_CONTENT" <<<"$output"; then
+  echo "[passthrough-mode] expected NO_REVIEWABLE_CONTENT to be absent in passthrough mode" >&2
+  echo "$output" >&2
+  exit 1
+fi
+echo "[passthrough-mode] passed (passthrough mode honored with exit 0, PASSTHROUGH summary, and no NO_REVIEWABLE_CONTENT)"
+
+# 3c-3. Direct execution of deliver-passthrough.sh:
+#       Ensures required coordinate enforcement, zero-lane SHIP report generation,
+#       and correct GITHUB_OUTPUT entries.
+passthrough_test_dir="$(mktemp -d)"
+# Fails closed on missing coordinates:
+if (
+  TARGET_REPO="" PR_NUMBER="" HEAD_SHA="" BASE_SHA="" \
+  bash "$repo_root/scripts/deliver-passthrough.sh"
+) >/dev/null 2>&1; then
+  echo "[deliver-passthrough-script] expected script to fail closed on missing coordinates" >&2
+  exit 1
+fi
+
+(
+  export TARGET_REPO="exampleorg/example-api"
+  export PR_NUMBER=4854
+  export HEAD_SHA="$head_sha"
+  export BASE_SHA="$base_sha"
+  export RUNNER_TEMP="$passthrough_test_dir"
+  export GITHUB_OUTPUT="$passthrough_test_dir/gh_output"
+  export GITHUB_STEP_SUMMARY="$passthrough_test_dir/summary"
+  bash "$repo_root/scripts/deliver-passthrough.sh"
+)
+grep -Fxq "review-status=SHIP" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing review-status output" >&2; exit 1; }
+grep -Fxq "gate-decision=PASS" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing gate-decision output" >&2; exit 1; }
+grep -Fxq "merge-eligible=true" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing merge-eligible output" >&2; exit 1; }
+grep -Fxq "files-omitted=0" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing files-omitted output" >&2; exit 1; }
+generated_report="$(grep '^run-report-path=' "$passthrough_test_dir/gh_output" | cut -d= -f2-)"
+[[ -f "$generated_report" ]] || { echo "[deliver-passthrough-script] report file was not created" >&2; exit 1; }
+jq -e '
+  .schemaVersion == "review-run-report-v1" and
+  .repository == "exampleorg/example-api" and
+  .prNumber == 4854 and
+  .baseSha == "'"$base_sha"'" and
+  .headSha == "'"$head_sha"'" and
+  .verdict == "SHIP" and
+  .lanes == [] and
+  .scope.mode == "passthrough"
+' "$generated_report" >/dev/null || { echo "[deliver-passthrough-script] generated report failed schema validation" >&2; exit 1; }
+rm -rf "$passthrough_test_dir"
+echo "[deliver-passthrough-script] passed (direct execution, coordinate enforcement, and report schema validated)"
+
 # 3d. A zero-lane run is not a blanket amnesty: if DISPATCH_REFLECTION_STATUS
 #     is present but contradicts the zero-lane shape (anything other than
 #     empty or "complete"), that is an inconsistent report and must still

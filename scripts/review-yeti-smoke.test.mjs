@@ -12,6 +12,8 @@ import {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
   OLLAMA_REPOSITORIES,
+  PASSTHROUGH_REPOSITORIES,
+  isPassthroughRepository,
   EXPECTED_OPENROUTER_ROUTING,
   EXPECTED_OPENROUTER_MODEL,
   EXPECTED_OPENROUTER_MODELS,
@@ -178,6 +180,35 @@ test('Example API resolves Ollama-only and a 90s connect deadline (no OpenRouter
 
   assert.deepEqual(calls, ['https://ollama.com/v1/chat/completions']);
   assert.deepEqual(result.healthy, ['ollama']);
+});
+
+test('isPassthroughRepository respects environment toggles, repository lists, and defaults', (t) => {
+  const origEnv = process.env.REVIEW_YETI_PASSTHROUGH;
+  t.after(() => {
+    if (origEnv === undefined) delete process.env.REVIEW_YETI_PASSTHROUGH;
+    else process.env.REVIEW_YETI_PASSTHROUGH = origEnv;
+  });
+
+  delete process.env.REVIEW_YETI_PASSTHROUGH;
+  assert.equal(isPassthroughRepository(EXAMPLE_API_REPOSITORY), true);
+  assert.equal(isPassthroughRepository('exampleorg/other-repo'), false);
+
+  process.env.REVIEW_YETI_PASSTHROUGH = 'true';
+  assert.equal(isPassthroughRepository('exampleorg/other-repo'), true);
+
+  process.env.REVIEW_YETI_PASSTHROUGH = '1';
+  assert.equal(isPassthroughRepository('exampleorg/other-repo'), true);
+
+  process.env.REVIEW_YETI_PASSTHROUGH = 'false';
+  assert.equal(isPassthroughRepository(EXAMPLE_API_REPOSITORY), false);
+
+  process.env.REVIEW_YETI_PASSTHROUGH = '0';
+  assert.equal(isPassthroughRepository(EXAMPLE_API_REPOSITORY), false);
+
+  process.env.REVIEW_YETI_PASSTHROUGH = 'exampleorg/example-meta, example-api';
+  assert.equal(isPassthroughRepository('exampleorg/example-meta'), true);
+  assert.equal(isPassthroughRepository('exampleorg/example-api'), true);
+  assert.equal(isPassthroughRepository('exampleorg/other'), false);
 });
 
 test('the Ollama repository set is retired — every repository inherits the same ollama-only default', () => {

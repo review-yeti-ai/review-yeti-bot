@@ -19,6 +19,8 @@ export {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
   OLLAMA_REPOSITORIES,
+  PASSTHROUGH_REPOSITORIES,
+  isPassthroughRepository,
   resolvePolicyForRepository,
 } from './repository-policy.mjs';
 

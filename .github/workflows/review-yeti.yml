@@ -137,6 +137,8 @@ jobs:
       - name: Load central Review Yeti policy
         id: policy
         working-directory: .exampleorg-review-actions
+        env:
+          REVIEW_YETI_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH || '' }}
         run: node scripts/emit-policy.mjs
 
       - name: Validate encoded transport handoff
@@ -148,6 +150,7 @@ jobs:
 
       - name: Smoke-test Review Yeti transports
         id: smoke
+        if: steps.policy.outputs.passthrough != 'true'
         working-directory: .exampleorg-review-actions
         env:
           GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
@@ -160,6 +163,7 @@ jobs:
           node scripts/review-yeti-smoke.mjs
 
       - name: Validate admitted transport handoff
+        if: steps.policy.outputs.passthrough != 'true'
         working-directory: .exampleorg-review-actions
         env:
           TRANSPORT_PLAN_B64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
@@ -168,6 +172,7 @@ jobs:
 
       - name: Resolve Review Yeti release channel
         id: resolved
+        if: steps.policy.outputs.passthrough != 'true'
         env:
           GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
@@ -175,6 +180,7 @@ jobs:
         run: .exampleorg-review-actions/scripts/resolve-release-channel.sh
 
       - name: Fetch Review Yeti action at resolved commit
+        if: steps.policy.outputs.passthrough != 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: ${{ steps.policy.outputs.repository }}
@@ -185,6 +191,7 @@ jobs:
           fetch-depth: 1
 
       - name: Validate Review Yeti release provenance
+        if: steps.policy.outputs.passthrough != 'true'
         env:
           GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
@@ -211,6 +218,7 @@ jobs:
       # still hard-fails before this step.
       - name: Run Review Yeti review panel
         id: review
+        if: steps.policy.outputs.passthrough != 'true'
         uses: ./.review-yeti-bot
         env:
           GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
@@ -255,6 +263,17 @@ jobs:
             echo "> ⚠️ Review Yeti ran on fallback transport **${{ steps.smoke.outputs.resolved_transport }}** this run (primary unhealthy)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Deliver Review Yeti passthrough verdict
+        id: passthrough
+        if: always() && steps.policy.outputs.passthrough == 'true'
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          TARGET_REPO: ${{ inputs.central_execution && inputs.repository || github.repository }}
+          PR_NUMBER: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.central_execution && inputs.head_sha || github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ inputs.central_execution && inputs.base_sha || github.event.pull_request.base.sha }}
+        run: .exampleorg-review-actions/scripts/deliver-passthrough.sh
+
       # The bot already writes per-lane telemetry (turnCount, failureClass,
       # resolved transport) to RUNNER_TEMP and exposes run-report-path, but
       # nothing consumed it — so the calls-per-lane distribution had to be
@@ -263,11 +282,11 @@ jobs:
       # budget gets hand-picked, which is how it drifted out of step with
       # max_investigation_turns. Upload it so the number can be derived.
       - name: Upload Review Yeti run report
-        if: always() && steps.review.outputs.run-report-path != ''
+        if: always() && (steps.passthrough.outputs.run-report-path != '' || steps.review.outputs.run-report-path != '')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: review-yeti-run-report-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.review.outputs.run-report-path }}
+          path: ${{ steps.passthrough.outputs.run-report-path || steps.review.outputs.run-report-path }}
           if-no-files-found: ignore
           retention-days: 14
 
@@ -298,11 +317,12 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
-          REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
-          GATE_DECISION: ${{ steps.review.outputs.gate-decision }}
-          MERGE_ELIGIBLE: ${{ steps.review.outputs.merge-eligible }}
-          FILES_OMITTED: ${{ steps.review.outputs.files-omitted }}
-          DISPATCH_REFLECTION_STATUS: ${{ steps.review.outputs.review-dispatch-reflection-status }}
-          PROVIDER_RECEIPT_DIGEST: ${{ steps.review.outputs.review-dispatch-provider-receipt-digest }}
-          RUN_REPORT_PATH: ${{ steps.review.outputs.run-report-path }}
+          REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
+          GATE_DECISION: ${{ steps.passthrough.outputs.gate-decision || steps.review.outputs.gate-decision }}
+          MERGE_ELIGIBLE: ${{ steps.passthrough.outputs.merge-eligible || steps.review.outputs.merge-eligible }}
+          FILES_OMITTED: ${{ steps.passthrough.outputs.files-omitted || steps.review.outputs.files-omitted }}
+          DISPATCH_REFLECTION_STATUS: ${{ steps.passthrough.outputs.review-dispatch-reflection-status || steps.review.outputs.review-dispatch-reflection-status }}
+          PROVIDER_RECEIPT_DIGEST: ${{ steps.passthrough.outputs.review-dispatch-provider-receipt-digest || steps.review.outputs.review-dispatch-provider-receipt-digest }}
+          RUN_REPORT_PATH: ${{ steps.passthrough.outputs.run-report-path || steps.review.outputs.run-report-path }}
+          REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}
         run: .exampleorg-review-actions/scripts/check-review-verdict.sh

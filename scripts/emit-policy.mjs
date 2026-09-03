@@ -1,6 +1,7 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { checkDeadTransportEnvelope, checkGenerationWallClock } from './lane-deadline-invariant.mjs';
 import {
+  isPassthroughRepository,
   OLLAMA_REPOSITORIES,
   resolvePolicyForRepository,
 } from './repository-policy.mjs';
@@ -213,6 +214,7 @@ const outputs = {
   max_file_diff_chars: review.max_file_diff_chars,
   max_passes: review.max_passes,
   exclude: review.exclude,
+  passthrough: isPassthroughRepository(targetRepository) ? 'true' : 'false',
 };
 
 const outputPath = process.env.GITHUB_OUTPUT;
