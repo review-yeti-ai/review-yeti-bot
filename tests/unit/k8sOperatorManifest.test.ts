@@ -26,6 +26,9 @@ describe('isolated DOKS operator manifest', () => {
     expect(dockerfile).toContain('FROM ${GO_BASE_IMAGE} AS build');
     expect(dockerfile).toContain('COPY k8s-operator/go.mod k8s-operator/go.sum ./');
     expect(dockerfile).toContain('CGO_ENABLED=0');
+    expect(dockerfile).toContain('ARG TARGETARCH');
+    expect(dockerfile).toContain('GOARCH=${TARGETARCH}');
+    expect(dockerfile).not.toContain('GOARCH=amd64');
     expect(dockerfile).toContain('FROM scratch');
     expect(dockerfile).toContain('USER 1000:1000');
     expect(dockerfile).not.toMatch(/:(?:latest|main)\b/u);
