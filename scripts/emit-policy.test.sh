@@ -47,14 +47,14 @@ if {item.get('name'): item.get('dispatch_weight') for item in transports} != {
 }:
     raise SystemExit('active provider weights must keep bounded OpenRouter primary at 2:1')
 # Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
-# versus unset at 0.750 with 7/72. Live Ollama 2026-09-03 (job 100486626925): first-pass
-# high burned ~95s of reasoning with no findings JSON; none-retry parsed in 5-9s.
-# Operator directive 2026-09-03: first-pass reasoning_effort is 'none'; never 'max';
-# never cap max_tokens on the live panel.
+# versus unset at 0.750 with 7/72. Operator 2026-09-03: keep live effort at 'high'
+# (none makes the panel too weak). Never 'max'. Never cap max_tokens; wall-clock
+# guards (timeout_ms, stall_ms) bound generation. Unlimited tokens + concurrency 6
+# keep high from starving findings JSON the way the 24576 cap did.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
-if any(item.get('reasoning_effort') not in (None, 'none') for item in transports):
-    raise SystemExit("live transports must first-pass reasoning_effort 'none'")
+if any(item.get('reasoning_effort') != 'high' for item in transports):
+    raise SystemExit("live transports must use reasoning_effort 'high'")
 if any('max_tokens' in item for item in transports):
     raise SystemExit('live transports must not cap max_tokens; wall-clock guards bound generation')
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)

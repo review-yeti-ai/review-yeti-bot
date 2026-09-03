@@ -51,7 +51,7 @@
           },
           "data_collection": "deny"
         },
-        "reasoning_effort": "none"
+        "reasoning_effort": "high"
       },
       {
         "name": "gemini",
@@ -75,7 +75,7 @@
           "max_retry_after_ms": 5000
         },
         "structured_output": "strict",
-        "reasoning_effort": "none"
+        "reasoning_effort": "high"
       },
       {
         "name": "ollama",
@@ -98,7 +98,7 @@
           "max_retries": 1,
           "max_retry_after_ms": 5000
         },
-        "reasoning_effort": "none",
+        "reasoning_effort": "high",
         "quarantine_on_timeout": false
       },
       {
@@ -125,7 +125,7 @@
         },
         "structured_output": "strict",
         "quarantine_on_timeout": false,
-        "reasoning_effort": "none"
+        "reasoning_effort": "high"
       },
       {
         "name": "fireworks",
@@ -150,7 +150,7 @@
         },
         "structured_output": "strict",
         "perf_metrics_in_response": true,
-        "reasoning_effort": "none"
+        "reasoning_effort": "high"
       }
     ],
     "openrouter_stream": "true",

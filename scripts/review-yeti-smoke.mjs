@@ -152,8 +152,8 @@ export function validatePolicy(policy, repository = '') {
       || gemini.model !== EXPECTED_GEMINI_MODEL
       || gemini.compat !== 'openai'
       || gemini.structured_output !== 'strict'
-      || gemini.reasoning_effort !== 'none') {
-    throw new Error('Gemini must use the pinned Google OpenAI-compatible endpoint/model with strict none-reasoning first pass');
+      || gemini.reasoning_effort !== 'high') {
+    throw new Error('Gemini must use the pinned Google OpenAI-compatible endpoint/model with strict high-reasoning output');
   }
   if (synthetic.base_url !== EXPECTED_SYNTHETIC_BASE_URL
       || synthetic.api_key_env !== 'SYNTHETIC_API_KEY'
@@ -163,8 +163,8 @@ export function validatePolicy(policy, repository = '') {
       || synthetic.concurrency_scope !== 'model'
       || synthetic.quota_probe !== 'synthetic-v2'
       || synthetic.structured_output !== 'strict'
-      || synthetic.reasoning_effort !== 'none') {
-    throw new Error('Synthetic must use the pinned endpoint/model, a five-pack per-model ceiling, quota-bounded admission, and none-reasoning first pass');
+      || synthetic.reasoning_effort !== 'high') {
+    throw new Error('Synthetic must use the pinned endpoint/model, a five-pack per-model ceiling, quota-bounded admission, and strict high-reasoning output');
   }
   if (fireworks.base_url !== 'https://api.fireworks.ai/inference/v1'
       || fireworks.api_key_env !== 'FIREWORKS_PR_REVIEW_API_KEY'
@@ -172,11 +172,11 @@ export function validatePolicy(policy, repository = '') {
       || fireworks.compat !== 'openai'
       || fireworks.structured_output !== 'strict'
       || fireworks.perf_metrics_in_response !== true
-      || fireworks.reasoning_effort !== 'none') {
+      || fireworks.reasoning_effort !== 'high') {
     throw new Error('Fireworks must remain declared with its existing disabled transport contract');
   }
 
-  if (ollama.reasoning_effort !== 'none') throw new Error('Ollama must use none-reasoning first pass');
+  if (ollama.reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
   if (ollama.max_tokens !== undefined) throw new Error('Ollama must not cap completion tokens');
   if (ollama.max_in_flight !== 6
       || ollama.concurrency_scope !== 'provider'

@@ -280,7 +280,7 @@ test('comparison profiles pin one direct provider under the same bounded contrac
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'fireworks').connect_timeout_ms, 15_000);
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').timeout_ms, 90_000);
   assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').max_tokens, undefined);
-  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').reasoning_effort, 'none');
+  assert.equal(policy.review_yeti.transports.find((transport) => transport.name === 'ollama').reasoning_effort, 'high');
   assert.throws(() => buildTransportHandoff(policy, 'openrouter-primary'), /unsupported qualification profile/u);
 });
 
