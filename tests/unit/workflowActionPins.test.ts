@@ -10,7 +10,7 @@ const requiredPins = new Map([
   ['actions/cache', 'caa296126883cff596d87d8935842f9db880ef25'],
   ['actions/upload-artifact', 'b7c566a772e6b6bfb58ed0dc250532a479d7789f'],
   ['docker/setup-buildx-action', '37fe631027851001ddb9b187196cc803df7f5f0e'],
-  ['docker/build-push-action', '53b7df96c91f9c12dcc8a07bcb9ccacbed38856'],
+  ['docker/build-push-action', '53b7df96c91f9c12dcc8a07bcb9ccacbed38856a'],
   ['digitalocean/action-doctl', '3cb3953159719656269e044e0e24ca16dd2a690f'],
   ['googleapis/release-please-action', '45996ed1f6d02564a971a2fa1b5860e934307cf7'],
 ]);

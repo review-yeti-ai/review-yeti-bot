@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.7
+# Baked Node graph for the composite Action legacy panel.
+# Same two packages as legacy-runtime/package-lock.json. Never copies the
+# application package.json (that reifies Next.js on the review runner).
+ARG NODE_BASE_IMAGE
+
+FROM ${NODE_BASE_IMAGE}
+WORKDIR /app
+COPY legacy-runtime/package.json legacy-runtime/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+ && test -d node_modules/@openrouter/sdk \
+ && test -d node_modules/js-yaml \
+ && test ! -e node_modules/next \
+ && test ! -e node_modules/react \
+ && test ! -e node_modules/vitest \
+ && npm cache clean --force
+USER 1000:1000
