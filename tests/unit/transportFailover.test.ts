@@ -231,9 +231,9 @@ describe('Multi-Transport Fast Failover', () => {
 
     expect(result.decision).toBe('APPROVE');
     expect(requestBodies).toHaveLength(3);
-    expect(requestBodies[0].body.max_tokens).toBe(24576);
-    expect(requestBodies[1].body.max_tokens).toBe(24576);
-    expect(requestBodies[2].body.max_tokens).toBe(24576);
+    expect(requestBodies[0].body.max_tokens).toBeUndefined();
+    expect(requestBodies[1].body.max_tokens).toBeUndefined();
+    expect(requestBodies[2].body.max_tokens).toBeUndefined();
     expect(requestBodies[0].body.reasoning_effort).toBe('high');
     expect(requestBodies[1].body.reasoning_effort).toBe('none');
     expect(requestBodies[2].body.reasoning_effort).toBe('medium');
@@ -281,8 +281,10 @@ describe('Multi-Transport Fast Failover', () => {
     expect(result.decision).toBe('APPROVE');
     expect(result.transport).toBe('fireworks');
     expect(requestBodies).toHaveLength(2);
-    expect(requestBodies[0]).toMatchObject({ max_tokens: 24576, reasoning_effort: 'high' });
-    expect(requestBodies[1]).toMatchObject({ max_tokens: 24576, reasoning_effort: 'none' });
+    expect(requestBodies[0].max_tokens).toBeUndefined();
+    expect(requestBodies[0].reasoning_effort).toBe('high');
+    expect(requestBodies[1].max_tokens).toBeUndefined();
+    expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'none' });
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
@@ -337,10 +339,10 @@ describe('Multi-Transport Fast Failover', () => {
     expect(result.decision).toBe('APPROVE');
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(requestBodies[0].max_tokens).toBe(24576);
+    expect(requestBodies[0].max_tokens).toBeUndefined();
     expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
     expect(requestBodies[1].model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(requestBodies[1].max_tokens).toBe(24576);
+    expect(requestBodies[1].max_tokens).toBeUndefined();
     expect(requestBodies[1].reasoning).toEqual({ effort: 'none' });
     expect(requestBodies[1].provider).toEqual({ data_collection: 'deny' });
     expect(requestBodies[1].plugins).toBeUndefined();
@@ -376,7 +378,7 @@ describe('Multi-Transport Fast Failover', () => {
     );
 
     expect(requestBodies).toHaveLength(1);
-    expect(requestBodies[0].max_tokens).toBe(1024);
+    expect(requestBodies[0].max_tokens).toBeUndefined();
   });
 
   it('correctly resolves and authenticates all configured candidate transports in resolveModelConfig', () => {
