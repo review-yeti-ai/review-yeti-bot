@@ -143,6 +143,12 @@ inputs:
       workflow path without this immutable provenance binding cannot authorize evidence reuse.
     required: false
     default: ''
+  max-incremental-chain:
+    description: >-
+      Maximum hops of trusted repair-delta reuse chained since the last full review. A candidate
+      parent report at or beyond this depth is not reused; the run falls back to a full review.
+    required: false
+    default: '5'
   config-ref:
     description: >-
       Git ref to read .ct-review.yaml and .ct-review/personas from. Defaults to the pull
@@ -521,6 +527,7 @@ runs:
         MAX_INCREMENTAL_DIFF_CHARS: ${{ inputs.max-incremental-diff-chars }}
         REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW: ${{ inputs.incremental-trusted-workflow }}
         REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW_SHA: ${{ inputs.incremental-trusted-workflow-sha }}
+        MAX_INCREMENTAL_CHAIN: ${{ inputs.max-incremental-chain }}
         REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
