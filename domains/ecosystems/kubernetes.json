@@ -1,0 +1,7 @@
+{
+  "ecosystem": "kubernetes",
+  "description": "Kubernetes manifests / Helm",
+  "classes": {
+    "infra": ["**/k8s/**", "**/helm/**", "Chart.yaml", "**/templates/**/*.yaml"]
+  }
+}

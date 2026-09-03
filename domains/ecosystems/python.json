@@ -1,0 +1,11 @@
+{
+  "ecosystem": "python",
+  "description": "Python",
+  "classes": {
+    "source": ["**/*.py"],
+    "test": ["**/test_*.py", "**/*_test.py", "tests/**", "test/**"],
+    "deps-manifest": ["pyproject.toml", "setup.py", "setup.cfg", "requirements*.txt", "Pipfile"],
+    "lockfile": ["poetry.lock", "Pipfile.lock", "uv.lock"],
+    "config": ["pytest.ini", "tox.ini", ".flake8", "mypy.ini", "pyrightconfig.json"]
+  }
+}

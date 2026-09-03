@@ -1,0 +1,11 @@
+{
+  "ecosystem": "go",
+  "description": "Go",
+  "classes": {
+    "source": ["**/*.go"],
+    "test": ["**/*_test.go"],
+    "deps-manifest": ["go.mod"],
+    "lockfile": ["go.sum"],
+    "config": [".golangci.{yml,yaml}"]
+  }
+}

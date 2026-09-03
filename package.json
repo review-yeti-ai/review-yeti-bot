@@ -49,7 +49,9 @@
     "pretest:e2e": "npm run test:artifacts",
     "pretest:replay": "npm run test:artifacts",
     "pretest:changed": "npm run test:artifacts",
-    "test:artifacts": "node scripts/ensure-static-assets.js && node scripts/ensure-pipeline-build.js"
+    "test:artifacts": "node scripts/ensure-static-assets.js && node scripts/ensure-pipeline-build.js && npm run domains:check",
+    "domains:build": "ts-node scripts/build-domain-index.ts",
+    "domains:check": "ts-node scripts/build-domain-index.ts --check"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.1",

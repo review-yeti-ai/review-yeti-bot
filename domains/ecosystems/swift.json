@@ -1,0 +1,11 @@
+{
+  "ecosystem": "swift",
+  "description": "Swift",
+  "classes": {
+    "source": ["**/*.swift"],
+    "test": ["**/*Tests.swift", "Tests/**"],
+    "deps-manifest": ["Package.swift", "*.podspec", "Podfile"],
+    "lockfile": ["Package.resolved", "Podfile.lock"],
+    "config": ["*.xcconfig"]
+  }
+}

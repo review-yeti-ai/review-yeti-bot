@@ -1,0 +1,7 @@
+{
+  "ecosystem": "github-actions",
+  "description": "GitHub Actions workflows and composite actions",
+  "classes": {
+    "ci": [".github/workflows/**", ".github/actions/**"]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "ecosystem": "elixir",
+  "description": "Elixir / Phoenix / Mix",
+  "classes": {
+    "source": ["**/*.{ex,heex,eex,leex}"],
+    "test": ["**/*_test.exs", "test/**", "**/*.exs"],
+    "deps-manifest": ["mix.exs"],
+    "lockfile": ["mix.lock"],
+    "database": ["priv/repo/migrations/**", "priv/*/migrations/**"],
+    "config": ["config/**/*.exs"]
+  }
+}

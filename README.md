@@ -527,6 +527,9 @@ the wrapper is imported. `legacy` remains the default rollback path.
 - **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — full `.ct-review.yaml` and
   persona-file schema.
 - **[Architecture](docs/ARCHITECTURE.md)** — how the review pipeline is put together.
+- **[Master Domain Index](domains/CONTRIBUTING.md)** — the community-extensible registry mapping
+  file paths to reviewer personas (`domains/ecosystems/*.json` + `domains/classes.json`); see the
+  contributing guide for how to add an ecosystem.
 
 ---
 

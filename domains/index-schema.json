@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/review-yeti-ai/review-yeti-bot/blob/main/domains/index-schema.json",
+  "title": "Master Domain Index schemas",
+  "description": "JSON Schema for the two Master Domain Index layers: a per-ecosystem file (domains/ecosystems/<ecosystem>.json) and the curated class-to-persona matrix (domains/classes.json). Validated in-repo by a small schema-subset interpreter (src/pipeline/domainIndex.ts and scripts/build-domain-index.mjs); the keywords used below (type, required, properties, additionalProperties, propertyNames, items, enum, minLength, minItems, minProperties, $ref) are the full set that interpreter supports.",
+  "definitions": {
+    "classVocabulary": {
+      "description": "The fixed, 14-value class vocabulary. Ecosystem files may use any subset; classes.json must define all 14.",
+      "type": "string",
+      "enum": [
+        "source",
+        "test",
+        "docs",
+        "deps-manifest",
+        "lockfile",
+        "ci",
+        "infra",
+        "database",
+        "config",
+        "ui-styles",
+        "i18n",
+        "license",
+        "scripts",
+        "assets"
+      ]
+    },
+    "personaVocabulary": {
+      "description": "The 12 built-in reviewer persona ids (PERSONA_CHARTERS in .github/workflows/pipelines/review-pipeline.js).",
+      "type": "string",
+      "enum": [
+        "security",
+        "performance",
+        "architecture",
+        "style",
+        "testing",
+        "documentation",
+        "accessibility",
+        "database",
+        "devops",
+        "i18n",
+        "dependencies",
+        "licensing"
+      ]
+    },
+    "globList": {
+      "description": "One or more glob patterns, ported git/CodeRabbit-style semantics (** crosses zero-or-more segments, * stays within one segment, ? one char, {a,b} alternation). Matched against the full repo-relative path.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "personaList": {
+      "description": "Zero or more persona ids from personaVocabulary. Empty is legitimate (e.g. the assets class).",
+      "type": "array",
+      "items": { "$ref": "#/definitions/personaVocabulary" }
+    },
+    "ecosystemFile": {
+      "description": "Layer 1: one file per ecosystem, mapping class names to glob patterns.",
+      "type": "object",
+      "required": ["ecosystem", "description", "classes"],
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "classes": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/definitions/classVocabulary" },
+          "additionalProperties": { "$ref": "#/definitions/globList" }
+        }
+      }
+    },
+    "classesFile": {
+      "description": "Layer 2: the curated matrix mapping every one of the 14 classes to its persona ids.",
+      "type": "object",
+      "required": [
+        "source",
+        "test",
+        "docs",
+        "deps-manifest",
+        "lockfile",
+        "ci",
+        "infra",
+        "database",
+        "config",
+        "ui-styles",
+        "i18n",
+        "license",
+        "scripts",
+        "assets"
+      ],
+      "propertyNames": { "$ref": "#/definitions/classVocabulary" },
+      "additionalProperties": { "$ref": "#/definitions/personaList" }
+    }
+  }
+}

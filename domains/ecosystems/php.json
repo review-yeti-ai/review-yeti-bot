@@ -1,0 +1,11 @@
+{
+  "ecosystem": "php",
+  "description": "PHP",
+  "classes": {
+    "source": ["**/*.php"],
+    "test": ["tests/**", "**/*Test.php"],
+    "deps-manifest": ["composer.json"],
+    "lockfile": ["composer.lock"],
+    "config": ["phpunit.xml*", ".php-cs-fixer.php"]
+  }
+}

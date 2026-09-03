@@ -1,0 +1,11 @@
+{
+  "ecosystem": "dotnet",
+  "description": ".NET / C# / F#",
+  "classes": {
+    "source": ["**/*.{cs,fs,vb}"],
+    "test": ["**/*.Tests/**", "**/*Tests.cs"],
+    "deps-manifest": ["**/*.{csproj,fsproj,vbproj}", "*.sln"],
+    "lockfile": ["packages.lock.json"],
+    "config": ["nuget.config", "**/*.editorconfig"]
+  }
+}
