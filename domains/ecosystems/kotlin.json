@@ -1,0 +1,11 @@
+{
+  "ecosystem": "kotlin",
+  "description": "Kotlin",
+  "classes": {
+    "source": ["**/*.{kt,kts}"],
+    "test": ["**/src/test/**", "**/*Test.kt"],
+    "deps-manifest": ["build.gradle.kts", "build.gradle"],
+    "lockfile": ["gradle.lockfile"],
+    "config": ["**/src/main/resources/application*.{yml,yaml,properties}"]
+  }
+}

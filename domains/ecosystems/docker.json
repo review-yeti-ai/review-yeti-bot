@@ -1,0 +1,7 @@
+{
+  "ecosystem": "docker",
+  "description": "Docker",
+  "classes": {
+    "infra": ["Dockerfile*", "**/Dockerfile*", "docker-compose*.{yml,yaml}", "**/.dockerignore"]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "ecosystem": "scala",
+  "description": "Scala",
+  "classes": {
+    "source": ["**/*.scala"],
+    "test": ["**/src/test/**", "**/*Spec.scala", "**/*Test.scala"],
+    "deps-manifest": ["build.sbt", "project/**"],
+    "config": [".scalafmt.conf"]
+  }
+}

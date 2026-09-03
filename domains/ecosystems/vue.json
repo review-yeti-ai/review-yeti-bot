@@ -1,0 +1,9 @@
+{
+  "ecosystem": "vue",
+  "description": "Vue.js",
+  "classes": {
+    "source": ["**/*.vue"],
+    "test": ["**/*.spec.{js,ts}", "tests/**"],
+    "config": ["vue.config.js"]
+  }
+}
