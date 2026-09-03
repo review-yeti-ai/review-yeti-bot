@@ -49,6 +49,7 @@ const ALLOWED_TRANSPORT_KEYS = [
   'connect_timeout_ms',
   'ttft_ms',
   'stall_ms',
+  'max_wall_clock_ms',
   'max_tokens',
   'stream',
   'structured_output',
@@ -251,6 +252,9 @@ export function buildExecutionPlan(policy, repository = '') {
           request_ms: transport.timeout_ms,
           stall_ms: transport.stall_ms,
           ttft_ms: transport.ttft_ms,
+          ...(transport.max_wall_clock_ms !== undefined
+            ? { max_wall_clock_ms: transport.max_wall_clock_ms }
+            : {}),
         },
         max_output_tokens: configuredOrUnknown(transport.max_tokens),
         streaming: transport.stream,

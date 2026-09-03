@@ -97,6 +97,9 @@ if (!ollamaTransport
     || ollamaTransport.connect_timeout_ms !== 90000) {
   throw new Error('Ollama must use a six-lane ceiling and a 90s connect deadline so concurrent persona streams can establish');
 }
+if (ollamaTransport.max_wall_clock_ms !== 900000) {
+  throw new Error('Ollama must allow a 15-minute live thinking stream (max_wall_clock_ms=900000)');
+}
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
   throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');
 }
@@ -114,9 +117,10 @@ if (openrouterTransport.capacity_wait_timeout_ms < openrouterTimeoutMs * openrou
 }
 
 // A lane advances through the enabled transports in order, retrying each transport up to
-// openrouter_max_attempts before moving on. The released runtime re-arms its stall/idle timer on
-// every SSE chunk and also enforces timeout_ms as a hard total generation ceiling. This invariant
-// specifically protects the earlier failure path where a transport NEVER
+// openrouter_max_attempts before moving on. The runtime re-arms its stall/idle timer on every
+// SSE chunk (reasoning or content). timeout_ms is the connect/request envelope, not a live
+// generation ceiling. max_wall_clock_ms (15 minutes) is the only cap on a healthy thinking
+// stream. This invariant specifically protects the earlier failure path where a transport NEVER
 // produces a first byte: connect_timeout_ms (time to establish the connection) plus one stall_ms
 // interval (the engine's liveness window -- if no chunk arrives inside it, the call is declared
 // dead and the lane fails over). That sum, not timeout_ms, is what has to fit inside the lane

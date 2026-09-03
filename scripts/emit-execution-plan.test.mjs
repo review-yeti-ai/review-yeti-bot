@@ -79,6 +79,9 @@ test('derives execution deadlines from each transport handoff contract', () => {
       request_ms: configured.timeout_ms,
       stall_ms: configured.stall_ms,
       ttft_ms: configured.ttft_ms,
+      ...(configured.max_wall_clock_ms !== undefined
+        ? { max_wall_clock_ms: configured.max_wall_clock_ms }
+        : {}),
     });
   }
 });

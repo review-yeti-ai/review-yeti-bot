@@ -91,7 +91,10 @@ function policyFixture() {
           : 30000;
     transport.rate_limit = { scope: 'provider', max_retries: 1, max_retry_after_ms: 5000 };
     if (transport.name === 'synthetic') transport.quota_probe = 'synthetic-v2';
-    if (transport.name === 'ollama') transport.quarantine_on_timeout = false;
+    if (transport.name === 'ollama') {
+      transport.quarantine_on_timeout = false;
+      transport.max_wall_clock_ms = 900000;
+    }
   }
   return policy;
 }

@@ -178,6 +178,9 @@ export function validatePolicy(policy, repository = '') {
       || ollama.dispatch_weight !== 1) {
     throw new Error('Ollama must use a six-lane provider-scoped ceiling and a bounded 30-second capacity wait');
   }
+  if (ollama.max_wall_clock_ms !== 900000) {
+    throw new Error('Ollama must allow a 15-minute live thinking stream');
+  }
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
   // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
