@@ -98,12 +98,26 @@ function isCompleteTrustedReport(report, expected) {
   return seen.size === expectedIds.size;
 }
 
+/**
+ * Single source of truth for "this finding is blocking" (P0/P1). Exported so callers outside
+ * this module (review-pipeline.js's main()) never re-derive the severity list independently --
+ * REL-552 Review Yeti PR #444 finding (architecture, P2): main() previously re-scanned
+ * parentReport.lanes with its own inline ['P0','P1'].includes check to compute which live
+ * personas are "dirty live" (for prior-findings prompt injection), duplicating the exact rule
+ * planIncrementalLanes uses to compute `reviewFullDiff`. A future severity-tier change here would
+ * have silently diverged from that duplicate.
+ */
 function isBlockingFinding(finding) {
   return ['P0', 'P1'].includes(finding?.severity);
 }
 
 function laneFindings(lane) {
   return Array.isArray(lane?.findings) ? lane.findings : [];
+}
+
+/** True when `lane` (a parentReport.lanes entry) owns any blocking (P0/P1) finding. */
+function isDirtyLane(lane) {
+  return laneFindings(lane).some(isBlockingFinding);
 }
 
 /**
@@ -161,7 +175,7 @@ function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, res
     }
   }
 
-  const isDirty = (personaId) => laneFindings(parentLanesById.get(personaId)).some(isBlockingFinding);
+  const isDirty = (personaId) => isDirtyLane(parentLanesById.get(personaId));
   const ownsChangedFileFinding = (personaId) => laneFindings(parentLanesById.get(personaId))
     .some((finding) => changedPathsLower.has(String(finding?.path || '').toLowerCase()));
 
@@ -196,9 +210,13 @@ function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, res
     }
   }
 
-  const reviewFullDiff = livePersonaIds.some(isDirty);
+  // REL-552 Review Yeti PR #444 (architecture, P2): expose the dirty-live set itself (not just
+  // the `reviewFullDiff` boolean derived from it) so main() can inject each dirty-live persona's
+  // own prior findings without re-deriving "dirty" independently from parentReport.lanes.
+  const dirtyLivePersonaIds = livePersonaIds.filter(isDirty);
+  const reviewFullDiff = dirtyLivePersonaIds.length > 0;
 
-  return { livePersonaIds, carriedClean, carriedDirty, reviewFullDiff, reason };
+  return { livePersonaIds, carriedClean, carriedDirty, dirtyLivePersonaIds, reviewFullDiff, reason };
 }
 
 function mergeIncrementalPersonaResults(personas, liveResults, parentReport, reviewedPersonaIds, reuseKindByPersonaId = null) {
@@ -384,6 +402,7 @@ async function resolveIncrementalReviewScope(options) {
           reusedPersonaIds,
           carriedCleanPersonaIds: plan.carriedClean,
           carriedDirtyPersonaIds: plan.carriedDirty,
+          dirtyLivePersonaIds: plan.dirtyLivePersonaIds,
           reviewFullDiff: plan.reviewFullDiff,
           lanePlanReason: plan.reason,
           chainDepth: parentChainDepth + 1,
@@ -409,6 +428,8 @@ module.exports = {
   isTrustedWorkflowReference,
   createFullReviewScope,
   isCompleteTrustedReport,
+  isBlockingFinding,
+  isDirtyLane,
   planIncrementalLanes,
   mergeIncrementalPersonaResults,
   assessReviewAssignmentBudget,
