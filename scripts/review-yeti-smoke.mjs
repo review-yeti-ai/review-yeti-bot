@@ -177,7 +177,10 @@ export function validatePolicy(policy, repository = '') {
     throw new Error('Fireworks must remain declared with its existing disabled transport contract');
   }
 
-  if (ollama.reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
+  // 2026-09-03 (REL-525, run 33791242325): at 'high' two of six lanes spent 66,880-67,758
+  // reasoning tokens inside the 65,536 budget and returned no findings JSON. 'medium' keeps
+  // reasoning bounded so the answer fits; 'high' and 'max' are forbidden on the live lane.
+  if (ollama.reasoning_effort !== 'medium') throw new Error("Ollama must use reasoning_effort 'medium'");
   // 2026-09-03 telemetry: with no cap, high-effort reasoning ended at finish_reason=length
   // with empty content on half the lanes (provider-side limit); a 24,576 cap starved the
   // answer instead. The live budget must be explicit and large enough for reasoning plus

@@ -44,17 +44,20 @@ if review.get('dispatch_mode') != 'ordered':
 if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'ollama': 1}:
     raise SystemExit('active provider weights must keep the single Ollama lane at weight 1')
 # Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
-# versus unset at 0.750 with 7/72. Operator 2026-09-03: keep live effort at 'high'
-# (none makes the panel too weak). Never 'max'. Operator 2026-09-03 (REL-525):
+# versus unset at 0.750 with 7/72. Never 'max'. Operator 2026-09-03 (REL-525):
 # with NO max_tokens on the wire the provider's own limit ended high-effort
 # reasoning at finish_reason=length with empty content on 3 of 6 lanes (run
 # 33785366231), while the old 24576 cap starved the answer. Live transports must
 # declare an explicit budget of at least 65536 tokens; small caps stay forbidden.
 # Wall-clock guards (timeout_ms, stall_ms, max_wall_clock_ms) still bound time.
+# REL-525 follow-up (run 33791242325, same day): even with the 65536 budget, 'high'
+# effort spent 66,880-67,758 reasoning tokens on 2 of 6 lanes and left no room for the
+# findings JSON ("no parseable findings JSON"). Live Ollama effort is 'medium': bounded
+# reasoning that fits the budget. 'high' and 'max' are both forbidden on the live lane.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
-if any(item.get('reasoning_effort') != 'high' for item in transports):
-    raise SystemExit("live transports must use reasoning_effort 'high'")
+if any(item.get('reasoning_effort') != 'medium' for item in transports):
+    raise SystemExit("live transports must use reasoning_effort 'medium' (REL-525: 'high' overran the 65536 budget on 2 of 6 lanes)")
 if any(not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 65536 for item in transports):
     raise SystemExit('live transports must declare an explicit max_tokens budget of at least 65536')
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
