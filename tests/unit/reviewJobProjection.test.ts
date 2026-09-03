@@ -52,8 +52,14 @@ describe('buildReviewJobProjection', () => {
     });
   });
 
-  it('rejects publication and deadline expansion before producing a projection', () => {
-    expect(() => buildReviewJobProjection({ ...input, publicationMode: 'app-gate' }, receivedAt + 60_000))
+  it('projects an app-gate publication mode onto the PRReviewJob contract', () => {
+    const projection = buildReviewJobProjection({ ...input, publicationMode: 'app-gate' }, receivedAt + 60_000);
+    expect(projection.metadata.labels['review-yeti.ai/publication-mode']).toBe('app-gate');
+    expect(projection.spec.publicationMode).toBe('app-gate');
+  });
+
+  it('rejects unknown publication modes and deadline expansion before producing a projection', () => {
+    expect(() => buildReviewJobProjection({ ...input, publicationMode: 'enabled' as any }, receivedAt + 60_000))
       .toThrow(/publication mode/i);
     expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + 900_001 }, receivedAt + 60_000))
       .toThrow(/15 minutes/i);
