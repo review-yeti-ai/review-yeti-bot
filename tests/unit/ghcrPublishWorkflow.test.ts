@@ -44,8 +44,8 @@ describe('GHCR publish contract', () => {
     const arch = workflowJob('publish-ghcr-arch');
     const merge = workflowJob('publish-ghcr');
 
-    expect(arch).toContain('runner: blacksmith-2vcpu-ubuntu-2404');
-    expect(arch).toContain('runner: blacksmith-2vcpu-ubuntu-2404-arm');
+    expect(arch).toContain('runner: blacksmith-2vcpu-ubuntu-2204');
+    expect(arch).toContain('runner: blacksmith-2vcpu-ubuntu-2204-arm');
     expect(arch).toContain('runs-on: ${{ matrix.runner }}');
     expect(arch).toContain('arch: amd64');
     expect(arch).toContain('arch: arm64');
@@ -55,7 +55,7 @@ describe('GHCR publish contract', () => {
     expect(arch).toContain('${{ github.sha }}-${{ matrix.arch }}');
     expect(arch).not.toContain('--platform linux/amd64');
 
-    expect(merge).toMatch(/runs-on:\s*blacksmith-2vcpu-ubuntu-2404-arm/);
+    expect(merge).toMatch(/runs-on:\s*blacksmith-2vcpu-ubuntu-2204-arm/);
     expect(merge).toContain('docker buildx imagetools create');
     expect(merge).toContain('imagetools inspect --raw');
     expect(merge).toContain('visibility=public');

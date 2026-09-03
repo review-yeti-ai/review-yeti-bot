@@ -24,7 +24,7 @@ env:
 jobs:
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
     # Keep required validation bounded alongside the review job; a stalled install or suite must
     # not turn CI into an unbounded review wait.
     timeout-minutes: 15
@@ -68,7 +68,7 @@ jobs:
 
   legacy-runtime:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
     timeout-minutes: 10
     permissions:
       contents: read
@@ -114,8 +114,8 @@ jobs:
   # later, explicit pull from these digests.
   #
   # cisco-cdr docker-backend-release pattern: native linux/amd64 on
-  # blacksmith-2vcpu-ubuntu-2404, native linux/arm64 on
-  # blacksmith-2vcpu-ubuntu-2404-arm, then imagetools merge on ARM 2vCPU.
+  # blacksmith-2vcpu-ubuntu-2204, native linux/arm64 on
+  # blacksmith-2vcpu-ubuntu-2204-arm, then imagetools merge on ARM 2vCPU.
   # Never qemu. Never platforms: linux/amd64,linux/arm64 on one job.
   publish-ghcr-arch:
     needs: [test, legacy-runtime]
@@ -125,9 +125,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: blacksmith-2vcpu-ubuntu-2404
+            runner: blacksmith-2vcpu-ubuntu-2204
           - arch: arm64
-            runner: blacksmith-2vcpu-ubuntu-2404-arm
+            runner: blacksmith-2vcpu-ubuntu-2204-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -252,7 +252,7 @@ jobs:
   publish-ghcr:
     needs: [publish-ghcr-arch]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
     timeout-minutes: 15
     permissions:
       contents: read
