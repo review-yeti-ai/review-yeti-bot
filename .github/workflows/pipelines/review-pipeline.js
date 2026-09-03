@@ -3725,14 +3725,13 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         formatRecoveryAttempted = true;
         noteRetryReason('malformed_output');
         raiseMaxOutputTokens(requestBody, DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
-        requestBody.reasoning_effort = 'none';
         appendRecoveryInstructions([
           '',
           'FORMAT RECOVERY:',
           '- Your prior response did not contain parseable findings JSON.',
-          '- Disable reasoning and return only {"findings":[]} or the required findings object.',
+          '- Keep the configured reasoning effort and return only {"findings":[]} or the required findings object.',
         ]);
-        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once with reasoning disabled before failover...`);
+        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once at the configured reasoning effort before failover...`);
         return true;
       };
       const prepareDirectTimeoutRecovery = () => {
@@ -3740,18 +3739,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         formatRecoveryAttempted = true;
         noteRetryReason('timeout');
         recoveryAction = 'bounded_retry';
-        requestBody.reasoning_effort = 'none';
         appendRecoveryInstructions([
           '',
           'TIMEOUT RECOVERY:',
           '- The prior generation produced no usable findings JSON before the transport deadline.',
-          '- Disable reasoning and reserve the output budget for the required findings object.',
+          '- Keep the configured reasoning effort and reserve the output budget for the required findings object.',
           '- Re-evaluate the complete diff against the review charter and return the required findings object.',
           '- Do not assume the change is clean; include every finding that meets the review criteria.',
           '- Do not return a summary, decision, or alternate key; the only top-level key is `findings` and its value is an array.',
           '- Do not emit prose or markdown outside the required findings object.',
         ]);
-        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' timed out before producing findings JSON; retrying once with reasoning disabled before failover...`);
+        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' timed out before producing findings JSON; retrying once at the configured reasoning effort before failover...`);
         return true;
       };
       const prepareOpenRouterTimeoutRecovery = () => {
@@ -4319,9 +4317,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             });
             // Direct reasoning providers can spend the first completion budget on
             // thought tokens and return no final JSON. Give the same admitted
-            // transport one bounded, reasoning-disabled format-recovery attempt
-            // before abandoning it for a different provider. This keeps a healthy
-            // Ollama/Fireworks lane useful without accepting malformed output.
+            // transport one bounded format-recovery attempt at the configured
+            // reasoning effort before abandoning it for a different provider.
             if (prepareDirectFormatRecovery()) continue;
             if (prepareOpenRouterFormatRecovery(findingsValidation?.error)) continue;
             if (i < candidateTransports.length - 1) {
@@ -4333,16 +4330,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
               formatRecoveryAttempted = true;
               raiseMaxOutputTokens(requestBody, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
-              if (isDirectReasoning) requestBody.reasoning_effort = 'none';
-              else requestBody.reasoning_effort = 'low';
+              if (!isDirectReasoning) requestBody.reasoning_effort = 'low';
               appendRecoveryInstructions([
                 '',
                 'FORMAT RECOVERY:',
                 `- Your prior response did not satisfy the canonical findings contract${findingsValidation?.error ? ` (${findingsValidation.error}).` : '.'}`,
-                '- Keep reasoning brief and reserve output tokens for the final JSON object.',
+                '- Keep the configured reasoning effort and reserve output tokens for the final JSON object.',
                 '- Return only {"findings":[]} or the required findings object.',
               ]);
-              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route with reasoning disabled and a larger answer budget...`);
+              console.warn(`[Persona: ${persona.id}] Final transport '${transportName}' returned a non-canonical findings response; retrying once via the admitted ${requestBody.model} route at the configured reasoning effort...`);
               continue;
             }
             return withTelemetry({ ...responseBase, decision: 'ERROR', findings: [], error: contractFailure });

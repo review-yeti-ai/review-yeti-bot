@@ -235,7 +235,7 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[1].body.max_tokens).toBeUndefined();
     expect(requestBodies[2].body.max_tokens).toBeUndefined();
     expect(requestBodies[0].body.reasoning_effort).toBe('high');
-    expect(requestBodies[1].body.reasoning_effort).toBe('none');
+    expect(requestBodies[1].body.reasoning_effort).toBe('high');
     expect(requestBodies[2].body.reasoning_effort).toBe('medium');
   });
 
@@ -284,7 +284,7 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[0].max_tokens).toBeUndefined();
     expect(requestBodies[0].reasoning_effort).toBe('high');
     expect(requestBodies[1].max_tokens).toBeUndefined();
-    expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'none' });
+    expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'high' });
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
