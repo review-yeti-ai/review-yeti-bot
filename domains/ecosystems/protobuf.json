@@ -1,0 +1,8 @@
+{
+  "ecosystem": "protobuf",
+  "description": "Protocol Buffers / gRPC schemas",
+  "classes": {
+    "source": ["**/*.proto"],
+    "config": ["buf.yaml", "buf.gen.yaml"]
+  }
+}

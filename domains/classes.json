@@ -1,0 +1,16 @@
+{
+  "source": ["security", "performance", "architecture", "testing", "style"],
+  "test": ["testing", "architecture"],
+  "docs": ["documentation", "licensing"],
+  "deps-manifest": ["dependencies", "security", "licensing"],
+  "lockfile": ["dependencies", "security"],
+  "ci": ["devops", "security"],
+  "infra": ["devops", "security", "architecture"],
+  "database": ["database", "performance", "security"],
+  "config": ["security", "architecture", "devops"],
+  "ui-styles": ["accessibility", "style"],
+  "i18n": ["i18n"],
+  "license": ["licensing"],
+  "scripts": ["security", "devops"],
+  "assets": []
+}

@@ -1,0 +1,11 @@
+{
+  "ecosystem": "dart-flutter",
+  "description": "Dart / Flutter",
+  "classes": {
+    "source": ["**/*.dart"],
+    "test": ["test/**", "**/*_test.dart"],
+    "deps-manifest": ["pubspec.yaml"],
+    "lockfile": ["pubspec.lock"],
+    "config": ["analysis_options.yaml"]
+  }
+}

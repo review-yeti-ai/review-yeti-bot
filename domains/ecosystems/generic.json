@@ -1,0 +1,14 @@
+{
+  "ecosystem": "generic",
+  "description": "Cross-ecosystem conventions not tied to a single language toolchain",
+  "classes": {
+    "license": ["LICENSE*", "NOTICE*", "COPYING*"],
+    "infra": ["Dockerfile*"],
+    "config": ["*.yml", "*.yaml", "**/*.yml", "**/*.yaml"],
+    "assets": ["**/*.{png,jpg,jpeg,gif,svg,ico,webp,bmp,mp3,mp4,wav,ogg,woff,woff2,ttf,otf,eot,pdf,zip}"],
+    "lockfile": ["*.lock"],
+    "ci": [".github/workflows/**"],
+    "docs": ["*.md", "**/*.md"],
+    "i18n": ["i18n/**", "locales/**", "**/*.po"]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "ecosystem": "javascript-typescript",
+  "description": "JavaScript / TypeScript / Node.js",
+  "classes": {
+    "source": ["**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"],
+    "test": ["**/*.{test,spec}.{js,jsx,ts,tsx,mjs,cjs}", "**/__tests__/**", "test/**", "tests/**"],
+    "deps-manifest": ["package.json"],
+    "lockfile": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json"],
+    "config": ["tsconfig*.json", ".eslintrc*", ".prettierrc*", "babel.config.*", "vite.config.*", "webpack.config.*", "jest.config.*", "vitest.config.*"],
+    "ui-styles": ["**/*.{css,scss,sass,less}"]
+  }
+}
