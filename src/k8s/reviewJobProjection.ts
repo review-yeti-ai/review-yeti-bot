@@ -14,6 +14,11 @@ export const TRUSTED_WORKER_IMAGE_REPOSITORIES = [
 
 export const TRUSTED_WORKER_IMAGE_REPOSITORY = TRUSTED_WORKER_IMAGE_REPOSITORIES[0];
 
+export const DEFAULT_GENERIC_RUNNER_IMAGE = 'node:24-bookworm-slim';
+export const GENERIC_RUNNER_IMAGE_PATTERN = /^(?:node:[a-zA-Z0-9_.-]+|ghcr\.io\/review-yeti-ai\/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$/u;
+
+export type RunnerMode = 'prebaked' | 'generic';
+
 export function isTrustedWorkerImage(image: string): boolean {
   return TRUSTED_WORKER_IMAGE_REPOSITORIES.some((repo) => image.startsWith(`${repo}@sha256:`));
 }
@@ -33,6 +38,7 @@ export interface ReviewJobProjectionInput {
   publicationMode: PublicationMode;
   workerImage: string;
   namespace: string;
+  runnerMode?: RunnerMode;
 }
 
 export interface PRReviewJobProjection {
@@ -58,6 +64,7 @@ export interface PRReviewJobProjection {
     publicationMode: PublicationMode;
     workerImage: string;
     runSecretName: string;
+    runnerMode?: RunnerMode;
   };
 }
 
@@ -87,13 +94,22 @@ export function buildReviewJobProjection(
     throw new Error('publication mode must be disabled or app-gate');
   }
   if (!namespacePattern.test(input.namespace)) throw new Error('namespace must be a Kubernetes DNS label');
-  if (!digestOnlyImagePattern.test(input.workerImage)) {
-    throw new Error('a strict digest-pinned worker image is required');
-  }
-  if (!isTrustedWorkerImage(input.workerImage)) {
-    throw new Error(
-      `worker image must use a trusted worker image repository (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
-    );
+  const runnerMode: RunnerMode = input.runnerMode || 'prebaked';
+  if (runnerMode === 'generic') {
+    if (!GENERIC_RUNNER_IMAGE_PATTERN.test(input.workerImage) && !isTrustedWorkerImage(input.workerImage)) {
+      throw new Error(
+        'generic runner image must be a supported node/runner image (e.g. node:24-bookworm-slim) or trusted worker image',
+      );
+    }
+  } else {
+    if (!digestOnlyImagePattern.test(input.workerImage)) {
+      throw new Error('a strict digest-pinned worker image is required');
+    }
+    if (!isTrustedWorkerImage(input.workerImage)) {
+      throw new Error(
+        `worker image must use a trusted worker image repository (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
+      );
+    }
   }
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
     throw new Error('review projection timestamps must be finite');
@@ -134,6 +150,7 @@ export function buildReviewJobProjection(
       publicationMode: input.publicationMode,
       workerImage: input.workerImage,
       runSecretName: `ct-review-run-${identitySuffix}`,
+      runnerMode,
     },
   };
 }

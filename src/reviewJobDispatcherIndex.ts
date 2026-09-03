@@ -23,6 +23,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     workerId: config.workerId,
     workerImage: config.workerImage,
     namespace: config.namespace,
+    runnerMode: config.runnerMode,
   });
   const controller = new AbortController();
   const stop = (signal: 'SIGTERM' | 'SIGINT') => {

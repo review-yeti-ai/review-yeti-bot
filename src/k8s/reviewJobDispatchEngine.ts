@@ -2,6 +2,7 @@ import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepo
 import {
   buildReviewJobProjection,
   type PRReviewJobProjection,
+  type RunnerMode,
 } from './reviewJobProjection';
 
 export interface ReviewJobProjector {
@@ -18,6 +19,7 @@ export interface ReviewJobDispatchEngineOptions {
   workerId: string;
   workerImage: string;
   namespace: string;
+  runnerMode?: RunnerMode;
   now?: () => number;
   leaseMs?: number;
   retryDelayMs?: number;
@@ -66,6 +68,7 @@ export class ReviewJobDispatchEngine {
         publicationMode: claim.publicationMode,
         workerImage: this.options.workerImage,
         namespace: this.options.namespace,
+        runnerMode: this.options.runnerMode,
       }, now);
     } catch {
       const marked = await this.options.repository.markTerminal(
