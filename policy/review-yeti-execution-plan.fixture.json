@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "343487781111e34cf5d323090b3f89f3169a8804033f5f772afc6ece714cdb3b",
+  "normalized_plan_sha256": "af3e90b447d98eb50bb81946bd48ee522b6649310efd096a0e8a4321bd1c0e8e",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -29,7 +29,7 @@
       {
         "name": "bifrost",
         "base_url_class": "exampleorg-bifrost-openai-compatible",
-        "model": "ollama/deepseek-v4-flash:0731",
+        "model": "ollama/glm-5.3-flash",
         "compatibility_mode": "openai",
         "timeouts": {
           "connect_ms": 90000,

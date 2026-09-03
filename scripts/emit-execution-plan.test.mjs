@@ -44,7 +44,7 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   );
   const bifrost = fixture.plan.transports.find((transport) => transport.name === 'bifrost');
   assert.equal(bifrost.reasoning.wire_shape, 'reasoning_effort');
-  assert.equal(bifrost.model, 'ollama/deepseek-v4-flash:0731');
+  assert.equal(bifrost.model, 'ollama/glm-5.3-flash');
   assert.deepEqual(bifrost.capacity, {
     max_in_flight: 6,
     concurrency_scope: 'provider',
