@@ -261,7 +261,10 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(receiver, /secrets: inherit/u);
   assert.doesNotMatch(receiver, /OLLAMA_PR_REVIEW_API_KEY/u);
   assert.match(reusable, /OLLAMA_PR_REVIEW_API_KEY:\s*\$\{\{ secrets\.OLLAMA_PR_REVIEW_API_KEY \}\}/u);
-  assert.match(reusable, /GH_TOKEN:\s*\$\{\{ inputs\.central_execution && secrets\.CROSS_REPO_TOKEN \|\| github\.token \}\}/u);
+  // REL-519: GitHub-surface auth moved to the ct-review-bot App installation
+  // token (own rate bucket); github.token remains the non-central fallback.
+  assert.match(reusable, /GH_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \|\| github\.token \}\}/u);
+  assert.doesNotMatch(reusable, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
 });
 
