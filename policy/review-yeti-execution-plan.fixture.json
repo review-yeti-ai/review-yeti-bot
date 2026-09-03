@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "7a7bd27a9bf8c31271756febd2080f73579bd0b5902019f7747434e8402a2159",
+  "normalized_plan_sha256": "e51f8b9a078b82175d546cf101c55914e0020e2b0c9d7cf69d672d7419a056a4",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -42,11 +42,11 @@
           "stall_ms": 30000,
           "ttft_ms": 75000
         },
-        "max_output_tokens": 24576,
+        "max_output_tokens": "runtime-default-uncharacterized",
         "streaming": true,
         "structured_output": "strict",
         "reasoning": {
-          "effort": "high",
+          "effort": "none",
           "wire_shape": "reasoning.effort"
         },
         "request_extensions": {
@@ -110,11 +110,11 @@
           "stall_ms": 20000,
           "ttft_ms": 60000
         },
-        "max_output_tokens": 24576,
+        "max_output_tokens": "runtime-default-uncharacterized",
         "streaming": true,
         "structured_output": "strict",
         "reasoning": {
-          "effort": "high",
+          "effort": "none",
           "wire_shape": "reasoning_effort"
         },
         "request_extensions": {

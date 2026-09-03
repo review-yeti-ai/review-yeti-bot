@@ -49,7 +49,7 @@ function policyFixture() {
           model: EXPECTED_OPENROUTER_MODEL,
           models: EXPECTED_OPENROUTER_MODELS.slice(1),
           compat: 'openrouter',
-          reasoning_effort: 'high',
+          reasoning_effort: 'none',
           timeout_ms: 90000,
           connect_timeout_ms: 20000,
           stream: true,
@@ -57,10 +57,10 @@ function policyFixture() {
           quarantine_on_timeout: false,
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
         },
-        { name: 'gemini', enabled: false, base_url: EXPECTED_GEMINI_BASE_URL, api_key_env: 'GEMINI_API_KEY', model: EXPECTED_GEMINI_MODEL, compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
-        { name: 'ollama', enabled: false, base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'high' },
-        { name: 'synthetic', enabled: true, base_url: EXPECTED_SYNTHETIC_BASE_URL, api_key_env: 'SYNTHETIC_API_KEY', model: EXPECTED_SYNTHETIC_MODEL, compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', quarantine_on_timeout: false, reasoning_effort: 'high' },
-        { name: 'fireworks', enabled: false, base_url: 'https://api.fireworks.ai/inference/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'accounts/fireworks/models/deepseek-v4-flash-0731', compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, max_tokens: 24576, stream: true, structured_output: 'strict', perf_metrics_in_response: true, reasoning_effort: 'high' },
+        { name: 'gemini', enabled: false, base_url: EXPECTED_GEMINI_BASE_URL, api_key_env: 'GEMINI_API_KEY', model: EXPECTED_GEMINI_MODEL, compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'none' },
+        { name: 'ollama', enabled: false, base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'none' },
+        { name: 'synthetic', enabled: true, base_url: EXPECTED_SYNTHETIC_BASE_URL, api_key_env: 'SYNTHETIC_API_KEY', model: EXPECTED_SYNTHETIC_MODEL, compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', quarantine_on_timeout: false, reasoning_effort: 'none' },
+        { name: 'fireworks', enabled: false, base_url: 'https://api.fireworks.ai/inference/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'accounts/fireworks/models/deepseek-v4-flash-0731', compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', perf_metrics_in_response: true, reasoning_effort: 'none' },
       ],
     },
   };
@@ -105,18 +105,16 @@ test('the smoke contract pins the approved transport order', () => {
   assert.equal(buildRequest(ollama).max_tokens, 512);
   assert.equal(buildRequest(gemini).response_format.type, 'json_object');
   assert.equal(buildRequest(gemini).temperature, undefined);
-  assert.equal(buildRequest(gemini).reasoning_effort, 'high');
+  assert.equal(buildRequest(gemini).reasoning_effort, 'none');
   assert.equal(buildRequest(gemini).stream, true);
   assert.equal(buildRequest(synthetic).response_format.type, 'json_object');
   assert.equal(buildRequest(synthetic).temperature, 0);
-  assert.equal(buildRequest(synthetic).reasoning_effort, 'high');
+  assert.equal(buildRequest(synthetic).reasoning_effort, 'none');
   assert.equal(buildRequest(synthetic).stream, true);
   assert.equal(buildRequest(ollama).stream, true);
   assert.equal(buildRequest(openrouter).stream, true);
-  assert.equal(buildRequest(ollama).reasoning_effort, 'high');
-  // Measured ablation 2026-08-20: pinning `max` scored recall 0.425 with 25/72 errors vs unset
-  // at 0.750 with 7/72. The provider default wins; no reasoning override is emitted.
-  assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
+  assert.equal(buildRequest(ollama).reasoning_effort, 'none');
+  assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'none' });
 });
 
 test('Example API resolves Ollama-only and a 90s connect deadline (no OpenRouter fallback)', async () => {
@@ -223,7 +221,11 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   assert.equal(openrouter.quarantine_on_timeout, false);
   assert.equal(transports.find((transport) => transport.name === 'synthetic').quarantine_on_timeout, false);
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
-  assert.equal(openrouter.max_tokens, 24_576);
+  assert.equal(openrouter.max_tokens, undefined);
+  assert.equal(openrouter.reasoning_effort, 'none');
+  const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
+  assert.equal(ollama.max_tokens, undefined);
+  assert.equal(ollama.reasoning_effort, 'none');
   assert.equal(openrouter.dispatch_weight, 2);
   assert.equal(openrouter.max_in_flight, 2);
   assert.equal(openrouter.concurrency_scope, 'provider');

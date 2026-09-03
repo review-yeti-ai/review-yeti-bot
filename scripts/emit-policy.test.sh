@@ -46,17 +46,17 @@ if {item.get('name'): item.get('dispatch_weight') for item in transports} != {
     'synthetic': 1,
 }:
     raise SystemExit('active provider weights must keep bounded OpenRouter primary at 2:1')
-# Measured ablation 2026-08-20 (live, N=8 reps x 9 fixtures x 3 arms, errored runs counted as
-# failures): reasoning_effort=max scored recall 0.425 [0.29-0.58] with 25/72 errors, versus the
-# provider default (unset) at 0.750 [0.60-0.86] with 7/72 -- non-overlapping CIs and 3.5x the
-# failure rate. OpenRouter must therefore NOT pin it. Ollama stays 'high': that
-# specific value was never measured, so it is left alone rather than changed on inference.
-# Operator directive 2026-08-20: reasoning_effort 'high' on every transport.
-# The guard forbids only 'max', which is the measured-bad arm (ablation: recall 0.425
-# [0.29-0.58] with 25/72 errors, vs the provider default at 0.750 [0.60-0.86] with 7/72).
-# NOTE: 'high' itself was never measured -- the ablation covered none / unset / max only.
+# Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
+# versus unset at 0.750 with 7/72. Live Ollama 2026-09-03 (job 100486626925): first-pass
+# high burned ~95s of reasoning with no findings JSON; none-retry parsed in 5-9s.
+# Operator directive 2026-09-03: first-pass reasoning_effort is 'none'; never 'max';
+# never cap max_tokens on the live panel.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
+if any(item.get('reasoning_effort') not in (None, 'none') for item in transports):
+    raise SystemExit("live transports must first-pass reasoning_effort 'none'")
+if any('max_tokens' in item for item in transports):
+    raise SystemExit('live transports must not cap max_tokens; wall-clock guards bound generation')
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
 synthetic = next((item for item in transports if item.get('name') == 'synthetic'), None)
