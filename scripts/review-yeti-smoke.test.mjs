@@ -682,6 +682,39 @@ test('transport helpers fail closed when enabled is missing', () => {
   assert.deepEqual(selectHealthyTransports([undeclared], ['synthetic']), []);
 });
 
+test('ollama smoke first-byte budget uses max_wall_clock_ms instead of OpenRouter TTFT', async () => {
+  const calls = [];
+  const { healthy } = await runSmoke({
+    policy: policyFixture(),
+    env: { OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret' },
+    timeoutMs: 80,
+    ttftMs: 5,
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 100);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(init.signal?.reason || new DOMException('aborted', 'AbortError'));
+        };
+        if (init.signal?.aborted) onAbort();
+        else init.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }),
+      };
+    },
+    log: () => {},
+  });
+
+  assert.deepEqual(healthy, ['ollama']);
+  assert.equal(calls[0].max_tokens, undefined);
+  assert.equal(calls[0].reasoning_effort, 'high');
+});
+
 test('probe admission rejects a transport that misses the action TTFT budget', async () => {
   const transport = policyFixture().review_yeti.transports.find((entry) => entry.name === 'ollama');
   const result = await probeTransport(

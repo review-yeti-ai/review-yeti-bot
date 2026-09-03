@@ -273,11 +273,6 @@ export function buildRequest(transport) {
       { role: 'system', content: 'You are a Review Yeti transport smoke test. Do not inspect files.' },
       { role: 'user', content: 'Return exactly {"ok":true,"review":"SMOKE_OK"} as a JSON object.' },
     ],
-    // Reasoning models can spend the first part of a short probe budget on hidden thought
-    // tokens. 128 caused Gemini 3.7 Flash to finish with `length` before emitting JSON even
-    // though the endpoint was healthy. Keep the probe bounded, but leave enough room for the
-    // terminal object so a valid provider is not falsely admitted as unhealthy.
-    max_tokens: 512,
     stream: transport.stream === true,
     ...(transport.structured_output === 'none' ? {} : { response_format: { type: 'json_object' } }),
     // Gemini 3.7's compatibility layer documents temperature/top-k/top-p as deprecated. Keep
@@ -285,6 +280,10 @@ export function buildRequest(transport) {
     // sampling for the other OpenAI-compatible transports.
     ...(isGemini ? {} : { temperature: 0 }),
   };
+  const configuredMaxTokens = Number(transport.max_tokens);
+  if (Number.isSafeInteger(configuredMaxTokens) && configuredMaxTokens > 0) {
+    request.max_tokens = configuredMaxTokens;
+  }
 
   if (transport.provider_routing) {
     request.provider = transport.provider_routing;
@@ -478,22 +477,31 @@ export async function runSmoke({
   const transports = validatePolicy(loadedPolicy, repository);
   const results = [];
   const review = loadedPolicy.review_yeti || {};
-  const effectiveTtftMs = Number(ttftMs ?? review.openrouter_ttft_ms ?? timeoutMs);
-  if (!Number.isFinite(effectiveTtftMs) || effectiveTtftMs <= 0) {
+  const fallbackTtftMs = Number(ttftMs ?? review.openrouter_ttft_ms ?? timeoutMs);
+  if (!Number.isFinite(fallbackTtftMs) || fallbackTtftMs <= 0) {
     throw new Error('Review Yeti smoke TTFT budget must be a positive number');
   }
   log(
     `[Review Yeti smoke] policy stream=${review.openrouter_stream ?? 'unset'} ` +
-      `ttft_ms=${effectiveTtftMs} timeout_ms=${timeoutMs}`,
+      `ttft_ms=${fallbackTtftMs} timeout_ms=${timeoutMs}`,
   );
 
   for (const transport of transports) {
+    const wallClockMs = Number(transport.max_wall_clock_ms);
+    const transportTimeoutMs = Number.isSafeInteger(wallClockMs) && wallClockMs > 0
+      ? wallClockMs
+      : timeoutMs;
+    const transportTtftMs = Number.isSafeInteger(wallClockMs) && wallClockMs > 0
+      ? wallClockMs
+      : Number(transport.ttft_ms) > 0
+        ? Number(transport.ttft_ms)
+        : fallbackTtftMs;
     const result = await probeTransport(
       transport,
       env[transport.api_key_env],
       fetchImpl,
-      timeoutMs,
-      effectiveTtftMs,
+      transportTimeoutMs,
+      transportTtftMs,
     );
     results.push(result);
     const timing = result.elapsed_ms != null ? ` elapsed_ms=${result.elapsed_ms}` : '';
