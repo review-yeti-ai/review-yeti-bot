@@ -1536,6 +1536,92 @@ describe('reviewWithModel', () => {
     ]));
   });
 
+  it('retries an Ollama reasoning-only content stall once with reasoning disabled', async () => {
+    const calls: any[] = [];
+    const reasoningOnlyStalled = () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'working' } }] })}\n\n`,
+          ));
+        },
+        cancel() {},
+      }),
+    });
+    const recoveredResponse = () => {
+      const wire = [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":[]}' } }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(wire));
+            controller.close();
+          },
+        }),
+      };
+    };
+    const fetchImplementation = async (_url: string, init: any) => {
+      calls.push(JSON.parse(init.body));
+      return calls.length === 1 ? reasoningOnlyStalled() : recoveredResponse();
+    };
+
+    const started = Date.now();
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'ollama-key',
+        model: 'deepseek-v4-flash:cloud',
+        reasoning_effort: 'high',
+        stream: true,
+        timeout_ms: 300,
+        connect_timeout_ms: 100,
+        ttft_ms: 100,
+        stall_ms: 40,
+      }],
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(res).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      attemptCount: 2,
+      recoveryAction: 'bounded_retry',
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].reasoning_effort).toBe('high');
+    expect(calls[1].reasoning_effort).toBe('none');
+    expect(calls[1].messages[0].content).toContain('TIMEOUT RECOVERY');
+    expect(calls[1].messages[0].content).toContain('Disable reasoning');
+    expect(res.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        attempt: 1,
+        outcome: 'transport_error',
+        failureClass: 'timeout',
+        timeoutKind: 'inactivity',
+        reasoningPresent: true,
+        contentPresent: false,
+        reasoningEffort: 'high',
+      }),
+      expect.objectContaining({
+        attempt: 2,
+        outcome: 'parsed',
+        failureClass: null,
+        reasoningEffort: 'none',
+      }),
+    ]));
+  });
+
   it('advances to the explicit GLM fallback after a primary OpenRouter timeout', async () => {
     const calls: any[] = [];
     const stalledResponse = () => ({
