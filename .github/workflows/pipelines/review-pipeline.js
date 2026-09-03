@@ -4012,13 +4012,31 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             attemptCapacityLeaseStartedMs = Date.now();
             console.log(`[Capacity] provider=${normalizeTelemetryProvider(configuredProvider || transportName) || 'custom'} phase=lease_acquired limit=${capacityLease.policy.maxInFlight} queue_wait_ms=${attemptCapacityWaitMs}`);
           }
+          const streamTotalTimeoutMs = resolveStreamTotalTimeoutMs(
+            transport,
+            attemptTimeoutMs,
+            streamEnabled,
+          );
+          // Ollama (and similar) often withhold HTTP headers until the first
+          // reasoning token. connect_timeout_ms is the dead-TCP envelope, not
+          // time-to-first-token. When max_wall_clock_ms is set, headers and body
+          // share that one generation clock so a high-effort stream is not killed
+          // at 90s before thinking starts.
+          const explicitMaxWallClock = Number(
+            transport.maxWallClockMs ?? transport.max_wall_clock_ms ?? transport.stream_max_wall_clock_ms,
+          );
+          const headerDeadlineMs = streamEnabled
+            && Number.isSafeInteger(explicitMaxWallClock)
+            && explicitMaxWallClock > 0
+            ? streamTotalTimeoutMs
+            : Math.min(connectTimeoutMs, attemptTimeoutMs);
           if (streamAbortController) {
             responseHeaderTimer = setTimeout(
               () => streamAbortController.abort(streamInactivityError(
-                Math.min(connectTimeoutMs, attemptTimeoutMs),
+                headerDeadlineMs,
                 'connect',
               )),
-              Math.min(connectTimeoutMs, attemptTimeoutMs),
+              headerDeadlineMs,
             );
           }
           let response;
@@ -4163,20 +4181,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: errMsg });
           }
 
-          // After headers, each body read gets a fresh inactivity timeout. A live
-          // reasoning/content stream is not cut at timeout_ms; max_wall_clock_ms
-          // (default 15 minutes) is the only generation ceiling. Format recovery
-          // gets the same bounded window rather than a special exemption.
-          const streamTotalTimeoutMs = resolveStreamTotalTimeoutMs(
-            transport,
-            attemptTimeoutMs,
-            streamEnabled,
-          );
+          // After headers, each body read gets a fresh inactivity timeout. When
+          // max_wall_clock_ms covers the header wait, spend only the remaining
+          // generation budget on the body so headers+thinking share one clock.
+          const remainingStreamTotalMs = streamEnabled
+            && Number.isSafeInteger(explicitMaxWallClock)
+            && explicitMaxWallClock > 0
+            && attemptProviderExecutionStartedMs
+            ? Math.max(1, streamTotalTimeoutMs - (Date.now() - attemptProviderExecutionStartedMs))
+            : streamTotalTimeoutMs;
           const payload = await readChatCompletionResponse(
             response,
             streamEnabled,
             inactivityTimeoutMs,
-            streamTotalTimeoutMs,
+            remainingStreamTotalMs,
             ttftTimeoutMs,
             (value) => {
               ttftMs = normalizeTelemetryDuration(value);
