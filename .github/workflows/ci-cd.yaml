@@ -116,13 +116,14 @@ jobs:
     needs: [test, legacy-runtime]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
       id-token: write
     env:
       GHCR_REGISTRY: ghcr.io/review-yeti-ai
+      OCI_SOURCE: https://github.com/review-yeti-ai/review-yeti-bot
     outputs:
       bot: ${{ steps.bot.outputs.digest }}
       worker: ${{ steps.worker.outputs.digest }}
@@ -130,6 +131,11 @@ jobs:
       legacy-runtime: ${{ steps.legacy-runtime.outputs.digest }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -137,18 +143,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: bot
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: true
-          sbom: true
-          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
-          cache-from: type=gha,mode=max,scope=ghcr-bot
-          cache-to: type=gha,mode=max,scope=ghcr-bot
+      - name: Build bot dist for the context-copied image
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -f dist/index.js
 
       - id: worker-base
         name: Resolve reviewed worker base image
@@ -157,24 +157,6 @@ jobs:
           image="$(sed -n 's/^NODE_BASE_IMAGE=//p' .github/worker-image.env | head -n 1)"
           [[ "$image" =~ ^node:24-bookworm-slim@sha256:[a-f0-9]{64}$ ]]
           echo "image=$image" >> "$GITHUB_OUTPUT"
-
-      - id: legacy-runtime
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile.legacy-runtime
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: true
-          sbom: true
-          build-args: |
-            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
-          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}
-          cache-from: type=gha,mode=max,scope=ghcr-legacy-runtime
-          cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime
-
-      - name: Prove the published legacy-runtime image
-        run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
 
       - id: worker
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -187,9 +169,53 @@ jobs:
           sbom: true
           build-args: |
             NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
-          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+            org.opencontainers.image.description=Review Yeti public worker
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
+            ${{ env.GHCR_REGISTRY }}/review-yeti-worker:latest
           cache-from: type=gha,mode=max,scope=ghcr-worker
           cache-to: type=gha,mode=max,scope=ghcr-worker
+
+      - id: bot
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
+            ${{ env.GHCR_REGISTRY }}/review-yeti-bot:latest
+          cache-from: type=gha,mode=max,scope=ghcr-bot
+          cache-to: type=gha,mode=max,scope=ghcr-bot
+
+      - id: legacy-runtime
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.legacy-runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}
+            ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:latest
+          cache-from: type=gha,mode=max,scope=ghcr-legacy-runtime
+          cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime
+
+      - name: Prove the published legacy-runtime image
+        run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
 
       - name: Run immutable worker self-test
         env:
@@ -219,9 +245,29 @@ jobs:
           push: true
           provenance: true
           sbom: true
-          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}
+            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:latest
           cache-from: type=gha,mode=max,scope=ghcr-operator
           cache-to: type=gha,mode=max,scope=ghcr-operator
+
+      - name: Make GHCR packages public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in review-yeti-worker review-yeti-bot review-yeti-operator review-yeti-legacy-runtime; do
+            if gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              "/orgs/review-yeti-ai/packages/container/${pkg}/visibility" \
+              -f visibility=public >/dev/null; then
+              echo "Set ${pkg} public"
+            else
+              echo "::warning::Could not set ${pkg} public via API. Set it at https://github.com/orgs/review-yeti-ai/packages/container/${pkg}/settings"
+            fi
+          done
 
       - name: Record GHCR digests
         env:
@@ -232,10 +278,11 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo '## GHCR images'
+            echo '## Public GHCR images'
             echo
+            echo "- worker (public runner): \`$WORKER\`"
+            echo "- \`docker pull ghcr.io/review-yeti-ai/review-yeti-worker:latest\`"
             echo "- \`$BOT\`"
-            echo "- \`$WORKER\`"
             echo "- \`$OPERATOR\`"
             echo "- \`$LEGACY\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -16,8 +16,13 @@ describe('GHCR publish contract', () => {
     expect(workflow).toContain('docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9');
     expect(workflow).toContain('review-yeti-bot:${{ github.sha }}');
     expect(workflow).toContain('review-yeti-worker:${{ github.sha }}');
+    expect(workflow).toContain('review-yeti-worker:latest');
     expect(workflow).toContain('review-yeti-operator:${{ github.sha }}');
     expect(workflow).toContain('review-yeti-legacy-runtime:${{ github.sha }}');
+    expect(workflow).toContain('npm run build');
+    expect(workflow).toContain('test -f dist/index.js');
+    expect(workflow).toContain('org.opencontainers.image.source=');
+    expect(workflow).toContain('visibility=public');
     expect(workflow).toMatch(/publish-ghcr:[\s\S]*needs:\s*\[test, legacy-runtime\]/u);
 
     const publishJob = workflow.split('publish-ghcr:')[1].split('build-and-deploy:')[0];
