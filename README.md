@@ -164,11 +164,13 @@ Weekly-credit state remains telemetry rather than a concurrency signal.
 credentials before the `v1` release channel is promoted. A development-only credential may be
 used for one-time qualification, but it is not sufficient evidence for production activation.
 
-The `exampleorg/example-api` repository override enables only Ollama. Its six-call
-`max_in_flight` value matches the current six-persona panel width; it is a local ceiling, not a
-reservation of the Ollama Team plan's shared account capacity. Provider capacity responses still
-enter the runtime's cumulative 30-second wait/retry budget, so concurrent non-review workloads can
-consume account slots without causing an immediate provider fallback.
+The Ollama-only repository set (`exampleorg/example-api`, `example-infra`,
+`example-release`, `example-meta`) enables only Ollama (operator directive 2026-09-02: OpenRouter is
+removed from the live review path for these repositories, including as a fallback). Their
+six-call `max_in_flight` value matches the current six-persona panel width; it is a local
+ceiling, not a reservation of the Ollama Team plan's shared account capacity. Provider capacity
+responses still enter the runtime's cumulative 30-second wait/retry budget, so concurrent
+non-review workloads can consume account slots.
 The workflow references only the GitHub secret; neither policy nor workflow files contain the
 credential value.
 
@@ -447,3 +449,5 @@ node scripts/emit-execution-plan.mjs --check
 
 Unknown policy keys and unclassified endpoint families fail this check. The fixture is
 characterization evidence only; the production workflow does not consume it.
+
+See also: Ollama-only repository set (operator directive 2026-09-02) — `example-api`, `example-infra`, `example-release`, `example-meta` enable only Ollama.
