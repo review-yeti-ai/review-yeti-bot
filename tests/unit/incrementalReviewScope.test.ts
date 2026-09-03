@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
 
 const root = path.resolve(__dirname, '../..');
 const scope = require(path.join(root, '.github/workflows/pipelines/incremental-review-scope.js'));
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
+const { applyFullWithCarryDiffSwap } = pipeline;
 
 const BASE = 'a'.repeat(40);
 const PARENT = 'b'.repeat(40);
@@ -750,3 +754,319 @@ describe('trusted incremental review scope', () => {
     });
   });
 });
+
+describe('applyFullWithCarryDiffSwap (REL-552 Review Yeti PR #444 follow-up: main() diffText swap)', () => {
+  const fullDiffText = [
+    'diff --git a/lib/auth.ex b/lib/auth.ex',
+    '--- a/lib/auth.ex',
+    '+++ b/lib/auth.ex',
+    '@@ -10,2 +10,3 @@',
+    '-def old_check(x) do',
+    '+def check(x) do',
+    '+  IO.inspect(x)',
+    ' end',
+    'diff --git a/README.md b/README.md',
+    '--- a/README.md',
+    '+++ b/README.md',
+    '@@ -1,1 +1,1 @@',
+    '-Old title',
+    '+New title',
+  ].join('\n');
+
+  function deltaScope(overrides: Record<string, unknown> = {}) {
+    return {
+      schemaVersion: 'review-scope-v1',
+      mode: 'delta',
+      planDigest: 'f'.repeat(64),
+      fullDiffDigest: 'full-digest-sentinel',
+      fullDiffChars: fullDiffText.length,
+      reviewedDiffDigest: 'delta-digest-sentinel',
+      reviewedDiffChars: 42,
+      parentHeadSha: 'b'.repeat(40),
+      parentReportDigest: 'parent-report-digest-sentinel',
+      reviewedPersonaIds: ['security'],
+      reusedPersonaIds: ['documentation'],
+      carriedCleanPersonaIds: ['documentation'],
+      carriedDirtyPersonaIds: [],
+      dirtyLivePersonaIds: ['security'],
+      reviewFullDiff: true,
+      lanePlanReason: 'domain_index',
+      chainDepth: 1,
+      indexDigest: 'sha256:abcd',
+      ...overrides,
+    };
+  }
+
+  it('(a)/(b)/(c) swaps diffText to the full diff and updates reviewedDiffKind/Chars/Digest to match, when reviewFullDiff is true', () => {
+    const prContext: any = { diffText: 'the bounded delta text that was reviewed', headSha: 'c'.repeat(40) };
+    const reviewScope = deltaScope({ reviewFullDiff: true });
+
+    const result = applyFullWithCarryDiffSwap({ prContext, reviewScope, fullDiffText });
+
+    expect(result).toBe(reviewScope); // mutates and returns the same object
+    // (a) prContext.diffText becomes the full diff.
+    expect(prContext.diffText).toBe(fullDiffText);
+    // (b) reviewedDiffKind is 'full-with-carry'.
+    expect(reviewScope.reviewedDiffKind).toBe('full-with-carry');
+    // (c) reviewedDiffChars/Digest reflect the full diff (copied from fullDiffChars/fullDiffDigest,
+    // not left at the delta's values).
+    expect(reviewScope.reviewedDiffChars).toBe(fullDiffText.length);
+    expect(reviewScope.reviewedDiffChars).toBe(reviewScope.fullDiffChars);
+    expect(reviewScope.reviewedDiffDigest).toBe('full-digest-sentinel');
+    expect(reviewScope.reviewedDiffDigest).toBe(reviewScope.fullDiffDigest);
+  });
+
+  it('(d) leaves prContext.diffText and reviewedDiffChars/Digest as the bounded delta when reviewFullDiff is false', () => {
+    const deltaText = 'the bounded delta text that was reviewed';
+    const prContext: any = { diffText: deltaText, headSha: 'c'.repeat(40) };
+    const reviewScope = deltaScope({
+      reviewFullDiff: false,
+      dirtyLivePersonaIds: [],
+      reviewedDiffChars: deltaText.length,
+      reviewedDiffDigest: 'delta-digest-sentinel',
+    });
+
+    applyFullWithCarryDiffSwap({ prContext, reviewScope, fullDiffText });
+
+    expect(prContext.diffText).toBe(deltaText);
+    expect(reviewScope.reviewedDiffKind).toBe('delta');
+    expect(reviewScope.reviewedDiffChars).toBe(deltaText.length);
+    expect(reviewScope.reviewedDiffChars).not.toBe(reviewScope.fullDiffChars);
+    expect(reviewScope.reviewedDiffDigest).toBe('delta-digest-sentinel');
+    expect(reviewScope.reviewedDiffDigest).not.toBe(reviewScope.fullDiffDigest);
+  });
+
+  it('leaves diffText untouched and does not set reviewedDiffKind for mode: full (nothing to swap)', () => {
+    const prContext: any = { diffText: fullDiffText, headSha: 'c'.repeat(40) };
+    const reviewScope: any = {
+      schemaVersion: 'review-scope-v1',
+      mode: 'full',
+      fullDiffChars: fullDiffText.length,
+      fullDiffDigest: 'full-digest-sentinel',
+      reviewedDiffChars: fullDiffText.length,
+      reviewedDiffDigest: 'full-digest-sentinel',
+      reviewFullDiff: false,
+    };
+
+    applyFullWithCarryDiffSwap({ prContext, reviewScope, fullDiffText });
+
+    expect(prContext.diffText).toBe(fullDiffText);
+    expect(reviewScope.reviewedDiffKind).toBeUndefined();
+  });
+});
+
+describe('main() end-to-end: the full-with-carry diffText swap through the real pipeline (REL-552 Review Yeti PR #444 follow-up)', () => {
+  const PR_REPO = 'calltelemetry/example';
+  const PR_NUMBER = '444';
+  const BASE_SHA = 'a'.repeat(40);
+  const PARENT_SHA = 'b'.repeat(40);
+  const HEAD_SHA = 'c'.repeat(40);
+  const TRUSTED_WORKFLOW = 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1';
+  const TRUSTED_WORKFLOW_SHA = 'd'.repeat(40);
+  const ACTION_SHA = 'e'.repeat(40);
+  const MAX_DIFF_CHARS = '24000';
+  const MAX_INCREMENTAL_DIFF_CHARS = '60000';
+  const MAX_INCREMENTAL_CHAIN = '5';
+  const ROSTER = ['security', 'documentation'];
+
+  const LIB_AUTH_DIFF = [
+    'diff --git a/lib/auth.ex b/lib/auth.ex',
+    '--- a/lib/auth.ex',
+    '+++ b/lib/auth.ex',
+    '@@ -10,2 +10,3 @@',
+    '-def old_check(x) do',
+    '+def check(x) do',
+    '+  IO.inspect(x)',
+    ' end',
+  ].join('\n');
+  const README_DIFF = [
+    'diff --git a/README.md b/README.md',
+    '--- a/README.md',
+    '+++ b/README.md',
+    '@@ -1,1 +1,1 @@',
+    '-Old title',
+    '+New title',
+  ].join('\n');
+  const FULL_DIFF_TEXT = `${LIB_AUTH_DIFF}\n${README_DIFF}`;
+
+  /** Packs `report` into a real zip archive (extractReportFromArtifact shells out to `unzip`). */
+  function zipReport(report: unknown): Buffer {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-bot-zip-fixture-'));
+    try {
+      const jsonPath = path.join(dir, `review-yeti-run-report-${PR_NUMBER}-1.json`);
+      fs.writeFileSync(jsonPath, JSON.stringify(report));
+      const zipPath = path.join(dir, 'report.zip');
+      execFileSync('zip', ['-j', zipPath, jsonPath], { stdio: 'pipe' });
+      return fs.readFileSync(zipPath);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  function buildFetchQueue(parentReport: unknown, deltaDiffText: string) {
+    const archiveBytes = zipReport(parentReport);
+    const responses = [
+      new Response(JSON.stringify({
+        artifacts: [{
+          name: 'review-yeti-run-report-1-1', expired: false, created_at: '2026-08-31T00:00:00Z',
+          archive_download_url: 'https://api.github.com/archive.zip', workflow_run: { id: 1, head_sha: PARENT_SHA },
+        }],
+      }), { status: 200 }),
+      new Response(JSON.stringify({
+        status: 'completed', event: 'pull_request_target', head_sha: PARENT_SHA, run_attempt: 1,
+        referenced_workflows: [{
+          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+          ref: 'refs/tags/v1',
+          sha: TRUSTED_WORKFLOW_SHA,
+        }],
+      }), { status: 200 }),
+      new Response(new Uint8Array(archiveBytes), { status: 200 }),
+      new Response(JSON.stringify({
+        status: 'ahead', ahead_by: 1, merge_base_commit: { sha: PARENT_SHA },
+        files: deltaDiffText === LIB_AUTH_DIFF
+          ? [{ filename: 'lib/auth.ex', patch: '@@ -10,2 +10,3 @@\n-def old_check(x) do\n+def check(x) do\n+  IO.inspect(x)\n end' }]
+          : [{ filename: 'README.md', patch: '@@ -1,1 +1,1 @@\n-Old title\n+New title' }],
+      }), { status: 200 }),
+      new Response(deltaDiffText, { status: 200 }),
+    ];
+    return async () => responses.shift()!;
+  }
+
+  function runMainSynthetically(parentReport: unknown, deltaDiffText: string) {
+    const originalFetch = globalThis.fetch;
+    const originalExitCode = process.exitCode;
+    const originalEnv: Record<string, string | undefined> = {};
+    const env: Record<string, string> = {
+      PR_DIFF: JSON.stringify({
+        diff: FULL_DIFF_TEXT, prNumber: PR_NUMBER, repo: PR_REPO, headSha: HEAD_SHA, baseSha: BASE_SHA,
+      }),
+      ACTIVE_PERSONAS: JSON.stringify(ROSTER),
+      GITHUB_ACTIONS: 'false',
+      VITEST: 'true',
+      GITHUB_TOKEN: 'fake-token-not-used-fetch-is-mocked',
+      REVIEW_YETI_INCREMENTAL_REVIEW: 'true',
+      REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW: TRUSTED_WORKFLOW,
+      REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW_SHA: TRUSTED_WORKFLOW_SHA,
+      REVIEW_YETI_ACTION_SHA: ACTION_SHA,
+      MAX_DIFF_CHARS,
+      MAX_INCREMENTAL_DIFF_CHARS,
+      MAX_INCREMENTAL_CHAIN,
+    };
+    // REL-552 follow-up safety: `resolveModelConfig`/`resolveActionReviewRuntime` auto-derive a
+    // live model transport from ANY of these provider keys if present in the ambient environment
+    // (this workspace legitimately has some of them set for unrelated tooling, e.g. GEMINI_API_KEY)
+    // -- every one must be cleared for the duration of this test so `modelConfig.enabled` is
+    // deterministically false and main() exits right after the diffText swap this test targets,
+    // never reaching a real model call or (worse) the `gh` CLI PR-comment-publishing subprocess.
+    const providerKeyVars = [
+      'OPENROUTER_API_KEY', 'OPENROUTER_PR_REVIEW_API_KEY', 'OPENROUTER_REVIEW_FLEET_KEY',
+      'FIREWORKS_API_KEY', 'FIREWORKS_PR_REVIEW_API_KEY',
+      'OLLAMA_API_KEY', 'OLLAMA_PR_REVIEW_API_KEY',
+      'SYNTHETIC_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY',
+      'REVIEW_YETI_TRANSPORTS', 'REVIEW_YETI_TRANSPORT_PLAN_B64',
+      'LLM_API_KEY', 'API_KEY',
+    ];
+    for (const key of [...Object.keys(env), 'GITHUB_EVENT_PATH', ...providerKeyVars]) {
+      originalEnv[key] = process.env[key];
+    }
+
+    const logs: string[] = [];
+    const logSpy = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
+    const originalLog = console.log;
+    const originalError = console.error;
+
+    return (async () => {
+      try {
+        for (const [key, value] of Object.entries(env)) process.env[key] = value;
+        delete process.env.GITHUB_EVENT_PATH;
+        // Never let main() reach persona dispatch or PR-comment publishing in this test --
+        // with every provider key cleared, `modelConfig.enabled` is false and main() exits right
+        // after the diffText swap ("[Review] No OPENROUTER_API_KEY configured...") and BEFORE any
+        // model call or `gh` CLI comment-publishing subprocess. That boundary is what makes it
+        // safe to run main() for real here.
+        for (const key of providerKeyVars) delete process.env[key];
+
+        globalThis.fetch = buildFetchQueue(parentReport, deltaDiffText) as unknown as typeof fetch;
+        console.log = logSpy;
+        console.error = logSpy;
+
+        await pipeline.main();
+        return logs;
+      } finally {
+        globalThis.fetch = originalFetch;
+        console.log = originalLog;
+        console.error = originalError;
+        process.exitCode = originalExitCode;
+        for (const [key, value] of Object.entries(originalEnv)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    })();
+  }
+
+  it('(a)/(b)/(c) swaps to the full diff through main() when the live set contains a dirty persona', async () => {
+    const indexDigest = loadCompiledIndex().indexDigest;
+    const planDigest = scope.buildReviewScopePlanDigest({
+      actionSha: ACTION_SHA, baseSha: BASE_SHA, personaIds: ROSTER,
+      maxDiffChars: Number(MAX_DIFF_CHARS), maxIncrementalDiffChars: Number(MAX_INCREMENTAL_DIFF_CHARS),
+      trustedWorkflow: TRUSTED_WORKFLOW, trustedWorkflowSha: TRUSTED_WORKFLOW_SHA,
+      indexDigest, maxIncrementalChain: Number(MAX_INCREMENTAL_CHAIN),
+    });
+    const parentReport = {
+      schemaVersion: 'review-run-report-v1', repository: PR_REPO, prNumber: Number(PR_NUMBER),
+      baseSha: BASE_SHA, headSha: PARENT_SHA, verdict: 'FIX_FIRST',
+      scope: { schemaVersion: 'review-scope-v1', planDigest },
+      lanes: [
+        // security owns a P1 on lib/auth.ex, and the delta touches lib/auth.ex itself -- both
+        // domain-touched (elixir "source" class) and "owns a finding on the delta file" apply,
+        // so security is live AND dirty ("dirty live") -> reviewFullDiff must be true.
+        { personaId: 'security', decision: 'FINDINGS', findings: [{ severity: 'P1', path: 'lib/auth.ex', line: 10, title: 'Missing auth bypass check', body: 'x' }] },
+        { personaId: 'documentation', decision: 'APPROVE', findings: [] },
+      ],
+    };
+
+    const logs = await runMainSynthetically(parentReport, LIB_AUTH_DIFF);
+    const scopeLine = logs.find((line) => line.includes('[Scope] Reviewing trusted repair delta'));
+    expect(scopeLine).toBeDefined();
+    // (b) reviewedDiffKind
+    expect(scopeLine).toContain('kind=full-with-carry');
+    // (a)/(c): the payload line reports how many files were parsed from prContext.diffText --
+    // 2 (lib/auth.ex + README.md) proves diffText became the FULL diff, not the 1-file delta.
+    expect(logs.some((line) => /\[Payload\] Parsed 2 file\(s\)/.test(line))).toBe(true);
+    // (c) reviewedDiffChars reported in the scope line equals the full diff's length.
+    expect(scopeLine).toContain(`${FULL_DIFF_TEXT.length.toLocaleString()} of ${FULL_DIFF_TEXT.length.toLocaleString()} chars`);
+  });
+
+  it('(d) keeps the bounded delta through main() when no live persona is dirty', async () => {
+    const indexDigest = loadCompiledIndex().indexDigest;
+    const planDigest = scope.buildReviewScopePlanDigest({
+      actionSha: ACTION_SHA, baseSha: BASE_SHA, personaIds: ROSTER,
+      maxDiffChars: Number(MAX_DIFF_CHARS), maxIncrementalDiffChars: Number(MAX_INCREMENTAL_DIFF_CHARS),
+      trustedWorkflow: TRUSTED_WORKFLOW, trustedWorkflowSha: TRUSTED_WORKFLOW_SHA,
+      indexDigest, maxIncrementalChain: Number(MAX_INCREMENTAL_CHAIN),
+    });
+    const parentReport = {
+      schemaVersion: 'review-run-report-v1', repository: PR_REPO, prNumber: Number(PR_NUMBER),
+      baseSha: BASE_SHA, headSha: PARENT_SHA, verdict: 'SHIP',
+      scope: { schemaVersion: 'review-scope-v1', planDigest },
+      // Nothing is dirty anywhere in the parent report this time.
+      lanes: [
+        { personaId: 'security', decision: 'APPROVE', findings: [] },
+        { personaId: 'documentation', decision: 'APPROVE', findings: [] },
+      ],
+    };
+
+    const logs = await runMainSynthetically(parentReport, README_DIFF);
+    const scopeLine = logs.find((line) => line.includes('[Scope] Reviewing trusted repair delta'));
+    expect(scopeLine).toBeDefined();
+    expect(scopeLine).toContain('kind=delta');
+    expect(scopeLine).not.toContain('kind=full-with-carry');
+    // The delta (README.md only, 1 file) was parsed -- NOT the 2-file full diff.
+    expect(logs.some((line) => /\[Payload\] Parsed 1 file\(s\)/.test(line))).toBe(true);
+    expect(logs.some((line) => /\[Payload\] Parsed 2 file\(s\)/.test(line))).toBe(false);
+    // reviewedDiffChars reported is the delta's length, strictly less than the full diff's.
+    expect(scopeLine).toContain(`${README_DIFF.length.toLocaleString()} of ${FULL_DIFF_TEXT.length.toLocaleString()} chars`);
+  });
+});
+
