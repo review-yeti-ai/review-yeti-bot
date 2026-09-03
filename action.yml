@@ -149,6 +149,21 @@ inputs:
       parent report at or beyond this depth is not reused; the run falls back to a full review.
     required: false
     default: '5'
+  incremental-artifact-repo:
+    description: >-
+      Repository whose Actions artifacts hold prior run reports. Set this to the executing
+      repository (for example github.repository) on a central repository_dispatch execution path,
+      where run reports are uploaded by the workflow that runs the review, not by the repository
+      being reviewed. Defaults to the reviewed pull request's own repository.
+    required: false
+    default: ''
+  incremental-trusted-events:
+    description: >-
+      Comma-separated GitHub event names a candidate parent run may have been triggered by.
+      Central repository_dispatch execution must add repository_dispatch explicitly; it is never
+      trusted by default.
+    required: false
+    default: 'pull_request,pull_request_target'
   config-ref:
     description: >-
       Git ref to read .ct-review.yaml and .ct-review/personas from. Defaults to the pull
@@ -528,6 +543,8 @@ runs:
         REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW: ${{ inputs.incremental-trusted-workflow }}
         REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW_SHA: ${{ inputs.incremental-trusted-workflow-sha }}
         MAX_INCREMENTAL_CHAIN: ${{ inputs.max-incremental-chain }}
+        REVIEW_YETI_INCREMENTAL_ARTIFACT_REPO: ${{ inputs.incremental-artifact-repo }}
+        REVIEW_YETI_INCREMENTAL_TRUSTED_EVENTS: ${{ inputs.incremental-trusted-events }}
         REVIEW_YETI_ACTION_SHA: ${{ inputs.action-sha }}
         PR_NUMBER: ${{ steps.target.outputs.pr }}
         PR_REPO: ${{ steps.target.outputs.repo }}
