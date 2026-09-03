@@ -178,7 +178,13 @@ export function validatePolicy(policy, repository = '') {
   }
 
   if (ollama.reasoning_effort !== 'high') throw new Error('Ollama must use high reasoning');
-  if (ollama.max_tokens !== undefined) throw new Error('Ollama must not cap completion tokens');
+  // 2026-09-03 telemetry: with no cap, high-effort reasoning ended at finish_reason=length
+  // with empty content on half the lanes (provider-side limit); a 24,576 cap starved the
+  // answer instead. The live budget must be explicit and large enough for reasoning plus
+  // the findings JSON; small caps stay forbidden.
+  if (!Number.isSafeInteger(ollama.max_tokens) || ollama.max_tokens < 65536) {
+    throw new Error('Ollama must declare an explicit completion budget of at least 65536 tokens');
+  }
   if (ollama.max_in_flight !== 6
       || ollama.concurrency_scope !== 'provider'
       || ollama.capacity_wait_timeout_ms !== 30000

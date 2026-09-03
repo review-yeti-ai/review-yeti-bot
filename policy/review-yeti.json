@@ -84,6 +84,7 @@
         "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
         "model": "deepseek-v4-flash:cloud",
         "compat": "openai",
+        "max_tokens": 65536,
         "timeout_ms": 90000,
         "connect_timeout_ms": 90000,
         "ttft_ms": 60000,

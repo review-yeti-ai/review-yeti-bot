@@ -45,15 +45,18 @@ if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'o
     raise SystemExit('active provider weights must keep the single Ollama lane at weight 1')
 # Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
 # versus unset at 0.750 with 7/72. Operator 2026-09-03: keep live effort at 'high'
-# (none makes the panel too weak). Never 'max'. Never cap max_tokens; wall-clock
-# guards (timeout_ms, stall_ms) bound generation. Unlimited tokens + concurrency 6
-# keep high from starving findings JSON the way the 24576 cap did.
+# (none makes the panel too weak). Never 'max'. Operator 2026-09-03 (REL-525):
+# with NO max_tokens on the wire the provider's own limit ended high-effort
+# reasoning at finish_reason=length with empty content on 3 of 6 lanes (run
+# 33785366231), while the old 24576 cap starved the answer. Live transports must
+# declare an explicit budget of at least 65536 tokens; small caps stay forbidden.
+# Wall-clock guards (timeout_ms, stall_ms, max_wall_clock_ms) still bound time.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
 if any(item.get('reasoning_effort') != 'high' for item in transports):
     raise SystemExit("live transports must use reasoning_effort 'high'")
-if any('max_tokens' in item for item in transports):
-    raise SystemExit('live transports must not cap max_tokens; wall-clock guards bound generation')
+if any(not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 65536 for item in transports):
+    raise SystemExit('live transports must declare an explicit max_tokens budget of at least 65536')
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
 synthetic = next((item for item in configured_transports if item.get('name') == 'synthetic'), None)
