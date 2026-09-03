@@ -37,12 +37,12 @@ configured_transports = review.get('transports', [])
 if any(type(item.get('enabled')) is not bool for item in configured_transports):
     raise SystemExit('every configured transport must declare enabled as a boolean')
 transports = [item for item in configured_transports if item.get('enabled') is True]
-if [item.get('name') for item in transports] != ['ollama']:
-    raise SystemExit('policy must be Ollama-only (operator 2026-09-03: OpenRouter retired)')
+if [item.get('name') for item in transports] != ['bifrost']:
+    raise SystemExit('policy must be Bifrost-only (operator 2026-09-03: Bifrost LLM gateway primary)')
 if review.get('dispatch_mode') != 'ordered':
-    raise SystemExit('policy must use ordered persona dispatch for the Ollama-only default')
-if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'ollama': 1}:
-    raise SystemExit('active provider weights must keep the single Ollama lane at weight 1')
+    raise SystemExit('policy must use ordered persona dispatch for the Bifrost-only default')
+if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'bifrost': 1}:
+    raise SystemExit('active provider weights must keep the single Bifrost lane at weight 1')
 # Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
 # versus unset at 0.750 with 7/72. Never 'max'. Operator 2026-09-03 (REL-525):
 # with NO max_tokens on the wire the provider's own limit ended high-effort
@@ -60,14 +60,15 @@ if any(item.get('reasoning_effort') not in ('medium', 'none') for item in transp
     raise SystemExit("live transports must use reasoning_effort 'medium' or 'none' (REL-525: 'high' overran the 65536 budget on 2 of 6 lanes)")
 if any(not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 65536 for item in transports):
     raise SystemExit('live transports must declare an explicit max_tokens budget of at least 65536')
+bifrost = next((item for item in configured_transports if item.get('name') == 'bifrost'), None)
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
 synthetic = next((item for item in configured_transports if item.get('name') == 'synthetic'), None)
 openrouter = next((item for item in configured_transports if item.get('name') == 'openrouter-primary'), None)
-if not openrouter or not ollama or not gemini or not synthetic:
-    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, and Synthetic transports (declared, disabled except Ollama)')
-if gemini.get('enabled') is not False or ollama.get('enabled') is not True:
-    raise SystemExit('Ollama must be the only enabled transport; Gemini must stay declared-but-disabled')
+if not openrouter or not ollama or not gemini or not synthetic or not bifrost:
+    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, Synthetic, and Bifrost transports')
+if gemini.get('enabled') is not False or ollama.get('enabled') is not False or bifrost.get('enabled') is not True:
+    raise SystemExit('Bifrost must be the only enabled transport; Gemini and Ollama must stay declared-but-disabled')
 if synthetic is None or synthetic.get('enabled') is not False:
     raise SystemExit('Synthetic must be declared-but-disabled (retired)')
 if openrouter is None or openrouter.get('enabled') is not False:
@@ -465,7 +466,7 @@ review = policy['review_yeti']
 review['openrouter_ttft_ms'] = '30000'
 next(item for item in review['transports'] if item['name'] == 'openrouter-primary')['ttft_ms'] = 30_000
 if stream_scope == 'transport':
-    next(item for item in review['transports'] if item['name'] == 'ollama')['stream'] = False
+    next(item for item in review['transports'] if item['name'] == 'bifrost')['stream'] = False
 elif stream_scope == 'global':
     review['openrouter_stream'] = 'false'
 else:
@@ -502,8 +503,8 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['ollama']:
-    raise SystemExit('base64 transport plan must be Ollama-only (operator 2026-09-03)')
+if [item.get('name') for item in plan] != ['bifrost']:
+    raise SystemExit('base64 transport plan must be Bifrost-only (operator 2026-09-03)')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
@@ -705,16 +706,15 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['ollama']:
-    raise SystemExit('Example API must emit only the Ollama transport (operator 2026-09-02: no OpenRouter fallback)')
-ollama = transports[0]
-if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('capacity_wait_timeout_ms'), ollama.get('connect_timeout_ms'), ollama.get('max_wall_clock_ms')) != (6, 'provider', 30000, 90000, 900000):
-    raise SystemExit('Example API Ollama admission must cover the six-persona panel, a 90s connect deadline, and a 15-minute live thinking stream')
+if [transport['name'] for transport in transports] != ['bifrost']:
+    raise SystemExit('Example API must emit only the Bifrost transport (operator 2026-09-03)')
+bifrost = transports[0]
+if (bifrost.get('max_in_flight'), bifrost.get('concurrency_scope'), bifrost.get('capacity_wait_timeout_ms'), bifrost.get('connect_timeout_ms'), bifrost.get('max_wall_clock_ms')) != (6, 'provider', 30000, 90000, 900000):
+    raise SystemExit('Example API Bifrost admission must cover the six-persona panel, a 90s connect deadline, and a 15-minute live thinking stream')
 PY
-echo "[cisco-ollama-primary] passed"
+echo "[cisco-bifrost-primary] passed"
 
-# Ollama-only set covers example-release, example-meta, and example-infra too
-# (operator directive 2026-09-02: OpenRouter removed from the live path).
+# Bifrost set covers example-release, example-meta, and example-infra too
 for repo in exampleorg/example-release exampleorg/example-meta exampleorg/example-infra; do
   repo_output="$tmp_dir/${repo##*/}-policy.output"
   (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY="$repo" GITHUB_OUTPUT="$repo_output" node emit-policy.mjs)
@@ -726,12 +726,12 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['ollama']:
-    raise SystemExit(f'{sys.argv[2]} must emit only the Ollama transport (operator directive 2026-09-02)')
+if [transport['name'] for transport in transports] != ['bifrost']:
+    raise SystemExit(f'{sys.argv[2]} must emit only the Bifrost transport (operator directive 2026-09-03)')
 if transports[0].get('max_in_flight') != 6 or transports[0].get('connect_timeout_ms') != 90000:
-    raise SystemExit(f'{sys.argv[2]} Ollama admission must cover the six-persona panel and a 90s connect deadline')
+    raise SystemExit(f'{sys.argv[2]} Bifrost admission must cover the six-persona panel and a 90s connect deadline')
 PY
-  echo "[$repo ollama-primary] passed"
+  echo "[$repo bifrost-primary] passed"
 done
 
 # REL-550: review_yeti.incremental gates the "trusted repair delta" mode's repository

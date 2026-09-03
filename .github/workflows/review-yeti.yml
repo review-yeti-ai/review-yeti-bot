@@ -164,6 +164,7 @@ jobs:
         if: steps.policy.outputs.passthrough != 'true'
         working-directory: .exampleorg-review-actions
         env:
+          BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY || secrets.BIFROST_PR_REVIEW_API_KEY }}
           GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
@@ -232,6 +233,7 @@ jobs:
         if: steps.policy.outputs.passthrough != 'true'
         uses: ./.review-yeti-bot
         env:
+          BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY || secrets.BIFROST_PR_REVIEW_API_KEY }}
           GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
@@ -241,7 +243,7 @@ jobs:
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
-          llm-api-key: ${{ inputs.central_execution && secrets.OLLAMA_PR_REVIEW_API_KEY || secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          llm-api-key: ${{ inputs.central_execution && (secrets.REVIEW_YETI_BIFROST_API_KEY || secrets.BIFROST_PR_REVIEW_API_KEY || secrets.OLLAMA_PR_REVIEW_API_KEY) || secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
           model: ${{ steps.smoke.outputs.resolved_model }}

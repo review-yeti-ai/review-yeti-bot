@@ -98,7 +98,9 @@ jobs:
           grep -Fq '"name": "fireworks"' policy/review-yeti.json
           jq -e '.review_yeti.transports[] | select(.name == "fireworks") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "ollama"' policy/review-yeti.json
-          jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == true' policy/review-yeti.json >/dev/null
+          jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == false' policy/review-yeti.json >/dev/null
+          grep -Fq '"name": "bifrost"' policy/review-yeti.json
+          jq -e '.review_yeti.transports[] | select(.name == "bifrost") | .enabled == true' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "synthetic"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-primary"' policy/review-yeti.json
           grep -Fq '"model": "deepseek/deepseek-v4-flash-0731"' policy/review-yeti.json
@@ -114,6 +116,8 @@ jobs:
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
           grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml
+          grep -Fq 'BIFROST_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'secrets.REVIEW_YETI_BIFROST_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'GEMINI_API_KEY:' .github/workflows/review-yeti.yml

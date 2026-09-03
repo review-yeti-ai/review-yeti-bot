@@ -82,27 +82,31 @@ for (const transport of review.transports) {
   }
   validateTransportEnvelope(transport);
 }
-const expectedTransportNames = ['ollama'];
+const expectedTransportNames = ['bifrost'];
 if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
   throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
 }
 if (review.dispatch_mode !== 'ordered') {
-  throw new Error('policy must use ordered Ollama-only dispatch for every repository');
+  throw new Error('policy must use ordered Bifrost dispatch for every repository');
 }
 const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
 if (!fireworksTransport || fireworksTransport.enabled !== false) {
   throw new Error('Fireworks must remain declared with enabled: false');
 }
-const ollamaTransport = review.transports.find((transport) => transport.name === 'ollama');
-if (!ollamaTransport
-    || ollamaTransport.max_in_flight !== 6
-    || ollamaTransport.concurrency_scope !== 'provider'
-    || ollamaTransport.capacity_wait_timeout_ms !== 30000
-    || ollamaTransport.connect_timeout_ms !== 90000) {
-  throw new Error('Ollama must use a six-lane ceiling and a 90s connect deadline so concurrent persona streams can establish');
+const bifrostTransport = review.transports.find((transport) => transport.name === 'bifrost');
+if (!bifrostTransport
+    || bifrostTransport.max_in_flight !== 6
+    || bifrostTransport.concurrency_scope !== 'provider'
+    || bifrostTransport.capacity_wait_timeout_ms !== 30000
+    || bifrostTransport.connect_timeout_ms !== 90000) {
+  throw new Error('Bifrost must use a six-lane ceiling and a 90s connect deadline so concurrent persona streams can establish');
 }
-if (ollamaTransport.max_wall_clock_ms !== 900000) {
-  throw new Error('Ollama must allow a 15-minute live thinking stream (max_wall_clock_ms=900000)');
+if (bifrostTransport.max_wall_clock_ms !== 900000) {
+  throw new Error('Bifrost must allow a 15-minute live thinking stream (max_wall_clock_ms=900000)');
+}
+const ollamaTransport = review.transports.find((transport) => transport.name === 'ollama');
+if (!ollamaTransport || ollamaTransport.enabled !== false) {
+  throw new Error('Ollama must remain declared with enabled: false when Bifrost gateway is active');
 }
 if (openrouterTransport.timeout_ms !== openrouterTimeoutMs) {
   throw new Error('openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms');

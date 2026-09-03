@@ -91,6 +91,7 @@ const BASE_URL_CLASSES = new Map([
   ['https://api.synthetic.new/openai/v1', 'direct-synthetic-openai-compatible'],
   ['https://ollama.com/v1', 'direct-ollama-cloud-openai-compatible'],
   ['https://openrouter.ai/api/v1', 'openrouter-gateway'],
+  ['https://llm-gateway.example.com/v1', 'exampleorg-bifrost-openai-compatible'],
 ]);
 
 function assertObject(value, path) {

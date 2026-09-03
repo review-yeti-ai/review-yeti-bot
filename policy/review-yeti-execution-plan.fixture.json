@@ -1,17 +1,17 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "86fce0f704386f01d38285c19b9ad226193546d8d452e9ba7c21ce998c399ea3",
+  "normalized_plan_sha256": "343487781111e34cf5d323090b3f89f3169a8804033f5f772afc6ece714cdb3b",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
     "release_channel": "v1",
     "transport_order": [
-      "ollama"
+      "bifrost"
     ],
     "dispatch": {
       "mode": "ordered",
       "weights": {
-        "ollama": 1
+        "bifrost": 1
       }
     },
     "lane": {
@@ -27,9 +27,9 @@
     },
     "transports": [
       {
-        "name": "ollama",
-        "base_url_class": "direct-ollama-cloud-openai-compatible",
-        "model": "deepseek-v4-flash:cloud",
+        "name": "bifrost",
+        "base_url_class": "exampleorg-bifrost-openai-compatible",
+        "model": "ollama/deepseek-v4-flash:0731",
         "compatibility_mode": "openai",
         "timeouts": {
           "connect_ms": 90000,

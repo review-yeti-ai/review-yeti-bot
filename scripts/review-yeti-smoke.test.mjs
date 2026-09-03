@@ -67,9 +67,10 @@ function policyFixture() {
           provider_routing: EXPECTED_OPENROUTER_ROUTING,
         },
         { name: 'gemini', enabled: false, base_url: EXPECTED_GEMINI_BASE_URL, api_key_env: 'GEMINI_API_KEY', model: EXPECTED_GEMINI_MODEL, compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
-        { name: 'ollama', enabled: true, base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'medium', max_tokens: 65536 },
+        { name: 'bifrost', enabled: true, base_url: 'https://llm-gateway.example.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/deepseek-v4-flash:0731', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 65536 },
         { name: 'synthetic', enabled: false, base_url: EXPECTED_SYNTHETIC_BASE_URL, api_key_env: 'SYNTHETIC_API_KEY', model: EXPECTED_SYNTHETIC_MODEL, compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', quarantine_on_timeout: false, reasoning_effort: 'high' },
         { name: 'fireworks', enabled: false, base_url: 'https://api.fireworks.ai/inference/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'accounts/fireworks/models/deepseek-v4-flash-0731', compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', perf_metrics_in_response: true, reasoning_effort: 'high' },
+        { name: 'ollama', enabled: false, base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'deepseek-v4-flash:cloud', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'medium', max_tokens: 65536 },
       ],
     },
   };
@@ -81,7 +82,7 @@ function policyFixture() {
       ? 2
       : transport.name === 'synthetic'
         ? 5
-        : transport.name === 'ollama'
+        : (transport.name === 'ollama' || transport.name === 'bifrost')
           ? 6
           : 1;
     transport.concurrency_scope = transport.name === 'synthetic' ? 'model' : 'provider';
@@ -89,12 +90,12 @@ function policyFixture() {
       ? 180000
       : transport.name === 'synthetic'
         ? 120000
-        : transport.name === 'ollama'
+        : (transport.name === 'ollama' || transport.name === 'bifrost')
           ? 30000
           : 30000;
     transport.rate_limit = { scope: 'provider', max_retries: 1, max_retry_after_ms: 5000 };
     if (transport.name === 'synthetic') transport.quota_probe = 'synthetic-v2';
-    if (transport.name === 'ollama') {
+    if (transport.name === 'ollama' || transport.name === 'bifrost') {
       transport.quarantine_on_timeout = false;
       transport.max_wall_clock_ms = 900000;
     }
@@ -114,16 +115,16 @@ function policyFixtureWith(enabledTransport) {
   return policy;
 }
 
-test('the smoke contract pins the approved transport order (ollama-only, OpenRouter retired)', () => {
+test('the smoke contract pins the approved transport order (bifrost-only, OpenRouter retired)', () => {
   const policy = policyFixture();
   const transports = validatePolicy(policy);
-  const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
+  const bifrost = policy.review_yeti.transports.find((transport) => transport.name === 'bifrost');
   const gemini = policy.review_yeti.transports.find((transport) => transport.name === 'gemini');
   const openrouter = policy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary');
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
-  assert.deepEqual(EXPECTED_TRANSPORT_ORDER, ['ollama']);
-  assert.equal(ollama.enabled, true);
-  for (const disabled of ['openrouter-primary', 'gemini', 'synthetic', 'fireworks']) {
+  assert.deepEqual(EXPECTED_TRANSPORT_ORDER, ['bifrost']);
+  assert.equal(bifrost.enabled, true);
+  for (const disabled of ['openrouter-primary', 'gemini', 'synthetic', 'fireworks', 'ollama']) {
     const declared = policy.review_yeti.transports.find((transport) => transport.name === disabled);
     assert.equal(declared.enabled, false, `${disabled} must remain declared but disabled`);
   }
@@ -136,32 +137,33 @@ test('the smoke contract pins the approved transport order (ollama-only, OpenRou
   assert.equal(buildRequest(declaredSynthetic).temperature, 0);
   assert.equal(buildRequest(declaredSynthetic).reasoning_effort, 'high');
   assert.equal(buildRequest(declaredSynthetic).stream, true);
-  assert.equal(buildRequest(ollama).stream, true);
+  assert.equal(buildRequest(bifrost).stream, true);
   assert.equal(buildRequest(openrouter).stream, true);
-  assert.equal(buildRequest(ollama).reasoning_effort, 'medium');
+  assert.equal(buildRequest(bifrost).reasoning_effort, 'medium');
   assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
 });
 
-test('Example API resolves Ollama-only and a 90s connect deadline (no OpenRouter fallback)', async () => {
+test('Example API resolves Bifrost-only and a 90s connect deadline (no OpenRouter fallback)', async () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const resolved = resolvePolicyForRepository(policy, EXAMPLE_API_REPOSITORY);
   const transports = validatePolicy(resolved, EXAMPLE_API_REPOSITORY);
 
   assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER);
   assert.equal(resolved.review_yeti.dispatch_mode, 'ordered');
-  assert.equal(transports[0].name, 'ollama');
+  assert.equal(transports[0].name, 'bifrost');
   assert.equal(transports[0].max_in_flight, 6);
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
   assert.equal(transports[0].connect_timeout_ms, 90000);
-  assert.equal(transports.length, 1, 'ollama must be the only enabled transport');
+  assert.equal(transports.length, 1, 'bifrost must be the only enabled transport');
 
   const calls = [];
   const result = await runSmoke({
     policy,
     env: {
       REVIEW_REPOSITORY: EXAMPLE_API_REPOSITORY,
-      OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
+      BIFROST_PR_REVIEW_API_KEY: 'bifrost-secret',
+      OLLAMA_PR_REVIEW_API_KEY: 'must-not-be-used',
       OPENROUTER_PR_REVIEW_API_KEY: 'must-not-be-used',
       SYNTHETIC_API_KEY: 'must-not-be-used',
       FIREWORKS_PR_REVIEW_API_KEY: 'must-not-be-used',
@@ -177,8 +179,8 @@ test('Example API resolves Ollama-only and a 90s connect deadline (no OpenRouter
     log: () => {},
   });
 
-  assert.deepEqual(calls, ['https://ollama.com/v1/chat/completions']);
-  assert.deepEqual(result.healthy, ['ollama']);
+  assert.deepEqual(calls, ['https://llm-gateway.example.com/v1/chat/completions']);
+  assert.deepEqual(result.healthy, ['bifrost']);
 });
 
 test('isPassthroughRepository respects environment toggles, repository lists, and defaults', (t) => {
@@ -392,6 +394,7 @@ test('the smoke suite probes every configured transport without logging credenti
   const calls = [];
   const logs = [];
   const env = {
+    BIFROST_PR_REVIEW_API_KEY: 'bifrost-secret',
     GEMINI_API_KEY: 'gemini-secret',
     OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
     OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
@@ -405,11 +408,11 @@ test('the smoke suite probes every configured transport without logging credenti
   const result = await runSmoke({ policy: policyFixture(), env, fetchImpl, log: (line) => logs.push(line) });
 
   assert.deepEqual(calls.map((call) => call.url), [
-    'https://ollama.test/v1/chat/completions',
+    'https://llm-gateway.example.com/v1/chat/completions',
   ]);
   assert.deepEqual(result.healthy, EXPECTED_TRANSPORT_ORDER);
   assert.equal(logs.some((line) => line.includes('secret')), false);
-  assert.match(logs.join('\n'), /ollama: healthy elapsed_ms=\d+ http=200/);
+  assert.match(logs.join('\n'), /bifrost: healthy elapsed_ms=\d+ http=200/);
   assert.match(logs.join('\n'), /policy stream=/);
 });
 
@@ -501,12 +504,12 @@ test('the smoke suite keeps bounded auth and model-not-found diagnostics without
 test('the smoke suite treats missing keys as unavailable and still accepts the healthy primary', async () => {
   const result = await runSmoke({
     policy: policyFixture(),
-    env: { OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret', OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret' },
+    env: { BIFROST_PR_REVIEW_API_KEY: 'bifrost-secret', OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret' },
     fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '```json\n{"ok":true,"review":"SMOKE_OK"}\n```' } }] }) }),
     log: () => {},
   });
 
-  assert.deepEqual(result.healthy, ['ollama']);
+  assert.deepEqual(result.healthy, ['bifrost']);
   assert.deepEqual(result.results.map((result) => result.status), ['healthy']);
 });
 
@@ -532,13 +535,13 @@ test('the smoke suite rejects policy drift before any network request', () => {
   const committedOrder = policy.review_yeti.transports
     .filter((transport) => transport.enabled)
     .map((transport) => transport.name);
-  assert.deepEqual(committedOrder, ['ollama'], 'committed policy must be ordered ollama-only');
+  assert.deepEqual(committedOrder, ['bifrost'], 'committed policy must be ordered bifrost-only');
   assert.deepEqual(committedOrder, EXAMPLE_API_TRANSPORT_ORDER, 'the committed order must equal the single allowed transport order');
   // Drift detection: any deviation from the single allowed order is contract
   // drift, checked by emit-policy.mjs before any network request (a second
-  // enabled lane, a renamed lane, or an ollama-not-first declaration).
+  // enabled lane, a renamed lane, or a bifrost-not-first declaration).
   const drifted = policyFixture();
-  drifted.review_yeti.transports.find((transport) => transport.name === 'ollama').enabled = false;
+  drifted.review_yeti.transports.find((transport) => transport.name === 'bifrost').enabled = false;
   drifted.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary').enabled = true;
   const driftedOrder = drifted.review_yeti.transports
     .filter((transport) => transport.enabled)
@@ -546,7 +549,7 @@ test('the smoke suite rejects policy drift before any network request', () => {
   assert.notEqual(
     JSON.stringify(driftedOrder),
     JSON.stringify(EXAMPLE_API_TRANSPORT_ORDER),
-    're-enabled OpenRouter in place of Ollama is drift',
+    're-enabled OpenRouter in place of Bifrost is drift',
   );
 });
 
@@ -637,22 +640,22 @@ test('the smoke suite rejects a provider allow-list before any network request',
 // (real failover, and it must be honest that this happened), and both down (still a hard fail --
 // this suite never silently green-lights a run with zero working transports).
 
-test('resolveTransport selects the healthy ollama primary (no-op failover)', () => {
+test('resolveTransport selects the healthy bifrost primary (no-op failover)', () => {
   const transports = policyFixture().review_yeti.transports;
   const resolved = resolveTransport(transports, EXPECTED_TRANSPORT_ORDER);
-  assert.equal(resolved.name, 'ollama');
+  assert.equal(resolved.name, 'bifrost');
 });
 
 test('resolveTransport ignores retired lanes even when reported healthy', () => {
   const transports = policyFixture().review_yeti.transports;
-  const resolved = resolveTransport(transports, ['openrouter-primary', 'synthetic', 'ollama']);
-  assert.equal(resolved.name, 'ollama');
+  const resolved = resolveTransport(transports, ['openrouter-primary', 'synthetic', 'bifrost', 'ollama']);
+  assert.equal(resolved.name, 'bifrost');
 });
 
 test('resolveTransport keeps direct order while excluding verified fallback providers', () => {
   const transports = policyFixture().review_yeti.transports;
-  // With the ollama-only default, ollama is the primary and the only selectable lane.
-  assert.equal(resolveTransport(transports, ['ollama']).name, 'ollama');
+  // With the bifrost-only default, bifrost is the primary and the only selectable lane.
+  assert.equal(resolveTransport(transports, ['bifrost']).name, 'bifrost');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
   assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
 });
@@ -664,9 +667,9 @@ test('resolveTransport returns null when nothing is healthy (caller must hard-fa
 
 test('selectHealthyTransports removes providers that failed preflight while preserving policy order', () => {
   const transports = policyFixture().review_yeti.transports;
-  const selected = selectHealthyTransports(transports, ['ollama']);
+  const selected = selectHealthyTransports(transports, ['bifrost']);
 
-  assert.deepEqual(selected.map((transport) => transport.name), ['ollama']);
+  assert.deepEqual(selected.map((transport) => transport.name), ['bifrost']);
   assert.deepEqual(
     JSON.parse(Buffer.from(encodeTransportPlan(selected), 'base64').toString('utf8')),
     selected,
@@ -725,11 +728,11 @@ test('transport helpers fail closed when enabled is missing', () => {
   assert.deepEqual(selectHealthyTransports([undeclared], ['synthetic']), []);
 });
 
-test('ollama smoke first-byte budget uses max_wall_clock_ms instead of OpenRouter TTFT', async () => {
+test('bifrost smoke first-byte budget uses max_wall_clock_ms instead of OpenRouter TTFT', async () => {
   const calls = [];
   const { healthy } = await runSmoke({
     policy: policyFixture(),
-    env: { OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret' },
+    env: { BIFROST_PR_REVIEW_API_KEY: 'bifrost-secret' },
     timeoutMs: 80,
     ttftMs: 5,
     fetchImpl: async (_url, init) => {
@@ -753,7 +756,7 @@ test('ollama smoke first-byte budget uses max_wall_clock_ms instead of OpenRoute
     log: () => {},
   });
 
-  assert.deepEqual(healthy, ['ollama']);
+  assert.deepEqual(healthy, ['bifrost']);
   assert.equal(calls[0].max_tokens, 65536);
   assert.equal(calls[0].reasoning_effort, 'medium');
 });
@@ -825,34 +828,35 @@ test('runSmoke + resolveTransport: zero healthy transports still throws before a
   await assert.rejects(
     runSmoke({
       policy: policyFixture(),
-      env: { OLLAMA_PR_REVIEW_API_KEY: 'b' },
+      env: { BIFROST_PR_REVIEW_API_KEY: 'b' },
       fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }),
       log: () => {},
     }),
     /no healthy Review Yeti transport/,
   );
 
-  // Restore: the Ollama primary is healthy again and must resolve to a real transport.
+  // Restore: the Bifrost primary is healthy again and must resolve to a real transport.
   const { healthy } = await runSmoke({
     policy: policyFixture(),
-    env: { OLLAMA_PR_REVIEW_API_KEY: 'b' },
+    env: { BIFROST_PR_REVIEW_API_KEY: 'b' },
     fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }) }),
     log: () => {},
   });
   const resolved = resolveTransport(policyFixture().review_yeti.transports, healthy);
-  assert.equal(resolved.name, 'ollama');
+  assert.equal(resolved.name, 'bifrost');
 });
 
 test('the committed policy retains disabled providers as non-admitted transports', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+  const bifrost = policy.review_yeti.transports.find((transport) => transport.name === 'bifrost');
   const gemini = policy.review_yeti.transports.find((transport) => transport.name === 'gemini');
   const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
   const fireworks = policy.review_yeti.transports.find((transport) => transport.name === 'fireworks');
   const openrouter = policy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary');
   const synthetic = policy.review_yeti.transports.find((transport) => transport.name === 'synthetic');
   assert.deepEqual(policy.review_yeti.transports.map((transport) => transport.name), EXPECTED_CONFIGURED_TRANSPORT_ORDER);
-  assert.equal(ollama.enabled, true, 'ollama is the only enabled transport');
-  for (const disabled of [gemini, fireworks, openrouter, synthetic]) {
+  assert.equal(bifrost.enabled, true, 'bifrost is the only enabled transport');
+  for (const disabled of [gemini, fireworks, openrouter, synthetic, ollama]) {
     assert.equal(disabled.enabled, false, `${disabled.name} must stay declared-but-disabled`);
   }
   assert.deepEqual(validatePolicy(policy).map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);

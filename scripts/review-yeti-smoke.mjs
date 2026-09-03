@@ -24,14 +24,15 @@ export {
 } from './repository-policy.mjs';
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
-  'ollama',
+  'bifrost',
 ]);
 export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'openrouter-primary',
   'gemini',
-  'ollama',
+  'bifrost',
   'synthetic',
   'fireworks',
+  'ollama',
 ]);
 export const EXPECTED_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 export const EXPECTED_GEMINI_MODEL = 'gemini-3.7-flash';
@@ -141,13 +142,14 @@ export function validatePolicy(policy, repository = '') {
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
 
+  const bifrost = transports.find((transport) => transport.name === 'bifrost');
   const gemini = transports.find((transport) => transport.name === 'gemini');
   const synthetic = transports.find((transport) => transport.name === 'synthetic');
   const ollama = transports.find((transport) => transport.name === 'ollama');
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
-  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter) {
-    throw new Error('policy must define OpenRouter, Gemini, Ollama, and Synthetic transports');
+  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter || !bifrost) {
+    throw new Error('policy must define OpenRouter, Gemini, Ollama, Synthetic, and Bifrost transports');
   }
   if (gemini.base_url !== EXPECTED_GEMINI_BASE_URL
       || gemini.api_key_env !== 'GEMINI_API_KEY'
@@ -179,24 +181,24 @@ export function validatePolicy(policy, repository = '') {
   }
 
   // 2026-09-03 (REL-525, run 33791242325): at 'high' two of six lanes spent 66,880-67,758
-  // reasoning tokens inside the 65,536 budget and returned no findings JSON. 'medium' keeps
-  // reasoning bounded so the answer fits; 'high' and 'max' are forbidden on the live lane.
-  if (ollama.reasoning_effort !== 'none' && ollama.reasoning_effort !== 'medium') throw new Error("Ollama must use reasoning_effort 'none' or 'medium'");
+  // reasoning tokens inside the 65,536 budget and returned no findings JSON. 'none' or 'medium'
+  // keeps reasoning bounded so the answer fits; 'high' and 'max' are forbidden on the live lane.
+  if (bifrost.reasoning_effort !== 'none' && bifrost.reasoning_effort !== 'medium') throw new Error("Bifrost must use reasoning_effort 'none' or 'medium'");
   // 2026-09-03 telemetry: with no cap, high-effort reasoning ended at finish_reason=length
   // with empty content on half the lanes (provider-side limit); a 24,576 cap starved the
   // answer instead. The live budget must be explicit and large enough for reasoning plus
   // the findings JSON; small caps stay forbidden.
-  if (!Number.isSafeInteger(ollama.max_tokens) || ollama.max_tokens < 65536) {
-    throw new Error('Ollama must declare an explicit completion budget of at least 65536 tokens');
+  if (!Number.isSafeInteger(bifrost.max_tokens) || bifrost.max_tokens < 65536) {
+    throw new Error('Bifrost must declare an explicit completion budget of at least 65536 tokens');
   }
-  if (ollama.max_in_flight !== 6
-      || ollama.concurrency_scope !== 'provider'
-      || ollama.capacity_wait_timeout_ms !== 30000
-      || ollama.dispatch_weight !== 1) {
-    throw new Error('Ollama must use a six-lane provider-scoped ceiling and a bounded 30-second capacity wait');
+  if (bifrost.max_in_flight !== 6
+      || bifrost.concurrency_scope !== 'provider'
+      || bifrost.capacity_wait_timeout_ms !== 30000
+      || bifrost.dispatch_weight !== 1) {
+    throw new Error('Bifrost must use a six-lane provider-scoped ceiling and a bounded 30-second capacity wait');
   }
-  if (ollama.max_wall_clock_ms !== 900000) {
-    throw new Error('Ollama must allow a 15-minute live thinking stream');
+  if (bifrost.max_wall_clock_ms !== 900000) {
+    throw new Error('Bifrost must allow a 15-minute live thinking stream');
   }
 
   // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned

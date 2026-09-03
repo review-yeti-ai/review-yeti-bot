@@ -1,14 +1,8 @@
-// OLLAMA-ONLY IS THE DEFAULT POLICY FOR EVERY REPOSITORY (ADR 0490 accepted;
-// operator directive 2026-09-03 retiring the per-repository Ollama-set
-// concept: OpenRouter is retired org-wide, so there are no special-cased
-// "Ollama repositories" — every consumer inherits the same ordered
-// ['ollama'] policy and `repository_overrides` are gone from central policy).
-// Historical note kept on purpose: ADR 0330 / example-meta #2701 documented an
-// Ollama 60s header timeout causing a required-check BLOCK under Ollama-only;
-// that risk is accepted by the operator under the central-dispatch master-key
-// boundary instead of being mitigated with an OpenRouter fallback.
+// BIFROST GATEWAY IS THE DEFAULT POLICY FOR EVERY REPOSITORY (Operator directive 2026-09-03:
+// Bifrost internal LLM gateway is the primary OpenAI-compatible provider with dedicated virtual key
+// and usage/cost tracking).
 export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
-export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
+export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['bifrost']);
 // Retired vocabulary: this set once selected repositories into the Ollama
 // policy. Kept as an empty set so historical imports keep resolving while
 // every guard now reads the default-order contract instead.

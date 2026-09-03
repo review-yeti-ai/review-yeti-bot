@@ -27,10 +27,10 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(fixture, committedFixture);
   assert.match(fixture.normalized_plan_sha256, /^[0-9a-f]{64}$/);
   assert.equal(fixture.normalized_plan_sha256, sha256(canonicalJson(fixture.plan)));
-  assert.deepEqual(fixture.plan.transport_order, ['ollama']);
+  assert.deepEqual(fixture.plan.transport_order, ['bifrost']);
   assert.deepEqual(fixture.plan.dispatch, {
     mode: 'ordered',
-    weights: { ollama: 1 },
+    weights: { bifrost: 1 },
   });
   assert.deepEqual(fixture.plan.scope, {
     max_diff_chars: 2000000,
@@ -40,21 +40,22 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.equal(fixture.plan.lane.max_review_assignments, 24);
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
-    ['direct-ollama-cloud-openai-compatible'],
+    ['exampleorg-bifrost-openai-compatible'],
   );
-  const ollama = fixture.plan.transports.find((transport) => transport.name === 'ollama');
-  assert.equal(ollama.reasoning.wire_shape, 'reasoning_effort');
-  assert.equal(ollama.model, 'deepseek-v4-flash:cloud');
-  assert.deepEqual(ollama.capacity, {
+  const bifrost = fixture.plan.transports.find((transport) => transport.name === 'bifrost');
+  assert.equal(bifrost.reasoning.wire_shape, 'reasoning_effort');
+  assert.equal(bifrost.model, 'ollama/deepseek-v4-flash:0731');
+  assert.deepEqual(bifrost.capacity, {
     max_in_flight: 6,
     concurrency_scope: 'provider',
     wait_timeout_ms: 30000,
   });
-  assert.equal(ollama.retry.rate_limit.max_retries, 1);
-  assert.equal(ollama.quarantine.on_timeout, false);
+  assert.equal(bifrost.retry.rate_limit.max_retries, 1);
+  assert.equal(bifrost.quarantine.on_timeout, false);
 
   for (const forbidden of [
     'api_key_env',
+    'BIFROST_PR_REVIEW_API_KEY',
     'FIREWORKS_PR_REVIEW_API_KEY',
     'OLLAMA_PR_REVIEW_API_KEY',
     'OPENROUTER_PR_REVIEW_API_KEY',
@@ -86,25 +87,26 @@ test('derives execution deadlines from each transport handoff contract', () => {
   }
 });
 
-test('Every repository emits the same Ollama-only ordered execution plan (no OpenRouter)', () => {
+test('Every repository emits the same Bifrost-only ordered execution plan (no OpenRouter)', () => {
   const defaultPlan = buildExecutionPlan(committedPolicy);
   const ciscoPlan = buildExecutionPlan(committedPolicy, EXAMPLE_API_REPOSITORY);
 
-  assert.deepEqual(defaultPlan.transport_order, ['ollama']);
+  assert.deepEqual(defaultPlan.transport_order, ['bifrost']);
   assert.equal(defaultPlan.dispatch.mode, 'ordered');
-  assert.deepEqual(ciscoPlan.transport_order, ['ollama']);
-  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { ollama: 1 } });
+  assert.deepEqual(ciscoPlan.transport_order, ['bifrost']);
+  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { bifrost: 1 } });
   assert.deepEqual(ciscoPlan.transports[0].capacity, {
     max_in_flight: 6,
     concurrency_scope: 'provider',
     wait_timeout_ms: 30000,
   });
   assert.equal(ciscoPlan.transports[0].timeouts.connect_ms, 90000);
-  assert.equal(ciscoPlan.transports[0].base_url_class, 'direct-ollama-cloud-openai-compatible');
-  assert.equal(ciscoPlan.transports.length, 1, 'ollama must be the only plan entry');
+  assert.equal(ciscoPlan.transports[0].base_url_class, 'exampleorg-bifrost-openai-compatible');
+  assert.equal(ciscoPlan.transports.length, 1, 'bifrost must be the only plan entry');
   assert.equal(ciscoPlan.transport_order.includes('openrouter-primary'), false);
   assert.equal(ciscoPlan.transport_order.includes('synthetic'), false);
   assert.equal(ciscoPlan.transport_order.includes('fireworks'), false);
+  assert.equal(ciscoPlan.transport_order.includes('ollama'), false);
 });
 
 test('rejects unknown keys at every execution-policy object boundary', () => {
@@ -147,8 +149,8 @@ test('rejects unknown keys at every execution-policy object boundary', () => {
 
 test('rejects an unclassified base URL instead of leaking it into the fixture', () => {
   const policy = clone(committedPolicy);
-  const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
-  ollama.base_url = 'https://credentials.example.invalid/v1';
+  const bifrost = policy.review_yeti.transports.find((transport) => transport.name === 'bifrost');
+  bifrost.base_url = 'https://credentials.example.invalid/v1';
   assert.throws(
     () => buildExecutionPlan(policy),
     /base_url has no approved credential-free class/,

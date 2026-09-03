@@ -78,11 +78,11 @@
         "reasoning_effort": "high"
       },
       {
-        "name": "ollama",
+        "name": "bifrost",
         "enabled": true,
-        "base_url": "https://ollama.com/v1",
-        "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
-        "model": "deepseek-v4-flash:cloud",
+        "base_url": "https://llm-gateway.example.com/v1",
+        "api_key_env": "BIFROST_PR_REVIEW_API_KEY",
+        "model": "ollama/deepseek-v4-flash:0731",
         "compat": "openai",
         "max_tokens": 65536,
         "timeout_ms": 90000,
@@ -153,6 +153,32 @@
         "structured_output": "strict",
         "perf_metrics_in_response": true,
         "reasoning_effort": "high"
+      },
+      {
+        "name": "ollama",
+        "enabled": false,
+        "base_url": "https://ollama.com/v1",
+        "api_key_env": "OLLAMA_PR_REVIEW_API_KEY",
+        "model": "deepseek-v4-flash:cloud",
+        "compat": "openai",
+        "max_tokens": 65536,
+        "timeout_ms": 90000,
+        "connect_timeout_ms": 90000,
+        "ttft_ms": 60000,
+        "stall_ms": 90000,
+        "max_wall_clock_ms": 900000,
+        "stream": true,
+        "dispatch_weight": 1,
+        "max_in_flight": 6,
+        "concurrency_scope": "provider",
+        "capacity_wait_timeout_ms": 30000,
+        "rate_limit": {
+          "scope": "provider",
+          "max_retries": 1,
+          "max_retry_after_ms": 5000
+        },
+        "reasoning_effort": "none",
+        "quarantine_on_timeout": false
       }
     ],
     "openrouter_stream": "true",
