@@ -87,7 +87,7 @@
         "timeout_ms": 90000,
         "connect_timeout_ms": 90000,
         "ttft_ms": 60000,
-        "stall_ms": 20000,
+        "stall_ms": 60000,
         "stream": true,
         "dispatch_weight": 1,
         "max_in_flight": 6,
