@@ -134,15 +134,26 @@ jobs:
         with:
           node-version: 24
 
+      # review-yeti-ai/review-yeti-bot is public; the default token is sufficient.
       - name: Checkout exact Review Yeti action commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: review-yeti-ai/review-yeti-bot
           ref: ${{ inputs.bot_sha }}
           path: review-yeti-bot
-          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          token: ${{ github.token }}
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Mint read-only example-meta token
+        id: ro_token
+        if: inputs.execution_engine == 'pi_workflow'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned
+        with:
+          app-id: ${{ secrets.CT_READONLY_APP_ID }}
+          private-key: ${{ secrets.CT_READONLY_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: example-meta
 
       - name: Checkout exact Pi authoring commit
         if: inputs.execution_engine == 'pi_workflow'
@@ -151,7 +162,7 @@ jobs:
           repository: exampleorg/example-meta
           ref: ${{ inputs.example_meta_sha }}
           path: example-meta
-          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          token: ${{ steps.ro_token.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
 

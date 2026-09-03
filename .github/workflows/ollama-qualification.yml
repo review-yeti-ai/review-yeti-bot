@@ -99,18 +99,14 @@ jobs:
         with:
           node-version: 24
 
-      # REL-539 / ADR 0511: left on CROSS_REPO_TOKEN. review-yeti-ai/review-yeti-bot
-      # is a different GitHub org from exampleorg; the ct-readonly-reader App
-      # (owner: exampleorg) is not installed there, so it cannot mint a token
-      # scoped to this checkout. Needs its own cross-org reader App installation
-      # (or an org-owner App) before this site can migrate off the PAT.
+      # review-yeti-ai/review-yeti-bot is public; the default token is sufficient.
       - name: Checkout exact Review Yeti action commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: review-yeti-ai/review-yeti-bot
           ref: ${{ inputs.bot_sha }}
           path: review-yeti-bot
-          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          token: ${{ github.token }}
           persist-credentials: false
           fetch-depth: 1
 
