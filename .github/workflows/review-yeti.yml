@@ -62,8 +62,31 @@ jobs:
       # tokens carry their own rate bucket (user 57885211's PAT-based
       # CROSS_REPO_TOKEN shares its 5,000 req/hr bucket with interactive use,
       # which 403'd CI and the operator simultaneously on 2026-09-02).
+      #
+      # TEMPORARY fail-open (2026-09-03): the App secrets
+      # (CT_REVIEW_DISPATCH_APP_ID / _PRIVATE_KEY) are not provisioned yet, so
+      # create-github-app-token hard-fails here and EVERY central review dies
+      # before checkout — observed live on main (runs 33704115643, 33704265666,
+      # 33704210453). This step degrades to a loud warning and empty output;
+      # every downstream surface already falls back to github.token via
+      # `steps.ry_token.outputs.token || github.token`. Remove this guard when
+      # the operator provisions the App secrets.
+      - name: Detect Review Yeti App secret presence
+        id: ry_app_presence
+        env:
+          APP_ID_PRESENT: ${{ secrets.CT_REVIEW_DISPATCH_APP_ID != '' }}
+          APP_KEY_PRESENT: ${{ secrets.CT_REVIEW_DISPATCH_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ "${APP_ID_PRESENT}" = "true" ] && [ "${APP_KEY_PRESENT}" = "true" ]; then
+            echo "provisioned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "provisioned=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CT_REVIEW_DISPATCH_APP_ID / _PRIVATE_KEY are not provisioned - Review Yeti falls back to github.token for this run (shared rate bucket). Provision the App secrets to restore the dedicated rate bucket (REL-519)."
+          fi
+
       - name: Mint Review Yeti App token
         id: ry_token
+        if: ${{ steps.ry_app_presence.outputs.provisioned == 'true' }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
         with:
           app-id: ${{ secrets.CT_REVIEW_DISPATCH_APP_ID }}
@@ -76,7 +99,7 @@ jobs:
           repository: exampleorg/example-review-actions
           ref: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
           path: .exampleorg-review-actions
-          token: ${{ steps.ry_token.outputs.token }}
+          token: ${{ steps.ry_token.outputs.token || github.token }}
           persist-credentials: false
           fetch-depth: 1
 
@@ -89,7 +112,7 @@ jobs:
       - name: Validate central dispatch boundary
         if: ${{ inputs.central_execution }}
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           CENTRAL_DISPATCH_PAYLOAD: >-
             {"request_id":"${{ inputs.request_id }}","repository":"${{ inputs.repository }}","pr_number":${{ inputs.pr_number }},"base_sha":"${{ inputs.base_sha }}","head_sha":"${{ inputs.head_sha }}"}
