@@ -3614,10 +3614,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       if (streamEnabled) requestBody.stream = true;
 
       const configuredReasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
-      // First pass is always `none`. High-effort first passes on Ollama spent ~95s
-      // emitting reasoning with no findings JSON; the none retry parsed in 5-9s
-      // (2026-09-03 job 100486626925). Recovery mutates this request body in place.
-      const reasoningEffort = configuredReasoningEffort ? 'none' : configuredReasoningEffort;
+      // Live policy first-pass is `none` (ct-review-actions). Honor an explicit transport
+      // or persona effort so qualification profiles and cassette replay stay exact.
+      const reasoningEffort = downgradeReasoningEffort(configuredReasoningEffort, fallbackAttempt);
       if (reasoningEffort) {
         if (isOpenRouterTransport) requestBody.reasoning = { effort: reasoningEffort };
         else requestBody.reasoning_effort = reasoningEffort;

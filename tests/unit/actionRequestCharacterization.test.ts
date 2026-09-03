@@ -249,7 +249,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         timeout_ms: 120000,
         body: {
           ...common('accounts/fireworks/models/deepseek-v4-flash-0731'),
-          reasoning_effort: 'none',
+          reasoning_effort: 'high',
           perf_metrics_in_response: true,
         },
       },
@@ -261,7 +261,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
         body: {
           ...common('deepseek-v4-flash:cloud', 0),
           seed: 144208749,
-          reasoning_effort: 'none',
+          reasoning_effort: 'high',
         },
       },
       'openrouter-fallback': {
@@ -276,7 +276,7 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
             { role: 'user', content: '<panel-evidence-prompt>' },
             { role: 'user', content: '<panel-assignment-prompt>' },
           ],
-          reasoning: { effort: 'none' },
+          reasoning: { effort: 'high' },
           session_id: 'review-yeti-v1-11a37010bca3ef6ace2fb892cd3d5969b2d4eff6fa878bce',
           prompt_cache_key: 'review-yeti-v1-11a37010bca3ef6ace2fb892cd3d5969b2d4eff6fa878bce',
           provider: {

@@ -234,9 +234,9 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[0].body.max_tokens).toBeUndefined();
     expect(requestBodies[1].body.max_tokens).toBeUndefined();
     expect(requestBodies[2].body.max_tokens).toBeUndefined();
-    expect(requestBodies[0].body.reasoning_effort).toBe('none');
+    expect(requestBodies[0].body.reasoning_effort).toBe('high');
     expect(requestBodies[1].body.reasoning_effort).toBe('none');
-    expect(requestBodies[2].body.reasoning_effort).toBe('none');
+    expect(requestBodies[2].body.reasoning_effort).toBe('medium');
   });
 
   it('recovers direct reasoning output before failing over to another provider', async () => {
@@ -282,7 +282,7 @@ describe('Multi-Transport Fast Failover', () => {
     expect(result.transport).toBe('fireworks');
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].max_tokens).toBeUndefined();
-    expect(requestBodies[0].reasoning_effort).toBe('none');
+    expect(requestBodies[0].reasoning_effort).toBe('high');
     expect(requestBodies[1].max_tokens).toBeUndefined();
     expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'none' });
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
@@ -340,7 +340,7 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(requestBodies[0].max_tokens).toBeUndefined();
-    expect(requestBodies[0].reasoning).toEqual({ effort: 'none' });
+    expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
     expect(requestBodies[1].model).toBe('deepseek/deepseek-v4-flash-0731');
     expect(requestBodies[1].max_tokens).toBeUndefined();
     expect(requestBodies[1].reasoning).toEqual({ effort: 'none' });

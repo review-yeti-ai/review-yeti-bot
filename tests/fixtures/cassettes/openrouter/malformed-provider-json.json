@@ -34,7 +34,6 @@
             "type": "json_object"
           },
           "temperature": 0.1,
-          "max_tokens": 1024,
           "stream": false,
           "session_id": "review-yeti-v1-c21721d2e555d2172706500bdfe93ad98f85c2b09eac963c",
           "prompt_cache_key": "review-yeti-v1-c21721d2e555d2172706500bdfe93ad98f85c2b09eac963c"

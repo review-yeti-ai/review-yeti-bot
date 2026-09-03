@@ -705,7 +705,7 @@ describe('reviewWithModel', () => {
     expect(res.findings).toEqual([]);
     expect(calls[0].body).toMatchObject({
       stream: true,
-      reasoning_effort: 'none',
+      reasoning_effort: 'high',
       perf_metrics_in_response: true,
     });
     expect(calls[0].body.max_tokens).toBeUndefined();
@@ -752,7 +752,7 @@ describe('reviewWithModel', () => {
     expect(calls[0].body.messages.find((m: any) => m.role === 'user').content.length).toBeLessThanOrEqual(412_000);
     expect(calls[0].body).toMatchObject({
       stream: true,
-      reasoning_effort: 'none',
+      reasoning_effort: 'high',
       response_format: { type: 'json_object' },
     });
     expect(calls[0].body.max_tokens).toBeUndefined();
