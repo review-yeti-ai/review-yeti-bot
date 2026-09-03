@@ -232,7 +232,11 @@ describe('direct-provider rate limits', () => {
     expect(calls).toBe(2);
     expect(sleeps).toEqual([10]);
     expect(result.recoveryAction).toBe('capacity_wait_retry');
-    expect(result.capacityWaitMs).toBe(10);
+    // capacityWaitMs is measured wall clock (Date.now() - waitStartedMs), not the planned sleep,
+    // so on a loaded runner it lands a millisecond or two past the 10ms it slept. Assert the
+    // floor and a generous ceiling instead of an exact equality that a scheduling hiccup breaks.
+    expect(result.capacityWaitMs).toBeGreaterThanOrEqual(10);
+    expect(result.capacityWaitMs).toBeLessThan(200);
   });
 
   it('retries the same Ollama transport after HTTP 503 without Retry-After', async () => {
@@ -382,13 +386,21 @@ describe('direct-provider rate limits', () => {
     });
 
     expect(calls).toBe(2);
-    expect(sleeps).toEqual([250, 50]);
+    // The first backoff is the fixed 250ms policy step; the second is whatever remains of the
+    // 300ms budget after the wall-clock time actually spent waiting (capacityWaitBudgetMs -
+    // capacityWaitSpentMs). That remainder, and the reported total, drift by a millisecond or two
+    // under runner contention, so bound them instead of pinning exact values.
+    expect(sleeps).toHaveLength(2);
+    expect(sleeps[0]).toBe(250);
+    expect(sleeps[1]).toBeGreaterThan(0);
+    expect(sleeps[1]).toBeLessThanOrEqual(50);
     expect(result).toMatchObject({
       decision: 'ERROR',
       failureClass: 'provider_capacity',
       error: 'provider_capacity_wait_timeout',
-      capacityWaitMs: 300,
     });
+    expect(result.capacityWaitMs).toBeGreaterThanOrEqual(250);
+    expect(result.capacityWaitMs).toBeLessThanOrEqual(300);
   });
 
   it('releases the local Ollama lease before remote-capacity backoff', async () => {
