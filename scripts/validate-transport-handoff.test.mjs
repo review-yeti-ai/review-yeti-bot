@@ -164,14 +164,14 @@ test('validates a repository-resolved transport handoff against the same overrid
   const overrides = {
     [repository]: {
       dispatch_mode: 'ordered',
-      enabled_transports: ['ollama', 'openrouter-primary'],
+      enabled_transports: ['ollama'],
     },
   };
   const resolvedOllama = { ...ollama, enabled: true };
 
   const result = runValidator(
     [openrouter, ollama],
-    [resolvedOllama, openrouter],
+    [resolvedOllama],
     undefined,
     false,
     repository,
@@ -179,7 +179,7 @@ test('validates a repository-resolved transport handoff against the same overrid
   );
 
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-  assert.match(result.stdout, /transport_plan_entries=2 stream=true/);
+  assert.match(result.stdout, /transport_plan_entries=1 stream=true/);
 
   const unresolved = runValidator(
     [openrouter, ollama],

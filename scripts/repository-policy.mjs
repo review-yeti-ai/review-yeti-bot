@@ -1,9 +1,12 @@
-// Repositories pinned to Ollama-primary ordered dispatch (ADR 0490, API-3157).
-// Ollama stays first. OpenRouter is the required pre-flight fallback (ADR 0330):
-// Ollama-only made a 60s header timeout on one persona a required-check BLOCK
-// (example-meta #2701, 2026-09-02). Do not revert to OpenRouter-primary.
+// Repositories pinned to Ollama-only ordered dispatch (ADR 0490, operator
+// directive 2026-09-02: OpenRouter removed from the live review path
+// entirely — it is not a fallback lane). Historical note kept on purpose:
+// ADR 0330 / example-meta #2701 documented an Ollama 60s header timeout causing a
+// required-check BLOCK under Ollama-only; that risk is accepted by the
+// operator under the central-dispatch master-key boundary instead of being
+// mitigated with an OpenRouter fallback.
 export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
-export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama', 'openrouter-primary']);
+export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['ollama']);
 export const OLLAMA_REPOSITORIES = Object.freeze(new Set([
   EXAMPLE_API_REPOSITORY,
   'exampleorg/example-infra',

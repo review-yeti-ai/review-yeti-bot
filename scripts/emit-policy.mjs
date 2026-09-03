@@ -79,13 +79,13 @@ for (const transport of review.transports) {
   validateTransportEnvelope(transport);
 }
 const expectedTransportNames = OLLAMA_REPOSITORIES.has(targetRepository)
-  ? ['ollama', 'openrouter-primary']
+  ? ['ollama']
   : ['openrouter-primary', 'synthetic'];
 if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
   throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
 }
 if (OLLAMA_REPOSITORIES.has(targetRepository) && review.dispatch_mode !== 'ordered') {
-  throw new Error(`${targetRepository} must use ordered Ollama-primary dispatch`);
+  throw new Error(`${targetRepository} must use ordered Ollama-only dispatch`);
 }
 const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
 if (!fireworksTransport || fireworksTransport.enabled !== false) {

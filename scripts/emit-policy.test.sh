@@ -699,16 +699,16 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['ollama', 'openrouter-primary']:
-    raise SystemExit('Example API must emit Ollama-primary with OpenRouter fallback')
+if [transport['name'] for transport in transports] != ['ollama']:
+    raise SystemExit('Example API must emit only the Ollama transport (operator 2026-09-02: no OpenRouter fallback)')
 ollama = transports[0]
 if (ollama.get('max_in_flight'), ollama.get('concurrency_scope'), ollama.get('capacity_wait_timeout_ms'), ollama.get('connect_timeout_ms')) != (6, 'provider', 30000, 90000):
     raise SystemExit('Example API Ollama admission must cover the six-persona panel and a 90s connect deadline')
 PY
 echo "[cisco-ollama-primary] passed"
 
-# Ollama-primary set covers example-release, example-meta, and example-infra too
-# (API-3157: restore OpenRouter as ordered fallback; keep Ollama first).
+# Ollama-only set covers example-release, example-meta, and example-infra too
+# (operator directive 2026-09-02: OpenRouter removed from the live path).
 for repo in exampleorg/example-release exampleorg/example-meta exampleorg/example-infra; do
   repo_output="$tmp_dir/${repo##*/}-policy.output"
   (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY="$repo" GITHUB_OUTPUT="$repo_output" node emit-policy.mjs)
@@ -720,8 +720,8 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['ollama', 'openrouter-primary']:
-    raise SystemExit(f'{sys.argv[2]} must emit Ollama-primary with OpenRouter fallback')
+if [transport['name'] for transport in transports] != ['ollama']:
+    raise SystemExit(f'{sys.argv[2]} must emit only the Ollama transport (operator directive 2026-09-02)')
 if transports[0].get('max_in_flight') != 6 or transports[0].get('connect_timeout_ms') != 90000:
     raise SystemExit(f'{sys.argv[2]} Ollama admission must cover the six-persona panel and a 90s connect deadline')
 PY

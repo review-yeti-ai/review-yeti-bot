@@ -119,7 +119,7 @@ test('the smoke contract pins the approved transport order', () => {
   assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
 });
 
-test('Example API resolves Ollama-primary with OpenRouter fallback and a 90s connect deadline', async () => {
+test('Example API resolves Ollama-only and a 90s connect deadline (no OpenRouter fallback)', async () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const resolved = resolvePolicyForRepository(policy, EXAMPLE_API_REPOSITORY);
   const transports = validatePolicy(resolved, EXAMPLE_API_REPOSITORY);
@@ -131,7 +131,7 @@ test('Example API resolves Ollama-primary with OpenRouter fallback and a 90s con
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
   assert.equal(transports[0].connect_timeout_ms, 90000);
-  assert.equal(transports[1].name, 'openrouter-primary');
+  assert.equal(transports.length, 1, 'ollama must be the only enabled transport');
 
   const calls = [];
   const result = await runSmoke({
@@ -139,7 +139,7 @@ test('Example API resolves Ollama-primary with OpenRouter fallback and a 90s con
     env: {
       REVIEW_REPOSITORY: EXAMPLE_API_REPOSITORY,
       OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
-      OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
+      OPENROUTER_PR_REVIEW_API_KEY: 'must-not-be-used',
       SYNTHETIC_API_KEY: 'must-not-be-used',
       FIREWORKS_PR_REVIEW_API_KEY: 'must-not-be-used',
     },
@@ -154,14 +154,11 @@ test('Example API resolves Ollama-primary with OpenRouter fallback and a 90s con
     log: () => {},
   });
 
-  assert.deepEqual(calls, [
-    'https://ollama.com/v1/chat/completions',
-    'https://openrouter.ai/api/v1/chat/completions',
-  ]);
-  assert.deepEqual(result.healthy, ['ollama', 'openrouter-primary']);
+  assert.deepEqual(calls, ['https://ollama.com/v1/chat/completions']);
+  assert.deepEqual(result.healthy, ['ollama']);
 });
 
-test('example-release, example-meta, and example-infra keep Ollama-primary ordered dispatch (API-3157)', () => {
+test('example-release, example-meta, and example-infra keep Ollama-only ordered dispatch (operator 2026-09-02)', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   assert.deepEqual(
     [...OLLAMA_REPOSITORIES].sort(),
@@ -567,6 +564,9 @@ test('resolveTransport keeps direct order while excluding verified fallback prov
   }
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
   assert.deepEqual(openrouter.provider_routing.ignore, ['morph', 'fireworks']);
+  // Ollama is disabled in the default striped policy: it is reachable only
+  // through a repository override (ordered Ollama-only), never the default.
+  assert.equal(resolveTransport(transports, ['ollama']), null);
 });
 
 test('resolveTransport returns null when nothing is healthy (caller must hard-fail, not run)', () => {

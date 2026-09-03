@@ -180,29 +180,25 @@
     "exampleorg/example-api": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama",
-        "openrouter-primary"
+        "ollama"
       ]
     },
     "exampleorg/example-infra": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama",
-        "openrouter-primary"
+        "ollama"
       ]
     },
     "exampleorg/example-release": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama",
-        "openrouter-primary"
+        "ollama"
       ]
     },
     "exampleorg/example-meta": {
       "dispatch_mode": "ordered",
       "enabled_transports": [
-        "ollama",
-        "openrouter-primary"
+        "ollama"
       ]
     }
   },

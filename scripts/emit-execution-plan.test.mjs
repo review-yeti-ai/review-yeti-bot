@@ -105,14 +105,14 @@ test('derives execution deadlines from each transport handoff contract', () => {
   }
 });
 
-test('Example API emits an Ollama-primary ordered execution plan with OpenRouter fallback', () => {
+test('Ollama repositories emit an Ollama-only ordered execution plan (no OpenRouter)', () => {
   const defaultPlan = buildExecutionPlan(committedPolicy);
   const ciscoPlan = buildExecutionPlan(committedPolicy, EXAMPLE_API_REPOSITORY);
 
   assert.deepEqual(defaultPlan.transport_order, ['openrouter-primary', 'synthetic']);
   assert.equal(defaultPlan.dispatch.mode, 'striped');
-  assert.deepEqual(ciscoPlan.transport_order, ['ollama', 'openrouter-primary']);
-  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { ollama: 1, 'openrouter-primary': 2 } });
+  assert.deepEqual(ciscoPlan.transport_order, ['ollama']);
+  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { ollama: 1 } });
   assert.deepEqual(ciscoPlan.transports[0].capacity, {
     max_in_flight: 6,
     concurrency_scope: 'provider',
@@ -120,7 +120,8 @@ test('Example API emits an Ollama-primary ordered execution plan with OpenRouter
   });
   assert.equal(ciscoPlan.transports[0].timeouts.connect_ms, 90000);
   assert.equal(ciscoPlan.transports[0].base_url_class, 'direct-ollama-cloud-openai-compatible');
-  assert.equal(ciscoPlan.transports[1].name, 'openrouter-primary');
+  assert.equal(ciscoPlan.transports.length, 1, 'ollama must be the only plan entry');
+  assert.equal(ciscoPlan.transport_order.includes('openrouter-primary'), false);
   assert.equal(ciscoPlan.transport_order.includes('synthetic'), false);
   assert.equal(ciscoPlan.transport_order.includes('fireworks'), false);
 });
