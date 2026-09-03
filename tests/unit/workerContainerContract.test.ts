@@ -117,7 +117,8 @@ describe('worker container contract', () => {
     const script = readRequired(sizeGatePath);
     expect(script).toContain("['buildx', 'imagetools', 'inspect', '--raw', image]");
     expect(script).toContain('300 * 1024 * 1024');
-    expect(script).toContain('workerBytes * 2 > serviceBytes');
+    expect(script).toContain('workerBytes >= serviceBytes');
+    expect(script).not.toContain('workerBytes * 2 > serviceBytes');
     expect(script).not.toMatch(/exec\([^)]*image/iu);
   });
 

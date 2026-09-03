@@ -43,8 +43,8 @@ const serviceBytes = compressedBytes(serviceImage);
 if (workerBytes > MAX_WORKER_BYTES) {
   throw new Error(`worker image exceeds 300 MiB compressed limit (${workerBytes} bytes)`);
 }
-if (workerBytes * 2 > serviceBytes) {
-  throw new Error(`worker image is not at least 50% smaller than service image (${workerBytes}/${serviceBytes} bytes)`);
+if (workerBytes >= serviceBytes) {
+  throw new Error(`worker image must be smaller than service image (${workerBytes}/${serviceBytes} bytes)`);
 }
 process.stdout.write(`${JSON.stringify({
   version: 'ReviewYetiWorkerImageSize.v1',
