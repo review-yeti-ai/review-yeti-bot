@@ -318,14 +318,6 @@ jobs:
 
           echo "- \`docker pull ghcr.io/review-yeti-ai/review-yeti-worker:latest\`" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enforce worker image size gates
-        env:
-          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
-          SERVICE_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
-        run: |
-          set -euo pipefail
-          node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
-
       - name: Make GHCR packages public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -341,6 +333,14 @@ jobs:
               echo "::warning::Could not set ${pkg} public via API. Set it at https://github.com/orgs/review-yeti-ai/packages/container/${pkg}/settings"
             fi
           done
+
+      - name: Enforce worker image size gates
+        env:
+          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
+          SERVICE_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
 
   build-and-deploy:
     needs: test
