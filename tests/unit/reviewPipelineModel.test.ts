@@ -1695,7 +1695,7 @@ describe('reviewWithModel', () => {
     ]));
   });
 
-  it('retries an Ollama reasoning-only content stall once at the requested reasoning effort', async () => {
+  it('retries an Ollama reasoning-only content stall once with reasoning effort reduced to reserve output budget (REL-547)', async () => {
     const calls: any[] = [];
     const reasoningOnlyStalled = () => ({
       ok: true,
@@ -1759,10 +1759,14 @@ describe('reviewWithModel', () => {
     });
     expect(calls).toHaveLength(2);
     expect(calls[0].reasoning_effort).toBe('high');
-    expect(calls[1].reasoning_effort).toBe('high');
+    // REL-547: a reasoning-only stall means reasoning alone is consuming the completion
+    // budget with zero content emitted. Retrying at the same 'high' effort reproduces the
+    // identical race, so the bounded retry must floor reasoning effort instead.
+    expect(calls[1].reasoning_effort).toBe('low');
+    expect(calls[1].max_tokens).toBe(pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
     expect(calls[1].messages[0].content).toContain('TIMEOUT RECOVERY');
-    expect(calls[1].messages[0].content).toContain('Keep the configured reasoning effort');
-    expect(calls[1].messages[0].content).not.toContain('Disable reasoning');
+    expect(calls[1].messages[0].content).toContain('Reasoning effort has been reduced');
+    expect(calls[1].messages[0].content).not.toContain('Keep the configured reasoning effort');
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         attempt: 1,
@@ -1777,7 +1781,7 @@ describe('reviewWithModel', () => {
         attempt: 2,
         outcome: 'parsed',
         failureClass: null,
-        reasoningEffort: 'high',
+        reasoningEffort: 'low',
       }),
     ]));
   });
@@ -2524,7 +2528,12 @@ describe('reviewWithModel', () => {
     });
 
     expect(res.decision).toBe('APPROVE');
-    expect(requestBodies.map((body) => body.reasoning_effort)).toEqual(['high', 'high']);
+    // Attempt 1 ran unlimited (no max_tokens) at the configured 'high' effort and burned the
+    // whole completion budget on reasoning (REL-547: finishReason 'length', contentPresent
+    // false). The recovery retry must not repeat that exact shape: it floors reasoning effort
+    // and establishes a bounded max_tokens so reasoning cannot starve the findings JSON again.
+    expect(requestBodies.map((body) => body.reasoning_effort)).toEqual(['high', 'low']);
+    expect(requestBodies.map((body) => body.max_tokens)).toEqual([undefined, pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS]);
     expect(res.responseAttempts).toEqual([
       expect.objectContaining({
         attempt: 1,
@@ -2549,8 +2558,8 @@ describe('reviewWithModel', () => {
         provider: 'ollama',
         responseStatus: 200,
         failureClass: null,
-        reasoningEffort: 'high',
-        maxOutputTokens: null,
+        reasoningEffort: 'low',
+        maxOutputTokens: pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
         outputTokens: 12,
         outputShape: 'direct_json_object',
         finishReason: 'stop',
@@ -2560,6 +2569,60 @@ describe('reviewWithModel', () => {
       }),
     ]);
     expect(JSON.stringify(res.responseAttempts)).not.toContain('analysis without findings JSON');
+  });
+
+  it('floors reasoning effort and establishes a max_tokens budget when direct format recovery repeats the reasoning-starves-content race (REL-547)', async () => {
+    // Regression test for the live 2026-09-03 outage: the ollama direct transport ran
+    // unlimited (max_tokens undefined) at 'high' reasoning effort, reasoning alone consumed
+    // the entire completion budget on BOTH attempts (finishReason 'length', contentPresent
+    // false), and the lane failed closed with "Model response contained no parseable findings
+    // JSON" because raiseMaxOutputTokens no-op'd on an undefined max_tokens and reasoning
+    // effort was never downgraded on the same-transport retry. This asserts the retry request
+    // is no longer byte-identical to the first attempt.
+    const requestBodies: any[] = [];
+    let calls = 0;
+    const fetchImplementation = async (_url: string, init: any) => {
+      requestBodies.push(JSON.parse(init.body));
+      calls += 1;
+      // Both attempts reproduce the exact incident shape: reasoning present, content empty,
+      // finish_reason 'length'. Without the fix, attempt 2 would fail identically to attempt 1.
+      const payload = {
+        usage: { completion_tokens: 40_000 },
+        choices: [{
+          finish_reason: 'length',
+          message: { content: '', reasoning_content: 'reviewing the complete diff'.repeat(1000) },
+        }],
+      };
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => payload,
+      };
+    };
+
+    const res = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'k',
+        model: 'deepseek-v4-flash:cloud',
+        reasoning_effort: 'high',
+      }],
+    });
+
+    expect(calls).toBe(2);
+    expect(res.decision).toBe('ERROR');
+    expect(res.error).toBe('Model response contained no parseable findings JSON.');
+    // The defining assertion: even though both attempts still fail in this adversarial
+    // fixture, the retry must not be a no-op replay of attempt 1's request shape.
+    expect(requestBodies[0].reasoning_effort).toBe('high');
+    expect(requestBodies[0].max_tokens).toBeUndefined();
+    expect(requestBodies[1].reasoning_effort).toBe('low');
+    expect(requestBodies[1].max_tokens).toBe(pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+    expect(requestBodies[1]).not.toEqual(requestBodies[0]);
   });
 
   it('returns response model, provider, and reported usage cost metadata', async () => {

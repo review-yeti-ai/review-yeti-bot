@@ -3,7 +3,13 @@ import path from 'path';
 
 // Load review-pipeline
 const pipelinePath = path.resolve(__dirname, '../../.github/workflows/pipelines/review-pipeline.js');
-const { reviewWithModel, resolveModelConfig, globalRunCircuitBreaker } = require(pipelinePath);
+const {
+  reviewWithModel,
+  resolveModelConfig,
+  globalRunCircuitBreaker,
+  DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
+  DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
+} = require(pipelinePath);
 
 describe('Multi-Transport Fast Failover', () => {
   beforeEach(() => {
@@ -232,10 +238,13 @@ describe('Multi-Transport Fast Failover', () => {
     expect(result.decision).toBe('APPROVE');
     expect(requestBodies).toHaveLength(3);
     expect(requestBodies[0].body.max_tokens).toBeUndefined();
-    expect(requestBodies[1].body.max_tokens).toBeUndefined();
+    // REL-547: the in-place format-recovery retry on the same (fireworks) direct-reasoning
+    // transport must establish a bounded max_tokens and floor reasoning effort, or it repeats
+    // the same unbounded reasoning-vs-content race as the attempt it is recovering from.
+    expect(requestBodies[1].body.max_tokens).toBe(DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
     expect(requestBodies[2].body.max_tokens).toBeUndefined();
     expect(requestBodies[0].body.reasoning_effort).toBe('high');
-    expect(requestBodies[1].body.reasoning_effort).toBe('high');
+    expect(requestBodies[1].body.reasoning_effort).toBe('low');
     expect(requestBodies[2].body.reasoning_effort).toBe('medium');
   });
 
@@ -283,8 +292,10 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].max_tokens).toBeUndefined();
     expect(requestBodies[0].reasoning_effort).toBe('high');
-    expect(requestBodies[1].max_tokens).toBeUndefined();
-    expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'high' });
+    // REL-547: same-transport format recovery now establishes a bounded max_tokens and
+    // floors reasoning effort instead of silently repeating the unbounded first attempt.
+    expect(requestBodies[1].max_tokens).toBe(DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+    expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'low' });
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
@@ -342,7 +353,10 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies[0].max_tokens).toBeUndefined();
     expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
     expect(requestBodies[1].model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(requestBodies[1].max_tokens).toBeUndefined();
+    // REL-547: this recovery path already reduces reasoning to 'none'; it must also
+    // establish the bounded output budget it was always intended to (raiseMaxOutputTokens
+    // previously no-op'd on an undefined max_tokens).
+    expect(requestBodies[1].max_tokens).toBe(DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
     expect(requestBodies[1].reasoning).toEqual({ effort: 'none' });
     expect(requestBodies[1].provider).toEqual({ data_collection: 'deny' });
     expect(requestBodies[1].plugins).toBeUndefined();

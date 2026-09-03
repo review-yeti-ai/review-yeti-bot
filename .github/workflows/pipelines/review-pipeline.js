@@ -3075,10 +3075,15 @@ function assignMaxOutputTokens(requestBody, value) {
 }
 
 function raiseMaxOutputTokens(requestBody, minimum) {
-  if (requestBody.max_tokens === undefined) return;
   const floor = Number(minimum);
   if (!Number.isSafeInteger(floor) || floor < 1) return;
-  requestBody.max_tokens = Math.max(requestBody.max_tokens, floor);
+  // An `undefined` max_tokens means the first pass ran unlimited (PR #423). A
+  // recovery retry must still establish this floor rather than no-op, or the
+  // retry repeats the exact same unbounded reasoning-vs-content race as the
+  // attempt it is meant to recover from.
+  requestBody.max_tokens = requestBody.max_tokens === undefined
+    ? floor
+    : Math.max(requestBody.max_tokens, floor);
 }
 
 function contentFragments(value) {
@@ -3786,13 +3791,20 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         formatRecoveryAttempted = true;
         noteRetryReason('malformed_output');
         raiseMaxOutputTokens(requestBody, DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+        // A malformed/empty response at the configured reasoning effort means
+        // reasoning consumed the completion budget before any content token was
+        // emitted (finishReason "length" with contentPresent false). Retrying at
+        // the same effort reliably reproduces the same race, so the recovery
+        // attempt must floor reasoning effort to guarantee output-budget headroom.
+        requestBody.reasoning_effort = downgradeReasoningEffort(configuredReasoningEffort, REASONING_EFFORT_LEVELS.length);
         appendRecoveryInstructions([
           '',
           'FORMAT RECOVERY:',
           '- Your prior response did not contain parseable findings JSON.',
-          '- Keep the configured reasoning effort and return only {"findings":[]} or the required findings object.',
+          '- Reasoning effort has been reduced to reserve the output budget for the required findings object.',
+          '- Return only {"findings":[]} or the required findings object.',
         ]);
-        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once at the configured reasoning effort before failover...`);
+        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once with reasoning effort reduced to '${requestBody.reasoning_effort}' to reserve output budget before failover...`);
         return true;
       };
       const prepareDirectTimeoutRecovery = () => {
@@ -3800,17 +3812,22 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         formatRecoveryAttempted = true;
         noteRetryReason('timeout');
         recoveryAction = 'bounded_retry';
+        raiseMaxOutputTokens(requestBody, DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+        // Same rationale as prepareDirectFormatRecovery: a transport deadline with
+        // no usable content usually means reasoning alone consumed the budget.
+        // Floor reasoning effort on the retry instead of repeating the same request shape.
+        requestBody.reasoning_effort = downgradeReasoningEffort(configuredReasoningEffort, REASONING_EFFORT_LEVELS.length);
         appendRecoveryInstructions([
           '',
           'TIMEOUT RECOVERY:',
           '- The prior generation produced no usable findings JSON before the transport deadline.',
-          '- Keep the configured reasoning effort and reserve the output budget for the required findings object.',
+          '- Reasoning effort has been reduced to reserve the output budget for the required findings object.',
           '- Re-evaluate the complete diff against the review charter and return the required findings object.',
           '- Do not assume the change is clean; include every finding that meets the review criteria.',
           '- Do not return a summary, decision, or alternate key; the only top-level key is `findings` and its value is an array.',
           '- Do not emit prose or markdown outside the required findings object.',
         ]);
-        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' timed out before producing findings JSON; retrying once at the configured reasoning effort before failover...`);
+        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' timed out before producing findings JSON; retrying once with reasoning effort reduced to '${requestBody.reasoning_effort}' to reserve output budget before failover...`);
         return true;
       };
       const prepareOpenRouterTimeoutRecovery = () => {
@@ -6548,6 +6565,7 @@ module.exports = {
   DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS,
   DIRECT_GENERATION_BUDGET_MULTIPLIER,
   DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
+  DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
   parseDiff,
   abbreviatePath,
   getPRDiffAndContext,
