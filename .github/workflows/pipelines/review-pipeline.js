@@ -107,12 +107,22 @@ const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 5_000;
 const OPENROUTER_PROVIDER_RETRY_TIMEOUT_MS = 30_000;
 const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 // Streaming responses need both an inactivity watchdog and a total generation
-// budget. Without the latter, a provider can emit a never-ending sequence of
-// small deltas and keep a review lane alive indefinitely. The total budget is
-// capped by the admitted transport timeout so the wire contract and the
-// watchdog agree; a bounded recovery attempt, when admitted, gets its own
-// transport window.
-const DEFAULT_STREAM_MAX_WALL_CLOCK_MS = 180_000;
+// budget. Stall/inactivity re-arms on every SSE chunk (reasoning or content).
+// timeout_ms is the connect/request envelope for callers that do not set an
+// explicit max_wall_clock_ms; a live thinking stream may use the full 15-minute
+// ceiling so small and large diffs share one contract instead of a short cap.
+const DEFAULT_STREAM_MAX_WALL_CLOCK_MS = 900_000;
+
+function resolveStreamTotalTimeoutMs(transport, attemptTimeoutMs, streamEnabled) {
+  if (!streamEnabled) return 0;
+  const explicit = Number(
+    transport.maxWallClockMs ?? transport.max_wall_clock_ms ?? transport.stream_max_wall_clock_ms,
+  );
+  if (Number.isSafeInteger(explicit) && explicit > 0) {
+    return Math.min(explicit, DEFAULT_STREAM_MAX_WALL_CLOCK_MS);
+  }
+  return Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, attemptTimeoutMs);
+}
 
 // OpenRouter's official SDK is used only for the OpenRouter gateway branch. Direct providers
 // remain on their existing OpenAI-compatible transport because their response contracts and
@@ -1312,9 +1322,9 @@ function resolveModelConfig(env = process.env) {
           // Independent runaway-reasoning cutoff (see reasoning_budget_ms below). It is
           // distinct from stall_ms/stallTimeoutMs above: stall_ms measures inactivity
           // between chunks, this measures elapsed time without content since reasoning
-          // started, and defaults to the transport's total timeout (effectively inert)
-          // when unset so existing policies keep their current behavior.
+          // started. Unset means "until max wall clock", not "until timeout_ms".
           reasoningBudgetMs: t.reasoning_budget_ms || t.reasoningBudgetMs,
+          maxWallClockMs: t.max_wall_clock_ms || t.maxWallClockMs || t.stream_max_wall_clock_ms,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
           dispatchWeight: t.dispatch_weight ?? t.dispatchWeight,
           maxInFlight: t.max_in_flight ?? t.maxInFlight,
@@ -3135,6 +3145,7 @@ async function readChatCompletionResponse(
   // so callers that do not pass a configured value are unaffected; the total deadline
   // remains the effective bound in that case.
   reasoningBudgetMs = Infinity,
+  onReasoningProgress,
 ) {
   const contentType = typeof response?.headers?.get === 'function'
     ? String(response.headers.get('content-type') || '').toLowerCase()
@@ -3152,6 +3163,7 @@ async function readChatCompletionResponse(
   let receivedFirstData = false;
   let receivedFirstContent = false;
   let firstUsableAt = 0;
+  let lastThinkingLog = 0;
   const streamStartedAt = Date.now();
   const dispatchEvent = () => {
     if (eventData.length === 0) return;
@@ -3196,6 +3208,13 @@ async function readChatCompletionResponse(
         onFirstData?.(Date.now() - streamStartedAt);
       }
       if (hasContent) receivedFirstContent = true;
+      if (hasReasoning && !receivedFirstContent && typeof onReasoningProgress === 'function') {
+        const now = Date.now();
+        if (lastThinkingLog === 0 || now - lastThinkingLog >= 15_000) {
+          lastThinkingLog = now;
+          onReasoningProgress(reasoningChunks.join('').length);
+        }
+      }
     } catch (_) {
       // Providers may terminate a stream with a partial final SSE frame. The
       // completed content accumulated so far remains valid and is parsed below.
@@ -3601,16 +3620,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           ? Number(transport.stallTimeoutMs || transport.stall_timeout_ms || transport.stall_ms)
           : transportTimeoutMs,
       );
-      // Independent of inactivityTimeoutMs above (see readChatCompletionResponse). Defaults
-      // to the transport's own total timeout when unset, which makes it effectively inert
-      // (the total deadline already governs) for any policy -- like ct-review-actions' current
-      // one -- that does not declare reasoning_budget_ms.
-      const reasoningBudgetMs = Math.min(
-        transportTimeoutMs,
-        Number(transport.reasoningBudgetMs || transport.reasoning_budget_ms) > 0
-          ? Number(transport.reasoningBudgetMs || transport.reasoning_budget_ms)
-          : transportTimeoutMs,
-      );
+      // Independent of inactivityTimeoutMs (see readChatCompletionResponse). An explicit
+      // reasoning_budget_ms still cuts thinking-without-content. Unset means a live
+      // reasoning stream may continue until the stream max wall clock; do not inherit
+      // timeout_ms or a healthy high-effort stream is killed at the short envelope.
+      const configuredReasoningBudget = Number(transport.reasoningBudgetMs || transport.reasoning_budget_ms);
+      const reasoningBudgetMs = Number.isSafeInteger(configuredReasoningBudget) && configuredReasoningBudget > 0
+        ? configuredReasoningBudget
+        : Infinity;
 
       resultBase = {
         ...resultBase,
@@ -4146,15 +4163,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: errMsg });
           }
 
-          // A streaming timeout is an inactivity budget, but every generation
-          // also receives a hard total wall-clock budget. Once response headers
-          // arrive, each body read gets a fresh inactivity timeout; the total
-          // deadline prevents active reasoning/content deltas from keeping a
-          // lane alive indefinitely. Format recovery gets the same bounded
-          // window rather than a special exemption.
-          const streamTotalTimeoutMs = streamEnabled
-            ? Math.min(DEFAULT_STREAM_MAX_WALL_CLOCK_MS, attemptTimeoutMs)
-            : 0;
+          // After headers, each body read gets a fresh inactivity timeout. A live
+          // reasoning/content stream is not cut at timeout_ms; max_wall_clock_ms
+          // (default 15 minutes) is the only generation ceiling. Format recovery
+          // gets the same bounded window rather than a special exemption.
+          const streamTotalTimeoutMs = resolveStreamTotalTimeoutMs(
+            transport,
+            attemptTimeoutMs,
+            streamEnabled,
+          );
           const payload = await readChatCompletionResponse(
             response,
             streamEnabled,
@@ -4165,6 +4182,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
               ttftMs = normalizeTelemetryDuration(value);
             },
             reasoningBudgetMs,
+            (reasoningChars) => {
+              const elapsedSec = Math.round((Date.now() - startMs) / 1000);
+              console.log(`[Persona: ${persona.id}] Thinking in progress (${Math.round(reasoningChars / 4)} tokens, ${elapsedSec}s elapsed)...`);
+            },
           );
           const payloadErrorCode = isOllama && payload?.error
             ? 'ollama_provider_error'
@@ -6446,6 +6467,8 @@ module.exports = {
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
   DEFAULT_PERSONA_CONCURRENCY,
+  DEFAULT_STREAM_MAX_WALL_CLOCK_MS,
+  resolveStreamTotalTimeoutMs,
   OLLAMA_MAX_IN_FLIGHT_REQUESTS,
   OLLAMA_CAPACITY_WAIT_TIMEOUT_MS,
   SYNTHETIC_MAX_IN_FLIGHT_PER_MODEL,
