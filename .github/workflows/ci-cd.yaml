@@ -109,6 +109,137 @@ jobs:
       - name: Prove the baked image has the two packages and not Next.js
         run: node scripts/verify-legacy-runtime-image.mjs --image review-yeti-legacy-runtime:ci
 
+  # OSS image publish. GHCR only: no Docker Hub, no DigitalOcean registry,
+  # and no kubectl/doctl. CallTelemetry's cluster stays disconnected until a
+  # later, explicit pull from these digests.
+  publish-ghcr:
+    needs: [test, legacy-runtime]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      GHCR_REGISTRY: ghcr.io/review-yeti-ai
+    outputs:
+      bot: ${{ steps.bot.outputs.digest }}
+      worker: ${{ steps.worker.outputs.digest }}
+      operator: ${{ steps.operator.outputs.digest }}
+      legacy-runtime: ${{ steps.legacy-runtime.outputs.digest }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: bot
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}
+          cache-from: type=gha,mode=max,scope=ghcr-bot
+          cache-to: type=gha,mode=max,scope=ghcr-bot
+
+      - id: worker-base
+        name: Resolve reviewed worker base image
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^NODE_BASE_IMAGE=//p' .github/worker-image.env | head -n 1)"
+          [[ "$image" =~ ^node:24-bookworm-slim@sha256:[a-f0-9]{64}$ ]]
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - id: legacy-runtime
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.legacy-runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
+          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}
+          cache-from: type=gha,mode=max,scope=ghcr-legacy-runtime
+          cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime
+
+      - name: Prove the published legacy-runtime image
+        run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
+
+      - id: worker
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.worker
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
+          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}
+          cache-from: type=gha,mode=max,scope=ghcr-worker
+          cache-to: type=gha,mode=max,scope=ghcr-worker
+
+      - name: Run immutable worker self-test
+        env:
+          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKER_IMAGE" =~ ^${GHCR_REGISTRY}/review-yeti-worker@sha256:[a-f0-9]{64}$ ]]
+          docker pull "$WORKER_IMAGE"
+          docker run --platform linux/amd64 --rm --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            "$WORKER_IMAGE" --self-test
+
+      - name: Enforce worker image size gates
+        env:
+          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
+          SERVICE_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-bot@${{ steps.bot.outputs.digest }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
+
+      - id: operator
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.operator
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}
+          cache-from: type=gha,mode=max,scope=ghcr-operator
+          cache-to: type=gha,mode=max,scope=ghcr-operator
+
+      - name: Record GHCR digests
+        env:
+          BOT: ${{ env.GHCR_REGISTRY }}/review-yeti-bot@${{ steps.bot.outputs.digest }}
+          WORKER: ${{ env.GHCR_REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
+          OPERATOR: ${{ env.GHCR_REGISTRY }}/review-yeti-operator@${{ steps.operator.outputs.digest }}
+          LEGACY: ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## GHCR images'
+            echo
+            echo "- \`$BOT\`"
+            echo "- \`$WORKER\`"
+            echo "- \`$OPERATOR\`"
+            echo "- \`$LEGACY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-and-deploy:
     needs: test
     # Deploy is opt-in, never automatic. This job has never run: it was gated on
@@ -116,6 +247,8 @@ jobs:
     # the suite, an unchanged condition would have started deploying on every merge.
     # Requiring an explicit dispatch input keeps deploy exactly as manual as it has
     # been in practice, while making it reachable on purpose rather than dead code.
+    # OSS image publishing is publish-ghcr (GHCR). This job still talks to
+    # DigitalOcean and must not be used to wire the public repo to CallTelemetry k8s.
     if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
     runs-on: blacksmith-2vcpu-ubuntu-2204-arm
     permissions:
