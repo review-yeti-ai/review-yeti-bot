@@ -1137,6 +1137,64 @@ describe('reviewWithModel', () => {
     expect(result).toMatchObject({ decision: 'APPROVE', findings: [] });
   });
 
+  it('lets a live reasoning stream continue past timeout_ms until content arrives under max_wall_clock_ms', async () => {
+    const encoder = new TextEncoder();
+    const fetchImplementation = async () => new Response(new ReadableStream({
+      async start(controller) {
+        for (let i = 0; i < 8; i += 1) {
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning: `think ${i}` } }] })}\n\n`,
+          ));
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":[]}' } }] })}\n\n`,
+        ));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+      cancel() {},
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+
+    const started = Date.now();
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'ollama-key',
+        model: 'deepseek-v4-flash:cloud',
+        reasoning_effort: 'high',
+        stream: true,
+        timeout_ms: 80,
+        connect_timeout_ms: 40,
+        ttft_ms: 40,
+        stall_ms: 40,
+        max_wall_clock_ms: 400,
+      }],
+    });
+
+    expect(Date.now() - started).toBeGreaterThan(100);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      attemptCount: 1,
+    });
+    expect(result.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: 'parsed',
+        reasoningEffort: 'high',
+        reasoningPresent: true,
+        contentPresent: true,
+      }),
+    ]));
+  });
+
   it('enforces an independent reasoning budget distinct from the content stall error', async () => {
     // The legitimate concern behind #423 (unbounded thinking riding the total deadline)
     // gets its own budget, reasoning_budget_ms, instead of reusing stall_ms. It measures
