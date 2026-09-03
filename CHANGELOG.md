@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.26.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.25.1...v1.26.0) (2026-09-03)
+
+
+### Features
+
+* **k8s:** support public GHCR trusted worker and operator images [no-linear] ([#437](https://github.com/review-yeti-ai/review-yeti-bot/issues/437)) ([d14c91d](https://github.com/review-yeti-ai/review-yeti-bot/commit/d14c91d3cd9c8e22a62aa043a982a952ac7d4dc4))
+
+
+### Bug Fixes
+
+* **ci:** native Blacksmith multi-arch GHCR publish [no-linear] ([#434](https://github.com/review-yeti-ai/review-yeti-bot/issues/434)) ([e561b8f](https://github.com/review-yeti-ai/review-yeti-bot/commit/e561b8f7463c366ae123241aff5db146596c11c0))
+* **ci:** size-gate worker as smaller than bot, public before gate [no-linear] ([#436](https://github.com/review-yeti-ai/review-yeti-bot/issues/436)) ([22abccc](https://github.com/review-yeti-ai/review-yeti-bot/commit/22abccc87a5c5a6db9154b3ae675d13b8c1bfd16))
+* **review:** disable undici 300s headersTimeout on 15-minute streams ([#435](https://github.com/review-yeti-ai/review-yeti-bot/issues/435)) ([ff6438d](https://github.com/review-yeti-ai/review-yeti-bot/commit/ff6438d51319ea2ad6d2724c8d24af60b4e778a4))
+* **review:** floor reasoning effort and bound output tokens on direct-transport recovery ([#438](https://github.com/review-yeti-ai/review-yeti-bot/issues/438)) ([8feb3e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/8feb3e498eecba13da302d9e39c1bbbe83249e7e))
+* **review:** wait for streaming headers on the 15-minute generation clock [no-linear] ([#432](https://github.com/review-yeti-ai/review-yeti-bot/issues/432)) ([3c20d60](https://github.com/review-yeti-ai/review-yeti-bot/commit/3c20d606b49b6e4e15884d87e7e62bfd52eeefd0))
+
 ## [1.25.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.25.0...v1.25.1) (2026-09-03)
 
 
