@@ -3062,6 +3062,22 @@ function downgradeReasoningEffort(effort, fallbackAttempt = 0) {
   return REASONING_EFFORT_LEVELS[Math.max(0, index - fallbackAttempt)];
 }
 
+// A response body large enough to land in these buckets means reasoning produced a
+// substantial share of the completion before any content token was emitted. When the
+// provider does not surface an exact token count, this bucket is the only signal
+// available, so treat it the same as an explicit finish_reason of "length".
+const REASONING_BUDGET_CONSUMED_SIZE_BUCKETS = new Set(['large', 'oversize']);
+
+/**
+ * Decide whether a failed attempt's own reasoning is what ate the output budget, as opposed
+ * to an unrelated format/prompt problem that happened to leave plenty of budget unused. Only
+ * this specific failure signature justifies stepping the retry down to a cheaper reasoning
+ * effort; every other failure shape must retry unchanged at the configured effort (REL-548).
+ */
+function reasoningExhaustedOutputBudget(finishReasonValue, reasoningBucket) {
+  return finishReasonValue === 'length' || REASONING_BUDGET_CONSUMED_SIZE_BUCKETS.has(reasoningBucket);
+}
+
 function normalizeMaxOutputTokens(value, fallback = DEFAULT_MAX_OUTPUT_TOKENS) {
   if (value === undefined || value === null || value === '') return fallback;
   if (String(value).trim().toLowerCase() === 'unlimited') return undefined;
@@ -3791,20 +3807,30 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         formatRecoveryAttempted = true;
         noteRetryReason('malformed_output');
         raiseMaxOutputTokens(requestBody, DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
-        // A malformed/empty response at the configured reasoning effort means
-        // reasoning consumed the completion budget before any content token was
-        // emitted (finishReason "length" with contentPresent false). Retrying at
-        // the same effort reliably reproduces the same race, so the recovery
-        // attempt must floor reasoning effort to guarantee output-budget headroom.
-        requestBody.reasoning_effort = downgradeReasoningEffort(configuredReasoningEffort, REASONING_EFFORT_LEVELS.length);
+        // A malformed/empty response only means reasoning consumed the completion budget
+        // before any content token was emitted when the telemetry says so (finishReason
+        // "length", or a reasoning-size bucket large enough to have crowded out the findings
+        // JSON). Retrying at the same effort reliably reproduces that exact race, so step the
+        // retry down exactly one configured reasoning-effort level to buy output-budget
+        // headroom. A malformed response with budget to spare (wrong shape/keys, prose, etc.)
+        // is a prompt/format problem, not a budget problem, and must retry unchanged at the
+        // configured effort (REL-548).
+        const budgetExhaustedOnReasoning = reasoningExhaustedOutputBudget(finishReason, reasoningSizeBucket);
+        if (budgetExhaustedOnReasoning) {
+          requestBody.reasoning_effort = downgradeReasoningEffort(configuredReasoningEffort, 1);
+        }
         appendRecoveryInstructions([
           '',
           'FORMAT RECOVERY:',
           '- Your prior response did not contain parseable findings JSON.',
-          '- Reasoning effort has been reduced to reserve the output budget for the required findings object.',
+          budgetExhaustedOnReasoning
+            ? '- Reasoning effort has been reduced to reserve the output budget for the required findings object.'
+            : '- Keep the configured reasoning effort and reserve output tokens for the required findings object.',
           '- Return only {"findings":[]} or the required findings object.',
         ]);
-        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once with reasoning effort reduced to '${requestBody.reasoning_effort}' to reserve output budget before failover...`);
+        console.warn(budgetExhaustedOnReasoning
+          ? `[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once at reduced reasoning effort '${requestBody.reasoning_effort}' (first attempt exhausted the output budget on reasoning) before failover...`
+          : `[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once at the configured reasoning effort before failover...`);
         return true;
       };
       const prepareDirectTimeoutRecovery = () => {

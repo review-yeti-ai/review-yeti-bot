@@ -239,12 +239,15 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies).toHaveLength(3);
     expect(requestBodies[0].body.max_tokens).toBeUndefined();
     // REL-547: the in-place format-recovery retry on the same (fireworks) direct-reasoning
-    // transport must establish a bounded max_tokens and floor reasoning effort, or it repeats
-    // the same unbounded reasoning-vs-content race as the attempt it is recovering from.
+    // transport must establish a bounded max_tokens, or it repeats the same unbounded
+    // reasoning-vs-content race as the attempt it is recovering from.
     expect(requestBodies[1].body.max_tokens).toBe(DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
     expect(requestBodies[2].body.max_tokens).toBeUndefined();
     expect(requestBodies[0].body.reasoning_effort).toBe('high');
-    expect(requestBodies[1].body.reasoning_effort).toBe('low');
+    // REL-548: this attempt's malformed content has no finish_reason: 'length' and no
+    // reasoning telemetry, so nothing shows reasoning consumed the output budget. A plain
+    // format problem with budget to spare must retry unchanged at the configured effort.
+    expect(requestBodies[1].body.reasoning_effort).toBe('high');
     expect(requestBodies[2].body.reasoning_effort).toBe('medium');
   });
 
@@ -292,10 +295,12 @@ describe('Multi-Transport Fast Failover', () => {
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].max_tokens).toBeUndefined();
     expect(requestBodies[0].reasoning_effort).toBe('high');
-    // REL-547: same-transport format recovery now establishes a bounded max_tokens and
-    // floors reasoning effort instead of silently repeating the unbounded first attempt.
+    // REL-547: same-transport format recovery now establishes a bounded max_tokens instead
+    // of silently repeating the unbounded first attempt. REL-548: this fixture's malformed
+    // content carries no finish_reason: 'length' and no reasoning telemetry, so nothing shows
+    // reasoning consumed the output budget; the retry must keep the configured effort.
     expect(requestBodies[1].max_tokens).toBe(DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
-    expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'low' });
+    expect(requestBodies[1]).toMatchObject({ reasoning_effort: 'high' });
     expect(requestBodies[1].messages[0].content).toContain('FORMAT RECOVERY');
   });
 
