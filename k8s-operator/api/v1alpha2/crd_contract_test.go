@@ -88,7 +88,7 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		"baseSha":       `^[a-f0-9]{40}$`,
 		"policyDigest":  `^[a-f0-9]{64}$`,
 		"configDigest":  `^[a-f0-9]{64}$`,
-		"workerImage":   `^registry\.digitalocean\.com/calltelemetry/review-yeti-worker@sha256:[a-f0-9]{64}$`,
+		"workerImage":   `^(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}$`,
 		"runSecretName": `^ct-review-run-[a-f0-9]{32}$`,
 	}
 	for field, want := range wants {

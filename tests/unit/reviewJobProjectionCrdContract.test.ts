@@ -58,4 +58,11 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(properties.publicationMode.enum).toEqual(['disabled', 'app-gate']);
     expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(900_000);
   });
+
+  it('validates public ghcr.io worker image under the CRD pattern', () => {
+    const properties = crdSchema().properties.spec.properties;
+    const ghcrWorkerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'f'.repeat(64)}`;
+    expect(ghcrWorkerImage).toMatch(new RegExp(properties.workerImage.pattern, 'u'));
+  });
 });
+
