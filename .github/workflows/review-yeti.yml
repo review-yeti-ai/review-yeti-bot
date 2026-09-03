@@ -74,14 +74,14 @@ jobs:
       - name: Detect Review Yeti App secret presence
         id: ry_app_presence
         env:
-          APP_ID_PRESENT: ${{ secrets.CT_REVIEW_DISPATCH_APP_ID != '' }}
-          APP_KEY_PRESENT: ${{ secrets.CT_REVIEW_DISPATCH_APP_PRIVATE_KEY != '' }}
+          APP_ID_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_ID != '' || secrets.CT_REVIEW_DISPATCH_APP_ID != '' }}
+          APP_KEY_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY != '' || secrets.CT_REVIEW_DISPATCH_APP_PRIVATE_KEY != '' }}
         run: |
           if [ "${APP_ID_PRESENT}" = "true" ] && [ "${APP_KEY_PRESENT}" = "true" ]; then
             echo "provisioned=true" >> "$GITHUB_OUTPUT"
           else
             echo "provisioned=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::CT_REVIEW_DISPATCH_APP_ID / _PRIVATE_KEY are not provisioned - Review Yeti falls back to github.token for this run (shared rate bucket). Provision the App secrets to restore the dedicated rate bucket (REL-519)."
+            echo "::warning::CT_REVIEW_BOT_APP_ID / _PRIVATE_KEY (or the legacy CT_REVIEW_DISPATCH_APP_* names) are not provisioned - Review Yeti falls back to github.token for this run (shared rate bucket). Provision the App secrets to restore the dedicated rate bucket (REL-519)."
           fi
 
       - name: Mint Review Yeti App token
@@ -89,8 +89,8 @@ jobs:
         if: ${{ steps.ry_app_presence.outputs.provisioned == 'true' }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
         with:
-          app-id: ${{ secrets.CT_REVIEW_DISPATCH_APP_ID }}
-          private-key: ${{ secrets.CT_REVIEW_DISPATCH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID || secrets.CT_REVIEW_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY || secrets.CT_REVIEW_DISPATCH_APP_PRIVATE_KEY }}
           owner: exampleorg
 
       - name: Checkout central workflow tooling
