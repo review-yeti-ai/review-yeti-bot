@@ -1032,6 +1032,63 @@ describe('reviewWithModel', () => {
     ]));
   });
 
+  it('waits for streaming response headers up to max_wall_clock_ms, not connect_timeout_ms', async () => {
+    const encoder = new TextEncoder();
+    const fetchImplementation = async (_url: string, init: RequestInit) => {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 100);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(init.signal?.reason || new DOMException('aborted', 'AbortError'));
+        };
+        if (init.signal?.aborted) onAbort();
+        else init.signal?.addEventListener('abort', onAbort, { once: true });
+      });
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ choices: [{ delta: { content: '{"findings":[]}' } }] })}\n\n`,
+          ));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+      transports: [{
+        name: 'ollama',
+        baseUrl: 'https://ollama.com/v1',
+        apiKey: 'ollama-key',
+        model: 'deepseek-v4-flash:cloud',
+        reasoning_effort: 'high',
+        stream: true,
+        timeout_ms: 80,
+        connect_timeout_ms: 40,
+        ttft_ms: 40,
+        stall_ms: 40,
+        max_wall_clock_ms: 400,
+      }],
+    });
+
+    expect(result).toMatchObject({
+      decision: 'APPROVE',
+      findings: [],
+      attemptCount: 1,
+    });
+    expect(result.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: 'parsed',
+        reasoningEffort: 'high',
+      }),
+    ]));
+  });
+
   it('uses the central stall deadline after meaningful streamed output', async () => {
     const config = resolveModelConfig({
       SYNTHETIC_API_KEY: 'synthetic-key',
