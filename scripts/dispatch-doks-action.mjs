@@ -11,7 +11,7 @@ const GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const RUN_ID_PATTERN = /^run_[a-f0-9]{16,64}$/u;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
-const SUPPORTED_EVENTS = new Set(['pull_request', 'pull_request_target', 'workflow_dispatch']);
+const SUPPORTED_EVENTS = new Set(['pull_request', 'pull_request_target', 'workflow_dispatch', 'repository_dispatch']);
 
 function required(environment, name, hint = '') {
   const value = String(environment[name] || '').trim();

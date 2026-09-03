@@ -85,6 +85,39 @@ describe('POST /api/dispatch/action', () => {
     expect(mismatch.admission.admit).not.toHaveBeenCalled();
   });
 
+  it('accepts central repository_dispatch from ct-review-actions', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const centralBody = {
+      ...body,
+      caller: {
+        ...body.caller,
+        eventName: 'repository_dispatch',
+        workflowRef: centralVerified.job_workflow_ref,
+      },
+    };
+    const fixture = app({ verifier: { verify: vi.fn(async () => centralVerified) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send(centralBody);
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({
+      version: 'ActionDispatchAccepted.v1',
+      status: 'accepted',
+      runId: `run_${'1'.repeat(32)}`,
+    });
+  });
+
   it('keeps app-gate disabled unless the verifier explicitly authorizes it', async () => {
     const fixture = app();
     const response = await request(fixture.instance)

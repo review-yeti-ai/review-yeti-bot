@@ -155,6 +155,14 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 					Key:                  "OPENROUTER_API_KEY",
 				}},
 			},
+			corev1.EnvVar{
+				Name: "OPENROUTER_BASE_URL",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
+					Key:                  "OPENROUTER_BASE_URL",
+					Optional:             &[]bool{true}[0],
+				}},
+			},
 		)
 		if spec.QualificationProfile == FullPanelQualificationProfile {
 			env = append(env, corev1.EnvVar{Name: FullPanelQualificationEnv, Value: "true"})
