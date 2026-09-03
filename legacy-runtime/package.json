@@ -1,0 +1,13 @@
+{
+  "name": "review-yeti-legacy-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Lock-backed Node graph for the composite Action legacy panel. Never install into the Action checkout root.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "@openrouter/sdk": "1.2.80",
+    "js-yaml": "4.1.1"
+  }
+}
