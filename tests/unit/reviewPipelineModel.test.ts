@@ -1536,7 +1536,7 @@ describe('reviewWithModel', () => {
     ]));
   });
 
-  it('retries an Ollama reasoning-only content stall once with reasoning disabled', async () => {
+  it('retries an Ollama reasoning-only content stall once at the requested reasoning effort', async () => {
     const calls: any[] = [];
     const reasoningOnlyStalled = () => ({
       ok: true,
@@ -1600,9 +1600,10 @@ describe('reviewWithModel', () => {
     });
     expect(calls).toHaveLength(2);
     expect(calls[0].reasoning_effort).toBe('high');
-    expect(calls[1].reasoning_effort).toBe('none');
+    expect(calls[1].reasoning_effort).toBe('high');
     expect(calls[1].messages[0].content).toContain('TIMEOUT RECOVERY');
-    expect(calls[1].messages[0].content).toContain('Disable reasoning');
+    expect(calls[1].messages[0].content).toContain('Keep the configured reasoning effort');
+    expect(calls[1].messages[0].content).not.toContain('Disable reasoning');
     expect(res.responseAttempts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         attempt: 1,
@@ -1617,7 +1618,7 @@ describe('reviewWithModel', () => {
         attempt: 2,
         outcome: 'parsed',
         failureClass: null,
-        reasoningEffort: 'none',
+        reasoningEffort: 'high',
       }),
     ]));
   });
@@ -2364,7 +2365,7 @@ describe('reviewWithModel', () => {
     });
 
     expect(res.decision).toBe('APPROVE');
-    expect(requestBodies.map((body) => body.reasoning_effort)).toEqual(['high', 'none']);
+    expect(requestBodies.map((body) => body.reasoning_effort)).toEqual(['high', 'high']);
     expect(res.responseAttempts).toEqual([
       expect.objectContaining({
         attempt: 1,
@@ -2389,7 +2390,7 @@ describe('reviewWithModel', () => {
         provider: 'ollama',
         responseStatus: 200,
         failureClass: null,
-        reasoningEffort: 'none',
+        reasoningEffort: 'high',
         maxOutputTokens: null,
         outputTokens: 12,
         outputShape: 'direct_json_object',
