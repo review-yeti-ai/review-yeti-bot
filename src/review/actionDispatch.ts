@@ -40,7 +40,9 @@ export function actionDispatchDigestInput(request: ActionDispatchRequest): Omit<
 export function assertActionDispatchMatchesClaims(request: ActionDispatchRequest, claims: GitHubActionsOidcClaims): void {
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
-  const isCentral = request.caller.eventName === 'repository_dispatch' && claims.repository.endsWith('/ct-review-actions');
+  const isCentral = request.caller.eventName === 'repository_dispatch'
+    && claims.repository === 'calltelemetry/ct-review-actions'
+    && request.owner === 'calltelemetry';
   const matches = (isDirect || isCentral)
     && request.caller.runId === claims.run_id
     && String(request.caller.runAttempt) === claims.run_attempt
