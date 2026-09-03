@@ -1079,6 +1079,123 @@ describe('reviewWithModel', () => {
     ]));
   });
 
+  it('does not report inactivity while reasoning chunks keep arriving faster than the stall window', async () => {
+    // Regression for #423: a high-reasoning model can take far longer than stall_ms to
+    // produce its first content token, but the socket is demonstrably alive as long as
+    // chunks (reasoning or content) keep arriving inside each stall_ms window. The old
+    // `throwIfContentStall` measured elapsed time since the FIRST reasoning chunk instead
+    // of time since the LAST chunk, so a steady reasoning stream longer than stall_ms was
+    // killed even though it never actually stalled.
+    const config = resolveModelConfig({
+      SYNTHETIC_API_KEY: 'synthetic-key',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([{
+        name: 'synthetic',
+        base_url: 'https://api.synthetic.new/openai/v1',
+        api_key_env: 'SYNTHETIC_API_KEY',
+        model: 'hf:zai-org/GLM-5.3-Flash',
+        stream: true,
+        timeout_ms: 2000,
+        connect_timeout_ms: 200,
+        ttft_ms: 200,
+        stall_ms: 40,
+      }]),
+    });
+    const encoder = new TextEncoder();
+    const reasoningFrame = (i: number) => `data: ${JSON.stringify({
+      choices: [{ index: 0, finish_reason: null, delta: { reasoning: `thinking step ${i}` } }],
+    })}\n\n`;
+    const terminalFrames = [
+      JSON.stringify({ choices: [{ index: 0, finish_reason: null, delta: { content: '{"findings":[]}' } }] }),
+      '[DONE]',
+    ].map((frame) => `data: ${frame}\n\n`).join('');
+    const fetchImplementation = async () => new Response(new ReadableStream({
+      async start(controller) {
+        // Each gap (15ms) is well under stall_ms (40ms), so no single read ever goes
+        // inactive. The cumulative span from the FIRST reasoning chunk to content
+        // (6 * 15ms = 90ms) exceeds stall_ms (40ms) -- that must not matter, since a
+        // chunk kept arriving inside every stall window the whole time.
+        for (let i = 0; i < 6; i++) {
+          controller.enqueue(encoder.encode(reasoningFrame(i)));
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+        controller.enqueue(encoder.encode(terminalFrames));
+        controller.close();
+      },
+      cancel() {},
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...config,
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result).toMatchObject({ decision: 'APPROVE', findings: [] });
+  });
+
+  it('enforces an independent reasoning budget distinct from the content stall error', async () => {
+    // The legitimate concern behind #423 (unbounded thinking riding the total deadline)
+    // gets its own budget, reasoning_budget_ms, instead of reusing stall_ms. It measures
+    // elapsed time since reasoning started without content -- not time since the last
+    // chunk -- so it must fire with a distinct error/timeoutKind even while chunks are
+    // still steadily arriving (which proves the socket itself is not stalled).
+    const config = resolveModelConfig({
+      SYNTHETIC_API_KEY: 'synthetic-key',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([{
+        name: 'synthetic',
+        base_url: 'https://api.synthetic.new/openai/v1',
+        api_key_env: 'SYNTHETIC_API_KEY',
+        model: 'hf:zai-org/GLM-5.3-Flash',
+        stream: true,
+        timeout_ms: 2000,
+        connect_timeout_ms: 200,
+        ttft_ms: 200,
+        stall_ms: 500,
+        reasoning_budget_ms: 40,
+      }]),
+    });
+    const encoder = new TextEncoder();
+    const reasoningFrame = (i: number) => `data: ${JSON.stringify({
+      choices: [{ index: 0, finish_reason: null, delta: { reasoning: `step ${i}` } }],
+    })}\n\n`;
+    const fetchImplementation = async () => new Response(new ReadableStream({
+      async start(controller) {
+        // Keeps every read under stall_ms (500ms) so the content-stall path never fires;
+        // only the tighter, independent reasoning_budget_ms (40ms) should trip.
+        for (let i = 0; i < 6; i++) {
+          controller.enqueue(encoder.encode(reasoningFrame(i)));
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+      },
+      cancel() {},
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...config,
+      fetchImplementation,
+      circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+    });
+
+    expect(result.decision).toBe('ERROR');
+    expect(result.error).toContain('Reasoning exceeded 40ms without content');
+    expect(result.error).not.toMatch(/^Streaming response inactive/);
+    expect(result.responseAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: 'transport_error',
+        failureClass: 'timeout',
+        timeoutKind: 'reasoning_budget',
+        reasoningPresent: true,
+      }),
+    ]));
+  });
+
   it('recovers malformed primary OpenRouter output before using a fallback transport', async () => {
     const openRouterBodies: any[] = [];
     let fallbackCalls = 0;
