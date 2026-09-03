@@ -8,6 +8,7 @@ data:
   REVIEW_JOB_DISPATCH_ENABLED: "true"
   REVIEW_JOB_NAMESPACE: ct-review-system
   REVIEW_JOB_WORKER_IMAGE: "${CT_REVIEW_WORKER_IMAGE}"
+  REVIEW_JOB_RUNNER_MODE: "${CT_REVIEW_RUNNER_MODE}"
 ---
 apiVersion: v1
 kind: ServiceAccount

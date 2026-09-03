@@ -12,7 +12,8 @@ const workerImage = `registry.digitalocean.com/calltelemetry/review-yeti-worker@
 function documents(): Array<Record<string, any>> {
   const source = fs.readFileSync(path.join(root, 'k8s/review-job-dispatcher.yaml.tpl'), 'utf8')
     .replaceAll('${CT_REVIEW_JOB_DISPATCHER_IMAGE}', dispatcherImage)
-    .replaceAll('${CT_REVIEW_WORKER_IMAGE}', workerImage);
+    .replaceAll('${CT_REVIEW_WORKER_IMAGE}', workerImage)
+    .replaceAll('${CT_REVIEW_RUNNER_MODE}', 'prebaked');
   return yaml.loadAll(source).filter(Boolean) as Array<Record<string, any>>;
 }
 
@@ -40,7 +41,8 @@ fi
     "process.stdin.on('data', (chunk) => { input += chunk; });",
     "process.stdin.on('end', () => process.stdout.write(input",
     "  .replaceAll('${CT_REVIEW_JOB_DISPATCHER_IMAGE}', process.env.CT_REVIEW_JOB_DISPATCHER_IMAGE || '')",
-    "  .replaceAll('${CT_REVIEW_WORKER_IMAGE}', process.env.CT_REVIEW_WORKER_IMAGE || '')));",
+    "  .replaceAll('${CT_REVIEW_WORKER_IMAGE}', process.env.CT_REVIEW_WORKER_IMAGE || '')",
+    "  .replaceAll('${CT_REVIEW_RUNNER_MODE}', process.env.CT_REVIEW_RUNNER_MODE || 'prebaked')));",
     '',
   ].join('\n'));
   fs.chmodSync(path.join(binaryDirectory, 'kubectl'), 0o755);
