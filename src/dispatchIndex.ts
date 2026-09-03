@@ -19,14 +19,13 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   await store.initialize();
   const pool = store.getPool();
   const policy = githubActionsOidcPolicyFromEnv(environment);
-  if (policy.allowAppGate) throw new Error('the qualification dispatch service requires ACTION_DISPATCH_ALLOW_APP_GATE=false');
   const appId = required(environment, 'GITHUB_APP_ID');
   const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
   const baseUrl = environment.GITHUB_API_BASE_URL || 'https://api.github.com';
   const app = createActionDispatchApp({
     verifier: new GitHubActionsOidcVerifier({ policy }),
     admission: new PostgresReviewDispatchRepository(pool),
-    allowAppGate: false,
+    allowAppGate: policy.allowAppGate,
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getGitHubAppInstallationIdForRepository({
       appId,
