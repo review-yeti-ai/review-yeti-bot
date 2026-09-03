@@ -27,6 +27,21 @@ service_ip="${KUBERNETES_SERVICE_IP:-}"
 api_endpoint_cidr="${KUBERNETES_API_ENDPOINT_CIDR:-}"
 api_cidr="${KUBERNETES_API_CIDR:-}"
 
+runner_mode="${CT_REVIEW_RUNNER_MODE:-${RUNNER_MODE:-prebaked}}"
+for arg in "$@"; do
+  case "$arg" in
+    --runner-mode=*)
+      runner_mode="${arg#*=}"
+      ;;
+  esac
+done
+
+if [[ "$runner_mode" != "prebaked" && "$runner_mode" != "generic" ]]; then
+  echo "install-doks-review-runtime: runner mode must be prebaked or generic" >&2
+  exit 2
+fi
+export CT_REVIEW_RUNNER_MODE="$runner_mode"
+
 require_value() {
   local name="$1"
   local value="$2"
@@ -38,7 +53,6 @@ require_value() {
 
 require_value CT_REVIEW_OPERATOR_IMAGE "$operator_image"
 require_value CT_REVIEW_JOB_DISPATCHER_IMAGE "$dispatcher_image"
-require_value CT_REVIEW_WORKER_IMAGE "$worker_image"
 require_value KUBERNETES_SERVICE_IP "$service_ip"
 require_value KUBERNETES_API_ENDPOINT_CIDR "$api_endpoint_cidr"
 require_value KUBERNETES_API_CIDR "$api_cidr"
@@ -51,10 +65,21 @@ if [[ ! "$dispatcher_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot|registr
   echo "install-doks-review-runtime: CT_REVIEW_JOB_DISPATCHER_IMAGE must be a lowercase digest in a trusted bot repository" >&2
   exit 2
 fi
-if [[ ! "$worker_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
-  echo "install-doks-review-runtime: CT_REVIEW_WORKER_IMAGE must be a lowercase digest in a trusted worker repository" >&2
-  exit 2
+
+if [[ "$runner_mode" == "generic" ]]; then
+  worker_image="${worker_image:-node:24-bookworm-slim}"
+  if [[ ! "$worker_image" =~ ^(node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+|(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[0-9a-f]{64})$ ]]; then
+    echo "install-doks-review-runtime: in generic runner mode, CT_REVIEW_WORKER_IMAGE must be a valid node/runner image (e.g. node:24-bookworm-slim)" >&2
+    exit 2
+  fi
+else
+  require_value CT_REVIEW_WORKER_IMAGE "$worker_image"
+  if [[ ! "$worker_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
+    echo "install-doks-review-runtime: CT_REVIEW_WORKER_IMAGE must be a lowercase digest in a trusted worker repository" >&2
+    exit 2
+  fi
 fi
+export CT_REVIEW_WORKER_IMAGE="$worker_image"
 
 if [[ ! "$service_ip" =~ ^[0-9A-Fa-f:.]+$ ]]; then
   echo "install-doks-review-runtime: KUBERNETES_SERVICE_IP must be an IP address" >&2
@@ -110,8 +135,8 @@ envsubst '${CT_REVIEW_OPERATOR_IMAGE} ${KUBERNETES_SERVICE_IP} ${KUBERNETES_API_
   < k8s/operator-deployment.yaml.tpl > "$render_dir/operator-deployment.yaml"
 kubectl apply --server-side -f "$render_dir/operator-deployment.yaml"
 
-export CT_REVIEW_JOB_DISPATCHER_IMAGE CT_REVIEW_WORKER_IMAGE
-bash scripts/deploy-review-job-dispatcher.sh
+export CT_REVIEW_JOB_DISPATCHER_IMAGE CT_REVIEW_WORKER_IMAGE CT_REVIEW_RUNNER_MODE
+bash scripts/deploy-review-job-dispatcher.sh --runner-mode="$runner_mode"
 
 operator_replicas="$(kubectl -n "$namespace" get deployment ct-review-yeti-operator -o jsonpath='{.spec.replicas}')"
 dispatcher_replicas="$(kubectl -n "$namespace" get deployment ct-review-job-dispatcher -o jsonpath='{.spec.replicas}')"

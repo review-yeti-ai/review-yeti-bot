@@ -63,8 +63,13 @@ type PRReviewJobSpec struct {
 	ConfigDigest string `json:"configDigest"`
 	// +kubebuilder:validation:Enum=disabled;app-gate
 	PublicationMode string `json:"publicationMode"`
-	// +kubebuilder:validation:Pattern=`^(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}$`
+	// +kubebuilder:validation:Pattern=`^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`
 	WorkerImage string `json:"workerImage"`
+	// RunnerMode defines whether the worker image is an immutable prebaked container
+	// or a generic runner image that executes runtime install steps. Defaults to prebaked.
+	// +kubebuilder:validation:Enum=prebaked;generic
+	// +optional
+	RunnerMode string `json:"runnerMode,omitempty"`
 	// +kubebuilder:validation:Pattern=`^ct-review-run-[a-f0-9]{32}$`
 	RunSecretName string `json:"runSecretName"`
 	// QualificationProfile is optional. An omitted profile preserves the

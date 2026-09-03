@@ -44,7 +44,7 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		"workerImage", "runSecretName",
 	}
 	wantProperties := append([]string(nil), wantRequired...)
-	wantProperties = append(wantProperties, "qualificationModel", "qualificationProfile")
+	wantProperties = append(wantProperties, "qualificationModel", "qualificationProfile", "runnerMode")
 	sort.Strings(wantRequired)
 	sort.Strings(wantProperties)
 	gotRequired := append([]string(nil), spec.Required...)
@@ -88,7 +88,7 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		"baseSha":       `^[a-f0-9]{40}$`,
 		"policyDigest":  `^[a-f0-9]{64}$`,
 		"configDigest":  `^[a-f0-9]{64}$`,
-		"workerImage":   `^(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}$`,
+		"workerImage":   `^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`,
 		"runSecretName": `^ct-review-run-[a-f0-9]{32}$`,
 	}
 	for field, want := range wants {

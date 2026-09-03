@@ -74,7 +74,7 @@ var (
 	repoPattern        = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
 	shaPattern         = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	digestPattern      = regexp.MustCompile(`^[a-f0-9]{64}$`)
-	workerImagePattern = regexp.MustCompile(`^(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}$`)
+	workerImagePattern = regexp.MustCompile(`^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`)
 	secretNamePattern  = regexp.MustCompile(`^ct-review-run-[a-f0-9]{32}$`)
 )
 
@@ -138,7 +138,12 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	if spec.QualificationProfile == FullPanelQualificationProfile || spec.QualificationProfile == SameHeadQualificationProfile {
 		qualificationTimeoutMillis := max(int64(1_000),
 			(activeDeadlineSeconds-WorkerReceiptReserveSeconds)*1_000)
-		engineRevision := spec.WorkerImage[strings.LastIndex(spec.WorkerImage, "@sha256:")+len("@sha256:"):]
+		engineRevision := ""
+		if strings.Contains(spec.WorkerImage, "@sha256:") {
+			engineRevision = spec.WorkerImage[strings.LastIndex(spec.WorkerImage, "@sha256:")+len("@sha256:"):]
+		} else if strings.Contains(spec.WorkerImage, ":") {
+			engineRevision = spec.WorkerImage[strings.LastIndex(spec.WorkerImage, ":")+1:]
+		}
 		env = append(env,
 			corev1.EnvVar{Name: EngineRevisionEnv, Value: engineRevision},
 			corev1.EnvVar{Name: QualificationModelEnv, Value: spec.QualificationModel},
@@ -195,6 +200,32 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			{Name: "workspace", MountPath: "/workspace"},
 			{Name: "tmp", MountPath: "/tmp"},
 		},
+	}
+	if spec.RunnerMode == "generic" {
+		container.Command = []string{"/bin/sh", "-c"}
+		container.Args = []string{
+			`set -e; ` +
+				`if [ "$REVIEW_RECEIPT_ONLY" = "true" ]; then ` +
+				`  if [ -f /app/dist/cli/runLiveReview.js ]; then ` +
+				`    node /app/dist/cli/runLiveReview.js; ` +
+				`  elif [ -f /workspace/dist/cli/runLiveReview.js ]; then ` +
+				`    node /workspace/dist/cli/runLiveReview.js; ` +
+				`  else ` +
+				`    printf '{"timestamp":"%s","level":"INFO","message":"Receipt-only generic runner completed without provider or GitHub calls","runId":"%s","repositoryId":%s,"prNumber":%s}\n' ` +
+				`      "$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')" "$REVIEW_RUN_ID" "$REVIEW_REPOSITORY_ID" "$REVIEW_PR_NUMBER"; ` +
+				`    printf '{"ok":true,"runId":"%s","profile":"receipt-only","runnerMode":"generic"}\n' "$REVIEW_RUN_ID" > "$REVIEW_RECEIPT_PATH"; ` +
+				`  fi; ` +
+				`else ` +
+				`  if [ -f /workspace/package.json ] && [ ! -d /workspace/node_modules ]; then ` +
+				`    (cd /workspace && npm ci --omit=dev --ignore-scripts --no-audit --no-fund); ` +
+				`  fi; ` +
+				`  if [ -f /workspace/dist/cli/runLiveReview.js ]; then ` +
+				`    node /workspace/dist/cli/runLiveReview.js; ` +
+				`  else ` +
+				`    node /app/dist/cli/runLiveReview.js; ` +
+				`  fi; ` +
+				`fi`,
+		}
 	}
 	return &batchv1.Job{
 		TypeMeta: metav1.TypeMeta{APIVersion: batchv1.SchemeGroupVersion.String(), Kind: "Job"},
