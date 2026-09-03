@@ -3735,6 +3735,25 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' returned no parseable findings JSON; retrying once with reasoning disabled before failover...`);
         return true;
       };
+      const prepareDirectTimeoutRecovery = () => {
+        if (!isDirectReasoning || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
+        formatRecoveryAttempted = true;
+        noteRetryReason('timeout');
+        recoveryAction = 'bounded_retry';
+        requestBody.reasoning_effort = 'none';
+        appendRecoveryInstructions([
+          '',
+          'TIMEOUT RECOVERY:',
+          '- The prior generation produced no usable findings JSON before the transport deadline.',
+          '- Disable reasoning and reserve the output budget for the required findings object.',
+          '- Re-evaluate the complete diff against the review charter and return the required findings object.',
+          '- Do not assume the change is clean; include every finding that meets the review criteria.',
+          '- Do not return a summary, decision, or alternate key; the only top-level key is `findings` and its value is an array.',
+          '- Do not emit prose or markdown outside the required findings object.',
+        ]);
+        console.warn(`[Persona: ${persona.id}] Direct transport '${transportName}' timed out before producing findings JSON; retrying once with reasoning disabled before failover...`);
+        return true;
+      };
       const prepareOpenRouterTimeoutRecovery = () => {
         if (!isOpenRouterTransport || formatRecoveryAttempted || fetchAttempts >= maxFetchAttempts) return false;
         formatRecoveryAttempted = true;
@@ -4383,6 +4402,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             return withTelemetry({ ...resultBase, decision: 'ERROR', findings: [], error: lastError });
           }
           if (isUnusableDirectOutput && prepareDirectFormatRecovery()) continue;
+          if (attemptFailureClass === 'timeout' && prepareDirectTimeoutRecovery()) continue;
           if (attemptFailureClass === 'timeout' && prepareOpenRouterTimeoutRecovery()) continue;
           if (fetchAttempts < maxFetchAttempts && isTransientSocket) {
             noteRetryReason('transient_socket');
