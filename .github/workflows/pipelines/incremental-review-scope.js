@@ -12,7 +12,7 @@ function sha256(value) {
   return createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
 }
 
-function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffChars, maxIncrementalDiffChars, trustedWorkflow, trustedWorkflowSha }) {
+function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffChars, maxIncrementalDiffChars, trustedWorkflow, trustedWorkflowSha, indexDigest, maxIncrementalChain }) {
   return sha256(JSON.stringify({
     schemaVersion: SCOPE_SCHEMA_VERSION,
     actionSha: String(actionSha || 'unbound').toLowerCase(),
@@ -22,6 +22,11 @@ function buildReviewScopePlanDigest({ actionSha, baseSha, personaIds, maxDiffCha
     maxIncrementalDiffChars: Number(maxIncrementalDiffChars) || 0,
     trustedWorkflow: String(trustedWorkflow || ''),
     trustedWorkflowSha: String(trustedWorkflowSha || '').toLowerCase(),
+    // REL-552: the domain index drives lane planning and the chain cap bounds how many hops of
+    // trusted-delta reuse are admitted. Either changing means an old report's plan digest no
+    // longer matches, so it cannot silently keep authorizing reuse under a stale policy.
+    indexDigest: String(indexDigest || ''),
+    maxIncrementalChain: Number.isFinite(Number(maxIncrementalChain)) ? Number(maxIncrementalChain) : 0,
   }));
 }
 
@@ -93,65 +98,130 @@ function isCompleteTrustedReport(report, expected) {
   return seen.size === expectedIds.size;
 }
 
-function selectIncrementalPersonaIds(parentReport, deltaFiles, personaIds) {
-  const available = new Set(personaIds || []);
-  const selected = new Set();
-  const combined = (deltaFiles || [])
-    .map((file) => `${file.path || ''}\n${file.patch || ''}`)
-    .join('\n')
-    .toLowerCase();
-  const paths = (deltaFiles || []).map((file) => String(file.path || '').toLowerCase());
-  const changedPaths = new Set(paths);
+function isBlockingFinding(finding) {
+  return ['P0', 'P1'].includes(finding?.severity);
+}
 
-  for (const lane of parentReport?.lanes || []) {
-    const ownsBlockingFinding = (lane.findings || []).some((finding) => ['P0', 'P1'].includes(finding?.severity));
-    const ownsFindingOnChangedFile = (lane.findings || []).some((finding) => changedPaths.has(String(finding?.path || '').toLowerCase()));
-    if (available.has(lane.personaId) && (ownsBlockingFinding || ownsFindingOnChangedFile)) {
-      selected.add(lane.personaId);
+function laneFindings(lane) {
+  return Array.isArray(lane?.findings) ? lane.findings : [];
+}
+
+/**
+ * Plans which personas review the delta live, and which carry forward untouched parent
+ * evidence, using the Master Domain Index (REL-551) instead of a hardcoded keyword regex.
+ *
+ * REL-552: the prior `selectIncrementalPersonaIds` forced any P0/P1 owner live regardless of
+ * whether the delta touched anything that owner cares about. A blocking parent lane (e.g.
+ * `security` owning a P1 on `lib/auth.ex`) forced live on an unrelated delta (a README typo)
+ * reviewed ONLY that delta with no prior-findings context, found nothing, and the finding
+ * dropped out of arbitration entirely once merged — silently laundering a FIX_FIRST into SHIP.
+ * This planner never drops a dirty owner's evidence: an untouched dirty lane is carried forward
+ * verbatim (`carriedDirty`) instead of being forced into a live lane that reviews nothing.
+ *
+ * Carry matrix (per persona in the roster):
+ *   touched + clean   -> live
+ *   touched + dirty   -> live
+ *   untouched + clean -> carriedClean
+ *   untouched + dirty -> carriedDirty  (parent findings re-asserted verbatim, zero model calls)
+ *
+ * "touched" = the persona id is reachable from `resolveFileDomains(path, index).personas` for
+ * any delta file, OR the parent lane already owns a finding whose path is a delta file (the
+ * pre-existing rule, kept so a reviewer that already flagged a file being edited again stays
+ * live). "dirty" = the parent lane has any P0/P1 finding.
+ *
+ * Fail-closed: any delta file the index does not recognize (`matched: false`) forces every
+ * roster persona live for this run -- an unrecognized file class is not a safe signal to carry
+ * anything forward on. A recognized-but-personaless file (`matched: true, personas: []`, e.g. a
+ * binary asset) contributes nothing and does not by itself trigger fail-closed.
+ *
+ * If domain resolution touches no persona at all (e.g. an image-only delta), the live set would
+ * be empty; that is never a valid outcome (the gate requires at least one live lane so a
+ * provider receipt exists), so it falls back to the same "one generalist" rule the old selector
+ * used: `architecture` if present in the roster, else the roster's first persona.
+ */
+function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, resolveFileDomains }) {
+  const roster = Array.isArray(personaIds) ? personaIds : [];
+  const paths = (deltaFiles || []).map((file) => String(file.path || ''));
+  const changedPathsLower = new Set(paths.map((path) => path.toLowerCase()));
+  const parentLanesById = new Map((parentReport?.lanes || []).map((lane) => [lane.personaId, lane]));
+
+  let failClosed = false;
+  const touchedPersonas = new Set();
+  const resolve = typeof resolveFileDomains === 'function' ? resolveFileDomains : null;
+  if (!index || !resolve) {
+    failClosed = true;
+  } else {
+    for (const filePath of paths) {
+      const resolution = resolve(filePath, index);
+      if (!resolution || resolution.matched !== true) {
+        failClosed = true;
+        continue;
+      }
+      for (const persona of resolution.personas || []) touchedPersonas.add(persona);
     }
   }
 
-  // One generalist owns every hunk. Architecture is the stable default; custom rosters fall
-  // back to their first configured reviewer rather than silently leaving a hunk unassigned.
-  const broadReviewer = available.has('architecture') ? 'architecture' : (personaIds || [])[0];
-  if (broadReviewer) selected.add(broadReviewer);
+  const isDirty = (personaId) => laneFindings(parentLanesById.get(personaId)).some(isBlockingFinding);
+  const ownsChangedFileFinding = (personaId) => laneFindings(parentLanesById.get(personaId))
+    .some((finding) => changedPathsLower.has(String(finding?.path || '').toLowerCase()));
 
-  const addWhen = (personaId, condition) => {
-    if (condition && available.has(personaId)) selected.add(personaId);
-  };
-  const hasPath = (pattern) => paths.some((item) => pattern.test(item));
+  const livePersonaIds = [];
+  const carriedClean = [];
+  const carriedDirty = [];
 
-  addWhen('security', /(auth|authoriz|credential|secret|token|api[_ -]?key|password|crypto|encrypt|permission|privilege|ssrf|xss|csrf|injection)/u.test(combined));
-  addWhen('dependencies', hasPath(/(^|\/)(package-lock\.json|package\.json|yarn\.lock|pnpm-lock\.yaml|mix\.exs|mix\.lock|gemfile|go\.(mod|sum)|cargo\.(toml|lock)|requirements[^/]*\.txt)$/u)
-    || /(^|\n)[+-].*\b(import|require|dependency|dependencies|devdependencies)\b/u.test(combined));
-  addWhen('licensing', hasPath(/(^|\/)(license|notice|copying|third[_-]?party|sbom)(\.|\/|$)/u));
-  addWhen('performance', /(benchmark|performance|latency|throughput|concurren|rate.?limit|cache|batch|pool|timeout|query|index|n\+1)/u.test(combined));
+  for (const personaId of roster) {
+    const touched = failClosed || touchedPersonas.has(personaId) || ownsChangedFileFinding(personaId);
+    if (touched) {
+      livePersonaIds.push(personaId);
+    } else if (isDirty(personaId)) {
+      carriedDirty.push(personaId);
+    } else {
+      carriedClean.push(personaId);
+    }
+  }
 
-  const docsOnly = paths.length > 0 && paths.every((item) => /(^|\/)(docs?|readme|changelog)(\/|\.|$)/u.test(item) || /\.(md|mdx|txt)$/u.test(item));
-  addWhen('testing', hasPath(/(^|\/)(tests?|spec|__tests__)(\/|\.|$)/u) || !docsOnly);
-  addWhen('documentation', docsOnly);
-  addWhen('database', /(migration|schema|database|postgres|sql|ecto|index|query)/u.test(combined));
-  addWhen('devops', hasPath(/(^|\/)(\.github|docker|k8s|helm|terraform|deploy)(\/|\.|$)/u));
-  addWhen('accessibility', /(aria-|accessib|screen.?reader|tabindex|role=)/u.test(combined));
-  addWhen('i18n', /(i18n|localiz|translat|locale)/u.test(combined));
+  let reason = failClosed ? 'unmatched_file' : 'domain_index';
 
-  return (personaIds || []).filter((personaId) => selected.has(personaId));
+  if (livePersonaIds.length === 0) {
+    // One generalist owns every hunk. Architecture is the stable default; custom rosters fall
+    // back to their first configured reviewer rather than silently leaving a hunk unassigned.
+    const broadReviewer = roster.includes('architecture') ? 'architecture' : roster[0];
+    if (broadReviewer) {
+      livePersonaIds.push(broadReviewer);
+      const cleanIndex = carriedClean.indexOf(broadReviewer);
+      if (cleanIndex !== -1) carriedClean.splice(cleanIndex, 1);
+      const dirtyIndex = carriedDirty.indexOf(broadReviewer);
+      if (dirtyIndex !== -1) carriedDirty.splice(dirtyIndex, 1);
+      reason = 'empty_live_fallback';
+    }
+  }
+
+  const reviewFullDiff = livePersonaIds.some(isDirty);
+
+  return { livePersonaIds, carriedClean, carriedDirty, reviewFullDiff, reason };
 }
 
-function mergeIncrementalPersonaResults(personas, liveResults, parentReport, reviewedPersonaIds) {
+function mergeIncrementalPersonaResults(personas, liveResults, parentReport, reviewedPersonaIds, reuseKindByPersonaId = null) {
   const liveById = new Map((liveResults || []).map((lane) => [lane.personaId, { ...lane, reuseSource: 'live' }]));
   const parentById = new Map((parentReport?.lanes || []).map((lane) => [lane.personaId, lane]));
   const reviewed = new Set(reviewedPersonaIds || []);
+  const reuseKindFor = (personaId) => {
+    if (reuseKindByPersonaId instanceof Map) return reuseKindByPersonaId.get(personaId) || null;
+    if (reuseKindByPersonaId && typeof reuseKindByPersonaId === 'object') return reuseKindByPersonaId[personaId] || null;
+    return null;
+  };
 
   return (personas || []).map((persona) => {
     if (reviewed.has(persona.id)) return liveById.get(persona.id);
     const lane = parentById.get(persona.id);
+    const reuseKind = reuseKindFor(persona.id);
     return {
       personaId: persona.id,
       displayName: persona.name,
       decision: lane?.decision || 'ERROR',
       findings: Array.isArray(lane?.findings) ? lane.findings : [],
       reuseSource: 'parent',
+      ...(reuseKind ? { reuseKind } : {}),
       provider: 'reused-evidence',
       model: 'prior-exact-head-report',
       inputTokens: 0,
@@ -216,6 +286,7 @@ async function resolveIncrementalReviewScope(options) {
 
   const fetchImplementation = options.fetchImplementation || globalThis.fetch;
   const apiBase = String(options.apiBase || 'https://api.github.com').replace(/\/+$/u, '');
+  const maxIncrementalChain = Math.max(1, Number.parseInt(String(options.maxIncrementalChain ?? 5), 10) || 5);
   const artifactsResponse = await githubRequest(fetchImplementation, options.token, `${apiBase}/repos/${options.repo}/actions/artifacts?per_page=100`);
   const artifactsPayload = await artifactsResponse.json();
   const artifacts = (Array.isArray(artifactsPayload.artifacts) ? artifactsPayload.artifacts : [])
@@ -223,6 +294,13 @@ async function resolveIncrementalReviewScope(options) {
     .filter((artifact) => artifact.workflow_run?.head_sha !== options.headSha)
     .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
     .slice(0, MAX_CANDIDATE_ARTIFACTS);
+
+  // REL-552: a chain of "trusted repair delta" reuses can in principle extend forever, each hop
+  // reviewing an ever-smaller slice while carrying forward evidence from a report nobody has
+  // fully reviewed in a long time. `chainDepth` (persisted on each report's `scope`) counts hops
+  // since the last full review; once a candidate parent would extend the chain to the cap, it is
+  // not a safe reuse target and this run falls back to a full review instead.
+  let chainCapped = false;
 
   for (const artifact of artifacts) {
     try {
@@ -252,6 +330,12 @@ async function resolveIncrementalReviewScope(options) {
       if (!isCompleteTrustedReport(extracted.report, expected)) continue;
       if (run.head_sha !== extracted.report.headSha) continue;
 
+      const parentChainDepth = Number(extracted.report.scope?.chainDepth) || 0;
+      if (parentChainDepth + 1 >= maxIncrementalChain) {
+        chainCapped = true;
+        continue;
+      }
+
       const comparisonResponse = await githubRequest(fetchImplementation, options.token,
         `${apiBase}/repos/${options.repo}/compare/${extracted.report.headSha}...${options.headSha}`);
       const comparison = await comparisonResponse.json();
@@ -272,7 +356,14 @@ async function resolveIncrementalReviewScope(options) {
       if (deltaFiles.length !== comparison.files.length) continue;
       const expectedPaths = new Set(comparison.files.map((file) => String(file.filename || '')));
       if (deltaFiles.some((file) => !expectedPaths.has(String(file.path || '')))) continue;
-      const reviewedPersonaIds = selectIncrementalPersonaIds(extracted.report, deltaFiles, options.personaIds);
+      const plan = planIncrementalLanes({
+        parentReport: extracted.report,
+        deltaFiles,
+        personaIds: options.personaIds,
+        index: options.index,
+        resolveFileDomains: options.resolveFileDomains,
+      });
+      const reviewedPersonaIds = plan.livePersonaIds;
       if (reviewedPersonaIds.length < 1) continue;
       const reusedPersonaIds = options.personaIds.filter((personaId) => !reviewedPersonaIds.includes(personaId));
 
@@ -291,6 +382,12 @@ async function resolveIncrementalReviewScope(options) {
           parentReportDigest: sha256(extracted.raw),
           reviewedPersonaIds,
           reusedPersonaIds,
+          carriedCleanPersonaIds: plan.carriedClean,
+          carriedDirtyPersonaIds: plan.carriedDirty,
+          reviewFullDiff: plan.reviewFullDiff,
+          lanePlanReason: plan.reason,
+          chainDepth: parentChainDepth + 1,
+          indexDigest: String(options.indexDigest || ''),
         },
       };
     } catch (_) {
@@ -299,7 +396,11 @@ async function resolveIncrementalReviewScope(options) {
     }
   }
 
-  return { reviewedDiffText: options.fullDiffText, scope: fullScope, parentReport: null };
+  return {
+    reviewedDiffText: options.fullDiffText,
+    scope: chainCapped ? { ...fullScope, fallbackReason: 'chain_cap' } : fullScope,
+    parentReport: null,
+  };
 }
 
 module.exports = {
@@ -308,7 +409,7 @@ module.exports = {
   isTrustedWorkflowReference,
   createFullReviewScope,
   isCompleteTrustedReport,
-  selectIncrementalPersonaIds,
+  planIncrementalLanes,
   mergeIncrementalPersonaResults,
   assessReviewAssignmentBudget,
   extractReportFromArtifact,
