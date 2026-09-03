@@ -558,6 +558,8 @@ grep -Fq 'EXPECTED_OLD_V1_SHA: ${{ steps.expected-v1.outputs.sha }}' "$repo_root
 grep -Fq 'PROMOTION_RECEIPT_PATH: ${{ runner.temp }}/review-yeti-v1-promotion-receipt.json' "$repo_root/.github/workflows/promote-v1.yml"
 grep -Fq 'actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0' "$repo_root/.github/workflows/promote-v1.yml"
 grep -Fq 'actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'node-version: 24' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq "if: always() && steps.review.outputs.provider-telemetry-path != ''" "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016

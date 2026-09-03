@@ -183,6 +183,17 @@ test('smoke timeout matches the Ollama connect deadline so preflight cannot fail
   assert.doesNotMatch(workflow, /REVIEW_YETI_SMOKE_TIMEOUT_MS: 30000/);
 });
 
+test('central panel job provisions Node 24 before any node scripts (legacy-runtime engines)', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7\.0\.0/);
+  assert.match(workflow, /node-version: 24/);
+  const setupIdx = workflow.indexOf('Set up Node 24');
+  const firstNodeScript = workflow.indexOf('node .exampleorg-review-actions/scripts/validate-central-dispatch.mjs');
+  assert.notEqual(setupIdx, -1);
+  assert.notEqual(firstNodeScript, -1);
+  assert.ok(setupIdx < firstNodeScript);
+});
+
 test('repository policy overrides are exact-match and reject widening or unknown transports', () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const other = resolvePolicyForRepository(policy, 'exampleorg/another-repo');

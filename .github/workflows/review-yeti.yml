@@ -103,6 +103,15 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      # legacy-runtime/package.json engines.node is >=24 (and pi-workflow requires
+      # caller-provisioned Node 24). The composite cannot nest setup-node; this
+      # job is the caller. Without this step the Blacksmith image's Node 20
+      # produces npm EBADENGINE on `npm ci` in legacy-runtime/.
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
       - name: Validate immutable caller pin
         if: ${{ !inputs.central_execution }}
         env:
