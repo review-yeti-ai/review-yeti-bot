@@ -112,6 +112,11 @@ jobs:
           set -euo pipefail
           test -n "$GH_TOKEN"
           test -n "$OPENROUTER_API_KEY"
+
+          receipt_dir="$RUNNER_TEMP/review-yeti-worker-parity"
+          mkdir -p "$receipt_dir"
+          sudo chown 1000:1000 "$receipt_dir"
+
           if [[ "$WORKER_IMAGE" =~ ^registry\.digitalocean\.com ]]; then
             test -n "$REGISTRY_USERNAME"
             test -n "$REGISTRY_TOKEN"
