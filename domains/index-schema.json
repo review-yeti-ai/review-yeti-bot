@@ -88,7 +88,6 @@
         "scripts",
         "assets"
       ],
-      "additionalProperties": false,
       "propertyNames": { "$ref": "#/definitions/classVocabulary" },
       "additionalProperties": { "$ref": "#/definitions/personaList" }
     }
