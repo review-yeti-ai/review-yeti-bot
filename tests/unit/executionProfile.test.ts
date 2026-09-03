@@ -78,6 +78,31 @@ describe('canonical execution-profile contract', () => {
     expect(() => normalizeProfile({ ...base, timeouts: { ...base.timeouts, request_ms: 1 } })).toThrow(/request_ms/i);
   });
 
+  it('treats reasoning_budget_ms as an optional, independently-validated timeout key', () => {
+    // reasoning_budget_ms is distinct from stall_ms (see review-pipeline.js
+    // readChatCompletionResponse): it bounds elapsed time without content since reasoning
+    // started, not inactivity between chunks. It must stay optional so a policy that omits
+    // it (like ct-review-actions' current one) keeps validating unchanged.
+    const base = { ...resolveExecutionProfile('openrouter-primary') };
+    delete base.profile_digest;
+    expect(base.timeouts).not.toHaveProperty('reasoning_budget_ms');
+
+    const withBudget = normalizeProfile({
+      ...base,
+      timeouts: { ...base.timeouts, reasoning_budget_ms: 45000 },
+    });
+    expect(withBudget.timeouts.reasoning_budget_ms).toBe(45000);
+
+    expect(() => normalizeProfile({
+      ...base,
+      timeouts: { ...base.timeouts, reasoning_budget_ms: 100 },
+    })).toThrow(/reasoning_budget_ms/i);
+    expect(() => normalizeProfile({
+      ...base,
+      timeouts: { ...base.timeouts, reasoning_budget_ms: 'soon' },
+    })).toThrow(/reasoning_budget_ms/i);
+  });
+
   it('covers each profile contract rejection family before any runtime wiring', () => {
     const copy = (id: string) => {
       const profile = JSON.parse(JSON.stringify(resolveExecutionProfile(id)));

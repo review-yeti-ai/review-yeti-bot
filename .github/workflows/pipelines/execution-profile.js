@@ -74,10 +74,23 @@ function normalizeProfile(profile) {
     throw new Error('openrouter-primary must use an approved direct model, not the OpenRouter auto-router');
   }
 
-  rejectUnknownKeys(profile.timeouts, ['connect_ms', 'request_ms', 'stall_ms', 'ttft_ms'], `execution profile ${id}.timeouts`);
+  rejectUnknownKeys(
+    profile.timeouts,
+    ['connect_ms', 'request_ms', 'stall_ms', 'ttft_ms', 'reasoning_budget_ms'],
+    `execution profile ${id}.timeouts`,
+  );
   for (const key of ['connect_ms', 'request_ms', 'stall_ms', 'ttft_ms']) {
     if (!Number.isSafeInteger(profile.timeouts[key]) || profile.timeouts[key] < 500 || profile.timeouts[key] > 600000) {
       throw new Error(`execution profile ${id}.timeouts.${key} must be an integer from 500 through 600000`);
+    }
+  }
+  // Independent runaway-reasoning cutoff (distinct from stall_ms -- see review-pipeline.js
+  // readChatCompletionResponse). Optional: unset means "bounded only by request_ms", so
+  // ct-review-actions' current policy (which does not declare this key) is unaffected.
+  if (Object.prototype.hasOwnProperty.call(profile.timeouts, 'reasoning_budget_ms')) {
+    const value = profile.timeouts.reasoning_budget_ms;
+    if (!Number.isSafeInteger(value) || value < 500 || value > 600000) {
+      throw new Error(`execution profile ${id}.timeouts.reasoning_budget_ms must be an integer from 500 through 600000`);
     }
   }
   if (profile.streaming !== true) throw new Error(`execution profile ${id} must require streaming`);

@@ -1309,6 +1309,12 @@ function resolveModelConfig(env = process.env) {
           connectTimeoutMs: t.connect_timeout_ms || t.connectTimeoutMs,
           ttftTimeoutMs: t.ttft_ms || t.ttftMs || t.ttft_timeout_ms || t.ttftTimeoutMs,
           stallTimeoutMs: t.stall_ms || t.stallMs || t.stall_timeout_ms || t.stallTimeoutMs,
+          // Independent runaway-reasoning cutoff (see reasoning_budget_ms below). It is
+          // distinct from stall_ms/stallTimeoutMs above: stall_ms measures inactivity
+          // between chunks, this measures elapsed time without content since reasoning
+          // started, and defaults to the transport's total timeout (effectively inert)
+          // when unset so existing policies keep their current behavior.
+          reasoningBudgetMs: t.reasoning_budget_ms || t.reasoningBudgetMs,
           timeoutMs: t.timeout_ms || t.timeoutMs || 90_000,
           dispatchWeight: t.dispatch_weight ?? t.dispatchWeight,
           maxInFlight: t.max_in_flight ?? t.maxInFlight,
@@ -1935,7 +1941,7 @@ const MODEL_RESPONSE_ATTEMPT_OUTCOMES = new Set([
   'transport_error',
 ]);
 const MODEL_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'missing', 'other']);
-const MODEL_TIMEOUT_KINDS = new Set(['connect', 'request', 'ttft', 'inactivity', 'total']);
+const MODEL_TIMEOUT_KINDS = new Set(['connect', 'request', 'ttft', 'inactivity', 'total', 'reasoning_budget']);
 const MAX_MODEL_RESPONSE_ATTEMPTS = 8;
 const MAX_TELEMETRY_TOKEN_COUNT = 1_000_000;
 
@@ -2481,7 +2487,7 @@ function classifyTelemetryTransportError(error) {
   const message = String(error?.message || error || '');
   if (/provider_capacity_wait_timeout|capacity_wait_timeout/i.test(message)) return 'provider_capacity';
   if (/provider_capacity_wait_cancelled|review_cancelled/i.test(message)) return 'cancelled';
-  if (/AbortError|aborted|timeout|deadline|stalled|inactive|inactivity/i.test(message)) return 'timeout';
+  if (/AbortError|aborted|timeout|deadline|stalled|inactive|inactivity|reasoning exceeded/i.test(message)) return 'timeout';
   if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
   return 'unknown';
@@ -2496,6 +2502,7 @@ function classifyTelemetryTimeoutKind(error) {
   const message = String(error?.message || error || '');
   if (/total deadline/i.test(message)) return 'total';
   if (/first streamed chunk|TTFT/i.test(message)) return 'ttft';
+  if (/reasoning exceeded/i.test(message)) return 'reasoning_budget';
   if (/stream(?:ing)?(?: response)? stalled|inactivity|heartbeat/i.test(message)) return 'inactivity';
   if (/AbortError|aborted|timeout|deadline/i.test(message)) return 'request';
   return null;
@@ -3078,6 +3085,17 @@ function streamTotalDeadlineError(timeoutMs) {
   return error;
 }
 
+// Distinct from streamInactivityError: this fires when reasoning chunks keep the socket
+// demonstrably alive (so it is not inactivity) but no content token has arrived within the
+// configured reasoning budget. Never reuse the "inactive" message/kind for this case -- a
+// live reasoning stream and a dead socket are different failures with different remedies.
+function reasoningBudgetExceededError(reasoningBudgetMs) {
+  const error = new Error(`Reasoning exceeded ${reasoningBudgetMs}ms without content`);
+  error.name = 'TimeoutError';
+  error.timeoutKind = 'reasoning_budget';
+  return error;
+}
+
 function hasMeaningfulFragments(fragments) {
   return fragments.some((fragment) => typeof fragment === 'string' && fragment.trim().length > 0);
 }
@@ -3112,6 +3130,11 @@ async function readChatCompletionResponse(
   totalTimeoutMs = 0,
   ttftTimeoutMs = inactivityTimeoutMs,
   onFirstData,
+  // Independent of inactivityTimeoutMs (stall_ms): bounds elapsed time since reasoning
+  // started without content, even while chunks keep the socket alive. Infinity by default
+  // so callers that do not pass a configured value are unaffected; the total deadline
+  // remains the effective bound in that case.
+  reasoningBudgetMs = Infinity,
 ) {
   const contentType = typeof response?.headers?.get === 'function'
     ? String(response.headers.get('content-type') || '').toLowerCase()
@@ -3215,14 +3238,20 @@ async function readChatCompletionResponse(
       throw annotateStreamTimeout(streamTotalDeadlineError(totalTimeoutMs), chunks, reasoningChunks);
     }
   };
-  const throwIfContentStall = () => {
-    if (!receivedFirstData || receivedFirstContent || !Number.isFinite(inactivityTimeoutMs) || inactivityTimeoutMs <= 0) {
+  // Reasoning chunks (and any other chunk) arriving prove the socket is alive; a genuine
+  // stall is "no chunk of ANY kind for inactivityTimeoutMs", which readBudgetMs below
+  // already enforces per-read. throwIfReasoningBudgetExceeded is a SEPARATE, independent
+  // concern: bound how long a live reasoning-only stream may run without content, so a
+  // steady heartbeat of thought tokens cannot ride the total deadline forever. It must
+  // never fire the "inactive" error/kind -- the stream is not inactive.
+  const throwIfReasoningBudgetExceeded = () => {
+    if (!receivedFirstData || receivedFirstContent || !Number.isFinite(reasoningBudgetMs) || reasoningBudgetMs <= 0) {
       return;
     }
-    if (Date.now() - firstUsableAt + 10 >= inactivityTimeoutMs) {
+    if (Date.now() - firstUsableAt + 10 >= reasoningBudgetMs) {
       cancelStream();
       throw annotateStreamTimeout(
-        streamInactivityError(inactivityTimeoutMs, 'inactivity'),
+        reasoningBudgetExceededError(reasoningBudgetMs),
         chunks,
         reasoningChunks,
       );
@@ -3238,13 +3267,13 @@ async function readChatCompletionResponse(
     try {
       while (true) {
         throwIfTotalDeadline();
-        throwIfContentStall();
+        throwIfReasoningBudgetExceeded();
+        // A fresh, full-length budget every iteration is the actual "inactivity" contract:
+        // as long as SOME chunk (content or reasoning) arrives inside this window, the read
+        // resolves and the loop comes back around with a fresh window. Only true silence
+        // -- no chunk of any kind -- can exhaust it.
         const readBudgetMs = Math.min(
-          receivedFirstData && receivedFirstContent
-            ? inactivityTimeoutMs
-            : receivedFirstData
-              ? Math.max(1, inactivityTimeoutMs - (Date.now() - firstUsableAt))
-              : ttftTimeoutMs,
+          receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs,
           remainingTotalMs(),
         );
         try {
@@ -3270,7 +3299,7 @@ async function readChatCompletionResponse(
           }
         } catch (err) {
           throwIfTotalDeadline();
-          throwIfContentStall();
+          throwIfReasoningBudgetExceeded();
           throw err;
         }
       }
@@ -3570,6 +3599,16 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
         transportTimeoutMs,
         Number(transport.stallTimeoutMs || transport.stall_timeout_ms || transport.stall_ms) > 0
           ? Number(transport.stallTimeoutMs || transport.stall_timeout_ms || transport.stall_ms)
+          : transportTimeoutMs,
+      );
+      // Independent of inactivityTimeoutMs above (see readChatCompletionResponse). Defaults
+      // to the transport's own total timeout when unset, which makes it effectively inert
+      // (the total deadline already governs) for any policy -- like ct-review-actions' current
+      // one -- that does not declare reasoning_budget_ms.
+      const reasoningBudgetMs = Math.min(
+        transportTimeoutMs,
+        Number(transport.reasoningBudgetMs || transport.reasoning_budget_ms) > 0
+          ? Number(transport.reasoningBudgetMs || transport.reasoning_budget_ms)
           : transportTimeoutMs,
       );
 
@@ -4108,6 +4147,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             (value) => {
               ttftMs = normalizeTelemetryDuration(value);
             },
+            reasoningBudgetMs,
           );
           const payloadErrorCode = isOllama && payload?.error
             ? 'ollama_provider_error'
