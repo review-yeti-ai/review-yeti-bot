@@ -60,6 +60,9 @@ describe('GHCR publish contract', () => {
     expect(merge).toContain('docker buildx imagetools create');
     expect(merge).toContain('imagetools inspect --raw');
     expect(merge).toContain('visibility=public');
+    expect(merge.indexOf('visibility=public')).toBeLessThan(
+      merge.indexOf('verify-worker-image-size.mjs'),
+    );
     expect(merge).not.toContain('setup-qemu');
     expect(merge).not.toContain('linux/amd64,linux/arm64');
   });
