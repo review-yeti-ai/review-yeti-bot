@@ -3,6 +3,9 @@ import type {
   ReviewJobDispatchOutcome,
 } from './reviewJobDispatchEngine';
 import {
+  DEFAULT_GENERIC_RUNNER_IMAGE,
+  GENERIC_RUNNER_IMAGE_PATTERN,
+  type RunnerMode,
   TRUSTED_WORKER_IMAGE_REPOSITORIES,
   TRUSTED_WORKER_IMAGE_REPOSITORY,
 } from './reviewJobProjection';
@@ -17,6 +20,7 @@ export interface ReviewJobDispatcherConfig {
   namespace: 'ct-review-system';
   workerImage: string;
   workerId: string;
+  runnerMode: RunnerMode;
   idleDelayMs: 1_000;
   activeDelayMs: 50;
   errorDelayMs: 5_000;
@@ -31,11 +35,26 @@ export function reviewJobDispatcherConfigFromEnv(
   if (environment.REVIEW_JOB_NAMESPACE !== 'ct-review-system') {
     throw new Error('REVIEW_JOB_NAMESPACE must remain ct-review-system during qualification');
   }
-  const workerImage = environment.REVIEW_JOB_WORKER_IMAGE?.trim() || '';
-  if (!workerImagePattern.test(workerImage)) {
-    throw new Error(
-      `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned trusted worker image (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
-    );
+  const runnerModeRaw = environment.REVIEW_JOB_RUNNER_MODE?.trim() || environment.RUNNER_MODE?.trim() || 'prebaked';
+  if (runnerModeRaw !== 'prebaked' && runnerModeRaw !== 'generic') {
+    throw new Error('REVIEW_JOB_RUNNER_MODE must be prebaked or generic');
+  }
+  const runnerMode = runnerModeRaw as RunnerMode;
+  let workerImage = environment.REVIEW_JOB_WORKER_IMAGE?.trim() || '';
+  if (runnerMode === 'generic') {
+    if (!workerImage) {
+      workerImage = DEFAULT_GENERIC_RUNNER_IMAGE;
+    } else if (!GENERIC_RUNNER_IMAGE_PATTERN.test(workerImage) && !workerImagePattern.test(workerImage)) {
+      throw new Error(
+        `REVIEW_JOB_WORKER_IMAGE must be a valid generic runner image (${DEFAULT_GENERIC_RUNNER_IMAGE}) or trusted worker image in generic mode`,
+      );
+    }
+  } else {
+    if (!workerImagePattern.test(workerImage)) {
+      throw new Error(
+        `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned trusted worker image (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
+      );
+    }
   }
   const hostname = environment.HOSTNAME?.trim() || '';
   if (!hostnamePattern.test(hostname)) {
@@ -45,6 +64,7 @@ export function reviewJobDispatcherConfigFromEnv(
     namespace: 'ct-review-system',
     workerImage,
     workerId: `review-job-dispatcher:${hostname}`,
+    runnerMode,
     idleDelayMs: 1_000,
     activeDelayMs: 50,
     errorDelayMs: 5_000,

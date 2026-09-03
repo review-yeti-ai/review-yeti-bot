@@ -48,6 +48,7 @@ describe('buildReviewJobProjection', () => {
         publicationMode: 'disabled',
         workerImage: input.workerImage,
         runSecretName: `ct-review-run-${'1'.repeat(32)}`,
+        runnerMode: 'prebaked',
       },
     });
   });

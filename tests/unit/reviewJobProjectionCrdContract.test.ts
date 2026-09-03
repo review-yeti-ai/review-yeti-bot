@@ -39,11 +39,12 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
   it('keeps the exact non-secret projection field set aligned', () => {
     const spec = crdSchema().properties.spec;
     expect(projection.apiVersion).toBe('review-yeti.ai/v1alpha2');
-    expect(Object.keys(projection.spec).sort()).toEqual([...spec.required].sort());
+    expect(Object.keys(projection.spec).sort()).toEqual([...spec.required, 'runnerMode'].sort());
     expect(Object.keys(spec.properties).sort()).toEqual([
       ...spec.required,
       'qualificationModel',
       'qualificationProfile',
+      'runnerMode',
     ].sort());
     expect(projection.spec).not.toHaveProperty('qualificationModel');
     expect(projection.spec).not.toHaveProperty('qualificationProfile');
@@ -56,6 +57,7 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
       if (schema.pattern) expect(String(projection.spec[field])).toMatch(new RegExp(schema.pattern, 'u'));
     }
     expect(properties.publicationMode.enum).toEqual(['disabled', 'app-gate']);
+    expect(properties.runnerMode.enum).toEqual(['prebaked', 'generic']);
     expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(900_000);
   });
 
@@ -63,6 +65,12 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     const properties = crdSchema().properties.spec.properties;
     const ghcrWorkerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'f'.repeat(64)}`;
     expect(ghcrWorkerImage).toMatch(new RegExp(properties.workerImage.pattern, 'u'));
+  });
+
+  it('validates generic node runner images under the CRD pattern', () => {
+    const properties = crdSchema().properties.spec.properties;
+    const nodeImage = 'node:24-bookworm-slim';
+    expect(nodeImage).toMatch(new RegExp(properties.workerImage.pattern, 'u'));
   });
 });
 
