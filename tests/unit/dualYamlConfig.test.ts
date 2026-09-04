@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseAndValidateConfig, loadConfig, translateCodeRabbitToV3 } from '../../src/config/configLoader';
-import { ctReviewConfigV3Schema, ASCII_MASCOT } from '../../src/config/schema';
+import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { formatInlineCommentBody, ASCII_MASCOT as PUBLISHER_MASCOT } from '../../src/github/commentPublisher';
 
 describe('Milestone 4: Dual YAML Compatibility & Config Dials', () => {

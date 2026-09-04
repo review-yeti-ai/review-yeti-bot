@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeAppVerdict } from '../../src/review/reviewAdapters';
+import { ReviewLane } from '../../src/review/reviewCore';
 
 const pipeline = require('../../.github/workflows/pipelines/review-pipeline.js');
 
@@ -30,7 +31,7 @@ describe('canonical review contract differential', () => {
   });
 
   it('keeps findings and verdicts identical while removing out-of-diff paths', () => {
-    const results = [
+    const results: ReviewLane[] = [
       {
         id: 'security',
         required: true,
