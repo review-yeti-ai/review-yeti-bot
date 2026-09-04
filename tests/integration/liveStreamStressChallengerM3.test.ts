@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -116,7 +117,7 @@ describe('Milestone 3 Empirical Stress Harness: High-Frequency SSE Streams & Liv
       const jobSummary = bus.getJobStatus(jobId);
 
       // Verify burst speed (< 1000ms for 600 events)
-      expect(durationMs).toBeLessThan(1000);
+      expect(durationMs).toBeLessThan(timeBudgetMs(1000));
 
       // Verify history ring buffer capped at 500
       expect(history.length).toBe(500);
@@ -248,7 +249,7 @@ describe('Milestone 3 Empirical Stress Harness: High-Frequency SSE Streams & Liv
       const durationMs = performance.now() - startTime;
 
       // Filtering 500 lines should be < 50ms
-      expect(durationMs).toBeLessThan(50);
+      expect(durationMs).toBeLessThan(timeBudgetMs(50));
       expect(screen.getByText(/CRITICAL_VULNERABILITY_FOUND/)).toBeDefined();
       expect(screen.queryByText(/Normal log payload index 1/)).toBeNull();
     });

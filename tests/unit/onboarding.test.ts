@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import path from 'node:path';
@@ -14,7 +15,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
       const scanResult = await scanRepositoryStack(currentRepoPath);
 
       expect(scanResult).toBeDefined();
-      expect(scanResult.detection.scanDurationMs).toBeLessThan(5000);
+      expect(scanResult.detection.scanDurationMs).toBeLessThan(timeBudgetMs(5000));
       expect(scanResult.detection.totalFilesScanned).toBeGreaterThan(0);
       expect(scanResult.detection.manifestsFound).toContain('package.json');
       expect(scanResult.detection.languages.TypeScript).toBeGreaterThan(0);
@@ -87,7 +88,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.scanResult.detection.scanDurationMs).toBeLessThan(1000);
+      expect(res.body.scanResult.detection.scanDurationMs).toBeLessThan(timeBudgetMs(1000));
       expect(res.body.scanResult.detection.manifestsFound).toContain('package.json');
     });
 

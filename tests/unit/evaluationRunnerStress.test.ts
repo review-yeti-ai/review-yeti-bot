@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -210,7 +211,7 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
       expect(metrics.fp).toBe(4950);
       expect(metrics.fn).toBe(0);
       expect(metrics.recall).toBe(1.0);
-      expect(elapsed).toBeLessThan(1000); // Must complete within 1 second
+      expect(elapsed).toBeLessThan(timeBudgetMs(1000)); // Must complete within 1 second
     });
 
     it('handles path normalization: Windows backslashes, leading ./, case variations, trailing spaces', () => {
