@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.5...v1.29.6) (2026-09-04)
+
+
+### Bug Fixes
+
+* **types:** consolidate duplicated ProviderConfigRecord and PersonaSetting (REL-573) ([#484](https://github.com/review-yeti-ai/review-yeti-bot/issues/484)) ([b39acc8](https://github.com/review-yeti-ai/review-yeti-bot/commit/b39acc8a24009f1884e426fea1061bb26c23fbe1))
+
 ## [1.29.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.4...v1.29.5) (2026-09-04)
 
 
