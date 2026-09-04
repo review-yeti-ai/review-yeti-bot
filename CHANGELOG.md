@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.1...v1.29.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **test:** resolve TypeScript type errors in W3 test file set (REL-570) ([#472](https://github.com/review-yeti-ai/review-yeti-bot/issues/472)) ([e978d7f](https://github.com/review-yeti-ai/review-yeti-bot/commit/e978d7f3a41b08d028ffe4fe7b64feaa6ec2aa9f))
+
 ## [1.29.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.0...v1.29.1) (2026-09-04)
 
 
