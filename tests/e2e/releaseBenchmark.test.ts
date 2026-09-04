@@ -715,7 +715,7 @@ describe('Release Benchmark & Automated Regression Gate E2E Test Suite', () => {
         id: 'boundary-empty-diff',
         name: 'Empty Diff Boundary Test',
         category: 'testing',
-        difficulty: 'easy',
+        description: 'A zero-length diff with an empty patch must not crash the review pipeline.',
         expectedVerdict: 'SHIP',
         expectedFindings: [],
         diffFiles: [
@@ -728,6 +728,7 @@ describe('Release Benchmark & Automated Regression Gate E2E Test Suite', () => {
           prNumber: 999,
           repo: 'calltelemetry/ai-workspace',
           title: 'Empty PR',
+          headSha: 'e2e0000000000000000000000000000000000fd',
         },
       };
 
@@ -1125,7 +1126,11 @@ describe('Release Benchmark & Automated Regression Gate E2E Test Suite', () => {
       expect(v4Comparison.passed).toBe(true);
       expect(v4Comparison.hasRegressions).toBe(false);
       expect(v4Comparison.totalBreaches).toBe(0);
-      expect(v4Comparison.modelDeltas['deepseek/deepseek-v4-flash-0731:low'].status).toBe('SKIPPED');
+      // compare-release-baselines.mjs is untyped runtime JS (out of this worker's file scope);
+      // modelDeltas is built via dynamically-keyed assignment, which checked-JS inference can't
+      // express with an index signature.
+      const v4ModelDeltas = v4Comparison.modelDeltas as Record<string, { status: string }>;
+      expect(v4ModelDeltas['deepseek/deepseek-v4-flash-0731:low'].status).toBe('SKIPPED');
     });
   });
 });

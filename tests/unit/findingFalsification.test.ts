@@ -13,6 +13,15 @@ const changedFiles = [
   { path: 'tests/app.test.js', patch: '@@ -1,2 +1,2 @@\n-assert(old)\n+assert(new)' },
 ];
 
+// src/review/findingFalsification.js is untyped runtime JS (out of this worker's file scope
+// to annotate); runFindingFalsification()'s return type resolves to `any`, so array methods on
+// `result.outcomes` need an explicit callback parameter type. Mirrors outcome()'s literal shape.
+interface FalsificationOutcome {
+  verdict: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
 function finding(overrides: Record<string, unknown> = {}) {
   return {
     severity: 'P1',
@@ -99,7 +108,7 @@ describe('runFindingFalsification', () => {
       changedFiles,
       falsifyTurn: async () => verdicts[call++],
     });
-    expect(result.outcomes.map((outcome) => outcome.verdict)).toEqual(['CONFIRM', 'REFUTE', 'ABSTAIN']);
+    expect(result.outcomes.map((outcome: FalsificationOutcome) => outcome.verdict)).toEqual(['CONFIRM', 'REFUTE', 'ABSTAIN']);
     expect(result.receipt.summary).toMatchObject({ candidates: 3, confirmed: 1, refuted: 1, abstained: 1 });
   });
 
@@ -181,7 +190,7 @@ describe('runFindingFalsification', () => {
       },
     });
     expect(calls).toBe(0);
-    expect(result.outcomes.map((outcome) => outcome.reason)).toEqual(['stage_budget_exhausted', 'stage_budget_exhausted']);
+    expect(result.outcomes.map((outcome: FalsificationOutcome) => outcome.reason)).toEqual(['stage_budget_exhausted', 'stage_budget_exhausted']);
     expect(result.receipt.summary).toMatchObject({ budgetExhausted: 2, neverVerified: 2, confirmed: 0 });
   });
 
@@ -207,8 +216,8 @@ describe('runFindingFalsification', () => {
       limits: { maxCandidates: 4, maxCalls: 2 },
       falsifyTurn: async () => confirmResponse(),
     });
-    expect(result.outcomes.filter((outcome) => outcome.verdict === 'CONFIRM').length).toBe(2);
-    expect(result.outcomes.filter((outcome) => outcome.reason === 'call_budget_exhausted').length).toBe(2);
+    expect(result.outcomes.filter((outcome: FalsificationOutcome) => outcome.verdict === 'CONFIRM').length).toBe(2);
+    expect(result.outcomes.filter((outcome: FalsificationOutcome) => outcome.reason === 'call_budget_exhausted').length).toBe(2);
   });
 
   it('prioritizes higher-severity findings when the budget cannot cover all of them', async () => {

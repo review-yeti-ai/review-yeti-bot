@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import yaml from 'js-yaml';
 
 import { Step4PersonaEnsemble, PERSONA_ENSEMBLE_DEFINITIONS } from '@/components/onboarding/steps/step-4-persona-ensemble';
