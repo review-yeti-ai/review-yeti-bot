@@ -4,11 +4,14 @@ import test from 'node:test';
 
 import {
   CENTRAL_REPOSITORY,
+  DEFAULT_GLOBAL_CONCURRENCY_CAP,
   DEFAULT_REPOSITORY_CONCURRENCY_CAP,
+  DEGRADED_CONCURRENCY_ALLOWANCE,
   DISPATCH_EVENT_TYPE,
   TARGET_REPOSITORY,
   assertAdmittedRepository,
   assertRepositoryCapacity,
+  globalConcurrencyCap,
   repositoryConcurrencyCap,
   validateCallerWorkflow,
   validateCentralDispatch,
@@ -65,6 +68,11 @@ function buildFixture({ repository, name, pr }) {
         pull_requests: [{ number: pr }],
       });
     }
+    if (url.includes('/actions/workflows/repository-dispatch.yml/runs')) {
+      // An idle lane: the happy path must exercise the real capacity branch,
+      // not the degraded fallback.
+      return response({ workflow_runs: [] });
+    }
     if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
     }
@@ -110,6 +118,11 @@ function successFetch(calls) {
         run_attempt: callerRunAttempt,
         pull_requests: [{ number: 4527 }],
       });
+    }
+    if (url.includes('/actions/workflows/repository-dispatch.yml/runs')) {
+      // An idle lane: the happy path must exercise the real capacity branch,
+      // not the degraded fallback.
+      return response({ workflow_runs: [] });
     }
     if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
@@ -389,4 +402,77 @@ test('per-repository capacity cap bounds the shared lane without blocking normal
     repositoryName: 'example-workspace', token: 't', fetchImpl: async () => ({ ok: false, status: 500 }), cap: 1, selfRunId: '0',
   });
   assert.equal(degraded.inFlight, null);
+  assert.equal(degraded.degraded, true);
+  assert.equal(degraded.allowance, DEGRADED_CONCURRENCY_ALLOWANCE);
+});
+
+// A per-repository cap alone does not bound the shared provider: owner-based
+// admission means N repositories could each sit at the per-repository cap.
+test('global cap bounds the shared lane across repositories', async () => {
+  const mixed = (perRepo) => async () => ({
+    ok: true,
+    json: async () => ({
+      workflow_runs: Object.entries(perRepo).flatMap(([name, count]) =>
+        Array.from({ length: count }, (_, index) => ({
+          id: `${name}-${index}`,
+          display_title: `Review Yeti central / ${name}:1:${headSha}:1:1`,
+        }))),
+    }),
+  });
+
+  assert.equal(DEFAULT_GLOBAL_CONCURRENCY_CAP, 8);
+  assert.equal(globalConcurrencyCap({}), DEFAULT_GLOBAL_CONCURRENCY_CAP);
+  assert.equal(globalConcurrencyCap({ CT_REVIEW_GLOBAL_CONCURRENCY_CAP: '3' }), 3);
+  assert.throws(() => globalConcurrencyCap({ CT_REVIEW_GLOBAL_CONCURRENCY_CAP: '-1' }), /positive integer/u);
+
+  // Three repositories, each below the per-repository cap of 6, together exceed
+  // the global cap. Without a global bound this admits and oversubscribes the
+  // provider — the hole this test exists to prevent.
+  await assert.rejects(
+    assertRepositoryCapacity({
+      repositoryName: 'example-workspace',
+      token: 't',
+      fetchImpl: mixed({ 'example-api': 4, 'example-meta': 4, 'example-workspace': 1 }),
+      cap: 6,
+      globalCap: 8,
+      selfRunId: '0',
+    }),
+    /global cap 8/u,
+  );
+
+  // Global pressure is reported even when this repository is idle.
+  const headroom = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace',
+    token: 't',
+    fetchImpl: mixed({ 'example-api': 3, 'example-meta': 2 }),
+    cap: 6,
+    globalCap: 8,
+    selfRunId: '0',
+  });
+  assert.equal(headroom.globalInFlight, 5);
+  assert.equal(headroom.inFlight, 0);
+
+  // The global cap is checked first: at global saturation the caller learns the
+  // lane is full, not that its own repository is fine.
+  await assert.rejects(
+    assertRepositoryCapacity({
+      repositoryName: 'example-workspace', token: 't', fetchImpl: mixed({ 'example-api': 8 }), cap: 6, globalCap: 8, selfRunId: '0',
+    }),
+    /central review lane already has 8/u,
+  );
+});
+
+test('a transient listing failure is retried before degrading', async () => {
+  let attempts = 0;
+  const flaky = async () => {
+    attempts += 1;
+    if (attempts === 1) return { ok: false, status: 502 };
+    return { ok: true, json: async () => ({ workflow_runs: [] }) };
+  };
+  const result = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl: flaky, cap: 6, globalCap: 8, selfRunId: '0',
+  });
+  assert.equal(attempts, 2);
+  assert.equal(result.degraded, false);
+  assert.equal(result.globalInFlight, 0);
 });

@@ -22,14 +22,42 @@ export const TARGET_REPOSITORY = 'exampleorg/example-api';
 // an incident with CT_REVIEW_REPOSITORY_CONCURRENCY_CAP.
 export const DEFAULT_REPOSITORY_CONCURRENCY_CAP = 6;
 
-export function repositoryConcurrencyCap(env = process.env) {
-  const raw = env?.CT_REVIEW_REPOSITORY_CONCURRENCY_CAP;
-  if (raw === undefined || raw === '') return DEFAULT_REPOSITORY_CONCURRENCY_CAP;
+// A per-repository cap alone does not bound the shared provider. Admission is
+// owner-based, so N admitted repositories could each sit at the per-repository
+// cap and demand 6N upstream slots against a lane of roughly ten. The global cap
+// is what actually protects the provider; the per-repository cap only stops one
+// repository monopolising whatever the global cap allows. Eight leaves headroom
+// below the lane's capacity while clearing the observed global peak of four.
+export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 8;
+
+// With no usable count, a permissive fallback would silently delete both caps
+// exactly when the provider is most likely to be under stress. Admitting a small
+// number keeps a legitimate review moving without pretending the lane is empty.
+export const DEGRADED_CONCURRENCY_ALLOWANCE = 1;
+
+function positiveIntegerFromEnv(raw, name, fallback) {
+  if (raw === undefined || raw === '') return fallback;
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error('CT_REVIEW_REPOSITORY_CONCURRENCY_CAP must be a positive integer');
+    throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+export function repositoryConcurrencyCap(env = process.env) {
+  return positiveIntegerFromEnv(
+    env?.CT_REVIEW_REPOSITORY_CONCURRENCY_CAP,
+    'CT_REVIEW_REPOSITORY_CONCURRENCY_CAP',
+    DEFAULT_REPOSITORY_CONCURRENCY_CAP,
+  );
+}
+
+export function globalConcurrencyCap(env = process.env) {
+  return positiveIntegerFromEnv(
+    env?.CT_REVIEW_GLOBAL_CONCURRENCY_CAP,
+    'CT_REVIEW_GLOBAL_CONCURRENCY_CAP',
+    DEFAULT_GLOBAL_CONCURRENCY_CAP,
+  );
 }
 
 export function assertAdmittedRepository(repository) {
@@ -144,34 +172,61 @@ export async function assertRepositoryCapacity({
   token,
   fetchImpl = globalThis.fetch,
   cap = repositoryConcurrencyCap(),
+  globalCap = globalConcurrencyCap(),
   selfRunId = process.env.GITHUB_RUN_ID,
 }) {
   const url = `https://api.github.com/repos/${CENTRAL_REPOSITORY}`
     + '/actions/workflows/repository-dispatch.yml/runs'
     + '?status=in_progress&per_page=100';
-  let runs;
-  try {
-    runs = await githubJson(url, token, fetchImpl);
-  } catch {
-    // Capacity is a guard rail, not an evidence gate. A transient listing
-    // failure must not reject a legitimate review; the cap re-applies on the
-    // next dispatch.
-    return { cap, inFlight: null, skipped: 'central run listing unavailable' };
+
+  // One listing answers both caps, so the global bound costs no extra request.
+  // Retry once: the preceding identity lookups already proved the API reachable,
+  // so a single failure here is far more likely transient than an outage.
+  let runs = null;
+  for (let attempt = 0; attempt < 2 && runs === null; attempt += 1) {
+    try {
+      runs = await githubJson(url, token, fetchImpl);
+    } catch {
+      runs = null;
+    }
   }
+
+  if (runs === null) {
+    // Degraded: no count is available. Rejecting outright would fail a required
+    // merge gate closed on a transient listing error; admitting without limit
+    // would delete both caps precisely when the lane is likely stressed. Admit a
+    // small allowance and report it, so the degradation is visible rather than
+    // silent.
+    return {
+      cap,
+      globalCap,
+      inFlight: null,
+      globalInFlight: null,
+      degraded: true,
+      allowance: DEGRADED_CONCURRENCY_ALLOWANCE,
+    };
+  }
+
+  const all = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
+  const others = all.filter((run) => !(selfRunId && String(run?.id) === String(selfRunId)));
+  const globalInFlight = others.length;
   const prefix = `${repositoryName}:`;
-  const inFlight = (Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : []).filter((run) => {
-    if (selfRunId && String(run?.id) === String(selfRunId)) return false;
-    const title = typeof run?.display_title === 'string' ? run.display_title : '';
-    // display_title carries the request_id, whose first field is the repo name.
-    return title.includes(prefix);
-  }).length;
+  // display_title carries the request_id, whose first field is the repo name.
+  const inFlight = others.filter((run) => (typeof run?.display_title === 'string' ? run.display_title : '').includes(prefix)).length;
+
+  if (globalInFlight >= globalCap) {
+    throw new Error(
+      `central review lane already has ${globalInFlight} reviews in flight `
+      + `(global cap ${globalCap}); retry when capacity frees`,
+    );
+  }
   if (inFlight >= cap) {
     throw new Error(
       `repository ${repositoryName} already has ${inFlight} central reviews in flight `
       + `(cap ${cap}); retry when capacity frees`,
     );
   }
-  return { cap, inFlight };
+  return { cap, globalCap, inFlight, globalInFlight, degraded: false };
 }
 
 export async function validateCentralDispatch({ payload, token, fetchImpl = globalThis.fetch }) {
