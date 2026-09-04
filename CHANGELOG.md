@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.1...v1.28.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **test:** give each worker a disposable state root instead of sharing /tmp/ct-review-bot (REL-560) ([#456](https://github.com/review-yeti-ai/review-yeti-bot/issues/456)) ([b82b11e](https://github.com/review-yeti-ai/review-yeti-bot/commit/b82b11e01a00bcc80e0ca0988603419dc7054f72))
+
 ## [1.28.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.0...v1.28.1) (2026-09-04)
 
 
