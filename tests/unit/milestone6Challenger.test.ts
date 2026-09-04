@@ -68,7 +68,11 @@ function build4PersonaConfig(): CtReviewConfigV3 {
     path_instructions: [],
     rules: [],
     reviewer_effort: 'high',
-  };
+    // Hand-built literal intentionally omits the CodeRabbit-mirrored sections
+    // (reviews/chat/knowledge_base/etc.) that zod defaults fill in when parsing
+    // YAML; executePersonaPanel only reads the fields set above. Same pattern
+    // as parseAndValidateConfig(...) casts used elsewhere in this test suite.
+  } as unknown as CtReviewConfigV3;
 }
 
 describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit Filtering & Webhooks', () => {

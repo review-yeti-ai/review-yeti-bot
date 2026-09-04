@@ -62,7 +62,11 @@ function build4PersonaConfig(): CtReviewConfigV3 {
     confidence_threshold: 70,
     mascot: true,
     display: { mascot: true },
-  };
+    // Hand-built literal intentionally omits the CodeRabbit-mirrored sections
+    // (reviews/chat/knowledge_base/etc.) that zod defaults fill in when parsing
+    // YAML; executePersonaPanel only reads the fields set above. Same pattern
+    // as parseAndValidateConfig(...) casts used elsewhere in this test suite.
+  } as unknown as CtReviewConfigV3;
 }
 
 describe('4-Persona Quorum Review Output Generation Integration', () => {

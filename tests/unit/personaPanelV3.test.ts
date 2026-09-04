@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
+import type { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
 
@@ -65,7 +66,7 @@ function fenced(nonce: string, body: object): string {
 
 describe('version 3 configurable persona panel', () => {
   it('accepts repository-composed personas and exact modern routes', () => {
-    const config = parseAndValidateConfig(policy);
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     expect(config.version).toBe(3);
     expect(config.personas.map((persona) => persona.id)).toEqual([
       'security-tenancy',
@@ -93,7 +94,7 @@ describe('version 3 configurable persona panel', () => {
   });
 
   it('runs enabled applicable personas concurrently, satisfies distinct-provider quorum, moderates, then arbitrates', async () => {
-    const config = parseAndValidateConfig(policy);
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     const starts: string[] = [];
     const personaFiles = new Map<string, string[]>();
     const complete = vi.fn(async ({ model, messages }: any) => {
@@ -163,7 +164,7 @@ describe('version 3 configurable persona panel', () => {
   });
 
   it('fails closed before moderator or arbiter when a required lane exhausts fallback', async () => {
-    const config = parseAndValidateConfig(policy);
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
       const prompt = messages[messages.length - 1].content as string;
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
@@ -191,7 +192,7 @@ describe('version 3 configurable persona panel', () => {
   });
 
   it('uses ordered provider fallback and rejects invalid moderator output', async () => {
-    const config = parseAndValidateConfig(policy);
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
       const prompt = String(messages.at(-1).content);
@@ -222,7 +223,7 @@ describe('version 3 configurable persona panel', () => {
   });
 
   it('rejects unfenced arbiter output across every configured fallback', async () => {
-    const config = parseAndValidateConfig(policy);
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
       const prompt = String(messages.at(-1).content);
@@ -252,7 +253,7 @@ describe('version 3 configurable persona panel', () => {
   });
 
   it('excludes disabled and out-of-scope personas', async () => {
-    const config = parseAndValidateConfig(policy.replace('quorum: 2', 'quorum: 1'));
+    const config = parseAndValidateConfig(policy.replace('quorum: 2', 'quorum: 1')) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
       const prompt = String(messages.at(-1).content);

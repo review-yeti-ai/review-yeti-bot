@@ -69,6 +69,7 @@ describe('Empirical Verification Suite — R3 (Persona Removal) & R4 (Clickable 
         },
         startTime: new Date().toISOString(),
         eventCount: 25,
+        lastEventTime: new Date().toISOString(),
       },
       {
         jobId: 'job_beta_202',
@@ -89,6 +90,7 @@ describe('Empirical Verification Suite — R3 (Persona Removal) & R4 (Clickable 
         },
         startTime: new Date().toISOString(),
         eventCount: 88,
+        lastEventTime: new Date().toISOString(),
       },
     ];
 
@@ -325,7 +327,7 @@ describe('Empirical Verification Suite — R3 (Persona Removal) & R4 (Clickable 
             nitsFound: 32,
           }} history={[]} />
           <PersonaProgressGrid personaProgress={progressMap} />
-          <PersonaTabs selectedPersona="all" events={highVolumeEvents} />
+          <PersonaTabs selectedPersona="all" onSelectPersona={() => {}} events={highVolumeEvents} />
           <TerminalFeed events={highVolumeEvents} selectedPersona="all" />
         </div>
       );

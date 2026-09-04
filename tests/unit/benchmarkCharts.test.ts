@@ -7,8 +7,26 @@ import {
   extractModelPoints,
   generateParetoFrontierSVG,
   generateMarkdownParetoSection,
-  ModelPoint,
 } from '../../scripts/generate-benchmark-charts.mjs';
+
+// generate-benchmark-charts.mjs is a plain JS module (no JSDoc typedef) and
+// does not export a `ModelPoint` type. This mirrors the exact shape built by
+// its extractModelPoints() so fixtures here stay typed rather than `any`.
+interface ModelPoint {
+  id: string;
+  exactModel: string;
+  family: string;
+  effort: string;
+  verdictAccuracyPct: number;
+  recall: number;
+  precision: number;
+  f1Score: number;
+  avgSnrDb: number;
+  avgTtftMs: number;
+  totalCostUSD: number;
+  costEfficiency: number;
+  totalTokens: number;
+}
 
 describe('Benchmark Chart & Pareto Frontier Generator', () => {
   it('correctly parses exact model identifiers and reasoning effort levels', () => {

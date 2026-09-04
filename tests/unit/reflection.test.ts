@@ -203,6 +203,7 @@ describe('Milestone 28: Reflection Engine', () => {
         {
           severity: 'P2',
           path: 'src/db.ts',
+          line: 1,
           title: 'Ensure you use sql log for queries',
           body: 'Short term test',
         },
