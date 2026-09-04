@@ -13,6 +13,12 @@
  * of "this file no longer runs at all" -- broken syntax, a bad import path, a missing module --
  * which is the failure that actually costs a CI cycle, without waiting on the 465-error type
  * backlog tracked separately.
+ *
+ * This is deliberately a LOCAL gate (`npm run lint`), not a CI step. Measured on CI it costs
+ * ~1m48s while the full suite it would pre-empt runs in ~2m26s, so adding it to the required job
+ * spent about a minute on every green run to save ninety seconds on a rare broken one -- and the
+ * suite already fails on an uncollectable file anyway. The gap it closes is that `npm run lint`
+ * reported clean *locally*, which is where the false confidence actually came from.
  */
 import { spawnSync } from 'node:child_process';
 
