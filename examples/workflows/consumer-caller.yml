@@ -1,0 +1,6 @@
+name: Review Yeti
+on: [pull_request]
+jobs:
+  review:
+    uses: review-yeti-ai/shared-workflows/.github/workflows/reusable-hub.yml@main
+    secrets: inherit

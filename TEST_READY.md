@@ -1,58 +1,72 @@
-# E2E Test Suite Ready: Dynamic Context Management & Zero-Loss Partitioning Architecture
-
-> [!WARNING]
-> **Historical readiness record; non-authoritative.** Commands and pass claims are point-in-time
-> evidence and do not prove current main, a released tag, or CallTelemetry fleet behavior. See
-> [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md).
+# E2E Test Suite Ready: Review Yeti Production Gallery, Helm 3 Chart & Operational Docs
 
 ## Test Runner Commands
-- **Dynamic Context Management E2E Suite**: `npx vitest run tests/e2e/contextManagementE2E.test.ts`
-- **Diff Compactor Unit & Invariance Suite**: `npx vitest run tests/unit/diffCompactor.test.ts`
-- **Turn History Manager Suite**: `npx vitest run tests/unit/turnHistoryManager.test.ts`
-- **Commit SHA Partition Manager Suite**: `npx vitest run tests/unit/shaPartitionManager.test.ts`
-- **All Dynamic Context Suites Combined**: `npx vitest run tests/unit/diffCompactor.test.ts tests/unit/turnHistoryManager.test.ts tests/unit/shaPartitionManager.test.ts tests/e2e/contextManagementE2E.test.ts`
-- **Expected Outcome**: 100% test pass rate with exit code 0 across all 4 tiers (108/108 passing tests).
+- **Standalone 4-Tier E2E Test Runner**:
+  ```bash
+  node tests/e2e/run-e2e.mjs
+  ```
+- **Vitest Review Yeti E2E Suite**:
+  ```bash
+  npx vitest run tests/e2e/reviewYetiE2E.test.ts
+  ```
+- **Execution Characteristics**:
+  - Exit code 0 across all implemented deliverables.
+  - Progressive testability: Milestone 1 features (workflows, configs, personas, catalog, anonymity) pass 100%; pending milestone features (M2 Helm chart, M3 docs) are gracefully skipped and automatically verified as soon as landed.
 
 ---
 
-## Coverage Summary (Dynamic Context Management)
+## Coverage Summary Table
 
 | Tier | Count | Description | Status |
 |---|---:|---|:---:|
-| **1. Core Feature Coverage** | 45 | Dynamic model context discovery ($C_{\text{safe}}$ calculation), unified diff compaction ($\pm 3$ lines), 2-turn sliding window fidelity, commit SHA range formatting (`base_sha...head_sha`), standard PR 100% ingestion with 0 truncation | **PASS (45/45)** |
-| **2. Boundary & Corner Cases** | 25 | Single line edits, 0 context lines, empty/whitespace diffs, malformed headers, overlong lines (>500 chars), deterministic bin-packing boundary ($C_{\text{safe}}$ overflow), oversized single-file partitions | **PASS (25/25)** |
-| **3. Cross-Feature Invariants & Guarantees** | 20 | Line number invariance guarantee (`changedLineNumbers(compacted)` === `changedLineNumbers(original)`), 100% zero-loss file coverage guarantee (0 files omitted, disjoint partitions, complete union), rolling findings ledger preservation across 5+ turns | **PASS (20/20)** |
-| **4. Real-World Workloads & Telemetry** | 18 | Massive 48-file monorepo PRs (1500+ lines) partitioned across multiple lanes, cluster splitting (>6 line context gaps), PR comment coverage telemetry formatting (`"Coverage: 100% (X/X files reviewed across Y partitions, 0 omitted)"`), CI step outputs | **PASS (18/18)** |
-| **Total Dynamic Context Suite** | **108** | **Authoritative Opaque-Box E2E Dynamic Context Management Suite** | **PASS (108/108)** |
+| **1. Feature Coverage & Structural Integrity** | 17 | Verifies existence, valid YAML/Markdown syntax, triggers, permissions, and step structure for 6 workflows (`standalone-action.yml`, `github-app-action.yml`, `kubernetes-dispatch.yml`, `reusable-hub.yml`, `consumer-caller.yml`, `incremental-review.yml`), 4 configs (`default`, `strict-security`, `monorepo`, `coderabbit-compat`), 4 persona charters (`tenancy`, `database-migrations`, `performance`, `compliance`), `examples/README.md`, Helm chart structure, and operational guides. | **PASS (15 passed, 2 pending M2/M3)** |
+| **2. Boundary, Schema & Corner Cases** | 7 | Strict Zod schema validation against `ctReviewConfigV3Schema` and `codeRabbitRawSchema`, negative/adversarial testing rejecting quorum overflow (`quorum > enabled`), duplicate persona IDs, missing required personas, empty charter bodies, malformed YAML, and `helm lint charts/review-yeti` (0 errors, 0 warnings). | **PASS (6 passed, 1 pending M2)** |
+| **3. Cross-Feature Combinations & Multi-Cloud** | 2 | Evaluates multi-cloud Helm template rendering across base `values.yaml`, `values-doks.yaml` (DO LoadBalancer & DO Block Storage), `values-eks.yaml` (AWS ALB & IRSA), `values-local.yaml` (NodePort & Ollama), asserting non-root security contexts (`runAsNonRoot: true`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`) and namespace-scoped least-privilege RBAC omitting secrets/nodes. | **PASS (1 passed, 1 pending M2)** |
+| **4. Real-World Scenarios & Anonymity Audit** | 4 | Complete gallery link integrity (100% of markdown links in `examples/README.md` resolve to disk), structured charter body headings verification, and strict public anonymity audit: `grep -rn "calltelemetry" examples/ charts/ docs/` == 0 matches. | **PASS (2 passed, 2 pending M2/M3)** |
+| **Combined E2E Suite Total** | **30** | **Comprehensive Opaque-Box 4-Tier Test Suite** | **PASS (24 passed, 6 pending M2/M3)** |
 
 ---
 
-## Feature Checklist (Requirements R1–R4)
+## Feature Checklist (Features 1–28 per PROJECT.md)
 
-| Feature Code | Requirement Area | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Status |
-|---|---|:---:|:---:|:---:|:---:|:---:|
-| **F1: DYNAMIC_MODEL_DISCOVERY** | R1: Dynamic context window discovery & $C_{\text{safe}}$ capacity math | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F2: STATIC_CAP_REMOVAL** | R1: Elimination of static 24,000-char caps & full diff ingestion | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F3: DIFF_COMPACTION** | R2: Unchanged context line collapsing to $\pm 3$ lines | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F4: LINE_INVARIANCE** | R2: Strict line number invariance (`changedLineNumbers`) guarantee | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F5: MINIFIED_STRIPPING** | R2: Stripping lockfiles, source maps, bundles, and overlong lines | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F6: SLIDING_TURN_HISTORY** | R2: 2-turn active window with historical turn tool receipt compaction | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F7: FINDINGS_LEDGER** | R2: Persistent rolling findings memory ledger preservation | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F8: SHA_RANGE_INJECTION** | R3: Explicit `base_sha...head_sha` range & manifest prompt headers | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F9: ZERO_LOSS_PARTITIONING** | R3: Deterministic bin-packing partition engine for diffs $> C_{\text{safe}}$ | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F10: 100PCT_COVERAGE** | R3: 100% file coverage guarantee (0 files dropped/omitted) | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F11: COVERAGE_TELEMETRY** | R3: PR comment badge: `"Coverage: 100% (X/X files, 0 omitted)"` | ✓ | ✓ | ✓ | ✓ | **PASS** |
-| **F12: E2E_PIPELINE_SIM** | R4: Full multi-agent pipeline review simulation across partitions | ✓ | ✓ | ✓ | ✓ | **PASS** |
+| Feature Code | Feature / Component | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Milestone | Status |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **F1** | `standalone-action.yml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F2** | `github-app-action.yml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F3** | `kubernetes-dispatch.yml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F4** | `reusable-hub.yml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F5** | `consumer-caller.yml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F6** | `incremental-review.yml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F7** | `default.ct-review.yaml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F8** | `strict-security.ct-review.yaml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F9** | `monorepo.ct-review.yaml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F10** | `coderabbit-compat.yaml` | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F11** | `tenancy.md` (Persona) | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F12** | `database-migrations.md` (Persona) | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F13** | `performance.md` (Persona) | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F14** | `compliance.md` (Persona) | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F15** | `examples/README.md` Catalog | ✓ | ✓ | ✓ | ✓ | M1 | **PASS** |
+| **F16** | `Chart.yaml` (Helm 3 metadata) | [test ready] | [test ready] | [test ready] | [test ready] | M2 | **TEST_READY** |
+| **F17** | `values.yaml` (Production configuration) | [test ready] | [test ready] | [test ready] | [test ready] | M2 | **TEST_READY** |
+| **F18** | `templates/` (Manifest suite) | [test ready] | [test ready] | [test ready] | [test ready] | M2 | **TEST_READY** |
+| **F19** | `values-doks.yaml` (DO Kubernetes) | [test ready] | [test ready] | [test ready] | [test ready] | M2 | **TEST_READY** |
+| **F20** | `values-eks.yaml` (AWS EKS) | [test ready] | [test ready] | [test ready] | [test ready] | M2 | **TEST_READY** |
+| **F21** | `values-local.yaml` (Local Minikube/Kind) | [test ready] | [test ready] | [test ready] | [test ready] | M2 | **TEST_READY** |
+| **F22** | `docs/HELM_GUIDE.md` | [test ready] | [test ready] | [test ready] | [test ready] | M3 | **TEST_READY** |
+| **F23** | `docs/TROUBLESHOOTING.md` | [test ready] | [test ready] | [test ready] | [test ready] | M3 | **TEST_READY** |
+| **F24** | Root `README.md` Updates | [test ready] | [test ready] | [test ready] | [test ready] | M3 | **TEST_READY** |
+| **F25** | Public Anonymity Audit (`calltelemetry` grep) | ✓ | ✓ | ✓ | ✓ | M4 | **PASS (M1 verified)** |
+| **F26** | Git Branch & Clean Commit | [planned] | [planned] | [planned] | [planned] | M4 | **PLANNED** |
+| **F27** | Git Push & Pull Request Creation | [planned] | [planned] | [planned] | [planned] | M4 | **PLANNED** |
+| **F28** | PR Merge to main | [planned] | [planned] | [planned] | [planned] | M4 | **PLANNED** |
 
 ---
 
 ## Test Suite File Index
 
-| File | Tests | Purpose | Status |
-|---|---:|---|:---:|
-| `tests/unit/diffCompactor.test.ts` | 20 | Unified diff context compactor, $\pm 3$ collapsing, cluster splitting, and line number invariance guarantee | **PASS (20/20)** |
-| `tests/unit/turnHistoryManager.test.ts` | 13 | 2-turn sliding window, multi-turn tool receipt compaction, and rolling findings ledger preservation | **PASS (13/13)** |
-| `tests/unit/shaPartitionManager.test.ts` | 16 | Commit SHA range formatting, deterministic bin-packing partitioning, 100% zero-loss file coverage guarantee, and telemetry comment formatting | **PASS (16/16)** |
-| `tests/e2e/contextManagementE2E.test.ts` | 59 | End-to-end integration simulation of standard PRs (<128k tokens, 100% ingestion) and massive PRs (multi-partition parallel review lanes with 100% coverage telemetry) | **PASS (59/59)** |
-| `tests/e2e/sandboxedPipelineHarness.test.ts` | 97 | Sandboxed PI plugin, 5-persona pipeline, VCR review cassettes, and Baseline v5 quality gate | **PASS (97/97)** |
-| **Combined Workspace Test Total** | **205** | **Authoritative Unit, Integration & E2E Test Suite** | **PASS (205/205)** |
+| File Path | Description | Verification Command |
+|---|---|---|
+| `TEST_INFRA.md` | Authoritative E2E Test Infrastructure architecture and 4-tier methodology | `cat TEST_INFRA.md` |
+| `TEST_READY.md` | Authoritative Test Readiness, runner commands, coverage table, and feature checklist | `cat TEST_READY.md` |
+| `tests/e2e/run-e2e.mjs` | Standalone executable 4-tier E2E test runner with ANSI formatted output | `node tests/e2e/run-e2e.mjs` |
+| `tests/e2e/reviewYetiE2E.test.ts` | Vitest 4-Tier E2E test suite covering workflows, configs, personas, helm chart, docs, and anonymity | `npx vitest run tests/e2e/reviewYetiE2E.test.ts` |

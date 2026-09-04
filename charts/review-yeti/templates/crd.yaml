@@ -1,0 +1,219 @@
+{{- if .Values.crd.install -}}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: prreviewjobs.review-yeti.ai
+  labels:
+    {{- include "review-yeti.labels" . | nindent 4 }}
+spec:
+  group: review-yeti.ai
+  names:
+    kind: PRReviewJob
+    listKind: PRReviewJobList
+    plural: prreviewjobs
+    singular: prreviewjob
+    shortNames:
+      - prj
+  scope: Namespaced
+  versions:
+    - name: v1alpha2
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Repo
+          type: string
+          jsonPath: .spec.repo
+        - name: PR
+          type: integer
+          jsonPath: .spec.prNumber
+        - name: Deadline
+          type: date
+          jsonPath: .spec.terminalDeadline
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - baseSha
+                - configDigest
+                - deliveryId
+                - headSha
+                - policyDigest
+                - prNumber
+                - publicationMode
+                - receivedAt
+                - repo
+                - repositoryId
+                - runId
+                - runSecretName
+                - terminalDeadline
+                - workerImage
+              x-kubernetes-validations:
+                - message: "PRReviewJob spec is immutable"
+                  rule: "self == oldSelf"
+                - message: "terminalDeadline must be exactly 15 minutes after receivedAt"
+                  rule: "timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')"
+                - message: "qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
+                  rule: "(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"
+              properties:
+                baseSha:
+                  type: string
+                  pattern: ^[a-f0-9]{40}$
+                configDigest:
+                  type: string
+                  pattern: ^[a-f0-9]{64}$
+                deliveryId:
+                  type: string
+                  minLength: 1
+                  maxLength: 512
+                headSha:
+                  type: string
+                  pattern: ^[a-f0-9]{40}$
+                policyDigest:
+                  type: string
+                  pattern: ^[a-f0-9]{64}$
+                prNumber:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                publicationMode:
+                  type: string
+                  enum:
+                    - disabled
+                    - app-gate
+                qualificationModel:
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                qualificationProfile:
+                  type: string
+                  enum:
+                    - full-panel
+                    - same-head
+                receivedAt:
+                  type: string
+                  format: date-time
+                repo:
+                  type: string
+                  pattern: ^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$
+                repositoryId:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                runId:
+                  type: string
+                  pattern: ^run_[a-f0-9]{32}$
+                runSecretName:
+                  type: string
+                  pattern: ^(?:ct-review-run-|review-yeti-run-|[a-z0-9-]+)[a-f0-9_-]*$
+                runnerMode:
+                  type: string
+                  enum:
+                    - prebaked
+                    - generic
+                terminalDeadline:
+                  type: string
+                  format: date-time
+                workerImage:
+                  type: string
+            status:
+              type: object
+              properties:
+                completionTime:
+                  type: string
+                  format: date-time
+                jobName:
+                  type: string
+                leaseName:
+                  type: string
+                message:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                phase:
+                  type: string
+                  enum:
+                    - Queued
+                    - Running
+                    - Succeeded
+                    - Failed
+                    - Expired
+                pvcName:
+                  type: string
+                startTime:
+                  type: string
+                  format: date-time
+                timing:
+                  type: object
+                  properties:
+                    completedAt:
+                      type: string
+                      format: date-time
+                    imageObservedAt:
+                      type: string
+                      format: date-time
+                    jobCreatedAt:
+                      type: string
+                      format: date-time
+                    podScheduledAt:
+                      type: string
+                      format: date-time
+                    processStartedAt:
+                      type: string
+                      format: date-time
+                    receivedAt:
+                      type: string
+                      format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    properties:
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      message:
+                        type: string
+                        maxLength: 32768
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                      reason:
+                        type: string
+                        minLength: 1
+                        maxLength: 1024
+                        pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      type:
+                        type: string
+                        maxLength: 316
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+{{- end }}

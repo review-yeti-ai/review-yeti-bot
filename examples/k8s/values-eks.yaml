@@ -1,0 +1,36 @@
+# AWS EKS Production Values for Review Yeti
+ingress:
+  enabled: true
+  className: "alb"
+  annotations:
+    alb.ingress.kubernetes.io/scheme: "internet-facing"
+    alb.ingress.kubernetes.io/target-type: "ip"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012"
+    alb.ingress.kubernetes.io/healthcheck-path: "/health"
+    alb.ingress.kubernetes.io/healthcheck-port: "3000"
+  host: "review.eks.example.com"
+  path: "/api/admission/dispatch"
+  pathType: "Prefix"
+  tls:
+    enabled: false
+
+dispatcher:
+  replicaCount: 2
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/review-yeti-dispatcher-irsa"
+
+worker:
+  storage:
+    storageClassName: "gp3"
+    size: "2Gi"
+
+operator:
+  replicaCount: 1
+
+secrets:
+  create: false
+  existingSecretName: "review-yeti-secrets"

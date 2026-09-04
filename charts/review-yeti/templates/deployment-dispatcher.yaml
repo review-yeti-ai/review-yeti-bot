@@ -1,0 +1,84 @@
+{{- if .Values.dispatcher.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "review-yeti.dispatcher.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "review-yeti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dispatcher
+spec:
+  replicas: {{ .Values.dispatcher.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "review-yeti.dispatcher.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.dispatcher.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "review-yeti.dispatcher.selectorLabels" . | nindent 8 }}
+        {{- with .Values.dispatcher.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "review-yeti.dispatcher.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.dispatcher.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.dispatcher.podSecurityContext | nindent 8 }}
+      containers:
+        - name: dispatcher
+          image: "{{ .Values.dispatcher.image.repository }}:{{ .Values.dispatcher.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.dispatcher.image.pullPolicy }}
+          command: ["node", "dist/dispatchIndex.js"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.dispatcher.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "review-yeti.dispatcher.fullname" . }}
+            - secretRef:
+                name: {{ include "review-yeti.secretName" . }}
+          securityContext:
+            {{- toYaml .Values.dispatcher.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            {{- toYaml .Values.dispatcher.probes.startup | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.dispatcher.probes.readiness | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.dispatcher.probes.liveness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dispatcher.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+      {{- with .Values.dispatcher.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dispatcher.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dispatcher.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
