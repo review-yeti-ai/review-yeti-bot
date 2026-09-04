@@ -71,10 +71,11 @@ describe('zero-replica review job dispatcher deployment', () => {
     const docs = documents();
     expect(docs.some((document) => ['Service', 'Ingress', 'PersistentVolumeClaim'].includes(document.kind))).toBe(false);
     const deployment = docs.find((document) => document.kind === 'Deployment');
-    const pod = deployment.spec.template.spec;
+    expect(deployment).toBeDefined();
+    const pod = deployment!.spec.template.spec;
     const container = pod.containers[0];
 
-    expect(deployment.spec.replicas).toBe(0);
+    expect(deployment!.spec.replicas).toBe(0);
     expect(pod.serviceAccountName).toBe('ct-review-job-dispatcher');
     expect(pod.automountServiceAccountToken).toBe(true);
     expect(container.image).toBe(dispatcherImage);
@@ -98,7 +99,7 @@ describe('zero-replica review job dispatcher deployment', () => {
       capabilities: { drop: ['ALL'] },
     }));
 
-    const serialized = JSON.stringify(deployment);
+    const serialized = JSON.stringify(deployment!);
     for (const forbidden of [
       'GITHUB_APP', 'GITHUB_TOKEN', 'OPENROUTER', 'FIREWORKS', 'OLLAMA', 'OMNIROUTE',
       'SYNTHETIC_API', 'WEBHOOK_SECRET', 'workspace-pvc', 'provider',
@@ -110,14 +111,16 @@ describe('zero-replica review job dispatcher deployment', () => {
   it('grants only namespaced get/create access to the v1alpha2 projection resource', () => {
     const docs = documents();
     const role = docs.find((document) => document.kind === 'Role');
-    expect(role.metadata.namespace).toBe('ct-review-system');
-    expect(role.rules).toEqual([{
+    expect(role).toBeDefined();
+    expect(role!.metadata.namespace).toBe('ct-review-system');
+    expect(role!.rules).toEqual([{
       apiGroups: ['review-yeti.ai'],
       resources: ['prreviewjobs'],
       verbs: ['get', 'create'],
     }]);
     const binding = docs.find((document) => document.kind === 'RoleBinding');
-    expect(binding.subjects).toEqual([{
+    expect(binding).toBeDefined();
+    expect(binding!.subjects).toEqual([{
       kind: 'ServiceAccount',
       name: 'ct-review-job-dispatcher',
       namespace: 'ct-review-system',
@@ -127,7 +130,8 @@ describe('zero-replica review job dispatcher deployment', () => {
   it('projects only immutable images and retains default-deny networking', () => {
     const docs = documents();
     const config = docs.find((document) => document.kind === 'ConfigMap');
-    expect(config.data).toEqual(expect.objectContaining({
+    expect(config).toBeDefined();
+    expect(config!.data).toEqual(expect.objectContaining({
       REVIEW_JOB_DISPATCH_ENABLED: 'true',
       REVIEW_JOB_NAMESPACE: 'ct-review-system',
       REVIEW_JOB_WORKER_IMAGE: workerImage,
@@ -135,8 +139,9 @@ describe('zero-replica review job dispatcher deployment', () => {
     const policies = docs.filter((document) => document.kind === 'NetworkPolicy');
     expect(policies.some((policy) => policy.metadata.name === 'ct-review-job-dispatcher-default-deny')).toBe(true);
     const allowed = policies.find((policy) => policy.metadata.name === 'ct-review-job-dispatcher-allowed');
-    expect(allowed.spec.policyTypes).toEqual(['Egress']);
-    expect(allowed.spec.egress).toEqual(expect.arrayContaining([
+    expect(allowed).toBeDefined();
+    expect(allowed!.spec.policyTypes).toEqual(['Egress']);
+    expect(allowed!.spec.egress).toEqual(expect.arrayContaining([
       expect.objectContaining({ ports: expect.arrayContaining([{ protocol: 'TCP', port: 443 }]) }),
       expect.objectContaining({ ports: expect.arrayContaining([{ protocol: 'TCP', port: 25060 }]) }),
     ]));

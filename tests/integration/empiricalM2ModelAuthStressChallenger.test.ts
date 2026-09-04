@@ -16,17 +16,17 @@ describe('Empirical Stress Harness: Model Filtering & Auth Middleware', () => {
   describe('1. Model Filtering: All Providers Disabled', () => {
     it('returns empty list for getEnabledProviders when all providers are explicitly disabled', () => {
       const allDisabledProviders: Record<string, ProviderConfigRecord> = {
-        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: false, updatedAt: '' },
-        openai: { id: 'openai', displayName: 'OpenAI', enabled: false, updatedAt: '' },
-        grok: { id: 'grok', displayName: 'Grok', enabled: false, updatedAt: '' },
-        deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: false, updatedAt: '' },
-        glm: { id: 'glm', displayName: 'GLM', enabled: false, updatedAt: '' },
-        gemini: { id: 'gemini', displayName: 'Gemini', enabled: false, updatedAt: '' },
-        doppler: { id: 'doppler', displayName: 'Doppler', enabled: false, updatedAt: '' },
-        ollama: { id: 'ollama', displayName: 'Ollama', enabled: false, updatedAt: '' },
-        'custom-openai': { id: 'custom-openai', displayName: 'Custom OpenAI', enabled: false, updatedAt: '' },
-        codex: { id: 'codex', displayName: 'Codex', enabled: false, updatedAt: '' },
-        agy: { id: 'agy', displayName: 'AGY', enabled: false, updatedAt: '' },
+        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: false, activeModels: [], updatedAt: '' },
+        openai: { id: 'openai', displayName: 'OpenAI', enabled: false, activeModels: [], updatedAt: '' },
+        grok: { id: 'grok', displayName: 'Grok', enabled: false, activeModels: [], updatedAt: '' },
+        deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: false, activeModels: [], updatedAt: '' },
+        glm: { id: 'glm', displayName: 'GLM', enabled: false, activeModels: [], updatedAt: '' },
+        gemini: { id: 'gemini', displayName: 'Gemini', enabled: false, activeModels: [], updatedAt: '' },
+        doppler: { id: 'doppler', displayName: 'Doppler', enabled: false, activeModels: [], updatedAt: '' },
+        ollama: { id: 'ollama', displayName: 'Ollama', enabled: false, activeModels: [], updatedAt: '' },
+        'custom-openai': { id: 'custom-openai', displayName: 'Custom OpenAI', enabled: false, activeModels: [], updatedAt: '' },
+        codex: { id: 'codex', displayName: 'Codex', enabled: false, activeModels: [], updatedAt: '' },
+        agy: { id: 'agy', displayName: 'AGY', enabled: false, activeModels: [], updatedAt: '' },
       };
 
       const enabledList = getEnabledProviders(allDisabledProviders);
@@ -35,8 +35,8 @@ describe('Empirical Stress Harness: Model Filtering & Auth Middleware', () => {
 
     it('returns false for isProviderEnabled for any provider when all are disabled', () => {
       const allDisabledProviders: Record<string, ProviderConfigRecord> = {
-        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: false, updatedAt: '' },
-        openai: { id: 'openai', displayName: 'OpenAI', enabled: false, updatedAt: '' },
+        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: false, activeModels: [], updatedAt: '' },
+        openai: { id: 'openai', displayName: 'OpenAI', enabled: false, activeModels: [], updatedAt: '' },
       };
 
       expect(isProviderEnabled('anthropic', allDisabledProviders)).toBe(false);
@@ -45,17 +45,17 @@ describe('Empirical Stress Harness: Model Filtering & Auth Middleware', () => {
 
     it('filters out all model options in getEnabledModelOptions when all providers are disabled', () => {
       const allDisabledProviders: Record<string, ProviderConfigRecord> = {
-        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: false, updatedAt: '' },
-        openai: { id: 'openai', displayName: 'OpenAI', enabled: false, updatedAt: '' },
-        grok: { id: 'grok', displayName: 'Grok', enabled: false, updatedAt: '' },
-        deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: false, updatedAt: '' },
-        glm: { id: 'glm', displayName: 'GLM', enabled: false, updatedAt: '' },
-        gemini: { id: 'gemini', displayName: 'Gemini', enabled: false, updatedAt: '' },
-        doppler: { id: 'doppler', displayName: 'Doppler', enabled: false, updatedAt: '' },
-        ollama: { id: 'ollama', displayName: 'Ollama', enabled: false, updatedAt: '' },
-        'custom-openai': { id: 'custom-openai', displayName: 'Custom OpenAI', enabled: false, updatedAt: '' },
-        codex: { id: 'codex', displayName: 'Codex', enabled: false, updatedAt: '' },
-        agy: { id: 'agy', displayName: 'AGY', enabled: false, updatedAt: '' },
+        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: false, activeModels: [], updatedAt: '' },
+        openai: { id: 'openai', displayName: 'OpenAI', enabled: false, activeModels: [], updatedAt: '' },
+        grok: { id: 'grok', displayName: 'Grok', enabled: false, activeModels: [], updatedAt: '' },
+        deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: false, activeModels: [], updatedAt: '' },
+        glm: { id: 'glm', displayName: 'GLM', enabled: false, activeModels: [], updatedAt: '' },
+        gemini: { id: 'gemini', displayName: 'Gemini', enabled: false, activeModels: [], updatedAt: '' },
+        doppler: { id: 'doppler', displayName: 'Doppler', enabled: false, activeModels: [], updatedAt: '' },
+        ollama: { id: 'ollama', displayName: 'Ollama', enabled: false, activeModels: [], updatedAt: '' },
+        'custom-openai': { id: 'custom-openai', displayName: 'Custom OpenAI', enabled: false, activeModels: [], updatedAt: '' },
+        codex: { id: 'codex', displayName: 'Codex', enabled: false, activeModels: [], updatedAt: '' },
+        agy: { id: 'agy', displayName: 'AGY', enabled: false, activeModels: [], updatedAt: '' },
       };
 
       const options = [
@@ -77,7 +77,7 @@ describe('Empirical Stress Harness: Model Filtering & Auth Middleware', () => {
   describe('2. Model Filtering: Unconfigured Providers Evaluation', () => {
     it('returns false for unconfigured provider when providers record contains other configured providers', () => {
       const partialProviders: Record<string, ProviderConfigRecord> = {
-        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, updatedAt: '' },
+        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, activeModels: [], updatedAt: '' },
       };
 
       // 'openai' and 'grok' are NOT in partialProviders
@@ -98,12 +98,11 @@ describe('Empirical Stress Harness: Model Filtering & Auth Middleware', () => {
           displayName: 'Custom Llama',
           providerId: 'ollama',
           enabled: true,
-          updatedAt: '',
         },
       };
 
       const providers: Record<string, ProviderConfigRecord> = {
-        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, updatedAt: '' },
+        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, activeModels: [], updatedAt: '' },
       };
 
       // ollama is unconfigured in providers, so custom-llama-model must be disabled
@@ -112,7 +111,7 @@ describe('Empirical Stress Harness: Model Filtering & Auth Middleware', () => {
 
     it('correctly maps unconfigured legacy/variant provider IDs to canonical IDs before evaluation', () => {
       const providers: Record<string, ProviderConfigRecord> = {
-        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, updatedAt: '' },
+        anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, activeModels: [], updatedAt: '' },
       };
 
       // agy_thinking should canonicalize to 'agy', which is unconfigured, so false

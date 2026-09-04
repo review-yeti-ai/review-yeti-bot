@@ -3,6 +3,7 @@ import fs from 'fs';
 import { DashboardStore, dashboardStore } from '../../src/persistence/dashboardStore';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
+import type { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
 const TEST_STORE_PATH = '/tmp/test_persona_persistence_integration.json';
@@ -84,7 +85,7 @@ describe('Persona Persistence & System Prompt Override Integration Suite', () =>
       customPrompt: customPromptText,
     });
 
-    const config = parseAndValidateConfig(policy);
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     let capturedCharter: string | undefined;
 
     const complete = async ({ model, messages }: any) => {
