@@ -189,7 +189,7 @@ Toggle automated PR reviews on/off or change the review stance (`chill`, `balanc
 
 **Request**:
 ```bash
-curl -X PATCH http://localhost:3000/api/dashboard/repositories/exampleorg/example-api \
+curl -X PATCH http://localhost:3000/api/dashboard/repositories/my-org/my-repo \
   -H "x-api-key: ct_live_a1b2c3d4e5f678901234567890abcdef" \
   -H "Content-Type: application/json" \
   -d '{
@@ -207,7 +207,7 @@ curl -X PATCH http://localhost:3000/api/dashboard/repositories/exampleorg/exampl
 {
   "success": true,
   "repository": {
-    "owner": "exampleorg",
+    "owner": "my-org",
     "repo": "example-api",
     "automationEnabled": true,
     "customProfile": "assertive",
