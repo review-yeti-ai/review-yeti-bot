@@ -1,6 +1,6 @@
+import { timeBudgetMs, throughputFloorPerSec } from '../support/timeBudget';
 import { describe, expect, it, afterEach } from 'vitest';
 import os from 'node:os';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('timeBudgetMs (REL-560)', () => {
   const original = process.env.VITEST_MAX_WORKERS;
@@ -33,5 +33,25 @@ describe('timeBudgetMs (REL-560)', () => {
     expect(timeBudgetMs(100)).toBeGreaterThanOrEqual(100);
     expect(timeBudgetMs(100)).toBeLessThanOrEqual(400);
     expect(os.cpus().length).toBeGreaterThan(0);
+  });
+});
+
+describe('throughputFloorPerSec (REL-560)', () => {
+  const original = process.env.VITEST_MAX_WORKERS;
+  afterEach(() => {
+    if (original === undefined) delete process.env.VITEST_MAX_WORKERS;
+    else process.env.VITEST_MAX_WORKERS = original;
+  });
+
+  it('lowers a rate floor by the same factor that raises a time budget', () => {
+    process.env.VITEST_MAX_WORKERS = '4';
+    expect(throughputFloorPerSec(2000)).toBe(500);
+    // A genuinely pathological parser -- 100 lines/sec -- must still fail the floor.
+    expect(100).toBeLessThan(throughputFloorPerSec(2000));
+  });
+
+  it('keeps the original floor when nothing can contend', () => {
+    process.env.VITEST_MAX_WORKERS = '1';
+    expect(throughputFloorPerSec(2000)).toBe(2000);
   });
 });

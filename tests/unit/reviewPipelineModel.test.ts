@@ -1,7 +1,7 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
-import { timeBudgetMs } from '../support/timeBudget';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')

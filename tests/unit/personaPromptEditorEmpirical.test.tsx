@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 // @vitest-environment jsdom
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -12,7 +13,6 @@ import { PersonaSelector, ALL_PERSONA_IDS, PERSONA_METADATA } from '@/components
 import SettingsPage from '@/app/settings/page';
 import { DashboardStore, dashboardStore } from '@/persistence/dashboardStore';
 import { createDashboardRouter } from '@/api/dashboardApi';
-import { timeBudgetMs } from '../support/timeBudget';
 
 // Mock next/navigation
 vi.mock('next/navigation', () => ({

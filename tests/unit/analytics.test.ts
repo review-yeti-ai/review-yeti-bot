@@ -1,7 +1,7 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Milestone 24 & 26: Typed Analytics REST API Unit Tests', () => {
   let app: any;

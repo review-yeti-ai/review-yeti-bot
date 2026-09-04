@@ -1,8 +1,8 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CommandDispatcher, parseCommand, ChatContext } from '../../src/chat/commandDispatcher';
 import { GitHubEventHandler } from '../../src/github/eventHandler';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Command Dispatcher', () => {
   let dispatcher: CommandDispatcher;

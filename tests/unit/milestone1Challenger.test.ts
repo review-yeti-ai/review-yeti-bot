@@ -1,8 +1,8 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import { generatePRSummary, parseDiffModules } from '../../src/review/summaryEngine';
 import { generateMermaidDiagram, analyzeDiffComplexity } from '../../src/review/mermaidEngine';
 import { formatInlineCommentBody, PersonaFinding } from '../../src/github/commentPublisher';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Milestone 1 Empirical Stress & Challenge Test Suite', () => {
 

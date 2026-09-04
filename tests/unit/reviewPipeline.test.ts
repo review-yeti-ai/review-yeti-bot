@@ -1,8 +1,8 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { timeBudgetMs } from '../support/timeBudget';
 
 // Resolve path to root repository .github/workflows/pipelines/review-pipeline.js
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))

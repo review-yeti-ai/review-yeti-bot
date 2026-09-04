@@ -18,9 +18,21 @@ import os from 'node:os';
  * (`toBeGreaterThan`) -- contention only makes those more true -- or for deterministic counts
  * like token estimates.
  */
-export function timeBudgetMs(idleBudgetMs: number): number {
+function contentionFactor(): number {
   const detected = Number(process.env.VITEST_MAX_WORKERS)
     || (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length);
-  const contention = Math.min(Math.max(1, detected || 1), 4);
-  return idleBudgetMs * contention;
+  return Math.min(Math.max(1, detected || 1), 4);
+}
+
+export function timeBudgetMs(idleBudgetMs: number): number {
+  return idleBudgetMs * contentionFactor();
+}
+
+/**
+ * The mirror of `timeBudgetMs` for a throughput *floor* -- an assertion of the form
+ * `expect(itemsPerSecond).toBeGreaterThan(n)`. Contention reduces throughput for exactly the same
+ * reason it inflates elapsed time, so the floor has to come down by the same factor rather than up.
+ */
+export function throughputFloorPerSec(idleRate: number): number {
+  return idleRate / contentionFactor();
 }

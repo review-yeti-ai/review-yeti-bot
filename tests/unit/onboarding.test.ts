@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import path from 'node:path';
@@ -5,7 +6,6 @@ import { scanRepositoryStack } from '../../src/onboarding/stackScanner';
 import { generateCtReviewConfig } from '../../src/onboarding/configGenerator';
 import { createApp } from '../../src/app';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
   const currentRepoPath = path.resolve(__dirname, '../../');
