@@ -147,7 +147,12 @@ describe('Milestone 1 (R4) — OpenRouter Default Model & Schema Validation Stre
           arbiter: { order: ['openrouter'] },
         },
       };
-      const sanitized = sanitizeV3Config(rawConfig);
+      // sanitizeV3Config() returns Record<string, unknown> (its contract is arbitrary-shape
+      // sanitization); narrow to the specific fields this assertion inspects.
+      const sanitized = sanitizeV3Config(rawConfig) as {
+        personas: Array<{ model: string }>;
+        reviewers: { providers: Array<{ model: string }> };
+      };
       expect(sanitized.personas[0].model).toBe(openrouterModel);
       expect(sanitized.reviewers.providers[0].model).toBe(openrouterModel);
     });

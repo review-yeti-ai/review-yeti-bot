@@ -10,20 +10,22 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  TurnMessage,
-  TurnHistoryManagerOptions,
-  FindingEntry,
-  ReceiptEntry,
   TurnHistoryManager,
 } from '../../src/pipeline/turnHistoryManager';
-
-export {
+import type {
   TurnMessage,
   TurnHistoryManagerOptions,
   FindingEntry,
   ReceiptEntry,
-  TurnHistoryManager,
+} from '../../src/pipeline/turnHistoryManager';
+
+export type {
+  TurnMessage,
+  TurnHistoryManagerOptions,
+  FindingEntry,
+  ReceiptEntry,
 };
+export { TurnHistoryManager };
 
 // ============================================================================
 // TEST SUITE: TIERS 1 TO 3

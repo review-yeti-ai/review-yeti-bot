@@ -3,6 +3,7 @@ import fs from 'fs';
 import { DashboardStore, dashboardStore } from '../../src/persistence/dashboardStore';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
+import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { LiveStreamBus } from '../../src/live/liveStreamBus';
 
@@ -23,7 +24,11 @@ const ALL_11_PERSONA_IDS = [
 ] as const;
 
 function buildAll11PersonaConfig(): CtReviewConfigV3 {
+  // Based on the real createDefaultV3Config() defaults (see src/config/configLoader.ts) so
+  // every schema-required top-level section (reviews, chat, knowledge_base, ...) is present
+  // without hand-duplicating the zod defaults here.
   return {
+    ...createDefaultV3Config(),
     version: 3,
     profile: 'assertive',
     quorum: 1,
