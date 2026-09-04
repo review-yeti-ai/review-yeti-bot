@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.6...v1.29.7) (2026-09-04)
+
+
+### Bug Fixes
+
+* **types:** tighten evaluation/config/dashboard product types (REL-573) ([#486](https://github.com/review-yeti-ai/review-yeti-bot/issues/486)) ([f80c127](https://github.com/review-yeti-ai/review-yeti-bot/commit/f80c127d95a948e4a6410c95fae6a08036650759))
+
 ## [1.29.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.5...v1.29.6) (2026-09-04)
 
 
