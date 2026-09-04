@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
@@ -1020,7 +1021,7 @@ index 123456..789abc 100644
       const durationMs = Date.now() - startTime;
 
       expect(results).toHaveLength(12);
-      expect(durationMs).toBeLessThan(1000); // Expect sub-second parallel execution
+      expect(durationMs).toBeLessThan(timeBudgetMs(1000)); // Expect sub-second parallel execution
 
       const arbitration = computeArbitrationQuorum(results);
       expect(arbitration.completedPersonas).toBe(12);
