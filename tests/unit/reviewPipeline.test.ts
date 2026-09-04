@@ -1000,7 +1000,7 @@ index 123456..789abc 100644
       const { PERSONA_CHARTERS, evaluatePersonaLane, computeArbitrationQuorum } = pipeline;
 
       // Generate 50 simulated file diffs with mixed content
-      const diffFiles = [];
+      const diffFiles: Array<{ path: string; patch: string; addedLines: Array<{ text: string }> }> = [];
       for (let i = 0; i < 50; i++) {
         diffFiles.push({
           path: `src/module_${i}/service_${i}.ts`,

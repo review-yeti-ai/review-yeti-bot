@@ -271,14 +271,20 @@ describe('review pipeline cassette replay', () => {
     const success = await new CommentPublisher(publisherOptions).publishReview({
       owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, commitSha: 'head-sha-42',
       event: 'COMMENT', body: 'Replay publication',
-      inlineComments: [{ path: 'src/api/user.ts', line: 2, finding }],
+      inlineComments: [{
+        owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, commitSha: 'head-sha-42',
+        path: 'src/api/user.ts', line: 2, finding,
+      }],
     });
     expect(success).toMatchObject({ success: true, reviewId: 4201, commentsCreated: 1 });
 
     const lineFallback = await new CommentPublisher(publisherOptions).publishReview({
       owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 43, commitSha: 'head-sha-43',
       event: 'REQUEST_CHANGES', body: 'Line fallback',
-      inlineComments: [{ path: 'src/api/user.ts', line: 2, finding }],
+      inlineComments: [{
+        owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 43, commitSha: 'head-sha-43',
+        path: 'src/api/user.ts', line: 2, finding,
+      }],
     });
     expect(lineFallback).toMatchObject({ success: true, reviewId: 4202, commentsCreated: 0 });
 
