@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.0...v1.29.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **test:** gate the helm e2e tests on the binary and bound their subprocess time (REL-570) ([#469](https://github.com/review-yeti-ai/review-yeti-bot/issues/469)) ([2841448](https://github.com/review-yeti-ai/review-yeti-bot/commit/2841448a757da25ad9908040920eb1b18dedf714))
+
 ## [1.29.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.6...v1.29.0) (2026-09-04)
 
 
