@@ -6,6 +6,12 @@ import { SymbolGraphStore } from '../indexer/symbolGraphStore';
 import { providerPool } from '../gateway/providerPool';
 import { R4_ALLOWED_MODELS } from '../config/schema';
 import { postgresStore } from './postgresStore';
+import type { ProviderConfigRecord, PersonaSetting } from '../types/dashboard';
+
+// ProviderConfigRecord and PersonaSetting are canonically declared in
+// ../types/dashboard.ts (shared with the frontend api-client). Re-exported
+// here so existing `from './dashboardStore'` imports keep working.
+export type { ProviderConfigRecord, PersonaSetting };
 
 export interface RepoDashboardSetting {
   id?: string;
@@ -21,27 +27,6 @@ export interface RepoDashboardSetting {
   defaultBranch?: string;
   modelOverrides?: Record<string, string>;
   updatedAt: string;
-}
-
-export interface PersonaSetting {
-  id: string;
-  personaId?: string;
-  displayName: string;
-  name?: string;
-  description: string;
-  enabled: boolean;
-  model: string;
-  modelId?: string;
-  providerId?: string;
-  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  effortLevel?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  maxTurns?: number;
-  confidenceThreshold: number;
-  customPrompt?: string;
-  required?: boolean;
-  charter?: string;
-  paths?: string[];
-  providers?: string[];
 }
 
 export interface GitHubAppConfigRecord {
@@ -83,25 +68,6 @@ export interface CustomApiBases {
   anthropic_base_url?: string;
   deepseek_base_url?: string;
   ollama_base_url?: string;
-}
-
-export interface ProviderConfigRecord {
-  id: string;
-  name?: string;
-  displayName: string;
-  active?: boolean;
-  enabled: boolean;
-  apiKey?: string;
-  apiKeyMasked?: string;
-  apiKeyRaw?: string;
-  baseUrl?: string;
-  orgId?: string;
-  subscriptionTier?: 'Free' | 'Pay-as-you-go' | 'Pro' | 'Team' | 'Enterprise' | 'free' | 'pro' | 'team' | 'enterprise' | 'pay-as-you-go';
-  status?: 'connected' | 'error' | 'untested' | 'disabled';
-  latencyMs?: number;
-  activeModels: string[];
-  customModels?: string[];
-  updatedAt: string;
 }
 
 export interface ModelRegistryItem {

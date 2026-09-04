@@ -1,13 +1,24 @@
 export interface ProviderConfigRecord {
   id: string;
   type?: string;
+  name?: string;
   displayName: string;
   enabled: boolean;
   active?: boolean;
+  apiKey?: string;
   apiKeyMasked?: string;
   apiKeyRaw?: string;
   baseUrl?: string;
-  subscriptionTier?: 'free' | 'pro' | 'team' | 'enterprise' | 'pay-as-you-go';
+  orgId?: string;
+  /**
+   * Runtime is always normalized to the Title-case variants via
+   * normalizeSubscriptionTier() (src/persistence/dashboardStore.ts). The
+   * lowercase variants remain accepted as loosely-typed patch input.
+   */
+  subscriptionTier?: 'free' | 'pro' | 'team' | 'enterprise' | 'pay-as-you-go' | 'Free' | 'Pay-as-you-go' | 'Pro' | 'Team' | 'Enterprise';
+  /** 'unconfigured' is a real runtime value -- see src/api/onboarding.ts. */
+  status?: 'connected' | 'error' | 'untested' | 'disabled' | 'unconfigured';
+  latencyMs?: number;
   activeModels: string[];
   customModels?: string[];
   updatedAt: string;
@@ -26,9 +37,15 @@ export interface ModelRegistryItem {
 
 export interface PersonaSetting {
   id: string;
+  personaId?: string;
   displayName: string;
+  name?: string;
+  description?: string;
   model: string;
+  modelId?: string;
+  providerId?: string;
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effortLevel?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   maxTurns?: number;
   confidenceThreshold: number;
   enabled: boolean;
