@@ -26,6 +26,23 @@ describe('Review Yeti E2E Test Suite', () => {
   // Check milestone existence for progressive testability
   const hasExamples = fs.existsSync(repoPath('examples'));
   const hasHelmChart = fs.existsSync(repoPath('charts/review-yeti/Chart.yaml'));
+  // REL-570: the chart existing does not mean the `helm` binary does. Every test below that
+  // shells out to helm must be gated on the binary too, or it fails with ENOENT on any host
+  // without helm instead of skipping.
+  const hasHelmBinary = (() => {
+    try {
+      execSync('helm version --short', { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  const canRunHelm = hasHelmChart && hasHelmBinary;
+  // These shell out to helm; they are subprocess-bound, not logic-bound, and vitest's 5s default
+  // is not a meaningful bound on a `helm lint`/`helm template` spawn -- especially with
+  // fileParallelism on, where the spawn competes with the other workers. `helm lint` timing out
+  // at 5000ms is what reddened main at 67fb09e.
+  const HELM_TIMEOUT_MS = 60_000;
   const hasCloudValues = fs.existsSync(repoPath('examples/k8s/values-doks.yaml'));
   const hasHelmGuide = fs.existsSync(repoPath('docs/HELM_GUIDE.md'));
   const hasTroubleshooting = fs.existsSync(repoPath('docs/TROUBLESHOOTING.md'));
@@ -480,13 +497,13 @@ enabled: true
     });
 
     describe('2.3 Helm Chart Linting', () => {
-      it.skipIf(!hasHelmChart)('helm lint charts/review-yeti passes with 0 errors and 0 warnings', () => {
+      it.skipIf(!canRunHelm)('helm lint charts/review-yeti passes with 0 errors and 0 warnings', () => {
         const cmd = 'helm lint charts/review-yeti';
         const output = execSync(cmd, { cwd: REPO_ROOT, encoding: 'utf-8' });
         expect(output).toContain('0 chart(s) failed');
         expect(output).not.toContain('[ERROR]');
         expect(output).not.toContain('[WARNING]');
-      });
+      }, HELM_TIMEOUT_MS);
     });
   });
 
@@ -494,7 +511,7 @@ enabled: true
   // TIER 3: Cross-Feature Combinations & Multi-Cloud Matrix
   // =========================================================================
   describe('Tier 3: Cross-Feature Combinations & Multi-Cloud Matrix', () => {
-    it.skipIf(!hasHelmChart)('renders base values.yaml with 100% valid Kubernetes YAML manifests', () => {
+    it.skipIf(!canRunHelm)('renders base values.yaml with 100% valid Kubernetes YAML manifests', () => {
       const output = execSync('helm template review-yeti charts/review-yeti', {
         cwd: REPO_ROOT,
         encoding: 'utf-8',
@@ -513,9 +530,9 @@ enabled: true
       expect(operator).toBeDefined();
       const opSec = operator?.spec?.template?.spec?.securityContext;
       expect(opSec?.runAsNonRoot).toBe(true);
-    });
+    }, HELM_TIMEOUT_MS);
 
-    it.skipIf(!hasHelmChart || !hasCloudValues)('renders DOKS cloud values with DO Block Storage CSI and DO LoadBalancer Ingress', () => {
+    it.skipIf(!canRunHelm || !hasCloudValues)('renders DOKS cloud values with DO Block Storage CSI and DO LoadBalancer Ingress', () => {
       const output = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-doks.yaml', {
         cwd: REPO_ROOT,
         encoding: 'utf-8',
@@ -537,9 +554,9 @@ enabled: true
       const roleRules = JSON.stringify(role?.rules);
       expect(roleRules).not.toContain('"secrets"');
       expect(roleRules).not.toContain('"nodes"');
-    });
+    }, HELM_TIMEOUT_MS);
 
-    it.skipIf(!hasHelmChart || !hasCloudValues)('renders EKS cloud values with AWS ALB Ingress annotations and IRSA support', () => {
+    it.skipIf(!canRunHelm || !hasCloudValues)('renders EKS cloud values with AWS ALB Ingress annotations and IRSA support', () => {
       const output = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-eks.yaml', {
         cwd: REPO_ROOT,
         encoding: 'utf-8',
@@ -550,9 +567,9 @@ enabled: true
       expect(ingress).toBeDefined();
       expect(ingress?.spec?.ingressClassName).toBe('alb');
       expect(ingress?.metadata?.annotations?.['alb.ingress.kubernetes.io/scheme']).toBe('internet-facing');
-    });
+    }, HELM_TIMEOUT_MS);
 
-    it.skipIf(!hasHelmChart || !hasCloudValues)('renders local Minikube/Kind values with NodePort service and Ollama endpoint', () => {
+    it.skipIf(!canRunHelm || !hasCloudValues)('renders local Minikube/Kind values with NodePort service and Ollama endpoint', () => {
       const output = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-local.yaml', {
         cwd: REPO_ROOT,
         encoding: 'utf-8',
@@ -563,7 +580,7 @@ enabled: true
       expect(service).toBeDefined();
       expect(service?.spec?.type).toBe('NodePort');
       expect(service?.spec?.ports?.[0]?.nodePort).toBe(30080);
-    });
+    }, HELM_TIMEOUT_MS);
 
     it('validates security context hardening invariant across dispatcher template', () => {
       // Test the contract invariant: containers must have allowPrivilegeEscalation: false and readOnlyRootFilesystem: true
