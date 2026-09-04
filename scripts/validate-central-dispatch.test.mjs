@@ -164,6 +164,11 @@ test('requires the central repository_dispatch execution context', () => {
     eventName: 'repository_dispatch',
     eventAction: DISPATCH_EVENT_TYPE,
   }));
+  assert.doesNotThrow(() => validateExecutionContext({
+    repository: CENTRAL_REPOSITORY,
+    eventName: 'workflow_dispatch',
+    eventAction: '',
+  }));
   assert.throws(() => validateExecutionContext({ repository: TARGET_REPOSITORY, eventName: 'repository_dispatch', eventAction: DISPATCH_EVENT_TYPE }), /central execution/);
   assert.throws(() => validateExecutionContext({ repository: CENTRAL_REPOSITORY, eventName: 'pull_request_target', eventAction: DISPATCH_EVENT_TYPE }), /requires repository_dispatch/);
 });

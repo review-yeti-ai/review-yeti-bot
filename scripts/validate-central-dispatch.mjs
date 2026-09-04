@@ -60,8 +60,11 @@ export function validateExecutionContext({ repository, eventName, eventAction })
   if (repository !== CENTRAL_REPOSITORY) {
     throw new Error(`central execution must run in ${CENTRAL_REPOSITORY}`);
   }
+  if (eventName === 'workflow_dispatch') {
+    return;
+  }
   if (eventName !== 'repository_dispatch' || eventAction !== DISPATCH_EVENT_TYPE) {
-    throw new Error(`central execution requires repository_dispatch action ${DISPATCH_EVENT_TYPE}`);
+    throw new Error(`central execution requires repository_dispatch action ${DISPATCH_EVENT_TYPE} or workflow_dispatch`);
   }
 }
 

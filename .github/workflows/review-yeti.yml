@@ -350,3 +350,50 @@ jobs:
           RUN_REPORT_PATH: ${{ steps.passthrough.outputs.run-report-path || steps.review.outputs.run-report-path }}
           REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}
         run: .exampleorg-review-actions/scripts/check-review-verdict.sh
+
+      - name: Report Review Yeti Check Run to target repository
+        if: always() && inputs.central_execution && steps.ry_token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          TARGET_REPO: ${{ inputs.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
+          CENTRAL_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TARGET_REPO:-}" || -z "${HEAD_SHA:-}" ]]; then
+            echo "::warning::Missing TARGET_REPO or HEAD_SHA; skipping check-run publication."
+            exit 0
+          fi
+
+          conclusion="success"
+          if [[ "${REVIEW_STATUS:-}" != "SHIP" ]]; then
+            conclusion="failure"
+          fi
+
+          echo "Publishing Check Run 'Review Yeti' (${conclusion}) to ${TARGET_REPO} on ${HEAD_SHA}..."
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
+            -d "$(jq -nc \
+              --arg name "Review Yeti" \
+              --arg head_sha "${HEAD_SHA}" \
+              --arg conclusion "${conclusion}" \
+              --arg details_url "${CENTRAL_RUN_URL}" \
+              --arg title "Review Yeti: ${REVIEW_STATUS:-SHIP}" \
+              --arg summary "Review Yeti central evaluation finished with verdict: ${REVIEW_STATUS:-SHIP}. See details in [central run](${CENTRAL_RUN_URL})." \
+              '{
+                name: $name,
+                head_sha: $head_sha,
+                status: "completed",
+                conclusion: $conclusion,
+                details_url: $details_url,
+                output: {
+                  title: $title,
+                  summary: $summary
+                }
+              }')" || {
+            echo "::warning::Failed to publish check-run to ${TARGET_REPO}."
+          }

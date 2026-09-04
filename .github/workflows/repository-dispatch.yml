@@ -4,6 +4,28 @@ run-name: Review Yeti central / ${{ github.event.client_payload.request_id }}
 on:
   repository_dispatch:
     types: [review-yeti-request]
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Target repository'
+        required: true
+        type: string
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: number
+      base_sha:
+        description: 'Base commit SHA'
+        required: true
+        type: string
+      head_sha:
+        description: 'Head commit SHA'
+        required: true
+        type: string
+      request_id:
+        description: 'Request ID'
+        required: true
+        type: string
 
 permissions:
   # A called reusable workflow may not request more than its caller grants; GitHub
@@ -16,7 +38,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: central-review-yeti-${{ github.event.client_payload.repository }}-${{ github.event.client_payload.pr_number }}
+  group: central-review-yeti-${{ github.event.client_payload.repository || inputs.repository }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -50,12 +72,12 @@ jobs:
       - name: Resolve target repository name
         id: target
         env:
-          TARGET_REPOSITORY: ${{ github.event.client_payload.repository }}
+          TARGET_REPOSITORY: ${{ github.event.client_payload.repository || inputs.repository }}
         run: |
           set -euo pipefail
           case "${TARGET_REPOSITORY}" in
             exampleorg/*) echo "name=${TARGET_REPOSITORY#exampleorg/}" >> "$GITHUB_OUTPUT" ;;
-            *) echo "::error::client_payload.repository must be a exampleorg repository, got '${TARGET_REPOSITORY}'"; exit 1 ;;
+            *) echo "::error::target repository must be a exampleorg repository, got '${TARGET_REPOSITORY}'"; exit 1 ;;
           esac
 
       - name: Mint Review Yeti App token for target validation
@@ -73,7 +95,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.ry_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
-          CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload || inputs) }}
         run: node scripts/validate-central-dispatch.mjs
 
   review:
