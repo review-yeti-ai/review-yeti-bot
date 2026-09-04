@@ -1,14 +1,17 @@
 import { EventEmitter } from 'events';
 import { Response } from 'express';
 import { logger } from '../utils/logger';
-import type { LiveStreamEventType, LiveStreamEvent } from '../types/live';
+import type { LiveStreamEventType, LiveStreamEvent, LiveJobSummary } from '../types/live';
 
 // Re-exported so existing consumers importing these types from this module
 // keep working. `src/types/live.ts` is the single source of truth for
-// LiveStreamEventType/LiveStreamEvent (REL-573): it is what every
-// src/components/live/* prop type is built against, so the bus must not
-// declare a second, divergent copy.
-export type { LiveStreamEventType, LiveStreamEvent };
+// LiveStreamEventType/LiveStreamEvent/LiveJobSummary (REL-573): it is what
+// every src/components/live/* prop type is built against, so the bus must
+// not declare a second, divergent copy. `LiveStreamEventData` was
+// previously duplicated here too (REL-573); the local copy was unused
+// (exported but never imported anywhere) and has been removed in favor of
+// the canonical `src/types/live.ts` declaration.
+export type { LiveStreamEventType, LiveStreamEvent, LiveJobSummary };
 
 export type LiveStreamPersona =
   | 'security'
@@ -19,49 +22,6 @@ export type LiveStreamPersona =
   | 'compliance'
   | 'quorum'
   | string;
-
-export interface LiveStreamEventData {
-  personaId?: string;
-  charter?: string;
-  paths?: string[];
-  required?: boolean;
-  chunk?: string;
-  decision?: string;
-  findingsCount?: number;
-  durationMs?: number;
-  tokensUsed?: number | { prompt: number; completion: number; total: number };
-  costUSD?: number | null;
-  provider?: string;
-  model?: string;
-  requestedModel?: string;
-  resolvedModel?: string;
-  promptSnippet?: string;
-  token?: string;
-  accumulatedLength?: number;
-  latencyMs?: number;
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-  symbolName?: string;
-  filePath?: string;
-  callersCount?: number;
-  calleesCount?: number;
-  riskScore?: number;
-  findingTitle?: string;
-  pattern?: string;
-  rationale?: string;
-  verdict?: string;
-  quorumSatisfied?: boolean;
-  distinctProviders?: string[];
-  totalPersonasExecuted?: number;
-  totalFindings?: number;
-  totalDurationMs?: number;
-  totalCostUSD?: number | null;
-  message?: string;
-  confidenceScore?: number;
-  path?: string;
-  [key: string]: any;
-}
 
 export interface PersonaProgress {
   persona: LiveStreamPersona;
@@ -83,19 +43,6 @@ export interface LiveQueueMetrics {
   activeJobsCount: number;
   queuedJobsCount: number;
   maxConcurrentJobs: number;
-}
-
-export interface LiveJobSummary {
-  jobId: string;
-  repo?: string;
-  prNumber?: number;
-  status: 'queued' | 'active' | 'completed' | 'failed' | 'dispatched';
-  personaProgress: Record<string, PersonaProgress>;
-  tokenMetrics: TokenMetrics;
-  startTime: string;
-  endTime?: string;
-  eventCount: number;
-  lastEventTime: string;
 }
 
 export class LiveStreamBus extends EventEmitter {
