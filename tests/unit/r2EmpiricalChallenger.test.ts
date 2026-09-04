@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { executeMillerTool } from '../../src/services/millerTool';
-import { OmniRouteClient, OmniRouteResponse } from '../../src/gateway/omniRouteClient';
+import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
 const TMP_DIR = path.join(__dirname, '../../fixtures/tmp/r2_test');
 
@@ -99,7 +99,7 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
               content: `Let me attempt to use a tool.\n\n\`\`\`json\n{\n  "tool": "${toolName}",\n  "args": ${JSON.stringify(args)}\n}\n\`\`\``,
               usage: { promptTokens: 50, completionTokens: 50, totalTokens: 100, estimatedCostUSD: 0.001 },
               durationMs: 10,
-            } as OmniRouteResponse;
+            };
           } else {
             return {
               id: 'msg_persona',
@@ -108,7 +108,7 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
               content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ role: 'correctness', decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
               usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, estimatedCostUSD: 0.001 },
               durationMs: 10,
-            } as OmniRouteResponse;
+            };
           }
         } else if (sysMsg.includes('MODERATOR') || sysMsg.includes('moderator')) {
           return {
@@ -118,7 +118,7 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
             content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
             usage: { promptTokens: 50, completionTokens: 50, totalTokens: 100, estimatedCostUSD: 0.001 },
             durationMs: 10,
-          } as OmniRouteResponse;
+          };
         } else {
           return {
             id: 'msg_arb',
@@ -127,7 +127,7 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
             content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All clean' })}\nCT_REVIEW_END:${nonce}`,
             usage: { promptTokens: 50, completionTokens: 50, totalTokens: 100, estimatedCostUSD: 0.001 },
             durationMs: 10,
-          } as OmniRouteResponse;
+          };
         }
       }),
     } as unknown as OmniRouteClient;

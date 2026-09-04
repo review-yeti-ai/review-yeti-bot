@@ -407,7 +407,10 @@ describe('direct-provider rate limits', () => {
     const capacityManager = new pipeline.ProviderCapacityManager();
     let calls = 0;
     let sleepStartedResolve: (() => void) | null = null;
-    let resumeSleep: (() => void) | null = null;
+    // Explicit union cast on the initializer prevents TS from narrowing this
+    // `let` to the literal `null` type across the Promise-executor closure
+    // reassignment below (a known TS control-flow-narrowing gap).
+    let resumeSleep: (() => void) | null = null as (() => void) | null;
     let secondFetchResolve: (() => void) | null = null;
     const sleepStarted = new Promise<void>((resolve) => { sleepStartedResolve = resolve; });
     const sleepGate = new Promise<void>((resolve) => { resumeSleep = resolve; });

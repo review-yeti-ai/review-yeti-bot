@@ -11,10 +11,9 @@ import {
   formatMarkdownReport,
   formatJSONReport,
   Finding,
-  ExpectedFinding,
   ComparativeBenchmarkReport,
 } from '../../src/evaluation/evaluationRunner';
-import { EvaluationScenario, getAllScenarios, getScenarioById } from '../../src/evaluation/scenarios';
+import { EvaluationScenario, ExpectedFinding, getAllScenarios, getScenarioById } from '../../src/evaluation/scenarios';
 
 describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
   const rootRepoDir = path.resolve(__dirname, '../..');

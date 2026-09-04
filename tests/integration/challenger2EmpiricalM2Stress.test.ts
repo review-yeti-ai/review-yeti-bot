@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
+import type { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
 
@@ -59,7 +60,7 @@ describe('Challenger 2 Empirical Stress Test: panelEngine & omniRouteClient Fail
   });
 
   it('Scenario 1: DNS Resolution Failure — panelEngine must fail closed and NOT return synthetic approvals', async () => {
-    const config = parseAndValidateConfig(testPolicy);
+    const config = parseAndValidateConfig(testPolicy) as unknown as CtReviewConfigV3;
     const client = new OmniRouteClient({
       baseUrl: 'http://nonexistent-dns-domain-xyz123456789.invalid:9999',
     });
@@ -89,7 +90,7 @@ describe('Challenger 2 Empirical Stress Test: panelEngine & omniRouteClient Fail
   });
 
   it('Scenario 2: Connection Timeout — panelEngine must fail closed and NOT return synthetic approvals', async () => {
-    const config = parseAndValidateConfig(testPolicy);
+    const config = parseAndValidateConfig(testPolicy) as unknown as CtReviewConfigV3;
     const client = new OmniRouteClient({
       baseUrl: `http://127.0.0.1:${timeoutPort}`,
     });
@@ -117,7 +118,7 @@ describe('Challenger 2 Empirical Stress Test: panelEngine & omniRouteClient Fail
   });
 
   it('Scenario 3: HTTP 500 Error — panelEngine must fail closed and NOT return synthetic approvals', async () => {
-    const config = parseAndValidateConfig(testPolicy);
+    const config = parseAndValidateConfig(testPolicy) as unknown as CtReviewConfigV3;
     const client = new OmniRouteClient({
       baseUrl: `http://127.0.0.1:${error500Port}`,
     });

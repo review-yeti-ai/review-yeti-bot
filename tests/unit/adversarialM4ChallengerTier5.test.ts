@@ -9,7 +9,6 @@ import {
   formatMarkdownReport,
   formatJSONReport,
   Finding,
-  ExpectedFinding,
   ComparativeBenchmarkReport,
   MODEL_PRICING_TABLE,
 } from '../../src/evaluation/evaluationRunner';
@@ -21,6 +20,7 @@ import {
   getScenariosByPersona,
   formatUnifiedDiff,
   EvaluationScenario,
+  ExpectedFinding,
 } from '../../src/evaluation/scenarios';
 import {
   DEFAULT_THRESHOLDS,
@@ -312,13 +312,13 @@ describe('Adversarial Tier 5 Verification: CLI Engines, Metrics Formulas & Regre
     it('2.7 Gate 7 & 8 Defect Loss & Noise Boundaries (FN and FP detection)', () => {
       // FN increase
       const dFn = calculateDeltas({ ...baseSummary, totalFn: 1 }, baseSummary);
-      const gateFn = evaluateModelGate(dFn, { disallowNewFn: true });
+      const gateFn = evaluateModelGate(dFn, { ...DEFAULT_THRESHOLDS, disallowNewFn: true });
       expect(gateFn.passed).toBe(false);
       expect(gateFn.violations.some((v) => v.includes('New false negatives'))).toBe(true);
 
       // FP increase
       const dFp = calculateDeltas({ ...baseSummary, totalFp: 1 }, baseSummary);
-      const gateFp = evaluateModelGate(dFp, { disallowNewFp: true });
+      const gateFp = evaluateModelGate(dFp, { ...DEFAULT_THRESHOLDS, disallowNewFp: true });
       expect(gateFp.passed).toBe(false);
       expect(gateFp.violations.some((v) => v.includes('New false positives'))).toBe(true);
     });
@@ -337,7 +337,7 @@ describe('Adversarial Tier 5 Verification: CLI Engines, Metrics Formulas & Regre
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
+      expect(res.comparison!.passed).toBe(true);
     });
 
     it('3.2 compare-release-baselines.mjs: Regressed candidate with --strict returns Exit Code 1', async () => {
@@ -355,7 +355,7 @@ describe('Adversarial Tier 5 Verification: CLI Engines, Metrics Formulas & Regre
         '--strict',
       ]);
       expect(res.exitCode).toBe(1);
-      expect(res.comparison.hasRegressions).toBe(true);
+      expect(res.comparison!.hasRegressions).toBe(true);
     });
 
     it('3.3 compare-release-baselines.mjs: Regressed candidate with --no-strict or --warn-only returns Exit Code 0', async () => {
@@ -373,7 +373,7 @@ describe('Adversarial Tier 5 Verification: CLI Engines, Metrics Formulas & Regre
         '--warn-only',
       ]);
       expect(resWarn.exitCode).toBe(0);
-      expect(resWarn.comparison.hasRegressions).toBe(true);
+      expect(resWarn.comparison!.hasRegressions).toBe(true);
 
       const resNoStrict = await mainCompare([
         'node',
@@ -427,12 +427,12 @@ describe('Adversarial Tier 5 Verification: CLI Engines, Metrics Formulas & Regre
       ]);
 
       expect(res.exitCode).toBe(0);
-      expect(res.report.models).toEqual([
+      expect(res.report!.models).toEqual([
         'deepseek/deepseek-v4-flash-0731:high',
         'qwen/qwen-3.8-27b:high',
       ]);
-      expect(res.report.scenarios.length).toBeGreaterThan(0);
-      for (const result of res.report.detailedResults) {
+      expect(res.report!.scenarios.length).toBeGreaterThan(0);
+      for (const result of res.report!.detailedResults) {
         expect(result.category).toBe('evidence');
       }
     });
@@ -449,7 +449,7 @@ describe('Adversarial Tier 5 Verification: CLI Engines, Metrics Formulas & Regre
 
       expect(res.exitCode).toBe(0);
       expect(res.comparison).toBeDefined();
-      expect(res.comparison.hasRegressions).toBe(false);
+      expect(res.comparison!.hasRegressions).toBe(false);
     });
 
     it('3.9 Direct Subprocess Shell Execution: Real Node CLI execution via execSync', () => {

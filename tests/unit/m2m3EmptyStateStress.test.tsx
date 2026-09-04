@@ -58,9 +58,13 @@ describe('M2 & M3 Adversarial Stress Testing: Empty State & Zero-Value Metrics',
       fs.writeFileSync(corruptPath, '{ invalid_json: ', 'utf8');
 
       let store: ReviewRunStore | null = null;
-      expect(() => {
+      let constructionError: unknown = null;
+      try {
         store = new ReviewRunStore(corruptPath);
-      }).not.toThrow();
+      } catch (err) {
+        constructionError = err;
+      }
+      expect(constructionError).toBeNull();
 
       expect(store?.getHead(123)).toBeUndefined();
       expect(store?.filterResolvedNits(123, [{ title: 'test' }])).toEqual([{ title: 'test' }]);
@@ -344,8 +348,11 @@ describe('M2 & M3 Adversarial Stress Testing: Empty State & Zero-Value Metrics',
           repo: 'calltelemetry/cisco-cdr',
           prNumber: 101,
           title: 'Fix issue',
+          status: 'completed' as const,
           verdict: 'SHIP' as const,
           personas: [],
+          tokens: 0,
+          cost: 0,
           latencyMs: 120,
           timestamp: '10m ago',
         },
