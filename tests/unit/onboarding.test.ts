@@ -5,6 +5,7 @@ import { scanRepositoryStack } from '../../src/onboarding/stackScanner';
 import { generateCtReviewConfig } from '../../src/onboarding/configGenerator';
 import { createApp } from '../../src/app';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
+import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
   const currentRepoPath = path.resolve(__dirname, '../../');
@@ -14,7 +15,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
       const scanResult = await scanRepositoryStack(currentRepoPath);
 
       expect(scanResult).toBeDefined();
-      expect(scanResult.detection.scanDurationMs).toBeLessThan(5000);
+      expect(scanResult.detection.scanDurationMs).toBeLessThan(timeBudgetMs(5000));
       expect(scanResult.detection.totalFilesScanned).toBeGreaterThan(0);
       expect(scanResult.detection.manifestsFound).toContain('package.json');
       expect(scanResult.detection.languages.TypeScript).toBeGreaterThan(0);
@@ -87,7 +88,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.scanResult.detection.scanDurationMs).toBeLessThan(1000);
+      expect(res.body.scanResult.detection.scanDurationMs).toBeLessThan(timeBudgetMs(1000));
       expect(res.body.scanResult.detection.manifestsFound).toContain('package.json');
     });
 

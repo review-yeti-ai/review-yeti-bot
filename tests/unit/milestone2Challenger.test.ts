@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CommandDispatcher, parseCommand, ChatContext } from '../../src/chat/commandDispatcher';
 import { GitHubEventHandler } from '../../src/github/eventHandler';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Command Dispatcher', () => {
   let dispatcher: CommandDispatcher;
@@ -192,7 +193,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
 
         expect(res.command).toBe('explain');
         expect(res.success).toBe(true);
-        expect(duration).toBeLessThan(500); // Should execute within 500ms
+        expect(duration).toBeLessThan(timeBudgetMs(500)); // Should execute within 500ms
         
         // Verify diff context was sliced to 4,000 chars for LLM prompt safety
         const promptSent = mockModelClient.complete.mock.calls[0][0].messages[1].content;
@@ -252,7 +253,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
 
         expect(res.command).toBe('summarize');
         expect(res.success).toBe(true);
-        expect(duration).toBeLessThan(1000);
+        expect(duration).toBeLessThan(timeBudgetMs(1000));
         expect(res.output).toContain('## Updated PR Summary');
       });
     });

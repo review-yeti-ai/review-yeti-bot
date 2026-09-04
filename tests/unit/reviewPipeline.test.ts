@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { timeBudgetMs } from '../support/timeBudget';
 
 // Resolve path to root repository .github/workflows/pipelines/review-pipeline.js
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -1020,7 +1021,7 @@ index 123456..789abc 100644
       const durationMs = Date.now() - startTime;
 
       expect(results).toHaveLength(12);
-      expect(durationMs).toBeLessThan(1000); // Expect sub-second parallel execution
+      expect(durationMs).toBeLessThan(timeBudgetMs(1000)); // Expect sub-second parallel execution
 
       const arbitration = computeArbitrationQuorum(results);
       expect(arbitration.completedPersonas).toBe(12);

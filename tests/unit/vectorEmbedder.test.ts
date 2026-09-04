@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { VectorEmbedder } from '../../src/indexer/vectorEmbedder';
+import { timeBudgetMs } from '../support/timeBudget';
 
 describe('VectorEmbedder', () => {
   const embedder = new VectorEmbedder();
@@ -9,7 +10,7 @@ describe('VectorEmbedder', () => {
     const result = await embedder.generateEmbedding(text);
 
     expect(result.vector.length).toBe(384);
-    expect(result.durationMs).toBeLessThan(10); // sub-millisecond to low ms
+    expect(result.durationMs).toBeLessThan(timeBudgetMs(10)); // sub-millisecond to low ms
 
     // Test L2 norm calculation: sum(v_i^2) == 1.0
     let sumSq = 0;

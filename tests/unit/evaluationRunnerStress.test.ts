@@ -14,6 +14,7 @@ import {
   ComparativeBenchmarkReport,
 } from '../../src/evaluation/evaluationRunner';
 import { EvaluationScenario, getAllScenarios, getScenarioById } from '../../src/evaluation/scenarios';
+import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
   const rootRepoDir = path.resolve(__dirname, '../..');
@@ -210,7 +211,7 @@ describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
       expect(metrics.fp).toBe(4950);
       expect(metrics.fn).toBe(0);
       expect(metrics.recall).toBe(1.0);
-      expect(elapsed).toBeLessThan(1000); // Must complete within 1 second
+      expect(elapsed).toBeLessThan(timeBudgetMs(1000)); // Must complete within 1 second
     });
 
     it('handles path normalization: Windows backslashes, leading ./, case variations, trailing spaces', () => {

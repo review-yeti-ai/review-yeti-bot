@@ -12,6 +12,7 @@ import { PersonaSelector, ALL_PERSONA_IDS, PERSONA_METADATA } from '@/components
 import SettingsPage from '@/app/settings/page';
 import { DashboardStore, dashboardStore } from '@/persistence/dashboardStore';
 import { createDashboardRouter } from '@/api/dashboardApi';
+import { timeBudgetMs } from '../support/timeBudget';
 
 // Mock next/navigation
 vi.mock('next/navigation', () => ({
@@ -171,7 +172,7 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
       const endTime = performance.now();
 
       expect(updated.customPrompt.length).toBe(500_000);
-      expect(endTime - startTime).toBeLessThan(1000); // fast persistence < 1s
+      expect(endTime - startTime).toBeLessThan(timeBudgetMs(1000)); // fast persistence < 1s
 
       const reloadedStore = new DashboardStore('/tmp/ct_prompt_editor_huge_store.json');
       const retrieved = reloadedStore.getSettings().personaSettings?.['performance'];

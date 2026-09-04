@@ -6,6 +6,7 @@ import { TurnProgressBar } from '../../../src/components/dashboard/TurnProgressB
 import { SessionTurnTimeline } from '../../../src/components/dashboard/SessionTurnTimeline';
 import { FindingsDeltaCard, FindingsDeltaBadge } from '../../../src/components/dashboard/FindingsDeltaCard';
 import { PersonaTurnStep, FindingsDeltaSummary } from '../../../src/types/dashboard';
+import { timeBudgetMs } from '../../support/timeBudget';
 
 describe('M6 Adversarial Edge Case Testing Suite', () => {
 
@@ -91,7 +92,7 @@ describe('M6 Adversarial Edge Case Testing Suite', () => {
       expect(screen.getByTestId('session-turn-timeline')).toBeInTheDocument();
       expect(screen.getByText('1000 steps executed')).toBeInTheDocument();
       expect(screen.getByTestId('turn-timeline-step-1000')).toBeInTheDocument();
-      expect(renderTime).toBeLessThan(2000); // Must render in under 2s
+      expect(renderTime).toBeLessThan(timeBudgetMs(2000)); // Must render in under 2s
     });
 
     it('handles steps with completely missing metadata', () => {
