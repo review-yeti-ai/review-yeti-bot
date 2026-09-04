@@ -55,16 +55,19 @@ function makeRequest(
     let bodyBuffer = '';
 
     const originalWrite = res.write;
-    res.write = function (chunk: any, encoding: any, cb: any) {
+    // node's ServerResponse.write has multiple overloads (with/without encoding/callback);
+    // the replacement must accept the same optional arity or TS rejects the assignment.
+    res.write = function (chunk: any, encoding?: any, cb?: any) {
       if (chunk) bodyBuffer += chunk.toString();
       if (typeof originalWrite === 'function') {
         originalWrite.call(res, chunk, encoding, cb);
       }
       return true;
-    };
+    } as typeof res.write;
 
     const originalEnd = res.end;
-    res.end = function (chunk: any, encoding: any, cb: any) {
+    // same overload-arity concern as res.write above.
+    res.end = function (chunk?: any, encoding?: any, cb?: any) {
       if (chunk) bodyBuffer += chunk.toString();
       if (typeof originalEnd === 'function') {
         originalEnd.call(res, chunk, encoding, cb);
@@ -83,7 +86,7 @@ function makeRequest(
         body: parsedBody,
         text: bodyBuffer,
       });
-    };
+    } as typeof res.end;
 
     app(req, res);
 

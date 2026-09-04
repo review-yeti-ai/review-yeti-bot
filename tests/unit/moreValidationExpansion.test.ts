@@ -58,7 +58,10 @@ describe('schema.ts — Comprehensive Validation Expansion Tests', () => {
     expect(res.success).toBe(true);
     if (res.success) {
       expect(res.data.mascot).toBe(false);
-      expect(res.data.display.mascot).toBe(false);
+      // `display` is a passthrough-only key not declared on the V3 schema shape,
+      // so zod's inferred type is `unknown`; narrow to the shape this fixture set.
+      const display = res.data.display as { mascot: boolean };
+      expect(display.mascot).toBe(false);
     }
   });
 

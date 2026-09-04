@@ -26,10 +26,8 @@ export {
   detectFileStatus,
   formatCoverageComment,
   formatPromptManifestHeader,
-  DiffPartition,
-  PartitionPlan,
-  FileStatus,
 };
+export type { DiffPartition, PartitionPlan, FileStatus };
 
 // ============================================================================
 // TEST SUITE: TIERS 1 TO 4

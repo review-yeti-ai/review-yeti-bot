@@ -45,15 +45,15 @@ describe('Milestone 5 Empirical Challenger: Full Test Suite & Isolation Harness'
       expect(matchGlobs).toBeDefined();
       expect(Array.isArray(matchGlobs)).toBe(true);
       
-      const tsxGlob = matchGlobs?.find(([pattern]) => pattern === '**/*.tsx');
+      const tsxGlob = matchGlobs?.find(([pattern]: [string | RegExp, string]) => pattern === '**/*.tsx');
       expect(tsxGlob).toBeDefined();
       expect(tsxGlob?.[1]).toBe('jsdom');
 
-      const sseGlob = matchGlobs?.find(([pattern]) => pattern === '**/useSSE.test.ts');
+      const sseGlob = matchGlobs?.find(([pattern]: [string | RegExp, string]) => pattern === '**/useSSE.test.ts');
       expect(sseGlob).toBeDefined();
       expect(sseGlob?.[1]).toBe('jsdom');
 
-      const liveGlob = matchGlobs?.find(([pattern]) => pattern === '**/liveStream*.test.ts');
+      const liveGlob = matchGlobs?.find(([pattern]: [string | RegExp, string]) => pattern === '**/liveStream*.test.ts');
       expect(liveGlob).toBeDefined();
       expect(liveGlob?.[1]).toBe('jsdom');
     });
