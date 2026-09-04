@@ -428,7 +428,12 @@ describe('OpenRouterClient', () => {
     vi.useFakeTimers();
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | undefined;
-    let requestSignal: AbortSignal | null = null;
+    // REL-573: `let x: AbortSignal | null = null` narrows to `null`, so `x?.aborted` reads as
+    // `never` and the previous fix reached for `as any`. Asserting the type on the initializer
+    // keeps the declared union alive through the closure reassignment below, which is the actual
+    // fix -- this is a TypeScript narrowing rule, not the @types/node AbortSignal conflict it was
+    // first attributed to (verified: it reproduces identically with skipLibCheck off).
+    let requestSignal = null as AbortSignal | null;
     try {
       const encoder = new TextEncoder();
       const activeStream = new ReadableStream({
@@ -475,12 +480,12 @@ describe('OpenRouterClient', () => {
       // @types/node vs lib.dom AbortSignal generic-arity conflict in this
       // project's global type environment (skipLibCheck hides the merge
       // error); cast locally rather than editing global type config.
-      expect((requestSignal as any)?.aborted).toBe(false);
+      expect(requestSignal?.aborted).toBe(false);
 
       await vi.advanceTimersByTimeAsync(50);
       await rejection;
 
-      expect((requestSignal as any)?.aborted).toBe(true);
+      expect(requestSignal?.aborted).toBe(true);
       expect(cancelled).toBe(true);
     } finally {
       if (interval) clearInterval(interval);
