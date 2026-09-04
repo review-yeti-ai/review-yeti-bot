@@ -900,7 +900,10 @@ describe('reviewWithModel', () => {
       }),
       '[DONE]',
     ].map((frame) => `data: ${frame}\n\n`).join('');
-    let observed: { headers: Headers; body: any } | null = null;
+    // Assigned only inside the fetchImplementation closure below; TS's control-flow
+    // narrowing collapses a `let x: T | null = null` initializer to `never` at read
+    // sites once a nested closure reassigns it, so use an `as`-typed initializer instead.
+    let observed = null as { headers: Headers; body: any } | null;
     const fetchImplementation = async (_url: string, init: any) => {
       observed = { headers: new Headers(init.headers), body: JSON.parse(init.body) };
       return new Response(frames, {
@@ -1092,8 +1095,11 @@ describe('reviewWithModel', () => {
 
   it('passes an undici dispatcher whose header timeout covers max_wall_clock_ms', async () => {
     const encoder = new TextEncoder();
-    let capturedInit: RequestInit | undefined;
-    const fetchImplementation = async (_url: string, init: RequestInit) => {
+    // The DOM lib's global `RequestInit` (pulled in via tsconfig "lib": ["dom", ...]) doesn't
+    // declare undici's `dispatcher` option; extend it locally rather than widen to `any`.
+    type RequestInitWithDispatcher = RequestInit & { dispatcher?: unknown };
+    let capturedInit: RequestInitWithDispatcher | undefined;
+    const fetchImplementation = async (_url: string, init: RequestInitWithDispatcher) => {
       capturedInit = init;
       return new Response(new ReadableStream({
         start(controller) {
@@ -2088,7 +2094,7 @@ describe('reviewWithModel', () => {
 
   it('caps format-recovery streams by wall clock so reasoning tokens cannot hang the lane', async () => {
     let calls = 0;
-    const sse = (chunks, { hang = false } = {}) => ({
+    const sse = (chunks: Array<{ content?: string; reasoning?: string }>, { hang = false } = {}) => ({
       ok: true,
       status: 200,
       headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },

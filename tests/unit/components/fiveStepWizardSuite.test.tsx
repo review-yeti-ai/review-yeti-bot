@@ -105,6 +105,7 @@ describe('FiveStepWizard Component Suite', () => {
         enabled: true,
         active: true,
         updatedAt: new Date().toISOString(),
+        activeModels: [],
       },
       openai: {
         id: 'openai',
@@ -112,6 +113,7 @@ describe('FiveStepWizard Component Suite', () => {
         enabled: false,
         active: false,
         updatedAt: new Date().toISOString(),
+        activeModels: [],
       },
     };
 
@@ -144,6 +146,7 @@ describe('FiveStepWizard Component Suite', () => {
         enabled: false,
         active: false,
         updatedAt: new Date().toISOString(),
+        activeModels: [],
       },
     };
 
@@ -164,6 +167,7 @@ describe('FiveStepWizard Component Suite', () => {
         enabled: false,
         active: false,
         updatedAt: new Date().toISOString(),
+        activeModels: [],
       },
     };
 

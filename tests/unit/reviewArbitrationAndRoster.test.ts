@@ -121,7 +121,7 @@ describe('Built-in charters are written as reviewer instructions', () => {
   });
 
   it('requires causal evidence before the testing reviewer reports a defect', () => {
-    const testing = PERSONA_CHARTERS.find((persona) => persona.id === 'testing');
+    const testing = PERSONA_CHARTERS.find((persona: { id: string; charter: string }) => persona.id === 'testing');
     expect(testing?.charter).toContain('Scope:');
     expect(testing?.charter).toContain('Concrete counterfactual evidence:');
     expect(testing?.charter).toContain("Name the changed assertion, input or path, and expected outcome");
@@ -135,7 +135,7 @@ describe('Built-in charters are written as reviewer instructions', () => {
   });
 
   it('keeps testing hardening generic rather than encoding evaluation fixtures', () => {
-    const testing = PERSONA_CHARTERS.find((persona) => persona.id === 'testing');
+    const testing = PERSONA_CHARTERS.find((persona: { id: string; charter: string }) => persona.id === 'testing');
     expect(testing?.charter).not.toMatch(/vacuous|format.?evadable|absence.?guard|default.?value/i);
   });
 });
