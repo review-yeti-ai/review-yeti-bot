@@ -1,8 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import { generateGitHubAppJwt } from '../src/github/appAuth';
-import { formatInlineCommentBody } from '../src/github/commentPublisher';
-import { PersonaFinding } from '../src/quorum/quorumEngine';
+// REL-573: this script also built its fix options as `rankedFixes` with `description`/
+// `codeSnippet` fields. The renderer reads `fixOptions` with `explanation`/`suggestionCode`
+// (see FixOption in commentPublisher), so every fix option this script produced was silently
+// discarded. Renamed to the fields the renderer actually consumes.
+// REL-573: PersonaFinding was imported from '../src/quorum/quorumEngine', a module that does not
+// exist anywhere in the tree -- this script could never have loaded. It is exported from
+// commentPublisher, which this file already imports from. `scripts/` being excluded from
+// tsconfig is why a broken import sat here undetected.
+import { formatInlineCommentBody, PersonaFinding } from '../src/github/commentPublisher';
 
 function formatCostAndUsageReport(report: any): string {
   let table = `### 📊 Review Token Usage & Cost Report\n\n`;
@@ -98,18 +105,18 @@ async function executeRealDiffReview(owner: string, repo: string, prNumber: numb
     comment: 'Deletion of rules.no-customer-identifiers and rules.fail-closed-gates removes PII customer data protections and fail-closed security gating.',
     confidence: 98,
     recommendation: 'Restore the P0 security rule definitions in .ct-review.yaml before merging.',
-    rankedFixes: [
+    fixOptions: [
       {
         rank: 1,
         title: 'Restore Full P0 Security Rules Block (Recommended)',
-        description: 'Re-add no-customer-identifiers and fail-closed-gates rules explicitly in .ct-review.yaml.',
-        codeSnippet: `rules:\n  - id: no-customer-identifiers\n    rule: "No customer names, support-case IDs, hostnames, FQDNs, public IPs, or PII in code or comments."\n    scope: ["**"]\n    severity: P0\n  - id: fail-closed-gates\n    rule: "A gate/verdict must fail CLOSED."\n    scope: ["**/scripts/*", "tools/**"]\n    severity: P1`,
+        explanation: 'Re-add no-customer-identifiers and fail-closed-gates rules explicitly in .ct-review.yaml.',
+        suggestionCode: `rules:\n  - id: no-customer-identifiers\n    rule: "No customer names, support-case IDs, hostnames, FQDNs, public IPs, or PII in code or comments."\n    scope: ["**"]\n    severity: P0\n  - id: fail-closed-gates\n    rule: "A gate/verdict must fail CLOSED."\n    scope: ["**/scripts/*", "tools/**"]\n    severity: P1`,
       },
       {
         rank: 2,
         title: 'Import Org-Level Security Policy Defaults (Alternative)',
-        description: 'Inherit security rules from org-level master policy while maintaining local overrides.',
-        codeSnippet: `extends: "calltelemetry/.github/.ct-review-default.yaml"\n\nrules:\n  - id: no-customer-identifiers\n    severity: P0`,
+        explanation: 'Inherit security rules from org-level master policy while maintaining local overrides.',
+        suggestionCode: `extends: "calltelemetry/.github/.ct-review-default.yaml"\n\nrules:\n  - id: no-customer-identifiers\n    severity: P0`,
       },
     ],
   };
@@ -122,18 +129,18 @@ async function executeRealDiffReview(owner: string, repo: string, prNumber: numb
     comment: 'ADR 0167 Compliance Violation: The diff strips out quorum_shortfall, path_filters (!.apm/**), and path_instructions.',
     confidence: 95,
     recommendation: 'Restore path_filters to prevent review tools from analyzing generated skill mirrors in .apm/.',
-    rankedFixes: [
+    fixOptions: [
       {
         rank: 1,
         title: 'Restore Full ADR 0167 Path Filters & Instructions (Recommended)',
-        description: 'Ensure path_filters and path_instructions are intact for bash 3.2 safety and skill source truth.',
-        codeSnippet: `path_filters:\n  - "!.apm/**"\n  - "!knowledge/review-learnings/**"\n\npath_instructions:\n  - path: "**/scripts/*"\n    instructions: "bash 3.2-safe: NO mapfile, NO declare -A."`,
+        explanation: 'Ensure path_filters and path_instructions are intact for bash 3.2 safety and skill source truth.',
+        suggestionCode: `path_filters:\n  - "!.apm/**"\n  - "!knowledge/review-learnings/**"\n\npath_instructions:\n  - path: "**/scripts/*"\n    instructions: "bash 3.2-safe: NO mapfile, NO declare -A."`,
       },
       {
         rank: 2,
         title: 'Minimal Path Filters Restoration (Alternative)',
-        description: 'Add basic path_filters excluding .apm/ and generated artifacts.',
-        codeSnippet: `path_filters:\n  - "!.apm/**"`,
+        explanation: 'Add basic path_filters excluding .apm/ and generated artifacts.',
+        suggestionCode: `path_filters:\n  - "!.apm/**"`,
       },
     ],
   };
