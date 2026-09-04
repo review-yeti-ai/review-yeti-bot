@@ -2,9 +2,8 @@
 
 > [!IMPORTANT]
 > **Public Action development guide.** Local execution validates the checked-out bot bytes; it is
-> not proof of the released `v1` channel or a CallTelemetry fleet review. Provider examples are
-> direct local configuration, not fleet policy. See
-> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+> not proof of the released `v1` channel or a centralized fleet review. Provider examples are
+> direct local configuration. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 This guide provides step-by-step instructions for executing the Review Yeti review pipeline, live PR reviews, and evaluation benchmarks locally from your workstation without relying on GitHub Actions.
 
@@ -19,7 +18,7 @@ This guide provides step-by-step instructions for executing the Review Yeti revi
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-..."
 # Optional overrides:
-export OPENROUTER_MODEL="google/gemini-3.7-flash:high"
+export OPENROUTER_MODEL="deepseek/deepseek-v4-flash-0731"
 export OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
 ```
 
@@ -50,11 +49,11 @@ node .github/workflows/pipelines/review-pipeline.js
 To review a specific diff file or reproduction case:
 
 ```bash
-PR_DIFF_FILE="tests/fixtures/scenarios/2101.diff" \
-PR_NUMBER=2101 \
-GITHUB_REPOSITORY="calltelemetry/ct-meta" \
-PR_HEAD_SHA="517968afa8a1ce28e2e3883df2a57a4edc2521d6" \
-PR_BASE_SHA="bddb8ed916926e1b0a23de7a22ab0d40b79ebbf4" \
+PR_DIFF_FILE="path/to/sample.diff" \
+PR_NUMBER=101 \
+GITHUB_REPOSITORY="my-org/my-repo" \
+PR_HEAD_SHA="$(git rev-parse HEAD)" \
+PR_BASE_SHA="$(git rev-parse origin/main)" \
 OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
 node .github/workflows/pipelines/review-pipeline.js
 ```
@@ -67,15 +66,14 @@ To evaluate a live remote pull request on GitHub via the CLI runner (automatical
 
 ```bash
 OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-npx ts-node src/cli/runLiveReview.ts --pr=2119 --repo=calltelemetry/ct-meta
+npx ts-node src/cli/runLiveReview.ts --pr=101 --repo=my-org/my-repo
 ```
 
 ---
 
 ## 5. Option D: Run the evaluation benchmark harness
 
-Run the checked-in benchmark matrix locally. Treat the baseline artifacts as the authority for the
-current scenario and model counts:
+Run the checked-in benchmark matrix locally:
 
 ```bash
 # 1. Run offline deterministic evaluation (zero network calls, uses recorded VCR cassettes)

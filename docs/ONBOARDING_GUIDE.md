@@ -1,164 +1,233 @@
-# 🚀 ct-review-bot — Zero-Config Onboarding & Session Learning Guide
+# 🚀 Review Yeti — Friendly Onboarding Guide
 
-> [!IMPORTANT]
-> **Optional service document.** Wizard, session-learning, dashboard, and App onboarding here does
-> not install the public GitHub Action or configure the CallTelemetry production fleet. Verify it
-> against current service source before use. See
-> [Documentation authority](DOCUMENTATION_AUTHORITY.md).
-
-Complete reference guide for deploying **ct-review-bot** to any codebase in under 60 seconds using the 1-Click Onboarding Wizard and configuring persistent team session learning.
+Welcome to **Review Yeti**! This guide walks you through setting up multi-persona AI code reviews on your GitHub repositories in under 5 minutes.
 
 ---
 
-## ⚡ Quick Start: 1-Click Onboarding Setup
+## ⚡ Quickstart: Zero to AI Review in 60 Seconds
 
-### Option 1: Web Dashboard (Recommended)
-1. Navigate to the Web Dashboard at `http://localhost:3000/dashboard/onboarding` (or your deployed server endpoint).
-2. Enter your target repository path or name (e.g. `calltelemetry/cisco-cdr`).
-3. Click **Scan Repository & Generate Config**.
-4. The scanner completes in **< 1 second**, auto-detecting your tech stack, languages, frameworks, infrastructure manifests, and path exclusion defaults.
-5. Review the auto-generated `.ct-review.yaml` configuration and click **Apply to Repository**.
+The fastest way to get started is with the standalone GitHub Action. You don't need to install any apps, configure webhooks, or host any infrastructure.
 
-### Option 2: REST API
-Execute a single POST request to the onboarding wizard API:
+### 1. Add the Workflow File
 
-```bash
-curl -X POST http://localhost:3000/api/onboarding/wizard \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ct_live_your_api_key" \
-  -d '{
-    "repo": "calltelemetry/cisco-cdr",
-    "autoCommit": true
-  }'
-```
-
----
-
-## 🔍 Tech Stack Auto-Detection Scanner Reference
-
-The Onboarding Engine (`src/onboarding/stackScanner.ts`) scans the target directory structure in **< 1000ms**, inspecting root manifests and file extensions across 8 major tech stacks:
-
-| Technology / Stack | Detection Pattern | Auto-Configured Settings |
-| :--- | :--- | :--- |
-| **TypeScript / Node.js** | `package.json`, `tsconfig.json`, `.ts`/`.tsx` | Enables TypeScript AST indexing; adds `node_modules/`, `dist/`, `package-lock.json` to path filters. |
-| **Python** | `requirements.txt`, `pyproject.toml`, `pipfile`, `.py` | Enables Python AST symbol graph; excludes `venv/` & `__pycache__/`. |
-| **Go** | `go.mod`, `.go` | Enables Go parser rules; filters `vendor/` & `go.sum`. |
-| **Java** | `pom.xml`, `build.gradle`, `.java` | Enables Java symbol inspection; filters `target/` & `build/`. |
-| **Elixir** | `mix.exs`, `.ex`/`.exs` | Enables Elixir parser rules; filters `_build/` & `deps/`. |
-| **Docker** | `Dockerfile`, `docker-compose.yml` | Configures DevOps & Cloud Infrastructure Specialist persona. |
-| **Kubernetes / Helm** | `Chart.yaml`, `k8s/*.yaml` | Enables infrastructure policy and security compliance rules. |
-| **HTML / CSS** | `.html`, `.css`, `.scss` | Applies frontend code review rules and asset filters. |
-
----
-
-## ⚙️ Auto-Generated `.ct-review.yaml` Reference Schema
-
-The configuration generator (`src/onboarding/configGenerator.ts`) produces a standard, CodeRabbit-compatible `.ct-review.yaml` schema:
+Create `.github/workflows/review-yeti.yml` in your repository:
 
 ```yaml
+# .github/workflows/review-yeti.yml
+name: Review Yeti
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Run Review Yeti
+        uses: review-yeti-ai/review-yeti-bot@v1
+        with:
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          model: deepseek/deepseek-v4-flash-0731
+```
+
+### 2. Add Your LLM API Key
+
+1. Go to your repository's **Settings** > **Secrets and variables** > **Actions**.
+2. Click **New repository secret**.
+3. Name: `OPENROUTER_API_KEY` (or your preferred OpenAI-compatible provider key).
+4. Value: Paste your API key (e.g. from [OpenRouter](https://openrouter.ai)).
+
+### 3. Open a Pull Request! 🎉
+
+Open a pull request on your repository. Review Yeti will automatically:
+1. Inspect the pull request diff.
+2. Evaluate it in parallel across 5 built-in expert personas (Security, Architecture, Performance, QA, Dependencies).
+3. Reconcile findings through automated arbitration.
+4. Post a clean, consolidated review comment with clear severity ratings (P0, P1, P2) and an actionable verdict (`SHIP`, `FIX_FIRST`, or `BLOCK`).
+
+---
+
+## 🏛️ Choose Your Organization Deployment Pattern
+
+Review Yeti scales from a single weekend project to an enterprise fleet of hundreds of repositories. Choose the pattern that best fits your team:
+
+```mermaid
+graph TD
+    subgraph Pattern 1: Standalone Action
+        A[Repo A PR] -->|Runs directly in GHA runner| B[Review Yeti Action @v1]
+        B -->|OpenRouter / Anthropic| LLM1[LLM Provider]
+    end
+
+    subgraph Pattern 2: Centralized Reusable Hub
+        C[Repo A PR] -->|uses: my-org/ci-hub/.github/workflows/review.yml| HUB[Central Workflow Hub]
+        D[Repo B PR] -->|uses: my-org/ci-hub/.github/workflows/review.yml| HUB
+        HUB -->|Centralized Secrets & Policy| LLM2[LLM Provider]
+    end
+
+    subgraph Pattern 3: Kubernetes Scaled Cluster
+        E[Repo A PR] -->|Lightweight shim < 10s| K8S[Kubernetes Review Cluster]
+        F[Repo B PR] -->|Lightweight shim < 10s| K8S
+        K8S -->|Ephemeral Worker Pods| LLM3[LLM Provider]
+        K8S -->|Direct Check Run & Comment| GH[GitHub API]
+    end
+```
+
+### Pattern 1: Standalone GitHub Action (Simplest)
+- **Best for**: Small teams, individual repositories, or testing Review Yeti.
+- **Setup**: One YAML file in each repository.
+- **Runner**: Executes directly inside GitHub Actions runner (`ubuntu-latest`).
+
+### Pattern 2: Centralized Reusable Workflow Hub (Recommended for Orgs)
+- **Best for**: Organizations managing 5 to 50+ repositories wanting central secret and model management.
+- **Setup**: Create a central repository (e.g., `my-org/review-actions`) containing a reusable workflow.
+- **Benefit**: Individual repos only need a 5-line caller workflow; secrets like `OPENROUTER_API_KEY` or GitHub App credentials live only in the central hub repository!
+
+```yaml
+# In consumer repo: .github/workflows/review.yml
+name: AI Code Review
+on: pull_request
+
+jobs:
+  review:
+    uses: my-org/review-actions/.github/workflows/review-yeti.yml@v1
+    secrets: inherit
+```
+
+### Pattern 3: Kubernetes Scaled Cluster (High Volume / Cost Optimized)
+- **Best for**: Organizations with high PR volume seeking to eliminate billable CI runner minutes.
+- **Setup**: Deploy the Review Yeti Operator & Dispatcher in your Kubernetes cluster (DOKS, EKS, GKE, etc.).
+- **Benefit**: GHA runner dispatches review in **< 10 seconds** and terminates; Kubernetes worker pods handle the LLM evaluations.
+- **Guide**: See [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md).
+
+---
+
+## 👥 Meet Your AI Review Panel
+
+Review Yeti does not use a generic single prompt. It assembles a **panel of specialized personas**, each with a dedicated charter:
+
+| Persona | Focus Area | What It Looks For |
+| :--- | :--- | :--- |
+| 🛡️ **Security & Tenancy** *(Default)* | Security vulnerabilities & data safety | SQL injection, auth bypass, tenant leaks, secrets in code, SSRF, XSS. |
+| ⚡ **Performance & Scale** *(Default)* | Efficiency & resource consumption | N+1 queries, unindexed filters, unbounded memory allocations, blocking I/O. |
+| 🏛️ **System Architecture** *(Default)* | Clean code & maintainability | Interface segregation, coupling, layer violations, design pattern misfits. |
+| 🧪 **Quality & QA** *(Default)* | Test coverage & edge cases | Missing test cases, flaky tests, unhandled exceptions, concurrency hazards. |
+| 📦 **Dependencies & Supply Chain** *(Default)* | Package safety | Deprecated libraries, vulnerable dependencies, licensing conflicts. |
+| 🗄️ **Database Specialist** *(Optional)* | Data integrity & migrations | Table locking migrations, index selection, transaction safety. |
+| 🌐 **Accessibility & Frontend** *(Optional)* | UX & web standards | WCAG contrast, ARIA tags, keyboard navigation, responsiveness. |
+
+---
+
+## 🛠️ Customizing Review Rules for Your Codebase
+
+### 1. Repository Configuration (`.ct-review.yaml`)
+
+Add a `.ct-review.yaml` to the root of your repository to enable/disable personas or customize thresholds:
+
+```yaml
+# .ct-review.yaml
 version: 3
-profile: balanced # chill | balanced | assertive
-quorum: 2
 
-reviews:
-  profile: balanced
-  reviewer_effort: medium # low | medium | high
-  confidence_threshold: 70
-  ticket_enforcement: false
-  request_changes_workflow: true
-  high_level_summary: true
+# Which personas to run
+personas:
+  - id: security
+    enabled: true
+  - id: performance
+    enabled: true
+  - id: database
+    enabled: true        # Enable optional database specialist
+  - id: accessibility
+    enabled: false
 
+# Path filters - ignore generated files, lockfiles, or vendor directories
 path_filters:
-  - "node_modules/**"
   - "dist/**"
   - "build/**"
-  - "target/**"
+  - "node_modules/**"
   - "vendor/**"
-  - "coverage/**"
   - "package-lock.json"
   - "yarn.lock"
-
-personas:
-  - id: security-arbiter
-    enabled: true
-    required: true
-    charter: builtin:security
-    paths: ["**"]
-    providers: ["claude", "codex"]
-  - id: ts-node-architect
-    enabled: true
-    required: true
-    charter: builtin:correctness
-    paths: ["**/*.ts", "**/*.tsx", "**/*.js", "package.json"]
-    providers: ["codex", "grok"]
-
-dials:
-  memory_engine: true
-  mascot: true
-  confidence_threshold: 70
-  ticket_enforcement: false
-
-reviewers:
-  execution: personas
-  fallback: ordered
-  overall_timeout_s: 180
-  providers:
-    - id: codex
-      enabled: true
-      model: codex/gpt-5.6-sol-high
-      effort: medium
-      review_timeout_s: 60
-      arbiter_timeout_s: 45
-    - id: grok
-      enabled: true
-      model: grok-cli/grok-4.5
-      effort: medium
-      review_timeout_s: 60
-      arbiter_timeout_s: 45
-  arbiter:
-    order: ["claude", "codex", "grok"]
 ```
+
+### 2. Adding Custom Persona Charters (`.ct-review/personas/*.md`)
+
+Teach Review Yeti your team's specific architectural patterns by creating Markdown charters under `.ct-review/personas/`:
+
+```markdown
+<!-- .ct-review/personas/tenancy.md -->
+---
+name: "🏢 Multi-Tenant Isolation Specialist"
+---
+
+Every database query touching tenant data must be explicitly scoped by `orgId`.
+
+## What to flag (P1):
+- Database queries accepting an un-scoped `id` without an `orgId` constraint.
+- API endpoints reading customer data that omit tenant authentication context.
+- In-memory cache keys that omit the `tenant_` prefix.
+
+## What to ignore:
+- Superadmin system scripts under `scripts/admin/`.
+- Database schema migration files.
+```
+
+> [!TIP]
+> **Base Ref Authority**: Review Yeti reads charters from the pull request's **base branch** (e.g. `main`), preventing pull requests from tampering with their own review rules!
 
 ---
 
-## 🧠 Session Reflection & Team Memory (`@ct-review learn`)
+## 🚦 Merge Gates & Branch Protection
 
-`ct-review-bot` dynamically adapts to your team's coding conventions, architectural guidelines, and past PR feedback through session reflection (`src/reflection/`).
+Review Yeti assigns a clear verdict to each review:
 
-### 1. Explicit Learning Command Syntax
-Teach the bot new project rules directly in PR comment threads:
+- 🟢 **`SHIP`**: Diff is clean. Zero P0 or P1 issues. Ready to merge!
+- 🟡 **`FIX_FIRST`**: Non-blocking improvements or minor bugs recommended before shipping.
+- 🔴 **`BLOCK`**: Critical issue identified (e.g. P0 security vulnerability, data loss risk).
 
-```text
-@ct-review learn <pattern | rule>
-```
+### Enforcing Review Yeti in GitHub Branch Protection
 
-**Examples**:
-- `@ct-review learn Always prefer named exports over default exports in src/components/`
-- `@ct-review learn Use logger.error() instead of console.error() in API routes`
-- `@ct-review learn Ignore magic numbers inside unit test assertions (*.test.ts)`
+1. In your GitHub repository, go to **Settings** > **Branches**.
+2. Click **Edit** on your branch protection rule (e.g. `main`).
+3. Check **Require status checks to pass before merging**.
+4. In the search box, select **Review Yeti**.
+5. Save changes.
 
-When issued, the bot parses the command via `src/reflection/commandParser.ts`, acknowledges registration in a comment reply, and persists the rule into `.ct-memory/` (or SQLite).
-
-### 2. Automatic Reaction & Comment Feedback Listener
-The bot observes PR comment replies and reaction emojis:
-- **Thumbs Up (👍)** / **"Good call"**: Increments confidence weight for that rule pattern.
-- **Thumbs Down (👎)** / **"Ignore this / false positive"**: Marks the finding as a suppressed nit for that file path.
-
-### 3. Precision Nit Suppression Engine
-Once a nit rule is learned or dismissed, `src/reflection/nitSuppressionEngine.ts` automatically filters matching non-critical review findings on subsequent PR pushes with **100% precision**.
+Pull requests with a `BLOCK` verdict will automatically be blocked from merging until resolved!
 
 ---
 
-## 🛠️ Verification & Health Monitoring
+## ❓ Frequently Asked Questions (FAQ)
 
-1. **Verify Setup**: Confirm `.ct-review.yaml` is present in your repository root.
-2. **Verify Memory**: Call `GET /api/memory/query?repo=calltelemetry/cisco-cdr` to view active learned rules.
-3. **Health Endpoint**: Call `GET /health` to verify system readiness:
-   ```json
-   {
-     "status": "ok",
-     "service": "ct-review-bot",
-     "memoryEngineReady": true,
-     "onboardingWizardReady": true
-   }
-   ```
+<details>
+<summary><b>Does Review Yeti send my entire codebase to the LLM?</b></summary>
+<br/>
+No. Review Yeti extracts and analyzes only the <b>exact unified diff</b> of the pull request, bounded by character limits (default 24,000 chars with intelligent hunk partitioning). Your uncommitted or unchanged files are never transmitted.
+</details>
+
+<details>
+<summary><b>Which LLM models work best with Review Yeti?</b></summary>
+<br/>
+Review Yeti supports any OpenAI-compatible endpoint. Highly recommended models:
+- <b>DeepSeek V3 / V4 Flash</b>: Outstanding speed, reasoning, and cost-efficiency.
+- <b>Claude 3.5 Sonnet / Sonnet 4</b>: Industry-leading nuance and low hallucination rate.
+- <b>Gemini 2.5 / 3.0 Flash</b>: Ultra-low latency and generous context windows.
+- <b>Self-hosted Ollama / vLLM</b>: Completely private on-prem execution.
+</details>
+
+<details>
+<summary><b>Why should I configure a GitHub App instead of GITHUB_TOKEN?</b></summary>
+<br/>
+A GitHub App provides native Check Runs API access, independent API rate limits (5,000+ req/hr), and clean bot attribution. See the <a href="GITHUB_APP_SETUP.md">GitHub App Setup Guide</a> for details.
+</details>
+
+---
+
+## 📚 Next Steps
+
+- [GitHub App Setup Guide](GITHUB_APP_SETUP.md) — Configure your GitHub App for native check runs and higher rate limits.
+- [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md) — Offload review workloads to your cluster and eliminate runner waste.
+- [Configuration Reference](CONFIGURATION_REFERENCE.md) — Complete `.ct-review.yaml` schema and options.
+- [Architecture Deep Dive](ARCHITECTURE.md) — How Review Yeti's consensus and arbitration engine works.

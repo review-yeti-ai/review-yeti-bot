@@ -33,4 +33,4 @@ Personas must **never** call `POST .../pulls/{n}/reviews` with inline comments.
 
 ## Deploy note
 
-Ship this revision to the live App (JBJMLLC / calltelemetry ct-review-bot deployment) before expecting production PRs to stop accumulating persona review threads.
+Ship this revision to the live App (production review-yeti deployment) before expecting production PRs to stop accumulating persona review threads.

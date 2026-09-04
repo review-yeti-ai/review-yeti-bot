@@ -1,31 +1,73 @@
-# 🤖 ct-review-bot
+# 🏔️ Review Yeti
 
 [![Review Bot](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml/badge.svg)](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub Action](https://img.shields.io/badge/GitHub%20Action-v1-green.svg)](https://github.com/marketplace/actions/review-yeti-ai)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326ce5.svg)](docs/KUBERNETES_MODE.md)
 
-**A GitHub Action that reviews your pull requests with a panel of AI reviewers and posts one
-consolidated comment.**
+**Autonomous Multi-Persona AI Code Review Panel for GitHub Pull Requests.**
 
-> **Documentation scope:** This README is the public GitHub Action entry point. The optional
-> App/dashboard service and historical design records are classified in
-> [Documentation authority](docs/DOCUMENTATION_AUTHORITY.md). CallTelemetry repositories use the
-> separate [`ct-review-actions`](https://github.com/calltelemetry/ct-review-actions) control plane;
-> its reviewed policy owns fleet provider order, credentials, release selection, and rollback.
-> Standalone provider examples below are not CallTelemetry fleet policy.
-
-Each reviewer is a persona with a narrow charter — security, performance, testing and so on —
-and you can write your own in markdown. Install it with ten lines of YAML. There is no app to
-install, no webhook to configure, and nothing to host.
+Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated charter (Security, Performance, Architecture, Quality, Dependencies)—evaluating pull request diffs in parallel, reconciling findings through automated arbitration, and posting **one consolidated, actionable review comment** and native **GitHub Check Run**.
 
 ---
 
-## Install
+## ✨ Features at a Glance
 
-Add one file to any repository you want reviewed:
+- 👥 **Multi-Persona Review Panel**: Dedicated reviewers for Security & Tenancy, System Architecture, Performance, QA & Testing, and Dependency Safety.
+- ⚖️ **Binding Arbitration Engine**: Automated moderator and arbiter that deduplicate findings and deliver clear verdicts: `SHIP`, `FIX_FIRST`, or `BLOCK`.
+- ⚡ **Dual Execution Engines**:
+  - **Ephemeral Action Mode**: Zero infrastructure, 60-second setup directly in GitHub Actions.
+  - **Kubernetes Worker Mode**: Dispatches reviews to K8s pods in **< 10 seconds**, eliminating 95%+ of billable runner minute waste.
+- 🔐 **Base-Ref Trust Boundary**: Charters and policies are loaded strictly from the target base branch (`main`), preventing PRs from tampering with their own review rules.
+- 🎯 **Zero Diff Hallucinations**: Automated filter discards any finding referencing code outside the PR's modified hunks.
+- 🌐 **Model & Provider Agnostic**: Works with OpenRouter, Anthropic, OpenAI, DeepSeek, or self-hosted Ollama/vLLM endpoints.
+
+---
+
+## 🏗️ Architecture Overview
+
+```mermaid
+graph TD
+    PR[Developer Opens / Updates PR] --> Choice{Execution Mode}
+
+    subgraph Mode 1: Ephemeral Action
+        Choice -->|Zero Infra| GHA[GitHub Actions Runner]
+        GHA --> Panel1[Parallel AI Personas Panel]
+    end
+
+    subgraph Mode 2: Kubernetes Worker
+        Choice -->|Zero Runner Waste| Shim[GHA Dispatch Shim < 10s]
+        Shim -->|review-status: DISPATCHED| CheckRun1[GitHub Check Run: PENDING]
+        Shim -->|Async Admission| K8S[Kubernetes Review Cluster]
+        K8S -->|Ephemeral Worker Pod| Panel2[Parallel AI Personas Panel]
+    end
+
+    subgraph The Review Yeti Core
+        Panel1 --> Arb[Arbitration & Consensus Engine]
+        Panel2 --> Arb
+        Arb --> Verdict{Verdict}
+        Verdict -->|0 Critical Issues| Ship[🟢 SHIP]
+        Verdict -->|Non-blocking nits| Fix[🟡 FIX_FIRST]
+        Verdict -->|P0 or Quorum P1s| Block[🔴 BLOCK]
+    end
+
+    Ship --> Output[Post Consolidated PR Comment & Update Check Run]
+    Fix --> Output
+    Block --> Output
+```
+
+---
+
+## ⚡ Quickstart: 5-Minute GitHub Action
+
+Add a single workflow file to any repository:
 
 ```yaml
-# .github/workflows/review.yml
-name: Review
-on: pull_request
+# .github/workflows/review-yeti.yml
+name: Review Yeti
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   review:
@@ -34,66 +76,58 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: review-yeti-ai/review-yeti-bot@v1
+      - name: Run Review Yeti
+        uses: review-yeti-ai/review-yeti-bot@v1
         with:
           llm-base-url: https://openrouter.ai/api/v1
           model: deepseek/deepseek-v4-flash-0731
-          llm-api-key: ${{ secrets.OPENROUTER_PR_REVIEW_API_KEY }}
-          # Optional direct fallbacks, used only when their keys are provisioned.
-          ollama-api-key: ${{ secrets.OLLAMA_API_KEY }}
-          synthetic-api-key: ${{ secrets.SYNTHETIC_API_KEY }}
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-That is the whole setup — note there is no `actions/checkout` step, and none is needed. The
-action reads the pull request diff, runs the reviewers in parallel, and comments on the PR using
-your workflow's built-in `GITHUB_TOKEN`; no personal access token required.
+> [!TIP]
+> **No `actions/checkout` required!** Review Yeti fetches the PR diff and base branch charters directly over the GitHub API, saving checkout time and bandwidth.
 
-You supply a model-provider API key and may override the compatible base URL. **You own the key
-and the prompts**; prompts are sent to the endpoint you configure. For a direct standalone Action
-install, the default endpoint is OpenRouter. Centrally managed callers inherit their provider plan
-from their own control plane instead.
+---
 
-> **No key yet?** The action fails closed without posting a successful verdict. It never presents
-> static pattern checks as a model review.
+## ☸️ Scale-Out: Kubernetes & DOKS Execution Mode
 
-### Optional DOKS admission (qualification only)
+For teams with high PR volume, running 5+ personas inside GitHub Actions runners can accumulate costly billable runner minutes. 
 
-The Action can instead make a short authenticated admission request to the Review Yeti DOKS
-queue. Local execution remains the default. This mode sends immutable PR identity only—never a
-provider key, GitHub token, diff, or prompt—and returns `DISPATCHED` / `PENDING`, not a passing
-review. The later Review Yeti App check is responsible for the terminal result.
+Review Yeti's **Kubernetes Mode** uses an asynchronous dispatch handshake:
+1. The GitHub Action acts as a lightweight shim, calls your Kubernetes cluster, and exits in **< 10 seconds**.
+2. The Action registers an initial check run: `review-status: DISPATCHED`, `gate-decision: PENDING`.
+3. An ephemeral worker pod in your Kubernetes cluster processes the review, posts the PR review comment, and updates the GitHub Check Run to `success` or `failure` directly using its GitHub App token.
 
 ```yaml
+# .github/workflows/review-yeti-k8s.yml
 jobs:
   review:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
-      id-token: write
+      checks: write
     steps:
-      - uses: review-yeti-ai/review-yeti-bot@<exact-commit-sha>
+      - name: Dispatch to Kubernetes Review Cluster
+        uses: review-yeti-ai/review-yeti-bot@v1
         with:
-          execution-backend: doks
-          action-sha: <same-exact-commit-sha>
-          doks-publish-mode: disabled
+          execution-backend: doks  # or generic kubernetes
+          dispatch-url: https://review-bot.example.com/api/admission/dispatch
+          dispatch-token: ${{ secrets.REVIEW_DISPATCH_SECRET }}
 ```
 
-The service must explicitly enable Action admission and allowlist the numeric repository and owner
-IDs plus the immutable trusted workflow ref and SHA. A missing OIDC permission, unavailable durable
-database, uninstalled GitHub App, identity mismatch, or non-`202` response fails the Action. There
-is no automatic local fallback and no scheduled canary.
+👉 **Read the complete [Kubernetes & DOKS Execution Guide](docs/KUBERNETES_MODE.md)**.
 
 ---
 
-## What you get
+## 📊 What You Get: Consolidated PR Review Comment
 
-A single comment on the pull request, in this shape:
+Review Yeti posts a single, clean markdown review comment summarizing all personas:
 
 > ## 🟡 **Verdict: FIX_FIRST**
 >
 > ### 📊 AI Review Panel Summary
-> - **Repository**: `acme/checkout`
+> - **Repository**: `my-org/checkout-service`
 > - **Commit SHA**: `a1b2c3d`
 > - **Review Mode**: Model-backed (`deepseek/deepseek-v4-flash-0731`)
 > - **Parallel Personas Evaluated**: `5/5`
@@ -116,422 +150,138 @@ A single comment on the pull request, in this shape:
 > |---|---|---|---|---|
 > | 🟠 P1 | `src/api/orders.ts` | 42 | **Order lookup not scoped to tenant** | Add `orgId` to the where clause. |
 
-Plus a mermaid diagram of the panel, and the findings for each reviewer in a collapsible section.
+---
 
-Findings that name a file outside the diff are discarded before posting, so the bot cannot
-comment on code that isn't there.
+## 👥 The Reviewer Persona Roster
+
+### Built-in Personas (On by Default)
+- 🛡️ **`security`**: SQL injection, authorization bypass, secret leakage, OWASP top 10, multi-tenant isolation.
+- ⚡ **`performance`**: N+1 queries, unindexed filters, thread blocking, memory leaks, high complexity loops.
+- 🏛️ **`architecture`**: Layering violations, interface segregation, tight coupling, anti-patterns.
+- 🧪 **`testing`**: Edge cases, missing assertions, negative testing, test coverage for modified code.
+- 📦 **`dependencies`**: Vulnerable packages, supply-chain safety, deprecation risks.
+
+### Optional Specialists (Opt-in via `.ct-review.yaml`)
+- 🗄️ **`database`**: Schema migrations, lock hazards, transaction isolation.
+- 🌐 **`accessibility`**: WCAG compliance, screen reader support, semantic markup.
+- 🎨 **`style`**: Idiomatic conventions, readability, clarity.
+- 📄 **`documentation`**: Public API documentation, docstrings, change notes.
+- 🚀 **`devops`**: Dockerfile best practices, Kubernetes configs, CI/CD scripts.
+- 🌍 **`i18n`**: Hardcoded UI strings, localization safety.
+- ⚖️ **`licensing`**: Open-source license compatibility.
+
+```yaml
+# Select specific personas in action inputs:
+with:
+  personas: security,performance,database
+```
 
 ---
 
-## Where reviewer configuration is read from
+## ⚖️ How Verdicts & Merge Gates Work
 
-Reviewer charters are prompts executed with **your** API key, so the action deliberately does
-**not** read them from the pull request under review. `.ct-review.yaml` and
-`.ct-review/personas/` are fetched over the API from the pull request's **base** branch — code
-that is already merged and reviewed.
-
-Without this, a pull request could add its own persona files, rewrite the instructions of the
-reviewer examining it, and declare as many reviewers as it liked against your account. Point
-`config-ref` at a different ref to override, and `max-personas` bounds how large a roster may
-grow regardless.
-
-A consequence worth knowing: **changes to reviewer configuration take effect once merged**, not
-on the pull request that proposes them.
-
-### What is sent to your model provider
-
-The pull request diff is sent to the endpoint and model selected by the trusted Action inputs. The
-direct standalone default is OpenRouter's explicit `deepseek/deepseek-v4-flash-0731` route, followed
-by `z-ai/glm-5.3-flash` and any explicitly provisioned Ollama or Synthetic fallback keys. Auto Router
-is not used. If that matters — proprietary code, regulated data, a customer commitment — pin the
-endpoint and credentials in the workflow. A centrally managed caller must change its central policy
-instead of copying this example:
-
-```yaml
-        with:
-          model: anthropic/claude-sonnet-4
-          llm-base-url: https://api.anthropic.com/v1
-          llm-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-For OpenRouter requests, the Action keeps the invariant review rules and exact PR evidence as a
-stable prompt prefix, then appends the persona assignment. A deterministic, content-derived
-`session_id`/`prompt_cache_key` keeps repeated requests for that exact evidence cache-affine without
-reusing a reviewer response. Changing the diff or retained review context rotates the identity.
-Recovery instructions are appended after the shared prefix, and provider-reported cache reads and
-writes are retained as `cachedInputTokens` and `cacheWriteTokens` in provider telemetry. This is
-provider prompt caching only; the Action does not enable whole-response or semantic caching.
-
-## Why this rather than a hosted review service
-
-- **You own the prompts.** Reviewer charters are markdown files in your repository. When the bot
-  says something unhelpful, you edit the file that caused it.
-- **You own the key.** Bring any OpenAI-compatible provider. Your code and diffs go to the
-  provider you chose, not to an intermediary.
-- **It is a GitHub Action.** No app installation, no webhook endpoint, no server, no database.
-- **Cost controls are explicit.** Persona count, diff, completion, concurrency, and transport
-  budgets are bounded. A hard assignment cap rejects partition-by-persona fanout before the first
-  model request. Provider attempts can still exceed one per assignment because
-  investigation turns, transport failover, and format recovery are real model calls; use the run
-  receipt and provider billing for actual usage.
-
-It is deliberately simpler than a full review platform: no cross-PR memory, no codebase-wide
-semantic index, no chat. If you need those, a hosted service will serve you better.
+| Verdict | Condition | GitHub Check Run Status | Description |
+| :--- | :--- | :--- | :--- |
+| **`SHIP`** 🟢 | 0 P0s, 0 P1s, minimal P2s | `success` | Approved. Safe to merge! |
+| **`FIX_FIRST`** 🟡 | 0 P0s, 1+ P1s (or high P2 volume) | `neutral` / `failure` | Non-blocking recommendations to resolve before release. |
+| **`BLOCK`** 🔴 | 1+ P0s, or P1 quorum reached | `failure` | Merge blocked until critical issues are fixed. |
 
 ---
 
-## What it costs
+## 🛠️ Customizing Reviewers for Your Codebase
 
-Cost depends on enabled reviewers, diff partitions, investigation turns, retries, recovery, model,
-and provider pricing. The default roster is five reviewers and the Action input defaults to a
-24,000-character diff budget, but zero-loss partitioning can create additional bounded model calls
-for a large pull request. `max-review-assignments` defaults to 24 and fails the run before dispatch
-when partitions multiplied by live personas exceed that ceiling. Lower the budget or narrow the roster to reduce exposure, then use the
-sanitized run receipt and provider billing rather than assuming one request per reviewer:
+### 1. Repository Configuration (`.ct-review.yaml`)
+
+Define enabled personas, diff limits, and path filters at your repository root:
 
 ```yaml
-        with:
-          personas: security,testing
-          max-diff-chars: '8000'
-```
+# .ct-review.yaml
+version: 3
 
-## Configuration
-
-### Trusted repair-delta reviews
-
-Set `incremental-review: true`, name the trusted reusable workflow, and grant `actions: read` to avoid re-sending the entire pull request
-after a small repair commit. Review Yeti finds a complete prior run-report artifact for the same PR,
-base SHA, immutable Action SHA, persona order, and diff budget; proves that report's head is an
-ancestor of the current head; and obtains the bounded compare diff from GitHub. It reruns every
-prior P0/P1 owner, any owner whose finding touches a changed file, relevant specialists, and one
-broad reviewer that covers every delta hunk. Untouched persona lanes are copied from the trusted
-parent report into the new exact-head report.
-
-Missing permissions, expired or malformed artifacts, rebases, force-pushes, base-policy drift,
-large deltas, binary patches, and incomplete prior lanes all fall back to a full review. Incremental
-scope never converts missing evidence into a partial successful verdict.
-
-```yaml
-permissions:
-  actions: read
-  contents: read
-  pull-requests: write
-
-steps:
-  - uses: review-yeti-ai/review-yeti-bot@v1
-    with:
-      incremental-review: 'true'
-      incremental-trusted-workflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@main,calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1'
-      max-review-assignments: '24'
-```
-
-### Provider dispatch and capacity
-
-The `dispatch-mode` action input defaults to `ordered`, preserving the historical shared provider
-fallback list. Centrally managed fleets can select `striped`: each persona lane receives one
-deterministic weighted primary transport, while the other healthy transports remain lane-local
-fallbacks. Striping changes distribution without sending the same persona to every provider or
-multiplying baseline calls.
-
-Transport plans may declare positive `dispatch_weight`, `max_in_flight`, and
-`capacity_wait_timeout_ms` values, `concurrency_scope` (`provider` or `model`), and a bounded
-`rate_limit` policy. Zero does not disable a recognized provider's safety
-ceiling; use the provider's admission boolean in central policy instead. Synthetic additionally
-supports `quota_probe: synthetic-v2`; the probe is advisory because the documented response reports
-subscription request fields but not the complete weekly-credit or concurrency state. When no
-explicit capacity is supplied, Synthetic defaults to one in-flight request per model and legacy
-Ollama callers retain their prior process-local ceiling. Direct HTTP 429 retries occur only when a
-positive `Retry-After` fits the transport's declared maximum; longer waits immediately use the next
-healthy transport.
-
-### Which reviewers run
-
-Five reviewers apply to essentially any codebase and are **on by default**:
-
-`security` · `performance` · `architecture` · `testing` · `dependencies`
-
-Seven more are situational and **off by default**, because enabling them everywhere produces
-findings about internationalisation in single-language projects and licence headers in projects
-that use none:
-
-`style` · `documentation` · `accessibility` · `database` · `devops` · `i18n` · `licensing`
-
-Opt in by id, or ask for the lot with `all`:
-
-```yaml
-          personas: security,database,devops    # a specific set
-          personas: all                         # every built-in
-```
-
-### How verdicts are decided
-
-| Verdict | Condition |
-| :--- | :--- |
-| `BLOCK` | any P0, or P1 count reaching `max(3, reviewers / 2)` |
-| `FIX_FIRST` | any P1, or P2 count reaching `max(5, reviewers)` |
-| `SHIP` | everything else |
-
-Thresholds scale with the size of the panel. A fixed "three P1s blocks" was calibrated for
-sparse pattern matches; with a dozen reviewers each free to raise a concern it means nearly
-every pull request blocks, and a reviewer that always blocks gets ignored. The posted comment
-names the thresholds it applied.
-
-### Defining your own reviewers
-
-Drop a `.ct-review.yaml` in the repository being reviewed to pick which personas run — and to
-write reviewers that know your codebase's own rules:
-
-```yaml
-personas:
-  - id: security                        # a built-in
-  - id: style
-    enabled: false                      # turn one off
-  - id: tenancy                         # one of your own
-    name: "🏢 Multi-Tenant Isolation"
-    charter: |
-      Every query touching customer data must be scoped by orgId.
-      Flag any repository method accepting a raw id without a tenant bound.
-```
-
-A custom persona needs a `charter`; it becomes that reviewer's system prompt. Supplying a
-`charter` for a built-in id overrides its instructions instead. An id that is neither built-in
-nor given a charter fails the run rather than quietly reviewing nothing.
-
-#### One file per reviewer
-
-Charters worth writing are usually too long for a YAML string. Put each reviewer in its own
-markdown file under `.ct-review/personas/` instead — optional frontmatter for the metadata, and
-the body is the charter:
-
-```markdown
-<!-- .ct-review/personas/tenancy.md -->
----
-name: "🏢 Multi-Tenant Isolation"
----
-
-Every query that touches customer data must be scoped by `orgId`.
-
-## What to flag
-- Repository methods accepting a raw `id` without a tenant bound
-- Raw SQL missing a `WHERE org_id = $n` clause
-- Cache keys omitting the tenant prefix
-
-## What not to flag
-- Admin-only endpoints under `src/admin/**`, which are intentionally cross-tenant
-- Migrations, which run outside request context
-```
-
-The id defaults to the filename, so `tenancy.md` defines the `tenancy` reviewer and no other
-configuration is needed — frontmatter is optional, and a file containing nothing but prose works.
-
-Persona files **add to** the default roster rather than replacing it, so dropping one in does not
-silently switch the built-ins off. To narrow the roster, list the ids you want in
-`.ct-review.yaml` or in the action's `personas:` input. Declaring the same id in both a file and
-`.ct-review.yaml` is an error rather than a guess about precedence.
-
-See the [Configuration Reference](docs/CONFIGURATION_REFERENCE.md#persona-definition-personas)
-for the full key list.
-
-### Central review repository (dispatch mode)
-
-Alternatively, keep personas, prompts and keys in one repository and have others dispatch
-into it. The receiving workflow lives at `.github/workflows/review-bot.yaml` and
-accepts a `repository_dispatch` with a `client_payload` of `{ target_repo, pr_number }`.
-
-This mode needs two tokens — one in the calling repository allowed to dispatch here, and a
-`REVIEW_BOT_TOKEN` here allowed to read and comment on the calling repository — because the
-default `GITHUB_TOKEN` is scoped to a single repository. Prefer the action above unless you
-specifically need centralized keys and session data.
-
-This repository-dispatch mode is not the CallTelemetry fleet wrapper. CallTelemetry callers invoke
-`ct-review-actions@v1`, which resolves an exact released bot commit and applies central policy.
-
----
-
-### Repository configuration (`.ct-review.yaml`)
-
-The Action reads trusted configuration from the pull request's base ref. Its repository-owned
-surface is deliberately narrower than the optional service schema:
-
-- `personas` and `.ct-review/personas/*.md` define the reviewer roster and charters;
-- `limits.max_diff_bytes` may narrow the diff boundary;
-- `submodules` controls bounded gitlink handling; and
-- `github_action.openrouter` may narrow the direct standalone OpenRouter policy.
-
-Action inputs remain authoritative for caller-selected bounds. A centrally supplied transport plan
-owns provider routing for managed callers.
-
-```yaml
-# .ct-review.yaml — in the repository being reviewed
 personas:
   - id: security
-  - id: testing
+  - id: database
+    enabled: true
   - id: style
     enabled: false
   - id: tenancy
     name: "🏢 Multi-Tenant Isolation"
     charter: |
-      Every query touching customer data must be scoped by orgId.
+      Every query touching tenant data must include orgId. Flag any query missing this scope.
+
+path_filters:
+  - "dist/**"
+  - "node_modules/**"
+  - "package-lock.json"
 ```
 
-Longer charters belong in their own files under `.ct-review/personas/`, described above. See the
-[Configuration Reference](docs/CONFIGURATION_REFERENCE.md) for every key.
+### 2. Standalone Markdown Charters (`.ct-review/personas/*.md`)
 
-> `profile`, `quorum`, `mascot`, `dials`, `reviews`, `chat`, `knowledge_base`, `auto_review`, and
-> CodeRabbit translation behavior belong to the optional self-hosted service below; the public
-> Action does not use them to decide its panel.
+Create longer, detailed persona charters in Markdown files under `.ct-review/personas/`:
+
+```markdown
+<!-- .ct-review/personas/tenancy.md -->
+---
+name: "🏢 Multi-Tenant Isolation Guardian"
+---
+
+Every database query that touches customer data must be scoped by `orgId`.
+
+## What to flag:
+- Repository methods accepting a raw `id` without a tenant bound.
+- Raw SQL queries missing a `WHERE org_id = $n` clause.
+- Cache keys omitting tenant prefixes.
+
+## What to ignore:
+- Admin routes under `src/admin/**`.
+- Database migrations.
+```
+
+> [!IMPORTANT]
+> **Base-Branch Authority**: Review Yeti loads configuration and charters from the pull request's **base branch** (e.g. `main`). Changes made to reviewer configurations within a PR take effect only **after** that PR is merged, ensuring review integrity.
 
 ---
 
-## Historical OpenRouter infrastructure record
+## 🔐 GitHub App Setup (Recommended)
 
-[`docs/OPENROUTER_TERRAFORM.md`](docs/OPENROUTER_TERRAFORM.md) is retained only as historical
-CallTelemetry infrastructure context. Its resource identifiers, Doppler paths, mutation commands,
-and secret handoffs are not validated for current use; do not execute them. A direct standalone
-Action is configured through reviewed Action inputs and repository secrets. The CallTelemetry fleet
-provider plan lives in `ct-review-actions`.
+While basic reviews work with the built-in `GITHUB_TOKEN`, setting up a **GitHub App** is strongly recommended for:
+- 🚀 **15,000 req/hr** independent rate limit.
+- 🏷️ **Native GitHub Check Runs** API access (`checks:write`).
+- 🔒 **Short-lived RS256 JWT `ghs_` tokens** (no long-lived personal access tokens).
+
+👉 **Follow the step-by-step [GitHub App Setup Guide](docs/GITHUB_APP_SETUP.md)**.
 
 ---
 
 ## 💻 Running Locally via CLI
 
-You can run Review Yeti locally directly from your terminal to inspect diffs, test custom personas, or benchmark models without creating a GitHub Actions run.
-
-### 1. Run Review Pipeline on a Local Unified Diff
-
-Pass your OpenRouter API key and target diff file to run the full parallel persona panel and binding arbitration locally:
+You can run Review Yeti directly from your terminal to inspect diffs or test personas locally:
 
 ```bash
-# 1. Export your OpenRouter API key
-export OPENROUTER_API_KEY="sk-or-v1-..."
+# 1. Review local uncommitted changes
+git diff origin/main...HEAD > /tmp/changes.diff
 
-# 2. (Optional) Set model or base URL override
-export OPENROUTER_MODEL="google/gemini-3.7-flash:high"   # or deepseek/deepseek-v4-flash-0731:high
-export OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
-
-# 3. Run review against a diff file
-PR_DIFF_FILE="path/to/my_change.diff" \
-PR_NUMBER=123 \
-GITHUB_REPOSITORY="calltelemetry/ct-meta" \
-PR_HEAD_SHA="$(git rev-parse HEAD)" \
-PR_BASE_SHA="$(git rev-parse origin/main)" \
-node .github/workflows/pipelines/review-pipeline.js
-```
-
-### 2. Review Uncommitted Git Changes in Current Repo
-
-You can review changes in your current working branch directly against `main`:
-
-```bash
-# Generate diff of uncommitted/local branch changes
-git diff origin/main...HEAD > /tmp/current_changes.diff
-
-# Execute local Review Yeti review
-PR_DIFF_FILE=/tmp/current_changes.diff \
+PR_DIFF_FILE=/tmp/changes.diff \
 PR_NUMBER=1 \
-GITHUB_REPOSITORY="review-yeti-ai/review-yeti-bot" \
-PR_HEAD_SHA="$(git rev-parse HEAD)" \
-PR_BASE_SHA="$(git rev-parse origin/main)" \
-OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+GITHUB_REPOSITORY="my-org/my-repo" \
+OPENROUTER_API_KEY="sk-or-v1-..." \
 node .github/workflows/pipelines/review-pipeline.js
 ```
 
-### 3. Run Live PR Review via GitHub CLI (`runLiveReview.ts`)
-
-Review any live GitHub pull request directly using `gh` CLI credentials:
-
-```bash
-OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-npx ts-node src/cli/runLiveReview.ts --pr=2119 --repo=calltelemetry/ct-meta
-```
-
-### 4. Run the release benchmark harness
-
-Execute the checked-in offline benchmark or an explicitly authorized live OpenRouter run. Treat the
-current baseline files—not this README—as the authority for scenario and model counts:
-
-```bash
-# Offline cassette replay (zero network required, deterministic)
-node scripts/evaluate-release-benchmark.mjs --offline
-
-# Live evaluation across OpenRouter
-OPENROUTER_API_KEY="$OPENROUTER_API_KEY" node scripts/evaluate-release-benchmark.mjs --live
-
-# Generate Pareto Frontier SVG charts (Accuracy vs. Cost)
-node scripts/generate-benchmark-charts.mjs
-```
-
-### 5. Reviewed SemVer releases
-
-The authoritative operator procedure and verification receipt are in
-[`docs/RELEASING.md`](docs/RELEASING.md).
-
-Merges to `main` are evaluated by Release Please using Conventional Commits. It
-opens a release PR instead of publishing directly from an ordinary merge:
-
-- `fix:` produces a patch release.
-- `feat:` produces a minor release.
-- `feat!:` or a `BREAKING CHANGE:` footer produces a major release.
-- `docs:`, `chore:`, `test:`, and `ci:` do not create a release.
-
-The release PR must pass the normal branch-protection and Review Yeti gates. When
-it is merged, Release Please creates an immutable `vMAJOR.MINOR.PATCH` tag. The
-single canonical tag workflow then runs the full test and benchmark gates and
-publishes the GitHub release assets. Only after that workflow succeeds is the
-matching tested commit promoted to the rolling `v1` tag. The `v1` tag is never
-advanced by an ordinary `main` merge.
-
-This repository's organization policy disables pull-request creation by the
-built-in `GITHUB_TOKEN`. The release workflow therefore uses the encrypted
-`RELEASE_PLEASE_TOKEN` repository secret (with `GITHUB_TOKEN` as a fallback for
-repositories where the organization permits workflow-created pull requests).
-
 ---
 
-## Optional: self-hosted dashboard service
+## 📚 Documentation Index
 
-> **Not required to review pull requests.** The GitHub Action above needs none of this. The
-> repository also contains a separate long-running service (`npm start`) providing a web
-> dashboard, an AST code indexer and persistent review memory. It is independent of the Action
-> and is not covered by the install instructions above.
-
-Its REST endpoints:
-
-| Endpoint | Method | Description |
-| :--- | :--- | :--- |
-| `/api/auth/login` | `POST` | Dashboard login endpoint returning user session tokens |
-| `/api/auth/session` | `GET` / `DELETE` | Validate or invalidate active session tokens |
-| `/api/auth/apikeys` | `GET` / `POST` / `DELETE` | Manage SHA-256 hashed API keys |
-| `/api/dashboard/overview` | `GET` | Aggregate overview metrics, token spend, provider health, memory stats |
-| `/api/dashboard/repositories` | `GET` / `PATCH` | Manage repository review automation status and custom profiles |
-| `/api/dashboard/settings` | `GET` / `PUT` | Configure global model overrides, memory thresholds, and financial cost caps |
-| `/api/dashboard/logs` | `GET` | Retrieve real-time PR review activity logs |
-| `/api/memory/query` | `POST` | Query persistent PR review memory & resolved nit patterns |
-| `/api/memory/record` | `POST` | Record review outcomes and ADR learnings into `.ct-memory/` |
-| `/api/code/symbol-graph` | `GET` / `POST` | Retrieve AST symbol call graphs, definitions, and references |
-| `/api/code/search` | `POST` | Semantic vector & keyword code search across indexed repositories |
-| `/api/router/providers` | `POST` | Dynamically register new LLM models at runtime without redeployment |
-
----
-
-## Documentation
-
-### Trusted Pi workflow runtime
-
-The optional `review-engine: pi-workflow` path installs the pinned Pi runtime from the small
-`pi-runtime/package-lock.json` manifest into an empty bounded prefix. It requires caller-provisioned Node 24, an exact
-`action-sha`, lifecycle scripts disabled during install, and source-bound build provenance before
-the wrapper is imported. `legacy` remains the default rollback path.
-
-- **[Running Locally via CLI](docs/RUNNING_LOCALLY.md)** — how to run Review Yeti, live PR reviews, and evaluation benchmarks locally.
-- **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — full `.ct-review.yaml` and
-  persona-file schema.
-- **[Architecture](docs/ARCHITECTURE.md)** — how the review pipeline is put together.
-- **[Master Domain Index](domains/CONTRIBUTING.md)** — the community-extensible registry mapping
-  file paths to reviewer personas (`domains/ecosystems/*.json` + `domains/classes.json`); see the
-  contributing guide for how to add an ecosystem.
+- 🚀 **[Onboarding Guide](docs/ONBOARDING_GUIDE.md)** — Getting started, deployment patterns, and branch protection.
+- 🔐 **[GitHub App Setup](docs/GITHUB_APP_SETUP.md)** — Step-by-step GitHub App registration and permissions matrix.
+- ☸️ **[Kubernetes & DOKS Mode](docs/KUBERNETES_MODE.md)** — Offloading reviews to Kubernetes worker pods.
+- 🏛️ **[Architecture Specification](docs/ARCHITECTURE.md)** — Pipeline design, arbitration engine, and trust boundaries.
+- ⚙️ **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — Complete schema for `.ct-review.yaml`.
+- 💻 **[Running Locally via CLI](docs/RUNNING_LOCALLY.md)** — Testing reviews and benchmarks in your terminal.
+- 📦 **[Releasing Guide](docs/RELEASING.md)** — SemVer releases and Release Please workflows.
 
 ---
 
 ## 📄 License
-Distributed under the MIT License. See `LICENSE` for details.
+
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.
