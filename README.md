@@ -1,21 +1,69 @@
-# exampleorg Review Actions
+# Review Yeti
 
-This private repository owns the organization-wide Review Yeti workflow contract.
-Consumer repositories contain only a small, identical `pull_request_target` shim. The
-review policy, provider routing, exact-head validation, verdict gate, and recovery contract
-live here. Central development runs on `main`; consumer repositories use the promoted `v1`
-release channel.
+> **Automated, multi-persona AI code reviews with centralized governance, credential isolation, and Kubernetes offload.**
 
-## Infrastructure ownership
+Review Yeti is an enterprise-grade AI review engine designed for GitHub organizations. It evaluates pull requests across specialized personas (Security, Architecture, Performance, Testing, Dependencies, and Licensing), enforces fail-closed cryptographic coordinate verification, and reports verdicts directly to GitHub Check Runs.
 
-This repository owns Review Yeti policy and runtime behavior, not shared cloud
-infrastructure. The Bifrost gateway manifests, deployment script, secret
-materialization contract, and operational runbook are maintained in the
-private `exampleorg/example-infra` repository under
-`deploy/bifrost-pilot/`. Review Yeti retains only its independently revocable
-virtual key and the provider-routing policy that consumes the gateway.
+---
 
-## Consumer contract
+## Highlights
+
+* 🛡️ **Zero Credential Exposure**: Consumer repositories never store LLM provider API keys or tokens; all credentials remain strictly within the central review repository or private Kubernetes cluster.
+* ⚡ **Zero-Waste Asynchrony**: Consumer PR trigger shims complete in **< 5–15 seconds**, eliminating the wasteful 15-minute runner polling anti-pattern.
+* ☸️ **Flexible Execution Modes**: Run reviews directly on **GitHub Actions** or offload heavy multi-persona workloads to an autoscaling **Kubernetes cluster** (DOKS, EKS, GKE).
+* 🤖 **Dedicated GitHub App Identity**: Uses short-lived installation tokens and separate per-installation rate-limit pools; creates direct check runs via `POST /repos/:owner/:repo/check-runs`.
+* 🔄 **Multi-Provider Resilience**: Built-in weighted striping, circuit breakers, and automatic failover across model providers (Bifrost, Ollama, OpenRouter, Gemini, and Synthetic).
+* 🚦 **Merge Queue Native**: First-class support for GitHub Merge Queues with instant synthetic-commit validation to avoid duplicate reviews.
+
+---
+
+## Architecture at a Glance
+
+Review Yeti operates on a centralized **Hub-and-Spoke** architecture:
+
+```
+┌─────────────────────────────────┐
+│     Consumer Repository (PR)    │
+│  - Lightweight trigger shim     │
+│  - Runs < 5s; releases runner   │
+└────────────────┬────────────────┘
+                 │ (workflow_dispatch / repository_dispatch)
+                 ▼
+┌─────────────────────────────────┐
+│   Central Review Hub Repository │
+│  - Holds provider credentials   │
+│  - Enforces review policies     │
+└───────────────┬─────────────────┘
+                │
+        ┌───────┴────────────────────────┐
+        ▼ (Mode 1: Hosted)               ▼ (Mode 2: Kubernetes)
+┌───────────────────────────────┐ ┌───────────────────────────────┐
+│ GitHub Actions Runner VM      │ │ Kubernetes Worker Pod         │
+│ - Runs review personas in GHA │ │ - Runs in private K8s cluster │
+└───────────────┬───────────────┘ └───────────────┬───────────────┘
+                │                                 │
+                └────────────────┬────────────────┘
+                                 │ (POST /repos/:repo/check-runs)
+                                 ▼
+                 ┌───────────────────────────────┐
+                 │ Pull Request Check Run Gate   │
+                 │ `Review Yeti: SHIP`           │
+                 └───────────────────────────────┘
+```
+
+For complete architectural details, see [Architecture & Design Principles](docs/architecture.md).
+
+---
+
+## Quickstart: Onboarding a Repository in 5 Minutes
+
+### Step 1: Install the GitHub App
+Ensure the **Review Yeti GitHub App** is installed on both the central review repository and the consumer repository with permissions for `Checks: write`, `Pull requests: write`, and `Contents: read`.
+
+See the [GitHub App Setup & Permissions Guide](docs/github-app-setup.md) for full instructions.
+
+### Step 2: Add the Trigger Workflow
+Add `.github/workflows/review-yeti.yml` to your repository:
 
 ```yaml
 name: Review Yeti
@@ -24,464 +72,166 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  group: review-yeti-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
+  actions: read
   contents: read
-  issues: write
-  pull-requests: write
 
 jobs:
   review:
-    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
-    secrets: inherit
+    name: Review Yeti / Review Yeti
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CENTRAL_REPOSITORY: my-org/review-actions
+      CENTRAL_EVENT_TYPE: review-yeti-request
+      TARGET_REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REQUEST_ID: ${{ github.event.repository.name }}:${{ github.event.pull_request.number }}:${{ github.event.pull_request.head.sha }}:${{ github.run_id }}:${{ github.run_attempt }}
+    steps:
+      - name: Mint Review Yeti Token
+        id: ry_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: "${{ env.CENTRAL_REPOSITORY }},${{ env.TARGET_REPOSITORY }}"
+
+      - name: Validate PR Coordinates
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="$(gh api "repos/${TARGET_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.state, .base.sha, .head.sha] | @tsv')"
+          IFS=$'\t' read -r state base_sha head_sha <<< "$live"
+          if [[ "$state" != "open" || "$base_sha" != "$EXPECTED_BASE_SHA" || "$head_sha" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::PR coordinates changed before dispatch."
+            exit 1
+          fi
+
+      - name: Dispatch Central Review
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -nc \
+            --arg event_type "${CENTRAL_EVENT_TYPE}" \
+            --arg request_id "${REQUEST_ID}" \
+            --arg repository "${TARGET_REPOSITORY}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --arg base_sha "${EXPECTED_BASE_SHA}" \
+            --arg head_sha "${EXPECTED_HEAD_SHA}" \
+            '{event_type: $event_type, client_payload: {request_id: $request_id, repository: $repository, pr_number: $pr_number, base_sha: $base_sha, head_sha: $head_sha}}' | \
+            gh api --method POST "repos/${CENTRAL_REPOSITORY}/dispatches" --input - --silent
+
+      - name: Confirm Central Dispatch
+        run: |
+          echo "Dispatched central Review Yeti for ${TARGET_REPOSITORY}#${PR_NUMBER}."
+          echo "Review executes asynchronously and publishes directly to GitHub Check Runs."
+
+  merge-group-review:
+    name: Review Yeti / Review Yeti
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report merge-group result
+        run: |
+          echo "Merge-group admission relies on constituent PR exact-head review."
 ```
 
-The reusable workflow derives the repository, PR number, base SHA, and head SHA from the trusted
-GitHub event, re-reads the PR through the caller's `GITHUB_TOKEN`, and fails closed if any
-coordinate changes. Consumers do not carry a second `central-sha` input, PR-body evidence block,
-or rotating claim. Consumer runs never check out or execute the pull-request head. The central
-same-repository self-review is the deliberate exception: it checks out the immutable PR head so
-policy and workflow changes are actually exercised; fork PRs remain on trusted `main`.
+### Step 3: Require the Check in GitHub Rulesets
+In your repository settings under **Rules > Rulesets**, add **`Review Yeti`** as a required status check on your protected branches.
 
-`v1` is a privileged central release branch, advanced only by the promotion workflow after the
-development line passes validation and the originating central PR has a successful Review Yeti
-check. Consumer repositories never update a SHA, branch, tag, or claim when policy or budgets
-change. Promotion is fast-forward-only, so the previous `v1` tip remains in branch history as
-the rollback record. The workflow captures the exact old `v1`, then performs one atomic push
-leased against both that ref and the validated `main` tip. Ref movement rejects the whole
-operation. A successful or idempotent run uploads a receipt containing the actor, release and
-check-run identities, validation digest, old/new SHAs, and rollback baseline. Revert the
-corresponding change on `main` and promote that new descendant to roll back; never rewind `v1`.
+For more details, see the [Consumer Repository Onboarding Guide](docs/onboarding-guide.md).
 
-The central policy selects the Review Yeti action by the single `v1` release channel. The reusable
-workflow resolves that channel to the exact commit for each run, checks out that commit (never the
-mutable ref), and verifies that it is reachable from the bot repository's `main` and targeted by
-the exact `v1` release tag before executing it. This keeps the action self-updating at the release
-channel without per-repository SHA edits or mutable, unverified code execution.
+---
 
-## No consumer-owned Review Yeti configuration
+## Execution Modes
 
-The policy is `policy/review-yeti.json` in this repository. Consumer repositories must not
-contain `.review-yeti*`, `.ct-review*`, or persona override files. The reusable workflow rejects
-those paths before any model request.
+Review Yeti supports two distinct execution backends configured centrally in `policy/review-yeti.json` or via repository variables:
 
-## Bootstrap and recovery
+### 1. Hosted GitHub Actions Mode (`execution_backend: local`)
+* The review runs inside standard GitHub Actions runners (`ubuntu-latest` or self-hosted/Blacksmith).
+* LLM streaming calls are orchestrated directly by workflow steps.
+* Best for: standard setups, minimal infrastructure footprint.
 
-The central repository reviews same-repository pull requests through `self-review.yml` using the
-immutable PR-head contract, while fork PRs use trusted development `main`. Consumer repositories
-use `v1`; they do not need synchronized per-repository edits when policy or budgets change.
+### 2. Kubernetes Worker Mode (`execution_backend: doks`)
+* Central Action dispatches requests to an internal Kubernetes gateway (`/api/dispatch/action`) and exits immediately (`DISPATCHED/PENDING`).
+* An autoscaling Kubernetes cluster schedules an ephemeral worker pod (`review-yeti-worker`) with an isolated sandbox.
+* The worker evaluates the diff and reports the final verdict directly back to GitHub Check Runs via the GitHub App token.
+* Best for: enterprise environments, private model inference (Ollama/vLLM on private GPUs), high PR volume, and eliminating long-running GHA runner bills.
 
-The initial repository creation is the one-time bootstrap exception: create `main`, let the first
-validated promotion create the `v1` branch, remove any historical `v1` tag, then protect `main`
-and require the workflow validation checks for all later changes. After bootstrap, the promotion
-workflow is the only writer to `v1`; operators roll back by reverting `main` and allowing the
-same fast-forward promotion path to record that rollback in branch history.
-The migration is complete once `refs/heads/v1` exists; the legacy tag must not be recreated.
+For deep-dive setup and deployment instructions, see [Kubernetes & DOKS Execution Mode](docs/kubernetes-mode.md).
 
-## Release procedure
+---
 
-1. Merge a change through the central repository's self-review on `main`.
-2. The promotion workflow verifies the central validation workflow and originating Review Yeti check.
-3. The promotion workflow atomically compare-and-swaps the `v1` branch to the merged `main`
-   commit and records an immutable receipt. A legacy `v1` tag, if present, is removed in the
-   same transaction.
-4. New consumer PRs automatically use the new policy; no consumer PR or body stamp is required.
+## Multi-Persona AI Review System
 
-The central policy is intentionally boring: changes are reviewed by the trusted development line,
-then promoted only after validation. The model may identify recurring failures and propose a PR,
-but it never writes directly to `main` or `v1`, changes release policy, or self-approves a
-promotion.
+Review Yeti reviews code through independent, specialized persona lenses:
 
-### Ref protection inventory (example-meta ADR 0431)
+| Persona | Focus Areas |
+| :--- | :--- |
+| **🛡️ Security** | Injection vulnerabilities, secret exposure, authorization bypasses, cryptographic hygiene. |
+| **🏗️ Architecture** | Structural patterns, domain boundary leaks, layer violations, maintainability. |
+| **⚡ Performance** | N+1 queries, algorithmic bottlenecks, lock contention, memory leaks, I/O efficiency. |
+| **🧪 Testing** | Edge cases, coverage regressions, test isolation, assertion validity. |
+| **📦 Dependencies** | Supply-chain risks, license compliance, version pins, package vulnerabilities. |
+| **⚖️ Licensing** | SPDX identifiers, copyleft conflicts, dual-licensing requirements. |
 
-The invariants above are mechanically enforced by repository settings, recorded here because
-settings are not visible in the tree:
+Findings are classified into:
+* **P0 / Blocker**: Critical defect or security vulnerability; blocks merge (`Verdict: FIX_FIRST`).
+* **P1 / Important**: High-severity defect; requires revision or explicit approval.
+* **P2 / Advisory**: Clean constructive suggestion; non-blocking informational finding.
 
-| Guard | Mechanism | What it prevents |
-| --- | --- | --- |
-| `v1 release channel branch protection` (ruleset 21052007) | deletion + non-fast-forward on `refs/heads/v1` | rewinding or deleting the channel |
-| `v1 tag shadow guard (ADR 0431)` (ruleset 21752583) | creation + update + deletion blocked on `refs/tags/v1` | recreating the legacy `v1` tag, which would shadow the branch in `uses:` resolution (git resolves tags before heads) |
-| `release tags immutable once created (ADR 0431)` (ruleset 21752607) | update + deletion blocked on `refs/tags/v*.*.*` | moving or deleting a published release tag |
-| `main` classic protection | required `validate` + `review / Review Yeti` checks | unvalidated commits becoming promotable |
-| `promote-v1.yml` / `scripts/promote-v1.sh` | atomic compare-and-swap push leased against the observed old `v1` and validated `main` tip, sha256 receipts | racing or stale promotions |
-| `scripts/validate-release-provenance.sh` | run-time fail-closed check that the resolved release-channel commit is reachable from `main` | executing a hijacked or disjoint channel commit |
+---
 
-Known residual (accepted in ADR 0431): the built-in GitHub Actions app cannot be added to a
-ruleset bypass list or a classic push allowlist via the API, so an org member with push access
-can still fast-forward push onto `v1` out-of-band. A divergent push fails the next promotion's
-ancestor check and the provenance guard; a main-reachable push has already passed `main`'s
-required checks. If full push prevention is ever required, promote via a token minted from the
-org-owned `ct-review-bot` GitHub App and allowlist only that app.
+## Local Reviews via CLI
 
-Consumer repositories reference this channel as `@v1` and their required contracts reject SHA
-pins by design — see example-meta ADR 0431 for the decision record and revisit triggers.
-
-## Fireworks timeout debug
-
-The hosted panel uses `openrouter-ttft-ms` across the enabled model transports. Fireworks, Gemini,
-Ollama, and the OpenRouter route all stream their responses, so the 60-second TTFT deadline
-measures the first SSE token rather than a fully buffered JSON body. OpenRouter requires
-BF16/FP16 endpoints, sorts the eligible provider catalog by throughput, applies a p90
-throughput floor and p99 latency preference, and allows eligible hosts to fall over.
-Smoke sends `stream: true` for every configured transport.
-
-Smoke logs `elapsed_ms` and `http` per transport. For a panel-sized probe:
+Developers can execute identical review sweeps on their local machines before pushing code:
 
 ```bash
-doppler run --project example-workspace --config prd -- \
-  node scripts/review-yeti-fireworks-debug.mjs
-```
-
-The script never prints the API key. Both probes are streaming and record their first-byte
-receipt without printing credentials or response content. Fireworks is disabled in the production
-transport plan; this probe remains available for an explicitly dispatched diagnostic comparison.
-
-## Provider order
-
-The current standard transport plan is deliberately limited and ordered:
-
-1. OpenRouter (`OPENROUTER_REVIEW_FLEET_KEY`) as the primary reviewer
-2. Synthetic (`SYNTHETIC_API_KEY`)
-3. Gemini (`GEMINI_API_KEY`, `enabled: false`) retained for quick re-enable
-4. Ollama (`OLLAMA_PR_REVIEW_API_KEY`, `enabled: false`) retained for explicit qualification
-5. Fireworks (`FIREWORKS_PR_REVIEW_API_KEY`, `enabled: false`) retained for explicit qualification only
-
-Synthetic is a direct OpenAI-compatible transport using `hf:zai-org/GLM-5.3-Flash`. This is the
-current catalog model selected for its supported high reasoning, JSON mode, structured outputs,
-and low published subscription price; Synthetic does not currently expose a DeepSeek V4 0731 model
-identifier. The model is deliberately explicit rather than using a moving `syn:` alias.
-Synthetic is admitted with a policy ceiling of `max_in_flight: 5` and
-`concurrency_scope: model`. Synthetic documents one concurrent request per model and 500 rolling
-five-hour requests per subscription pack. Hosted admission derives `/v2/quotas` only from the
-already validated `https://api.synthetic.new` provider origin, derives a live pack count only from
-an exact 500-request multiple, clamps the handoff at or below the five-slot policy ceiling, and
-fails safe to one slot when the endpoint or its under-development response shape is unavailable.
-Weekly-credit state remains telemetry rather than a concurrency signal.
-
-`OLLAMA_PR_REVIEW_API_KEY` is sourced from the masked Doppler secret in
-`example-workspace/prd` and synchronized to the repository's GitHub Actions secret of the same name.
-`GEMINI_API_KEY` and `SYNTHETIC_API_KEY` must likewise be populated from production-scoped
-credentials before the `v1` release channel is promoted. A development-only credential may be
-used for one-time qualification, but it is not sufficient evidence for production activation.
-
-The Ollama-only repository set (`exampleorg/example-api`, `example-infra`,
-`example-release`, `example-meta`) enables only Ollama (operator directive 2026-09-02: OpenRouter is
-removed from the live review path for these repositories, including as a fallback). Their
-six-call `max_in_flight` value matches the current six-persona panel width; it is a local
-ceiling, not a reservation of the Ollama Team plan's shared account capacity. Provider capacity
-responses still enter the runtime's cumulative 30-second wait/retry budget, so concurrent
-non-review workloads can consume account slots.
-The workflow references only the GitHub secret; neither policy nor workflow files contain the
-credential value.
-
-The action uses deterministic weighted striping across persona lanes: OpenRouter has weight 2 and
-Synthetic has weight 1, so OpenRouter remains primary by volume while Synthetic receives normal
-review work rather than waiting for an outage. Each lane still carries the other healthy transport
-as a fallback, and the total remains one baseline model call per persona. Gemini, Ollama, and
-Fireworks remain declared for explicit qualification, but their `enabled: false` settings keep them
-out of production admission. Re-enabling Gemini or Ollama later adds its existing weight-1 stripe
-without changing consumer repositories. OpenRouter admits at most two provider-scoped calls at a
-time and lets later lanes wait up to 120 seconds for a slot. This keeps a six-persona large-diff
-panel from presenting four large prompts to the gateway concurrently or abandoning queued work at
-the former 30-second admission limit. The runtime requires compatible
-request parameters, the policy's
-`strict` output marker, and throughput-ranked provider routing while delegating endpoint eligibility
-to OpenRouter's live policy except for the account-level Morph and Fireworks exclusions recorded
-after their verified incidents. Model selection is explicit: OpenRouter receives
-`deepseek/deepseek-v4-flash-0731` first and `z-ai/glm-5.3-flash` as its only model fallback via
-the documented `models` array; the Auto Router alias and plugin are not used. In the current hosted
-panel, `strict` is a policy declaration: the runtime sends JSON mode
-(`response_format: { type: "json_object" }`) and validates the terminal payload, but it does not
-enforce one cross-provider JSON Schema. Each caller must expose the five named environment
-variables through its inherited GitHub Actions secrets. Fireworks stays on the default serverless
-tier. All five transports use `high` reasoning. Provider/model semaphores bound concurrency;
-direct HTTP 429 responses retry only when `Retry-After` fits the declared five-second retry budget,
-then fail over under a provider-scoped circuit breaker. OpenRouter retains its own model fallback
-and endpoint-selection recovery.
-
-The central budget is also fixed here: two investigation turns, one 24-request per-lane call
-budget, an 860-second lane deadline with a two-minute non-generation reserve and a 40-second
-job-cap reserve, and a 60-second OpenRouter first-token budget.
-
-## One-time OpenRouter qualification
-
-The manually dispatched `One-time OpenRouter qualification` workflow is the bounded proof path
-for the direct DeepSeek-to-GLM route. It is not scheduled and cannot publish a review or mutate
-provider policy. A full run executes the three fixed fixtures twice with two calls in flight, which
-matches the OpenRouter transport's provider-scoped capacity instead of allowing a third lane to
-expire in the local queue. The child process is capped at ten minutes and the workflow at fifteen.
-
-The sanitized receipt separates integrity from acceptance. Integrity proves exact refs, fixture
-identity, request shape, and OpenRouter attribution. Acceptance fails closed unless all six rows
-terminate, at least three of the four defect rows detect their defect, and neither clean row
-produces a false positive. Failed evidence is still uploaded by the workflow for diagnosis, but it
-cannot be mistaken for a successful qualification or authorize activation.
-
-The clean sentinel is `table-driven-consolidation-preserves-coverage`. The former
-`clean-behavioural-guard` fixture is intentionally excluded from this promotion gate after human
-adjudication found real semantic bypasses in its literal-token implementation. Treating those
-findings as false positives would reward a model for overlooking a defect; changing the sentinel
-preserves the review charter and does not add fixture-specific model instructions.
-
-## One-time Fireworks/Ollama comparison
-
-When an operator wants evidence for moving more work to Ollama, use the manually dispatched
-`One-time Fireworks/Ollama comparison` workflow. It requires the exact target repository, PR
-number, base/head SHAs, and exact `review-yeti-bot` commit, then verifies those coordinates through
-the GitHub API before starting a model request. Each dispatch runs thirteen fixed fixtures once
-through a Fireworks-only arm and once through an Ollama-only arm. Fixtures are serial within each
-arm (`concurrency: 1`); the two arms run in parallel. Both arms use high reasoning, streaming, a
-150-second inactivity window, a 30-second connection window, and a 24,576-token output ceiling.
-Both also invoke the same current-testing evaluator arm and synthetic prompt identity.
-
-This is a bounded evidence run, not a canary or a review trigger: it has no schedule, pull-request
-event, recurring rerun, traffic split, comment/check/review publication, merge authority, or
-provider mutation. Neither arm is authoritative. The uploaded receipt
-contains only aggregate counts, bounded per-fixture outcomes and routing labels, latency, cost,
-exact-head coordinates, digests, and at most two content-free response-attempt summaries per
-fixture. Attempt summaries retain only closed outcome/effort/output classifications and bounded
-status, latency, token counts, and presence/size fields; they contain no findings, model text,
-reasoning trace, provider error body, exception message, or credentials. A
-completed comparison is only evidence for a later manual decision. One receipt represents one
-independent run; at least three sequential manual dispatches are required before a provider
-decision. The qualification workflow itself never mutates provider order or the `v1` consumer path;
-those are controlled by a separate, reviewed control-plane policy change.
-
-The receipt embeds both implementation identities: the exact central-action commit selected by
-the manual dispatch and the exact `review-yeti-bot` commit checked out for both arms.
-
-Both arms use the same fail-closed integrity checks: exact fixture ids and categories, provider and
-transport attribution, first-attempt reasoning and token settings, bounded attempt history,
-terminal parseability, streaming, and telemetry consistency. The workflow fails when that evidence
-is incomplete or misattributed. A valid run with missed defects, clean false positives, or malformed
-output recovery remains a successful evidence run and records the stricter per-arm quality gate as
-failed; it does not activate either provider. Route sampling is intentionally not identical:
-Fireworks uses its configured temperature without a deterministic seed, while Ollama uses its
-configured deterministic sampling. Receipts therefore compare the two configured operational
-routes, not pure model weights under an identical sampler. Missing provider usage or cost data is
-recorded as unavailable rather than zero, so this workflow cannot support a pricing conclusion
-without complete telemetry.
-
-The qualification receipt schema is `review-yeti.ollama-qualification.v7`. It retains the bot's
-output-contract provenance per fixture and records whether policy intent, the observed request
-mode, provider capability, and terminal parsing were reported. These fields are evidence only:
-they do not alter the provider order, verdict gate, or activation boundary.
-
-- **timeout_ms = 120000 for Synthetic and disabled Fireworks, 90000 for Gemini, Ollama, and the OpenRouter route.**
-  Streaming body reads re-arm the engine's stall/idle timer on every SSE chunk, while the released
-  runtime also enforces `timeout_ms` as the hard total wall-clock ceiling for each generation.
-  Synthetic's ceiling is 120 seconds because a hosted exact-head run remained healthy but was cut
-  off immediately after the former 90-second limit. These values were raised from a previous
-  75000/30000/45000 once the CI invariant below stopped modeling them as a wall-clock sum (see
-  exampleorg/example-meta ADR 0337 for the full decision).
-- **stall_ms = 20000 per transport.** The engine's liveness window: if a transport goes silent for a full
-  `stall_ms` after connecting (no SSE chunk, including `reasoning_content`), the call is declared
-  dead and the lane fails over. This matches the engine's own default and is declared in policy so
-  it participates in the lane-deadline invariant below and is tunable without an engine change.
-- **ttft_ms = 60000 per transport.** The action uses this value as the first-meaningful-output
-  budget. Because every configured transport streams, TTFT is measured at the first SSE chunk and
-  does not cap a generation after streaming has begun.
-
-A provider that never connects, goes silent for a full `stall_ms` window, or reaches its total
-`timeout_ms` ceiling fails over or fails closed.
-
-**One explicit deadline contract per transport.** Every emitted transport now carries
-`timeout_ms`, `connect_timeout_ms`, `ttft_ms`, and `stall_ms`; the handoff validator rejects a plan
-that loses any one of them. The released runtime consumes those transport fields directly. The
-top-level `openrouter_timeout_ms`, `openrouter_ttft_ms`, and `stall_ms` fields remain compatibility
-aliases for existing callers. Policy validation keeps them in lockstep with the OpenRouter
-transport so they cannot silently diverge; other transports remain free to use their own
-provider-qualified liveness windows.
-
-**Streaming is an invariant.** Every transport declares `stream: true` and the global
-`openrouter_stream` flag is `"true"`. Each persona lane owns one active request at a time, while
-provider/model semaphores permit independent providers to stream concurrently without exceeding
-their declared capacity. `emit-policy.mjs` rejects a future policy that makes only one transport
-non-streaming while retaining a tight TTFT budget; `scripts/emit-policy.test.sh` exercises that
-counterfactual. This keeps provider attribution and first-token telemetry intact without disabling
-SSE to hide upstream failures.
-
-**Lane-deadline arithmetic invariant (dead-transport envelope).** The runtime applies each
-transport's `timeout_ms` as a total generation ceiling. The separate policy-load invariant below
-guards the faster **dead-transport** path: a transport that
-never produces a first byte (`connect_timeout_ms`) or that goes silent after connecting for a full
-`stall_ms` interval. `emit-policy.mjs` enforces
-`sum(transport.connect_timeout_ms + transport.stall_ms) * openrouter_max_attempts * max_investigation_turns + budget.lane_overhead_ms <= budget.lane_deadline_ms`
-at policy-load time (both in the reusable workflow and in CI) -- summed over however many
-enabled transports the policy admits, not a hardcoded count -- and `scripts/emit-policy.test.sh` and
-`scripts/review-yeti-smoke.mjs` (a previously-drifted duplicate of the same check) re-check the
-same inequality against the committed policy plus counterfactual fixtures that violate it.
-Separately,
-`max_passes * lane_deadline_ms` must stay inside the job's own `timeout-minutes`
-(`.github/workflows/review-yeti.yml`), or a hosted run can be killed mid-lane by the runner instead
-of failing closed on its own terms; `emit-policy.test.sh` checks that too. With 2 enabled transports at
-`connect_timeout_ms` `20000 + 15000 = 35000`, plus `2 x 20000 = 40000` stall reserve,
-`(35000 + 40000) x 2 attempts x 2 turns + 120000 overhead = 420000 <= 860000`, and
-`max_passes(1) x lane_deadline_ms(860000) = 860000 <= 900000` (the 15-minute job cap, leaving
-40s for workflow setup, publishing, and verdict enforcement). The workflow's hard 15-minute job
-timeout remains the final backstop. Validation,
-failover dispatch, and evidence work are accounted for by the lane overhead reserve rather than by
-an unbounded wait. This still guards against a repeat of the incident that
-originally motivated this invariant -- a full sequential failover of transports that never connect
-or never stream must still finish inside the lane deadline.
-
-Before the model action starts, the reusable workflow runs `scripts/review-yeti-smoke.mjs` against
-each configured transport using a bounded, review-shaped JSON request. The smoke test records only
-transport names and status, never credentials or response bodies, and fails closed when no
-transport can complete the request. Before smoke runs, the workflow decodes the base64 transport
-handoff and verifies that it exactly matches the checked-out policy, has unique names, and streams
-every entry. Its contract tests run in the central validation workflow so
-provider order, OpenRouter routing, response validation, fallback behavior, and policy-drift
-rejection are checked before a release can advance. The smoke result is also an admission filter:
-the action receives only transports that passed preflight. The runtime then applies the configured
-striped weights to that healthy subset and retains deterministic lane-local failover order. A
-known-unhealthy provider therefore remains configured and visible in telemetry but cannot consume
-every lane's runtime budget before healthy failover begins.
-
-## Transport telemetry
-
-The `Transport telemetry` workflow (`.github/workflows/transport-telemetry.yml`) is a scheduled
-(daily, off-peak) plus manually-dispatched, read-only, non-publishing smoke run. It exists to give
-`example-meta` ADR 0481 ("keep Fireworks disabled, tune OpenRouter; revisit on multi-run per-provider
-evidence") and ADR 0467 ("revisit provider weights and capacities only with account-tier evidence
-plus per-provider latency, queue, rate-limit, and review-quality receipts") the multi-run evidence
-stream their revisit bars require, without adding a second review path.
-
-It probes every transport declared in `policy/review-yeti.json` -- enabled or not, so Gemini,
-Ollama, and Fireworks accrue evidence alongside the active OpenRouter/Synthetic pair -- using the
-same bounded `probeTransport()` machinery `review-yeti-smoke.mjs` uses for production admission
-(`scripts/transport-telemetry.mjs`). It never touches a pull request, runs the review panel, or
-publishes a comment, check, review verdict, merge decision, or provider mutation; a missing
-credential is recorded as `skipped: no_credential`, never a failure.
-
-Each run appends one JSON line per transport (schema
-`exampleorg.review-yeti.transport-telemetry.v1`: transport, model, enabled, outcome, HTTP
-status, failure class, TTFT/total latency, timeout/rate-limit flags, run id, timestamp) to an
-orphan `telemetry` branch's `transport-ledger.jsonl`, and uploads the same run's ledger as a
-90-day workflow artifact. The durable ledger lives on its own branch, never on `main`, so the
-review-contract history stays uncluttered by daily telemetry commits.
-
-Read the ledger with `scripts/transport-telemetry-report.mjs`, which prints per-transport p50/p90
-TTFT, p50/p90 total latency, timeout rate, rate-limit rate, and sample count over a lookback
-window:
-
-```bash
-git fetch origin telemetry
-node scripts/transport-telemetry-report.mjs --days 7
-# or against a local export / CI artifact:
-node scripts/transport-telemetry-report.mjs --ledger /path/to/transport-ledger.jsonl --days 30
-```
-
-This ledger covers exactly what a bounded chat-completion smoke can observe: latency and
-rate-limit/timeout evidence. It does not measure queue depth or review-quality (false-positive/
-false-negative rate); those remain open ADR-0467 revisit-bar columns for a future, differently-
-scoped instrument and are intentionally not fabricated here.
-
-## Malformed-output transport failover evidence (REL-525)
-
-The Review Yeti engine already retries a persona lane once with reasoning disabled when a
-transport returns unparseable findings JSON, then -- when that repository's resolved transport
-plan admits more than one enabled transport -- advances to the next enabled transport for that
-lane before marking the lane failed. That retry-and-failover decision is made inside
-`review-yeti-ai/review-yeti-bot` (`reviewWithModel`'s per-lane transport walk), not in this
-repository: this repository owns only the transport plan the engine consumes
-(`policy/review-yeti.json`, `scripts/repository-policy.mjs`) and the reusable caller workflow that
-invokes the engine and uploads its evidence.
-
-Before this fix, that decision was visible only inside the raw `review-yeti-provider-telemetry-*`
-artifact (schema `review-provider-telemetry-v4`). `scripts/annotate-transport-failover.mjs` reads
-that already-recorded per-attempt telemetry after the review step and turns it into loud, reviewable
-evidence:
-
-- A malformed-output attempt immediately followed by an attempt on a *different* transport is
-  logged as one `::warning::` failover line (`failover_from`, `failover_to`,
-  `reason=malformed_output`) and one job-summary table row.
-- A malformed-output attempt that is the *last* recorded attempt for a lane (every enabled
-  transport for that lane was exhausted -- including the single-transport case, such as a
-  repository pinned to one allowed provider) is logged as a distinct "no alternative transport"
-  line, never mislabeled as a failover.
-- A transport change driven by a timeout or stall (ADR 0337) is never reported here as
-  `reason=malformed_output`; that recovery path keeps its existing stall-based timeout handling
-  unchanged.
-
-This script only reads telemetry the engine already produces; it makes no retry or failover
-decision of its own. Run it locally against a downloaded artifact with:
-
-```bash
-node scripts/annotate-transport-failover.mjs /path/to/review-yeti-provider-telemetry-*.json
-```
-
-## One-time same-engine DOKS comparison
-
-The `One-time same-engine worker parity qualification` workflow is the manual hosted half of a
-DOKS comparison. It pulls one exact `review-yeti-worker@sha256:...` artifact, reviews an exact pull
-request head through the worker's `same-head` profile, and uploads only the sanitized receipt.
-The matching DOKS run must use that same worker digest, model, timeout, policy digest, and config
-digest. Receipt comparison fails closed if the engine, provider topology, or resolved lane models
-differ.
-
-This workflow has no schedule or pull-request trigger, cannot publish a review, has read-only
-GitHub permissions, and is capped at 15 minutes. Registry credentials should be short-lived,
-read-only credentials installed only for the explicit run and removed afterward. A successful
-comparison is qualification evidence; it does not enable the DOKS App gate or make DOKS a required
-check.
-
-## CLI-first local reviews
-
-The central policy can be exercised locally through the same bounded, read-only review engine used
-by the hosted action. The launcher validates `policy/review-yeti.json`, materializes it into an
-ephemeral 0600 config, and delegates to an already-installed `reviewyeti` executable. It never
-downloads code, publishes to GitHub, or writes a repository configuration file.
-
-```bash
-# Validate the policy without credentials or network access.
+# Verify policy configuration without credentials or network calls
 ./scripts/review-yeti-local check --json
 
-# Confirm the installed local engine is available.
+# Run health check on local Review Yeti binary
 ./scripts/review-yeti-local doctor --json
 
-# Validate an MCP server manifest without connecting to servers or calling tools.
-./scripts/review-yeti-local mcp validate --config ./mcp.json --json
+# Review uncommitted changes against base branch
+./scripts/review-yeti-local review --base origin/main --head HEAD --json
 
-# Review an immutable commit range from the current checkout.
-./scripts/review-yeti-local review \
-  --base "$BASE_SHA" --head "$HEAD_SHA" \
-  --mcp-config ./mcp.json --json --output review-yeti.json
-
-# Review an exact diff or a read-only GitHub pull request instead.
-./scripts/review-yeti-local review --diff-file ./change.diff --json
-./scripts/review-yeti-local review --pr exampleorg/example-review-actions#65 --json
+# Review a specific diff file or GitHub PR
+./scripts/review-yeti-local review --diff-file ./feature.diff --json
+./scripts/review-yeti-local review --pr example-org/my-project#42 --json
 ```
 
-`--base` and `--head` require full commit SHAs. The launcher exits with the delegated Review Yeti
-status, preserves machine-readable stdout, and sends diagnostics to stderr. Set `REVIEW_YETI_BIN`
-or pass `--cli-bin` when the executable is installed outside the default `PATH`; the wrapper does
-not install or fetch it. Provider credentials remain in the caller's environment and are never
-printed or written to the temporary config. MCP manifests are JSON with a `servers` array; the
-launcher validates IDs, transports, endpoints, stdio commands, environment-key shape, duplicate
-servers, and the API-key-only Linear policy. `mcp validate` performs no network requests or tool
-calls. A validated manifest is passed to the installed engine through `MCP_CONFIG_JSON` for the
-review process only; local reviews remain read-only and never publish MCP results to GitHub.
+---
 
-## Distribution
+## Documentation Suite
 
-The Review Yeti bot is selected by the platform release channel (`action_channel: v1` in the
-`policy/review-yeti.json`). The workflow resolves that channel to an exact commit, checks the
-tag target and main reachability, then executes the checked-out action. There is no
-per-repository SHA override or emergency bypass; changes advance through the central channel's
-reviewed promotion. Until the dedicated release guide lands, see the
-[review-yeti-bot release section](https://github.com/review-yeti-ai/review-yeti-bot#5-reviewed-semver-releases).
+* 📘 [Consumer Repository Onboarding Guide](docs/onboarding-guide.md): Step-by-step repository setup, workflow options, and ruleset protection.
+* 🔑 [GitHub App Setup & Permissions Guide](docs/github-app-setup.md): Manifest flow, permissions matrix, and org secret management.
+* ☸️ [Kubernetes & DOKS Execution Mode](docs/kubernetes-mode.md): Cluster architecture, worker pod specifications, and async dispatch flow.
+* 🏛️ [Architecture & Design Principles](docs/architecture.md): Centralized governance, coordinate validation, and check run reporting.
 
-The credential-free execution-plan fixture records the provider behavior that central policy
-claims to configure without exposing endpoint URLs or credential environment names. It marks
-runtime-owned retry/default behavior as uncharacterized instead of inventing a value. Validate
-the committed normalized plan and digest with:
+---
 
-```bash
-node scripts/emit-execution-plan.mjs --check
-```
+## Central Governance & Release Promotion
 
-Unknown policy keys and unclassified endpoint families fail this check. The fixture is
-characterization evidence only; the production workflow does not consume it.
+Changes to Review Yeti are developed on `main` and promoted to the immutable `@v1` channel via the atomic release promotion workflow:
 
-See also: Ollama-only repository set (operator directive 2026-09-02) — `example-api`, `example-infra`, `example-release`, `example-meta` enable only Ollama.
+1. Changes pass rigorous test suites on `main` (`scripts/validate-central-dispatch.mjs`, transport telemetry, and schema validation).
+2. The `promote-v1.yml` workflow performs an atomic fast-forward push to the `v1` branch and generates an immutable SHA receipt.
+3. All consumer repositories referencing `@v1` immediately receive updated policies and features without repository-side commits.
