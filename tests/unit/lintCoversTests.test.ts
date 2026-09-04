@@ -36,6 +36,33 @@ describe('lint covers test files (REL-570)', () => {
     expect(checker).toMatch(/process\.exit\(/u);
   });
 
+  it('typechecks scripts rather than excluding them', () => {
+    const tsconfig = JSON.parse(fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8'));
+    // REL-573: `scripts/` was excluded alongside `tests/`. Including it immediately exposed
+    // scripts/publish-real-diff-review.ts importing from '../src/quorum/quorumEngine' -- a module
+    // that does not exist anywhere in the tree, so the script could never have loaded.
+    expect(tsconfig.exclude).not.toContain('scripts');
+  });
+
+  it('keeps skipLibCheck on, as a recorded decision rather than an accident', () => {
+    const tsconfig = JSON.parse(fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8'));
+    // Measured with skipLibCheck: false -> 17 errors, ALL of them inside node_modules, none in
+    // our own code:
+    //   * 9 from vitest/@vitest -- `Cannot find module 'vite'`. vite 8 ships its types through an
+    //     `exports` map, which `moduleResolution: "node"` (Node10) cannot read. Fixing this means
+    //     migrating moduleResolution to bundler/nodenext, which also forces `module` off CommonJS.
+    //     That is a real migration, not a flag flip.
+    //   * 4 from next -- HeadersAdapter is not assignable to Headers. Upstream Next.js bug.
+    //   * 1 from immer -- global `Iterator` declaration conflict with the TS lib.
+    //   * 2 from @testing-library/jest-dom, 1 from isomorphic-ws -- fixable, but pointless alone.
+    //
+    // It is worth re-testing after a moduleResolution migration. It does NOT hide anything in our
+    // own source: the `AbortSignal | null` collapse once blamed on it is a TypeScript narrowing
+    // rule (`let x: T | null = null` narrows to `null`), reproducible with skipLibCheck either
+    // way, and fixed properly by asserting the type on the initializer.
+    expect(tsconfig.compilerOptions.skipLibCheck).toBe(true);
+  });
+
   it('typechecks tests rather than excluding them', () => {
     const tsconfig = JSON.parse(fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8'));
     // The whole point of REL-570. If this ever reappears, 464 errors can silently accumulate again.
