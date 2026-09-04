@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.29.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.6...v1.29.0) (2026-09-04)
+
+
+### Features
+
+* **examples,helm,docs:** add examples gallery, official Helm chart, and operational guides ([#466](https://github.com/review-yeti-ai/review-yeti-bot/issues/466)) ([67fb09e](https://github.com/review-yeti-ai/review-yeti-bot/commit/67fb09efbb675e46dbaa4f2dcbea037aa070fcf5))
+
+
+### Bug Fixes
+
+* **ci:** stop cancelling main's post-merge validation (REL-570) ([#468](https://github.com/review-yeti-ai/review-yeti-bot/issues/468)) ([0f7d36f](https://github.com/review-yeti-ai/review-yeti-bot/commit/0f7d36f85f0da4167e9be5798ef30d7854ad4829))
+
 ## [1.28.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.5...v1.28.6) (2026-09-04)
 
 
