@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 const fsMocks = vi.hoisted(() => ({
   mkdir: vi.fn(async () => undefined),
   readFile: vi.fn(),
-  writeFile: vi.fn(async () => undefined),
+  writeFile: vi.fn(async (_path: string, _data: string | Buffer, _options?: unknown) => undefined),
 }));
 const executionMocks = vi.hoisted(() => ({
   executePersonaPanel: vi.fn(),
@@ -31,10 +31,12 @@ import {
   runSameHeadQualificationWorker,
 } from '../../src/cli/runLiveReview';
 import { compareQualificationReceipts } from '../../src/qualification/receiptComparison';
+import type { PanelResult } from '../../src/panel/panelEngine';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
 
 const validEnvironment = {
+  NODE_ENV: 'test',
   REVIEW_RECEIPT_ONLY: 'true',
   REVIEW_PUBLICATION_MODE: 'disabled',
   REVIEW_RECEIPT_PATH: receiptPathLiteral,
@@ -78,7 +80,7 @@ describe('receipt-only worker contract', () => {
       repositoryId: 123,
       repo: validEnvironment.REVIEW_REPO,
       prNumber: 42,
-      headSha: validEnvironment.REVIEW_HEAD_SHA,
+      headSha: validEnvironment.REVIEW_HEAD_SHA!,
       baseSha: validEnvironment.REVIEW_BASE_SHA,
       policyDigest: validEnvironment.REVIEW_POLICY_DIGEST,
       configDigest: validEnvironment.REVIEW_CONFIG_DIGEST,
@@ -136,7 +138,7 @@ describe('receipt-only worker contract', () => {
 
     const moduleLoader = vi.fn();
     const result = await runWorkerSelfTest(
-      { REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
+      { NODE_ENV: 'test', REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
       moduleLoader,
     );
 
@@ -158,18 +160,18 @@ describe('receipt-only worker contract', () => {
 
   it('fails closed when the runtime manifest is missing, malformed, or wrong-versioned', async () => {
     fsMocks.readFile.mockRejectedValue(new Error('ENOENT'));
-    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+    await expect(runWorkerSelfTest({ NODE_ENV: 'test', REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
       .rejects.toThrow('worker runtime manifest is missing');
 
     fsMocks.readFile.mockResolvedValueOnce(Buffer.from('{not-json'));
-    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+    await expect(runWorkerSelfTest({ NODE_ENV: 'test', REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
       .rejects.toThrow('worker runtime manifest is invalid');
 
     fsMocks.readFile.mockResolvedValueOnce(Buffer.from(JSON.stringify({
       version: 'ReviewYetiWorkerRuntime.v0',
       entrypoint: 'dist/cli/runLiveReview.js',
     })));
-    await expect(runWorkerSelfTest({ REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
+    await expect(runWorkerSelfTest({ NODE_ENV: 'test', REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' }))
       .rejects.toThrow('worker runtime manifest is invalid');
   });
 
@@ -185,7 +187,7 @@ describe('receipt-only worker contract', () => {
     });
 
     await expect(runWorkerSelfTest(
-      { REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
+      { NODE_ENV: 'test', REVIEW_RUNTIME_MANIFEST_PATH: '/tmp/runtime-manifest.json' },
       moduleLoader,
     )).rejects.toThrow('module unavailable');
   });
@@ -225,6 +227,7 @@ describe('receipt-only worker contract', () => {
 
 describe('provider qualification worker contract', () => {
   const providerEnvironment = {
+    NODE_ENV: 'test',
     REVIEW_PROVIDER_QUALIFICATION_ONLY: 'true',
     REVIEW_RECEIPT_ONLY: 'false',
     REVIEW_PUBLICATION_MODE: 'disabled',
@@ -265,7 +268,7 @@ describe('provider qualification worker contract', () => {
 
     expect(client.complete).toHaveBeenCalledOnce();
     expect(client.complete).toHaveBeenCalledWith(expect.objectContaining({
-      model: providerEnvironment.REVIEW_QUALIFICATION_MODEL,
+      model: providerEnvironment.REVIEW_QUALIFICATION_MODEL!,
       stream: true,
       maxTokens: 256,
       timeoutMs: 120000,
@@ -274,7 +277,7 @@ describe('provider qualification worker contract', () => {
       version: 'ReviewYetiProviderQualification.v1',
       status: 'succeeded',
       providerId: 'openrouter',
-      requestedModel: providerEnvironment.REVIEW_QUALIFICATION_MODEL,
+      requestedModel: providerEnvironment.REVIEW_QUALIFICATION_MODEL!,
       resolvedModel: 'deepseek/deepseek-v4-flash-0731',
       publicationMode: 'disabled',
       providerCalls: 1,
@@ -316,6 +319,7 @@ describe('provider qualification worker contract', () => {
 
 describe('panel qualification worker contract', () => {
   const panelEnvironment = {
+    NODE_ENV: 'test',
     REVIEW_PANEL_QUALIFICATION_ONLY: 'true',
     REVIEW_PROVIDER_QUALIFICATION_ONLY: 'false',
     REVIEW_RECEIPT_ONLY: 'false',
@@ -346,18 +350,18 @@ describe('panel qualification worker contract', () => {
   it('runs the injected panel once and persists only aggregate non-publishing telemetry', async () => {
     const client = {
       complete: vi.fn(async () => ({
-        model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: panelEnvironment.REVIEW_QUALIFICATION_MODEL!,
         content: 'qualification response',
         usage: null,
         costUSD: null,
         raw: {},
       })),
     };
-    const panelRunner = vi.fn(async (options: any) => {
+    const panelRunner = vi.fn(async (options: any): Promise<PanelResult> => {
       expect(options.config.quorum).toBe(1);
       expect(options.config.reviewers.fallback).toBe('none');
       expect(options.config.reviewers.providers).toHaveLength(1);
-      expect(options.config.reviewers.providers[0].model).toBe(panelEnvironment.REVIEW_QUALIFICATION_MODEL);
+      expect(options.config.reviewers.providers[0].model).toBe(panelEnvironment.REVIEW_QUALIFICATION_MODEL!);
       expect(options.config.reviewers.arbiter.order).toEqual(['qualification']);
       expect(options.config.personas[0].maxTurns).toBe(2);
       expect(options.changedFiles).toEqual([
@@ -365,28 +369,28 @@ describe('panel qualification worker contract', () => {
       ]);
       for (let call = 0; call < 3; call += 1) {
         await options.client.complete({
-          model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          model: panelEnvironment.REVIEW_QUALIFICATION_MODEL!,
           messages: [],
           timeoutMs: 1000,
           stream: true,
         });
       }
       return {
-        headSha: panelEnvironment.REVIEW_HEAD_SHA,
+        headSha: panelEnvironment.REVIEW_HEAD_SHA!,
         personas: [{
           id: 'qualification-lane', required: true, providerId: 'qualification',
-          model: panelEnvironment.REVIEW_QUALIFICATION_MODEL, decision: 'APPROVE', findings: [],
+          model: panelEnvironment.REVIEW_QUALIFICATION_MODEL!, decision: 'APPROVE', findings: [],
           usage: { prompt: 100, completion: 20, total: 120 }, costUSD: 0.001, durationMs: 250,
         }],
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
         moderator: {
-          providerId: 'qualification', model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          providerId: 'qualification', model: panelEnvironment.REVIEW_QUALIFICATION_MODEL!,
           decision: 'RECONCILED', findings: [], usage: { prompt: 50, completion: 10, total: 60 },
           costUSD: 0.0005, durationMs: 150,
         },
         arbiter: {
-          providerId: 'qualification', model: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          providerId: 'qualification', model: panelEnvironment.REVIEW_QUALIFICATION_MODEL!,
           verdict: 'SHIP', rationale: 'fixture is safe', usage: { prompt: 40, completion: 8, total: 48 },
           costUSD: 0.0004, durationMs: 120,
         },
@@ -401,8 +405,8 @@ describe('panel qualification worker contract', () => {
       version: 'ReviewYetiPanelQualification.v1',
       status: 'succeeded',
       providerId: 'openrouter',
-      requestedModel: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
-      resolvedModel: panelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      requestedModel: panelEnvironment.REVIEW_QUALIFICATION_MODEL!,
+      resolvedModel: panelEnvironment.REVIEW_QUALIFICATION_MODEL!,
       publicationMode: 'disabled',
       providerCalls: 3,
       githubWrites: 0,
@@ -437,6 +441,7 @@ describe('panel qualification worker contract', () => {
 
 describe('full-panel qualification worker contract', () => {
   const fullPanelEnvironment = {
+    NODE_ENV: 'test',
     REVIEW_FULL_PANEL_QUALIFICATION_ONLY: 'true',
     REVIEW_PANEL_QUALIFICATION_ONLY: 'false',
     REVIEW_PROVIDER_QUALIFICATION_ONLY: 'false',
@@ -477,7 +482,7 @@ describe('full-panel qualification worker contract', () => {
         await new Promise((resolve) => setTimeout(resolve, 1));
         activeCalls -= 1;
         return {
-          model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
           content: 'qualification response',
           usage: { prompt: 100, completion: 20, total: 120 },
           costUSD: 0.001,
@@ -498,7 +503,7 @@ describe('full-panel qualification worker contract', () => {
       expect(options.config.personas.every((persona: any) => persona.maxTurns === 3)).toBe(true);
       expect(options.config.reviewers.providers).toHaveLength(1);
       expect(options.config.reviewers.providers[0].id).toBe('openrouter');
-      expect(options.config.reviewers.providers[0].model).toBe(fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL);
+      expect(options.config.reviewers.providers[0].model).toBe(fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!);
       expect(options.config.reviewers.providers[0].effort).toBe('low');
       expect(options.config.reviewers.arbiter.order).toEqual(['openrouter']);
       expect(options.requestPolicy).toEqual({
@@ -530,29 +535,29 @@ describe('full-panel qualification worker contract', () => {
         'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
         'moderator', 'arbiter',
       ].map((persona) => options.client.complete({
-        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
         messages: [],
         stream: true,
         persona,
         providerId: 'openrouter',
       })));
       const personaResult = (id: string) => ({
-        id, required: true, providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        id, required: true, providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
         decision: 'APPROVE' as const, findings: [], usage: { prompt: 100, completion: 20, total: 120 },
         costUSD: 0.001, durationMs: 250,
       });
       return {
-        headSha: fullPanelEnvironment.REVIEW_HEAD_SHA,
+        headSha: fullPanelEnvironment.REVIEW_HEAD_SHA!,
         personas: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'].map(personaResult),
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
         moderator: {
-          providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
           decision: 'RECONCILED' as const, findings: [], usage: { prompt: 100, completion: 20, total: 120 },
           costUSD: 0.001, durationMs: 150,
         },
         arbiter: {
-          providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+          providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
           verdict: 'SHIP' as const, rationale: 'qualification completed', usage: { prompt: 100, completion: 20, total: 120 },
           costUSD: 0.001, durationMs: 120,
         },
@@ -571,7 +576,7 @@ describe('full-panel qualification worker contract', () => {
       engineRevision: 'e'.repeat(64),
       providerTopologyDigest: '583bc1bd38ba0e1d83f0193648c6cad68359d563e77b312d828fe98b20f84f1a',
       providerId: 'openrouter',
-      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
       publicationMode: 'disabled',
       providerCalls: 8,
       githubWrites: 0,
@@ -608,7 +613,7 @@ describe('full-panel qualification worker contract', () => {
   it('persists a sanitized partial receipt when the full panel fails closed', async () => {
     const client = {
       complete: vi.fn(async () => ({
-        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
         content: 'partial qualification response',
         usage: { prompt: 17, completion: 3, total: 20 },
         costUSD: 0.0001,
@@ -617,7 +622,7 @@ describe('full-panel qualification worker contract', () => {
     };
     const panelRunner = vi.fn(async (options: any) => {
       await options.client.complete({
-        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
         messages: [],
         timeoutMs: 1000,
         persona: 'licensing',
@@ -635,7 +640,7 @@ describe('full-panel qualification worker contract', () => {
       profile: 'full-panel',
       status: 'failed',
       providerId: 'openrouter',
-      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
       publicationMode: 'disabled',
       providerCalls: 1,
       githubWrites: 0,
@@ -646,8 +651,8 @@ describe('full-panel qualification worker contract', () => {
       attempt: 1,
       persona: 'licensing',
       outcome: 'completed',
-      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
-      resolvedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+      requestedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
+      resolvedModel: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
       usage: { prompt: 17, completion: 3, total: 20 },
       costUSD: 0.0001,
     })]);
@@ -657,16 +662,16 @@ describe('full-panel qualification worker contract', () => {
 
   it('persists a failed receipt when a completed panel misses the acceptance gate', async () => {
     const panelRunner = vi.fn(async () => ({
-      headSha: fullPanelEnvironment.REVIEW_HEAD_SHA,
+      headSha: fullPanelEnvironment.REVIEW_HEAD_SHA!,
       personas: [],
       optionalFailures: [{ id: 'licensing', error: 'private response detail' }],
       quorum: { required: 1, distinctProviders: [], satisfied: false },
       moderator: {
-        providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
         decision: 'RECONCILED' as const, findings: [], usage: null, costUSD: null, durationMs: 0,
       },
       arbiter: {
-        providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL,
+        providerId: 'qualification', model: fullPanelEnvironment.REVIEW_QUALIFICATION_MODEL!,
         verdict: 'BLOCK' as const, rationale: 'not persisted', usage: null, costUSD: null, durationMs: 0,
       },
     }));
@@ -699,6 +704,7 @@ describe('full-panel qualification worker contract', () => {
 
 describe('same-head qualification worker contract', () => {
   const sameHeadEnvironment = {
+    NODE_ENV: 'test',
     REVIEW_SAME_HEAD_QUALIFICATION_ONLY: 'true',
     REVIEW_FULL_PANEL_QUALIFICATION_ONLY: 'false',
     REVIEW_PANEL_QUALIFICATION_ONLY: 'false',
@@ -732,12 +738,12 @@ describe('same-head qualification worker contract', () => {
   ].join('\n');
   const diffDigest = createHash('sha256').update(rawDiff).digest('hex');
 
-  function completePanelResult() {
+  function completePanelResult(): PanelResult {
     const persona = (id: string) => ({
       id,
       required: true,
       providerId: 'qualification',
-      model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+      model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
       decision: 'APPROVE' as const,
       findings: [],
       usage: { prompt: 100, completion: 20, total: 120 },
@@ -745,17 +751,17 @@ describe('same-head qualification worker contract', () => {
       durationMs: 50,
     });
     return {
-      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA!,
       personas: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'].map(persona),
       optionalFailures: [],
       quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
       moderator: {
-        providerId: 'qualification', model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        providerId: 'qualification', model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         decision: 'RECONCILED' as const, findings: [],
         usage: { prompt: 100, completion: 20, total: 120 }, costUSD: 0.001, durationMs: 30,
       },
       arbiter: {
-        providerId: 'qualification', model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        providerId: 'qualification', model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         verdict: 'SHIP' as const, rationale: 'private provider response',
         usage: { prompt: 100, completion: 20, total: 120 }, costUSD: 0.001, durationMs: 30,
       },
@@ -793,15 +799,15 @@ describe('same-head qualification worker contract', () => {
 
   it('reviews the verified diff and persists only sanitized same-head telemetry', async () => {
     const sourceLoader = vi.fn(async () => ({
-      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
-      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA!,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA!,
       diff: rawDiff,
       diffDigest,
       githubReads: 3 as const,
     }));
     const client = {
       complete: vi.fn(async () => ({
-        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         content: 'private model response',
         usage: { prompt: 100, completion: 20, total: 120 },
         costUSD: 0.001,
@@ -819,14 +825,14 @@ describe('same-head qualification worker contract', () => {
       expect(options.requestPolicy.models).toEqual(['z-ai/glm-5.3-flash']);
       const lanes = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing', 'moderator', 'arbiter'];
       await Promise.all(lanes.map((persona) => options.client.complete({
-        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         messages: [{ role: 'user', content: 'private prompt' }],
         stream: true,
         persona,
         providerId: 'openrouter',
       })));
       await options.client.complete({
-        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         messages: [{ role: 'user', content: 'private retry prompt' }],
         stream: true,
         persona: 'security',
@@ -847,7 +853,7 @@ describe('same-head qualification worker contract', () => {
       repo: sameHeadEnvironment.REVIEW_REPO,
       prNumber: 42,
       expectedBaseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
-      expectedHeadSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      expectedHeadSha: sameHeadEnvironment.REVIEW_HEAD_SHA!,
     });
     expect(receipt).toMatchObject({
       version: 'ReviewYetiPanelQualification.v1',
@@ -857,7 +863,7 @@ describe('same-head qualification worker contract', () => {
       engineRevision: 'e'.repeat(64),
       providerTopologyDigest: '583bc1bd38ba0e1d83f0193648c6cad68359d563e77b312d828fe98b20f84f1a',
       baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
-      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA!,
       diffDigest,
       githubReads: 3,
       githubWrites: 0,
@@ -875,26 +881,26 @@ describe('same-head qualification worker contract', () => {
     expect(receipt.laneAttribution).toEqual([
       {
         role: 'persona', lane: 'security', providerId: 'openrouter',
-        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
-        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         callCount: 2, retryCount: 1,
       },
       ...['performance', 'architecture', 'testing', 'dependencies', 'licensing'].map((lane) => ({
         role: 'persona', lane, providerId: 'openrouter',
-        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
-        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         callCount: 1, retryCount: 0,
       })),
       {
         role: 'moderator', lane: 'moderator', providerId: 'openrouter',
-        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
-        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         callCount: 1, retryCount: 0,
       },
       {
         role: 'arbiter', lane: 'arbiter', providerId: 'openrouter',
-        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
-        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        requestedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
+        resolvedModel: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         callCount: 1, retryCount: 0,
       },
     ]);
@@ -912,15 +918,15 @@ describe('same-head qualification worker contract', () => {
 
   it('persists the production canonical verdict when a persona finds a blocking defect', async () => {
     const sourceLoader = vi.fn(async () => ({
-      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
-      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA!,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA!,
       diff: rawDiff,
       diffDigest,
       githubReads: 3 as const,
     }));
     const client = {
       complete: vi.fn(async () => ({
-        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         content: 'private model response',
         usage: { prompt: 100, completion: 20, total: 120 },
         costUSD: 0.001,
@@ -932,7 +938,7 @@ describe('same-head qualification worker contract', () => {
         'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
         'moderator', 'arbiter',
       ].map((persona) => options.client.complete({
-        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         messages: [{ role: 'user', content: 'private prompt' }],
         stream: true,
         persona,
@@ -1005,15 +1011,15 @@ describe('same-head qualification worker contract', () => {
 
   it('persists a classified failure when sanitized finding telemetry exceeds its bound', async () => {
     const sourceLoader = vi.fn(async () => ({
-      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA,
-      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA,
+      baseSha: sameHeadEnvironment.REVIEW_BASE_SHA!,
+      headSha: sameHeadEnvironment.REVIEW_HEAD_SHA!,
       diff: rawDiff,
       diffDigest,
       githubReads: 3 as const,
     }));
     const client = {
       complete: vi.fn(async () => ({
-        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         content: 'private model response',
         usage: { prompt: 100, completion: 20, total: 120 },
         costUSD: 0.001,
@@ -1025,7 +1031,7 @@ describe('same-head qualification worker contract', () => {
         'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
         'moderator', 'arbiter',
       ].map((persona) => options.client.complete({
-        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL,
+        model: sameHeadEnvironment.REVIEW_QUALIFICATION_MODEL!,
         messages: [{ role: 'user', content: 'private prompt' }],
         stream: true,
         persona,

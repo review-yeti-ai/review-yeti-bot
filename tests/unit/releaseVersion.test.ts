@@ -1,11 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll } from 'vitest';
 
-const { validateReleaseVersion } = await import('../../scripts/validate-release-version.mjs');
+// The probe tsconfig targets CommonJS, which disallows top-level await; load
+// the ESM script inside beforeAll instead (vitest guarantees it completes
+// before any `it` in this file runs).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped .mjs script export
+let validateReleaseVersion: (input: any) => any;
 
 const MAIN_SHA = 'a'.repeat(40);
 const TAG_SHA = 'b'.repeat(40);
 
 describe('release version contract', () => {
+  beforeAll(async () => {
+    ({ validateReleaseVersion } = await import('../../scripts/validate-release-version.mjs'));
+  });
+
   it('accepts a matching semver tag and package version on main', () => {
     expect(validateReleaseVersion({
       tag: 'v1.8.6',
