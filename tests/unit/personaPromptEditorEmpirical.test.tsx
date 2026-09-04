@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { PromptEditor } from '@/components/settings/prompt-editor';
-import { PersonaSelector, ALL_PERSONA_IDS, PERSONA_METADATA } from '@/components/settings/persona-selector';
+import { PersonaSelector, ALL_PERSONA_IDS, PERSONA_METADATA, PersonaId } from '@/components/settings/persona-selector';
 import SettingsPage from '@/app/settings/page';
 import { DashboardStore, dashboardStore } from '@/persistence/dashboardStore';
 import { createDashboardRouter } from '@/api/dashboardApi';
@@ -171,7 +171,7 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
       const updated = testStore.updatePersonaSetting('performance', { customPrompt: hugePrompt });
       const endTime = performance.now();
 
-      expect(updated.customPrompt.length).toBe(500_000);
+      expect(updated.customPrompt?.length).toBe(500_000);
       expect(endTime - startTime).toBeLessThan(timeBudgetMs(1000)); // fast persistence < 1s
 
       const reloadedStore = new DashboardStore('/tmp/ct_prompt_editor_huge_store.json');

@@ -14,7 +14,9 @@ describe('Logger Utility', () => {
   });
 
   it('logs info messages formatted in non-production mode', () => {
-    process.env.NODE_ENV = 'development';
+    // NODE_ENV is typed read-only in @types/node's ProcessEnv; cast to a mutable
+    // record to simulate an environment swap for this test only.
+    (process.env as Record<string, string>).NODE_ENV = 'development';
     process.env.LOG_LEVEL = 'info';
     const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
 
@@ -27,7 +29,7 @@ describe('Logger Utility', () => {
   });
 
   it('logs JSON formatted messages in production mode', () => {
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string>).NODE_ENV = 'production';
     process.env.LOG_LEVEL = 'debug';
     logger.setLevel('debug');
     const consoleSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
