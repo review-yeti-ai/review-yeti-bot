@@ -29,6 +29,7 @@
     "test:backend": "vitest run tests/unit/panel*.test.ts tests/unit/summary*.test.ts tests/unit/provider*.test.ts tests/unit/graph*.test.ts tests/unit/indexer*.test.ts",
     "test:components": "vitest run tests/unit/**/*.test.tsx",
     "test:unit": "vitest run tests/unit",
+    "test:release-contract": "vitest run --config vitest.release.config.ts",
     "test:integration": "vitest run tests/integration",
     "test:generational": "vitest run tests/unit/reviewCoreDifferential.test.ts tests/unit/reviewGenerationContracts.test.ts tests/unit/reviewAdmission.test.ts tests/unit/piRunState.test.ts tests/unit/actionPolicyContract.test.ts",
     "test:e2e": "vitest run tests/e2e",
@@ -51,7 +52,8 @@
     "pretest:changed": "npm run test:artifacts",
     "test:artifacts": "node scripts/ensure-static-assets.js && node scripts/ensure-pipeline-build.js && npm run domains:check",
     "domains:build": "ts-node scripts/build-domain-index.ts",
-    "domains:check": "ts-node scripts/build-domain-index.ts --check"
+    "domains:check": "ts-node scripts/build-domain-index.ts --check",
+    "pretest:release-contract": "npm run test:artifacts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.1",

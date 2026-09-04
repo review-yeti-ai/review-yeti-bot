@@ -86,6 +86,8 @@ jobs:
 
       - name: Verify consumer action release contract
         run: |
+          # REL-559: the pack/install/attest closure lives in the release-contract lane now.
+          npm run test:release-contract
           npm test -- --run \
             tests/unit/reviewActionPackaging.test.ts \
             tests/unit/reviewPipeline.test.ts \
