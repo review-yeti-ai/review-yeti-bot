@@ -10,7 +10,9 @@ import { MemoryGraphModal } from './memory-graph-modal';
 import { FindingsDeltaBadge } from './FindingsDeltaBadge';
 
 interface OverviewMetricsProps {
-  stats?: OverviewStats | null;
+  // Every field is read defensively (optional chaining + `?? 0`/`|| ...` fallbacks), so the
+  // component genuinely tolerates a partial/empty stats object, not just a fully-populated one.
+  stats?: Partial<OverviewStats> | null;
   onUpdateStats?: () => void;
 }
 
