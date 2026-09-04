@@ -17,7 +17,7 @@ const allowedPatch = [
 describe('validated fix workflow', () => {
   it('requires approval and exact head, then validates before proposing a PR', async () => {
     const calls: string[] = [];
-    const workflow = new FixWorkflow({ currentHeadSha: async () => head, applyPatch: async () => {}, sandbox: { run: async (command) => { calls.push(command); return { command, exitStatus: 0, stdout: 'ok', stderr: '' }; } }, createBranch: async () => calls.push('branch'), createPullRequest: async () => ({ number: 2, url: 'https://github.com/o/r/pull/2' }) });
+    const workflow = new FixWorkflow({ currentHeadSha: async () => head, applyPatch: async () => {}, sandbox: { run: async (command) => { calls.push(command); return { command, exitStatus: 0, stdout: 'ok', stderr: '' }; } }, createBranch: async () => { calls.push('branch'); }, createPullRequest: async () => ({ number: 2, url: 'https://github.com/o/r/pull/2' }) });
     const input = { snapshot, findings: [{ id: 'f1', path: 'src/a.ts', line: 2 }], selectedFindingIds: ['f1'], proposedPatch: allowedPatch, patchPaths: ['src/a.ts'], validation: [{ command: 'npm', args: ['test'] }], approved: false, baseBranch: 'main' };
     expect((await workflow.start(input)).status).toBe('proposal_only');
     const result = await workflow.start({ ...input, approved: true });
@@ -84,7 +84,7 @@ describe('validated fix workflow', () => {
     const calls: string[] = [];
     const workflow = new FixWorkflow({
       currentHeadSha: async () => head,
-      createBranch: async () => calls.push('branch'),
+      createBranch: async () => { calls.push('branch'); },
       applyPatch: async () => { throw new Error('patch does not apply'); },
       sandbox: { run: async (command) => { calls.push(command); return { command, exitStatus: 0, stdout: '', stderr: '' }; } },
       createPullRequest: async () => { calls.push('pr'); return { number: 2, url: 'https://github.com/o/r/pull/2' }; },

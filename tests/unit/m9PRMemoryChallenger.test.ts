@@ -262,7 +262,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
 
       const findings: PanelFinding[] = [
         {
-          severity: 'P3',
+          severity: 'P2',
           path: 'src/app.ts',
           line: 15,
           title: 'Found CONSOLE.LOG("debug")',
@@ -302,14 +302,14 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
 
       const findings: PanelFinding[] = [
         {
-          severity: 'P3',
+          severity: 'P2',
           path: 'src/legacy/oldCode.ts',
           line: 5,
           title: 'Unused variable detected',
           body: 'Variable x is never read',
         },
         {
-          severity: 'P3',
+          severity: 'P2',
           path: 'src/new/freshCode.ts',
           line: 10,
           title: 'Unused variable detected',

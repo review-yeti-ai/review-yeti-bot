@@ -39,14 +39,14 @@ describe('Model Filtering & Provider Normalization Unit Tests', () => {
         displayName: 'OpenAI',
         enabled: false,
         active: false,
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(), activeModels: [],
       },
       anthropic: {
         id: 'anthropic',
         displayName: 'Anthropic',
         enabled: true,
         active: true,
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(), activeModels: [],
       },
     };
 
@@ -62,13 +62,13 @@ describe('Model Filtering & Provider Normalization Unit Tests', () => {
         id: 'openai',
         displayName: 'OpenAI',
         enabled: false,
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(), activeModels: [],
       },
       anthropic: {
         id: 'anthropic',
         displayName: 'Anthropic',
         enabled: true,
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(), activeModels: [],
       },
     };
 
@@ -79,10 +79,10 @@ describe('Model Filtering & Provider Normalization Unit Tests', () => {
 
   it('returns array of active enabled providers', () => {
     const providers: Record<string, ProviderConfigRecord> = {
-      openai: { id: 'openai', displayName: 'OpenAI', enabled: false, updatedAt: '' },
-      deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: false, updatedAt: '' },
-      anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, updatedAt: '' },
-      grok: { id: 'grok', displayName: 'Grok', enabled: true, updatedAt: '' },
+      openai: { id: 'openai', displayName: 'OpenAI', enabled: false, updatedAt: '', activeModels: [] },
+      deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: false, updatedAt: '', activeModels: [] },
+      anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, updatedAt: '', activeModels: [] },
+      grok: { id: 'grok', displayName: 'Grok', enabled: true, updatedAt: '', activeModels: [] },
     };
 
     const enabled = getEnabledProviders(providers);
@@ -100,9 +100,9 @@ describe('Model Filtering & Provider Normalization Unit Tests', () => {
     ];
 
     const providers: Record<string, ProviderConfigRecord> = {
-      openai: { id: 'openai', displayName: 'OpenAI', enabled: false, updatedAt: '' },
-      anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, updatedAt: '' },
-      deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: true, updatedAt: '' },
+      openai: { id: 'openai', displayName: 'OpenAI', enabled: false, updatedAt: '', activeModels: [] },
+      anthropic: { id: 'anthropic', displayName: 'Anthropic', enabled: true, updatedAt: '', activeModels: [] },
+      deepseek: { id: 'deepseek', displayName: 'DeepSeek', enabled: true, updatedAt: '', activeModels: [] },
     };
 
     const filtered = getEnabledModelOptions(modelOptions, providers);

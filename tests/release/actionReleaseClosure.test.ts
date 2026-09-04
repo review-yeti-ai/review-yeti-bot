@@ -56,7 +56,7 @@ describe('Pi runtime packaging closure (release contract)', () => {
     execFileSync('git', ['add', '--all'], { cwd: releaseDir });
     execFileSync('git', ['commit', '-q', '-m', 'clean release fixture'], { cwd: releaseDir });
 
-    const npmEnvironment = { ...process.env, NPM_CONFIG_USERCONFIG: os.devNull } as Record<string, string | undefined>;
+    const npmEnvironment: NodeJS.ProcessEnv = { ...process.env, NPM_CONFIG_USERCONFIG: os.devNull };
     for (const key of Object.keys(npmEnvironment)) {
       if (/^npm_config_allow_scripts(?:_pin)?$/iu.test(key)) delete npmEnvironment[key];
     }
