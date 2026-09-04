@@ -1,60 +1,53 @@
 import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, vi } from 'vitest';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { parseAndValidateConfig } from '../../src/config/configLoader';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { ReviewModelClient, OpenRouterResponse } from '../../src/gateway/openRouterClient';
 
+// Built via the real parser (as src/panel/__tests__/panelEngine.test.ts does) rather than a
+// hand-authored literal, so the config satisfies every required/defaulted field of the v3
+// schema without duplicating its defaults by hand here.
+const mockYaml = `
+version: 3
+quorum: 1
+reviewer_effort: medium
+reviewers:
+  execution: personas
+  overall_timeout_s: 60
+  fallback: ordered
+  arbiter:
+    order: [test-prov]
+  providers:
+    - id: test-prov
+      model: google/gemini-3.7-flash:medium
+      effort: medium
+      enabled: true
+      review_timeout_s: 30
+      arbiter_timeout_s: 30
+personas:
+  - id: security
+    enabled: true
+    required: true
+    paths: ["**/*"]
+    providers: [test-prov]
+    charter: Security checks
+  - id: performance
+    enabled: true
+    required: true
+    paths: ["**/*"]
+    providers: [test-prov]
+    charter: Performance checks
+  - id: architecture
+    enabled: true
+    required: true
+    paths: ["**/*"]
+    providers: [test-prov]
+    charter: Architecture checks
+`;
+
 describe('Panel Engine Parallel Execution', () => {
-  const mockConfig: CtReviewConfigV3 = {
-    version: '3.0',
-    enabled: true,
-    target_branch: 'main',
-    quorum: 1,
-    reviewer_effort: 'medium',
-    reviewers: {
-      overall_timeout_s: 60,
-      fallback: 'continue',
-      arbiter: {
-        order: ['test-prov'],
-      },
-      providers: [
-        {
-          id: 'test-prov',
-          type: 'openrouter',
-          model: 'google/gemini-3.7-flash:medium',
-          enabled: true,
-          review_timeout_s: 30,
-          arbiter_timeout_s: 30,
-        },
-      ],
-    },
-    personas: [
-      {
-        id: 'security',
-        name: 'Security Guardian',
-        enabled: true,
-        paths: ['**/*'],
-        providers: ['test-prov'],
-        charter: 'Security checks',
-      },
-      {
-        id: 'performance',
-        name: 'Performance Specialist',
-        enabled: true,
-        paths: ['**/*'],
-        providers: ['test-prov'],
-        charter: 'Performance checks',
-      },
-      {
-        id: 'architecture',
-        name: 'Architecture Specialist',
-        enabled: true,
-        paths: ['**/*'],
-        providers: ['test-prov'],
-        charter: 'Architecture checks',
-      },
-    ],
-  };
+  const mockConfig = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
 
   it('executes multiple personas in parallel concurrently rather than sequentially', async () => {
     let activeConcurrentCalls = 0;
@@ -81,6 +74,7 @@ describe('Panel Engine Parallel Execution', () => {
           content: `CT_REVIEW_BEGIN:${nonce}\n${jsonBody}\nCT_REVIEW_END:${nonce}`,
           usage: { prompt: 100, completion: 50, total: 150 },
           costUSD: 0.0001,
+          raw: null,
         };
       }),
     };

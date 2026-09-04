@@ -1057,6 +1057,7 @@ describe('applyFullWithCarryDiffSwap (REL-552 Review Yeti PR #444 follow-up: mai
       planDigest: 'f'.repeat(64),
       fullDiffDigest: 'full-digest-sentinel',
       fullDiffChars: fullDiffText.length,
+      reviewedDiffKind: 'delta',
       reviewedDiffDigest: 'delta-digest-sentinel',
       reviewedDiffChars: 42,
       parentHeadSha: 'b'.repeat(40),
