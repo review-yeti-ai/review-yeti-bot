@@ -3,6 +3,8 @@ import * as matchers from '@testing-library/jest-dom/matchers';
 import { expect, beforeEach, afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { dashboardStore } from '../src/persistence/dashboardStore';
 import { postgresStore } from '../src/persistence/postgresStore';
 import { providerPool } from '../src/gateway/providerPool';
@@ -13,7 +15,33 @@ expect.extend(matchers);
 
 // Set standard test environment variables
 const testStoreId = `${process.pid}_${Math.random().toString(36).substring(2)}`;
-process.env.CT_DASHBOARD_STORE = `/tmp/ct-review-bot/test_store_${testStoreId}.json`;
+
+// REL-560: give every worker its own disposable state root, and delete it on exit.
+//
+// Two separate bugs lived in the old fixed `/tmp/ct-review-bot` paths:
+//
+// 1. `CT_REVIEW_RUN_STORE` was never set, so ReviewRunStore (src/app.ts) fell back to a single
+//    shared `/tmp/ct-review-bot/review-runs.json` that persisted across every test file AND
+//    across every run, accumulating deliveries/heads/previousHeads/threads. Locally the suite
+//    failed 2-13 tests per run with a different failing set each time; moving that one file
+//    aside took it to 1. CI never saw it because a fresh runner starts with the file absent.
+// 2. The reset below assigns a fresh `CT_DASHBOARD_STORE` path per test and only ever unlinks
+//    the previous one, so the last store of every fork survived. That leaked ~200 files per
+//    worker, forever: this machine had 374,719 files and 17 GB under /tmp/ct-review-bot.
+//
+// Both are fixed by rooting all of it in one per-worker mkdtemp directory that is removed when
+// the worker exits. This is also what makes `fileParallelism` safe -- workers can no longer
+// read or clobber each other's run store.
+const workerStateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-bot-test-'));
+process.on('exit', () => {
+  try {
+    fs.rmSync(workerStateRoot, { recursive: true, force: true });
+  } catch {}
+});
+
+process.env.CT_REVIEW_RUN_STORE = path.join(workerStateRoot, 'review-runs.json');
+process.env.CT_REVIEW_DATA_DIR = workerStateRoot;
+process.env.CT_DASHBOARD_STORE = path.join(workerStateRoot, `test_store_${testStoreId}.json`);
 process.env.CT_REVIEW_PLATFORM_DB = process.env.CT_REVIEW_PLATFORM_DB || ':memory:';
 process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'test_webhook_secret';
 process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
@@ -53,16 +81,19 @@ function resetAllGlobalState() {
   process.env.NO_PROXY = '*';
   process.env.no_proxy = '*';
 
-  // 1.5. Clean and assign fresh test store file if in /tmp
-  if (process.env.CT_DASHBOARD_STORE && process.env.CT_DASHBOARD_STORE.startsWith('/tmp/')) {
+  // 1.5. Clean and assign a fresh store file inside this worker's own state root.
+  // REL-560: the guard used to be `startsWith('/tmp/')`, which never matches on macOS because
+  // os.tmpdir() is /var/folders/..., so the per-test cleanup silently did nothing there. Anchor
+  // it to workerStateRoot instead, which is correct on every platform.
+  if (process.env.CT_DASHBOARD_STORE && process.env.CT_DASHBOARD_STORE.startsWith(workerStateRoot)) {
     try {
       if (fs.existsSync(process.env.CT_DASHBOARD_STORE)) {
         fs.unlinkSync(process.env.CT_DASHBOARD_STORE);
       }
     } catch {}
   }
-  const testStoreId = `${process.pid}_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-  process.env.CT_DASHBOARD_STORE = `/tmp/ct-review-bot/test_store_${testStoreId}.json`;
+  const resetStoreId = `${process.pid}_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+  process.env.CT_DASHBOARD_STORE = path.join(workerStateRoot, `test_store_${resetStoreId}.json`);
 
   // 2. Reset Singleton Stores
   if (typeof dashboardStore.reset === 'function') {
