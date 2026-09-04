@@ -37,7 +37,10 @@ function openRouterTransport() {
   };
 }
 
-function streamResponse(frames: any[], { model = 'openai/gpt-5.6-luna', provider = 'openrouter', usage } = {}) {
+function streamResponse(
+  frames: any[],
+  { model = 'openai/gpt-5.6-luna', provider = 'openrouter', usage }: { model?: string; provider?: string; usage?: Record<string, unknown> } = {},
+) {
   const payloads = [
     ...frames,
     {

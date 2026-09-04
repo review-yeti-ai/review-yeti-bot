@@ -6,7 +6,11 @@ import { CtReviewConfigV3, R4_ALLOWED_MODELS, V3_PROVIDER_MODELS } from '../../s
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
 function build10PersonaConfig(quorum: number = 4): CtReviewConfigV3 {
+  // Based on the real createDefaultV3Config() defaults (see src/config/configLoader.ts) so
+  // every schema-required top-level section (reviews, chat, knowledge_base, ...) is present
+  // without hand-duplicating the zod defaults here.
   return {
+    ...createDefaultV3Config(),
     version: 3,
     profile: 'assertive',
     quorum,

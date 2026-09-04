@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { executeDocsPersona } from '../../src/personas/docsPersona';
 import { executeMarketingPersona } from '../../src/personas/marketingPersona';
 import { extractLinearIssueIds, executeLinearSyncPersona } from '../../src/personas/linearSyncPersona';
