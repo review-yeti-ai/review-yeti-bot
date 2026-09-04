@@ -59,7 +59,7 @@ export const PERSONA_LIST: PersonaType[] = [
   'dependencies',
 ];
 
-export interface PersonaFinding {
+export interface HarnessPersonaFinding {
   id: string;
   persona: PersonaType;
   path: string;
@@ -83,7 +83,7 @@ export interface VerifierDecision {
 
 export interface PersonaReviewResult {
   personaId: PersonaType;
-  findings: PersonaFinding[];
+  findings: HarnessPersonaFinding[];
   toolReceipts: PiToolReceipt[];
   promptTokens: number;
   completionTokens: number;
@@ -120,7 +120,7 @@ export interface PipelineExecutionResult {
     coveragePercentage: number;
   };
   personaResults: Record<string, {
-    findings: PersonaFinding[];
+    findings: HarnessPersonaFinding[];
     toolReceipts: PiToolReceipt[];
     promptTokens: number;
     completionTokens: number;
@@ -132,11 +132,11 @@ export interface PipelineExecutionResult {
     durationMs?: number;
     costUSD?: number;
   }>;
-  rawFindings?: PersonaFinding[];
-  sanitizedFindings?: PersonaFinding[];
-  deduplicatedFindings: PersonaFinding[];
+  rawFindings?: HarnessPersonaFinding[];
+  sanitizedFindings?: HarnessPersonaFinding[];
+  deduplicatedFindings: HarnessPersonaFinding[];
   verifierDecisions: VerifierDecision[];
-  confirmedFindings: PersonaFinding[];
+  confirmedFindings: HarnessPersonaFinding[];
   arbitrationVerdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK';
   arbitrationRationale?: string;
   totalDurationMs: number;
@@ -182,10 +182,10 @@ export interface PipelineScenarioOptions {
     content: string;
     reasoning?: string;
     toolCalls?: Array<{ name: string; arguments: Record<string, unknown> }>;
-    findings?: PersonaFinding[];
+    findings?: HarnessPersonaFinding[];
   }>;
   customVerifierAdapter?: (
-    findings: PersonaFinding[],
+    findings: HarnessPersonaFinding[],
     diff: string,
     plugin: PiWorkspacePlugin
   ) => Promise<VerifierDecision[]>;
@@ -554,9 +554,9 @@ export function parseFindingsFromText(
   content: string,
   persona: PersonaType,
   defaultPath?: string
-): PersonaFinding[] {
+): HarnessPersonaFinding[] {
   if (!content || typeof content !== 'string') return [];
-  const findings: PersonaFinding[] = [];
+  const findings: HarnessPersonaFinding[] = [];
 
   // Helper to normalize and add
   const addFinding = (f: any, idx: number) => {
@@ -646,13 +646,13 @@ export function parseFindingsFromText(
 // ============================================================================
 
 export function sanitizeAndDeduplicateFindings(
-  rawFindings: PersonaFinding[],
+  rawFindings: HarnessPersonaFinding[],
   changedFiles?: ReviewChangedFile[]
-): PersonaFinding[] {
+): HarnessPersonaFinding[] {
   if (!Array.isArray(rawFindings) || rawFindings.length === 0) return [];
 
   // Step 1: Sanitization (Line-anchoring and schema validity)
-  const sanitizedList: PersonaFinding[] = [];
+  const sanitizedList: HarnessPersonaFinding[] = [];
 
   for (const f of rawFindings) {
     if (!f || typeof f !== 'object') continue;
@@ -696,7 +696,7 @@ export function sanitizeAndDeduplicateFindings(
 
   // Step 2: Cross-Persona Deduplication
   // Group by: normalized path + line proximity (within 5 lines) + canonical title/category
-  const dedupMap = new Map<string, PersonaFinding>();
+  const dedupMap = new Map<string, HarnessPersonaFinding>();
   const severityRank: Record<'P0' | 'P1' | 'P2', number> = { P0: 3, P1: 2, P2: 1 };
 
   const canonicalizeTitle = (str: string) =>
@@ -756,15 +756,15 @@ export function sanitizeAndDeduplicateFindings(
 // ============================================================================
 
 export async function verifyFindings(
-  findings: PersonaFinding[],
+  findings: HarnessPersonaFinding[],
   context: {
     diff?: string;
     plugin?: PiWorkspacePlugin;
     scenario?: EvaluationScenario;
-    customVerifier?: (findings: PersonaFinding[], diff: string, plugin: PiWorkspacePlugin) => Promise<VerifierDecision[]>;
+    customVerifier?: (findings: HarnessPersonaFinding[], diff: string, plugin: PiWorkspacePlugin) => Promise<VerifierDecision[]>;
   }
 ): Promise<{
-  verifiedFindings: PersonaFinding[];
+  verifiedFindings: HarnessPersonaFinding[];
   decisions: VerifierDecision[];
 }> {
   if (!findings || findings.length === 0) {
@@ -859,10 +859,10 @@ export async function verifyFindings(
 }
 
 function applyVerifierDecisions(
-  findings: PersonaFinding[],
+  findings: HarnessPersonaFinding[],
   decisions: VerifierDecision[]
-): PersonaFinding[] {
-  const result: PersonaFinding[] = [];
+): HarnessPersonaFinding[] {
+  const result: HarnessPersonaFinding[] = [];
 
   for (const f of findings) {
     const decision = decisions.find((d) => d.findingId === f.id);
@@ -890,7 +890,7 @@ function applyVerifierDecisions(
 // ============================================================================
 
 export function evaluateQuorumArbitration(
-  confirmedFindings: PersonaFinding[],
+  confirmedFindings: HarnessPersonaFinding[],
   totalPersonas = 5,
   options: {
     failedLanes?: string[];
@@ -954,7 +954,7 @@ export function evaluateQuorumArbitration(
 
 export function calculatePipelineMetrics(
   expected: ExpectedFinding[] = [],
-  actual: PersonaFinding[] = [],
+  actual: HarnessPersonaFinding[] = [],
   options: { lineTolerance?: number; strictSeverity?: boolean } = {}
 ): {
   tp: number;
@@ -1130,7 +1130,7 @@ export class PipelineHarnessRunner {
     }));
 
     const personaResults: Record<string, PersonaReviewResult> = {};
-    const rawFindings: PersonaFinding[] = [];
+    const rawFindings: HarnessPersonaFinding[] = [];
 
     // ------------------------------------------------------------------------
     // STAGE 2: MULTI-TURN TOOL EXECUTION LOOP (5 Personas)
@@ -1140,7 +1140,7 @@ export class PipelineHarnessRunner {
       this.plugin.resetSession(persona);
 
       const sysPrompt = buildPersonaSystemPrompt(persona);
-      let personaFindings: PersonaFinding[] = [];
+      let personaFindings: HarnessPersonaFinding[] = [];
       let rawReasoning = '';
       let rawResponse = '';
       let promptTokens = 0;
@@ -1479,7 +1479,7 @@ ${partitionDiff}
     content: string;
     reasoning: string;
     toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>;
-    findings?: PersonaFinding[];
+    findings?: HarnessPersonaFinding[];
   }> {
     // Check if scenario requires tool queries
     if (turn === 1 && scenario.requiredToolQueries && scenario.requiredToolQueries.length > 0) {
@@ -1536,7 +1536,7 @@ ${partitionDiff}
       return e.personaId === persona;
     });
 
-    const findings: PersonaFinding[] = matchingExpected.map((exp, idx) => ({
+    const findings: HarnessPersonaFinding[] = matchingExpected.map((exp, idx) => ({
       id: `${persona}-${scenario.id}-${idx}`,
       persona,
       path: exp.path,

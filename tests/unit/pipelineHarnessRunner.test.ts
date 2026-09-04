@@ -21,7 +21,7 @@ import {
   calculatePipelineMetrics,
   PERSONA_LIST,
   PERSONA_CHARTERS,
-  PersonaFinding,
+  HarnessPersonaFinding,
   VerifierDecision,
   PersonaType,
 } from '../../src/evaluation/pipelineHarnessRunner';
@@ -266,7 +266,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
   // =========================================================================
   describe('Stage 3: Finding Sanitization & Deduplication', () => {
     it('filters out findings with non-integer or <= 0 line numbers', () => {
-      const raw: PersonaFinding[] = [
+      const raw: HarnessPersonaFinding[] = [
         { id: '1', persona: 'security', path: 'sip.ts', line: 0, severity: 'P0', title: 'Invalid Zero Line', body: '', confidence: 0.9 },
         { id: '2', persona: 'security', path: 'sip.ts', line: -5, severity: 'P0', title: 'Invalid Neg Line', body: '', confidence: 0.9 },
         { id: '3', persona: 'security', path: 'sip.ts', line: 10, severity: 'P0', title: 'Valid Line', body: 'Valid', confidence: 0.9 },
@@ -284,7 +284,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
         },
       ];
 
-      const raw: PersonaFinding[] = [
+      const raw: HarnessPersonaFinding[] = [
         { id: 'f-valid', persona: 'security', path: 'sip_signaling_service/index.ts', line: 11, severity: 'P0', title: 'Valid Hunk Line', body: 'Body', confidence: 0.95 },
         { id: 'f-invalid', persona: 'security', path: 'sip_signaling_service/index.ts', line: 99, severity: 'P0', title: 'Outside Hunk Line', body: 'Body', confidence: 0.95 },
       ];
@@ -295,7 +295,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('deduplicates cross-persona findings within 5 lines and preserves highest severity', () => {
-      const raw: PersonaFinding[] = [
+      const raw: HarnessPersonaFinding[] = [
         { id: 'f-sec', persona: 'security', path: 'cdr.ts', line: 50, severity: 'P2', title: 'Tenant Quota Omission', body: 'Low sev finding', confidence: 0.7, suggestion: 'Fix A' },
         { id: 'f-perf', persona: 'performance', path: 'cdr.ts', line: 52, severity: 'P1', title: 'Tenant Quota Omission', body: 'Med sev finding', confidence: 0.85, suggestion: 'Fix B' },
         { id: 'f-arch', persona: 'architecture', path: 'cdr.ts', line: 51, severity: 'P0', title: 'Tenant Quota Omission', body: 'Critical breach', confidence: 0.98, suggestion: 'Fix C' },
@@ -309,7 +309,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('retains distinct findings when root causes / titles differ on same line', () => {
-      const raw: PersonaFinding[] = [
+      const raw: HarnessPersonaFinding[] = [
         { id: 'f-1', persona: 'security', path: 'sip.ts', line: 20, severity: 'P0', title: 'SQL Injection in Tenant Search', body: 'Tainted input', confidence: 0.95 },
         { id: 'f-2', persona: 'performance', path: 'sip.ts', line: 20, severity: 'P1', title: 'Blocking Sleep in Event Loop', body: 'Synchronous wait', confidence: 0.90 },
       ];
@@ -340,7 +340,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('CONFIRM: confirms genuine defects with verified technical rationale', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'find-real-1',
           persona: 'security',
@@ -364,7 +364,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('REJECT: eliminates false positive trap (supervised infinite timeout in listener)', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'find-trap-timeout',
           persona: 'performance',
@@ -388,7 +388,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('REJECT: eliminates lockfree CAS retry loop false positive trap', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'find-trap-cas',
           persona: 'performance',
@@ -410,7 +410,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('ADJUST_SEVERITY: downgrades cosmetic or log formatting from P0 to P2', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'find-nit-p0',
           persona: 'testing',
@@ -434,12 +434,12 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('supports customVerifierAdapter for scenario-specific challenger assertions', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         { id: 'f-custom-1', persona: 'security', path: 'a.ts', line: 1, severity: 'P0', title: 'Bug A', body: '', confidence: 0.9 },
         { id: 'f-custom-2', persona: 'performance', path: 'b.ts', line: 2, severity: 'P1', title: 'Bug B', body: '', confidence: 0.9 },
       ];
 
-      const customVerifier = async (fList: PersonaFinding[]) => [
+      const customVerifier = async (fList: HarnessPersonaFinding[]) => [
         { findingId: 'f-custom-1', verdict: 'CONFIRM' as const, rationale: 'Confirmed by custom challenger', confidence: 0.99 },
         { findingId: 'f-custom-2', verdict: 'REJECT' as const, rationale: 'Rejected by custom challenger', confidence: 0.95 },
       ];
@@ -466,7 +466,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('verdict is SHIP when only 1-4 minor P2 findings exist across 5 personas', () => {
-      const p2Findings: PersonaFinding[] = [
+      const p2Findings: HarnessPersonaFinding[] = [
         { id: '1', persona: 'testing', path: 'test.ts', line: 5, severity: 'P2', title: 'Minor test typo', body: '', confidence: 0.8 },
         { id: '2', persona: 'dependencies', path: 'pkg.json', line: 10, severity: 'P2', title: 'Minor license note', body: '', confidence: 0.8 },
       ];
@@ -475,7 +475,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('verdict is FIX_FIRST when 5 or more P2 findings exist (fixP2 threshold = 5 for 5 personas)', () => {
-      const p2Findings: PersonaFinding[] = Array.from({ length: 5 }, (_, i) => ({
+      const p2Findings: HarnessPersonaFinding[] = Array.from({ length: 5 }, (_, i) => ({
         id: `p2-${i}`,
         persona: PERSONA_LIST[i % 5],
         path: `file_${i}.ts`,
@@ -491,7 +491,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('verdict is FIX_FIRST when 1 or 2 P1 findings exist', () => {
-      const p1Findings: PersonaFinding[] = [
+      const p1Findings: HarnessPersonaFinding[] = [
         { id: '1', persona: 'performance', path: 'rtp.ts', line: 20, severity: 'P1', title: 'Jitter drift', body: '', confidence: 0.9 },
         { id: '2', persona: 'testing', path: 'sip_test.ts', line: 40, severity: 'P1', title: 'Missing timeout test', body: '', confidence: 0.85 },
       ];
@@ -500,7 +500,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('verdict is BLOCK when 3 or more P1 findings exist (blockP1 threshold = 3 for 5 personas)', () => {
-      const p1Findings: PersonaFinding[] = Array.from({ length: 3 }, (_, i) => ({
+      const p1Findings: HarnessPersonaFinding[] = Array.from({ length: 3 }, (_, i) => ({
         id: `p1-${i}`,
         persona: PERSONA_LIST[i],
         path: `file_${i}.ts`,
@@ -516,7 +516,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
     });
 
     it('verdict is BLOCK when any P0 finding exists', () => {
-      const p0Finding: PersonaFinding[] = [
+      const p0Finding: HarnessPersonaFinding[] = [
         { id: 'p0-1', persona: 'security', path: 'sip.ts', line: 15, severity: 'P0', title: 'Critical Auth Bypass', body: '', confidence: 0.99 },
       ];
       const arb = evaluateQuorumArbitration(p0Finding, 5);
@@ -539,7 +539,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
         { personaId: 'architecture', path: 'pbx.ts', line: 30, severity: 'P1' as const, title: 'Bug 2' },
       ];
 
-      const actual: PersonaFinding[] = [
+      const actual: HarnessPersonaFinding[] = [
         { id: '1', persona: 'security', path: 'sip.ts', line: 11, severity: 'P0', title: 'Bug 1', body: '', confidence: 0.9 }, // TP (within 5 lines)
         { id: '2', persona: 'architecture', path: 'pbx.ts', line: 32, severity: 'P1', title: 'Bug 2', body: '', confidence: 0.9 }, // TP
         { id: '3', persona: 'testing', path: 'extra.ts', line: 99, severity: 'P2', title: 'Spurious', body: '', confidence: 0.7 }, // FP
