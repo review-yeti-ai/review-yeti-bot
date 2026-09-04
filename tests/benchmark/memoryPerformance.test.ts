@@ -102,7 +102,7 @@ describe('Milestone 11: PR Memory & Nit Pattern Matching Performance Benchmark',
       if (i < 300) {
         if (i % 2 === 0) {
           findings.push({
-            severity: 'P3',
+            severity: 'P2',
             path: 'src/module_0/target.ts',
             line: i + 1,
             title: `Found console.log("debug_${i}")`,
@@ -110,7 +110,7 @@ describe('Milestone 11: PR Memory & Nit Pattern Matching Performance Benchmark',
           });
         } else {
           findings.push({
-            severity: 'P3',
+            severity: 'P2',
             path: `src/any/file_${i}.ts`,
             line: i + 1,
             title: `Exact match item exact_nit_match_${(i % 50) * 2 + 1}`,

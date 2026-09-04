@@ -99,8 +99,12 @@ function resetAllGlobalState() {
   if (typeof dashboardStore.reset === 'function') {
     dashboardStore.reset();
   }
-  if (typeof postgresStore.reset === 'function') {
-    postgresStore.reset();
+  // PostgresStore has no `reset` method on its declared type (confirmed in
+  // src/persistence/postgresStore.ts) — this guard is a pre-existing no-op kept in the same
+  // defensive-optional style as the inMemorySpanExporter check below, in case a future revision
+  // adds one. Cast, matching that existing pattern, rather than deleting the guard.
+  if (typeof (postgresStore as any).reset === 'function') {
+    (postgresStore as any).reset();
   }
   if (typeof providerPool.clear === 'function') {
     providerPool.clear();

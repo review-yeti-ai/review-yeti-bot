@@ -1,7 +1,31 @@
+// @playwright/test is not an installed project dependency (no entry in package.json /
+// node_modules), and this Playwright spec is deliberately outside vitest's `include` globs (see
+// vitest.config.ts) — it runs under a separate Playwright invocation once that package is
+// present. An in-file `declare module` augmentation can't shim a module that doesn't resolve at
+// all (TS only allows augmenting a module it can already find), and adding a new ambient .d.ts
+// is out of this file's scope, so the missing-module diagnostic is suppressed here with a
+// one-line reason; every real call below is still checked against whatever shape `test` actually
+// has once the dependency exists.
+// @ts-expect-error - @playwright/test is intentionally not installed; see comment above.
 import { test } from '@playwright/test';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+
+// Minimal local shape for the Playwright Page API surface this spec actually calls, since
+// @playwright/test's real types aren't available (see the import-site comment above).
+interface PlaywrightRoute {
+  request(): { url(): string };
+  continue(): void;
+  abort(): void;
+}
+interface PlaywrightPage {
+  route(pattern: string, handler: (route: PlaywrightRoute) => void): Promise<void>;
+  setViewportSize(size: { width: number; height: number }): Promise<void>;
+  goto(url: string, options?: { waitUntil?: string }): Promise<void>;
+  waitForTimeout(ms: number): Promise<void>;
+  screenshot(options: { path: string; fullPage?: boolean }): Promise<void>;
+}
 
 let server: any;
 const PORT = 3099;
@@ -47,8 +71,8 @@ const routes = [
 ];
 
 for (const route of routes) {
-  test(`Capture screenshots for ${route.name}`, async ({ page }) => {
-    await page.route('**/*', (r) => {
+  test(`Capture screenshots for ${route.name}`, async ({ page }: { page: PlaywrightPage }) => {
+    await page.route('**/*', (r: PlaywrightRoute) => {
       if (r.request().url().startsWith('http://localhost:3099')) {
         r.continue();
       } else {

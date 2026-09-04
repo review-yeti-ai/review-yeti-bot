@@ -256,7 +256,7 @@ describe('Milestone 1 Stress & Edge Case Challenge Suite', () => {
         expect(receivedHeaders!['authorization']).toBeUndefined();
         expect(receivedHeaders!['x-api-key']).toBeUndefined();
       } finally {
-        await new Promise<void>((resolve) => server.close(resolve));
+        await new Promise<void>((resolve) => server.close(() => resolve()));
       }
     });
 
@@ -284,7 +284,7 @@ describe('Milestone 1 Stress & Edge Case Challenge Suite', () => {
         expect(res.body.message).toMatch(/Connection timed out|ECONNRESET|ETIMEDOUT|timeout/i);
         expect(duration).toBeGreaterThanOrEqual(1000);
       } finally {
-        await new Promise<void>((resolve) => server.close(resolve));
+        await new Promise<void>((resolve) => server.close(() => resolve()));
       }
     }, 12000);
   });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { isRedTeamPersona, getModelFamily, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../../src/personas/redTeamPersona';
 import { ctReviewConfigV3Schema, CtReviewConfigV3 } from '../../src/config/schema';
+import { createDefaultV3Config } from '../../src/config/configLoader';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
@@ -168,6 +169,7 @@ describe('redTeamPersona unit tests', () => {
         reviews: {
           profile: 'assertive',
           reviewer_effort: 'high',
+          default_max_turns: 20,
           confidence_threshold: 70,
           mascot: true,
           ticket_enforcement: false,
@@ -237,6 +239,7 @@ describe('redTeamPersona unit tests', () => {
 
     it('handles config with ONLY Red-Team personas when nonRedTeamPersonas is empty', async () => {
       const config: CtReviewConfigV3 = {
+        ...createDefaultV3Config(),
         version: 3,
         profile: 'assertive',
         quorum: 1,
@@ -311,6 +314,7 @@ describe('redTeamPersona unit tests', () => {
 
     it('supports non-Red-Team personas with dual_model: true', async () => {
       const config: CtReviewConfigV3 = {
+        ...createDefaultV3Config(),
         version: 3,
         profile: 'balanced',
         quorum: 1,
@@ -385,6 +389,7 @@ describe('redTeamPersona unit tests', () => {
 
     it('throws PanelConfigurationError when distinct provider quorum is unsatisfied', async () => {
       const config: CtReviewConfigV3 = {
+        ...createDefaultV3Config(),
         version: 3,
         profile: 'balanced',
         quorum: 2, // Quorum 2 required!

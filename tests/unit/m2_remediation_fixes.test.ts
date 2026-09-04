@@ -10,7 +10,7 @@ describe('M2 Remediation Fixes Verification Suite', () => {
   describe('1. Model Filtering Strict Provider Enablement', () => {
     it('returns false for unconfigured providers when providers map is present and non-empty', () => {
       const providers: Record<string, ProviderConfigRecord> = {
-        openai: { id: 'openai', displayName: 'OpenAI', enabled: true, active: true, updatedAt: '' },
+        openai: { id: 'openai', displayName: 'OpenAI', enabled: true, active: true, updatedAt: '', activeModels: [] },
       };
 
       // Configured provider returns true
@@ -35,7 +35,7 @@ describe('M2 Remediation Fixes Verification Suite', () => {
     it('returns empty array when all providers are disabled (no fallback to all options)', () => {
       const allDisabledProviders: Record<string, ProviderConfigRecord> = {};
       ALL_CANONICAL_PROVIDERS.forEach((pId) => {
-        allDisabledProviders[pId] = { id: pId, displayName: pId, enabled: false, active: false, updatedAt: '' };
+        allDisabledProviders[pId] = { id: pId, displayName: pId, enabled: false, active: false, updatedAt: '', activeModels: [] };
       });
 
       const enabledOpts = getEnabledModelOptions(AVAILABLE_MODEL_OPTIONS, allDisabledProviders);
