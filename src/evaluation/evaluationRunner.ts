@@ -26,6 +26,13 @@ import {
   formatUnifiedDiff,
   DiffFile,
 } from './scenarios';
+
+// `./scenarios` is the canonical source of `ExpectedFinding` (it defines the
+// scenario fixture shape). This module's public API (MatchedFindingPair,
+// ScenarioEvaluationResult) exposes `ExpectedFinding` in its exported
+// interfaces, so re-export the type here as well rather than requiring
+// consumers to import it from a second module.
+export type { ExpectedFinding } from './scenarios';
 import {
   OpenRouterClient,
   normalizeOpenRouterModel,
