@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.28.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.27.0...v1.28.0) (2026-09-04)
+
+
+### Features
+
+* **oidc:** support wildcard workflow refs/shas and allow app-gate in deploy template ([#448](https://github.com/review-yeti-ai/review-yeti-bot/issues/448)) ([5acd512](https://github.com/review-yeti-ai/review-yeti-bot/commit/5acd5127c5250a25074af92f11d02f463c6dec00))
+* **review:** carry Review Yeti lanes per domain and review the full diff when a blocking owner reruns (REL-552) ([#444](https://github.com/review-yeti-ai/review-yeti-bot/issues/444)) ([544b66b](https://github.com/review-yeti-ai/review-yeti-bot/commit/544b66b01e7986c8cbf89f711c74b933cb055167))
+
+
+### Bug Fixes
+
+* **dispatch:** allow policy.allowAppGate in action dispatch service entrypoint ([#450](https://github.com/review-yeti-ai/review-yeti-bot/issues/450)) ([2742cf4](https://github.com/review-yeti-ai/review-yeti-bot/commit/2742cf45b3e32215465b5cea3b96105f25aba7a4))
+* **review:** resolve trusted repair-delta parents on the central repository_dispatch path (REL-553) ([#447](https://github.com/review-yeti-ai/review-yeti-bot/issues/447)) ([dc17d9c](https://github.com/review-yeti-ai/review-yeti-bot/commit/dc17d9c77d630da1cbc83a12fe93661c2e858ac5))
+* **test:** bound the wall-clock capacity-wait assertions instead of pinning them [no-linear] ([#451](https://github.com/review-yeti-ai/review-yeti-bot/issues/451)) ([8d27250](https://github.com/review-yeti-ai/review-yeti-bot/commit/8d27250ce340e2393416b2349c3c3a057c3a3036))
+
 ## [1.27.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.26.0...v1.27.0) (2026-09-03)
 
 
