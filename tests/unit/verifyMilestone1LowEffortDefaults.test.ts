@@ -58,11 +58,13 @@ describe('Milestone 1 Verification: Universal Low Effort Defaults', () => {
   });
 
   it('5. generateCtReviewConfig() sets reviewer_effort and provider efforts to low', () => {
+    // `personas`/`pathFilters` are not part of ConfigGenerationOptions (the real
+    // fields are selectedPersonaIds/customPathFilters); omit them so the
+    // generator falls back to its defaults exactly as this fixture always
+    // exercised at runtime, rather than silently forcing empty overrides.
     const generated = generateCtReviewConfig({
       profile: 'balanced',
       ticketEnforcement: false,
-      personas: [],
-      pathFilters: [],
     });
     expect(generated.config.reviews.reviewer_effort).toBe('low');
     generated.config.reviewers.providers.forEach((p) => {

@@ -100,7 +100,10 @@ describe('Adversarial & Stress Verification for Persona Prompt Persistence', () 
     const testStore = new DashboardStore(STRESS_STORE_PATH);
     (dashboardStore as any).filePath = STRESS_STORE_PATH;
     (dashboardStore as any).data = (testStore as any).data;
-    testStore.saveData((testStore as any).data);
+    // saveData is a private implementation detail; this fixture pokes internal
+    // state to simulate a cross-restart disk write, matching the (testStore as
+    // any).data access already used above.
+    (testStore as any).saveData((testStore as any).data);
 
     const app = express();
     app.use(express.json());

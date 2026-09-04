@@ -5,7 +5,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, renderHook, act } from '@testing-library/react';
 import express, { Response } from 'express';
 import { EventEmitter } from 'events';
-import { LiveStreamBus, LiveStreamEvent } from '../../src/live/liveStreamBus';
+import { LiveStreamBus } from '../../src/live/liveStreamBus';
+// The rendered live components (TerminalFeed, PersonaTabs, etc.) type their
+// `events` prop against src/types/live's LiveStreamEvent, which is a
+// separate (narrower) declaration from src/live/liveStreamBus's. Use the
+// consumer-facing type here so fixtures match what the components accept.
+import type { LiveStreamEvent } from '../../src/types/live';
 import { createLiveRouter } from '../../src/api/liveApi';
 import { useSSE, DEFAULT_PERSONAS } from '../../src/lib/useSSE';
 import { TerminalFeed } from '../../src/components/live/terminal-feed';
