@@ -1,8 +1,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT, type KeyLike } from 'jose';
 import { GitHubActionsOidcVerifier } from '../../src/auth/githubActionsOidc';
 
-let privateKey: CryptoKey;
+// jose's generateKeyPair returns KeyLike (a loose `{ type: string }` shape, not
+// the DOM CryptoKey interface) unless a KeyLikeType generic is supplied.
+let privateKey: KeyLike;
 let keySet: ReturnType<typeof createLocalJWKSet>;
 
 const claims = {

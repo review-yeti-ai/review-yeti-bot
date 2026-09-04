@@ -22,10 +22,10 @@ describe('Remediation Gen1 Targeted Empirical Challenger Suite', () => {
 
     it('correctly evaluates model enablement for openrouter models based on provider config', () => {
       const enabledProviders = {
-        openrouter: { id: 'openrouter', displayName: 'OpenRouter', enabled: true, updatedAt: '' },
+        openrouter: { id: 'openrouter', displayName: 'OpenRouter', enabled: true, activeModels: [], updatedAt: '' },
       };
       const disabledProviders = {
-        openrouter: { id: 'openrouter', displayName: 'OpenRouter', enabled: false, updatedAt: '' },
+        openrouter: { id: 'openrouter', displayName: 'OpenRouter', enabled: false, activeModels: [], updatedAt: '' },
       };
 
       expect(isModelEnabled('openrouter/anthropic/claude-3.5-sonnet', enabledProviders)).toBe(true);
