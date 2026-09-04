@@ -1,0 +1,71 @@
+# Review Yeti Monorepo Policy (.ct-review.yaml)
+# Demonstrates path filtering, path-specific review instructions, and per-persona directory scoping.
+
+version: 4
+profile: "balanced"
+quorum: 1
+confidence_threshold: 75
+
+limits:
+  max_files: 1500
+  max_diff_bytes: 2000000
+
+path_filters:
+  - "!**/node_modules/**"
+  - "!**/dist/**"
+  - "!**/build/**"
+  - "!**/*.min.js"
+  - "!**/coverage/**"
+  - "!docs/**"
+  - "!**/*.generated.*"
+
+reviews:
+  path_instructions:
+    - path: "apps/web/**"
+      instructions: "Enforce Next.js App Router best practices, client/server boundary separation, and accessible semantic HTML."
+    - path: "services/api/**"
+      instructions: "Enforce RESTful conventions, Zod request payload schema validation, and structured error logging."
+    - path: "packages/database/**"
+      instructions: "Verify SQL migration safety: non-locking index creation, backward-compatible column operations, and foreign key indexing."
+    - path: "packages/auth/**"
+      instructions: "Enforce multi-tenant isolation, cryptographic JWT verification, and zero-trust permission boundaries."
+
+personas:
+  - id: "security"
+    enabled: true
+    required: true
+    charter: "builtin:security"
+    paths: ["**"]
+    providers: ["openrouter"]
+  - id: "database"
+    enabled: true
+    required: false
+    charter: "builtin:database"
+    paths: ["packages/database/**", "**/migrations/**", "**/*.sql"]
+    providers: ["openrouter"]
+  - id: "devops"
+    enabled: true
+    required: false
+    charter: "builtin:devops"
+    paths: ["deploy/**", "k8s/**", "helm/**", "Dockerfile*", ".github/**"]
+    providers: ["openrouter"]
+  - id: "performance"
+    enabled: true
+    required: false
+    charter: "builtin:performance"
+    paths: ["services/**", "apps/**"]
+    providers: ["openrouter"]
+
+reviewers:
+  execution: "personas"
+  fallback: "ordered"
+  overall_timeout_s: 600
+  providers:
+    - id: "openrouter"
+      enabled: true
+      model: "deepseek/deepseek-v4-flash-0731"
+      effort: "high"
+      review_timeout_s: 180
+      arbiter_timeout_s: 120
+  arbiter:
+    order: ["openrouter"]

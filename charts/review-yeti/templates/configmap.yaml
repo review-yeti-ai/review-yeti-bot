@@ -1,0 +1,20 @@
+{{- if .Values.dispatcher.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "review-yeti.dispatcher.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "review-yeti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dispatcher
+data:
+  NODE_ENV: {{ .Values.dispatcher.config.nodeEnv | quote }}
+  HOST: {{ .Values.dispatcher.config.host | quote }}
+  PORT: {{ .Values.dispatcher.config.port | quote }}
+  ACTION_DISPATCH_ENABLED: "true"
+  ACTION_DISPATCH_ALLOW_APP_GATE: {{ .Values.dispatcher.config.allowAppGate | quote }}
+  ACTION_DISPATCH_REPOSITORY_IDS: {{ .Values.dispatcher.config.repositoryIds | quote }}
+  ACTION_DISPATCH_OWNER_IDS: {{ .Values.dispatcher.config.ownerIds | quote }}
+  ACTION_DISPATCH_WORKFLOW_REFS: {{ .Values.dispatcher.config.workflowRefs | quote }}
+  ACTION_DISPATCH_WORKFLOW_SHAS: {{ .Values.dispatcher.config.workflowShas | quote }}
+{{- end }}

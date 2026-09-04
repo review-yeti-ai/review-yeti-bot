@@ -4,10 +4,18 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub Action](https://img.shields.io/badge/GitHub%20Action-v1-green.svg)](https://github.com/marketplace/actions/review-yeti-ai)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326ce5.svg)](docs/KUBERNETES_MODE.md)
+[![Helm Chart](https://img.shields.io/badge/Helm%20Chart-1.0.0-informational.svg)](charts/review-yeti)
+[![Examples Gallery](https://img.shields.io/badge/Examples-Gallery-purple.svg)](examples)
 
 **Autonomous Multi-Persona AI Code Review Panel for GitHub Pull Requests.**
 
 Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated charter (Security, Performance, Architecture, Quality, Dependencies)—evaluating pull request diffs in parallel, reconciling findings through automated arbitration, and posting **one consolidated, actionable review comment** and native **GitHub Check Run**.
+
+> [!TIP]
+> 🚀 **Explore Pre-Built Resources**:
+> - **[Official Helm 3 Chart](charts/review-yeti/)** & **[Helm Operations Guide](docs/HELM_GUIDE.md)** for production Kubernetes clusters.
+> - **[Examples Gallery](examples/)** featuring 6 production workflows, 4 configuration profiles, and custom persona charters.
+> - **[Production Troubleshooting Guide](docs/TROUBLESHOOTING.md)** for triage and incident resolution.
 
 ---
 
@@ -116,7 +124,24 @@ jobs:
           dispatch-token: ${{ secrets.REVIEW_DISPATCH_SECRET }}
 ```
 
-👉 **Read the complete [Kubernetes & DOKS Execution Guide](docs/KUBERNETES_MODE.md)**.
+### 🚀 Self-Hosting with Official Helm 3 Chart
+
+Review Yeti provides a production-grade Helm 3 chart in [`charts/review-yeti/`](charts/review-yeti/):
+
+```bash
+# 1. Add and install Review Yeti using production values
+helm install review-yeti charts/review-yeti \
+  --namespace review-yeti-system \
+  --create-namespace \
+  -f examples/k8s/values-doks.yaml
+```
+
+Pre-configured cloud values files are available in [`examples/k8s/`](examples/k8s/):
+- **DigitalOcean (DOKS)**: [`examples/k8s/values-doks.yaml`](examples/k8s/values-doks.yaml) (DO LoadBalancer + Block Storage)
+- **AWS EKS**: [`examples/k8s/values-eks.yaml`](examples/k8s/values-eks.yaml) (AWS Load Balancer Controller ALB + gp3)
+- **Local Dev**: [`examples/k8s/values-local.yaml`](examples/k8s/values-local.yaml) (Minikube / Kind / K3s with local Ollama)
+
+👉 **Read the comprehensive [Helm 3 Operations Guide](docs/HELM_GUIDE.md)**, **[Kubernetes Architecture Specification](docs/KUBERNETES_MODE.md)**, and **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**.
 
 ---
 
@@ -273,6 +298,9 @@ node .github/workflows/pipelines/review-pipeline.js
 ## 📚 Documentation Index
 
 - 🚀 **[Onboarding Guide](docs/ONBOARDING_GUIDE.md)** — Getting started, deployment patterns, and branch protection.
+- ☸️ **[Helm 3 Operations Guide](docs/HELM_GUIDE.md)** — Comprehensive step-by-step Helm chart installation, values tuning, cloud guides (DOKS/EKS), upgrades, and rollbacks.
+- 🛠️ **[Production Troubleshooting Guide](docs/TROUBLESHOOTING.md)** — Diagnosing HTTP 403/401/429 errors, worker timeouts, lease locks, and OOM issues.
+- 📦 **[Examples Gallery](examples/README.md)** — Copy-pasteable GitHub Actions workflows, configuration profiles, and custom persona charters.
 - 🔐 **[GitHub App Setup](docs/GITHUB_APP_SETUP.md)** — Step-by-step GitHub App registration and permissions matrix.
 - ☸️ **[Kubernetes & DOKS Mode](docs/KUBERNETES_MODE.md)** — Offloading reviews to Kubernetes worker pods.
 - 🏛️ **[Architecture Specification](docs/ARCHITECTURE.md)** — Pipeline design, arbitration engine, and trust boundaries.

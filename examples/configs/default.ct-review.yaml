@@ -1,0 +1,84 @@
+# Review Yeti Default Policy (.ct-review.yaml)
+# Balanced 5-persona setup suitable for most web and cloud applications.
+
+version: 3
+profile: "balanced"
+quorum: 1
+confidence_threshold: 70
+mascot: true
+
+reviews:
+  profile: "balanced"
+  reviewer_effort: "high"
+  confidence_threshold: 70
+  mascot: true
+  request_changes_workflow: true
+  high_level_summary: true
+  sequence_diagrams: true
+  collapse_walkthrough: false
+
+chat:
+  auto_reply: true
+  max_context_turns: 10
+  art_mascot_response: true
+
+knowledge_base:
+  learnings: true
+  issues: true
+  pull_requests: true
+
+path_filters:
+  - "!**/node_modules/**"
+  - "!**/dist/**"
+  - "!**/*.min.js"
+  - "!**/coverage/**"
+
+auto_review:
+  enabled: true
+  ignore_drafts: true
+
+personas:
+  - id: "security"
+    enabled: true
+    required: true
+    charter: "builtin:security"
+    paths: ["**"]
+    providers: ["openrouter"]
+  - id: "performance"
+    enabled: true
+    required: false
+    charter: "builtin:performance"
+    paths: ["**"]
+    providers: ["openrouter"]
+  - id: "architecture"
+    enabled: true
+    required: false
+    charter: "builtin:constitutional-goals"
+    paths: ["**"]
+    providers: ["openrouter"]
+  - id: "testing"
+    enabled: true
+    required: false
+    charter: "builtin:consistency"
+    paths: ["**"]
+    providers: ["openrouter"]
+  - id: "dependencies"
+    enabled: true
+    required: false
+    charter: "builtin:correctness"
+    paths: ["**"]
+    providers: ["openrouter"]
+
+reviewers:
+  execution: "personas"
+  fallback: "ordered"
+  overall_timeout_s: 600
+  providers:
+    - id: "openrouter"
+      enabled: true
+      model: "deepseek/deepseek-v4-flash-0731"
+      effort: "high"
+      review_timeout_s: 180
+      arbiter_timeout_s: 120
+  arbiter:
+    order: ["openrouter"]
