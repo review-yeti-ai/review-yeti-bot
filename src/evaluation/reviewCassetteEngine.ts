@@ -23,7 +23,7 @@ import {
   DiffBudgetResult,
 } from "../sandbox/piWorkspacePlugin";
 import {
-  PersonaFinding,
+  HarnessPersonaFinding,
   VerifierDecision,
   PipelineExecutionResult,
   PipelineHarnessRunner,
@@ -62,7 +62,7 @@ export interface ReviewCassetteVerifierInteraction {
 
 export interface ReviewCassetteArbitration {
   verdict: "SHIP" | "FIX_FIRST" | "BLOCK";
-  confirmedFindings: PersonaFinding[];
+  confirmedFindings: HarnessPersonaFinding[];
   rationale?: string;
   status?: string;
   quorumSatisfied?: boolean;
