@@ -17,7 +17,6 @@ import {
   PERSONA_ENSEMBLE_DEFINITIONS,
   AVAILABLE_MODEL_OPTIONS,
 } from '../../src/components/onboarding/steps/step-4-persona-ensemble';
-import type { ProviderConfigRecord as ModelFilteringProviderConfigRecord } from '../../src/types/dashboard';
 
 describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback Remapping & Cost Calculator', () => {
   let tempStorePath: string;
@@ -114,15 +113,12 @@ describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback 
       expect(configs['agy'].enabled).toBe(true);
 
       // Verify isProviderEnabled resolves both canonical and legacy variant lookup keys correctly.
-      // dashboardStore's ProviderConfigRecord and types/dashboard's ProviderConfigRecord are two
-      // separate, structurally-diverging interfaces (different `subscriptionTier` unions) -- a
-      // pre-existing src/ duplication, not something this test file can fix. Bridge with an
-      // explicit typed cast rather than `any`.
-      const configsForFiltering = configs as unknown as Record<string, ModelFilteringProviderConfigRecord>;
-      expect(isProviderEnabled('custom-openai', configsForFiltering)).toBe(true);
-      expect(isProviderEnabled('custom_openai', configsForFiltering)).toBe(true);
-      expect(isProviderEnabled('agy', configsForFiltering)).toBe(true);
-      expect(isProviderEnabled('agy_thinking', configsForFiltering)).toBe(true);
+      // dashboardStore's ProviderConfigRecord and types/dashboard's ProviderConfigRecord are now
+      // a single consolidated type (REL-573), so no bridging cast is needed here.
+      expect(isProviderEnabled('custom-openai', configs)).toBe(true);
+      expect(isProviderEnabled('custom_openai', configs)).toBe(true);
+      expect(isProviderEnabled('agy', configs)).toBe(true);
+      expect(isProviderEnabled('agy_thinking', configs)).toBe(true);
     });
   });
 
