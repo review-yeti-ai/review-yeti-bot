@@ -36,7 +36,8 @@ describe('admission-only Action dispatch deployment', () => {
   it('exposes only the exact dispatch path and permits only required network flows', () => {
     const docs = documents();
     const ingress = docs.find((document) => document.kind === 'Ingress');
-    expect(ingress.spec.rules[0].http.paths).toEqual([expect.objectContaining({
+    expect(ingress).toBeDefined();
+    expect(ingress!.spec.rules[0].http.paths).toEqual([expect.objectContaining({
       path: '/api/dispatch/action',
       pathType: 'Exact',
     })]);
@@ -44,7 +45,8 @@ describe('admission-only Action dispatch deployment', () => {
     const policies = docs.filter((document) => document.kind === 'NetworkPolicy');
     expect(policies.some((policy) => policy.metadata.name === 'ct-review-action-dispatch-default-deny')).toBe(true);
     const allowed = policies.find((policy) => policy.metadata.name === 'ct-review-action-dispatch-allowed');
-    expect(allowed.spec.egress).toEqual(expect.arrayContaining([
+    expect(allowed).toBeDefined();
+    expect(allowed!.spec.egress).toEqual(expect.arrayContaining([
       expect.objectContaining({ ports: expect.arrayContaining([{ protocol: 'TCP', port: 443 }]) }),
       expect.objectContaining({ ports: expect.arrayContaining([{ protocol: 'TCP', port: 25060 }]) }),
     ]));

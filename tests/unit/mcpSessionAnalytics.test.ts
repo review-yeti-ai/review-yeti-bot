@@ -70,13 +70,23 @@ describe('mcp-session-analytics unit integration test in ct-review-bot', () => {
   });
 
   it('executes search_sessions handler correctly', async () => {
-    const res = await handleSearchSessions({ owner: 'ct' }, mockRepo);
+    // handleSearchSessions is a plain-JS tool whose JSDoc typedef declares
+    // getSessions/getSessionById as returning bare `object`, so its own
+    // inferred return type loses the mock session shape; recover it here
+    // rather than editing the tool's JSDoc (out of scope for this fix).
+    const res = (await handleSearchSessions({ owner: 'ct' }, mockRepo)) as {
+      total: number;
+      sessions: (typeof mockSessions)[number][];
+    };
     expect(res.total).toBe(1);
     expect(res.sessions[0].id).toBe('ct/review-bot#101');
   });
 
   it('executes get_session_details handler correctly', async () => {
-    const res = await handleGetSessionDetails({ sessionId: 'ct/review-bot#101' }, mockRepo);
+    const res = (await handleGetSessionDetails({ sessionId: 'ct/review-bot#101' }, mockRepo)) as (typeof mockSessions)[number] & {
+      turnBudgetUtilizationPercent: number;
+      turnTimeline: unknown[];
+    };
     expect(res.id).toBe('ct/review-bot#101');
     expect(res.turnBudgetUtilizationPercent).toBe(15);
     expect(res.turnTimeline.length).toBe(2);

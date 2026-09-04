@@ -471,12 +471,16 @@ describe('OpenRouterClient', () => {
 
       // Let fetch resolve and the first active delta enter the reader before advancing the clock.
       await vi.advanceTimersByTimeAsync(0);
-      expect(requestSignal?.aborted).toBe(false);
+      // AbortSignal | null collapses to `never` here due to a pre-existing
+      // @types/node vs lib.dom AbortSignal generic-arity conflict in this
+      // project's global type environment (skipLibCheck hides the merge
+      // error); cast locally rather than editing global type config.
+      expect((requestSignal as any)?.aborted).toBe(false);
 
       await vi.advanceTimersByTimeAsync(50);
       await rejection;
 
-      expect(requestSignal?.aborted).toBe(true);
+      expect((requestSignal as any)?.aborted).toBe(true);
       expect(cancelled).toBe(true);
     } finally {
       if (interval) clearInterval(interval);
@@ -675,7 +679,9 @@ describe('Dynamic Model Context Window Discovery & Budget Calculation', () => {
       expect(cap.toolReserveTokens).toBe(16_000);
       expect(Number(cap)).toBe(410_400);
       expect(+cap).toBe(410_400);
-      expect(cap > 24_000).toBe(true);
+      // cap coerces via valueOf(); TS relational operators don't special-case
+      // objects with a numeric valueOf, so compare the coerced Number explicitly.
+      expect(Number(cap) > 24_000).toBe(true);
     });
 
     it('calculates C_safe for 1M context model (Gemini 3.7 Flash)', () => {

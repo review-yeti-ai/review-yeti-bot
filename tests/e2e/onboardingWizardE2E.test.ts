@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -17,6 +17,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     // Generate valid RSA 2048-bit key for tests
     const keyPair = crypto.generateKeyPairSync('rsa', {
       modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
     });
     realPrivateKey = keyPair.privateKey;
