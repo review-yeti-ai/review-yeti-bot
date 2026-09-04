@@ -1,5 +1,5 @@
 import { timeBudgetMs } from '../support/timeBudget';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import path from 'node:path';
 import { scanRepositoryStack } from '../../src/onboarding/stackScanner';

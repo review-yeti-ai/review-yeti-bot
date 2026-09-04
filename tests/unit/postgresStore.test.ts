@@ -128,6 +128,7 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
       await store.savePersona({
         id: 'pg_persona_test',
         displayName: 'PG Test Persona',
+        description: 'Persona used for PostgresStore dual-store integration coverage.',
         model: 'gpt-4o',
         effort: 'high',
         confidenceThreshold: 85,
@@ -172,6 +173,7 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
       const updatedPersona = {
         id: 'security',
         displayName: 'Security Specialist',
+        description: 'Security persona reused across the restart-persistence assertion.',
         model: 'gpt-4o',
         effort: 'high' as const,
         confidenceThreshold: 92,
@@ -183,11 +185,16 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
         displayName: 'OpenAI Enterprise API',
         enabled: true,
         active: true,
+        activeModels: ['gpt-4o'],
+        updatedAt: new Date().toISOString(),
       };
 
       await store.savePersona(updatedPersona);
       await store.saveProvider(updatedProvider);
       await store.saveSettings({
+        defaultModelOverrides: {},
+        memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
+        providerCostCaps: { monthlyBudgetUSD: 100, dailyBudgetUSD: 10, alertThresholdPercent: 80, actionOnCapBreach: 'fail_closed' },
         personaSettings: { security: updatedPersona },
         providerConfigs: { openai: updatedProvider },
       });
