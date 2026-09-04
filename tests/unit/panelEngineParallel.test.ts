@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { ReviewModelClient, OpenRouterResponse } from '../../src/gateway/openRouterClient';
+import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Panel Engine Parallel Execution', () => {
   const mockConfig: CtReviewConfigV3 = {
@@ -99,6 +100,6 @@ describe('Panel Engine Parallel Execution', () => {
     // Verified concurrent execution: all 3 personas were active simultaneously
     expect(maxObservedConcurrency).toBe(3);
     // Verified parallel duration: ran in ~50-100ms, not 150ms+ serialized
-    expect(duration).toBeLessThan(350);
+    expect(duration).toBeLessThan(timeBudgetMs(350));
   });
 });

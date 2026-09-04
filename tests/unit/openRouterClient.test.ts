@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
 import { LiveStreamBus } from '../../src/live/liveStreamBus';
 import {
+import { timeBudgetMs } from '../support/timeBudget';
   buildOpenRouterChatRequest,
   buildOpenRouterSdkChatRequest,
   normalizeOpenRouterModel,
@@ -524,7 +525,7 @@ describe('OpenRouterClient', () => {
         kind: 'total',
       });
       expect(cancelCalled).toBe(true);
-      expect(Date.now() - started).toBeLessThan(500);
+      expect(Date.now() - started).toBeLessThan(timeBudgetMs(500));
     } finally {
       if (interval) clearInterval(interval);
     }

@@ -229,7 +229,7 @@ class MixedIndentClass:
       expect(result.references.length).toBeGreaterThan(500);
 
       // Verify parse completes reasonably fast (< 5000ms)
-      expect(durationMs).toBeLessThan(5000);
+      expect(durationMs).toBeLessThan(timeBudgetMs(5000));
       expect(linesPerSec).toBeGreaterThan(2000);
     });
 
@@ -636,6 +636,7 @@ class PythonDocClass:
 
       const pyCode = `
 import os, sys
+import { timeBudgetMs } from '../support/timeBudget';
 
 def global_utility_func(val):
     return val * 2

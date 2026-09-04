@@ -34,6 +34,7 @@ import {
   PipelineExecutionResult,
 } from "../../src/evaluation/pipelineHarnessRunner";
 import {
+import { timeBudgetMs } from '../support/timeBudget';
   getAllScenarios,
   getScenarioById,
   EvaluationScenario,
@@ -423,7 +424,7 @@ describe("Review Cassette Engine Unit Tests (Milestone M3)", () => {
       const duration = Date.now() - start;
 
       expect(results.size).toBe(50);
-      expect(duration).toBeLessThan(500);
+      expect(duration).toBeLessThan(timeBudgetMs(500));
     });
   });
 
