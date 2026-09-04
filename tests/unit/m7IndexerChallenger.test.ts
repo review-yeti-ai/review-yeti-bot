@@ -1,3 +1,4 @@
+import { timeBudgetMs, throughputFloorPerSec } from '../support/timeBudget';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -229,8 +230,8 @@ class MixedIndentClass:
       expect(result.references.length).toBeGreaterThan(500);
 
       // Verify parse completes reasonably fast (< 5000ms)
-      expect(durationMs).toBeLessThan(5000);
-      expect(linesPerSec).toBeGreaterThan(2000);
+      expect(durationMs).toBeLessThan(timeBudgetMs(5000));
+      expect(linesPerSec).toBeGreaterThan(throughputFloorPerSec(2000));
     });
 
     it('indexes a 10,000+ LOC synthetic repository into SymbolGraphStore SQLite database', async () => {

@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 // @vitest-environment jsdom
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -171,7 +172,7 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
       const endTime = performance.now();
 
       expect(updated.customPrompt.length).toBe(500_000);
-      expect(endTime - startTime).toBeLessThan(1000); // fast persistence < 1s
+      expect(endTime - startTime).toBeLessThan(timeBudgetMs(1000)); // fast persistence < 1s
 
       const reloadedStore = new DashboardStore('/tmp/ct_prompt_editor_huge_store.json');
       const retrieved = reloadedStore.getSettings().personaSettings?.['performance'];

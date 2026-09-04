@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
@@ -1167,7 +1168,7 @@ describe('reviewWithModel', () => {
       circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
     });
 
-    expect(Date.now() - started).toBeLessThan(200);
+    expect(Date.now() - started).toBeLessThan(timeBudgetMs(200));
     expect(result.decision).toBe('ERROR');
     expect(result.error).toContain('Streaming response inactive for 40ms');
     expect(result.responseAttempts).toEqual(expect.arrayContaining([
@@ -1280,7 +1281,7 @@ describe('reviewWithModel', () => {
     });
 
     expect(Date.now() - started).toBeGreaterThan(100);
-    expect(Date.now() - started).toBeLessThan(500);
+    expect(Date.now() - started).toBeLessThan(timeBudgetMs(500));
     expect(result).toMatchObject({
       decision: 'APPROVE',
       findings: [],

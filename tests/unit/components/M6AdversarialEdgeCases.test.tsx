@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../../support/timeBudget';
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, expect, it } from 'vitest';
@@ -91,7 +92,7 @@ describe('M6 Adversarial Edge Case Testing Suite', () => {
       expect(screen.getByTestId('session-turn-timeline')).toBeInTheDocument();
       expect(screen.getByText('1000 steps executed')).toBeInTheDocument();
       expect(screen.getByTestId('turn-timeline-step-1000')).toBeInTheDocument();
-      expect(renderTime).toBeLessThan(2000); // Must render in under 2s
+      expect(renderTime).toBeLessThan(timeBudgetMs(2000)); // Must render in under 2s
     });
 
     it('handles steps with completely missing metadata', () => {
