@@ -1,27 +1,14 @@
 import { EventEmitter } from 'events';
 import { Response } from 'express';
 import { logger } from '../utils/logger';
+import type { LiveStreamEventType, LiveStreamEvent } from '../types/live';
 
-export type LiveStreamEventType =
-  | 'persona:start'
-  | 'persona:chunk'
-  | 'persona:complete'
-  | 'llm:prompt'
-  | 'llm:token'
-  | 'llm:error'
-  | 'omniroute:metric'
-  | 'openrouter:metric'
-  | 'ast:lookup'
-  | 'nit:suppression'
-  | 'job:queued'
-  | 'job:dispatched'
-  | 'job:complete'
-  // Legacy event type shims
-  | 'agent_start'
-  | 'llm_chunk'
-  | 'agent_done'
-  | 'indexer_lookup'
-  | 'quorum_verdict';
+// Re-exported so existing consumers importing these types from this module
+// keep working. `src/types/live.ts` is the single source of truth for
+// LiveStreamEventType/LiveStreamEvent (REL-573): it is what every
+// src/components/live/* prop type is built against, so the bus must not
+// declare a second, divergent copy.
+export type { LiveStreamEventType, LiveStreamEvent };
 
 export type LiveStreamPersona =
   | 'security'
@@ -74,14 +61,6 @@ export interface LiveStreamEventData {
   confidenceScore?: number;
   path?: string;
   [key: string]: any;
-}
-
-export interface LiveStreamEvent {
-  jobId: string;
-  timestamp: string;
-  type: LiveStreamEventType;
-  persona: LiveStreamPersona;
-  data: LiveStreamEventData;
 }
 
 export interface PersonaProgress {
