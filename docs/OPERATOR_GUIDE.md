@@ -65,7 +65,7 @@ Set the following environment variables in your Kubernetes Secret or Doppler:
 - `GITHUB_WEBHOOK_SECRET`: Secret token for validating HMAC SHA-256 signatures on incoming GitHub webhooks.
 
 ### 2. GitHub Webhook Configuration
-In your GitHub App / Organization Settings (`https://github.com/organizations/exampleorg/settings/apps/ct-review-bot`):
+In your GitHub App / Organization Settings (`https://github.com/organizations/my-org/settings/apps/review-yeti-bot`):
 - **Webhook URL**: `https://review-bot.example.com/webhook`
 - **Permissions**:
   - `Pull Requests`: Read & Write
