@@ -149,7 +149,8 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
       const configContent = fs.readFileSync(vitestConfigPath, 'utf8');
 
       expect(configContent).toContain("pool: 'forks'");
-      expect(configContent).toContain('fileParallelism: false');
+      // REL-560: parallel files, still one isolated fork per file.
+      expect(configContent).toContain('fileParallelism: true');
       expect(configContent).toContain('isolate: true');
       expect(configContent).not.toContain('poolOptions');
       expect(configContent).not.toContain('singleFork');
