@@ -37,7 +37,7 @@ import {
   calculatePipelineMetrics,
   PERSONA_LIST,
   PERSONA_CHARTERS,
-  PersonaFinding,
+  HarnessPersonaFinding,
   VerifierDecision,
   PersonaType,
 } from '../../src/evaluation/pipelineHarnessRunner';
@@ -408,7 +408,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
   // =========================================================================
   describe('4. Finding Sanitization & Cross-Persona Deduplication', () => {
     it('discards invalid findings with line <= 0, non-integer lines, or empty titles', () => {
-      const malformed: PersonaFinding[] = [
+      const malformed: HarnessPersonaFinding[] = [
         { id: '1', persona: 'security', path: 'sip.ts', line: 0, severity: 'P0', title: 'Zero Line', body: 'x', confidence: 0.9 },
         { id: '2', persona: 'security', path: 'sip.ts', line: -10, severity: 'P0', title: 'Neg Line', body: 'x', confidence: 0.9 },
         { id: '3', persona: 'security', path: 'sip.ts', line: NaN, severity: 'P0', title: 'NaN Line', body: 'x', confidence: 0.9 },
@@ -429,7 +429,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
         },
       ];
 
-      const raw: PersonaFinding[] = [
+      const raw: HarnessPersonaFinding[] = [
         { id: 'f-in-hunk', persona: 'security', path: 'sip_signaling_service/src/callRouter.ts', line: 51, severity: 'P0', title: 'Route Auth Missing', body: '', confidence: 0.95 },
         { id: 'f-out-hunk', persona: 'security', path: 'sip_signaling_service/src/callRouter.ts', line: 12, severity: 'P0', title: 'Unmodified File Location', body: '', confidence: 0.95 },
       ];
@@ -440,7 +440,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('deduplicates cross-persona findings within 5-line proximity and merges metadata to highest severity', () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         { id: 'sec-1', persona: 'security', path: 'rtp.ts', line: 100, severity: 'P2', title: 'Unchecked Port Allocation Buffer', body: 'Minor check', confidence: 0.7, suggestion: 'Add boundary check' },
         { id: 'perf-1', persona: 'performance', path: 'rtp.ts', line: 103, severity: 'P1', title: 'Unchecked Port Allocation Buffer', body: 'High memory growth', confidence: 0.88, suggestion: 'Pool ports' },
         { id: 'arch-1', persona: 'architecture', path: 'rtp.ts', line: 101, severity: 'P0', title: 'Unchecked Port Allocation Buffer', body: 'Fatal port exhaustion race', confidence: 0.99, suggestion: 'Atomic allocator' },
@@ -454,7 +454,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('retains distinct findings occurring on same line if issue titles and root causes differ', () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         { id: 'f1', persona: 'security', path: 'cdr.ts', line: 40, severity: 'P0', title: 'SQL Injection in Tenant Query', body: 'Unescaped user parameter', confidence: 0.95 },
         { id: 'f2', persona: 'performance', path: 'cdr.ts', line: 40, severity: 'P1', title: 'Synchronous Disk Flush in Hot Loop', body: 'Blocking file write', confidence: 0.90 },
       ];
@@ -469,7 +469,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
   // =========================================================================
   describe('5. Finding Verifier & False Positive Trap Rejection', () => {
     it('REJECTS false positive trap: supervised infinite timeout in GenServer/listener', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'trap-timeout-1',
           persona: 'performance',
@@ -490,7 +490,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('REJECTS false positive trap: lockfree atomic CAS retry spinloop', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'trap-cas-1',
           persona: 'performance',
@@ -509,7 +509,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('REJECTS false positive trap: G.711 μ-law companding table lookup & bitwise modulo', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'trap-g711-1',
           persona: 'architecture',
@@ -538,7 +538,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('ADJUSTS severity from P0 to P2 for cosmetic log formatting defects', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'miscalibrated-p0',
           persona: 'testing',
@@ -559,7 +559,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('CONFIRMS genuine P0 security and architecture defects with verified confidence', async () => {
-      const findings: PersonaFinding[] = [
+      const findings: HarnessPersonaFinding[] = [
         {
           id: 'genuine-p0',
           persona: 'security',
@@ -591,7 +591,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('returns SHIP for 1-4 minor P2 findings', () => {
-      const p2List: PersonaFinding[] = [
+      const p2List: HarnessPersonaFinding[] = [
         { id: '1', persona: 'testing', path: 'a.ts', line: 10, severity: 'P2', title: 'Nit 1', body: '', confidence: 0.8 },
         { id: '2', persona: 'dependencies', path: 'b.ts', line: 20, severity: 'P2', title: 'Nit 2', body: '', confidence: 0.8 },
       ];
@@ -600,7 +600,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('returns FIX_FIRST when P2 findings reach threshold of 5', () => {
-      const p2List: PersonaFinding[] = Array.from({ length: 5 }, (_, i) => ({
+      const p2List: HarnessPersonaFinding[] = Array.from({ length: 5 }, (_, i) => ({
         id: `p2-${i}`,
         persona: PERSONA_LIST[i % 5],
         path: `file_${i}.ts`,
@@ -616,7 +616,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('returns FIX_FIRST for 1 or 2 P1 findings', () => {
-      const p1List: PersonaFinding[] = [
+      const p1List: HarnessPersonaFinding[] = [
         { id: 'p1-1', persona: 'architecture', path: 'sip.ts', line: 10, severity: 'P1', title: 'High Bug 1', body: '', confidence: 0.9 },
         { id: 'p1-2', persona: 'performance', path: 'rtp.ts', line: 20, severity: 'P1', title: 'High Bug 2', body: '', confidence: 0.9 },
       ];
@@ -626,7 +626,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('returns BLOCK when P1 findings reach threshold of 3', () => {
-      const p1List: PersonaFinding[] = Array.from({ length: 3 }, (_, i) => ({
+      const p1List: HarnessPersonaFinding[] = Array.from({ length: 3 }, (_, i) => ({
         id: `p1-${i}`,
         persona: PERSONA_LIST[i],
         path: `file_${i}.ts`,
@@ -642,7 +642,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
     });
 
     it('returns BLOCK for any P0 finding', () => {
-      const p0List: PersonaFinding[] = [
+      const p0List: HarnessPersonaFinding[] = [
         { id: 'p0-crit', persona: 'security', path: 'auth.ts', line: 5, severity: 'P0', title: 'Critical Auth Bypass', body: '', confidence: 0.99 },
       ];
       const arb = evaluateQuorumArbitration(p0List, 5);
@@ -672,7 +672,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
       const expected = [
         { personaId: 'security', path: 'sip.ts', line: 10, severity: 'P0' as const, title: 'Bug 1' },
       ];
-      const actual: PersonaFinding[] = [
+      const actual: HarnessPersonaFinding[] = [
         { id: 'a1', persona: 'security', path: 'sip.ts', line: 10, severity: 'P0', title: 'Bug 1', body: '', confidence: 0.9 },
         { id: 'a2', persona: 'security', path: 'extra.ts', line: 20, severity: 'P1', title: 'Spurious', body: '', confidence: 0.7 },
       ];
