@@ -5,13 +5,15 @@ import path from 'node:path';
 const root = process.cwd();
 
 /**
- * REL-570. `npm run lint` was `tsc --noEmit` against a tsconfig that excludes `tests/`, so it
+ * REL-570. `npm run lint` was `tsc --noEmit` against a tsconfig that excluded `tests/`, so it
  * reported a clean tree while two test files were syntactically broken and collecting zero tests.
  * Only the full CI suite caught that, minutes later.
  *
- * These assertions keep `lint` honest about test files. They deliberately do NOT require tsc to
- * typecheck tests: doing that today surfaces 465 errors (275 with `strict` off), tracked
- * separately. What must not regress is that *some* gate proves every test file still parses.
+ * That exclusion is now gone: all 464 type errors across 101 test files were burned down and
+ * `tests/` is typechecked like everything else. These assertions keep both halves of the gate
+ * from quietly regressing -- the exclusion must not come back, and the collection check must
+ * keep running, because tsc proves a file *typechecks* while `vitest list` proves it can
+ * actually be *collected* (a file can typecheck and still throw at import time).
  */
 describe('lint covers test files (REL-570)', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -34,10 +36,10 @@ describe('lint covers test files (REL-570)', () => {
     expect(checker).toMatch(/process\.exit\(/u);
   });
 
-  it('documents why tsc still excludes tests, so the exclusion is a decision and not an accident', () => {
+  it('typechecks tests rather than excluding them', () => {
     const tsconfig = JSON.parse(fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8'));
-    expect(tsconfig.exclude).toContain('tests');
-    const checker = fs.readFileSync(path.join(root, 'scripts/check-test-files-parse.mjs'), 'utf8');
-    expect(checker).toMatch(/excludes `tests\/`/u);
+    // The whole point of REL-570. If this ever reappears, 464 errors can silently accumulate again.
+    expect(tsconfig.exclude).not.toContain('tests');
+    expect(tsconfig.include.some((p: string) => p.includes('**/*.ts'))).toBe(true);
   });
 });
