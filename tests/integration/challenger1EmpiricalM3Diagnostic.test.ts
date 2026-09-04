@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { createApp } from '../../src/app';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
+import type { ProviderConfigRecord } from '../../src/persistence/dashboardStore';
 import * as panelEngine from '../../src/panel/panelEngine';
 
 const TEMP_STORE_PATH = path.join('/tmp', 'ct-review-bot', `diagnostic_challenger_m3_${Date.now()}.json`);
@@ -30,7 +31,10 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
   describe('1. Unconfigured or Invalid Credentials Verification', () => {
     it('returns HTTP 400 Bad Request with clear error message when credentials are unconfigured', async () => {
       // Set provider configs in store to unconfigured
-      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured', apiKeyRaw: '' });
+      // src/persistence/dashboardStore.ts's ProviderConfigRecord.status type omits 'unconfigured'
+      // even though src/api/onboarding.ts explicitly checks `cfg.status === 'unconfigured'`
+      // (see this worker's report: real product type gap, left unfixed -- out of file scope).
+      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured' as ProviderConfigRecord['status'], apiKeyRaw: '' });
 
       const res = await request(app)
         .post('/api/onboarding/diagnostic')
@@ -46,7 +50,10 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
 
     it('returns HTTP 400 Bad Request with clear error message when credentials are invalid', async () => {
       // Set provider config in store to unconfigured API key
-      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured', apiKeyRaw: '' });
+      // src/persistence/dashboardStore.ts's ProviderConfigRecord.status type omits 'unconfigured'
+      // even though src/api/onboarding.ts explicitly checks `cfg.status === 'unconfigured'`
+      // (see this worker's report: real product type gap, left unfixed -- out of file scope).
+      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured' as ProviderConfigRecord['status'], apiKeyRaw: '' });
 
       const res = await request(app)
         .post('/api/onboarding/diagnostic')
@@ -106,10 +113,13 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
     it('returns HTTP 200 OK with valid live latency metrics when credentials are active and valid', async () => {
       // Mock executePersonaPanel to simulate active network response for Probe 3
       vi.spyOn(panelEngine, 'executePersonaPanel').mockResolvedValue({
+        headSha: 'abc1234',
+        optionalFailures: [],
+        quorum: { required: 3, distinctProviders: ['codex', 'grok', 'claude'], satisfied: true },
         personas: [
-          { id: 'security', providerId: 'codex', model: 'gpt-5.6-sol-high', decision: 'APPROVE', durationMs: 42, usage: { prompt: 100, completion: 50, total: 150 }, costUSD: 0.001 },
-          { id: 'architecture', providerId: 'grok', model: 'grok-4.5', decision: 'APPROVE', durationMs: 38, usage: { prompt: 100, completion: 50, total: 150 }, costUSD: 0.001 },
-          { id: 'quality', providerId: 'claude', model: 'claude-opus-4-8', decision: 'APPROVE', durationMs: 45, usage: { prompt: 100, completion: 50, total: 150 }, costUSD: 0.001 },
+          { id: 'security', required: true, findings: [], providerId: 'codex', model: 'gpt-5.6-sol-high', decision: 'APPROVE', durationMs: 42, usage: { prompt: 100, completion: 50, total: 150 }, costUSD: 0.001 },
+          { id: 'architecture', required: true, findings: [], providerId: 'grok', model: 'grok-4.5', decision: 'APPROVE', durationMs: 38, usage: { prompt: 100, completion: 50, total: 150 }, costUSD: 0.001 },
+          { id: 'quality', required: true, findings: [], providerId: 'claude', model: 'claude-opus-4-8', decision: 'APPROVE', durationMs: 45, usage: { prompt: 100, completion: 50, total: 150 }, costUSD: 0.001 },
         ],
         moderator: { decision: 'RECONCILED', findings: [], raw: '' } as any,
         arbiter: { verdict: 'SHIP', summary: 'Clean approval across all personas', confidence: 0.98, raw: '' } as any,

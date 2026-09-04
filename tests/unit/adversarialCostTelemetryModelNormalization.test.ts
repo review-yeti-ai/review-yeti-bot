@@ -221,7 +221,9 @@ describe('Adversarial Verification: Cost Telemetry & Model Normalization', () =>
         decision: 'APPROVE' as const,
         inputTokens: 500,
         outputTokens: 100,
-        cost: 0.005,
+        // Typed as `number | null` up front so the unknown-cost lane pushed below (cost: null)
+        // is a real member of this array's element type, not an excess-property mismatch.
+        cost: 0.005 as number | null,
         findings: [],
       }));
 

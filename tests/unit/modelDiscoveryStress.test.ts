@@ -411,9 +411,12 @@ describe('Adversarial Stress Test: Dynamic Model Discovery & Budget Calculation 
         expect(cap.safeDiffChars).toBeGreaterThan(24_000);
         // 128k models have >= 410,400 chars (17.1x expansion over 24k)
         expect(cap.safeDiffChars).toBeGreaterThanOrEqual(410_400);
-        // Supports arithmetic comparisons via valueOf()
+        // Supports arithmetic comparisons via valueOf(). TS's `>` operator type-checking
+        // doesn't special-case objects with a custom valueOf()/Symbol.toPrimitive, so cast to
+        // `number` for the type checker; the cast is erased at runtime and `>` still invokes
+        // the object's own coercion, which is exactly what this assertion proves.
         expect(+cap).toBe(cap.safeDiffChars);
-        expect(cap > 24_000).toBe(true);
+        expect((cap as unknown as number) > 24_000).toBe(true);
       }
     });
 
@@ -423,7 +426,7 @@ describe('Adversarial Stress Test: Dynamic Model Discovery & Budget Calculation 
       expect(cap.toString()).toBe('410400');
       expect(Number(cap)).toBe(410400);
       expect(+cap).toBe(410400);
-      expect(cap + 100).toBe(410500);
+      expect((cap as unknown as number) + 100).toBe(410500);
     });
   });
 
