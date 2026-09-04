@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.3...v1.29.4) (2026-09-04)
+
+
+### Bug Fixes
+
+* **types:** typecheck tests instead of excluding them (REL-570) ([#479](https://github.com/review-yeti-ai/review-yeti-bot/issues/479)) ([c9028b7](https://github.com/review-yeti-ai/review-yeti-bot/commit/c9028b714d4e5274d40f7c3364df5d8cc61dbfba))
+
 ## [1.29.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.2...v1.29.3) (2026-09-04)
 
 
