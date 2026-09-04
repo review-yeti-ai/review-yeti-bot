@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.5...v1.28.6) (2026-09-04)
+
+
+### Bug Fixes
+
+* **ci:** keep the test-parse gate local, drop it from the required job (REL-570) ([#464](https://github.com/review-yeti-ai/review-yeti-bot/issues/464)) ([bd19aa0](https://github.com/review-yeti-ai/review-yeti-bot/commit/bd19aa0b3d63c4121356a2c620d1b39bee18257b))
+
 ## [1.28.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.4...v1.28.5) (2026-09-04)
 
 
