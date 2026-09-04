@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.2...v1.28.3) (2026-09-04)
+
+
+### Performance
+
+* **test:** enable vitest fileParallelism (REL-560) ([#458](https://github.com/review-yeti-ai/review-yeti-bot/issues/458)) ([157cbbf](https://github.com/review-yeti-ai/review-yeti-bot/commit/157cbbf63a88063def81e626d9049c0943189ffc))
+
 ## [1.28.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.1...v1.28.2) (2026-09-04)
 
 
