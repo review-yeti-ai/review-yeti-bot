@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.2...v1.29.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* **test:** resolve tsc strict-mode errors in W1 test files (REL-570) ([#474](https://github.com/review-yeti-ai/review-yeti-bot/issues/474)) ([2efde5d](https://github.com/review-yeti-ai/review-yeti-bot/commit/2efde5d7e955dc8ffb45766cc50c25993786b4a6))
+
 ## [1.29.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.1...v1.29.2) (2026-09-04)
 
 
