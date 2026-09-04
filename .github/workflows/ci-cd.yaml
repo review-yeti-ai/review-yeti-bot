@@ -65,6 +65,14 @@ jobs:
       # main was never verified after merge either. The trigger is added here, and
       # build-and-deploy is re-gated below so that adding it does not silently start
       # deploying on every merge.
+      # REL-570: ~20s gate that collects every test file without executing a test, so a file that
+      # cannot parse or resolve its imports fails here rather than three minutes into the suite.
+      # It also closes the gap that made this necessary: `npm run lint` is tsc against a tsconfig
+      # that excludes tests/, so a syntactically broken test file passed lint and silently
+      # collected zero tests.
+      - name: Verify every test file parses
+        run: npm run lint:tests
+
       - name: Run Full Test Suite
         run: npm test
 
