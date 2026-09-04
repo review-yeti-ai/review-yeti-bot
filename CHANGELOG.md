@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.4...v1.28.5) (2026-09-04)
+
+
+### Bug Fixes
+
+* **ci:** make lint cover test files with a parse gate (REL-570) ([#462](https://github.com/review-yeti-ai/review-yeti-bot/issues/462)) ([1fcf8a7](https://github.com/review-yeti-ai/review-yeti-bot/commit/1fcf8a7f9fbf18555a35fb30f98fbc2b1c89beeb))
+
 ## [1.28.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.3...v1.28.4) (2026-09-04)
 
 
