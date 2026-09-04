@@ -1208,6 +1208,26 @@ const DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS = 30_000;
 // OpenRouter keeps its separate bounded default and privacy-policy contract.
 const DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS = 8_192;
 const DIRECT_GENERATION_BUDGET_MULTIPLIER = 3;
+// REL-556: a direct reasoning transport (Ollama/Fireworks-style -- reasoning tokens draw from
+// the same fixed generation ceiling as content, with no independent context-length bound for
+// reasoning itself) can spend its entire output ceiling on reasoning before emitting a single
+// content token, once the prompt is large enough, regardless of `reasoning_effort` /
+// `reasoning_budget_ms` (REL-534/#427-428) or the reasoning-effort-floored recovery retry
+// (REL-547). Evidence: `calltelemetry/cisco-cdr` PR #4861 via central run 33798590063 -- a
+// ~212k-prompt-token / 729,269-char diff exhausted the Ollama `deepseek-v4-flash:cloud` model's
+// 65,536-token ceiling on reasoning alone, on both the first pass and the floored-effort retry
+// (3 of 6 lanes: security, architecture, licensing -- the full-diff/cross-cutting personas). The
+// other 3 lanes, at the same ~65k-prompt-token size, completed successfully with all three
+// reasoning controls in effect. REL-547's retry-time fixes cannot close this: they act after the
+// prompt is already sized past what the transport can answer. The only remaining lever is an
+// input-side cap that keeps a direct-reasoning transport's prompt away from the failure
+// boundary -- see calculateTransportDiffCapacity / calculateLaneDiffBudget below.
+const DIRECT_REASONING_OUTPUT_CEILING_TOKENS = 65_536;
+// There is exactly one proven-safe measurement (~65k prompt tokens) and one proven-failing
+// measurement (~212k prompt tokens); nothing is known about the shape of the curve between
+// them, so this is calibrated with a margin under the smaller (safe) point rather than
+// interpolated toward the larger (failing) one.
+const DIRECT_REASONING_SAFE_PROMPT_TOKENS = 48_000;
 const DEFAULT_DIRECT_MAX_OUTPUT_TOKENS =
   DEFAULT_DIRECT_OUTPUT_BUDGET_TOKENS * DIRECT_GENERATION_BUDGET_MULTIPLIER;
 const DEFAULT_SUBMODULE_POLICY = {
@@ -1264,6 +1284,59 @@ function calculateSafeDiffCapacity(modelOrTokens, options = {}) {
   const charsPerToken = options.charsPerToken ?? 3.8;
   const usableTokens = Math.max(0, contextTokens - systemPromptTokens - toolReserveTokens);
   return Math.floor(usableTokens * charsPerToken);
+}
+
+/**
+ * REL-556 input-side budget: the diff-char ceiling one transport can safely be asked to
+ * review. For an ordinary (context-bound) transport this is unchanged -- `calculateSafeDiffCapacity`
+ * still governs it. For a direct-reasoning transport (Ollama/Fireworks; see
+ * `isDirectReasoningTransport`) the binding constraint is not context length but the transport's
+ * fixed total-generation ceiling, which reasoning alone can exhaust before any content token is
+ * emitted on a large-enough prompt (see DIRECT_REASONING_SAFE_PROMPT_TOKENS above). A transport
+ * may override the default via `reasoningSafePromptTokens` (or `reasoning_safe_prompt_tokens`) in
+ * its policy entry, for a route whose provider has published a different measured ceiling.
+ *
+ * @param {object} transport
+ * @param {string} baseUrl
+ * @param {object} options
+ * @returns {number} Infinity when the transport is not reasoning-ceiling-bound.
+ */
+function calculateTransportDiffCapacity(transport = {}, baseUrl = '', options = {}) {
+  if (!isDirectReasoningTransport(transport, baseUrl)) return Infinity;
+  const charsPerToken = options.charsPerToken ?? 3.8;
+  const systemPromptTokens = options.systemPromptTokens ?? 4000;
+  const configuredSafeTokens = Number(transport.reasoningSafePromptTokens ?? transport.reasoning_safe_prompt_tokens);
+  const safePromptTokens = Number.isFinite(configuredSafeTokens) && configuredSafeTokens > 0
+    ? configuredSafeTokens
+    : DIRECT_REASONING_SAFE_PROMPT_TOKENS;
+  const usableTokens = Math.max(0, safePromptTokens - systemPromptTokens);
+  return Math.floor(usableTokens * charsPerToken);
+}
+
+/**
+ * Derives the diff-char budget for one review lane as the minimum safe capacity across every
+ * transport that lane may fall back to. `reviewWithModel` builds a single prompt shared by the
+ * whole fallback chain (see the transport loop below), so the budget must be small enough that
+ * the tightest transport in the chain -- not just the first one tried -- can still answer it
+ * (REL-556). Falls back to `fallbackMaxDiffChars` unchanged when no candidate transport is known
+ * or none of them are reasoning-ceiling-bound.
+ *
+ * @param {Array<object>} transports
+ * @param {number} fallbackMaxDiffChars
+ * @param {object} options
+ * @returns {number}
+ */
+function calculateLaneDiffBudget(transports, fallbackMaxDiffChars, options = {}) {
+  const candidates = Array.isArray(transports) ? transports : [];
+  const perTransportCaps = candidates
+    .map((transport) => calculateTransportDiffCapacity(
+      transport,
+      String(transport?.baseUrl || transport?.base_url || ''),
+      options,
+    ))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (perTransportCaps.length === 0) return fallbackMaxDiffChars;
+  return Math.max(1, Math.min(fallbackMaxDiffChars, ...perTransportCaps));
 }
 
 /**
@@ -3573,7 +3646,17 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   const fetchImpl = options.fetchImplementation || options.fetchImpl || globalThis.fetch;
   const sleep = options.sleepImplementation || options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const cancellationSignal = options.signal || null;
-  const maxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
+  const requestedMaxDiffChars = options.maxDiffChars || cfg.maxDiffChars || DEFAULT_MAX_DIFF_CHARS;
+  // REL-556: `options.transports` is the resolved per-lane dispatch plan (built by
+  // buildTransportDispatchPlans before this call); `cfg.transports` is the full policy-resolved
+  // candidate list when a caller invokes reviewWithModel directly without pre-planning a lane
+  // (e.g. a qualification harness). Either way, the single prompt built below is shared across
+  // the whole fallback chain, so the applied budget must be safe for every candidate transport,
+  // not just the first one tried.
+  const laneTransportCandidates = Array.isArray(options.transports) && options.transports.length > 0
+    ? options.transports
+    : (Array.isArray(cfg.transports) && cfg.transports.length > 0 ? cfg.transports : null);
+  const maxDiffChars = calculateLaneDiffBudget(laneTransportCandidates, requestedMaxDiffChars);
   const laneStartMs = Date.now();
   let attemptCount = 0;
   let failureClass = null;
@@ -3626,6 +3709,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     ...(requestFingerprint ? { requestFingerprint } : {}),
     ...(totalCapacityWaitMs > 0 ? { capacityWaitMs: normalizeTelemetryDuration(totalCapacityWaitMs) } : {}),
     responseAttempts: normalizeModelResponseAttempts(responseAttempts),
+    // REL-556: the diff-char budget actually applied to this lane (which may be tighter than
+    // the requested budget when a reasoning-ceiling-bound transport is in the fallback chain --
+    // see calculateLaneDiffBudget) and how much of the diff that budget left out, so a run report
+    // reader can tell "this lane saw the whole diff" from "this lane was budget-truncated" without
+    // re-deriving it from the transport list.
+    diffBudgetChars: Number.isFinite(maxDiffChars) ? maxDiffChars : null,
+    diffOmittedFilesCount: Array.isArray(coverage?.omitted) ? coverage.omitted.length : 0,
+    diffTruncatedFilesCount: Array.isArray(coverage?.truncated) ? coverage.truncated.length : 0,
   });
   let requestOptions = null;
   let resultBase = {
@@ -3692,6 +3783,9 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
   } else {
     coverage = planDiffBudget(diffFiles, maxDiffChars);
     diffContent = `Unified diff under review:\n${coverage.text}`;
+    if (maxDiffChars < requestedMaxDiffChars) {
+      console.warn(`[Persona: ${persona.id}] REL-556: diff budget tightened from ${requestedMaxDiffChars} to ${maxDiffChars} chars -- a reasoning-ceiling-bound transport is in this lane's fallback chain. ${coverage.omitted.length} file(s) omitted, ${coverage.truncated.length} truncated.`);
+    }
   }
 
   const userPrompt = [
@@ -6024,6 +6118,10 @@ function buildReviewRunReport(arbitration, personaResults, prContext, scope = nu
       severity,
       ...(result.reuseSource ? { evidenceSource: result.reuseSource } : {}),
       ...(result.reuseKind ? { reuseKind: result.reuseKind } : {}),
+      // REL-556: surfaces the applied per-lane diff budget in the human-facing run report.
+      ...(Number.isFinite(result.diffBudgetChars) ? { diffBudgetChars: Math.trunc(result.diffBudgetChars) } : {}),
+      ...(Number.isFinite(result.diffOmittedFilesCount) ? { diffOmittedFilesCount: Math.trunc(result.diffOmittedFilesCount) } : {}),
+      ...(Number.isFinite(result.diffTruncatedFilesCount) ? { diffTruncatedFilesCount: Math.trunc(result.diffTruncatedFilesCount) } : {}),
     };
   });
 
@@ -6109,6 +6207,10 @@ function buildProviderTelemetryReceipt(personaResults, prContext) {
       ...(normalizeTelemetryDuration(result.capacityWaitMs) > 0
         ? { capacityWaitMs: normalizeTelemetryDuration(result.capacityWaitMs) }
         : {}),
+      // REL-556: additive fields, existing consumers of schemaVersion v4 are unaffected.
+      ...(Number.isFinite(result.diffBudgetChars) ? { diffBudgetChars: Math.trunc(result.diffBudgetChars) } : {}),
+      ...(Number.isFinite(result.diffOmittedFilesCount) ? { diffOmittedFilesCount: Math.trunc(result.diffOmittedFilesCount) } : {}),
+      ...(Number.isFinite(result.diffTruncatedFilesCount) ? { diffTruncatedFilesCount: Math.trunc(result.diffTruncatedFilesCount) } : {}),
     };
   });
 
@@ -6876,6 +6978,10 @@ module.exports = {
   globalRunCircuitBreaker,
   isSubscriptionLane,
   calculateSafeDiffCapacity,
+  calculateTransportDiffCapacity,
+  calculateLaneDiffBudget,
+  DIRECT_REASONING_OUTPUT_CEILING_TOKENS,
+  DIRECT_REASONING_SAFE_PROMPT_TOKENS,
   resolvePersonaConcurrency,
   resolveDispatchMode,
   buildTransportDispatchPlans,
