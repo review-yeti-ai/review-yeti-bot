@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.0...v1.28.1) (2026-09-04)
+
+
+### Performance
+
+* **test:** move the npm pack/install closure out of the per-PR gate (REL-559) ([#453](https://github.com/review-yeti-ai/review-yeti-bot/issues/453)) ([f2d38bf](https://github.com/review-yeti-ai/review-yeti-bot/commit/f2d38bfc523feec404befbc937418cb36a9cd3c0))
+
 ## [1.28.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.27.0...v1.28.0) (2026-09-04)
 
 
