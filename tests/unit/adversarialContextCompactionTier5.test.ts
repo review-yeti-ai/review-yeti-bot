@@ -44,7 +44,7 @@ import {
   sanitizeAndDeduplicateFindings,
   evaluateQuorumArbitration,
   calculatePipelineMetrics,
-  PersonaFinding,
+  HarnessPersonaFinding,
 } from '../../src/evaluation/pipelineHarnessRunner';
 import { changedLineNumbers } from '../../src/review/reviewCore';
 import { ExpectedFinding } from '../../src/evaluation/scenarios';
@@ -663,7 +663,7 @@ describe('Tier 5 Adversarial Robustness: Context Management & Compaction Archite
   describe('Dimension 4: Parallel Partition Execution & Finding Aggregation', () => {
     it('TEST_T5_AGG_01: cross-partition findings with line proximity (<=5 lines) deduplicate and resolve to highest severity', () => {
       // Simulate findings discovered across multiple partition lanes
-      const rawFindingsFromPartitions: PersonaFinding[] = [
+      const rawFindingsFromPartitions: HarnessPersonaFinding[] = [
         // Partition 1 finding
         {
           id: 'part1-sec-1',
@@ -719,7 +719,7 @@ describe('Tier 5 Adversarial Robustness: Context Management & Compaction Archite
 
     it('TEST_T5_AGG_02: quorum arbitration evaluates aggregated partition findings and triggers correct blocking verdict', () => {
       // 1. PR with P0 finding -> BLOCK
-      const p0Findings: PersonaFinding[] = [
+      const p0Findings: HarnessPersonaFinding[] = [
         {
           id: 'f1',
           persona: 'security',
@@ -736,7 +736,7 @@ describe('Tier 5 Adversarial Robustness: Context Management & Compaction Archite
       expect(arb1.metrics.p0Count).toBe(1);
 
       // 2. PR with only P1 findings -> FIX_FIRST
-      const p1Findings: PersonaFinding[] = [
+      const p1Findings: HarnessPersonaFinding[] = [
         {
           id: 'f2',
           persona: 'performance',
@@ -753,7 +753,7 @@ describe('Tier 5 Adversarial Robustness: Context Management & Compaction Archite
       expect(arb2.metrics.p1Count).toBe(1);
 
       // 3. PR with only P2 findings or empty -> SHIP
-      const p2Findings: PersonaFinding[] = [
+      const p2Findings: HarnessPersonaFinding[] = [
         {
           id: 'f3',
           persona: 'testing',
@@ -781,7 +781,7 @@ describe('Tier 5 Adversarial Robustness: Context Management & Compaction Archite
         { personaId: 'performance', path: 'src/rtp.ts', line: 100, severity: 'P1' as const, title: 'RTP Leak' },
       ];
 
-      const actual: PersonaFinding[] = [
+      const actual: HarnessPersonaFinding[] = [
         {
           id: 'a1',
           persona: 'security',
