@@ -165,6 +165,97 @@ describe('useSSE Custom Hook Unit Tests', () => {
     expect(result.current.filteredEvents).toHaveLength(2);
   });
 
+  it('updates personaProgress lastMessage on job:queued and job:dispatched without changing status (REL-573)', async () => {
+    const { result } = renderHook(() => useSSE({ jobId: 'lifecycle-job' }));
+
+    // Sanity: initial state is PENDING with the generic waiting message.
+    expect(result.current.personaProgress.security.status).toBe('PENDING');
+    expect(result.current.personaProgress.security.lastMessage).toBe('Waiting for execution...');
+
+    const queuedEvent: LiveStreamEvent = {
+      jobId: 'lifecycle-job',
+      timestamp: new Date().toISOString(),
+      type: 'job:queued',
+      persona: 'all',
+      data: { message: 'Review job queued for calltelemetry/cisco-cdr #99', status: 'queued' },
+    };
+
+    await act(async () => {
+      const mockEs = MockEventSource.instances[0];
+      mockEs.emitMessage(queuedEvent);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Every default persona is still PENDING (nothing has started executing),
+    // consistent with /api/live/active reporting job.status === 'queued'.
+    for (const personaKey of DEFAULT_PERSONAS) {
+      expect(result.current.personaProgress[personaKey].status).toBe('PENDING');
+      expect(result.current.personaProgress[personaKey].lastMessage).toBe(
+        'Review job queued for calltelemetry/cisco-cdr #99'
+      );
+    }
+
+    const dispatchedEvent: LiveStreamEvent = {
+      jobId: 'lifecycle-job',
+      timestamp: new Date().toISOString(),
+      type: 'job:dispatched',
+      persona: 'all',
+      data: { message: 'Review job dispatched for calltelemetry/cisco-cdr #99', status: 'dispatched' },
+    };
+
+    await act(async () => {
+      const mockEs = MockEventSource.instances[0];
+      mockEs.emitMessage(dispatchedEvent);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    for (const personaKey of DEFAULT_PERSONAS) {
+      expect(result.current.personaProgress[personaKey].status).toBe('PENDING');
+      expect(result.current.personaProgress[personaKey].lastMessage).toBe(
+        'Review job dispatched for calltelemetry/cisco-cdr #99'
+      );
+    }
+
+    // Both lifecycle events land in the raw event feed too.
+    expect(result.current.events.map((e) => e.type)).toEqual(['job:queued', 'job:dispatched']);
+  });
+
+  it('does not overwrite lastMessage via job:queued/job:dispatched for a persona that already started (REL-573)', async () => {
+    const { result } = renderHook(() => useSSE({ jobId: 'lifecycle-job-2' }));
+
+    const startEvent: LiveStreamEvent = {
+      jobId: 'lifecycle-job-2',
+      timestamp: new Date().toISOString(),
+      type: 'persona:start',
+      persona: 'security',
+      data: { message: 'Security persona audit starting...' },
+    };
+
+    const dispatchedEvent: LiveStreamEvent = {
+      jobId: 'lifecycle-job-2',
+      timestamp: new Date().toISOString(),
+      type: 'job:dispatched',
+      persona: 'all',
+      data: { message: 'Review job dispatched', status: 'dispatched' },
+    };
+
+    await act(async () => {
+      const mockEs = MockEventSource.instances[0];
+      mockEs.emitMessage(startEvent);
+      mockEs.emitMessage(dispatchedEvent);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // security already transitioned to IN PROGRESS via persona:start, so the
+    // later job:dispatched event must not clobber its own message.
+    expect(result.current.personaProgress.security.status).toBe('IN PROGRESS');
+    expect(result.current.personaProgress.security.lastMessage).toBe('Security persona audit starting...');
+
+    // A persona untouched by persona:start still picks up the job-level message.
+    expect(result.current.personaProgress.architecture.status).toBe('PENDING');
+    expect(result.current.personaProgress.architecture.lastMessage).toBe('Review job dispatched');
+  });
+
   it('clears events and resets token metrics when clearEvents is called', async () => {
     const { result } = renderHook(() => useSSE({ jobId: 'clear-job' }));
 
