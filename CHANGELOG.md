@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.4...v1.29.5) (2026-09-04)
+
+
+### Bug Fixes
+
+* **types:** typecheck scripts, repair a dead script import, drop the AbortSignal casts (REL-573) ([#481](https://github.com/review-yeti-ai/review-yeti-bot/issues/481)) ([e1bbe30](https://github.com/review-yeti-ai/review-yeti-bot/commit/e1bbe3028d1c3c05de580367c3e404a623819025))
+
 ## [1.29.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.3...v1.29.4) (2026-09-04)
 
 
