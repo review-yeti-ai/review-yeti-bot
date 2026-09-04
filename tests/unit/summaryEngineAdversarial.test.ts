@@ -164,6 +164,24 @@ index 1111111..2222222 100644
       ],
       optionalFailures: [],
       quorum: { required: 1, distinctProviders: ['openai'], satisfied: true },
+      moderator: {
+        providerId: 'openai',
+        model: 'gpt-5.6-sol',
+        decision: 'RECONCILED',
+        findings: [],
+        usage: null,
+        costUSD: null,
+        durationMs: 100,
+      },
+      arbiter: {
+        providerId: 'openai',
+        model: 'gpt-5.6-sol',
+        verdict: 'FIX_FIRST',
+        rationale: 'Critical security issue',
+        usage: null,
+        costUSD: null,
+        durationMs: 100,
+      },
     };
 
     expect(() => formatAdversarialMatrix([], mockPanelResult)).not.toThrow();
@@ -205,6 +223,24 @@ index 1111111..2222222 100644
       ],
       optionalFailures: [],
       quorum: { required: 1, distinctProviders: ['openai'], satisfied: true },
+      moderator: {
+        providerId: 'openai',
+        model: 'gpt-5.6-sol',
+        decision: 'RECONCILED',
+        findings: [],
+        usage: null,
+        costUSD: null,
+        durationMs: 100,
+      },
+      arbiter: {
+        providerId: 'openai',
+        model: 'gpt-5.6-sol',
+        verdict: 'FIX_FIRST',
+        rationale: 'Critical security issue',
+        usage: null,
+        costUSD: null,
+        durationMs: 100,
+      },
     };
 
     const summary = generatePRSummary(sampleDiff, [], mockConfig, mockPanelResult);
@@ -245,6 +281,24 @@ index 1111111..2222222 100644
       ],
       optionalFailures: [],
       quorum: { required: 1, distinctProviders: ['openai'], satisfied: true },
+      moderator: {
+        providerId: 'openai',
+        model: 'gpt-5.6-sol',
+        decision: 'RECONCILED',
+        findings: [],
+        usage: null,
+        costUSD: null,
+        durationMs: 100,
+      },
+      arbiter: {
+        providerId: 'openai',
+        model: 'gpt-5.6-sol',
+        verdict: 'FIX_FIRST',
+        rationale: 'Critical security issue',
+        usage: null,
+        costUSD: null,
+        durationMs: 100,
+      },
     };
 
     const findingsWithNulls: PersonaFinding[] = [null as any, undefined as any];
@@ -264,6 +318,7 @@ index 1111111..2222222 100644
         filePath: 'src/db/query.ts',
         lineNumber: 42,
         severity: 'critical',
+        comment: 'Cross-examination surfaced an unsafe query construction path.',
         attackVector: 'SQLi | RCE Injection <script>alert(1)</script>',
         failureMode: '<!-- comment --> </details>\nBroken pipe | in failure mode',
         mitigation: 'Sanitize | Escape <input> tags',

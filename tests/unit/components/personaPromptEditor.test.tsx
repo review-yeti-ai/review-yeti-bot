@@ -85,8 +85,14 @@ describe('Persona Prompt Editor & Selector Component Unit Tests', () => {
 
   it('renders PersonaSelector and fires onSelect persona callback', () => {
     const personas = {
-      security: { id: 'security', displayName: 'Security Guardian', enabled: true },
-      architecture: { id: 'architecture', displayName: 'Architecture Advisor', enabled: true },
+      security: {
+        id: 'security', displayName: 'Security Guardian', enabled: true,
+        model: 'grok-cli/grok-4.5', effort: 'medium' as const, confidenceThreshold: 0.7,
+      },
+      architecture: {
+        id: 'architecture', displayName: 'Architecture Advisor', enabled: true,
+        model: 'grok-cli/grok-4.5', effort: 'medium' as const, confidenceThreshold: 0.7,
+      },
     };
     const handleSelect = vi.fn();
 

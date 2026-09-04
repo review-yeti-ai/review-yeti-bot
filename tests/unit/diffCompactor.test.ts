@@ -22,13 +22,15 @@ import {
   compactFileListDiffs,
 } from '../../src/pipeline/diffCompactor';
 
-export {
+export type {
   DiffCompactionOptions,
   CompactedDiffResult,
   CompactedFileListResult,
+  ChangedLineRecord,
+};
+export {
   LOCKFILE_PATTERNS,
   MINIFIED_PATTERNS,
-  ChangedLineRecord,
   extractChangedLineNumbers,
   compactUnifiedDiff,
   compactFileListDiffs,
