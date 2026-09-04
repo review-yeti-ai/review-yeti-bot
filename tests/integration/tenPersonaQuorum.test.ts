@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
+import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
 function build10PersonaConfig(): CtReviewConfigV3 {
   return {
+    ...createDefaultV3Config(),
     version: 3,
     profile: 'assertive',
     quorum: 4,
@@ -36,8 +38,12 @@ function build10PersonaConfig(): CtReviewConfigV3 {
     },
     path_instructions: [],
     rules: [],
-    reviewer_effort: 'high',
-    confidence_threshold: 70,
+    reviews: {
+      ...createDefaultV3Config().reviews,
+      reviewer_effort: 'high',
+      confidence_threshold: 70,
+      mascot: true,
+    },
     mascot: true,
   };
 }

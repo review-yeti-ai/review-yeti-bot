@@ -1332,8 +1332,8 @@ describe('Sandboxed PI Harness & Empirical Multi-Agent Pipeline E2E (Tiers 1-4)'
       });
 
       it('TEST_F12_04: detects mismatched scenario IDs during replay', () => {
-        const cassetteId = 'scen-101';
-        const queryId = 'scen-102';
+        const cassetteId: string = 'scen-101';
+        const queryId: string = 'scen-102';
         expect(cassetteId === queryId).toBe(false);
       });
 

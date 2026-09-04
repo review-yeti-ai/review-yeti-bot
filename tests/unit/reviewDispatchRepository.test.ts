@@ -51,7 +51,7 @@ function input() {
 }
 
 function clientWithRows(rows: any[][]) {
-  const query = vi.fn(async () => ({ rows: rows.shift() || [] }));
+  const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: rows.shift() || [] }));
   const release = vi.fn();
   return { query, release };
 }
@@ -151,7 +151,7 @@ describe('PostgresReviewDispatchRepository', () => {
   });
 
   it('claims pending or expired work with SKIP LOCKED and a renewable lease', async () => {
-    const query = vi.fn(async () => ({ rows: [{
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{
       run_id: row.run_id,
       delivery_id: input().deliveryId,
       repository_id: 123,
@@ -188,7 +188,7 @@ describe('PostgresReviewDispatchRepository', () => {
   });
 
   it('terminalizes both the outbox and run only for the owning dispatcher lease', async () => {
-    const query = vi.fn(async () => ({ rows: [{ run_id: row.run_id }] }));
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ run_id: row.run_id }] }));
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
     await expect(repository.markTerminal(
       row.run_id,
