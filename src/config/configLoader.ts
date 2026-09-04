@@ -155,7 +155,7 @@ export function applyTrustedOverrides(
   return normalizeConfigToV4({ ...config, limits, submodules } as CtReviewConfigV4);
 }
 
-export function translateCodeRabbitToV3(raw: any): any {
+export function translateCodeRabbitToV3(raw: any): CtReviewConfigV3 {
   const rawObj = (raw || {}) as Record<string, any>;
   const reviews = rawObj.reviews || {};
   const chat = rawObj.chat || {};

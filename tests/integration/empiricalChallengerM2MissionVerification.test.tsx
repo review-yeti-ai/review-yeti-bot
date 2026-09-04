@@ -8,13 +8,10 @@ import express from 'express';
 import { OverviewMetrics } from '../../src/components/dashboard/overview-metrics';
 import type { OverviewStats } from '../../src/types/dashboard';
 
-// The component's `stats` prop is declared as `OverviewStats | null`, but every field is read
-// with defensive optional chaining (`stats?.totalCostUSD ?? 0`, etc.) — the real runtime contract
-// tolerates a partial/empty object, which is exactly what this suite exercises. The declared
-// type doesn't reflect that (a product type worth tightening to `Partial<OverviewStats> | null`,
-// left alone here per scope), so an empty object is asserted to the declared type rather than
-// weakening the test by fabricating stat values that would defeat the empty-state assertions.
-const EMPTY_STATS = {} as OverviewStats;
+// The component's `stats` prop is `Partial<OverviewStats> | null`, matching the real runtime
+// contract (every field is read with defensive optional chaining / `?? 0` fallbacks). An empty
+// object is a valid value of that type, so no cast is needed for the empty-state assertions below.
+const EMPTY_STATS: Partial<OverviewStats> = {};
 import { CostEstimatorCard } from '../../src/components/onboarding/cost-estimator-card';
 import { isProviderEnabled } from '../../src/lib/model-filtering';
 import { createIntegrationsRouter } from '../../src/dashboard/integrationsApi';
