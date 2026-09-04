@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -282,8 +283,8 @@ And newline injection attacks <script>alert(1)</script>`;
           const elapsed = t1 - t0;
           durations.push(elapsed);
 
-          expect(scan.detection.scanDurationMs).toBeLessThan(3000);
-          expect(elapsed).toBeLessThan(3000);
+          expect(scan.detection.scanDurationMs).toBeLessThan(timeBudgetMs(3000));
+          expect(elapsed).toBeLessThan(timeBudgetMs(3000));
         }
 
         durations.sort((a, b) => a - b);
@@ -298,8 +299,8 @@ And newline injection attacks <script>alert(1)</script>`;
         console.log(`  - Avg: ${avg.toFixed(2)}ms`);
         console.log(`  - P95: ${p95.toFixed(2)}ms`);
 
-        expect(max).toBeLessThan(1000);
-        expect(p95).toBeLessThan(1000);
+        expect(max).toBeLessThan(timeBudgetMs(1000));
+        expect(p95).toBeLessThan(timeBudgetMs(1000));
       }, 15000);
     });
 

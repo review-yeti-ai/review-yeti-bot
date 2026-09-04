@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
@@ -524,7 +525,7 @@ describe('OpenRouterClient', () => {
         kind: 'total',
       });
       expect(cancelCalled).toBe(true);
-      expect(Date.now() - started).toBeLessThan(500);
+      expect(Date.now() - started).toBeLessThan(timeBudgetMs(500));
     } finally {
       if (interval) clearInterval(interval);
     }

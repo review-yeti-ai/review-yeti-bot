@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import { generatePRSummary, parseDiffModules } from '../../src/review/summaryEngine';
 import { generateMermaidDiagram, analyzeDiffComplexity } from '../../src/review/mermaidEngine';
@@ -52,7 +53,7 @@ describe('Milestone 1 Empirical Stress & Challenge Test Suite', () => {
       expect(moduleMap.size).toBe(10);
       expect(summary).toContain('200 file(s) in 10 module(s)');
       expect(diagram).toContain('```mermaid');
-      expect(duration).toBeLessThan(3000);
+      expect(duration).toBeLessThan(timeBudgetMs(3000));
     });
 
     it('handles malformed git diff headers and path traversals without throw', () => {

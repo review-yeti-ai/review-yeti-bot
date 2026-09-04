@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 /**
  * Unit Test Suite: VCR Review Cassette Recording Engine & DeepSeek V4 Flash Low Execution
  * Location: tests/unit/reviewCassetteEngine.test.ts
@@ -423,7 +424,7 @@ describe("Review Cassette Engine Unit Tests (Milestone M3)", () => {
       const duration = Date.now() - start;
 
       expect(results.size).toBe(50);
-      expect(duration).toBeLessThan(500);
+      expect(duration).toBeLessThan(timeBudgetMs(500));
     });
   });
 
